@@ -1,0 +1,13 @@
+
+# Compiled Python files
+*.pyc
+__pycache__/
+data/
+
+# Dependencies
+uv.lock
+
+.claude/
+.copilot/
+*.log
+*.tmp
