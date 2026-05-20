@@ -12,7 +12,7 @@
 | Provider | `data/config/provider.yaml` | 加载为 `ProviderConfig` |
 | Agent | `data/personality/default/agent.yaml` 优先，否则 `data/config/agent.yaml` | 加载为 `AgentConfig` |
 | 权限 | `data/personality/default/permissions.json` 优先，否则 `data/config/permissions.json` | 加载为 `PermissionConfig` |
-| 沙箱 | `data/personality/default/sandbox.json` 优先，否则 `data/config/sandbox.json` | 加载为 `SandboxConfig` |
+| 沙箱 | `data/personality/default/sandbox.json` 优先，否则 `data/config/sandbox.json`，再否则使用 P0 保守默认 | 加载为 `SandboxConfig` |
 | 人格模板 | `data/config/personality_template.md` | system prompt 模板 |
 | Agent 指令 | `data/personality/default/AGENT.md` | 拼进 system prompt |
 | 长期记忆 | `data/personality/default/MEMORY.md` | 拼进 system prompt |
@@ -167,6 +167,8 @@ mailbox:
 
 可选系统级沙箱配置，用来限制工具运行时能看到的宿主资源。
 
+如果两个 `sandbox.json` 都不存在，P0 runtime 默认启用一个保守 sandbox：workspace/subagents 可写，personality/skills 只读，`MEMORY.md` 可写，其他宿主路径默认 deny。可以用 `XBOT_SANDBOX=disabled` 或 CLI `--no-sandbox` 显式关闭。
+
 ```json
 {
   "enabled": true,
@@ -188,7 +190,7 @@ mailbox:
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enabled` | bool | `false` | 是否启用系统级 sandbox |
+| `enabled` | bool | Pydantic 默认 `false`，P0 runtime fallback 为 `true` | 是否启用系统级 sandbox |
 | `backend` | string | `bubblewrap` | 当前仅支持 `bubblewrap` |
 | `default` | `deny` / `ask` | `deny` | 未命中资源规则时的默认策略 |
 | `network` | bool | `false` | 是否允许网络 namespace 共享 |
@@ -316,14 +318,14 @@ data/personality/default/skills/<skill_name>/SKILL.md
 | `filesystem_read` | 通过 sandbox/legacy workspace 边界读取 |
 | `filesystem_write` | sandbox 关闭时 mock；sandbox 开启时通过 bubblewrap 写入 |
 | `filesystem_list` | 通过 sandbox/legacy workspace 边界列目录 |
-| `ask` | 占位 |
-| `message_send` | 终端打印 |
+| `ask` | 触发 `user_ask` interrupt/resume |
+| `message_send` | 通过 interaction adapter 发送用户可见消息 |
 | `memory_update` | 追加写入 `MEMORY.md` |
-| `subagent_create` | 创建占位目录和 ID |
-| `subagent_wait` | 占位 |
-| `subagent_list` | 列目录 |
-| `subagent_stop` | 占位 |
-| `compact` | 占位 |
+| `subagent_create` | 创建 P0 subagent 记录和 workspace |
+| `subagent_wait` | 读取 P0 subagent 状态和结果文件 |
+| `subagent_list` | 列出 P0 subagent 记录 |
+| `subagent_stop` | 将 P0 subagent 标记为 stopped |
+| `compact` | 手动请求下一次图循环进行上下文压缩 |
 | `skill_load` | 通过 sandbox/运行时资源边界读取 skill 文件 |
 
 ## 配置设计建议

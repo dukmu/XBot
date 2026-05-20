@@ -99,8 +99,8 @@ def create_memory_update_tool(memory_path: str):
 @pytest.mark.asyncio
 async def test_filesystem_read_rejects_paths_outside_workspace():
     """Filesystem tools must not resolve paths outside the workspace."""
-    result = await filesystem_read.ainvoke({"path": "/etc/passwd"})
-    assert "Path escapes workspace" in result
+    with pytest.raises(ValueError, match="Path escapes workspace"):
+        await filesystem_read.ainvoke({"path": "/etc/passwd"})
 
 
 def test_permission_deny_precedence():
@@ -219,6 +219,90 @@ async def test_sandbox_one_call_approval_can_expose_exact_path(temp_data_dir):
         assert await policy.read_text("secrets/token.txt") == "original"
     finally:
         policy.clear_one_call_approvals()
+
+
+@pytest.mark.asyncio
+async def test_interaction_result_only_emits_new_messages(mock_llm, user_context):
+    """The interaction layer should emit new events without replaying old history."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.set_response_sequence([
+        {"content": "first"},
+        {"content": "second"},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_test"}},
+        sandbox=SandboxPolicy(),
+        tools=[],
+        database_path=":memory:",
+    )
+
+    first = await runtime.send_user_message("hello")
+    second = await runtime.send_user_message("again")
+
+    assert [event.payload.content for event in first.events if event.kind == "message"][-1] == "first"
+    assert [event.payload.content for event in second.events if event.kind == "message"][-1] == "second"
+    assert all(getattr(event.payload, "content", None) != "first" for event in second.events)
+
+
+@pytest.mark.asyncio
+async def test_interaction_interrupt_keeps_message_before_prompt(mock_llm, user_context):
+    """Permission prompts should be emitted after the model message that caused them."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.set_response_sequence([
+        {
+            "content": "I will inspect the workspace.",
+            "tool_calls": [
+                {"name": "shell", "args": {"command": "pwd"}, "id": "call_pwd"},
+            ],
+        },
+        {"content": "Done."},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[shell],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="ask")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_interrupt_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[shell],
+        database_path=":memory:",
+    )
+
+    result = await runtime.send_user_message("where am I?")
+
+    kinds = [event.kind for event in result.events]
+    assert "message" in kinds
+    assert kinds[-1] == "interrupt"
+    assert any(
+        getattr(event.payload, "content", None) == "I will inspect the workspace."
+        for event in result.events
+        if event.kind == "message"
+    )
 
 
 # ============================================================================

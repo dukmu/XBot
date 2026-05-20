@@ -50,10 +50,12 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 │   ├── models.py              # Pydantic models and state types
 │   ├── config.py              # Configuration loading
 │   ├── permissions.py         # Permission system
-│   ├── tools.py               # Built-in tools and placeholders
+│   ├── tools.py               # Built-in tools
 │   ├── skills.py              # Skill discovery and loading
 │   ├── llm.py                 # LLM factory
 │   ├── graph.py               # LangGraph state graph
+│   ├── interaction.py         # P0 interaction runtime and normalized events
+│   ├── terminal.py            # CLI terminal adapter
 │   ├── checkpointer.py        # SQLite persistence target
 │   └── mock_llm.py            # Test model
 ├── docs/
@@ -148,9 +150,10 @@ Useful flags:
 ```bash
 python main.py --print-tools
 python main.py --print-thoughts
+python main.py --no-sandbox
 ```
 
-Note: `--disable-inmemory` is currently a declared flag, but the runtime still defaults to in-memory persistence.
+The CLI is a thin adapter over `xbot.interaction.HermesInteraction`. If no `sandbox.json` is present, the P0 runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
 
 ## Runtime Graph
 
@@ -171,14 +174,14 @@ Permission confirmation is handled inside the tools node via LangGraph interrupt
 | `filesystem_read` | Reads through the sandbox backend |
 | `filesystem_write` | Writes through the sandbox backend |
 | `filesystem_list` | Lists through the sandbox backend |
-| `ask` | Placeholder for active ask interrupt |
-| `message_send` | Prints a message to terminal |
+| `ask` | Triggers a `user_ask` interrupt/resume flow |
+| `message_send` | Emits a user-visible message through the interaction adapter |
 | `memory_update` | Appends to `MEMORY.md` |
-| `subagent_create` | Creates placeholder subagent workspace and ID |
-| `subagent_wait` | Placeholder |
+| `subagent_create` | Creates a P0 subagent record and workspace |
+| `subagent_wait` | Reads a P0 subagent status/result record |
 | `subagent_list` | Lists subagent directories |
-| `subagent_stop` | Placeholder |
-| `compact` | Placeholder trigger response |
+| `subagent_stop` | Marks a P0 subagent record as stopped |
+| `compact` | Requests context compaction on the next graph pass |
 | `skill_load` | Loads a `SKILL.md` file by name through sandbox when enabled |
 
 ## License
