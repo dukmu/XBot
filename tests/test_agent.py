@@ -263,6 +263,39 @@ def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
 
 
 @pytest.mark.asyncio
+async def test_interaction_stream_emits_deltas_without_final_duplicate(mock_llm, user_context):
+    """Streaming platforms should receive token deltas instead of only final messages."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.chunk_size = 3
+    mock_llm.set_response_sequence([{"content": "stream me"}])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_stream_test"}},
+        sandbox=SandboxPolicy(),
+        tools=[],
+        database_path=":memory:",
+    )
+
+    events = [event async for event in runtime.stream_user_message("hello")]
+
+    assert [event.kind for event in events].count("message_delta") >= 2
+    assert not any(event.kind == "message" and getattr(event.payload, "content", None) == "stream me" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_interaction_result_only_emits_new_messages(mock_llm, user_context):
     """The interaction layer should emit new events without replaying old history."""
     from xbot.interaction import HermesInteraction
