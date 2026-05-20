@@ -199,6 +199,7 @@ async def main():
         checkpointer=checkpointer,
         store=store,
         permission_system=permissions,
+        max_context_chars=agent_config.max_context_tokens * 4,
     )
 
     # Interactive loop

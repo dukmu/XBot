@@ -29,7 +29,7 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 | Permission allow/deny/ask | Implemented |
 | Permission interrupt confirmation | Basic implementation |
 | Active ask | Basic implementation |
-| Context compression | Partial |
+| Context compression | Basic linear implementation |
 | Tool result cache hooks | Basic in-memory implementation |
 | Context tree and rewind | Planned |
 | Subagents | Placeholder |

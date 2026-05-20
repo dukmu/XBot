@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 import pytest_asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
@@ -888,6 +888,46 @@ async def test_persistence_store_archive(mock_llm, tools, user_context, temp_dat
         count = await cursor.fetchone()
         # May be 0 if compression didn't trigger, but table should exist
         assert count is not None
+
+
+@pytest.mark.asyncio
+async def test_linear_compression_reduces_message_chain(mock_llm, tools, user_context):
+    """Test that long conversations are compacted into a summary and recent tail."""
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    permission_system = PermissionSystem(PermissionConfig(default="allow"))
+
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=tools,
+        checkpointer=checkpointer,
+        store=None,
+        permission_system=permission_system,
+        max_messages_before_compress=4,
+        keep_recent_messages=2,
+    )
+
+    thread_id = "test_linear_compression"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    first = await graph.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="msg1"),
+                AIMessage(content="reply1"),
+                HumanMessage(content="msg2"),
+                AIMessage(content="reply2"),
+                HumanMessage(content="msg3"),
+            ],
+            "user_context": user_context,
+        },
+        config=config,
+    )
+
+    assert len(first["messages"]) <= 4
+    assert any(isinstance(m, SystemMessage) and "[Compacted History]" in str(m.content) for m in first["messages"])
 
 
 # ============================================================================
