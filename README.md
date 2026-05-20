@@ -176,10 +176,10 @@ Permission confirmation is handled inside the tools node via LangGraph interrupt
 | `ask` | Triggers a `user_ask` interrupt/resume flow |
 | `message_send` | Emits a user-visible message through the interaction adapter |
 | `memory_update` | Appends to `MEMORY.md` |
-| `subagent_create` | Creates a P0 subagent record and workspace |
-| `subagent_wait` | Reads a P0 subagent status/result record |
-| `subagent_list` | Lists subagent directories |
-| `subagent_stop` | Marks a P0 subagent record as stopped |
+| `subagent_create` | Creates a P0 task record and workspace; no worker starts |
+| `subagent_wait` | Reads a P0 task record status/result |
+| `subagent_list` | Lists task record directories |
+| `subagent_stop` | Marks a P0 task record as stopped |
 | `compact` | Requests context compaction on the next graph pass |
 | `skill_load` | Loads a `SKILL.md` file by name through sandbox when enabled |
 

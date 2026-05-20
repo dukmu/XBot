@@ -121,9 +121,9 @@ python main.py --print-thoughts
 - Runtime 默认使用 `InMemorySaver` 和 `InMemoryStore`。
 - sandbox 开启时，`shell` 在 bubblewrap 内执行；sandbox 关闭时，`shell` 不可用。
 - `filesystem_*` 会按 sandbox 或 legacy workspace 边界访问本地文件。
-- 权限策略为 `ask` 时，会通过 interrupt/resume 请求用户确认。
+- 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
-- `subagent_*` 当前是 P0 记录/状态实现，还不是完整异步 agent。
+- `subagent_*` 当前是 P0 task record 实现，还不是完整异步 agent。
 
 ## 验证安装
 

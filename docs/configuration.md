@@ -209,7 +209,7 @@ mailbox:
 - `readwrite`：可读写挂载。
 - `readonly`：只读挂载。
 - `deny`：在 sandbox 内遮蔽该路径；如果它位于可写父目录下，shell 子进程也看不到宿主内容。
-- `ask`：默认按 deny 遮蔽；命中时通过 `sandbox_confirm` interrupt 复用 ask 流程，获批后只临时挂载本次工具调用的精确路径。
+- `ask`：默认按 deny 遮蔽；命中时通过合并的 `tool_confirm` interrupt 复用 ask 流程，获批后只临时挂载本次工具调用的精确路径。
 
 实现约束：
 
@@ -321,10 +321,10 @@ data/personality/<personality_id>/skills/<skill_name>/SKILL.md
 | `ask` | 触发 `user_ask` interrupt/resume |
 | `message_send` | 通过 interaction adapter 发送用户可见消息 |
 | `memory_update` | 追加写入 `MEMORY.md` |
-| `subagent_create` | 创建 P0 subagent 记录和 workspace |
-| `subagent_wait` | 读取 P0 subagent 状态和结果文件 |
-| `subagent_list` | 列出 P0 subagent 记录 |
-| `subagent_stop` | 将 P0 subagent 标记为 stopped |
+| `subagent_create` | 创建 P0 task record 和 workspace，不启动 worker |
+| `subagent_wait` | 读取 P0 task record 状态和结果文件 |
+| `subagent_list` | 列出 P0 task record |
+| `subagent_stop` | 将 P0 task record 标记为 stopped |
 | `compact` | 手动请求下一次图循环进行上下文压缩 |
 | `skill_load` | 通过 sandbox/运行时资源边界读取 skill 文件 |
 

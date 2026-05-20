@@ -65,10 +65,13 @@ created_at: ...
 
 ```yaml
 interrupt_id: int_...
-type: user_ask | permission_confirm
+type: user_ask | tool_confirm
 question: ...
 tool_name: optional
 args: optional
+reasons: optional
+sandbox: optional
+permission: optional
 resume_schema: ...
 ```
 
@@ -140,7 +143,7 @@ resources:
 START
   -> agent
   -> tools
-       -> permission_confirm interrupt when needed
+       -> tool_confirm interrupt when approval is needed
        -> user_ask interrupt when ask() is called
        -> output guardrail / cache hook
   -> agent
@@ -215,14 +218,15 @@ tools -> ToolMessage("User answered: ...")
 agent -> continue
 ```
 
-### permission_confirm
+### tool_confirm
 
-由权限系统触发。用户批准后才执行工具；拒绝后返回标准拒绝工具结果。
+由权限系统或 sandbox ask 触发。一个工具调用如果同时需要权限确认和 sandbox 资源确认，只向用户发出一次合并确认；拒绝后返回标准拒绝工具结果。
 
 ```text
 agent -> tool_call
 permission -> deny | allow | ask
-ask -> interrupt(type="permission_confirm")
+sandbox -> deny | allow | ask
+ask -> interrupt(type="tool_confirm")
 user -> approved true/false
 tools -> execute or return denial
 ```
@@ -259,7 +263,7 @@ tools -> execute or return denial
 
 ### Subagent
 
-先不实现 autonomous async subagent。推荐路线：
+当前 `subagent_*` 是 P0 task record 工具，只创建/读取/停止任务记录，不启动 worker。先不实现 autonomous async subagent。推荐路线：
 
 1. 同步 worker：一次任务，一次返回。
 2. background task：固定 workflow 或固定工具链。
