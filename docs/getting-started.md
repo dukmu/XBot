@@ -56,7 +56,7 @@ session_type: "private"
 
 ## 配置 Agent
 
-默认会优先读取 `data/personality/default/agent.yaml`，不存在时读取 `data/config/agent.yaml`。
+默认会优先读取 `data/personality/default/agent.yaml`，不存在时读取 `data/config/agent.yaml`。可通过 `--personality-id` 或 `XBOT_PERSONALITY_ID` 切换 personality。
 
 ```yaml
 name: "default"
@@ -79,11 +79,11 @@ tools:
 skills: []
 ```
 
-注意：当前 `tools` 字段尚未真正过滤暴露给模型的工具，入口会传入所有内置工具。
+注意：`tools` 字段会过滤暴露给模型的工具；`filesystem` 会展开为 `filesystem_read`、`filesystem_write`、`filesystem_list`。
 
 ## 配置权限
 
-编辑 `data/personality/default/permissions.json` 或 `data/config/permissions.json`：
+编辑 `data/personality/<personality_id>/permissions.json` 或 `data/config/permissions.json`：
 
 ```json
 {

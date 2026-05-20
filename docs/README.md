@@ -35,7 +35,7 @@
 | 部分实现 | 有代码基础，但行为尚未完整闭环 |
 | 规划中 | 架构目标，尚未实现 |
 
-当前开发阶段默认使用 `InMemorySaver` 和 `InMemoryStore`。SQLite checkpointer/store 代码已经存在，但还不是默认入口路径。
+当前开发阶段默认使用 `InMemorySaver` 和 `InMemoryStore`。SQLite 持久化尚未接入；后续应优先复用 LangGraph 官方持久化包，而不是维护自写 saver/store。
 
 ## 待补文档
 

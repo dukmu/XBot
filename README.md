@@ -8,7 +8,7 @@ The current codebase is in an early development stage. The main loop, LangGraph 
 
 Hermes is meant to be a personal agent, not a multi-tenant service. The main design goals are:
 
-- **Single-user local runtime**: one user, one local workspace, one default session.
+- **Single-user local runtime**: one user, one local workspace, configurable local sessions.
 - **Explicit model context**: `system prompt + system state + message chain + optional think blocks`.
 - **Permission-first tools**: tool calls go through allow/deny/ask rules; sensitive actions interrupt for confirmation.
 - **System sandbox**: when enabled, host-touching tools run inside bubblewrap with explicit resource mounts and deny/ask masking.
@@ -34,9 +34,9 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 | Context compression | Basic linear implementation |
 | Tool result cache hooks | Basic in-memory implementation |
 | Context tree and rewind | Planned |
-| Subagents | Placeholder |
+| Subagents | P0 record tools |
 | Mailbox | Planned |
-| SQLite persistence | Code exists, not default |
+| SQLite persistence | Planned |
 | Runtime persistence default | `InMemorySaver` / `InMemoryStore` |
 
 ## Repository Layout
@@ -56,7 +56,6 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 │   ├── graph.py               # LangGraph state graph
 │   ├── interaction.py         # P0 interaction runtime and normalized events
 │   ├── terminal.py            # CLI terminal adapter
-│   ├── checkpointer.py        # SQLite persistence target
 │   └── mock_llm.py            # Test model
 ├── docs/
 │   ├── README.md
@@ -121,7 +120,7 @@ platform: "local"
 session_type: "private"
 ```
 
-Configure permissions in `data/config/permissions.json` or `data/personality/default/permissions.json`:
+Configure permissions in `data/config/permissions.json` or `data/personality/<personality_id>/permissions.json`:
 
 ```json
 {

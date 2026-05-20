@@ -78,5 +78,5 @@ Context compacted: summarized 2 messages, kept 1 recent messages.
 
 - 真正异步执行的 subagent graph。
 - mailbox、rewind、上下文树访问工具。
-- SQLite checkpointer/store 持久化替代当前 `InMemorySaver/InMemoryStore`。
+- SQLite 持久化替代当前 `InMemorySaver/InMemoryStore`。
 - 多平台 UI adapter 除 terminal 外的端到端测试。

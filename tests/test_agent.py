@@ -296,6 +296,66 @@ def test_sandbox_reports_workspace_symlink_escape(temp_data_dir):
     assert "resolves outside via symlink" in decision.reason
 
 
+def test_runtime_paths_drive_session_and_personality_dirs(temp_data_dir):
+    """Session/personality ids should derive runtime paths and default sandbox rules."""
+    from xbot.config import configure_runtime_paths, default_sandbox_config, get_runtime_paths
+
+    original = get_runtime_paths()
+    try:
+        paths = configure_runtime_paths(
+            data_dir=temp_data_dir,
+            session_id="analysis",
+            personality_id="hermes",
+        )
+        sandbox_config = default_sandbox_config(paths)
+        resource_paths = {rule.path for rule in sandbox_config.resources}
+
+        assert paths.workspace_dir == temp_data_dir / "sessions" / "analysis" / "workspace"
+        assert paths.personality_dir == temp_data_dir / "personality" / "hermes"
+        assert "sessions/analysis/workspace" in resource_paths
+        assert "personality/hermes/MEMORY.md" in resource_paths
+    finally:
+        configure_runtime_paths(
+            data_dir=original.data_dir,
+            session_id=original.session_id,
+            personality_id=original.personality_id,
+        )
+
+
+def test_config_expands_runtime_placeholders(temp_data_dir):
+    """Sandbox config files can follow the active runtime paths."""
+    from xbot.config import configure_runtime_paths, expand_runtime_placeholders, get_runtime_paths
+
+    original = get_runtime_paths()
+    try:
+        configure_runtime_paths(
+            data_dir=temp_data_dir,
+            session_id="analysis",
+            personality_id="hermes",
+        )
+        expanded = expand_runtime_placeholders(
+            {
+                "resources": [
+                    {"path": "sessions/<session_id>/workspace"},
+                    {"path": "personality/{{personality_id}}/MEMORY.md"},
+                ]
+            }
+        )
+
+        assert expanded == {
+            "resources": [
+                {"path": "sessions/analysis/workspace"},
+                {"path": "personality/hermes/MEMORY.md"},
+            ]
+        }
+    finally:
+        configure_runtime_paths(
+            data_dir=original.data_dir,
+            session_id=original.session_id,
+            personality_id=original.personality_id,
+        )
+
+
 def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
     """Providers may expose tool calls in both content_blocks and tool_calls."""
     from xbot.terminal import TerminalOptions, TerminalRenderer
@@ -563,6 +623,27 @@ async def test_prepare_context_clears_stale_runtime_events(mock_llm):
     )
 
     assert result == {"runtime_events": []}
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_serializes_user_context(mock_llm, user_context):
+    """Graph state should stay msgpack-friendly instead of persisting Pydantic objects."""
+    from xbot.graph import make_prepare_context_node
+
+    node = make_prepare_context_node(
+        mock_llm,
+        max_messages_before_compress=10,
+        max_context_chars=10_000,
+        keep_recent_messages=1,
+    )
+    result = await node(
+        {
+            "messages": [HumanMessage(content="short")],
+            "user_context": user_context,
+        }
+    )
+
+    assert result["user_context"] == user_context.model_dump()
 
 
 def test_sanitize_message_chain_drops_orphan_tool_messages():
@@ -1467,22 +1548,17 @@ async def test_persistence_checkpoint_restore(mock_llm, tools, user_context, tem
 
 
 @pytest.mark.asyncio
-async def test_persistence_store_archive(mock_llm, tools, user_context, temp_data_dir):
-    """Test that store archives compressed messages."""
-    import aiosqlite
-    from xbot.checkpointer import SQLiteCheckpointer, SQLiteStore
-    
-    db_path = temp_data_dir / "sessions" / "default" / "conversation.db"
-    
-    checkpointer = SQLiteCheckpointer(str(db_path))
-    store = SQLiteStore(str(db_path))
-    await checkpointer.setup()
-    await store.setup()
-    
+async def test_persistence_store_archive(mock_llm, tools, user_context):
+    """Test that the graph accepts the current in-memory store path."""
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.store.memory import InMemoryStore
+
+    checkpointer = MemorySaver()
+    store = InMemoryStore()
     permission_system = PermissionSystem(PermissionConfig(default="allow"))
-    
+
     from xbot.graph import build_agent_graph
-    
+
     graph = build_agent_graph(
         llm=mock_llm,
         tools=tools,
@@ -1490,24 +1566,19 @@ async def test_persistence_store_archive(mock_llm, tools, user_context, temp_dat
         store=store,
         permission_system=permission_system,
     )
-    
+
     config = {"configurable": {"thread_id": "test_store"}}
-    
+
     # Trigger compression with long conversation
     mock_llm.set_response_sequence(COMPRESSION_SEQUENCE)
     input_state = {
         "messages": [HumanMessage(content="Long conversation starter")],
         "user_context": user_context,
     }
-    
+
     result = await graph.ainvoke(input_state, config=config)
-    
-    # Verify store has archived data
-    async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM store")
-        count = await cursor.fetchone()
-        # May be 0 if compression didn't trigger, but table should exist
-        assert count is not None
+
+    assert "messages" in result
 
 
 @pytest.mark.asyncio
@@ -1555,17 +1626,13 @@ async def test_linear_compression_reduces_message_chain(mock_llm, tools, user_co
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_full_workflow(mock_llm, tools, user_context, temp_data_dir):
+async def test_full_workflow(mock_llm, tools, user_context):
     """Test complete workflow with multiple features."""
-    import aiosqlite
-    from xbot.checkpointer import SQLiteCheckpointer, SQLiteStore
-    
-    db_path = temp_data_dir / "sessions" / "default" / "conversation.db"
-    
-    checkpointer = SQLiteCheckpointer(str(db_path))
-    store = SQLiteStore(str(db_path))
-    await checkpointer.setup()
-    await store.setup()
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.store.memory import InMemoryStore
+
+    checkpointer = MemorySaver()
+    store = InMemoryStore()
     
     permission_config = PermissionConfig(
         default="ask",
@@ -1582,7 +1649,7 @@ async def test_full_workflow(mock_llm, tools, user_context, temp_data_dir):
         store=store,
         permission_system=permission_system,
     )
-    
+
     thread_id = "test_full_workflow"
     config = {"configurable": {"thread_id": thread_id}}
     
@@ -1592,25 +1659,19 @@ async def test_full_workflow(mock_llm, tools, user_context, temp_data_dir):
         ("Create subagent", [{"content": "Creating...", "tool_calls": [{"name": "subagent_create", "args": {"task": "test", "mode": "attach"}, "id": "c2"}]}]),
         ("Check status", [{"content": "Status OK"}]),
     ]
-    
+
     for user_msg, response_seq in scenarios:
         mock_llm.set_response_sequence(response_seq)
         input_state = {
             "messages": [HumanMessage(content=user_msg)],
             "user_context": user_context,
         }
-        
+
         result = await graph.ainvoke(input_state, config=config)
         assert "messages" in result
-    
-    # Verify persistence
-    async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
-            (thread_id,)
-        )
-        count = await cursor.fetchone()
-        assert count[0] > 0
+
+    saved = await checkpointer.aget_tuple(config)
+    assert saved is not None
 
 
 # ============================================================================

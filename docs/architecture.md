@@ -118,10 +118,10 @@ network: false
 timeout_seconds: 30
 max_output_chars: 20000
 resources:
-  - path: sessions/default/workspace
+  - path: sessions/<session_id>/workspace
     access: readwrite
     recursive: true
-  - path: personality/default
+  - path: personality/<personality_id>
     access: readonly
 ```
 
@@ -173,8 +173,8 @@ payload: ...
 来源：
 
 - `data/config/personality_template.md`
-- `data/personality/default/AGENT.md`
-- `data/personality/default/MEMORY.md`
+- `data/personality/<personality_id>/AGENT.md`
+- `data/personality/<personality_id>/MEMORY.md`
 - skills 摘要
 
 SystemPrompt 负责角色、规则、工具使用约束和长期记忆。
@@ -339,6 +339,5 @@ RuntimeState 只放未读高优先级摘要和数量。
 | `xbot/tools.py` | 内置工具、`cache_read` |
 | `xbot/cache.py` | 开发阶段内存 ToolResultRef cache |
 | `xbot/permissions.py` | deny/allow/ask 权限规则 |
-| `xbot/config.py` | YAML/JSON 配置加载 |
+| `xbot/config.py` | YAML/JSON 配置加载和 runtime path 派生 |
 | `xbot/models.py` | Pydantic 配置模型和运行时契约模型 |
-| `xbot/checkpointer.py` | SQLite checkpointer/store 的目标实现 |

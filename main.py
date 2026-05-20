@@ -12,7 +12,6 @@ import os
 import sys
 from pathlib import Path
 
-os.environ["LANGGRAPH_STRICT_MSGPACK"] = "false"
 sys.path.insert(0, str(Path(__file__).parent))
 
 from xbot.interaction import HermesInteraction
@@ -27,12 +26,18 @@ async def main() -> None:
     parser.add_argument("--print-thoughts", action="store_true", help="Print model reasoning/thinking blocks when provided")
     parser.add_argument("--print-tools", action="store_true", help="Print tool calls and tool results")
     parser.add_argument("--no-sandbox", action="store_true", help="Disable the default P0 system sandbox")
+    parser.add_argument("--session-id", default=os.environ.get("XBOT_SESSION_ID", "default"), help="Runtime session id")
+    parser.add_argument("--personality-id", default=os.environ.get("XBOT_PERSONALITY_ID", "default"), help="Personality id")
     args = parser.parse_args()
 
     if args.no_sandbox:
         os.environ["XBOT_SANDBOX"] = "disabled"
 
-    runtime = HermesInteraction.create(thread_id="default")
+    runtime = HermesInteraction.create(
+        thread_id=args.session_id,
+        session_id=args.session_id,
+        personality_id=args.personality_id,
+    )
     session = TerminalSession(
         runtime,
         TerminalOptions(
