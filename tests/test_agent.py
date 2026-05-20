@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for the Digital Human Agent system.
+Comprehensive test suite for the Hermes agent runtime.
 
 Tests cover:
 - Tool calls (shell, filesystem, ask, message_send)
@@ -246,6 +246,32 @@ def test_sandbox_shell_preflight_blocks_unapproved_absolute_write(temp_data_dir)
     assert "/home/shefrin/hello-agent.txt" in decision.reason
 
 
+def test_sandbox_guard_uses_tool_semantics_for_write_paths(temp_data_dir):
+    """Write tools should ask/deny as writes before helper execution starts."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    ask_dir = workspace / "approval"
+    ask_dir.mkdir(parents=True)
+    target = ask_dir / "note.txt"
+    policy = SandboxPolicy(
+        SandboxConfig(
+            enabled=True,
+            default="deny",
+            resources=[
+                {"path": str(workspace), "access": "readwrite", "recursive": True},
+                {"path": str(ask_dir), "access": "ask", "recursive": True},
+            ],
+        ),
+        data_root=temp_data_dir,
+        workspace_root=workspace,
+    )
+
+    decision = policy.guard_tool_call("filesystem_write", {"path": str(target)}, "sandboxed")
+
+    assert decision.action == "ask"
+    assert decision.operation == "write"
+    assert "write access" in decision.reason
+
+
 def test_sandbox_reports_workspace_symlink_escape(temp_data_dir):
     """Workspace symlinks that resolve outside the sandbox should be explicit."""
     workspace = temp_data_dir / "sessions" / "default" / "workspace"
@@ -297,6 +323,32 @@ def test_terminal_renders_normalized_tool_call_event(capsys):
     output = capsys.readouterr().out
     assert output.count("Tool Call>") == 1
     assert "{'command': 'pwd'}" in output
+
+
+def test_stream_tool_call_waits_for_complete_args(user_context):
+    """Streaming normalization must not emit shell({}) half-calls."""
+    from xbot.interaction import HermesInteraction
+
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=None,
+        graph_config={"configurable": {"thread_id": "partial_tool_call_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[],
+        database_path=":memory:",
+    )
+
+    first = runtime._complete_tool_calls_from_chunk(
+        AIMessageChunk(content="", tool_calls=[{"name": "shell", "args": {}, "id": "call_1", "type": "tool_call"}])
+    )
+    second = runtime._complete_tool_calls_from_chunk(
+        AIMessageChunk(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
+    )
+
+    assert first == []
+    assert second == [{"name": "shell", "args": {"command": "pwd"}, "id": "call_1"}]
 
 
 @pytest.mark.asyncio
@@ -373,6 +425,45 @@ async def test_interaction_stream_normalizes_tool_call_events(mock_llm, user_con
 
 
 @pytest.mark.asyncio
+async def test_interaction_stream_preserves_zero_arg_tool_calls(mock_llm, user_context):
+    """Zero-argument tools are valid and should be emitted from final updates."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.set_response_sequence([
+        {
+            "content": "compacting",
+            "tool_calls": [{"name": "compact", "args": {}, "id": "call_compact"}],
+        },
+        {"content": "done"},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[compact],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_zero_arg_tool_call_stream_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[compact],
+        database_path=":memory:",
+    )
+
+    events = [event async for event in runtime.stream_user_message("compact now")]
+    tool_calls = [event.payload for event in events if event.kind == "tool_call"]
+
+    assert {"name": "compact", "args": {}, "id": "call_compact"} in tool_calls
+
+
+@pytest.mark.asyncio
 async def test_interaction_stream_hides_prepare_context_and_reports_compaction(mock_llm, user_context):
     """Compression should be a runtime status event, not streamed summary text."""
     from xbot.interaction import HermesInteraction
@@ -412,6 +503,66 @@ async def test_interaction_stream_hides_prepare_context_and_reports_compaction(m
     assert any(event.kind == "status" and "Context compacted" in str(event.payload) for event in events)
     assert "internal summary" not in text
     assert "visible answer" in text
+
+
+@pytest.mark.asyncio
+async def test_interaction_batch_reports_compaction_once(mock_llm, user_context):
+    """Non-streaming platforms should also receive compaction status events."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.set_response_sequence([
+        {"content": "first visible"},
+        {"content": "summary"},
+        {"content": "after compact"},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        max_messages_before_compress=1,
+        keep_recent_messages=1,
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_batch_compact_test"}},
+        sandbox=SandboxPolicy(),
+        tools=[],
+        database_path=":memory:",
+    )
+
+    await runtime.send_user_message("hello")
+    result = await runtime.send_user_message("again")
+    status_events = [event for event in result.events if event.kind == "status" and "Context compacted" in str(event.payload)]
+
+    assert len(status_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_clears_stale_runtime_events(mock_llm):
+    """Runtime events are one-shot updates, not durable notices."""
+    from xbot.graph import make_prepare_context_node
+
+    node = make_prepare_context_node(
+        mock_llm,
+        max_messages_before_compress=10,
+        max_context_chars=10_000,
+        keep_recent_messages=1,
+    )
+    result = await node(
+        {
+            "messages": [HumanMessage(content="short")],
+            "runtime_events": [{"type": "context_compacted", "message": "old"}],
+        }
+    )
+
+    assert result == {"runtime_events": []}
 
 
 def test_sanitize_message_chain_drops_orphan_tool_messages():
@@ -459,6 +610,7 @@ def test_interaction_reset_thread_clears_render_state(user_context):
     runtime._seen_message_keys.add("x")
     runtime._streamed_message_keys.add("x")
     runtime._streamed_tool_call_keys.add("x")
+    runtime._seen_runtime_event_keys.add("x")
 
     runtime.reset_thread("clean")
 
@@ -466,6 +618,7 @@ def test_interaction_reset_thread_clears_render_state(user_context):
     assert not runtime._seen_message_keys
     assert not runtime._streamed_message_keys
     assert not runtime._streamed_tool_call_keys
+    assert not runtime._seen_runtime_event_keys
 
 
 @pytest.mark.asyncio
