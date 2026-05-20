@@ -221,6 +221,47 @@ async def test_sandbox_one_call_approval_can_expose_exact_path(temp_data_dir):
         policy.clear_one_call_approvals()
 
 
+def test_sandbox_shell_preflight_blocks_unapproved_absolute_write(temp_data_dir):
+    """Shell commands must not appear to succeed against unapproved host paths."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    policy = SandboxPolicy(
+        SandboxConfig(
+            enabled=True,
+            default="deny",
+            resources=[
+                {"path": str(workspace), "access": "readwrite", "recursive": True},
+            ],
+        ),
+        data_root=temp_data_dir,
+        workspace_root=workspace,
+    )
+
+    decision = policy.guard_tool_call(
+        "shell",
+        {"command": 'echo "hello-agent" > /home/shefrin/hello-agent.txt'},
+        "sandboxed",
+    )
+
+    assert decision.action == "deny"
+    assert "/home/shefrin/hello-agent.txt" in decision.reason
+
+
+def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
+    """Providers may expose tool calls in both content_blocks and tool_calls."""
+    from xbot.terminal import TerminalOptions, TerminalRenderer
+
+    message = AIMessage(
+        content=[{"type": "tool_call", "name": "shell", "args": {"command": "pwd"}, "id": "call_1"}],
+        tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}],
+    )
+    renderer = TerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
+
+    renderer.message(message)
+    output = capsys.readouterr().out
+
+    assert output.count("Tool Call>") == 1
+
+
 @pytest.mark.asyncio
 async def test_interaction_result_only_emits_new_messages(mock_llm, user_context):
     """The interaction layer should emit new events without replaying old history."""
