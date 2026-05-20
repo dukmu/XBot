@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 import pytest_asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool as lc_tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
@@ -246,6 +246,30 @@ def test_sandbox_shell_preflight_blocks_unapproved_absolute_write(temp_data_dir)
     assert "/home/shefrin/hello-agent.txt" in decision.reason
 
 
+def test_sandbox_reports_workspace_symlink_escape(temp_data_dir):
+    """Workspace symlinks that resolve outside the sandbox should be explicit."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    outside = temp_data_dir / "outside"
+    outside.mkdir()
+    (workspace / "outside").symlink_to(outside)
+    policy = SandboxPolicy(
+        SandboxConfig(
+            enabled=True,
+            default="deny",
+            resources=[
+                {"path": str(workspace), "access": "readwrite", "recursive": True},
+            ],
+        ),
+        data_root=temp_data_dir,
+        workspace_root=workspace,
+    )
+
+    decision = policy.guard_tool_call("filesystem_list", {"path": "outside"}, "sandboxed")
+
+    assert decision.action == "deny"
+    assert "resolves outside via symlink" in decision.reason
+
+
 def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
     """Providers may expose tool calls in both content_blocks and tool_calls."""
     from xbot.terminal import TerminalOptions, TerminalRenderer
@@ -260,6 +284,31 @@ def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
     output = capsys.readouterr().out
 
     assert output.count("Tool Call>") == 1
+
+
+def test_terminal_buffers_streamed_tool_call_chunks(capsys):
+    """Streaming tool call chunks should print once with complete args."""
+    from xbot.terminal import TerminalOptions, TerminalRenderer
+
+    renderer = TerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
+    renderer.message_delta(
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {"name": "shell", "args": '{"command": ', "id": "call_1", "index": 0, "type": "tool_call_chunk"}
+            ],
+        )
+    )
+    renderer.message_delta(
+        AIMessageChunk(
+            content="",
+            tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}],
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert output.count("Tool Call>") == 1
+    assert "{'command': 'pwd'}" in output
 
 
 @pytest.mark.asyncio
@@ -293,6 +342,62 @@ async def test_interaction_stream_emits_deltas_without_final_duplicate(mock_llm,
 
     assert [event.kind for event in events].count("message_delta") >= 2
     assert not any(event.kind == "message" and getattr(event.payload, "content", None) == "stream me" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_interaction_stream_hides_prepare_context_and_reports_compaction(mock_llm, user_context):
+    """Compression should be a runtime status event, not streamed summary text."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.chunk_size = 5
+    mock_llm.set_response_sequence([
+        {"content": "first visible"},
+        {"content": "internal summary"},
+        {"content": "visible answer"},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        max_messages_before_compress=1,
+        keep_recent_messages=1,
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_compact_stream_test"}},
+        sandbox=SandboxPolicy(),
+        tools=[],
+        database_path=":memory:",
+    )
+
+    _ = [event async for event in runtime.stream_user_message("hello")]
+    events = [event async for event in runtime.stream_user_message("again")]
+    text = "".join(str(getattr(event.payload, "content", "")) for event in events)
+
+    assert any(event.kind == "status" and "Context compacted" in str(event.payload) for event in events)
+    assert "internal summary" not in text
+    assert "visible answer" in text
+
+
+def test_sanitize_message_chain_drops_orphan_tool_messages():
+    """Provider message chains must not contain tool results without calls."""
+    from xbot.graph import sanitize_message_chain
+
+    orphan = ToolMessage(content="orphan", name="shell", tool_call_id="missing")
+    ai = AIMessage(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
+    paired = ToolMessage(content="ok", name="shell", tool_call_id="call_1")
+
+    sanitized = sanitize_message_chain([HumanMessage(content="hi"), orphan, ai, paired])
+
+    assert orphan not in sanitized
+    assert paired in sanitized
 
 
 @pytest.mark.asyncio
