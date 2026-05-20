@@ -25,11 +25,12 @@ import pytest
 import pytest_asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
+from langchain_core.tools import tool as lc_tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
-from xbot.models import UserContext, PermissionConfig
+from xbot.models import UserContext, PermissionConfig, SandboxConfig
 from xbot.mock_llm import (
     MockLLM,
     TOOL_CALL_SEQUENCE,
@@ -57,6 +58,7 @@ from xbot.tools import (
     get_all_tools,
 )
 from xbot.permissions import PermissionSystem
+from xbot.sandbox import SandboxPolicy
 
 
 # Helper to create tools with custom parameters for tests
@@ -112,6 +114,111 @@ def test_permission_deny_precedence():
     )
 
     assert permission_system.check("shell", {"command": "rm -rf /tmp/test"}) == "deny"
+
+
+def test_permission_ask_rule_is_respected():
+    """Explicit ask rules must be honored."""
+    permission_system = PermissionSystem(
+        PermissionConfig(
+            default="deny",
+            ask=[{"tool": "shell", "params": {"command": "^whoami$"}}],
+        )
+    )
+
+    assert permission_system.check("shell", {"command": "whoami"}) == "ask"
+
+
+@pytest.mark.asyncio
+async def test_compact_tool_is_allowed_and_returns_manual_request():
+    """The compact tool must remain a manual trigger."""
+    result = await compact.ainvoke({})
+    assert "Manual context compression requested" in result
+
+
+@pytest.mark.asyncio
+async def test_sandbox_enabled_requires_tool_registration(mock_llm):
+    """New tools must explicitly declare their sandbox mode before exposure."""
+    from xbot.graph import build_agent_graph
+
+    @lc_tool
+    async def unregistered_tool() -> str:
+        """A tool intentionally missing from TOOL_SANDBOX_MODE."""
+        return "ok"
+
+    with pytest.raises(ValueError, match="not registered"):
+        build_agent_graph(
+            llm=mock_llm,
+            tools=[unregistered_tool],
+            checkpointer=MemorySaver(),
+            store=None,
+            permission_system=PermissionSystem(PermissionConfig(default="allow")),
+            sandbox_policy=SandboxPolicy(SandboxConfig(enabled=True)),
+        )
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
+@pytest.mark.asyncio
+async def test_sandbox_shell_masks_denied_paths(temp_data_dir):
+    """A script running inside shell must not read or write denied host paths."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    secret_dir = workspace / "secrets"
+    secret_dir.mkdir(parents=True)
+    secret_file = secret_dir / "token.txt"
+    secret_file.write_text("original", encoding="utf-8")
+
+    policy = SandboxPolicy(
+        SandboxConfig(
+            enabled=True,
+            resources=[
+                {"path": str(workspace), "access": "readwrite", "recursive": True},
+                {"path": str(secret_dir), "access": "deny", "recursive": True},
+            ],
+        ),
+        data_root=temp_data_dir,
+        workspace_root=workspace,
+    )
+
+    result = await policy.run_shell(
+        "cat secrets/token.txt; "
+        "echo hacked > secrets/token.txt; "
+        "echo allowed > visible.txt"
+    )
+
+    assert "No such file" in result or "Read-only file system" in result
+    assert secret_file.read_text(encoding="utf-8") == "original"
+    assert (workspace / "visible.txt").read_text(encoding="utf-8") == "allowed\n"
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
+@pytest.mark.asyncio
+async def test_sandbox_one_call_approval_can_expose_exact_path(temp_data_dir):
+    """A sandbox ask approval should expose only the approved path for one call."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    secret_dir = workspace / "secrets"
+    secret_dir.mkdir(parents=True)
+    secret_file = secret_dir / "token.txt"
+    secret_file.write_text("original", encoding="utf-8")
+
+    policy = SandboxPolicy(
+        SandboxConfig(
+            enabled=True,
+            resources=[
+                {"path": str(workspace), "access": "readwrite", "recursive": True},
+                {"path": str(secret_dir), "access": "ask", "recursive": True},
+            ],
+        ),
+        data_root=temp_data_dir,
+        workspace_root=workspace,
+    )
+
+    with pytest.raises(ValueError, match="asks before read access"):
+        await policy.read_text("secrets/token.txt")
+
+    policy.approve_once(secret_file, "read")
+    try:
+        assert await policy.read_text("secrets/token.txt") == "original"
+    finally:
+        policy.clear_one_call_approvals()
 
 
 # ============================================================================

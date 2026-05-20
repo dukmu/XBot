@@ -12,6 +12,7 @@
 | Provider | `data/config/provider.yaml` | 加载为 `ProviderConfig` |
 | Agent | `data/personality/default/agent.yaml` 优先，否则 `data/config/agent.yaml` | 加载为 `AgentConfig` |
 | 权限 | `data/personality/default/permissions.json` 优先，否则 `data/config/permissions.json` | 加载为 `PermissionConfig` |
+| 沙箱 | `data/personality/default/sandbox.json` 优先，否则 `data/config/sandbox.json` | 加载为 `SandboxConfig` |
 | 人格模板 | `data/config/personality_template.md` | system prompt 模板 |
 | Agent 指令 | `data/personality/default/AGENT.md` | 拼进 system prompt |
 | 长期记忆 | `data/personality/default/MEMORY.md` | 拼进 system prompt |
@@ -124,9 +125,10 @@ skills: []
 
 重要限制：
 
-- 当前 `main.py` 会把 `get_all_tools()` 返回的所有工具都传给 graph，`tools` 列表尚未真正过滤工具。
+- `tools` 会过滤暴露给模型的工具；`filesystem` 会展开为 `filesystem_read/write/list`。
 - `include_reasoning` 当前主要影响输出/意图配置，尚未完整实现“是否把 think 放入下轮上下文”的上下文构造策略。
 - `max_context_tokens` 尚未形成完整自动压缩触发链路。
+- `sandbox` 开启后，未知工具默认拒绝；会碰宿主资源的工具必须走系统 sandbox 后端。
 
 Hermes 规划字段：
 
@@ -160,6 +162,58 @@ mailbox:
 ```
 
 这些字段是目标设计，当前代码尚未读取。
+
+## sandbox.json
+
+可选系统级沙箱配置，用来限制工具运行时能看到的宿主资源。
+
+```json
+{
+  "enabled": true,
+  "backend": "bubblewrap",
+  "default": "deny",
+  "network": false,
+  "timeout_seconds": 30,
+  "max_output_chars": 20000,
+  "resources": [
+    {"path": "sessions/default/workspace", "access": "readwrite", "recursive": true},
+    {"path": "sessions/default/subagents", "access": "readwrite", "recursive": true},
+    {"path": "personality/default", "access": "readonly", "recursive": true},
+    {"path": "personality/default/MEMORY.md", "access": "readwrite", "recursive": false},
+    {"path": "skills", "access": "readonly", "recursive": true},
+    {"path": "personality/default/skills", "access": "readonly", "recursive": true}
+  ]
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用系统级 sandbox |
+| `backend` | string | `bubblewrap` | 当前仅支持 `bubblewrap` |
+| `default` | `deny` / `ask` | `deny` | 未命中资源规则时的默认策略 |
+| `network` | bool | `false` | 是否允许网络 namespace 共享 |
+| `timeout_seconds` | int | `30` | 单次 sandbox 命令超时 |
+| `max_output_chars` | int | `20000` | 输出截断上限 |
+| `resources` | list[rule] | `[]` | 明确挂载的宿主资源 |
+
+资源规则：
+
+```json
+{"path": "sessions/default/workspace", "access": "readwrite", "recursive": true}
+```
+
+`path` 相对 `data/` 解析，也支持绝对路径。`access` 支持：
+
+- `readwrite`：可读写挂载。
+- `readonly`：只读挂载。
+- `deny`：在 sandbox 内遮蔽该路径；如果它位于可写父目录下，shell 子进程也看不到宿主内容。
+- `ask`：默认按 deny 遮蔽；命中时通过 `sandbox_confirm` interrupt 复用 ask 流程，获批后只临时挂载本次工具调用的精确路径。
+
+实现约束：
+
+- 所有暴露给模型的工具都必须在 `TOOL_SANDBOX_MODE` 中声明为 `sandboxed` 或 `host`。启用 sandbox 后，未声明工具会在图构建阶段失败。
+- `host` 表示 ask、message、cache、compact 等不直接接触宿主资源的控制面工具；这不是绕过注册，而是显式声明它不需要系统级子进程隔离。
+- `shell` 在 sandbox 开启时真实执行，但只能看到 bubblewrap 挂载出的资源；脚本、子进程和命令替换都会继承同一个边界。
 
 ## permissions.json
 
@@ -254,14 +308,14 @@ data/personality/default/skills/<skill_name>/SKILL.md
 
 ## 当前工具配置状态
 
-虽然 `agent.yaml` 中有 `tools` 字段，当前入口仍暴露所有内置工具。真实可用行为如下：
+`agent.yaml` 中的 `tools` 字段会过滤暴露给模型的工具。真实可用行为如下：
 
 | 工具 | 当前行为 |
 |------|----------|
-| `shell` | mock，不执行真实命令 |
-| `filesystem_read` | 真实读取 workspace 内文件 |
-| `filesystem_write` | mock，不写入 |
-| `filesystem_list` | 真实列目录 |
+| `shell` | sandbox 关闭时 mock；sandbox 开启时在 bubblewrap 内真实执行 |
+| `filesystem_read` | 通过 sandbox/legacy workspace 边界读取 |
+| `filesystem_write` | sandbox 关闭时 mock；sandbox 开启时通过 bubblewrap 写入 |
+| `filesystem_list` | 通过 sandbox/legacy workspace 边界列目录 |
 | `ask` | 占位 |
 | `message_send` | 终端打印 |
 | `memory_update` | 追加写入 `MEMORY.md` |
@@ -270,7 +324,7 @@ data/personality/default/skills/<skill_name>/SKILL.md
 | `subagent_list` | 列目录 |
 | `subagent_stop` | 占位 |
 | `compact` | 占位 |
-| `skill_load` | 读取 skill 文件 |
+| `skill_load` | 通过 sandbox/运行时资源边界读取 skill 文件 |
 
 ## 配置设计建议
 
@@ -279,7 +333,7 @@ data/personality/default/skills/<skill_name>/SKILL.md
 - 不增加多 personality 动态加载，先稳定 `default`。
 - 保持 `InMemorySaver/Store` 默认，避免 interrupt 和持久化同时复杂化。
 - 将 `include_reasoning` 拆成 `capture_think` 和 `include_think_in_context`。
-- 让 `tools` 字段真正控制暴露给模型的工具。
+- 将 sandbox 资源配置拆成单独示例文件，降低启用成本。
 
 中期建议：
 

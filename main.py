@@ -35,6 +35,7 @@ from xbot.config import (
     get_session_db_path,
 )
 from xbot.permissions import PermissionSystem
+from xbot.sandbox import SandboxPolicy
 from xbot.tools import filter_tools, get_all_tools
 from xbot.llm import create_llm
 from xbot.graph import build_agent_graph
@@ -59,7 +60,8 @@ async def resume_after_interrupt(graph, config, interrupt_value):
         answer = await ainput("Your response: ")
         resume_payload = {"answer": answer}
     else:
-        print(f"\n\n[Permission Request]")
+        label = "Sandbox Request" if interrupt_type == "sandbox_confirm" else "Permission Request"
+        print(f"\n\n[{label}]")
         print(f"  {question}")
         answer = await ainput("Allow? (yes/no): ")
         resume_payload = {"approved": answer.lower().strip().startswith("y")}
@@ -215,6 +217,9 @@ async def main():
         from xbot.models import PermissionConfig
         permissions = PermissionSystem(PermissionConfig())
 
+    sandbox = SandboxPolicy(agent_config.sandbox)
+    print(f"  Sandbox: {sandbox.describe()}")
+
     # Initialize persistence
     db_path = get_session_db_path()
     print(f"  Database: {db_path}")
@@ -230,6 +235,7 @@ async def main():
         checkpointer=checkpointer,
         store=store,
         permission_system=permissions,
+        sandbox_policy=sandbox,
         max_context_chars=agent_config.max_context_tokens * 4,
     )
 

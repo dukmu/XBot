@@ -11,6 +11,7 @@ Hermes is meant to be a personal agent, not a multi-tenant service. The main des
 - **Single-user local runtime**: one user, one local workspace, one default session.
 - **Explicit model context**: `system prompt + system state + message chain + optional think blocks`.
 - **Permission-first tools**: tool calls go through allow/deny/ask rules; sensitive actions interrupt for confirmation.
+- **System sandbox**: when enabled, host-touching tools run inside bubblewrap with explicit resource mounts and deny/ask masking.
 - **Active ask**: the agent can pause and ask the user for missing intent or decisions.
 - **Context compression**: when context grows too large, older history becomes a compacted summary node.
 - **Context tree**: future message history is a tree, supporting branches, compacted nodes, rewind, and tree inspection.
@@ -28,6 +29,7 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 | Provider config | Implemented |
 | Permission allow/deny/ask | Implemented |
 | Permission interrupt confirmation | Basic implementation |
+| System sandbox | Implemented MVP |
 | Active ask | Basic implementation |
 | Context compression | Basic linear implementation |
 | Tool result cache hooks | Basic in-memory implementation |
@@ -165,10 +167,10 @@ Permission confirmation is handled inside the tools node via LangGraph interrupt
 
 | Tool | Current behavior |
 |------|------------------|
-| `shell` | Mocked for safety |
-| `filesystem_read` | Reads files under the workspace path |
-| `filesystem_write` | Mocked for safety |
-| `filesystem_list` | Lists workspace files |
+| `shell` | Runs inside bubblewrap when sandbox is enabled |
+| `filesystem_read` | Reads through the sandbox backend |
+| `filesystem_write` | Writes through the sandbox backend |
+| `filesystem_list` | Lists through the sandbox backend |
 | `ask` | Placeholder for active ask interrupt |
 | `message_send` | Prints a message to terminal |
 | `memory_update` | Appends to `MEMORY.md` |
@@ -177,7 +179,7 @@ Permission confirmation is handled inside the tools node via LangGraph interrupt
 | `subagent_list` | Lists subagent directories |
 | `subagent_stop` | Placeholder |
 | `compact` | Placeholder trigger response |
-| `skill_load` | Loads a `SKILL.md` file by name |
+| `skill_load` | Loads a `SKILL.md` file by name through sandbox when enabled |
 
 ## License
 
