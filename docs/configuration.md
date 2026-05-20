@@ -314,9 +314,9 @@ data/personality/default/skills/<skill_name>/SKILL.md
 
 | 工具 | 当前行为 |
 |------|----------|
-| `shell` | sandbox 关闭时 mock；sandbox 开启时在 bubblewrap 内真实执行 |
+| `shell` | sandbox 开启时在 bubblewrap 内真实执行；sandbox 关闭时不可用 |
 | `filesystem_read` | 通过 sandbox/legacy workspace 边界读取 |
-| `filesystem_write` | sandbox 关闭时 mock；sandbox 开启时通过 bubblewrap 写入 |
+| `filesystem_write` | sandbox 开启时通过 bubblewrap 写入；sandbox 关闭时仅按 legacy workspace 边界直接写入 |
 | `filesystem_list` | 通过 sandbox/legacy workspace 边界列目录 |
 | `ask` | 触发 `user_ask` interrupt/resume |
 | `message_send` | 通过 interaction adapter 发送用户可见消息 |

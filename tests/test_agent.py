@@ -286,25 +286,13 @@ def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
     assert output.count("Tool Call>") == 1
 
 
-def test_terminal_buffers_streamed_tool_call_chunks(capsys):
-    """Streaming tool call chunks should print once with complete args."""
+def test_terminal_renders_normalized_tool_call_event(capsys):
+    """Terminal should render complete tool-call events, not assemble chunks."""
+    from xbot.interaction import InteractionEvent
     from xbot.terminal import TerminalOptions, TerminalRenderer
 
     renderer = TerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
-    renderer.message_delta(
-        AIMessageChunk(
-            content="",
-            tool_call_chunks=[
-                {"name": "shell", "args": '{"command": ', "id": "call_1", "index": 0, "type": "tool_call_chunk"}
-            ],
-        )
-    )
-    renderer.message_delta(
-        AIMessageChunk(
-            content="",
-            tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}],
-        )
-    )
+    renderer.event(InteractionEvent("tool_call", "agent", {"name": "shell", "args": {"command": "pwd"}}))
 
     output = capsys.readouterr().out
     assert output.count("Tool Call>") == 1
@@ -342,6 +330,46 @@ async def test_interaction_stream_emits_deltas_without_final_duplicate(mock_llm,
 
     assert [event.kind for event in events].count("message_delta") >= 2
     assert not any(event.kind == "message" and getattr(event.payload, "content", None) == "stream me" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_interaction_stream_normalizes_tool_call_events(mock_llm, user_context):
+    """Interaction should assemble streamed tool call chunks before platform renderers."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.chunk_size = 5
+    mock_llm.set_response_sequence([
+        {
+            "content": "calling",
+            "tool_calls": [{"name": "shell", "args": {"command": "pwd"}, "id": "call_1"}],
+        },
+        {"content": "done"},
+    ])
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[shell],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_tool_call_stream_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[shell],
+        database_path=":memory:",
+    )
+
+    events = [event async for event in runtime.stream_user_message("hello")]
+    tool_calls = [event.payload for event in events if event.kind == "tool_call"]
+
+    assert tool_calls == [{"name": "shell", "args": {"command": "pwd"}, "id": "call_1"}]
 
 
 @pytest.mark.asyncio
@@ -398,6 +426,55 @@ def test_sanitize_message_chain_drops_orphan_tool_messages():
 
     assert orphan not in sanitized
     assert paired in sanitized
+
+
+def test_split_for_compaction_preserves_tool_call_groups():
+    """Compaction windowing must not split assistant tool calls from results."""
+    from xbot.graph import split_for_compaction
+
+    ai = AIMessage(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
+    tool_result = ToolMessage(content="ok", name="shell", tool_call_id="call_1")
+
+    to_compress, keep = split_for_compaction([HumanMessage(content="hi"), ai, tool_result], keep_recent_messages=1)
+
+    assert ai in keep
+    assert tool_result in keep
+    assert all(message not in to_compress for message in [ai, tool_result])
+
+
+def test_interaction_reset_thread_clears_render_state(user_context):
+    """Reset should move to a clean thread and clear interaction-side caches."""
+    from xbot.interaction import HermesInteraction
+
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=None,
+        graph_config={"configurable": {"thread_id": "dirty"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[],
+        database_path=":memory:",
+    )
+    runtime._seen_message_keys.add("x")
+    runtime._streamed_message_keys.add("x")
+    runtime._streamed_tool_call_keys.add("x")
+
+    runtime.reset_thread("clean")
+
+    assert runtime.graph_config == {"configurable": {"thread_id": "clean"}}
+    assert not runtime._seen_message_keys
+    assert not runtime._streamed_message_keys
+    assert not runtime._streamed_tool_call_keys
+
+
+@pytest.mark.asyncio
+async def test_disabled_sandbox_shell_does_not_mock_success():
+    """Disabling sandbox must not make shell appear to execute successfully."""
+    policy = SandboxPolicy(SandboxConfig(enabled=False))
+
+    with pytest.raises(RuntimeError, match="requires the system sandbox"):
+        await policy.run_shell("pwd")
 
 
 @pytest.mark.asyncio

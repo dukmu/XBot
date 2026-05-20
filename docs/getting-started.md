@@ -119,12 +119,11 @@ python main.py --print-thoughts
 ## 当前运行特征
 
 - Runtime 默认使用 `InMemorySaver` 和 `InMemoryStore`。
-- `shell` 工具当前是 mock，不会执行真实 shell 命令。
-- `filesystem_write` 当前是 mock，不会写文件。
-- `filesystem_read` 和 `filesystem_list` 会在 workspace 限制下读取本地文件。
+- sandbox 开启时，`shell` 在 bubblewrap 内执行；sandbox 关闭时，`shell` 不可用。
+- `filesystem_*` 会按 sandbox 或 legacy workspace 边界访问本地文件。
 - 权限策略为 `ask` 时，会通过 interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
-- `compact`、`subagent_*` 还不是完整实现。
+- `subagent_*` 当前是 P0 记录/状态实现，还不是完整异步 agent。
 
 ## 验证安装
 
