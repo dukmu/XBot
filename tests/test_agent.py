@@ -94,6 +94,26 @@ def create_memory_update_tool(memory_path: str):
     return memory_update
 
 
+@pytest.mark.asyncio
+async def test_filesystem_read_rejects_paths_outside_workspace():
+    """Filesystem tools must not resolve paths outside the workspace."""
+    result = await filesystem_read.ainvoke({"path": "/etc/passwd"})
+    assert "Path escapes workspace" in result
+
+
+def test_permission_deny_precedence():
+    """Deny rules must take precedence over broad allow rules."""
+    permission_system = PermissionSystem(
+        PermissionConfig(
+            default="ask",
+            allow=[{"tool": "shell", "params": {"command": ".*"}}],
+            deny=[{"tool": "shell", "params": {"command": "^rm"}}],
+        )
+    )
+
+    assert permission_system.check("shell", {"command": "rm -rf /tmp/test"}) == "deny"
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================

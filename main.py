@@ -45,6 +45,37 @@ async def ainput(prompt: str) -> str:
     return await asyncio.get_event_loop().run_in_executor(None, input, prompt)
 
 
+async def resume_after_interrupt(graph, config, interrupt_value):
+    """Prompt the user for the right resume payload for an interrupt."""
+    if not isinstance(interrupt_value, dict):
+        interrupt_value = {}
+
+    interrupt_type = interrupt_value.get("type", "permission_confirm")
+    question = interrupt_value.get("question", "Allow this action?")
+
+    if interrupt_type == "user_ask":
+        print(f"\n\n[Agent Question]")
+        print(f"  {question}")
+        answer = await ainput("Your response: ")
+        resume_payload = {"answer": answer}
+    else:
+        print(f"\n\n[Permission Request]")
+        print(f"  {question}")
+        answer = await ainput("Allow? (yes/no): ")
+        resume_payload = {"approved": answer.lower().strip().startswith("y")}
+
+    print("\nResuming execution...")
+    return await graph.ainvoke(Command(resume=resume_payload), config=config)
+
+
+def extract_interrupt_value(interrupt_info):
+    """Extract the first LangGraph interrupt payload from result metadata."""
+    if isinstance(interrupt_info, list) and interrupt_info:
+        first = interrupt_info[0]
+        return first.value if hasattr(first, "value") else first
+    return interrupt_info
+
+
 # Track seen (index, type) pairs - content still prints after first
 _seen_block_keys = set()
 # Track if agent response prefix has been printed for current turn
@@ -241,22 +272,8 @@ async def main():
                 # Check if result contains an interrupt (LangGraph returns interrupt in result dict)
                 interrupt_info = result.get("__interrupt__")
                 if interrupt_info:
-                    # Handle permission ask interrupt - interrupt_info is a list of Interrupt objects
-                    # Each Interrupt has .value dict with 'question' key
-                    interrupt_value = interrupt_info[0].value if hasattr(interrupt_info[0], 'value') else interrupt_info[0]
-                    question = interrupt_value.get("question", "Allow this action?")
-                    print(f"\n\n[Permission Request]")
-                    print(f"  {question}")
-
-                    answer = await ainput("Your response (yes/no): ")
-                    approved = answer.lower().strip().startswith("y")
-
-                    # Resume with approval decision
-                    print("\nResuming execution...")
-                    resume_result = await graph.ainvoke(
-                        Command(resume={"approved": approved}),
-                        config=config
-                    )
+                    interrupt_value = extract_interrupt_value(interrupt_info)
+                    resume_result = await resume_after_interrupt(graph, config, interrupt_value)
                     for msg in resume_result.get("messages", []):
                         print_message(msg, args.print_thoughts, args.print_tools, agent_config.name)
                 else:
@@ -267,19 +284,7 @@ async def main():
             except GraphInterrupt as e:
                 # Handle permission ask interrupt (for older LangGraph behavior)
                 interrupt_data = e.args[0] if e.args else {}
-                question = interrupt_data.get("question", "Allow this action?")
-                print(f"\n\n[Permission Request]")
-                print(f"  {question}")
-
-                answer = await ainput("Your response (yes/no): ")
-                approved = answer.lower().strip().startswith("y")
-
-                # Resume with approval decision
-                print("\nResuming execution...")
-                resume_result = await graph.ainvoke(
-                    Command(resume={"approved": approved}),
-                    config=config
-                )
+                resume_result = await resume_after_interrupt(graph, config, interrupt_data)
                 for msg in resume_result.get("messages", []):
                     print_message(msg, args.print_thoughts, args.print_tools, agent_config.name)
 
