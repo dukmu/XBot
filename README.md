@@ -1,104 +1,114 @@
-# Digital Human Agent
+# XBot Hermes
 
-A single-user local digital human agent system built with LangGraph and SQLite.
+Hermes is a lightweight, single-user local agent built around a high-quality context loop: explicit system prompt construction, permission interrupts, active ask, context compression, and a future context tree with rewind and subagents.
 
-## Features
+The current codebase is in an early development stage. The main loop, LangGraph ReAct flow, permission checks, config loading, and basic tool surface exist. Some planned capabilities, such as full subagents, mailbox, persistent context tree, and tool-result cache hooks, are documented as design targets rather than complete runtime behavior.
 
-- **LangGraph-based ReAct Loop**: Full agent reasoning cycle with tool use
-- **SQLite Persistence**: Session state and data storage in `./data/`
-- **Fine-grained Permissions**: Tool parameter regex constraints, target restrictions
-- **Sub-agents**: Attach (wait for result) and Detach (independent) modes
-- **Context Compression**: Automatic summarization when token limit approached
-- **Skill System**: Anthropic Skills protocol support
-- **Streaming Output**: Real-time response streaming to terminal
+## Design Intent
 
-## Directory Structure
+Hermes is meant to be a personal agent, not a multi-tenant service. The main design goals are:
 
-```
+- **Single-user local runtime**: one user, one local workspace, one default session.
+- **Explicit model context**: `system prompt + system state + message chain + optional think blocks`.
+- **Permission-first tools**: tool calls go through allow/deny/ask rules; sensitive actions interrupt for confirmation.
+- **Active ask**: the agent can pause and ask the user for missing intent or decisions.
+- **Context compression**: when context grows too large, older history becomes a compacted summary node.
+- **Context tree**: future message history is a tree, supporting branches, compacted nodes, rewind, and tree inspection.
+- **Subagents**: future synchronous and asynchronous workers can inherit or start fresh context.
+- **Tool cache hooks**: large tool results should be cached and referenced instead of copied wholesale into context.
+
+See [docs/architecture.md](./docs/architecture.md) for the full Hermes architecture.
+
+## Current Capability Status
+
+| Capability | Status |
+|------------|--------|
+| LangGraph ReAct loop | Implemented |
+| Terminal runtime | Implemented |
+| Provider config | Implemented |
+| Permission allow/deny/ask | Implemented |
+| Permission interrupt confirmation | Basic implementation |
+| Active ask | Basic implementation |
+| Context compression | Partial |
+| Tool result cache hooks | Basic in-memory implementation |
+| Context tree and rewind | Planned |
+| Subagents | Placeholder |
+| Mailbox | Planned |
+| SQLite persistence | Code exists, not default |
+| Runtime persistence default | `InMemorySaver` / `InMemoryStore` |
+
+## Repository Layout
+
+```text
 ./
-├── main.py                    # Entry point
-├── pyproject.toml             # Project metadata and dependencies (uv)
-├── README.md                  # This file
-├── data/
-│   ├── config/
-│   │   ├── provider.yaml      # LLM Provider config
-│   │   ├── agent.yaml         # Agent base config
-│   │   ├── permissions.json   # Permission rules
-│   │   ├── personality_template.md
-│   │   └── user.yaml          # User metadata
-│   ├── sessions/
-│   │   └── default/
-│   │       ├── conversation.db    # SQLite database
-│   │       ├── workspace/         # Agent working directory
-│   │       ├── cache/             # Tool result cache
-│   │       └── subagents/         # Sub-agent workspaces
-│   └── personality/
-│       └── default/
-│           ├── AGENT.md           # System prompt
-│           ├── MEMORY.md          # Long-term memory
-│           ├── agent.yaml         # Personality-specific config
-│           ├── permissions.json   # Personality-specific permissions
-│           ├── jobs.json          # Cron jobs
-│           └── skills/            # Personality-specific skills
-└── src/
-    ├── __init__.py
-    ├── models.py              # Pydantic models
-    ├── config.py              # Configuration loading
-    ├── permissions.py         # Permission system
-    ├── tools.py               # Built-in tools
-    ├── skills.py              # Skill loader
-    ├── llm.py                 # LLM factory
-    ├── graph.py               # LangGraph state graph
-    └── checkpointer.py        # SQLite persistence
+├── main.py                    # Terminal entry point
+├── pyproject.toml             # Project metadata and uv dependencies
+├── README.md
+├── xbot/
+│   ├── models.py              # Pydantic models and state types
+│   ├── config.py              # Configuration loading
+│   ├── permissions.py         # Permission system
+│   ├── tools.py               # Built-in tools and placeholders
+│   ├── skills.py              # Skill discovery and loading
+│   ├── llm.py                 # LLM factory
+│   ├── graph.py               # LangGraph state graph
+│   ├── checkpointer.py        # SQLite persistence target
+│   └── mock_llm.py            # Test model
+├── docs/
+│   ├── README.md
+│   ├── architecture.md
+│   ├── configuration.md
+│   ├── getting-started.md
+│   └── testing.md
+├── tests/
+│   └── test_agent.py
+└── data/
+    ├── config/
+    │   ├── provider.yaml
+    │   ├── agent.yaml
+    │   ├── permissions.json
+    │   ├── personality_template.md
+    │   └── user.yaml
+    ├── sessions/
+    │   └── default/
+    │       ├── workspace/
+    │       ├── cache/
+    │       └── subagents/
+    └── personality/
+        └── default/
+            ├── AGENT.md
+            ├── MEMORY.md
+            ├── agent.yaml
+            ├── permissions.json
+            ├── jobs.json
+            └── skills/
 ```
 
 ## Installation
 
-### Using uv (Recommended)
+Using uv is recommended:
 
 ```bash
-# Install uv if not already installed
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and setup
-git clone <repository-url>
-cd <project-directory>
-
-# Sync dependencies
-uv sync            # Production dependencies
-uv sync --all-extras  # Include dev dependencies (pytest, etc.)
+uv sync
+uv sync --all-extras
 ```
 
-### Using pip
-
-```bash
-pip install -r requirements.txt
-```
+The project does not currently include a `requirements.txt`; use `uv` or install dependencies from `pyproject.toml`.
 
 ## Configuration
 
-### 1. Set up LLM Provider
-
-Edit `data/config/provider.yaml`:
+Configure the provider in `data/config/provider.yaml`:
 
 ```yaml
 name: "minimax"
 type: "anthropic"
-base_url: "https://api.minimax.com/anthropic"
+base_url: "https://api.minimaxi.com/anthropic"
 api_key: "${ANTHROPIC_API_KEY}"
 model: "Minimax-M2.7"
 max_concurrent: 2
 ```
 
-Set the environment variable:
-
-```bash
-export ANTHROPIC_API_KEY="your-api-key-here"
-```
-
-### 2. Configure User
-
-Edit `data/config/user.yaml`:
+Configure the user in `data/config/user.yaml`:
 
 ```yaml
 user_id: "local_user"
@@ -107,21 +117,23 @@ platform: "local"
 session_type: "private"
 ```
 
-### 3. Set Permissions
-
-Edit `data/config/permissions.json` or `data/personality/default/permissions.json`:
+Configure permissions in `data/config/permissions.json` or `data/personality/default/permissions.json`:
 
 ```json
 {
   "default": "ask",
+  "ask_timeout": 60,
   "allow": [
-    {"tool": "shell", "params": {"command": "^(ls|cat|pwd)$"}}
+    {"tool": "shell", "params": {"command": "^(ls|cat|pwd|echo)$"}},
+    {"tool": "message_send", "params": {}}
   ],
   "deny": [
-    {"tool": "shell", "params": {"command": "^(rm|sudo).*$"}}
+    {"tool": "shell", "params": {"command": "^(rm|sudo|chmod).*$"}}
   ]
 }
 ```
+
+See [docs/configuration.md](./docs/configuration.md) for the current config model.
 
 ## Usage
 
@@ -129,80 +141,43 @@ Edit `data/config/permissions.json` or `data/personality/default/permissions.jso
 python main.py
 ```
 
-Then interact with the agent:
+Useful flags:
 
-```
-==================================================
-Digital Human Agent
-==================================================
-
-Loading configuration...
-  User: Alice (local_user)
-  Agent: default
-  Provider: minimax (Minimax-M2.7)
-
-Initializing components...
-  Enabled tools: ['shell', 'filesystem_read', ...]
-  Database: ./data/sessions/default/conversation.db
-Building agent graph...
-
-==================================================
-Agent ready! Type your message (or /exit to quit)
-==================================================
-
-You: List files in the workspace
-[Agent uses filesystem_list tool]
-f test.txt
-d projects
-
-You: What's in test.txt?
-[Agent reads and displays content]
-
-You: /exit
-Goodbye!
+```bash
+python main.py --print-tools
+python main.py --print-thoughts
 ```
 
-## Available Tools
+Note: `--disable-inmemory` is currently a declared flag, but the runtime still defaults to in-memory persistence.
 
-| Tool                 | Description                                        |
-| -------------------- | -------------------------------------------------- |
-| `shell`            | Execute shell commands (restricted by permissions) |
-| `filesystem_read`  | Read file contents                                 |
-| `filesystem_write` | Write to files                                     |
-| `filesystem_list`  | List directory contents                            |
-| `ask`              | Ask user questions                                 |
-| `message_send`     | Send messages to user                              |
-| `memory_update`    | Update long-term memory                            |
-| `subagent_create`  | Create sub-agent                                   |
-| `subagent_wait`    | Wait for sub-agent                                 |
-| `subagent_list`    | List active sub-agents                             |
-| `subagent_stop`    | Stop sub-agent                                     |
-| `compact`          | Trigger context compression                        |
-| `skill_load`       | Load skill definition                              |
+## Runtime Graph
 
-## Architecture
+Current graph:
 
-### State Graph
-
-```
-START → agent → tools → agent → END
-                ↓
-          permission_ask → tools
-                ↓
-            compress → agent
+```text
+START -> agent -> tools -> agent -> END
+              \-> compress -> agent
 ```
 
-### Nodes
+Permission confirmation is handled inside the tools node via LangGraph interrupt/resume.
 
-1. **agent**: Calls LLM with tools bound
-2. **tools**: Executes tool calls with permission checking
-3. **permission_ask**: Interrupts for user approval
-4. **compress**: Summarizes old messages
+## Built-in Tools
 
-### Persistence
-
-- **Checkpointer**: Saves conversation checkpoints to SQLite
-- **Store**: Archives compressed messages and sub-agent data
+| Tool | Current behavior |
+|------|------------------|
+| `shell` | Mocked for safety |
+| `filesystem_read` | Reads files under the workspace path |
+| `filesystem_write` | Mocked for safety |
+| `filesystem_list` | Lists workspace files |
+| `ask` | Placeholder for active ask interrupt |
+| `message_send` | Prints a message to terminal |
+| `memory_update` | Appends to `MEMORY.md` |
+| `subagent_create` | Creates placeholder subagent workspace and ID |
+| `subagent_wait` | Placeholder |
+| `subagent_list` | Lists subagent directories |
+| `subagent_stop` | Placeholder |
+| `compact` | Placeholder trigger response |
+| `skill_load` | Loads a `SKILL.md` file by name |
 
 ## License
 

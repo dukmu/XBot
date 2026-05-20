@@ -1,156 +1,100 @@
 # 配置参考
 
-本文档详细说明所有配置文件的结构、选项和最佳实践。
+本文档以当前代码中的 Pydantic model 为准，同时列出 Hermes 目标架构需要新增的规划配置。
 
-## 配置文件总览
+## 配置加载顺序
 
-| 文件 | 位置 | 用途 | 格式 |
-|------|------|------|------|
-| `user.yaml` | `data/config/` | 用户元信息 | YAML |
-| `provider.yaml` | `data/config/` | LLM Provider 配置 | YAML |
-| `agent.yaml` | `data/config/` | Agent 基础配置 | YAML |
-| `permissions.json` | `data/config/` | 全局权限规则 | JSON |
-| `personality_template.md` | `data/config/` | 人格模板 | Markdown |
-| `agent.yaml` | `data/personality/{name}/` | 人格特定配置 | YAML |
-| `permissions.json` | `data/personality/{name}/` | 人格特定权限 | JSON |
-| `jobs.json` | `data/personality/{name}/` | 定时任务配置 | JSON |
+当前配置入口在 `xbot/config.py`。
 
----
+| 配置 | 当前路径 | 说明 |
+|------|----------|------|
+| 用户信息 | `data/config/user.yaml` | 加载为 `UserContext` |
+| Provider | `data/config/provider.yaml` | 加载为 `ProviderConfig` |
+| Agent | `data/personality/default/agent.yaml` 优先，否则 `data/config/agent.yaml` | 加载为 `AgentConfig` |
+| 权限 | `data/personality/default/permissions.json` 优先，否则 `data/config/permissions.json` | 加载为 `PermissionConfig` |
+| 人格模板 | `data/config/personality_template.md` | system prompt 模板 |
+| Agent 指令 | `data/personality/default/AGENT.md` | 拼进 system prompt |
+| 长期记忆 | `data/personality/default/MEMORY.md` | 拼进 system prompt |
+| Skills | `data/skills/*/SKILL.md` 与 `data/personality/default/skills/*/SKILL.md` | 生成 skills 摘要 |
 
-## 用户元信息配置 (user.yaml)
+当前代码固定使用 `data/personality/default`，尚未根据配置动态选择 personality 名称。
 
-### 文件位置
+## user.yaml
 
-```
-data/config/user.yaml
-```
-
-### 完整示例
+当前支持字段：
 
 ```yaml
-user_id: "local_user_001"
+user_id: "local_user"
 user_name: "Alice"
 platform: "local"
 session_type: "private"
-timezone: "Asia/Shanghai"
-language: "zh-CN"
 ```
 
-### 字段说明
+| 字段 | 类型 | 必填 | 默认值 |
+|------|------|------|--------|
+| `user_id` | string | 是 | 无 |
+| `user_name` | string | 是 | 无 |
+| `platform` | string | 否 | `local` |
+| `session_type` | literal | 否 | `private` |
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `user_id` | string | ✅ | - | 用户唯一标识符 |
-| `user_name` | string | ✅ | - | 用户显示名称 |
-| `platform` | string | ❌ | `"local"` | 平台类型 (`local`, `web`, `mobile`) |
-| `session_type` | string | ❌ | `"private"` | 会话类型 (`private`, `shared`) |
-| `timezone` | string | ❌ | `"UTC"` | 时区设置 (IANA 格式) |
-| `language` | string | ❌ | `"en-US"` | 首选语言 (BCP 47 格式) |
+`session_type` 当前只允许 `private`。
 
-### 最佳实践
+规划字段：
 
-- `user_id` 应保持稳定，不要频繁更改
-- `user_name` 可以包含中文等非 ASCII 字符
-- 单用户场景下，这些配置在系统运行期间保持不变
+| 字段 | 用途 |
+|------|------|
+| `timezone` | 构造 system state message |
+| `language` | 默认回复语言和区域格式 |
+| `workspace_profile` | 未来支持多个本地工作区 |
 
----
+## provider.yaml
 
-## LLM Provider 配置 (provider.yaml)
-
-### 文件位置
-
-```
-data/config/provider.yaml
-```
-
-### 完整示例
+当前支持字段：
 
 ```yaml
-# OpenAI 配置
-name: "openai"
-type: "openai"
-api_key: "${OPENAI_API_KEY}"
-model: "gpt-4o"
-base_url: null
-max_concurrent: 5
-timeout: 60
-retry_attempts: 3
-temperature: 0.7
-max_tokens: 4096
-
-# Anthropic 配置（备选）
-# name: "anthropic"
-# type: "anthropic"
-# api_key: "${ANTHROPIC_API_KEY}"
-# model: "claude-3-5-sonnet-20241022"
-# max_concurrent: 3
-# timeout: 120
-
-# Minimax 配置（兼容 OpenAI 接口）
-# name: "minimax"
-# type: "openai"
-# api_key: "${MINIMAX_API_KEY}"
-# model: "Minimax-M2.7"
-# base_url: "https://api.minimax.chat/v1"
-# max_concurrent: 2
-```
-
-### 字段说明
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `name` | string | ✅ | - | Provider 名称（用于日志和选择） |
-| `type` | string | ✅ | - | Provider 类型 (`openai`, `anthropic`) |
-| `api_key` | string | ✅ | - | API 密钥（支持 `${ENV_VAR}` 语法） |
-| `model` | string | ✅ | - | 模型名称 |
-| `base_url` | string | ❌ | `null` | API 基础 URL（用于兼容服务） |
-| `max_concurrent` | int | ❌ | `1` | 最大并发请求数 |
-| `timeout` | int | ❌ | `60` | 请求超时时间（秒） |
-| `retry_attempts` | int | ❌ | `3` | 失败重试次数 |
-| `temperature` | float | ❌ | `0.7` | 生成温度（0-2） |
-| `max_tokens` | int | ❌ | `4096` | 最大输出 token 数 |
-
-### 环境变量引用
-
-使用 `${VAR_NAME}` 语法引用环境变量：
-
-```yaml
-api_key: "${MY_API_KEY}"
-base_url: "${API_BASE_URL:-https://api.default.com}"  # 带默认值
-```
-
-### 支持的 Provider 类型
-
-#### OpenAI 兼容
-
-```yaml
-type: "openai"
-# 适用于：OpenAI, Minimax, Moonshot, ZeroOne, 等
-```
-
-#### Anthropic
-
-```yaml
+name: "minimax"
 type: "anthropic"
-# 适用于：Claude 系列模型
+base_url: "https://api.minimaxi.com/anthropic"
+api_key: "${ANTHROPIC_API_KEY}"
+model: "Minimax-M2.7"
+max_concurrent: 2
 ```
 
----
+| 字段 | 类型 | 必填 | 默认值 |
+|------|------|------|--------|
+| `name` | string | 是 | 无 |
+| `type` | `openai` 或 `anthropic` | 是 | 无 |
+| `base_url` | string/null | 否 | `null` |
+| `api_key` | string | 是 | 无 |
+| `model` | string | 是 | 无 |
+| `max_concurrent` | int | 否 | `1` |
 
-## Agent 基础配置 (agent.yaml)
+环境变量语法：
 
-### 文件位置
-
+```yaml
+api_key: "${ANTHROPIC_API_KEY}"
 ```
-data/config/agent.yaml
-```
 
-### 完整示例
+当前只支持完整 `${VAR_NAME}` 替换，不支持 `${VAR_NAME:-default}`。
+
+规划字段：
+
+| 字段 | 用途 |
+|------|------|
+| `timeout` | 请求超时 |
+| `retry_attempts` | 模型调用重试 |
+| `temperature` | 采样温度 |
+| `max_tokens` | 最大输出 token |
+| `rate_limit` | 结合 `max_concurrent` 控制并发 |
+
+## agent.yaml
+
+当前支持字段：
 
 ```yaml
 name: "default"
-provider: "openai"
-agent_role: "A helpful and harmless assistant"
+provider: "minimax"
+agent_role: "A helpful assistant"
 max_context_tokens: 8000
 include_reasoning: false
 tools:
@@ -162,381 +106,184 @@ tools:
   - subagent_create
   - subagent_wait
   - subagent_list
+  - subagent_stop
   - compact
+  - skill_load
 skills: []
-compression_threshold: 0.8
-workspace_root: "./data/sessions/default/workspace"
 ```
 
-### 字段说明
+| 字段 | 类型 | 必填 | 默认值 |
+|------|------|------|--------|
+| `name` | string | 否 | `default` |
+| `provider` | string | 否 | `minimax` |
+| `agent_role` | string | 否 | `A helpful assistant` |
+| `max_context_tokens` | int | 否 | `8000` |
+| `include_reasoning` | bool | 否 | `false` |
+| `tools` | list[string] | 否 | `["shell", "filesystem", "ask"]` |
+| `skills` | list[string] | 否 | `[]` |
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `name` | string | ❌ | `"default"` | Agent 配置名称 |
-| `provider` | string | ✅ | - | 引用的 provider 名称 |
-| `agent_role` | string | ❌ | `"A helpful assistant"` | Agent 角色描述 |
-| `max_context_tokens` | int | ❌ | `8000` | 最大上下文 token 数 |
-| `include_reasoning` | bool | ❌ | `false` | 是否包含思考内容到上下文 |
-| `tools` | list | ❌ | 见上 | 启用的工具列表 |
-| `skills` | list | ❌ | `[]` | 加载的 Skill 列表 |
-| `compression_threshold` | float | ❌ | `0.8` | 压缩触发阈值（0-1） |
-| `workspace_root` | string | ❌ | 自动 | 工作区根目录 |
+重要限制：
 
-### 可用工具列表
+- 当前 `main.py` 会把 `get_all_tools()` 返回的所有工具都传给 graph，`tools` 列表尚未真正过滤工具。
+- `include_reasoning` 当前主要影响输出/意图配置，尚未完整实现“是否把 think 放入下轮上下文”的上下文构造策略。
+- `max_context_tokens` 尚未形成完整自动压缩触发链路。
 
-| 工具名 | 说明 | 权限敏感 |
-|--------|------|----------|
-| `shell` | 执行 shell 命令 | ✅ |
-| `filesystem` | 文件系统操作 | ✅ |
-| `ask` | 向用户提问 | ❌ |
-| `message_send` | 发送消息给用户 | ❌ |
-| `memory_update` | 更新长期记忆 | ✅ |
-| `subagent_create` | 创建子代理 | ✅ |
-| `subagent_wait` | 等待子代理完成 | ❌ |
-| `subagent_list` | 列出子代理 | ❌ |
-| `compact` | 手动触发压缩 | ❌ |
-| `skill_load` | 加载 Skill | ❌ |
+Hermes 规划字段：
 
----
+```yaml
+context:
+  max_tokens: 8000
+  compression_threshold: 0.85
+  capture_think: false
+  include_think_in_context: false
+  include_system_state: true
 
-## 权限规则配置 (permissions.json)
+runtime:
+  persistence: inmemory  # inmemory | sqlite
+  thread_id: default
 
-### 文件位置
+cache:
+  enabled: true
+  max_inline_chars: 4000
+  default_read_limit: 8000
 
+subagents:
+  enabled: true
+  default_mode: sync
+  default_context_policy: inherit_summary
+  timeout_seconds: 300
+  max_tool_calls: 30
+
+mailbox:
+  enabled: true
+  include_unread_summary_in_context: true
 ```
-data/config/permissions.json           # 全局规则
-data/personality/{name}/permissions.json  # 人格特定规则
-```
 
-### 完整示例
+这些字段是目标设计，当前代码尚未读取。
+
+## permissions.json
+
+当前支持字段：
 
 ```json
 {
   "default": "ask",
   "ask_timeout": 60,
   "allow": [
-    {
-      "tool": "shell",
-      "params": {
-        "command": "^(ls|cat|pwd|echo)$"
-      }
-    },
-    {
-      "tool": "filesystem",
-      "params": {
-        "action": "^(read|list)$"
-      }
-    }
+    {"tool": "shell", "params": {"command": "^(ls|cat|pwd|echo)$"}},
+    {"tool": "message_send", "params": {}}
   ],
   "deny": [
-    {
-      "tool": "shell",
-      "params": {
-        "command": "^rm\\s+-rf"
-      }
-    },
-    {
-      "tool": "shell",
-      "params": {
-        "command": "^sudo"
-      }
-    }
+    {"tool": "shell", "params": {"command": "^(rm|sudo|chmod).*$"}}
   ]
 }
 ```
 
-### 字段说明
+| 字段 | 类型 | 默认值 |
+|------|------|--------|
+| `default` | `allow` / `deny` / `ask` | `ask` |
+| `ask_timeout` | int | `60` |
+| `allow` | list[rule] | `[]` |
+| `deny` | list[rule] | `[]` |
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `default` | string | ❌ | `"ask"` | 默认策略 (`allow`, `deny`, `ask`) |
-| `ask_timeout` | int | ❌ | `60` | 询问超时时间（秒） |
-| `allow` | array | ❌ | `[]` | 允许规则列表 |
-| `deny` | array | ❌ | `[]` | 拒绝规则列表 |
-
-### 规则结构
-
-每个规则包含：
+规则结构：
 
 ```json
 {
-  "tool": "工具名称",
+  "tool": "shell",
   "params": {
-    "参数名": "正则表达式"
+    "command": "^(ls|pwd)$"
   }
 }
 ```
 
-### 匹配逻辑
+匹配顺序：
 
-1. 按顺序检查 `allow` 规则，匹配则返回 `allow`
-2. 按顺序检查 `deny` 规则，匹配则返回 `deny`
-3. 都不匹配则返回 `default`
+1. 先匹配 `deny`
+2. 再匹配 `allow`
+3. 未命中则使用 `default`
 
-### 正则表达式示例
+deny 优先可以避免危险操作被宽泛 allow 规则覆盖。配置时仍建议避免写出“同一操作既 allow 又 deny”的冲突规则。
 
-```json
-// 允许安全命令
-{"command": "^(ls|cat|pwd|head|tail|wc)$"}
+规划改进：
 
-// 允许读取特定目录
-{"path": "^/workspace/data/.*$"}
+- 支持显式 `ask` 规则列表。
+- 支持风险等级，如 `low`、`medium`、`high`。
+- 支持资源类型，如 file、shell、network、memory。
+- 支持按工具声明的风险元数据生成更好的确认文案。
 
-// 拒绝危险操作
-{"command": "^rm\\s+(-rf|--no-preserve-root)"}
-{"command": "^chmod\\s+777"}
-{"command": "^dd\\s+"}
+## personality_template.md
+
+当前模板会在 `xbot/graph.py` 中用字符串替换填充。
+
+当前支持变量：
+
+```text
+{{ user_context.user_id }}
+{{ user_context.user_name }}
+{{ user_context.platform }}
+{{ user_context.session_type }}
+{{ agent_config.agent_role }}
 ```
 
----
+注意：当前代码里的 `agent_config.agent_role` 实际从 graph state 读取，默认值为 `A helpful assistant`。后续应把 `AgentConfig` 显式放入 state 或 context builder。
 
-## 人格模板 (personality_template.md)
+## AGENT.md 和 MEMORY.md
 
-### 文件位置
+`data/personality/default/AGENT.md` 会作为 Agent Instructions 拼进 system prompt。
 
-```
-data/config/personality_template.md
-```
+`data/personality/default/MEMORY.md` 会作为 Long-term Memory 拼进 system prompt。
 
-### 完整示例
+Hermes 目标设计中，长期记忆应逐步拆为：
 
-```markdown
-# Agent Personality Template
-
-## User Information
-- **Name**: {{user_name}}
-- **User ID**: {{user_id}}
-- **Platform**: {{platform}}
-- **Language**: {{language}}
-
-## Agent Role
-{{agent_role}}
-
-## System Instructions
-
-You are a helpful, harmless, and honest AI assistant. Follow these guidelines:
-
-1. **Safety First**: Never perform actions that could harm the user's system or data.
-2. **Ask for Permission**: When in doubt, ask the user before executing potentially dangerous operations.
-3. **Be Transparent**: Explain your reasoning and what you're doing.
-4. **Respect Privacy**: Do not access or share personal information unnecessarily.
-
-## Available Tools
-
-You have access to the following tools:
-- Shell command execution (with permission)
-- File system operations (within workspace)
-- Subagent creation for parallel tasks
-- Memory management
-
-## Response Style
-
-- Be concise but thorough
-- Use clear and simple language
-- Provide context when making important decisions
-- Admit when you're uncertain
-
-## Memory Context
-
-{{memory_content}}
+- 人类可读 Markdown。
+- 结构化 facts。
+- open threads。
+- 工具结果引用。
 
 ## Skills
 
-{{skills_list}}
+当前 skill 发现路径：
+
+```text
+data/skills/<skill_name>/SKILL.md
+data/personality/default/skills/<skill_name>/SKILL.md
 ```
 
-### 变量替换
+`get_skills_summary()` 只把 skill 名称和简短描述放入 system prompt。完整 skill 内容需要通过 `skill_load` 工具读取。
 
-| 变量 | 来源 |
-|------|------|
-| `{{user_name}}` | `user.yaml` |
-| `{{user_id}}` | `user.yaml` |
-| `{{platform}}` | `user.yaml` |
-| `{{language}}` | `user.yaml` |
-| `{{agent_role}}` | `agent.yaml` |
-| `{{memory_content}}` | `MEMORY.md` |
-| `{{skills_list}}` | 加载的 Skills |
+## 当前工具配置状态
 
----
+虽然 `agent.yaml` 中有 `tools` 字段，当前入口仍暴露所有内置工具。真实可用行为如下：
 
-## 人格特定配置
+| 工具 | 当前行为 |
+|------|----------|
+| `shell` | mock，不执行真实命令 |
+| `filesystem_read` | 真实读取 workspace 内文件 |
+| `filesystem_write` | mock，不写入 |
+| `filesystem_list` | 真实列目录 |
+| `ask` | 占位 |
+| `message_send` | 终端打印 |
+| `memory_update` | 追加写入 `MEMORY.md` |
+| `subagent_create` | 创建占位目录和 ID |
+| `subagent_wait` | 占位 |
+| `subagent_list` | 列目录 |
+| `subagent_stop` | 占位 |
+| `compact` | 占位 |
+| `skill_load` | 读取 skill 文件 |
 
-### 目录结构
+## 配置设计建议
 
-```
-data/personality/default/
-├── agent.yaml           # 人格特定 Agent 配置
-├── permissions.json     # 人格特定权限
-├── jobs.json            # 定时任务
-├── AGENT.md             # 系统提示词
-├── MEMORY.md            # 长期记忆
-└── skills/              # 人格专属 Skills
-```
+短期建议：
 
-### agent.yaml (人格级)
+- 不增加多 personality 动态加载，先稳定 `default`。
+- 保持 `InMemorySaver/Store` 默认，避免 interrupt 和持久化同时复杂化。
+- 将 `include_reasoning` 拆成 `capture_think` 和 `include_think_in_context`。
+- 让 `tools` 字段真正控制暴露给模型的工具。
 
-覆盖全局 `agent.yaml` 的配置：
+中期建议：
 
-```yaml
-agent_role: "You are a coding expert assistant"
-tools:
-  - shell
-  - filesystem
-  - ask
-skills:
-  - code_review
-  - test_generation
-```
-
-### jobs.json (定时任务)
-
-```json
-{
-  "jobs": [
-    {
-      "id": "daily_backup",
-      "schedule": "0 2 * * *",
-      "enabled": true,
-      "prompt": "Perform daily backup of workspace files"
-    },
-    {
-      "id": "weekly_cleanup",
-      "schedule": "0 3 * * 0",
-      "enabled": true,
-      "prompt": "Clean up temporary files older than 7 days"
-    }
-  ]
-}
-```
-
-#### Cron 表达式格式
-
-```
-* * * * *
-│ │ │ │ │
-│ │ │ │ └─ 星期 (0-6, 0=周日)
-│ │ │ └─── 月份 (1-12)
-│ │ └───── 日期 (1-31)
-│ └─────── 小时 (0-23)
-└───────── 分钟 (0-59)
-```
-
-### AGENT.md (系统提示词)
-
-```markdown
-# Assistant Identity
-
-You are an AI assistant specialized in software development.
-
-## Expertise Areas
-- Python programming
-- Shell scripting
-- System administration
-- Code review and best practices
-
-## Working Style
-- Write clean, well-documented code
-- Test thoroughly before suggesting changes
-- Explain trade-offs when multiple solutions exist
-```
-
-### MEMORY.md (长期记忆)
-
-```markdown
-# Long-term Memory
-
-## User Preferences
-- Prefers Python over other languages
-- Uses VS Code as primary editor
-- Works on macOS
-
-## Project Context
-- Current project: Personal automation scripts
-- Main languages: Python, Bash
-- Testing framework: pytest
-
-## Important Notes
-- Backup important files before modifications
-- Prefer non-destructive operations
-```
-
----
-
-## 配置优先级
-
-当多个配置文件存在冲突时，优先级如下（从高到低）：
-
-1. **人格特定配置** (`data/personality/{name}/`)
-2. **全局配置** (`data/config/`)
-3. **默认值** (代码中定义)
-
----
-
-## 配置验证
-
-### 使用 Pydantic 验证
-
-```python
-from pydantic import ValidationError
-
-try:
-    config = AgentConfig.model_validate(yaml.safe_load(file))
-except ValidationError as e:
-    print(f"配置验证失败：{e}")
-```
-
-### 命令行验证工具
-
-```bash
-# 验证所有配置文件
-python -m xbot.config validate
-
-# 验证特定文件
-python -m xbot.config validate data/config/agent.yaml
-```
-
----
-
-## 配置热重载
-
-某些配置支持运行时重新加载：
-
-| 配置 | 热重载 | 方式 |
-|------|--------|------|
-| `user.yaml` | ❌ | 需重启 |
-| `provider.yaml` | ❌ | 需重启 |
-| `agent.yaml` | ⚠️ | 部分生效 |
-| `permissions.json` | ✅ | 自动检测 |
-| `jobs.json` | ✅ | 自动检测 |
-
----
-
-## 故障排查
-
-### 常见问题
-
-**Q: 配置不生效？**
-
-A: 检查：
-1. YAML/JSON 格式是否正确
-2. 字段名称是否拼写正确
-3. 配置优先级是否符合预期
-
-**Q: 环境变量未解析？**
-
-A: 确保：
-1. 使用 `${VAR}` 语法
-2. 环境变量已导出：`export VAR=value`
-3. 重启应用使变更生效
-
-**Q: 权限规则不匹配？**
-
-A: 测试正则表达式：
-
-```python
-import re
-pattern = r"^(ls|cat|pwd)$"
-print(re.match(pattern, "ls"))  # 应该匹配
-print(re.match(pattern, "pwd"))  # 应该匹配
-print(re.match(pattern, "rm"))   # 不应匹配
-```
+- 增加 `context` 配置块，管理 token、压缩和 system state。
+- 增加 `cache` 配置块，管理工具结果 hook。
+- 增加 `subagents` 配置块，限制后台任务资源。
+- 增加 `mailbox` 配置块，控制异步事件进入上下文的方式。

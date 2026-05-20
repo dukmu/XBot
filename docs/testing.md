@@ -1,5 +1,7 @@
 # 测试指南
 
+> 状态说明：本文档包含当前测试策略和部分目标测试场景。当前仓库已有 Mock LLM 和若干集成测试，但 subagent、cron、mailbox、上下文树、rewind、工具 cache 等能力尚未完整实现；涉及这些能力的测试说明应视为 Hermes 后续实现目标。
+
 本指南介绍如何使用 MOCK LLM 进行单元测试和集成测试，覆盖工具调用、重启恢复、子代理、权限控制、人机交互和持久化等场景。
 
 ## 测试架构
@@ -757,9 +759,11 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-test.txt
+        run: |
+          pip install uv
+          uv sync --all-extras
       - name: Run tests
-        run: pytest tests/ -v --cov=src
+        run: uv run pytest tests/ -v
       - name: Upload coverage
         uses: codecov/codecov-action@v3
 ```

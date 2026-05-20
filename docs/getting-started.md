@@ -1,91 +1,49 @@
 # 快速开始
 
-本指南将帮助您快速安装并运行单用户本地数字人 Agent 系统。
+本指南帮助你在本地运行 XBot Hermes。
+
+Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查和基本工具已可运行；subagent、mailbox、上下文树、工具结果 cache 等能力仍在设计和实现中。
 
 ## 环境要求
 
-### 系统要求
+- Python 3.10+
+- uv
+- 可用的 OpenAI 或 Anthropic 兼容模型服务
 
-- **操作系统**: Linux / macOS / Windows (WSL 推荐)
-- **Python**: ≥ 3.10
-- **内存**: 最低 2GB，推荐 4GB+
-- **磁盘**: 至少 500MB 可用空间
-
-### 依赖项
-
-- Python 包管理工具：`pip` 或 `poetry`
-- Git（用于克隆仓库）
-
-## 安装步骤
-
-### 1. 克隆仓库（如适用）
+## 安装
 
 ```bash
-git clone <repository-url>
-cd <project-directory>
+uv sync
+uv sync --all-extras
 ```
 
-### 2. 创建虚拟环境（推荐）
+当前仓库不包含 `requirements.txt`，推荐使用 `uv` 和 `pyproject.toml` 管理依赖。
+
+## 配置 Provider
+
+编辑 `data/config/provider.yaml`：
+
+```yaml
+name: "minimax"
+type: "anthropic"
+base_url: "https://api.minimaxi.com/anthropic"
+api_key: "${ANTHROPIC_API_KEY}"
+model: "Minimax-M2.7"
+max_concurrent: 2
+```
+
+设置环境变量：
 
 ```bash
-# 使用 uv（推荐）
-uv venv
-source .venv/bin/activate  # Linux/macOS
-# 或
-.venv\Scripts\activate     # Windows
-
-# 或使用 venv
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-
-# 或使用 conda
-conda create -n agent python=3.10
-conda activate agent
+export ANTHROPIC_API_KEY="your-api-key"
 ```
 
-### 3. 安装依赖
+`type` 当前支持：
 
-**使用 uv（推荐）：**
+- `anthropic`
+- `openai`
 
-```bash
-# 安装 uv（如果尚未安装）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 同步依赖
-uv sync            # 安装生产依赖
-uv sync --all-extras  # 包含开发依赖（pytest 等）
-```
-
-**使用 pip：**
-
-```bash
-pip install -r requirements.txt
-```
-
-**主要依赖包括：**
-
-- `langgraph` ≥ 1.0 - Agent 框架
-- `langchain-openai` / `langchain-anthropic` - LLM 集成
-- `aiosqlite` - SQLite 异步驱动
-- `pydantic` ≥ 2.0 - 数据校验
-- `pyyaml` - 配置文件解析
-- `tiktoken` - Token 计数
-
-### 4. 初始化目录结构
-
-```bash
-# 创建必要的目录
-mkdir -p data/config
-mkdir -p data/sessions/default/{workspace,cache,subagents}
-mkdir -p data/personality/default/skills
-mkdir -p data/skills
-```
-
-系统首次运行时会自动创建这些目录，但预先创建可以方便您编辑配置文件。
-
-## 配置说明
-
-### 1. 用户元信息配置
+## 配置用户
 
 编辑 `data/config/user.yaml`：
 
@@ -96,44 +54,9 @@ platform: "local"
 session_type: "private"
 ```
 
-| 字段 | 说明 | 默认值 |
-|------|------|--------|
-| `user_id` | 用户唯一标识 | 必填 |
-| `user_name` | 用户显示名称 | 必填 |
-| `platform` | 平台类型 | `"local"` |
-| `session_type` | 会话类型 | `"private"` |
+## 配置 Agent
 
-### 2. LLM Provider 配置
-
-编辑 `data/config/provider.yaml`：
-
-```yaml
-name: "minimax"
-type: "anthropic"  # 或 "openai"
-api_key: "${MINIMAX_API_KEY}"  # 支持环境变量
-model: "Minimax-M2.7"
-max_concurrent: 2
-```
-
-**支持的 Provider 类型：**
-
-- `anthropic` - Anthropic API (Claude)
-- `openai` - OpenAI API (GPT)
-- 兼容 OpenAI 接口的服务（如 Minimax、Moonshot 等）
-
-**设置 API 密钥：**
-
-```bash
-# 方式 1：环境变量（推荐）
-export MINIMAX_API_KEY="your-api-key-here"
-
-# 方式 2：直接在配置文件中填写（不推荐用于生产环境）
-api_key: "sk-..."
-```
-
-### 3. Agent 基础配置
-
-编辑 `data/config/agent.yaml`：
+默认会优先读取 `data/personality/default/agent.yaml`，不存在时读取 `data/config/agent.yaml`。
 
 ```yaml
 name: "default"
@@ -145,183 +68,76 @@ tools:
   - shell
   - filesystem
   - ask
+  - message_send
+  - memory_update
   - subagent_create
   - subagent_wait
+  - subagent_list
+  - subagent_stop
+  - compact
+  - skill_load
 skills: []
 ```
 
-| 字段 | 说明 | 默认值 |
-|------|------|--------|
-| `name` | Agent 名称 | `"default"` |
-| `provider` | 使用的 LLM provider | 必填 |
-| `agent_role` | Agent 角色描述 | `"A helpful assistant"` |
-| `max_context_tokens` | 最大上下文 token 数 | `8000` |
-| `include_reasoning` | 是否包含思考内容 | `false` |
-| `tools` | 启用的工具列表 | 见上 |
-| `skills` | 加载的 Skills | `[]` |
+注意：当前 `tools` 字段尚未真正过滤暴露给模型的工具，入口会传入所有内置工具。
 
-### 4. 权限规则配置
+## 配置权限
 
-编辑 `data/config/permissions.json`：
+编辑 `data/personality/default/permissions.json` 或 `data/config/permissions.json`：
 
 ```json
 {
   "default": "ask",
   "ask_timeout": 60,
   "allow": [
-    {"tool": "shell", "params": {"command": "^(ls|cat|pwd)$"}},
-    {"tool": "filesystem", "params": {"action": "read"}}
+    {"tool": "shell", "params": {"command": "^(ls|cat|pwd|echo)$"}},
+    {"tool": "message_send", "params": {}}
   ],
   "deny": [
-    {"tool": "shell", "params": {"command": "^rm\\s+-rf"}}
+    {"tool": "shell", "params": {"command": "^(rm|sudo|chmod).*$"}}
   ]
 }
 ```
 
-**权限策略：**
+当前匹配顺序是 `deny -> allow -> default`。避免写出同一操作既 allow 又 deny 的规则。
 
-- `allow` - 直接允许
-- `deny` - 直接拒绝
-- `ask` - 询问用户（默认）
-
-详见 [权限系统文档](./permissions.md)。
-
-### 5. 人格配置（可选）
-
-编辑 `data/personality/default/AGENT.md`：
-
-```markdown
-# Agent Personality
-
-You are a helpful, harmless, and honest assistant.
-
-## User Information
-- Name: {{user_name}}
-- Platform: {{platform}}
-
-## Capabilities
-- You can execute shell commands (with permission)
-- You can read/write files in the workspace
-- You can create subagents for parallel tasks
-
-## Style
-- Be concise and clear
-- Ask for clarification when needed
-- Explain your reasoning when making important decisions
-```
-
-## 首次运行指南
-
-### 1. 启动 Agent
+## 启动
 
 ```bash
 python main.py
 ```
 
-您将看到类似输出：
-
-```
-Agent ready. Type your message (or /exit).
-You: 
-```
-
-### 2. 基本交互
-
-**发送消息：**
-
-```
-You: 你好，请介绍一下你自己
-Agent: 你好！我是一个本地数字人助手...
-```
-
-**执行命令：**
-
-```
-You: 列出当前目录的文件
-[Permission Ask] Shell command 'ls' requires permission. Allow?
-Your response (yes/no): yes
-Agent: 文件列表如下：...
-```
-
-**退出程序：**
-
-```
-You: /exit
-Goodbye!
-```
-
-### 3. 验证安装
-
-运行以下命令验证系统正常工作：
-
-```
-You: 请执行一个简单的测试命令：pwd
-[Permission Ask] Shell command 'pwd' requires permission. Allow?
-Your response (yes/no): yes
-Agent: 当前工作目录是：/workspace/data/sessions/default/workspace
-```
-
-### 4. 检查持久化
-
-运行后检查数据库文件是否生成：
+常用调试参数：
 
 ```bash
-ls -la data/sessions/default/conversation.db
-# 应该能看到一个 SQLite 数据库文件
+python main.py --print-tools
+python main.py --print-thoughts
 ```
 
-## 常见问题
+启动后输入消息，使用 `/exit` 退出。
 
-### Q: 遇到 "ModuleNotFoundError"
+## 当前运行特征
 
-**解决：** 确保已激活虚拟环境并安装了依赖：
+- Runtime 默认使用 `InMemorySaver` 和 `InMemoryStore`。
+- `shell` 工具当前是 mock，不会执行真实 shell 命令。
+- `filesystem_write` 当前是 mock，不会写文件。
+- `filesystem_read` 和 `filesystem_list` 会在 workspace 限制下读取本地文件。
+- 权限策略为 `ask` 时，会通过 interrupt/resume 请求用户确认。
+- `ask` 已接入 interrupt/resume 的基础流程。
+- `compact`、`subagent_*` 还不是完整实现。
 
-```bash
-# 使用 uv
-uv sync --all-extras
+## 验证安装
 
-# 或使用 pip
-source .venv/bin/activate
-pip install -r requirements.txt
+可以先尝试：
+
+```text
+Alice> 请列出 workspace 文件
 ```
 
-### Q: API 密钥错误
+如果模型请求调用 `filesystem_list`，并且权限允许或用户确认，终端会显示工具结果和模型回复。
 
-**解决：** 检查环境变量是否正确设置：
+## 下一步阅读
 
-```bash
-echo $MINIMAX_API_KEY  # Linux/macOS
-echo %MINIMAX_API_KEY%  # Windows
-```
-
-### Q: 权限询问无响应
-
-**解决：** 检查 `permissions.json` 配置，确保格式正确。可临时设置为全允许进行测试：
-
-```json
-{"default": "allow"}
-```
-
-### Q: 数据库锁定
-
-**解决：** 关闭所有使用该数据库的程序，或删除锁文件：
-
-```bash
-rm data/sessions/default/conversation.db-shm
-rm data/sessions/default/conversation.db-wal
-```
-
-## 下一步
-
-- 阅读 [配置参考](./configuration.md) 了解详细配置选项
-- 查看 [工具系统](./tools.md) 学习如何使用各种工具
-- 探索 [Skill 系统](./skills.md) 扩展 Agent 能力
-- 阅读 [测试指南](./testing.md) 学习如何编写测试
-
-## 获取帮助
-
-如遇到问题：
-
-1. 查看 [故障排查](./troubleshooting.md)
-2. 检查日志输出（如有）
-3. 提交 Issue 并附上错误信息
+- [架构与设计](./architecture.md)
+- [配置参考](./configuration.md)
+- [测试指南](./testing.md)

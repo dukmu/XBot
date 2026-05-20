@@ -35,7 +35,7 @@ from xbot.config import (
     get_session_db_path,
 )
 from xbot.permissions import PermissionSystem
-from xbot.tools import get_all_tools
+from xbot.tools import filter_tools, get_all_tools
 from xbot.llm import create_llm
 from xbot.graph import build_agent_graph
 
@@ -174,8 +174,7 @@ async def main():
     llm = create_llm(provider_config)
     tools = get_all_tools()
 
-    # Pass all tools to graph - permissions system controls access
-    enabled_tools = tools
+    enabled_tools = filter_tools(tools, agent_config.tools)
     print(f"  Tools available: {[t.name for t in enabled_tools]}")
 
     # Initialize permission system
@@ -228,10 +227,7 @@ async def main():
             input_state = {
                 "messages": [HumanMessage(content=user_input)],
                 "user_context": user_ctx,
-                "compression_pending": False,
-                "pending_permission_request": None,
                 "active_subagents": [],
-                "output_events": [],
             }
 
             # Stream execution

@@ -1,397 +1,291 @@
-# 架构设计
+# Hermes 架构与设计
 
-## 系统整体架构
+Hermes 是 XBot 的目标形态：一个轻量级、高质量、单用户、本地优先的 agent。当前阶段的设计原则是：先把主循环、上下文构造、工具安全和恢复语义做稳，再逐步引入上下文树、subagent 和 mailbox。
 
-本系统是一个面向单用户的本地数字人 Agent，所有组件运行在同一进程中，数据持久化于 `./data/` 目录下。
+## 设计原则
 
-### 架构图
+1. **简单优先**：默认采用线性会话链；树、分支、异步任务只在主循环稳定后引入。
+2. **运行时契约优先**：先定义 Run、Turn、Interrupt、ContextFrame、ToolResultRef 等硬契约。
+3. **工具安全优先**：工具执行前有 input guardrail，执行后有 output guardrail。
+4. **上下文质量优先**：模型看到的是精心构造的 ContextFrame，不是原始数据库 dump。
+5. **副作用显式化**：rewind 只改变上下文 head，不回滚文件、shell、memory 等外部副作用。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Terminal / UI Layer                     │
-│                    (用户交互界面层)                            │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       Main Loop                              │
-│                   (主程序循环控制)                             │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐     │
-│  │ Input Handler│  │ Stream Processor│  │ Interrupt Handler│    │
-│  └─────────────┘  └──────────────┘  └─────────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    LangGraph State Graph                     │
-│                    (状态图编排引擎)                           │
-│  ┌─────────┐    ┌─────────┐    ┌──────────────┐            │
-│  │  agent  │───▶│  tools  │───▶│permission_ask│            │
-│  └─────────┘    └─────────┘    └──────────────┘            │
-│       │              │                                       │
-│       ▼              │                                       │
-│  ┌─────────┐         │                                       │
-│  │compress │◀────────┘                                       │
-│  └─────────┘                                                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│  LLM Layer    │   │   Tool Layer    │   │ Permission Layer│
-│ (模型调用层)   │   │   (工具执行层)   │   │  (权限控制层)    │
-│ ┌───────────┐ │   │ ┌─────────────┐ │   │ ┌─────────────┐ │
-│ │MockLLM    │ │   │ │ shell       │ │   │ │ Rule Engine │ │
-│ │OpenAI     │ │   │ │ filesystem  │ │   │ │ Regex Match │ │
-│ │Anthropic  │ │   │ │ ask         │ │   │ │ Ask/Deny    │ │
-│ └───────────┘ │   │ │ subagent    │ │   │ └─────────────┘ │
-└───────────────┘   │ └─────────────┘ │   └─────────────────┘
-                    │ ┌─────────────┐ │
-                    │ │ memory_update││
-                    │ └─────────────┘ │
-                    └─────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Persistence Layer                          │
-│                   (持久化存储层)                              │
-│  ┌─────────────────────┐    ┌─────────────────────┐         │
-│  │  SQLiteCheckpointer │    │    SQLiteStore      │         │
-│  │  (会话状态检查点)     │    │  (归档数据存储)      │         │
-│  └─────────────────────┘    └─────────────────────┘         │
-│           │                        │                         │
-│           └────────────┬───────────┘                         │
-│                        ▼                                     │
-│            ┌───────────────────────┐                         │
-│            │  conversation.db      │                         │
-│            │  (SQLite 数据库文件)    │                         │
-│            └───────────────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Configuration Layer                        │
-│                   (配置管理层)                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │user.yaml │  │provider.yaml│ │agent.yaml │ │permissions│   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
-└─────────────────────────────────────────────────────────────┘
+## 当前状态
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| LangGraph ReAct 主循环 | 已实现 | `agent -> tools -> agent` |
+| Terminal runtime | 已实现 | 支持 interrupt/resume 的基本处理 |
+| Provider 配置 | 已实现 | OpenAI/Anthropic 兼容 |
+| 权限 allow/deny/ask | 已实现 | 本轮改为 deny 优先 |
+| 主动 ask | 本轮实现 | `ask` 工具触发 `user_ask` interrupt |
+| 工具过滤 | 本轮实现 | `agent.yaml` 的 `tools` 控制暴露工具 |
+| System state frame | 本轮实现 | 每次模型调用注入当前运行状态，不沉淀为历史 |
+| ToolResultRef/cache | 本轮实现 MVP | 大工具结果返回 ref，支持 `cache_read` |
+| 上下文压缩 | 部分实现 | 当前仍是简单摘要节点 |
+| 上下文树/rewind | 规划中 | 不进入当前 MVP |
+| subagent/mailbox | 规划中 | 后续在 EventQueue 基础上实现 |
+| 持久化 | 开发阶段内存 | 默认 `InMemorySaver` / `InMemoryStore` |
+
+## P0 硬契约
+
+Hermes 先围绕 5 个契约演进。
+
+### Run
+
+一次 agent 运行实例。建议字段：
+
+```yaml
+run_id: run_...
+thread_id: default
+started_at: ...
+current_turn_id: turn_...
+trace_id: trace_...
 ```
 
-## 组件交互流程
+当前代码主要使用 LangGraph `thread_id`，`run_id/trace_id` 尚未持久化。
 
-### 1. 用户消息处理流程
+### Turn
 
-```
-用户输入 → Input Handler → 构建 AgentState → LangGraph 执行
-                                              │
-                                              ▼
-                                    ┌─────────────────┐
-                                    │   agent 节点     │
-                                    │  - 调用 LLM      │
-                                    │  - 生成响应/工具调用│
-                                    └─────────────────┘
-                                              │
-                              ┌───────────────┼───────────────┐
-                              │               │               │
-                              ▼               ▼               ▼
-                        直接回复          需要工具调用      需要压缩
-                              │               │               │
-                              │               ▼               │
-                              │      ┌─────────────────┐      │
-                              │      │   tools 节点     │      │
-                              │      │  - 权限检查      │      │
-                              │      │  - 执行工具      │      │
-                              │      └─────────────────┘      │
-                              │               │               │
-                              │      ┌────────┴────────┐      │
-                              │      │                 │      │
-                              │      ▼                 ▼      │
-                              │  允许执行          需要询问    │
-                              │      │                 │      │
-                              │      │                 ▼      │
-                              │      │     ┌─────────────────┐│
-                              │      │     │permission_ask 节点││
-                              │      │     │  - interrupt    ││
-                              │      │     │  - 等待用户响应  ││
-                              │      │     └─────────────────┘│
-                              │      │               │        │
-                              │      └───────────────┼────────┘
-                              │                      │
-                              ▼                      ▼
-                        Stream Processor ←───────────┘
-                              │
-                              ▼
-                          输出到终端
+一次用户输入或 runtime 事件驱动的模型循环。建议字段：
+
+```yaml
+turn_id: turn_...
+run_id: run_...
+input_kind: user_message | interrupt_resume | background_event
+created_at: ...
 ```
 
-### 2. 工具调用与权限检查流程
+### InterruptEvent
 
-```
-工具调用请求
-      │
-      ▼
-┌─────────────────┐
-│  PermissionSystem│
-│  .check()       │
-└─────────────────┘
-      │
-      ├──────────────┬──────────────┐
-      │              │              │
-      ▼              ▼              ▼
-   allow          deny           ask
-      │              │              │
-      ▼              │              ▼
-执行工具         返回错误     设置 pending_permission_request
-      │                         │
-      ▼                         ▼
-返回结果                    interrupt
-      │                         │
-      └────────────┬────────────┘
-                   │
-                   ▼
-            路由回 agent 节点
+所有用户打断都走统一结构，通过 `type` 区分语义。
+
+```yaml
+interrupt_id: int_...
+type: user_ask | permission_confirm
+question: ...
+tool_name: optional
+args: optional
+resume_schema: ...
 ```
 
-### 3. 子代理创建与执行流程（Attach 模式）
+当前实现使用 LangGraph interrupt payload，最小字段为 `type`、`question`、`tool_name`、`args`。
 
-```
-主代理调用 subagent_create_attach
-                │
-                ▼
-        动态构建子图
-                │
-                ▼
-        初始化子代理状态
-                │
-                ▼
-        ┌───────────────┐
-        │ subagent 节点  │
-        │  - ainvoke    │
-        │  - 阻塞等待    │
-        └───────────────┘
-                │
-                ▼
-        子代理执行完成
-                │
-                ▼
-        返回结果给主代理
-                │
-                ▼
-        主代理继续执行
+### ContextFrame
+
+每次模型调用前构造一次 ContextFrame。
+
+```text
+ContextFrame =
+  SystemPrompt
+  + RuntimeState
+  + MessageChain
 ```
 
-### 4. 上下文压缩流程
+重要约束：
 
-```
-agent 节点调用 LLM 前
-        │
-        ▼
-计算当前 Token 数
-        │
-        ├──────────────────┐
-        │                  │
-   < 阈值            ≥ 阈值
-        │                  │
-        │                  ▼
-        │         设置 compression_pending
-        │                  │
-        │                  ▼
-        │         route_after_agent 检测
-        │                  │
-        │                  ▼
-        │         跳转到 compress 节点
-        │                  │
-        │                  ▼
-        │         ┌─────────────────┐
-        │         │  compress 节点   │
-        │         │  - 生成摘要      │
-        │         │  - 归档旧消息    │
-        │         │  - 替换消息块    │
-        │         └─────────────────┘
-        │                  │
-        │                  ▼
-        └──────────←───────┘
-                   │
-                   ▼
-            返回 agent 节点继续
+- Tool schema 由模型 API 绑定，不写进普通 prompt。
+- RuntimeState 是瞬时系统消息，不作为长期历史节点保存。
+- 原始 think/reasoning 不默认进入下一轮上下文。
+- 需要长期保留的思考结论应写成 assistant 消息、plan artifact 或 memory。
+
+### ToolResultRef
+
+大工具结果不直接塞回模型上下文，而是返回引用。
+
+```yaml
+ref: cache://tool-result/<id>
+mime_type: text/plain
+summary: ...
+size: 12345
+read_hint: use cache_read(ref, query or max_chars)
 ```
 
-## 数据流设计
+小结果直接内联；大结果写入运行时 cache，通过 `cache_read` 按需读取。
 
-### 1. AgentState 数据流
+## 当前主循环
 
-```python
-class AgentState(MessagesState):
-    # 只读数据（从配置加载）
-    user_context: UserContext
-    
-    # 可变状态（运行时更新）
-    messages: List[Message]           # 对话历史
-    pending_permission_request: dict  # 权限询问暂存
-    compression_pending: bool         # 压缩标记
-    active_subagents: List[str]       # 活跃子代理
-    output_events: List[OutputEvent]  # 输出事件队列
+```text
+START
+  -> agent
+  -> tools
+       -> permission_confirm interrupt when needed
+       -> user_ask interrupt when ask() is called
+       -> output guardrail / cache hook
+  -> agent
+  -> END
 ```
 
-**数据流向：**
+当前 `compress` 节点保留，但压缩触发仍是简单机制。
 
-- **流入**: 用户输入 → HumanMessage → messages
-- **流出**: AIMessage / ToolMessage → messages → Stream Processor → 终端
-- **内部流转**: 各节点通过读取/修改 state 传递信息
+## 上下文构造
 
-### 2. 持久化数据流
+### SystemPrompt
 
-```
-运行时状态 (AgentState)
-        │
-        │ checkpoint 保存
-        ▼
-┌─────────────────┐
-│ Checkpointer    │
-│ put(thread_id,  │
-│     checkpoint) │
-└─────────────────┘
-        │
-        │ SQL INSERT/UPDATE
-        ▼
-┌─────────────────┐
-│ checkpoints 表   │
-│ - thread_id     │
-│ - checkpoint_id │
-│ - checkpoint    │
-│ - metadata      │
-└─────────────────┘
+来源：
 
-工具执行结果/归档数据
-        │
-        │ store.put()
-        ▼
-┌─────────────────┐
-│ Store           │
-│ put(namespace,  │
-│     key, value) │
-└─────────────────┘
-        │
-        │ SQL INSERT
-        ▼
-┌─────────────────┐
-│ store 表         │
-│ - namespace     │
-│ - key           │
-│ - value         │
-└─────────────────┘
+- `data/config/personality_template.md`
+- `data/personality/default/AGENT.md`
+- `data/personality/default/MEMORY.md`
+- skills 摘要
+
+SystemPrompt 负责角色、规则、工具使用约束和长期记忆。
+
+### RuntimeState
+
+RuntimeState 每次模型调用动态生成：
+
+```text
+# Runtime State
+time: 2026-05-20T...
+user: Alice (local_user)
+platform: local
+session_type: private
+active_subagents: 0
+pending_mailbox_items: 0
 ```
 
-## LangGraph 状态图详解
+RuntimeState 不进入 `state["messages"]`，避免时间、状态计数等瞬时信息污染历史。
 
-### 状态图定义
+### MessageChain
 
-```python
-from langgraph.graph import StateGraph, START, END
+当前阶段仍使用 LangGraph `messages` 作为线性链。后续引入 context tree 后，MessageChain 从当前 head 选择一条 path 构造。
 
-def build_agent_graph(...):
-    builder = StateGraph(AgentState)
-    
-    # 添加节点
-    builder.add_node("agent", make_agent_node(llm, tools))
-    builder.add_node("tools", make_tool_node(tools, permission_system))
-    builder.add_node("permission_ask", make_permission_ask_node())
-    builder.add_node("compress", make_compress_node(llm))
-    
-    # 添加边
-    builder.add_edge(START, "agent")
-    
-    # 条件边：agent 之后去哪里？
-    builder.add_conditional_edges(
-        "agent",
-        route_after_agent,
-        {
-            "tools": "tools",
-            "compress": "compress",
-            "end": END
-        }
-    )
-    
-    # 条件边：tools 之后去哪里？
-    builder.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "agent": "agent",
-            "permission_ask": "permission_ask"
-        }
-    )
-    
-    # 固定边
-    builder.add_edge("permission_ask", "tools")  # 批准后重新执行
-    builder.add_edge("compress", "agent")        # 压缩后继续对话
-    
-    return builder.compile(checkpointer=checkpointer, store=store)
+## ask 与权限确认
+
+Hermes 区分两种 interrupt。
+
+### user_ask
+
+由 agent 主动调用 `ask(question)` 触发。用户回答后，回答作为 `ask` 工具结果返回给模型。
+
+```text
+agent -> ask(question)
+runtime -> interrupt(type="user_ask")
+user -> answer
+tools -> ToolMessage("User answered: ...")
+agent -> continue
 ```
 
-### 节点职责
+### permission_confirm
 
-| 节点 | 职责 | 输入 | 输出 |
-|------|------|------|------|
-| **agent** | 调用 LLM 生成响应或工具调用 | messages, user_context | AIMessage (含 tool_calls) |
-| **tools** | 执行工具调用，处理权限 | AIMessage with tool_calls | ToolMessage(s) |
-| **permission_ask** | 中断并等待用户授权 | pending_permission_request | 用户授权结果 |
-| **compress** | 压缩上下文，生成摘要 | messages (过长时) | 压缩后的 messages |
+由权限系统触发。用户批准后才执行工具；拒绝后返回标准拒绝工具结果。
 
-### 路由逻辑
-
-```python
-def route_after_agent(state: AgentState) -> str:
-    """决定 agent 节点之后的执行路径"""
-    last_msg = state["messages"][-1]
-    
-    # 有工具调用 → 去 tools 节点
-    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-        return "tools"
-    
-    # 需要压缩 → 去 compress 节点
-    if state.get("compression_pending"):
-        return "compress"
-    
-    # 否则结束
-    return "end"
-
-def route_after_tools(state: AgentState) -> str:
-    """决定 tools 节点之后的执行路径"""
-    # 有待处理的权限询问 → 去 permission_ask
-    if state.get("pending_permission_request"):
-        return "permission_ask"
-    
-    # 否则返回 agent 继续对话
-    return "agent"
+```text
+agent -> tool_call
+permission -> deny | allow | ask
+ask -> interrupt(type="permission_confirm")
+user -> approved true/false
+tools -> execute or return denial
 ```
 
-## 关键设计决策
+权限判断采用 deny 优先，避免危险规则被宽泛 allow 覆盖。
 
-### 1. 为什么使用 LangGraph？
+## 工具运行时
 
-- **状态管理**: 内置的状态管理机制简化了复杂对话流程的实现
-- **可中断性**: 原生支持 interrupt，便于实现权限询问等人机交互
-- **检查点**: 自动保存执行状态，支持断点续传和重启恢复
-- **可扩展性**: 易于添加新节点和自定义路由逻辑
+工具调用经过三层处理：
 
-### 2. 为什么选择 SQLite？
+1. **Input guardrail**：权限系统检查工具名和参数。
+2. **Execution**：调用 LangChain tool。
+3. **Output guardrail**：大结果写 cache，返回 ToolResultRef。
 
-- **轻量级**: 无需额外服务，单文件数据库
-- **事务支持**: ACID 特性保证数据一致性
-- **成熟稳定**: 广泛使用，性能可靠
-- **易于备份**: 单文件便于备份和迁移
+工具结果 cache 是开发阶段的内存实现。它不是长期记忆，也不保证跨进程恢复。
 
-### 3. 权限系统设计原则
+## 暂缓的复杂能力
 
-- **最小权限**: 默认拒绝，显式允许
-- **细粒度控制**: 支持工具级别、参数级别的约束
-- **人机协同**: 不确定时询问用户，而非直接拒绝
-- **可审计**: 所有权限决策记录在案
+### 上下文树
 
-### 4. 上下文压缩策略
+仍保留为目标，但不进入当前 MVP。未来最小实现只包括：
 
-- **预防性压缩**: 在达到上限前（80%）触发，避免截断
-- **增量压缩**: 仅压缩自上次检查点以来的消息
-- **可追溯**: 保留压缩摘要，必要时可还原详情
+- `node_id`
+- `parent_id`
+- `current_head`
+- `compacted` 节点
+- `tree_path`
+- `rewind`
+
+明确约束：`rewind` 不回滚外部副作用，只改变后续上下文从哪个节点继续生长。
+
+### Subagent
+
+先不实现 autonomous async subagent。推荐路线：
+
+1. 同步 worker：一次任务，一次返回。
+2. background task：固定 workflow 或固定工具链。
+3. 真正异步 subagent：带 timeout、取消、max tool calls、权限继承策略。
+
+### Mailbox
+
+先不实现双 mailbox。推荐先实现统一 `EventQueue`：
+
+```yaml
+event_id: evt_...
+audience: user | agent | both
+source: runtime | subagent:<id> | tool:<name>
+summary: ...
+payload_ref: optional
+status: unread | read | archived
+```
+
+RuntimeState 只放未读高优先级摘要和数量。
+
+## 持久化策略
+
+当前阶段：
+
+- `InMemorySaver`
+- `InMemoryStore`
+- 内存 tool cache
+
+目标阶段：
+
+| 数据 | 目标 |
+|------|------|
+| checkpoint | SQLite |
+| tool cache metadata | SQLite |
+| large payload | SQLite/blob/filesystem hybrid |
+| context tree | SQLite |
+| EventQueue | SQLite |
+
+## 实现路线
+
+### P1：稳定主循环
+
+- 工具过滤
+- deny 优先权限
+- 主动 ask interrupt
+- RuntimeState 注入
+- ToolResultRef/cache MVP
+
+### P2：压缩
+
+- 线性 MessageChain 压缩
+- compacted summary
+- facts/open threads/tool refs
+
+### P3：最小上下文树
+
+- node 表
+- current head
+- rewind
+- 明确 side-effect ledger
+
+### P4：后台能力
+
+- 同步 worker
+- EventQueue
+- background task
+- 异步 subagent
+
+## 当前代码对应关系
+
+| 模块 | 职责 |
+|------|------|
+| `main.py` | Terminal runtime loop、interrupt resume、图执行 |
+| `xbot/graph.py` | LangGraph 节点、ContextFrame、工具 runtime |
+| `xbot/tools.py` | 内置工具、`cache_read` |
+| `xbot/cache.py` | 开发阶段内存 ToolResultRef cache |
+| `xbot/permissions.py` | deny/allow/ask 权限规则 |
+| `xbot/config.py` | YAML/JSON 配置加载 |
+| `xbot/models.py` | Pydantic 配置模型和运行时契约模型 |
+| `xbot/checkpointer.py` | SQLite checkpointer/store 的目标实现 |

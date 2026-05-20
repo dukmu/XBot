@@ -29,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
-from xbot.models import AgentState, UserContext, PermissionConfig
+from xbot.models import UserContext, PermissionConfig
 from xbot.mock_llm import (
     MockLLM,
     TOOL_CALL_SEQUENCE,
