@@ -13,8 +13,14 @@ from xbot.models import PermissionConfig, SandboxConfig
 from xbot.permissions import PermissionSystem
 from xbot.sandbox import SandboxPolicy
 from xbot.runtime import RuntimeContext
-from xbot.state import TaskStateStore, read_jsonl
-from xbot.tools import compact, filesystem_read, filesystem_write, shell
+from xbot.state import (
+    TaskStateStore,
+    configure_runtime_task_state,
+    materialize_context_tree_state,
+    read_jsonl,
+    reset_runtime_task_state,
+)
+from xbot.tools import compact, context_head, context_rewind, filesystem_read, filesystem_write, shell
 from xbot.cache import ToolResultCache
 from xbot.planning import materialize_plan_state, select_ready_node, validate_plan
 from xbot.verification import verification_passed, verify_task_state
@@ -343,6 +349,7 @@ def test_task_state_store_initializes_file_backed_task(temp_data_dir):
     assert store.paths.graph_jsonl.exists()
     assert store.paths.state_yaml.exists()
     assert store.paths.context_md.exists()
+    assert store.paths.context_tree_jsonl.exists()
     assert store.paths.claims_yaml.exists()
     assert store.paths.artifacts_dir.exists()
 
@@ -373,9 +380,63 @@ def test_task_state_store_materializes_events(temp_data_dir):
     assert state["turn_count"] == 1
     assert state["event_count"] == len(events)
     assert state["graph_event_count"] == len(graph_events)
+    assert state["context_tree_event_count"] == 3
+    assert state["context_tree"]["node_count"] == 3
+    assert state["context_tree"]["head"] == "ctx_000003"
     assert state["interaction_event_counts"]["by_kind"]["message"] == 1
     assert state["interaction_event_counts"]["by_kind"]["tool_call"] == 1
     assert events[-1]["type"] == "turn_finished"
+
+
+def test_context_tree_rewind_moves_head_without_deleting_history(temp_data_dir):
+    """Rewind should move the context head while preserving append-only history."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="context-rewind",
+        session_id="default",
+        personality_id="default",
+    )
+
+    first = store.record_context_node(turn_id="turn_1", kind="user_message", source="user", payload="first")
+    second = store.record_context_node(turn_id="turn_1", kind="message", source="agent", payload="second")
+    store.record_context_node(turn_id="turn_2", kind="message", source="agent", payload="branch")
+    store.rewind_context(first["node_id"], reason="try alternate branch")
+
+    tree_events = list(read_jsonl(store.paths.context_tree_jsonl))
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+    projected = materialize_context_tree_state(tree_events)
+
+    assert first["node_id"] == "ctx_000001"
+    assert second["parent_id"] == first["node_id"]
+    assert state["context_tree"]["head"] == first["node_id"]
+    assert state["context_tree"]["node_count"] == 3
+    assert state["context_tree"]["rewind_count"] == 1
+    assert projected["errors"] == []
+    assert any(event.get("type") == "context_rewind" for event in read_jsonl(store.paths.events_jsonl))
+
+
+@pytest.mark.asyncio
+async def test_context_tree_tools_use_bound_task_state(temp_data_dir):
+    """Agent-facing context tools should operate on the current task state."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="context-tools",
+        session_id="default",
+        personality_id="default",
+    )
+    first = store.record_context_node(turn_id="turn_1", kind="user_message", source="user", payload="first")
+    store.record_context_node(turn_id="turn_1", kind="message", source="agent", payload="second")
+    token = configure_runtime_task_state(store)
+    try:
+        before = await context_head.ainvoke({})
+        rewind_result = await context_rewind.ainvoke({"node_id": first["node_id"], "reason": "alternate path"})
+        after = await context_head.ainvoke({})
+    finally:
+        reset_runtime_task_state(token)
+
+    assert '"node_count": 2' in before
+    assert f"Context head moved to {first['node_id']}" in rewind_result
+    assert f'"head": "{first["node_id"]}"' in after
 
 
 def test_plan_dag_selects_ready_verification_first():
@@ -465,6 +526,8 @@ def test_verify_task_state_checks_materialized_counts(temp_data_dir):
         "plan_is_valid_dag",
         "event_count_matches_state",
         "graph_event_count_matches_state",
+        "context_tree_event_count_matches_state",
+        "context_tree_is_valid",
         "plan_projection_has_no_errors",
     }
 

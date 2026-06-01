@@ -38,6 +38,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Behavior smoke coverage: `tests/test_personality_runtime.py` creates an isolated data dir, runs a smoke provider through `HermesInteraction`, refactors `calculator.py`, and verifies task audit state.
 - [x] Real provider smoke script: `scripts/provider_smoke_refactor.py` creates an isolated data dir and runs an actual provider, defaulting to DeepSeek OpenAI-compatible config.
 - [x] Real DeepSeek provider smoke completed successfully.
+- [x] Context tree MVP: `context_tree.jsonl` records append-only context nodes, `state.yaml` materializes head/node counts, and `context_rewind` moves the head without deleting history.
 
 ## Notes
 
@@ -50,6 +51,7 @@ Current continuation objective: make the personality configuration system consis
 - Latest local verification passed: `uv run pytest -q` (`60 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 
 ## Acceptance Audit
 
@@ -67,3 +69,4 @@ Current continuation objective: make the personality configuration system consis
 - Runtime path isolation: complete for MVP. Existing helper APIs remain, but the underlying path state is context-local and covered by tests.
 - Personality config system: complete locally. Directory layout is canonical and lower-case under `data/personalities`.
 - Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable task files.
+- Context tree/rewind: MVP complete. Remaining scope is context projection from tree branches into model prompts and richer branch inspection commands.
