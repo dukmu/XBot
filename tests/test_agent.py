@@ -802,14 +802,14 @@ async def test_human_in_loop_resume(mock_llm, tools, user_context):
 @pytest.mark.asyncio
 async def test_persistence_checkpoint_restore(mock_llm, tools, user_context, temp_data_dir):
     """Test that checkpoints are persisted and restored."""
-    from langgraph.checkpoint.memory import MemorySaver
-    
-    # Use memory checkpointer for this test (SQLite has binding issues)
-    checkpointer = MemorySaver()
+    from xbot.checkpoint import FileBackedSaver
     
     permission_system = PermissionSystem(PermissionConfig(default="allow"))
     
     from xbot.graph import build_agent_graph
+
+    checkpoint_path = temp_data_dir / "sessions" / "default" / "checkpoints" / "langgraph.pkl"
+    checkpointer = FileBackedSaver(checkpoint_path)
     
     graph = build_agent_graph(
         llm=mock_llm,
@@ -834,15 +834,24 @@ async def test_persistence_checkpoint_restore(mock_llm, tools, user_context, tem
     # Verify checkpoint was saved
     saved = await checkpointer.aget_tuple(config)
     assert saved is not None
+    assert checkpoint_path.exists()
     
-    # Second interaction - should load from checkpoint
+    # Second interaction should load from a new saver instance.
+    restored_checkpointer = FileBackedSaver(checkpoint_path)
+    restored_graph = build_agent_graph(
+        llm=mock_llm,
+        tools=tools,
+        checkpointer=restored_checkpointer,
+        store=None,
+        permission_system=permission_system,
+    )
     mock_llm.set_response_sequence([{"content": "Second message"}])
     input_state2 = {
         "messages": [HumanMessage(content="Continue")],
         "user_context": user_context,
     }
     
-    result2 = await graph.ainvoke(input_state2, config=config)
+    result2 = await restored_graph.ainvoke(input_state2, config=config)
     
     # Verify conversation history
     assert len(result2["messages"]) >= 3

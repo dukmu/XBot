@@ -95,5 +95,5 @@ Runtime events 通过 LangGraph custom stream 发出，不进入持久 graph sta
 这些是设计目标或后续阶段，不应在 P0 测试中伪装成已实现能力：
 
 - 真正异步执行的 subagent background runner。
-- SQLite 持久化替代当前 `InMemorySaver/InMemoryStore`。当前已有文件化任务 state，但 LangGraph checkpoint 仍是内存实现。
+- 官方 SQLite/Postgres 持久化替代当前 file-backed checkpoint pickle 和 `InMemoryStore`。
 - 多平台 UI adapter 除 terminal 外的端到端测试。

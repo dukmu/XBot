@@ -113,7 +113,7 @@ python main.py --print-thoughts
 
 ## 当前运行特征
 
-- Runtime 默认使用 `InMemorySaver` 和 `InMemoryStore`。
+- Runtime 默认使用 file-backed LangGraph checkpoint saver 和 `InMemoryStore`。
 - sandbox 开启时，`shell` 在 bubblewrap 内执行；sandbox 关闭时，`shell` 不可用。
 - `filesystem_*` 会按 sandbox 或 workspace 边界访问本地文件。
 - 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
