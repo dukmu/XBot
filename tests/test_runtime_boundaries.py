@@ -9,9 +9,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langchain_core.tools import tool as lc_tool
 from langgraph.checkpoint.memory import MemorySaver
 
+from tests.test_personality_runtime import write_local_runtime
+from xbot.config import configure_runtime_paths
 from xbot.models import PermissionConfig, SandboxConfig
 from xbot.permissions import PermissionSystem
-from xbot.sandbox import SandboxPolicy
+from xbot.sandbox import SandboxPolicy, reset_runtime_sandbox, set_runtime_sandbox
 from xbot.runtime import RuntimeContext
 from xbot.state import (
     TaskStateStore,
@@ -21,7 +23,18 @@ from xbot.state import (
     read_jsonl,
     reset_runtime_task_state,
 )
-from xbot.tools import compact, context_head, context_rewind, filesystem_read, filesystem_write, mailbox_read, mailbox_send, shell
+from xbot.tools import (
+    compact,
+    context_head,
+    context_rewind,
+    filesystem_read,
+    filesystem_write,
+    mailbox_read,
+    mailbox_send,
+    shell,
+    subagent_create,
+    subagent_wait,
+)
 from xbot.cache import ToolResultCache
 from xbot.planning import materialize_plan_state, select_ready_node, validate_plan
 from xbot.verification import verification_passed, verify_task_state
@@ -466,6 +479,49 @@ async def test_mailbox_tools_use_bound_task_state(temp_data_dir):
     assert '"subject": "notice"' in pending
     assert '"acknowledged": true' in acknowledged
     assert empty == "[]"
+
+
+@pytest.mark.asyncio
+async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_data_dir):
+    """Attach-mode subagent should execute in a child runtime when task state is bound."""
+    write_local_runtime(temp_data_dir)
+    configure_runtime_paths(data_dir=temp_data_dir, session_id="parent", personality_id="default")
+    parent_workspace = temp_data_dir / "sessions" / "parent" / "workspace"
+    parent_workspace.mkdir(parents=True)
+    (parent_workspace / "calculator.py").write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "parent" / "tasks",
+        thread_id="parent-task",
+        session_id="parent",
+        personality_id="default",
+    )
+    sandbox = SandboxPolicy(SandboxConfig(enabled=False), data_root=temp_data_dir, workspace_root=parent_workspace)
+    state_token = configure_runtime_task_state(store)
+    sandbox_token = set_runtime_sandbox(sandbox)
+    try:
+        result = await subagent_create.ainvoke(
+            {"task": "Refactor calculator.py to improve readability.", "name": "worker", "mode": "attach"}
+        )
+        wait_result = None
+    finally:
+        reset_runtime_sandbox(sandbox_token)
+        reset_runtime_task_state(state_token)
+
+    assert "Subagent worker_" in result
+    assert "completed" in result
+    child_sessions = sorted((temp_data_dir / "sessions").glob("parent__subagent__worker_*"))
+    assert child_sessions
+    child_workspace_file = child_sessions[0] / "workspace" / "calculator.py"
+    assert "return a + b" in child_workspace_file.read_text(encoding="utf-8")
+    mailbox = store.materialize_state()["mailbox"]
+    assert mailbox["pending_by_recipient"]["parent"] == 1
+    subagent_id = child_sessions[0].name.removeprefix("parent__subagent__")
+    sandbox_token = set_runtime_sandbox(sandbox)
+    try:
+        wait_result = await subagent_wait.ainvoke({"subagent_id": subagent_id})
+    finally:
+        reset_runtime_sandbox(sandbox_token)
+    assert "completed" in wait_result
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Real DeepSeek provider smoke completed successfully.
 - [x] Context tree MVP: `context_tree.jsonl` records append-only context nodes, `state.yaml` materializes head/node counts, and `context_rewind` moves the head without deleting history.
 - [x] Mailbox MVP: `mailbox.jsonl` records send/read acknowledgements, `state.yaml` materializes pending counts, and agent-facing tools can send/read messages.
+- [x] Subagent MVP: `subagent_create(mode="attach")` runs an isolated child `HermesInteraction`, writes a result, and reports back through parent mailbox.
 
 ## Notes
 
@@ -71,4 +72,5 @@ Current continuation objective: make the personality configuration system consis
 - Personality config system: complete locally. Directory layout is canonical and lower-case under `data/personalities`.
 - Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable task files.
 - Context tree/rewind: MVP complete. Remaining scope is context projection from tree branches into model prompts and richer branch inspection commands.
-- Mailbox: MVP complete. Remaining scope is wiring subagent workers and runtime background events onto the mailbox queue.
+- Mailbox: MVP complete. Remaining scope is wiring runtime background events onto the mailbox queue.
+- Subagent: attach-mode MVP complete. Remaining scope is true async detach runner, budgets/timeouts, cancellation, and child workspace diff handoff.

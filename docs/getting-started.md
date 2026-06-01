@@ -2,7 +2,7 @@
 
 本指南帮助你在本地运行 XBot Hermes。
 
-Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 task state、Plan/DAG、工具结果 cache 和基本工具已可运行；subagent、mailbox、上下文树等能力仍在设计和实现中。
+Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 task state、Plan/DAG、工具结果 cache、上下文树、mailbox 和 attach-mode subagent 已可运行；异步 subagent runner 和 checkpoint 持久化仍在推进中。
 
 ## 环境要求
 
@@ -118,7 +118,7 @@ python main.py --print-thoughts
 - `filesystem_*` 会按 sandbox 或 workspace 边界访问本地文件。
 - 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
-- `subagent_*` 当前是 P0 task record 实现，还不是完整异步 agent。
+- `subagent_create(mode="attach")` 会同步运行隔离 child runtime；`detach` 仍是 pending record，等待后续后台 runner。
 
 ## 验证安装
 
