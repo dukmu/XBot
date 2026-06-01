@@ -2,7 +2,7 @@
 
 本指南帮助你在本地运行 XBot Hermes。
 
-Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查和基本工具已可运行；subagent、mailbox、上下文树、工具结果 cache 等能力仍在设计和实现中。
+Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 task state、Plan/DAG、工具结果 cache 和基本工具已可运行；subagent、mailbox、上下文树等能力仍在设计和实现中。
 
 ## 环境要求
 
@@ -24,24 +24,26 @@ uv sync --all-extras
 编辑 `data/config/provider.yaml`：
 
 ```yaml
-name: "minimax"
-type: "anthropic"
-base_url: "https://api.minimaxi.com/anthropic"
-api_key: "${ANTHROPIC_API_KEY}"
-model: "Minimax-M2.7"
+name: "deepseek"
+type: "openai"
+base_url: "${DEEPSEEK_OPENAI_BASE_URL}"
+api_key: "${DEEPSEEK_API_TOKEN}"
+model: "deepseek-v4-flash"
 max_concurrent: 2
 ```
 
 设置环境变量：
 
 ```bash
-export ANTHROPIC_API_KEY="your-api-key"
+export DEEPSEEK_API_TOKEN="your-api-key"
+export DEEPSEEK_OPENAI_BASE_URL="https://your-deepseek-compatible-endpoint"
 ```
 
 `type` 当前支持：
 
 - `anthropic`
 - `openai`
+- `smoke`，仅用于本地端到端 smoke 测试，不发网络请求
 
 ## 配置用户
 
@@ -54,36 +56,29 @@ platform: "local"
 session_type: "private"
 ```
 
-## 配置 Agent
+## 配置 Personality
 
-默认会优先读取 `data/personality/default/agent.yaml`，不存在时读取 `data/config/agent.yaml`。可通过 `--personality-id` 或 `XBOT_PERSONALITY_ID` 切换 personality。
+每个 personality 都是一个独立目录：`data/personalities/<personality_id>/`。可通过 `--personality-id` 或 `XBOT_PERSONALITY_ID` 切换 personality。
 
 ```yaml
+# data/personalities/default/personality.yaml
 name: "default"
-provider: "minimax"
-agent_role: "A helpful assistant"
+provider: "deepseek"
+agent_role: "A local code-focused assistant that makes small, auditable changes."
 max_context_tokens: 8000
 include_reasoning: false
 tools:
-  - shell
   - filesystem
   - ask
   - message_send
-  - memory_update
-  - subagent_create
-  - subagent_wait
-  - subagent_list
-  - subagent_stop
-  - compact
-  - skill_load
 skills: []
 ```
 
-注意：`tools` 字段会过滤暴露给模型的工具；`filesystem` 会展开为 `filesystem_read`、`filesystem_write`、`filesystem_list`。
+`instructions.md` 是 personality 指令，`memory.md` 是长期记忆，`permissions.json` 和 `sandbox.json` 是该 personality 的工具边界。`tools` 字段会过滤暴露给模型的工具；`filesystem` 会展开为 `filesystem_read`、`filesystem_write`、`filesystem_list`。
 
 ## 配置权限
 
-编辑 `data/personality/<personality_id>/permissions.json` 或 `data/config/permissions.json`：
+编辑 `data/personalities/<personality_id>/permissions.json`：
 
 ```json
 {
@@ -120,7 +115,7 @@ python main.py --print-thoughts
 
 - Runtime 默认使用 `InMemorySaver` 和 `InMemoryStore`。
 - sandbox 开启时，`shell` 在 bubblewrap 内执行；sandbox 关闭时，`shell` 不可用。
-- `filesystem_*` 会按 sandbox 或 legacy workspace 边界访问本地文件。
+- `filesystem_*` 会按 sandbox 或 workspace 边界访问本地文件。
 - 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
 - `subagent_*` 当前是 P0 task record 实现，还不是完整异步 agent。

@@ -1,6 +1,7 @@
 """Focused runtime boundary tests for Hermes."""
 
 import shutil
+import yaml
 
 import pytest
 
@@ -11,7 +12,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from xbot.models import PermissionConfig, SandboxConfig
 from xbot.permissions import PermissionSystem
 from xbot.sandbox import SandboxPolicy
+from xbot.runtime import RuntimeContext
+from xbot.state import TaskStateStore, read_jsonl
 from xbot.tools import compact, filesystem_read, filesystem_write, shell
+from xbot.cache import ToolResultCache
+from xbot.planning import materialize_plan_state, select_ready_node, validate_plan
+from xbot.verification import verification_passed, verify_task_state
 
 @pytest.mark.asyncio
 async def test_filesystem_read_rejects_paths_outside_workspace():
@@ -228,15 +234,33 @@ def test_runtime_paths_drive_session_and_personality_dirs(temp_data_dir):
         resource_paths = {rule.path for rule in sandbox_config.resources}
 
         assert paths.workspace_dir == temp_data_dir / "sessions" / "analysis" / "workspace"
-        assert paths.personality_dir == temp_data_dir / "personality" / "hermes"
+        assert paths.personality_dir == temp_data_dir / "personalities" / "hermes"
         assert "sessions/analysis/workspace" in resource_paths
-        assert "personality/hermes/MEMORY.md" in resource_paths
+        assert "personalities/hermes/memory.md" in resource_paths
     finally:
         configure_runtime_paths(
             data_dir=original.data_dir,
             session_id=original.session_id,
             personality_id=original.personality_id,
         )
+
+
+def test_runtime_paths_are_context_local(temp_data_dir):
+    """Runtime paths should not be a single process-global mutable value."""
+    from contextvars import copy_context
+    from xbot.config import configure_runtime_paths, get_runtime_paths
+
+    def configure_and_read(session_id: str) -> str:
+        configure_runtime_paths(data_dir=temp_data_dir, session_id=session_id, personality_id="default")
+        return get_runtime_paths().session_id
+
+    ctx_a = copy_context()
+    ctx_b = copy_context()
+
+    assert ctx_a.run(configure_and_read, "session-a") == "session-a"
+    assert ctx_b.run(configure_and_read, "session-b") == "session-b"
+    assert ctx_a.run(lambda: get_runtime_paths().session_id) == "session-a"
+    assert ctx_b.run(lambda: get_runtime_paths().session_id) == "session-b"
 
 
 def test_config_expands_runtime_placeholders(temp_data_dir):
@@ -254,7 +278,7 @@ def test_config_expands_runtime_placeholders(temp_data_dir):
             {
                 "resources": [
                     {"path": "sessions/<session_id>/workspace"},
-                    {"path": "personality/{{personality_id}}/MEMORY.md"},
+                    {"path": "personalities/{{personality_id}}/memory.md"},
                 ]
             }
         )
@@ -262,7 +286,7 @@ def test_config_expands_runtime_placeholders(temp_data_dir):
         assert expanded == {
             "resources": [
                 {"path": "sessions/analysis/workspace"},
-                {"path": "personality/hermes/MEMORY.md"},
+                {"path": "personalities/hermes/memory.md"},
             ]
         }
     finally:
@@ -271,6 +295,241 @@ def test_config_expands_runtime_placeholders(temp_data_dir):
             session_id=original.session_id,
             personality_id=original.personality_id,
         )
+
+
+def test_interaction_startup_uses_explicit_runtime_context(user_context, temp_data_dir):
+    """Interaction status should derive session/personality from RuntimeContext when provided."""
+    from xbot.config import RuntimePaths
+    from xbot.interaction import HermesInteraction
+
+    runtime_context = RuntimeContext(
+        paths=RuntimePaths(data_dir=temp_data_dir, session_id="ctx-session", personality_id="ctx-personality"),
+        thread_id="ctx-thread",
+        task_id="ctx-thread",
+        run_id="run_ctx",
+        trace_id="trace_ctx",
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=None,
+        graph_config={"configurable": {"thread_id": "ctx-thread"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[],
+        database_path=":memory:",
+        runtime_context=runtime_context,
+    )
+
+    payloads = [str(event.payload) for event in runtime.startup_events()]
+
+    assert "Session: ctx-session" in payloads
+    assert "Personality: ctx-personality" in payloads
+
+
+def test_task_state_store_initializes_file_backed_task(temp_data_dir):
+    """A task directory should expose the file-as-state contract."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="analysis/thread",
+        session_id="default",
+        personality_id="default",
+        goal="# Goal\n\nAnalyze runtime state.\n",
+    )
+
+    assert store.paths.task_yaml.exists()
+    assert store.paths.goal_md.exists()
+    assert store.paths.plan_yaml.exists()
+    assert store.paths.graph_jsonl.exists()
+    assert store.paths.state_yaml.exists()
+    assert store.paths.context_md.exists()
+    assert store.paths.claims_yaml.exists()
+    assert store.paths.artifacts_dir.exists()
+
+
+def test_task_state_store_materializes_events(temp_data_dir):
+    """state.yaml should be a materialized view of append-only runtime events."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="materialize",
+        session_id="default",
+        personality_id="default",
+    )
+
+    store.record_turn_started(turn_id="turn_000001", input_kind="user_message", content="hello")
+    store.record_turn_events(
+        turn_id="turn_000001",
+        events=[
+            type("Evt", (), {"kind": "message", "source": "agent", "payload": "ok"})(),
+            type("Evt", (), {"kind": "tool_call", "source": "agent", "payload": {"name": "shell", "args": {"command": "pwd"}}})(),
+        ],
+    )
+    store.record_turn_finished(turn_id="turn_000001", status="completed")
+
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+    events = list(read_jsonl(store.paths.events_jsonl))
+    graph_events = list(read_jsonl(store.paths.graph_jsonl))
+
+    assert state["turn_count"] == 1
+    assert state["event_count"] == len(events)
+    assert state["graph_event_count"] == len(graph_events)
+    assert state["interaction_event_counts"]["by_kind"]["message"] == 1
+    assert state["interaction_event_counts"]["by_kind"]["tool_call"] == 1
+    assert events[-1]["type"] == "turn_finished"
+
+
+def test_plan_dag_selects_ready_verification_first():
+    """The plan graph should be scheduler-readable instead of plain markdown."""
+    plan = {
+        "version": 1,
+        "status": "active",
+        "root": "n_goal",
+        "nodes": [
+            {"id": "n_goal", "type": "goal", "title": "goal", "status": "verified"},
+            {"id": "n_write", "type": "subtask", "title": "write", "depends_on": ["n_goal"], "status": "ready"},
+            {"id": "n_verify", "type": "verification", "title": "verify", "depends_on": ["n_goal"], "status": "ready"},
+        ],
+    }
+
+    assert validate_plan(plan) == []
+    assert select_ready_node(plan)["id"] == "n_verify"
+    state = materialize_plan_state(plan)
+    assert state["active_node"] == "n_verify"
+    assert state["ready_nodes"] == ["n_write", "n_verify"]
+
+
+def test_plan_dag_reports_missing_dependencies():
+    """Invalid plans should be surfaced in materialized state."""
+    plan = {
+        "version": 1,
+        "status": "active",
+        "root": "n_missing",
+        "nodes": [
+            {"id": "n2", "type": "subtask", "title": "work", "depends_on": ["n1"], "status": "ready"},
+        ],
+    }
+
+    errors = validate_plan(plan)
+    assert "root node is missing: n_missing" in errors
+    assert "node n2 depends on missing node n1" in errors
+    assert materialize_plan_state(plan)["status"] == "invalid"
+
+
+def test_task_state_store_versions_plan_updates(temp_data_dir):
+    """Plan changes should create a new version and keep prior versions on disk."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="plan-version",
+        session_id="default",
+        personality_id="default",
+    )
+
+    updated = store.add_plan_nodes(
+        [
+            {
+                "id": "n_verify_state",
+                "type": "verification",
+                "title": "Verify state files",
+                "depends_on": ["n_goal"],
+                "status": "ready",
+            }
+        ],
+        reason="add verification node",
+    )
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+    events = list(read_jsonl(store.paths.events_jsonl))
+
+    assert updated["version"] == 2
+    assert (store.paths.plan_versions_dir / "plan_v1.yaml").exists()
+    assert state["plan"]["active_node"] == "n_verify_state"
+    assert state["plan"]["ready_nodes"] == ["n_verify_state"]
+    assert any(event.get("type") == "plan_updated" for event in events)
+
+
+def test_verify_task_state_checks_materialized_counts(temp_data_dir):
+    """Runtime verification should prove file state and append-only logs agree."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="verify-state",
+        session_id="default",
+        personality_id="default",
+    )
+    store.record_turn_started(turn_id="turn_000001", input_kind="user_message", content="hello")
+    store.record_turn_finished(turn_id="turn_000001", status="completed")
+
+    checks = verify_task_state(store)
+
+    assert verification_passed(checks)
+    assert {check.name for check in checks} >= {
+        "task_files_exist",
+        "plan_is_valid_dag",
+        "event_count_matches_state",
+        "graph_event_count_matches_state",
+        "plan_projection_has_no_errors",
+    }
+
+
+def test_tool_result_cache_can_read_persisted_results(temp_data_dir):
+    """Large tool results should survive cache object replacement when file-backed."""
+    cache_dir = temp_data_dir / "sessions" / "default" / "cache" / "tool-results"
+    cache = ToolResultCache(max_inline_chars=10, persist_dir=cache_dir)
+    response = cache.maybe_cache("alpha\nbeta\ngamma\n")
+    ref = next(line.removeprefix("ref: ") for line in response.splitlines() if line.startswith("ref: "))
+
+    reloaded = ToolResultCache(max_inline_chars=10, persist_dir=cache_dir)
+
+    assert reloaded.read(ref, query="beta") == "beta"
+    assert list(cache_dir.glob("*.txt"))
+    assert list(cache_dir.glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_interaction_records_file_state_events(mock_llm, user_context, temp_data_dir):
+    """HermesInteraction should persist user-visible runtime events to task state."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+
+    mock_llm.set_response_sequence([{"content": "persisted answer"}])
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="interaction-state",
+        session_id="default",
+        personality_id="default",
+    )
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_state_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[],
+        database_path=":memory:",
+        state_store=store,
+    )
+
+    result = await runtime.send_user_message("hello")
+
+    assert any(getattr(event.payload, "content", None) == "persisted answer" for event in result.events)
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+    events = list(read_jsonl(store.paths.events_jsonl))
+    serialized_messages = [
+        event["payload"]
+        for event in events
+        if event.get("type") == "interaction_event" and event.get("kind") == "message"
+    ]
+
+    assert state["turn_count"] == 1
+    assert state["interaction_event_counts"]["by_kind"]["message"] >= 1
+    assert any(message.get("content") == "persisted answer" for message in serialized_messages)
 
 
 def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
@@ -772,4 +1031,3 @@ async def test_tool_confirm_combines_permission_and_sandbox_asks(mock_llm, user_
     assert payload["permission"]
     assert payload["sandbox"]["path"] == str(target)
     assert len(payload["reasons"]) == 2
-

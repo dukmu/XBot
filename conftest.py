@@ -24,7 +24,7 @@ def temp_data_dir():
     (data_dir / "sessions" / "default" / "workspace").mkdir(parents=True)
     (data_dir / "sessions" / "default" / "cache").mkdir(parents=True)
     (data_dir / "sessions" / "default" / "subagents").mkdir(parents=True)
-    (data_dir / "personality" / "default").mkdir(parents=True)
+    (data_dir / "personalities" / "default").mkdir(parents=True)
     yield data_dir
     shutil.rmtree(temp_dir)
 

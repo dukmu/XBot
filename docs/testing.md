@@ -6,7 +6,9 @@
 
 ```bash
 uv run pytest -q
-uv run python -m py_compile main.py xbot/*.py tests/test_agent.py
+uv run pytest -q tests/test_personality_runtime.py
+python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py
+uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke
 ```
 
 如果本机安装了 `bubblewrap`，sandbox 集成测试会真实运行；否则相关测试会自动跳过。跳过不代表 sandbox 可回退执行，生产路径仍然是 fail closed。
@@ -15,8 +17,15 @@ uv run python -m py_compile main.py xbot/*.py tests/test_agent.py
 
 - `PermissionSystem`：allow/deny/ask 优先级和正则匹配。
 - 系统 sandbox：工具注册、默认 deny、ask 一次性授权、symlink escape、shell 预检和 bubblewrap 子进程隔离。
+- Runtime paths：session/personality 路径派生和 context-local 隔离。
+- Personality config：canonical `data/personalities/<id>/` 布局、instructions/memory 加载、personality-scoped permissions/sandbox。
 - 工具调用：`shell`、`filesystem_*`、`ask`、`compact`、`skill_load`、memory 和 P0 task record 工具。
+- 工具结果 cache：大结果 file-backed cache，可通过新 cache 实例读取持久化内容。
 - 交互 runtime：batch/stream 两种模式，合并 tool confirmation，interrupt resume，`/reset` 对应的 clean thread 语义。
+- 文件化任务 state：任务目录初始化、`events.jsonl`/`graph.jsonl` append-only 日志、`state.yaml` materialized view、interaction 事件落盘。
+- Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
+- Verification 阶段：校验任务目录文件、计划 DAG、事件计数和 materialized state 一致性。
+- Provider/smoke refactor：隔离 data dir 中通过 `HermesInteraction` 执行 `calculator.py` 重构并验证 audit state。
 - 流式事件：文本 delta、完整 tool call 归一化、避免最终消息重复、隐藏 `prepare_context` 内部总结。
 - 压缩：保留 tool-call/tool-result 分组，丢弃 provider 不接受的孤儿 `ToolMessage`，并向终端发出一次性 runtime status。
 
@@ -42,6 +51,12 @@ mock_llm.set_response_sequence([
     {"content": "done"},
 ])
 ```
+
+## Smoke model
+
+`xbot.smoke_llm.SmokeRefactorLLM` 是端到端行为测试替身。它不直接改文件，而是通过真实 `filesystem_read` / `filesystem_write` 工具完成一个小型 Python 重构，用来验证 runtime、personality config、permissions、task state 和 audit log。
+
+`scripts/provider_smoke_refactor.py` 使用真实 provider，默认读取 `DEEPSEEK_API_TOKEN` 和 `DEEPSEEK_OPENAI_BASE_URL`，模型默认是已验收通过的 `deepseek-v4-flash`。它会在隔离目录生成完整配置和 workspace。该脚本不属于普通单元测试，因为它依赖外部 provider 配额和网络。
 
 ## 写新测试的原则
 
@@ -78,5 +93,5 @@ Runtime events 通过 LangGraph custom stream 发出，不进入持久 graph sta
 
 - 真正异步执行的 subagent graph。
 - mailbox、rewind、上下文树访问工具。
-- SQLite 持久化替代当前 `InMemorySaver/InMemoryStore`。
+- SQLite 持久化替代当前 `InMemorySaver/InMemoryStore`。当前已有文件化任务 state，但 LangGraph checkpoint 仍是内存实现。
 - 多平台 UI adapter 除 terminal 外的端到端测试。
