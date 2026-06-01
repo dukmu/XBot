@@ -17,10 +17,11 @@ from xbot.state import (
     TaskStateStore,
     configure_runtime_task_state,
     materialize_context_tree_state,
+    materialize_mailbox_state,
     read_jsonl,
     reset_runtime_task_state,
 )
-from xbot.tools import compact, context_head, context_rewind, filesystem_read, filesystem_write, shell
+from xbot.tools import compact, context_head, context_rewind, filesystem_read, filesystem_write, mailbox_read, mailbox_send, shell
 from xbot.cache import ToolResultCache
 from xbot.planning import materialize_plan_state, select_ready_node, validate_plan
 from xbot.verification import verification_passed, verify_task_state
@@ -350,6 +351,7 @@ def test_task_state_store_initializes_file_backed_task(temp_data_dir):
     assert store.paths.state_yaml.exists()
     assert store.paths.context_md.exists()
     assert store.paths.context_tree_jsonl.exists()
+    assert store.paths.mailbox_jsonl.exists()
     assert store.paths.claims_yaml.exists()
     assert store.paths.artifacts_dir.exists()
 
@@ -413,6 +415,57 @@ def test_context_tree_rewind_moves_head_without_deleting_history(temp_data_dir):
     assert state["context_tree"]["rewind_count"] == 1
     assert projected["errors"] == []
     assert any(event.get("type") == "context_rewind" for event in read_jsonl(store.paths.events_jsonl))
+
+
+def test_mailbox_state_tracks_pending_and_acknowledged_messages(temp_data_dir):
+    """Mailbox state should be append-only and materialized by recipient."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="mailbox-state",
+        session_id="default",
+        personality_id="default",
+    )
+
+    first = store.send_mailbox_message(sender="parent", recipient="subagent:a", subject="work", content="Refactor file")
+    store.send_mailbox_message(sender="subagent:a", recipient="parent", subject="done", content="Patch ready")
+    store.acknowledge_mailbox_message(first["message_id"], actor="subagent:a")
+
+    mailbox_events = list(read_jsonl(store.paths.mailbox_jsonl))
+    mailbox = materialize_mailbox_state(mailbox_events)
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+
+    assert mailbox["message_count"] == 2
+    assert mailbox["acknowledged_count"] == 1
+    assert mailbox["pending_by_recipient"] == {"parent": 1}
+    assert state["mailbox"]["pending_count"] == 1
+    assert state["mailbox_event_count"] == 3
+    assert any(event.get("type") == "mailbox_message_sent" for event in read_jsonl(store.paths.events_jsonl))
+
+
+@pytest.mark.asyncio
+async def test_mailbox_tools_use_bound_task_state(temp_data_dir):
+    """Agent-facing mailbox tools should read and acknowledge pending messages."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="mailbox-tools",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        sent = await mailbox_send.ainvoke(
+            {"recipient": "agent", "subject": "notice", "content": "hello", "sender": "runtime"}
+        )
+        pending = await mailbox_read.ainvoke({"recipient": "agent"})
+        acknowledged = await mailbox_read.ainvoke({"recipient": "agent", "acknowledge": True})
+        empty = await mailbox_read.ainvoke({"recipient": "agent"})
+    finally:
+        reset_runtime_task_state(token)
+
+    assert "Mailbox message sent: msg_000001" in sent
+    assert '"subject": "notice"' in pending
+    assert '"acknowledged": true' in acknowledged
+    assert empty == "[]"
 
 
 @pytest.mark.asyncio
@@ -528,6 +581,8 @@ def test_verify_task_state_checks_materialized_counts(temp_data_dir):
         "graph_event_count_matches_state",
         "context_tree_event_count_matches_state",
         "context_tree_is_valid",
+        "mailbox_event_count_matches_state",
+        "mailbox_is_valid",
         "plan_projection_has_no_errors",
     }
 

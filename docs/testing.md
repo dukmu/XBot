@@ -19,11 +19,12 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - 系统 sandbox：工具注册、默认 deny、ask 一次性授权、symlink escape、shell 预检和 bubblewrap 子进程隔离。
 - Runtime paths：session/personality 路径派生和 context-local 隔离。
 - Personality config：canonical `data/personalities/<id>/` 布局、instructions/memory 加载、personality-scoped permissions/sandbox。
-- 工具调用：`shell`、`filesystem_*`、`ask`、`compact`、`context_head`、`context_rewind`、`skill_load`、memory 和 P0 task record 工具。
+- 工具调用：`shell`、`filesystem_*`、`ask`、`compact`、`context_head`、`context_rewind`、`mailbox_send`、`mailbox_read`、`skill_load`、memory 和 P0 task record 工具。
 - 工具结果 cache：大结果 file-backed cache，可通过新 cache 实例读取持久化内容。
 - 交互 runtime：batch/stream 两种模式，合并 tool confirmation，interrupt resume，`/reset` 对应的 clean thread 语义。
-- 文件化任务 state：任务目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl` append-only 日志、`state.yaml` materialized view、interaction 事件落盘。
+- 文件化任务 state：任务目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl`/`mailbox.jsonl` append-only 日志、`state.yaml` materialized view、interaction 事件落盘。
 - 上下文树/rewind：turn/message/tool 事件生成 context 节点，`context_rewind` 移动 head 但保留历史。
+- Mailbox：send/read/ack 都写入 append-only 队列，`state.yaml` 投影 pending count。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
 - Verification 阶段：校验任务目录文件、计划 DAG、事件计数和 materialized state 一致性。
 - Provider/smoke refactor：隔离 data dir 中通过 `HermesInteraction` 执行 `calculator.py` 重构并验证 audit state。
@@ -93,6 +94,6 @@ Runtime events 通过 LangGraph custom stream 发出，不进入持久 graph sta
 这些是设计目标或后续阶段，不应在 P0 测试中伪装成已实现能力：
 
 - 真正异步执行的 subagent graph。
-- mailbox。
+- 真正异步执行的 subagent worker。
 - SQLite 持久化替代当前 `InMemorySaver/InMemoryStore`。当前已有文件化任务 state，但 LangGraph checkpoint 仍是内存实现。
 - 多平台 UI adapter 除 terminal 外的端到端测试。

@@ -39,6 +39,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Real provider smoke script: `scripts/provider_smoke_refactor.py` creates an isolated data dir and runs an actual provider, defaulting to DeepSeek OpenAI-compatible config.
 - [x] Real DeepSeek provider smoke completed successfully.
 - [x] Context tree MVP: `context_tree.jsonl` records append-only context nodes, `state.yaml` materializes head/node counts, and `context_rewind` moves the head without deleting history.
+- [x] Mailbox MVP: `mailbox.jsonl` records send/read acknowledgements, `state.yaml` materializes pending counts, and agent-facing tools can send/read messages.
 
 ## Notes
 
@@ -70,3 +71,4 @@ Current continuation objective: make the personality configuration system consis
 - Personality config system: complete locally. Directory layout is canonical and lower-case under `data/personalities`.
 - Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable task files.
 - Context tree/rewind: MVP complete. Remaining scope is context projection from tree branches into model prompts and richer branch inspection commands.
+- Mailbox: MVP complete. Remaining scope is wiring subagent workers and runtime background events onto the mailbox queue.

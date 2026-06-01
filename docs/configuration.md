@@ -143,6 +143,7 @@ plan.yaml
 events.jsonl
 graph.jsonl
 context_tree.jsonl
+mailbox.jsonl
 state.yaml
 context.md
 claims.yaml
@@ -152,4 +153,4 @@ summaries/
 locks/
 ```
 
-`events.jsonl`、`graph.jsonl` 和 `context_tree.jsonl` 是 append-only source of truth；`state.yaml` 是 materialized view。`xbot.verification.verify_task_state()` 会校验任务文件、plan DAG、上下文树、事件计数和 state 投影一致性。
+`events.jsonl`、`graph.jsonl`、`context_tree.jsonl` 和 `mailbox.jsonl` 是 append-only source of truth；`state.yaml` 是 materialized view。`xbot.verification.verify_task_state()` 会校验任务文件、plan DAG、上下文树、mailbox、事件计数和 state 投影一致性。
