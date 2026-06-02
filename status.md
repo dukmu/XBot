@@ -47,10 +47,12 @@ Current continuation objective: make the personality configuration system consis
 - [x] Task mode MVP: `task_begin` records global goal, replaces executable DAG, writes `context.md`, and `plan_next`/`plan_update` actively drive nodes.
 - [x] Read locator MVP: `filesystem_read` supports pattern search, line ranges, context lines, and max char truncation.
 - [x] Summary/context MVP: compaction and `summary_add` write durable summary artifacts, and latest summaries plus pending mailbox project into `context.md`.
+- [x] DAG attribution MVP: task-mode graph events and summaries carry `plan_node_id`; `state.yaml` exposes per-node DAG activity and `plan_node_history` inspects a node's event trail.
+- [x] Memory tools MVP: `memory_update` writes structured entries, while `memory_list` and `memory_search` make long-term memory queryable.
 
 ## Notes
 
-- No multi-agent, mailbox, rewind, or full LangGraph rewrite in this pass.
+- Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 - The first implementation should keep existing behavior stable and add state as an outer runtime layer.
 - Targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "task_state_store or interaction_records_file_state or tool_result_cache"` (`4 passed`).
 - Compile verification passed: `python -m py_compile main.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py`.
@@ -61,6 +63,9 @@ Current continuation objective: make the personality configuration system consis
 - Latest full verification passed: `uv run pytest -q` (`70 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed after summary/context projection changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Latest full verification passed: `uv run pytest -q` (`72 passed`).
+- Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
+- Real DeepSeek smoke passed after DAG attribution and memory tools: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 

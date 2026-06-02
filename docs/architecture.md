@@ -69,10 +69,12 @@ data/sessions/<session_id>/tasks/<thread_id>/
 - `state.yaml` 是从 append-only 日志 materialize 出来的当前视图，不是 source of truth。
 - `plan.yaml` 是可校验 DAG，`xbot.planning` 检查缺失依赖/环并计算 `ready_nodes` 与 `active_node`。
 - 计划变更会把旧版本保存到 `checkpoints/plans/plan_vN.yaml`。
+- task mode 下的 turn、tool、artifact、summary 图事件会归因到当前 running/active plan node；`state.yaml.dag` 汇总每个节点的活动计数和最新事件。
 - `goal.md`、`context.md`、`claims.yaml` 先作为稳定文件边界落地，后续再逐步接入 planner、context projector 和 verifier。
 - agent 可通过 `context_head` 读取当前上下文树投影，通过 `context_rewind` 将 head 移到既有节点。该操作不删除历史，也不回滚文件、shell、memory 等外部副作用。
 - agent 可通过 `mailbox_send` 和 `mailbox_read` 交换可审计消息。读取时可 ack；ack 不删除消息，只影响 pending 投影。
 - 压缩和 `summary_add` 产生的摘要写入 `summaries/summary_N.md`，最近摘要会投影到 `context.md`。
+- `memory_update` 追加结构化长期记忆；`memory_list` 和 `memory_search` 允许按条目读取和检索，而不是把 `memory.md` 当作不可查询的大文本。
 
 ### Task Mode And Plan Tools
 
@@ -82,6 +84,7 @@ data/sessions/<session_id>/tasks/<thread_id>/
 - `plan_add_nodes(nodes_json)`：向 DAG 追加节点，保持计划版本化。
 - `plan_next()`：由调度器选择 ready node，并将其标记为 running。
 - `plan_update(node_id, status)`：推进节点到 `verified`、`failed`、`blocked` 等状态。
+- `plan_node_history(node_id)`：读取归因到某个 DAG 节点的 graph events。
 - `task_status()`：读取当前 goal/plan/context 投影。
 - `task_exit()`：退出任务模式，保留 DAG 和事件历史。
 
@@ -362,6 +365,7 @@ tools -> execute or return denial
 - `state.yaml` 关键计数和状态
 - `plan.yaml` active/ready/errors
 - 最近 DAG/runtime events
+- 每个 plan node 的 DAG 活动计数，配合 `plan_node_history` 做局部追踪
 - context tree 和 mailbox 投影
 - subagent manifest 摘要
 

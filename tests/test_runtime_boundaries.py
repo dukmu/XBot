@@ -33,7 +33,10 @@ from xbot.tools import (
     filesystem_write,
     mailbox_read,
     mailbox_send,
+    memory_list,
+    memory_search,
     plan_add_nodes,
+    plan_node_history,
     plan_next,
     plan_update,
     shell,
@@ -444,6 +447,39 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
+    """Turn, tool, artifact, and summary events should point at the active DAG node."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="dag-attribution",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Ship feature", "steps_json": '["Inspect"]'})
+        await plan_next.ainvoke({})
+        store.record_turn_started(turn_id="turn_000001", input_kind="user_message", content="work")
+        store.record_turn_events(
+            turn_id="turn_000001",
+            events=[
+                type("Evt", (), {"kind": "tool_call", "source": "agent", "payload": {"name": "filesystem_read"}})(),
+                type("Evt", (), {"kind": "message", "source": "agent", "payload": "done"})(),
+            ],
+        )
+        store.record_summary(content="Inspection finished.", reason="node progress", source="test")
+        history = json.loads(await plan_node_history.ainvoke({"node_id": "n001"}))
+    finally:
+        reset_runtime_task_state(token)
+
+    graph_events = list(read_jsonl(store.paths.graph_jsonl))
+    assert any(event.get("plan_node_id") == "n001" and event.get("event") == "tool_call_observed" for event in graph_events)
+    assert any(event.get("plan_node_id") == "n001" and event.get("type") == "summary" for event in graph_events)
+    assert store.materialize_state()["dag"]["node_event_counts"]["n001"] >= 3
+    assert any(event.get("plan_node_id") == "n001" for event in history)
+
+
+@pytest.mark.asyncio
 async def test_summary_tools_project_into_context(temp_data_dir):
     """Summaries should be durable artifacts and visible in context.md."""
     store = TaskStateStore.create(
@@ -483,6 +519,24 @@ def test_project_context_includes_pending_mailbox(temp_data_dir):
 
     assert "## Pending Mailbox" in context
     assert "Check active node" in context
+
+
+async def test_memory_tools_list_and_search_structured_entries(temp_data_dir):
+    """Memory should be searchable instead of append-only opaque text."""
+    configure_runtime_paths(data_dir=temp_data_dir, session_id="default", personality_id="default")
+    memory_path = temp_data_dir / "personalities" / "default" / "memory.md"
+    memory_path.write_text(
+        "---\nts: 2026-06-02T00:00:00+00:00\ncontent: |\n  User prefers DAG-first execution.\n"
+        "---\nts: 2026-06-02T00:01:00+00:00\ncontent: |\n  Keep ROS teaching mode separate from coding mode.\n",
+        encoding="utf-8",
+    )
+
+    listed = json.loads(await memory_list.ainvoke({"limit": 2}))
+    found = json.loads(await memory_search.ainvoke({"query": "ROS teaching"}))
+
+    assert len(listed) == 2
+    assert listed[0]["id"] == "mem_000001"
+    assert found[0]["content"] == "Keep ROS teaching mode separate from coding mode."
 
 
 def test_task_state_store_materializes_events(temp_data_dir):

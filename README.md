@@ -202,6 +202,7 @@ The directory contains `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `gra
 Large tool results are cached under `data/sessions/<session_id>/cache/tool-results/` when the runtime is created through `HermesInteraction.create()`. The model receives a `cache://tool-result/<digest>` ref and can read focused slices with `cache_read`.
 
 `plan.yaml` is an executable DAG, not only notes. The runtime validates node dependencies, exposes `ready_nodes` and `active_node` in `state.yaml`, and checkpoints prior plan versions under `checkpoints/plans/` when the plan changes.
+Runtime events, graph projections, artifacts, and summaries are attributed to the current running plan node when task mode is active. `state.yaml` exposes per-node DAG activity, and `plan_node_history` can inspect the event history for a specific node.
 
 ## Built-in Tools
 
@@ -210,13 +211,14 @@ Large tool results are cached under `data/sessions/<session_id>/cache/tool-resul
 | `shell` | Runs inside bubblewrap when sandbox is enabled |
 | `filesystem_read` | Reads through the sandbox backend |
 | `task_begin` / `plan_next` / `plan_update` | Enter task mode and drive the executable DAG |
+| `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect task summaries |
 | `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, and subagents |
 | `filesystem_write` | Writes through the sandbox backend |
 | `filesystem_list` | Lists through the sandbox backend |
 | `ask` | Triggers a `user_ask` interrupt/resume flow |
 | `message_send` | Emits a user-visible message through the interaction adapter |
-| `memory_update` | Appends to `memory.md` |
+| `memory_update` / `memory_list` / `memory_search` | Append, list, and search structured long-term memory entries |
 | `subagent_create` | Creates a P0 task record and workspace; no worker starts |
 | `subagent_wait` | Reads a P0 task record status/result |
 | `subagent_list` | Lists task record directories |
