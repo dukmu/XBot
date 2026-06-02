@@ -273,6 +273,7 @@ async def test_runtime_processes_detached_subagents_under_parent_session(temp_da
     assert manifest["timeout_seconds"] == 30
     assert manifest["turn_budget"] == 2
     assert manifest["turns_used"] == 1
+    assert manifest["workspace_changes"] == ["calculator.py"]
     assert manifest["child_session_id"] == session_id
     assert manifest["child_task_state"] == str(temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state")
     assert (temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state" / "state.yaml").exists()
@@ -280,4 +281,9 @@ async def test_runtime_processes_detached_subagents_under_parent_session(temp_da
     assert not list((temp_data_dir / "sessions").glob(f"{session_id}__subagent__*"))
     assert state["mailbox"]["pending_by_recipient"]["parent"] == 1
     assert any(event.get("event") == "subagent_finished" and event.get("id") == subagent_id for event in parent_graph)
+    assert any(
+        event.get("event") == "subagent_finished"
+        and event.get("payload", {}).get("workspace_changes") == ["calculator.py"]
+        for event in parent_graph
+    )
     assert any(event.kind == "status" and "mailbox notification sent" in str(event.payload) for event in result.events)
