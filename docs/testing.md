@@ -31,7 +31,7 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - Debug tools：`debug_analyze` 汇总 DAG、plan、state、context tree、mailbox、subagent manifest 和 child DAG 摘要，`scope="dag"` 聚合每个 plan node 的事件类型计数。
 - Task guidance：`task_status` 和 `debug_analyze` 返回 `next_action`，覆盖 chat、ready、running、blocked/failed、completed 等状态。
 - File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
-- Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
+- Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新在 `versions/plans/index.yaml` 记录变更前后快照。
 - DAG event attribution：turn/tool/artifact/summary 图事件归因到 active plan node，`state.yaml.dag` 和 `plan_node_history` 可审计节点执行历史。
 - Task mode：`task_begin` 写入目标和 DAG，`plan_autofill` 补齐 inspect/implement/verify/report 骨架，`plan_next`/`plan_update` 推进节点，调度器保持单 running node，plan mutation/scheduling 离开 task mode 会被拒绝，`completed` 退出要求 DAG 已完成，`context.md` 真实投影任务状态和节点结果。
 - Summaries/mailbox projection：summary artifacts 和 pending mailbox 会进入 `context.md`。

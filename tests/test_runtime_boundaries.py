@@ -1033,9 +1033,15 @@ def test_task_state_store_versions_plan_updates(temp_data_dir):
     )
     state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
     events = list(read_jsonl(store.paths.events_jsonl))
+    version_index = yaml.safe_load((store.paths.plan_versions_dir / "index.yaml").read_text(encoding="utf-8"))
+    version_entries = version_index["versions"]
 
     assert updated["version"] == 2
-    assert (store.paths.plan_versions_dir / "plan_v1.yaml").exists()
+    assert store.paths.plan_versions_dir == store.paths.versions_dir / "plans"
+    assert (store.paths.plan_versions_dir / "latest.yaml").exists()
+    assert len(version_entries) >= 3
+    assert {entry["version"] for entry in version_entries} >= {1, 2}
+    assert all((store.paths.plan_versions_dir / entry["path"]).exists() for entry in version_entries)
     assert state["plan"]["active_node"] == "n_verify_state"
     assert state["plan"]["ready_nodes"] == ["n_verify_state"]
     assert any(event.get("type") == "plan_updated" for event in events)

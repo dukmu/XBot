@@ -107,7 +107,7 @@ Current continuation objective: make the personality configuration system consis
 
 ## Acceptance Audit
 
-- Phase 1 file-backed agent state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`.
+- Phase 1 file-backed agent state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `versions/`, `summaries/`, and `locks/`.
 - Append-only runtime and graph logs: complete. `TaskStateStore` appends JSONL events and materializes `state.yaml`.
 - Interaction integration: complete. `HermesInteraction` records user/resume turns and normalized interaction events when a `TaskStateStore` is present; `create()` initializes the primary DAG state under `data/sessions/<session_id>/state/`.
 - Runtime contracts: complete for this pass. `RunRecord` and `TurnRecord` are explicit Pydantic models and are used at the interaction boundary.
@@ -115,7 +115,7 @@ Current continuation objective: make the personality configuration system consis
 - Out of scope by plan: multi-agent execution, mailbox, rewind/context tree, and replacing LangGraph checkpoint persistence.
 - Loop decoupling: complete for the MVP. Context construction lives in `xbot/context.py`, context compaction lives in `xbot/compaction.py`, and tool guard/interrupt/cache hooks live in `xbot/tool_runtime.py`.
 - Tool-result cache persistence: complete for MVP. `HermesInteraction.create()` configures `GLOBAL_TOOL_RESULT_CACHE` to write under the session cache directory.
-- Plan/DAG state: complete for MVP. `plan.yaml` is validated as a DAG, `state.yaml` includes a scheduler view, and prior plan versions are stored under `checkpoints/plans`.
+- Plan/DAG state: complete for MVP. `plan.yaml` is validated as a DAG, `state.yaml` includes a scheduler view, and plan change snapshots are indexed under `versions/plans`.
 - Explicit runtime context: complete for MVP. Session, personality, thread, task, run, trace, and path identifiers are represented by `RuntimeContext`; legacy global path helpers remain for tools/config compatibility.
 - Verification phase: complete for MVP. `verify_task_state()` checks required agent state files, plan validity, event counts, graph-event counts, and plan projection errors.
 - Runtime path isolation: complete for MVP. Existing helper APIs remain, but the underlying path state is context-local and covered by tests.

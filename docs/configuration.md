@@ -162,6 +162,7 @@ context.md
 claims.yaml
 artifacts/
 checkpoints/
+versions/
 summaries/
 locks/
 ```
