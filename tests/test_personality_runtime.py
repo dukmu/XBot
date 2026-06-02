@@ -5,8 +5,10 @@ from pathlib import Path
 
 import yaml
 
+from xbot.checkpoint import FileBackedSaver
 from xbot.config import configure_runtime_paths, default_sandbox_config, load_agent_config, load_agent_prompt, load_memory
 from xbot.interaction import HermesInteraction
+from xbot.state import read_jsonl
 from xbot.verification import verification_passed, verify_task_state
 
 
@@ -131,3 +133,56 @@ async def test_smoke_provider_refactors_in_isolated_workspace(temp_data_dir):
     assert runtime.state_store.paths.events_jsonl.exists()
     assert runtime.state_store.paths.graph_jsonl.exists()
     assert runtime.state_store.paths.state_yaml.exists()
+
+
+async def test_runtime_restart_restores_checkpoint_and_file_state(temp_data_dir):
+    """Recreating HermesInteraction should resume one session root and one checkpoint."""
+    write_local_runtime(temp_data_dir)
+    session_id = "restart-runtime"
+    thread_id = "restart-thread"
+    workspace = temp_data_dir / "sessions" / session_id / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "calculator.py"
+    target.write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+
+    runtime1 = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id=session_id,
+        personality_id="default",
+        thread_id=thread_id,
+    )
+    result1 = await runtime1.send_user_message("Refactor calculator.py to improve readability.")
+
+    checkpoint_path = temp_data_dir / "sessions" / session_id / "saver" / "langgraph.pkl"
+    state_root = temp_data_dir / "sessions" / session_id / "state"
+    assert checkpoint_path.exists()
+    assert runtime1.state_store is not None
+    assert runtime1.state_store.materialize_state()["turn_count"] == 1
+    assert any(message.type == "tool" for message in result1.raw_result["messages"])
+
+    saved = await FileBackedSaver(checkpoint_path).aget_tuple({"configurable": {"thread_id": thread_id}})
+    assert saved is not None
+
+    runtime2 = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id=session_id,
+        personality_id="default",
+        thread_id=thread_id,
+    )
+    assert runtime2.state_store is not None
+    assert runtime2.state_store.paths.root == state_root
+    assert runtime2.runtime_context.task_dir == state_root
+    assert runtime2._turn_counter == 1
+
+    result2 = await runtime2.send_user_message("Continue from the existing checkpoint.")
+    state = runtime2.state_store.materialize_state()
+
+    assert state["turn_count"] == 2
+    turn_started = [event for event in read_jsonl(runtime2.state_store.paths.events_jsonl) if event.get("type") == "turn_started"]
+    assert "turn_000002" in [event["turn_id"] for event in turn_started]
+    assert len(result2.raw_result["messages"]) > len(result1.raw_result["messages"])
+    assert sum(1 for message in result2.raw_result["messages"] if message.type == "human") >= 2
+    assert any(
+        "Refactor complete" in str(getattr(event.payload, "content", event.payload))
+        for event in result2.events
+    )
