@@ -483,6 +483,31 @@ async def test_task_mode_enforces_plan_scope_and_completion(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_plan_next_keeps_single_running_node(temp_data_dir):
+    """The DAG scheduler should not start a second node while one is running."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="single-running-node",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Single active node", "steps_json": '["First", "Second"]'})
+        first = json.loads(await plan_next.ainvoke({}))
+        second = json.loads(await plan_next.ainvoke({}))
+        state = store.materialize_state()["plan"]
+    finally:
+        reset_runtime_task_state(token)
+
+    assert first["id"] == "n001"
+    assert second["id"] == "n001"
+    assert second["already_running"] is True
+    assert state["running_nodes"] == ["n001"]
+    assert "n002" in state["ready_nodes"]
+
+
+@pytest.mark.asyncio
 async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
     """Turn, tool, artifact, and summary events should point at the active DAG node."""
     store = TaskStateStore.create(
