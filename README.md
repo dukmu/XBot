@@ -212,7 +212,7 @@ The system prompt also instructs the model to use task mode for complex multi-st
 |------|------------------|
 | `shell` | Runs inside bubblewrap when sandbox is enabled |
 | `filesystem_read` | Reads through the sandbox backend |
-| `task_begin` / `plan_next` / `plan_update` | Enter task mode and drive the executable DAG |
+| `task_begin` / `plan_autofill` / `plan_next` / `plan_update` | Enter task mode, grow a standard DAG skeleton, and drive execution |
 | `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect task summaries |
 | `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, subagents, and per-node DAG activity |

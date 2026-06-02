@@ -65,6 +65,12 @@ tools:
   - ask
   - message_send
   - memory_update
+  - task_begin
+  - task_status
+  - task_exit
+  - plan_autofill
+  - plan_next
+  - plan_update
   - compact
   - skill_load
 skills: []

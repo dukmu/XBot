@@ -37,6 +37,7 @@ from xbot.tools import (
     memory_list,
     memory_search,
     plan_add_nodes,
+    plan_autofill,
     plan_node_history,
     plan_next,
     plan_update,
@@ -128,6 +129,7 @@ def test_system_prompt_contains_task_mode_operating_rules(temp_data_dir):
     )
 
     assert "enter task mode with task_begin" in prompt
+    assert "use plan_autofill" in prompt
     assert "drive the DAG through plan_next and plan_update" in prompt
     assert "Do not call task_exit with completed" in prompt
 
@@ -524,6 +526,43 @@ async def test_plan_next_keeps_single_running_node(temp_data_dir):
     assert second["already_running"] is True
     assert state["running_nodes"] == ["n001"]
     assert "n002" in state["ready_nodes"]
+
+
+@pytest.mark.asyncio
+async def test_plan_autofill_adds_standard_dag_skeleton(temp_data_dir):
+    """Autofill should give a task a usable inspect/implement/verify/report DAG."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="autofill-plan",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Refactor payment module"})
+        filled = json.loads(
+            await plan_autofill.ainvoke(
+                {
+                    "scope": "refactor",
+                    "constraints_json": '{"checks":["unit tests pass"],"artifacts":["patch is scoped"]}',
+                }
+            )
+        )
+        duplicate = json.loads(await plan_autofill.ainvoke({"scope": "refactor"}))
+        state = store.materialize_state()["plan"]
+    finally:
+        reset_runtime_task_state(token)
+
+    assert filled["added"] == ["n_inspect", "n_implement", "n_verify", "n_report"]
+    assert duplicate["added"] == []
+    assert state["active_node"] == "n_inspect"
+    assert state["ready_nodes"] == ["n_inspect"]
+    plan = yaml.safe_load(store.paths.plan_yaml.read_text(encoding="utf-8"))
+    by_id = {node["id"]: node for node in plan["nodes"]}
+    assert by_id["n_implement"]["depends_on"] == ["n_inspect"]
+    assert by_id["n_verify"]["depends_on"] == ["n_implement"]
+    assert "unit tests pass" in by_id["n_verify"]["success_criteria"]
+    assert "patch is scoped" in by_id["n_implement"]["success_criteria"]
 
 
 @pytest.mark.asyncio

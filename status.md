@@ -53,6 +53,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Task mode guard MVP: plan mutation/scheduling tools require task mode, completed exit refuses unfinished/blocked/failed DAG nodes, and `context.md` includes completed plus blocked/failed node projections.
 - [x] Single-active DAG scheduler MVP: `plan_next` returns the existing running node instead of opening a second running node.
 - [x] Task-mode prompt contract MVP: system prompt tells the model to use `task_begin` for complex multi-step work and drive the DAG through `plan_next`/`plan_update`.
+- [x] Plan autofill MVP: `plan_autofill` grows a standard inspect/implement/verify/report DAG skeleton and skips duplicate stage types.
 
 ## Notes
 
@@ -79,6 +80,9 @@ Current continuation objective: make the personality configuration system consis
 - Latest full verification passed: `uv run pytest -q` (`75 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed after task-mode prompt contract changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Latest full verification passed: `uv run pytest -q` (`76 passed`).
+- Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
+- Real DeepSeek smoke passed after plan autofill changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 

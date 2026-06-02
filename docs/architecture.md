@@ -83,13 +83,14 @@ data/sessions/<session_id>/tasks/<thread_id>/
 
 - `task_begin(goal, steps_json)`：记录全局目标，替换当前 DAG，写入 `goal.md` 和 `context.md`。
 - `plan_add_nodes(nodes_json)`：向 DAG 追加节点，保持计划版本化。
+- `plan_autofill(scope, constraints_json)`：为当前任务补齐标准 inspect/implement/verify/report DAG 骨架，已有同类型节点时不重复创建。
 - `plan_next()`：由调度器选择 ready node，并将其标记为 running；如果已有 running node，则返回当前 running node，不启动第二个节点。
 - `plan_update(node_id, status)`：推进节点到 `verified`、`failed`、`blocked` 等状态。
 - `plan_node_history(node_id)`：读取归因到某个 DAG 节点的 graph events。
 - `task_status()`：读取当前 goal/plan/context 投影。
 - `task_exit()`：退出任务模式，保留 DAG 和事件历史。
 
-任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。调度器保持单 running node，不允许通过连续 `plan_next` 并行打开多个 DAG 节点。`plan_add_nodes`、`plan_next`、`plan_update` 只能在 task mode 中执行；`task_exit(status="completed")` 会检查 DAG，存在 ready/pending/running/blocked/failed 节点时拒绝完成退出。需要中止时必须显式用 `cancelled` 或 `failed` 状态退出。
+任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。如果任务缺少可执行结构，agent 可以先用 `plan_autofill` 生成标准骨架，再用 `plan_add_nodes` 做任务特定扩展。调度器保持单 running node，不允许通过连续 `plan_next` 并行打开多个 DAG 节点。`plan_add_nodes`、`plan_autofill`、`plan_next`、`plan_update` 只能在 task mode 中执行；`task_exit(status="completed")` 会检查 DAG，存在 ready/pending/running/blocked/failed 节点时拒绝完成退出。需要中止时必须显式用 `cancelled` 或 `failed` 状态退出。
 
 `context.md` 会投影 active/running/ready/pending 节点，也会保留最近 completed 节点和 blocked/failed 节点，使模型能看到 DAG 执行结果，而不是只看到下一步。
 
