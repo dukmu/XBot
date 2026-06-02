@@ -126,6 +126,10 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - **Code cleanup**: removed 40+ dead items (wrappers, legacy functions, duplicate properties, unused imports, dead fallback paths).
 - **Doc cleanup**: README status table updated, architecture.md stale sections fixed.
 - 97 tests pass. DeepSeek smoke PASSED. Compile OK.
+- DAG task run PASSED: agent successfully completed a 7-node least-squares project DAG in ~2min (11 tool rounds, 4 compactions, 24 plan versions).
+- `current_design.md` written: comprehensive design report covering architecture, context, DAG, task mode, tools, hooks, registry, state, and gaps.
+- Strategic logging added to graph.py, tool_runtime.py, interaction.py, context.py for trajectory observation.
+- `scripts/run_dag_task.py`: standalone DAG task runner with isolated workspace setup.
 
 ## Notes (master)
 
