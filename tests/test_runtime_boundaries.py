@@ -27,6 +27,8 @@ from xbot.state import (
 )
 from xbot.tools import (
     compact,
+    claim_add,
+    claim_list,
     context_head,
     context_rewind,
     debug_analyze,
@@ -658,11 +660,51 @@ async def test_summary_tools_project_into_context(temp_data_dir):
     context = store.paths.context_md.read_text(encoding="utf-8")
     state = store.materialize_state()
     assert added["summary_id"] == "summary_000001"
+    assert added["reason"] == "preference"
     assert listed[0]["summary_id"] == "summary_000001"
+    assert listed[0]["reason"] == "preference"
+    assert content.startswith("---\n")
+    assert "summary_id: summary_000001" in content
     assert "DAG-first" in content
     assert "## Recent Summaries" in context
     assert "DAG-first" in context
     assert state["summaries"]["count"] == 1
+    assert state["summaries"]["latest"]["reason"] == "preference"
+
+
+@pytest.mark.asyncio
+async def test_claim_tools_record_and_verify_structured_claims(temp_data_dir):
+    """Claims should be structured, listable, and verified by runtime checks."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="claim-tools",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        added = json.loads(
+            await claim_add.ainvoke(
+                {
+                    "claim": "Calculator spacing was refactored.",
+                    "evidence": "calculator.py contains `return a + b`.",
+                    "status": "verified",
+                }
+            )
+        )
+        listed = json.loads(await claim_list.ainvoke({"status": "verified"}))
+    finally:
+        reset_runtime_task_state(token)
+
+    state = store.materialize_state()
+    checks = verify_task_state(store)
+
+    assert added["claim_id"] == "claim_000001"
+    assert listed[0]["claim"] == "Calculator spacing was refactored."
+    assert state["claims"]["count"] == 1
+    assert state["claims"]["verified_count"] == 1
+    assert verification_passed(checks)
+    assert any(check.name == "claims_are_valid" and check.status == "passed" for check in checks)
 
 
 def test_project_context_includes_pending_mailbox(temp_data_dir):
@@ -1012,6 +1054,8 @@ def test_verify_task_state_checks_materialized_counts(temp_data_dir):
         "mailbox_event_count_matches_state",
         "mailbox_is_valid",
         "plan_projection_has_no_errors",
+        "claims_are_valid",
+        "summaries_are_structured",
     }
 
 

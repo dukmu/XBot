@@ -111,31 +111,51 @@ async def run(
     )
 
     workspace = data_dir / "sessions" / session_id / "workspace"
-    target = workspace / "calculator.py"
-    before = target.read_text(encoding="utf-8")
+    calculator = workspace / "calculator.py"
+    stats = workspace / "stats.py"
+    before_calculator = calculator.read_text(encoding="utf-8")
+    before_stats = stats.read_text(encoding="utf-8")
 
     runtime = HermesInteraction.create(
         data_dir=data_dir,
         session_id=session_id,
         personality_id="refactor",
         thread_id=thread_id,
+        trace_events=True,
     )
-    result = await runtime.send_user_message(
-        "Refactor calculator.py. You must call filesystem_read first, then filesystem_write. "
-        "Only improve readability by changing `return a+b` to `return a + b`."
+    result1 = await collect_stream(runtime, 
+        "Task 1. Use task mode and tools. Required path: "
+        "task_begin -> plan_autofill -> plan_next -> filesystem_read -> filesystem_write -> "
+        "plan_update -> summary_add -> claim_add -> compact -> task_status. "
+        "Refactor calculator.py only by changing `return a+b` to `return a + b`. "
+        "After finishing every DAG node, call task_exit with completed."
     )
-    errors = [event for event in result.events if event.kind == "error"]
-    if errors:
-        print_audit_paths(data_dir, workspace, target, runtime, result)
-        raise SystemExit(f"Smoke failed: provider/runtime error: {errors[0].payload}")
+    assert_no_runtime_errors(data_dir, workspace, calculator, runtime, result1)
 
-    after = target.read_text(encoding="utf-8")
-    if before == after:
-        print_audit_paths(data_dir, workspace, target, runtime, result)
+    result2 = await collect_stream(runtime,
+        "Task 2. Start a new task mode task. Required path: "
+        "task_begin -> plan_autofill -> plan_add_nodes -> plan_next -> filesystem_read -> filesystem_write -> "
+        "plan_update -> summary_add -> claim_add -> task_status. "
+        "Refactor stats.py only by changing `return total/count` to `return total / count`. "
+        "The plan_add_nodes call must add one task-specific verification node. "
+        "After finishing every DAG node, call task_exit with completed."
+    )
+    assert_no_runtime_errors(data_dir, workspace, stats, runtime, result2)
+
+    after_calculator = calculator.read_text(encoding="utf-8")
+    after_stats = stats.read_text(encoding="utf-8")
+    if before_calculator == after_calculator:
+        print_audit_paths(data_dir, workspace, calculator, runtime, result2)
         raise SystemExit("Smoke failed: calculator.py was not changed")
-    if "return a + b" not in after:
-        print_audit_paths(data_dir, workspace, target, runtime, result)
+    if before_stats == after_stats:
+        print_audit_paths(data_dir, workspace, stats, runtime, result2)
+        raise SystemExit("Smoke failed: stats.py was not changed")
+    if "return a + b" not in after_calculator:
+        print_audit_paths(data_dir, workspace, calculator, runtime, result2)
         raise SystemExit("Smoke failed: expected arithmetic spacing refactor")
+    if "return total / count" not in after_stats:
+        print_audit_paths(data_dir, workspace, stats, runtime, result2)
+        raise SystemExit("Smoke failed: expected division spacing refactor")
     if runtime.state_store is None:
         raise SystemExit("Smoke failed: runtime did not create agent state")
 
@@ -143,9 +163,10 @@ async def run(
     if not verification_passed(checks):
         details = "; ".join(f"{check.name}={check.status}:{check.message}" for check in checks)
         raise SystemExit(f"Smoke failed: agent state verification failed: {details}")
+    assert_execution_trace(runtime)
 
     print("SMOKE PASSED")
-    print_audit_paths(data_dir, workspace, target, runtime, result)
+    print_audit_paths(data_dir, workspace, stats, runtime, result2)
 
 
 def print_audit_paths(data_dir: Path, workspace: Path, target: Path, runtime: HermesInteraction, result) -> None:
@@ -158,6 +179,69 @@ def print_audit_paths(data_dir: Path, workspace: Path, target: Path, runtime: He
         print(f"graph: {runtime.state_store.paths.graph_jsonl}")
         print(f"state: {runtime.state_store.paths.state_yaml}")
     print(f"events_emitted: {len(result.events)}")
+
+
+def assert_no_runtime_errors(data_dir: Path, workspace: Path, target: Path, runtime: HermesInteraction, result) -> None:
+    errors = [event for event in result.events if event.kind == "error"]
+    if errors:
+        print_audit_paths(data_dir, workspace, target, runtime, result)
+        raise SystemExit(f"Smoke failed: provider/runtime error: {errors[0].payload}")
+
+
+async def collect_stream(runtime: HermesInteraction, content: str):
+    from xbot.interaction import InteractionResult
+
+    events = [event async for event in runtime.stream_user_message(content)]
+    return InteractionResult(events=events)
+
+
+def assert_execution_trace(runtime: HermesInteraction) -> None:
+    if runtime.state_store is None:
+        raise SystemExit("Smoke failed: runtime did not create agent state")
+    events = list(read_jsonl(runtime.state_store.paths.events_jsonl))
+    graph_events = list(read_jsonl(runtime.state_store.paths.graph_jsonl))
+    tool_names = []
+    for event in graph_events:
+        if event.get("event") != "tool_call_observed":
+            continue
+        payload = event.get("payload") or {}
+        name = payload.get("name") or payload.get("tool")
+        if name:
+            tool_names.append(str(name))
+    required = {
+        "task_begin",
+        "plan_autofill",
+        "plan_next",
+        "plan_update",
+        "filesystem_read",
+        "filesystem_write",
+        "summary_add",
+        "claim_add",
+        "compact",
+        "task_status",
+        "plan_add_nodes",
+    }
+    missing = sorted(required - set(tool_names))
+    if missing:
+        raise SystemExit(f"Smoke failed: missing required tool trace(s): {missing}; observed={tool_names}")
+    if sum(1 for event in events if event.get("type") == "task_mode_started") < 2:
+        raise SystemExit("Smoke failed: expected two task_mode_started events")
+    if sum(1 for event in events if event.get("type") == "task_mode_exited" and event.get("status") == "completed") < 2:
+        raise SystemExit("Smoke failed: expected two completed task_mode_exited events")
+    claims = (runtime.state_store.materialize_state().get("claims") or {}).get("count", 0)
+    summaries = (runtime.state_store.materialize_state().get("summaries") or {}).get("count", 0)
+    if claims < 2 or summaries < 2:
+        raise SystemExit(f"Smoke failed: expected at least two claims and summaries, got claims={claims} summaries={summaries}")
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    if not path.exists():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
 
 
 def seed_runtime(
@@ -216,7 +300,20 @@ def seed_runtime(
                 "agent_role": "A precise refactoring agent. Use tools to inspect and edit files.",
                 "max_context_tokens": 8000,
                 "include_reasoning": False,
-                "tools": ["filesystem", "message_send"],
+                "tools": [
+                    "filesystem",
+                    "message_send",
+                    "task_begin",
+                    "task_status",
+                    "task_exit",
+                    "plan_autofill",
+                    "plan_add_nodes",
+                    "plan_next",
+                    "plan_update",
+                    "summary_add",
+                    "claim_add",
+                    "compact",
+                ],
                 "skills": [],
             },
             sort_keys=False,
@@ -224,8 +321,8 @@ def seed_runtime(
         encoding="utf-8",
     )
     (personality / "instructions.md").write_text(
-        "For code refactors, inspect the file with filesystem_read, then write the complete edited file with filesystem_write.\n"
-        "Keep the change minimal and auditable.\n",
+        "For code refactors, obey the required tool path in the user request exactly. "
+        "Use task mode, grow and execute the DAG, record a summary and claim, and keep changes minimal.\n",
         encoding="utf-8",
     )
     (personality / "memory.md").write_text("No memory.\n", encoding="utf-8")
@@ -236,6 +333,11 @@ def seed_runtime(
                 "allow": [
                     {"tool": "filesystem.*", "params": {}},
                     {"tool": "message_send", "params": {}},
+                    {"tool": "task_.*", "params": {}},
+                    {"tool": "plan_.*", "params": {}},
+                    {"tool": "summary_.*", "params": {}},
+                    {"tool": "claim_.*", "params": {}},
+                    {"tool": "compact", "params": {}},
                 ],
             },
             indent=2,
@@ -245,6 +347,7 @@ def seed_runtime(
     )
     (personality / "sandbox.json").write_text(json.dumps({"enabled": False}, indent=2) + "\n", encoding="utf-8")
     (workspace / "calculator.py").write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+    (workspace / "stats.py").write_text("def mean(total, count):\n    return total/count\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

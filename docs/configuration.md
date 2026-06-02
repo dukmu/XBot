@@ -73,6 +73,11 @@ tools:
   - plan_autofill
   - plan_next
   - plan_update
+  - summary_add
+  - summary_list
+  - summary_read
+  - claim_add
+  - claim_list
   - compact
   - skill_load
 skills: []
