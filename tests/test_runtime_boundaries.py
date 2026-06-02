@@ -1790,3 +1790,328 @@ async def test_tool_confirm_combines_permission_and_sandbox_asks(mock_llm, user_
     assert payload["permission"]
     assert payload["sandbox"]["path"] == str(target)
     assert len(payload["reasons"]) == 2
+
+
+# ============================================================================
+# LoopHooks tests
+# ============================================================================
+
+
+class TestLoopHooks:
+    """Tests for xbot.hooks.LoopHooks."""
+
+    def test_hooks_run_in_registration_order(self):
+        from xbot.hooks import LoopHooks
+        import asyncio
+
+        hooks = LoopHooks()
+        order: list[str] = []
+
+        async def hook_a(ctx):
+            order.append("a")
+            return None
+
+        async def hook_b(ctx):
+            order.append("b")
+            return None
+
+        hooks.register("before_agent", hook_a)
+        hooks.register("before_agent", hook_b)
+
+        result = asyncio.run(hooks.run("before_agent", {}))
+        assert result is None
+        assert order == ["a", "b"]
+
+    def test_hook_short_circuit_returns_first_truthy(self):
+        from xbot.hooks import LoopHooks
+        import asyncio
+
+        hooks = LoopHooks()
+        order: list[str] = []
+
+        async def hook_a(ctx):
+            order.append("a")
+            return {"short": "circuit"}
+
+        async def hook_b(ctx):
+            order.append("b")
+            return None
+
+        hooks.register("before_agent", hook_a)
+        hooks.register("before_agent", hook_b)
+
+        result = asyncio.run(hooks.run("before_agent", {}))
+        assert result == {"short": "circuit"}
+        assert order == ["a"]  # hook_b never ran
+
+    def test_unknown_stage_raises(self):
+        from xbot.hooks import LoopHooks
+
+        hooks = LoopHooks()
+        with pytest.raises(ValueError, match="Unknown hook stage"):
+            hooks.register("nonexistent_stage", lambda ctx: None)
+
+    def test_all_stages_are_registrable(self):
+        from xbot.hooks import LoopHooks
+
+        hooks = LoopHooks()
+        for stage in LoopHooks.STAGES:
+            async def noop(ctx):
+                return None
+            hooks.register(stage, noop)
+            assert len(getattr(hooks, stage)) == 1
+
+    def test_build_default_hooks_returns_empty_hooks(self):
+        from xbot.hooks import build_default_hooks
+
+        hooks = build_default_hooks()
+        for stage in hooks.STAGES:
+            assert getattr(hooks, stage) == []
+
+
+# ============================================================================
+# ToolRegistry tests
+# ============================================================================
+
+
+class TestToolRegistry:
+    """Tests for xbot.registry.ToolRegistry."""
+
+    def test_register_and_get_tool(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def test_tool(x: str) -> str:
+            """A test tool."""
+            return x
+
+        registry = ToolRegistry()
+        registry.register(test_tool, sandbox_mode="sandboxed")
+
+        assert registry.get("test_tool") is test_tool
+        assert registry.sandbox_mode("test_tool") == "sandboxed"
+        assert len(registry) == 1
+        assert "test_tool" in registry
+
+    def test_unregistered_tool_returns_none(self):
+        from xbot.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        assert registry.get("nonexistent") is None
+        assert registry.sandbox_mode("nonexistent") == "unregistered"
+        assert not registry.registered("nonexistent")
+
+    def test_filter_expands_filesystem_wildcard(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def filesystem_read(path: str) -> str:
+            """Read a file."""
+            return path
+
+        @lc_tool
+        def filesystem_write(path: str, content: str) -> str:
+            """Write a file."""
+            return path
+
+        @lc_tool
+        def filesystem_list(path: str) -> str:
+            """List a directory."""
+            return path
+
+        @lc_tool
+        def other_tool(x: str) -> str:
+            """Other tool."""
+            return x
+
+        registry = ToolRegistry()
+        registry.register(filesystem_read, sandbox_mode="sandboxed")
+        registry.register(filesystem_write, sandbox_mode="sandboxed")
+        registry.register(filesystem_list, sandbox_mode="sandboxed")
+        registry.register(other_tool, sandbox_mode="host")
+
+        result = registry.filter(["filesystem"])
+        assert len(result) == 3
+        names = [t.name for t in result]
+        assert "filesystem_read" in names
+        assert "filesystem_write" in names
+        assert "filesystem_list" in names
+
+    def test_filter_preserves_order(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def tool_a(x: str) -> str:
+            """A."""
+            return x
+
+        @lc_tool
+        def tool_b(x: str) -> str:
+            """B."""
+            return x
+
+        @lc_tool
+        def tool_c(x: str) -> str:
+            """C."""
+            return x
+
+        registry = ToolRegistry()
+        registry.register(tool_a)
+        registry.register(tool_b)
+        registry.register(tool_c)
+
+        result = registry.filter(["tool_c", "tool_a"])
+        assert [t.name for t in result] == ["tool_c", "tool_a"]
+
+    def test_unregister_removes_tool(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def temp_tool(x: str) -> str:
+            """Temp."""
+            return x
+
+        registry = ToolRegistry()
+        registry.register(temp_tool)
+        assert len(registry) == 1
+
+        registry.unregister("temp_tool")
+        assert len(registry) == 0
+        assert registry.get("temp_tool") is None
+
+    def test_sandbox_modes_returns_all_modes(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def sandboxed_tool(x: str) -> str:
+            """Sandboxed tool."""
+            return x
+
+        @lc_tool
+        def host_tool(x: str) -> str:
+            """Host tool."""
+            return x
+
+        registry = ToolRegistry()
+        registry.register(sandboxed_tool, sandbox_mode="sandboxed")
+        registry.register(host_tool, sandbox_mode="host")
+
+        modes = registry.sandbox_modes()
+        assert modes == {"sandboxed_tool": "sandboxed", "host_tool": "host"}
+
+    def test_bootstrap_registry_loads_all_tools(self):
+        from xbot.registry import bootstrap_registry
+
+        registry = bootstrap_registry()
+        assert len(registry) > 10
+        # Verify key tools are present
+        assert registry.registered("shell")
+        assert registry.registered("filesystem_read")
+        assert registry.registered("task_begin")
+        assert registry.registered("plan_next")
+        assert registry.registered("debug_analyze")
+        # Verify sandbox modes
+        assert registry.sandbox_mode("shell") == "sandboxed"
+        assert registry.sandbox_mode("debug_analyze") == "host"
+
+
+# ============================================================================
+# Cache-friendly context tests
+# ============================================================================
+
+
+class TestCacheFriendlyContext:
+    """Tests for the refactored xbot.context module."""
+
+    def test_system_prompt_is_memoized(self, temp_data_dir):
+        from xbot.config import configure_runtime_paths
+        from xbot.context import get_system_prompt, invalidate_system_prompt_cache
+
+        paths = configure_runtime_paths(session_id="ctx-test", personality_id="default", data_dir=temp_data_dir)
+        user_ctx = UserContext(user_id="test-user", user_name="Tester")
+
+        invalidate_system_prompt_cache()
+        prompt1 = get_system_prompt(user_context=user_ctx, agent_role="tester", sandbox_summary="sandbox: off")
+        prompt2 = get_system_prompt(user_context=user_ctx, agent_role="tester", sandbox_summary="sandbox: off")
+
+        assert prompt1 == prompt2
+        assert len(prompt1) > 100
+
+        invalidate_system_prompt_cache()
+        prompt3 = get_system_prompt(user_context=user_ctx, agent_role="tester", sandbox_summary="sandbox: off", system_notice="changed notice")
+        assert prompt3 != prompt1
+        assert "changed notice" in prompt3
+
+    def test_build_dag_suffix_contains_task_context(self, temp_data_dir):
+        from xbot.config import configure_runtime_paths
+        from xbot.context import build_dag_suffix
+        from xbot.state import TaskStateStore, configure_runtime_task_state, reset_runtime_task_state
+
+        paths = configure_runtime_paths(session_id="dag-suffix-test", personality_id="default", data_dir=temp_data_dir)
+        store = TaskStateStore.create(
+            tasks_root=temp_data_dir / "state",
+            thread_id="test-thread",
+            session_id="dag-suffix-test",
+            personality_id="default",
+            task_id="agent",
+            direct_root=True,
+            goal="# Goal\n\nTest task.\n",
+        )
+        # Populate context.md so the suffix can read it
+        store.project_context()
+        token = configure_runtime_task_state(store)
+        try:
+            suffix = build_dag_suffix(sandbox_summary="sandbox: off")
+            assert "# Current State" in suffix
+            assert "# Task State Projection" in suffix
+        finally:
+            reset_runtime_task_state(token)
+
+    def test_context_messages_has_dag_suffix_at_end(self, temp_data_dir):
+        from xbot.config import configure_runtime_paths
+        from xbot.context import build_context_messages, invalidate_system_prompt_cache
+        from xbot.state import TaskStateStore, configure_runtime_task_state, reset_runtime_task_state
+        from langchain_core.messages import HumanMessage
+
+        invalidate_system_prompt_cache()
+
+        paths = configure_runtime_paths(session_id="ctx-msg-test", personality_id="default", data_dir=temp_data_dir)
+        store = TaskStateStore.create(
+            tasks_root=temp_data_dir / "state",
+            thread_id="test-thread",
+            session_id="ctx-msg-test",
+            personality_id="default",
+            task_id="agent",
+            direct_root=True,
+            goal="# Goal\n\nTest context.\n",
+        )
+        token = configure_runtime_task_state(store)
+        try:
+            user_ctx = UserContext(user_id="test-user", user_name="Tester")
+            state = {
+                "user_context": user_ctx.model_dump(),
+                "agent_role": "test assistant",
+                "active_subagents": [],
+                "system_notice": "",
+            }
+            messages = build_context_messages(
+                state,
+                sandbox_summary="sandbox: enabled",
+                message_chain=[HumanMessage(content="hello")],
+            )
+
+            assert len(messages) >= 2
+            # First message is system prompt
+            assert "test assistant" in messages[0].content or "# Agent Instructions" in messages[0].content
+            # Last message is DAG suffix
+            assert "# Current State" in messages[-1].content
+            assert "# Task State Projection" in messages[-1].content
+            # User message is in the middle
+            assert messages[1].content == "hello"
+        finally:
+            reset_runtime_task_state(token)

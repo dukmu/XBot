@@ -4,9 +4,60 @@
 
 Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
 
-Current continuation objective: make the personality configuration system consistent and intuitive, clean old config logic, replace brittle coverage with behavior-oriented smoke tests, and prove an isolated code refactor run is auditable with the current DeepSeek provider.
+Current continuation objective (branch `claude-refactor`): refactor to Hooked Loop + Pluggable architecture with cache-friendly DAG-as-backend context.
 
 ## Current Scope
+
+- Phase 1: Add file-backed agent DAG state without replacing LangGraph.
+- Phase 2: Add explicit runtime contract records at the interaction boundary.
+- Phase 3: Move context-frame construction out of the LangGraph graph module.
+- Phase 4: Persist large tool-result cache entries to files.
+- Phase 5: Make `plan.yaml` an executable DAG with validation, ready-node selection, and versioning.
+- Phase 6 (claude-refactor): Hook-enabled loop with pluggable tool registry and cache-friendly DAG context.
+- Preserve current terminal/runtime behavior while adding observability and recovery foundations.
+
+## Progress
+
+### claude-refactor branch (current)
+
+- [x] `xbot/hooks.py` — LoopHooks system with before/after hooks for all 6 stages, short-circuit support, registration API.
+- [x] `xbot/registry.py` — ToolRegistry replacing hardcoded `get_all_tools()`, supporting dynamic register/unregister, sandbox mode tracking, `filesystem` wildcard expansion, bootstrap from existing tools.
+- [x] `xbot/context.py` refactored for cache-friendly context:
+  - System prompt memoized per parameter combination (stable prefix → KV-cache friendly).
+  - DAG suffix (`build_dag_suffix`) appended at end of message list after history.
+  - Context structure: `[SystemMessage: stable prompt] [history...] [SystemMessage: DAG suffix]`.
+- [x] `xbot/graph.py` refactored with hook support:
+  - `make_agent_node`, `make_prepare_context_node_with_hooks`, `make_tools_node_with_hooks` all accept `LoopHooks`.
+  - `build_agent_graph` accepts optional `hooks` and `tool_registry` parameters.
+  - Backward compatible — all existing tests pass without changes.
+- [x] `xbot/tool_runtime.py` — added hook-based guard functions (`permission_guard_hook`, `cache_result_hook`) and `register_default_guard_hooks` for future migration.
+- [x] `xbot/interaction.py` — `HermesInteraction.create()` bootstraps `ToolRegistry` and `LoopHooks`, passes them to graph.
+- [x] 15 new tests for `LoopHooks`, `ToolRegistry`, and cache-friendly context (total: 97 passed).
+- [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
+
+### master branch (completed)
+
+- [x] Read `plan.md` and `task.md`.
+- [x] Confirmed current gap: runtime state is in-memory and not task-file-backed.
+- [x] Implement file-backed agent state directory and append-only logs.
+- [x] Connect `HermesInteraction` to the file-backed state store.
+- [x] Add tests for event replay/materialized state and interaction logging.
+- [x] Run verification commands.
+- [x] Update README and architecture/testing docs.
+- [x] Complete acceptance audit against `plan.md` scope.
+- [x] Phase 3 progress: context-frame construction moved into `xbot/context.py`.
+- [x] Phase 4 progress: tool-result cache can persist large results to files and reload them.
+- [x] Phase 5 progress: `xbot/planning.py` validates plan DAGs, computes `ready_nodes`/`active_node`, and versions plan updates through `TaskStateStore`.
+- [x] Loop decoupling progress: tool guardrails, permission/sandbox interrupt handling, and tool-result cache hooks moved into `xbot/tool_runtime.py`.
+- [x] Loop decoupling progress: context compaction moved into `xbot/compaction.py`.
+- [x] Runtime context progress: `xbot/runtime.py` adds explicit `RuntimeContext`, and `HermesInteraction` uses it for session/personality/thread/task/run identity at the boundary.
+- [x] Verification phase progress: `xbot/verification.py` verifies agent state files, plan DAG validity, append-only log counts, and `state.yaml` materialized consistency.
+- [x] Runtime path isolation progress: `xbot.config` uses context-local runtime paths instead of a single process-global `_RUNTIME_PATHS`.
+- [x] Personality layout progress: canonical config is now `data/personalities/<id>/personality.yaml`, `instructions.md`, `memory.md`, `permissions.json`, `sandbox.json`, and `skills/`.
+- [x] Old config logic cleanup: `xbot.config` no longer reads `data/personality`, `AGENT.md`, `MEMORY.md`, `person.yaml`, or global `data/config/agent|permissions|sandbox`.
+- [x] Behavior smoke coverage: `tests/test_personality_runtime.py` creates an isolated data dir, runs a smoke provider through `HermesInteraction`, refactors `calculator.py`, and verifies task audit state.
+- [x] Real provider smoke script: `scripts/provider_smoke_refactor.py` creates an isolated data dir and runs an actual provider, defaulting to DeepSeek OpenAI-compatible config.
+- [x] All previous MVPs complete (context tree, mailbox, subagent, checkpoint, trace guard, debug tools, task mode, etc.)
 
 - Phase 1: Add file-backed agent DAG state without replacing LangGraph.
 - Phase 2: Add explicit runtime contract records at the interaction boundary.
@@ -62,7 +113,15 @@ Current continuation objective: make the personality configuration system consis
 - [x] Live stream trace attribution MVP: when trace is enabled, stream events are persisted at event time, token deltas are not persisted, and tool calls keep the active DAG node attribution.
 - [x] Plan success-state MVP: `completed` and `verified` both satisfy DAG dependencies, avoiding provider-specific wording from deadlocking the scheduler.
 
-## Notes
+## Notes (claude-refactor)
+
+- Hook system (`xbot/hooks.py`) supports 6 loop stages with short-circuit semantics.
+- Tool registry (`xbot/registry.py`) provides dynamic tool management, sandbox mode tracking, and replaces hardcoded `get_all_tools()` at the bootstrap level.
+- Cache-friendly context: system prompt memoized per parameters, DAG suffix appended at end of message list to minimize KV-cache invalidation.
+- All 97 tests pass on this branch.
+- Compile verification passed: `python -m py_compile main.py xbot/*.py tests/*.py`.
+
+## Notes (master)
 
 - Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 - The first implementation should keep existing behavior stable and add state as an outer runtime layer.

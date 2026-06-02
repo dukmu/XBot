@@ -21,6 +21,8 @@ Hermes is meant to be a personal agent, not a multi-tenant service. The main des
 
 See [docs/architecture.md](./docs/architecture.md) for the full Hermes architecture.
 
+For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS.md) for architecture, conventions, known issues, and development workflow. [CLAUDE.md](./CLAUDE.md) provides a quick-reference entry point for Claude Code.
+
 ## Current Capability Status
 
 | Capability | Status |
@@ -49,6 +51,8 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 ├── main.py                    # Terminal entry point
 ├── pyproject.toml             # Project metadata and uv dependencies
 ├── README.md
+├── AGENTS.md                  # Architecture guide for AI agents
+├── CLAUDE.md                  # Quick reference for Claude Code
 ├── xbot/
 │   ├── models.py              # Pydantic models and state types
 │   ├── config.py              # Configuration loading
