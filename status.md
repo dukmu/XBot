@@ -115,11 +115,15 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 
 ## Notes (claude-refactor)
 
-- Hook system (`xbot/hooks.py`) supports 6 loop stages with short-circuit semantics.
-- Tool registry (`xbot/registry.py`) provides dynamic tool management, sandbox mode tracking, and replaces hardcoded `get_all_tools()` at the bootstrap level.
-- Cache-friendly context: system prompt memoized per parameters, DAG suffix appended at end of message list to minimize KV-cache invalidation.
-- All 97 tests pass on this branch.
-- Compile verification passed: `python -m py_compile main.py xbot/*.py tests/*.py`.
+- Hook system (`xbot/hooks.py`): 6 loop stages, short-circuit semantics, registration API.
+- Tool registry (`xbot/registry.py`): dynamic tool management, sandbox mode tracking, `filesystem` wildcard expansion.
+- Cache-friendly context: memoized system prompt per params, DAG suffix at end of message list.
+- **Hook migration complete**: `sandbox_permission_guard_hook`, `active_ask_hook`, `cache_result_hook`, `compact_result_hook` → registered via `register_default_guard_hooks`.
+- `make_tools_node_with_hooks` orchestrates full guard pipeline when hooks registered; falls back to inline `make_tool_node` when no guards.
+- `make_simple_tool_node` reads pre-computed denials from shared guard context (for hook-orchestrated path).
+- **Code cleanup**: removed 30+ dead items (unused imports, dead functions, stale config paths, duplicate property).
+- **Doc cleanup**: README status table updated, architecture.md stale sections fixed.
+- All 97 tests pass. Compile OK.
 
 ## Notes (master)
 

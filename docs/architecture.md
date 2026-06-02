@@ -1,6 +1,6 @@
 # Hermes 架构与设计
 
-Hermes 是 XBot 的目标形态：一个轻量级、高质量、单用户、本地优先的 agent。当前阶段的设计原则是：先把主循环、上下文构造、工具安全和恢复语义做稳，再逐步引入上下文树、subagent 和 mailbox。
+Hermes 是 XBot 的目标形态：一个轻量级、高质量、单用户、本地优先的 agent。核心循环已支持 Hook 注入、插件化工具注册和缓存友好的 DAG 上下文投影。上下文树、subagent (attach 模式) 和 mailbox 均已实现 MVP。
 
 ## 设计原则
 
@@ -338,11 +338,11 @@ tools -> execute or return denial
 
 工具失败必须保持显式：工具函数不把异常伪装成普通成功文本；图边界将真实执行异常转换为 `ToolMessage(status="error")`。`GraphInterrupt` 不属于工具失败，必须继续冒泡给 interaction runtime 处理。
 
-## 暂缓的复杂能力
+## 已实现的复杂能力
 
-### 上下文树
+### 上下文树 (已实现 MVP)
 
-仍保留为目标，但不进入当前 MVP。未来最小实现只包括：
+`context_tree.jsonl` 记录 append-only 上下文节点，`state.yaml` materialize head 和 node 计数。`context_rewind` 移动 head 但不删除历史：
 
 - `node_id`
 - `parent_id`
@@ -385,20 +385,9 @@ tools -> execute or return denial
 `debug_analyze(scope="dag")` 会收窄到 DAG/plan/subagent 视图，包含 plan node 表、`state.yaml.dag` 活动投影，以及最近事件按 `plan_node_id` 和事件类型聚合后的计数。
 默认 `debug_analyze` 也会给出 task `next_action`，用于定位当前 DAG 卡在哪一步。
 
-### Mailbox
+### Mailbox (已实现 MVP)
 
-先不实现双 mailbox。推荐先实现统一 `EventQueue`：
-
-```yaml
-event_id: evt_...
-audience: user | agent | both
-source: runtime | subagent:<id> | tool:<name>
-summary: ...
-payload_ref: optional
-status: unread | read | archived
-```
-
-RuntimeState 只放未读高优先级摘要和数量。
+`mailbox.jsonl` 记录 append-only 消息（send/read/ack）。`state.yaml` 投影 pending count。RuntimeState 显示未读高优先级摘要。后续路线：统一 `EventQueue` 抽象。
 
 ## 持久化策略
 

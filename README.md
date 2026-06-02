@@ -37,12 +37,15 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 | Context compression | Basic linear implementation |
 | Tool result cache hooks | File-backed MVP |
 | Plan/DAG state | Implemented MVP |
-| Context tree and rewind | Planned |
-| Subagents | P0 record tools |
-| Mailbox | Planned |
+| Context tree and rewind | Implemented MVP |
+| Subagents (attach mode) | Implemented MVP |
+| Mailbox | Implemented MVP |
 | File-backed agent state | Implemented MVP |
+| Hooked loop architecture | Implemented (hooks.py + registry.py) |
+| Pluggable tool registry | Implemented (ToolRegistry) |
+| Cache-friendly DAG context | Implemented (context.py) |
 | SQLite persistence | Planned as optional index |
-| Runtime persistence default | `InMemorySaver` / `InMemoryStore` |
+| Runtime persistence default | `FileBackedSaver` / `InMemoryStore` |
 
 ## Repository Layout
 

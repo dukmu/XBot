@@ -61,41 +61,6 @@ from xbot.permissions import PermissionSystem
 from xbot.sandbox import SandboxPolicy
 
 
-# Helper to create tools with custom parameters for tests
-def create_shell_tool():
-    """Create shell tool."""
-    return shell
-
-def create_filesystem_tool(workspace_root: str):
-    """Create filesystem tools with workspace restriction."""
-    # Tools already have workspace restriction built-in
-    return [filesystem_read, filesystem_write, filesystem_list]
-
-def create_ask_tool():
-    """Create ask tool."""
-    return ask
-
-def create_message_send_tool():
-    """Create message_send tool."""
-    return message_send
-
-def create_subagent_create_tool(base_path: str):
-    """Create subagent_create tool."""
-    return subagent_create
-
-def create_subagent_wait_tool():
-    """Create subagent_wait tool."""
-    return subagent_wait
-
-def create_subagent_list_tool():
-    """Create subagent_list tool."""
-    return subagent_list
-
-def create_memory_update_tool(memory_path: str):
-    """Create memory_update tool."""
-    return memory_update
-
-
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -111,7 +76,7 @@ def temp_data_dir():
     (data_dir / "sessions" / "default" / "workspace").mkdir(parents=True)
     (data_dir / "sessions" / "default" / "cache").mkdir(parents=True)
     (data_dir / "sessions" / "default" / "subagents").mkdir(parents=True)
-    (data_dir / "personality" / "default").mkdir(parents=True)
+    (data_dir / "personalities" / "default").mkdir(parents=True)
     
     yield data_dir
     
