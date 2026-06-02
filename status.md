@@ -37,8 +37,9 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata. `xbot/tools.py` is now a compatibility re-export only.
 - [x] Runtime restart consistency: `HermesInteraction.create()` resumes the existing file-backed session state and checkpoint path, restores the turn counter from materialized append-only state, and treats LangGraph `InMemoryStore` as executor-local scratch only.
 - [x] Semantic state progress: claims now carry confidence/evidence refs/invalidates/superseded metadata, relevant claims project into `context.md`, and `task_status`/`debug_analyze` report claim and summary health.
+- [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
-- [x] Latest full verification passed: `uv run pytest -q` (`104 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`105 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 

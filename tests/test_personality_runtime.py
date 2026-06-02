@@ -186,3 +186,38 @@ async def test_runtime_restart_restores_checkpoint_and_file_state(temp_data_dir)
         "Refactor complete" in str(getattr(event.payload, "content", event.payload))
         for event in result2.events
     )
+
+
+async def test_runtime_processes_mailbox_as_background_events(temp_data_dir):
+    """Mailbox dispatch should use the same runtime state, checkpoint, and turn log."""
+    write_local_runtime(temp_data_dir)
+    session_id = "mailbox-runtime"
+    workspace = temp_data_dir / "sessions" / session_id / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "calculator.py"
+    target.write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id=session_id,
+        personality_id="default",
+        thread_id="mailbox-thread",
+    )
+    assert runtime.state_store is not None
+    message = runtime.state_store.send_mailbox_message(
+        sender="runtime",
+        recipient="agent",
+        subject="background_refactor",
+        content="Refactor calculator.py to improve readability.",
+    )
+
+    result = await runtime.process_mailbox()
+    state = runtime.state_store.materialize_state()
+    mailbox_events = list(read_jsonl(runtime.state_store.paths.mailbox_jsonl))
+
+    assert "return a + b" in target.read_text(encoding="utf-8")
+    assert state["turn_count"] == 1
+    assert state["mailbox"]["pending_count"] == 0
+    assert any(event.get("event") == "mailbox_message_acknowledged" and event.get("message_id") == message["message_id"] for event in mailbox_events)
+    assert any(event.get("type") == "turn_started" and event.get("input_kind") == "background_event" for event in read_jsonl(runtime.state_store.paths.events_jsonl))
+    assert any("Refactor complete" in str(getattr(event.payload, "content", event.payload)) for event in result.events)
