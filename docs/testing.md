@@ -66,7 +66,7 @@ mock_llm.set_response_sequence([
 
 ## Smoke model
 
-`xbot.smoke_llm.SmokeRefactorLLM` 是端到端行为测试替身。它不直接改文件，而是通过真实 `filesystem_read` / `filesystem_write` 工具完成一个小型 Python 重构，用来验证 runtime、personality config、permissions、task state 和 audit log。
+`xbot.smoke_llm.SmokeRefactorLLM` 是端到端行为测试替身。它不直接改文件，而是通过真实 `filesystem_read` / `filesystem_write` 工具完成一个小型 Python 重构，用来验证 runtime、personality config、permissions、agent state 和 audit log。
 
 `scripts/provider_smoke_refactor.py` 使用真实 provider，默认读取 `DEEPSEEK_API_TOKEN` 和 `DEEPSEEK_OPENAI_BASE_URL`，模型默认是已验收通过的 `deepseek-v4-flash`。它会在隔离目录生成完整配置和 workspace。该脚本不属于普通单元测试，因为它依赖外部 provider 配额和网络。
 

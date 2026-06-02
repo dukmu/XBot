@@ -137,12 +137,12 @@ async def run(
         print_audit_paths(data_dir, workspace, target, runtime, result)
         raise SystemExit("Smoke failed: expected arithmetic spacing refactor")
     if runtime.state_store is None:
-        raise SystemExit("Smoke failed: runtime did not create task state")
+        raise SystemExit("Smoke failed: runtime did not create agent state")
 
     checks = verify_task_state(runtime.state_store)
     if not verification_passed(checks):
         details = "; ".join(f"{check.name}={check.status}:{check.message}" for check in checks)
-        raise SystemExit(f"Smoke failed: task state verification failed: {details}")
+        raise SystemExit(f"Smoke failed: agent state verification failed: {details}")
 
     print("SMOKE PASSED")
     print_audit_paths(data_dir, workspace, target, runtime, result)
@@ -153,7 +153,7 @@ def print_audit_paths(data_dir: Path, workspace: Path, target: Path, runtime: He
     print(f"workspace: {workspace}")
     print(f"target: {target}")
     if runtime.state_store is not None:
-        print(f"task_state: {runtime.state_store.paths.root}")
+        print(f"agent_state: {runtime.state_store.paths.root}")
         print(f"events: {runtime.state_store.paths.events_jsonl}")
         print(f"graph: {runtime.state_store.paths.graph_jsonl}")
         print(f"state: {runtime.state_store.paths.state_yaml}")

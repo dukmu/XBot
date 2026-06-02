@@ -2,7 +2,7 @@
 
 本指南帮助你在本地运行 XBot Hermes。
 
-Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 task state、Plan/DAG、工具结果 cache、上下文树、mailbox 和 attach-mode subagent 已可运行；异步 subagent runner 和 checkpoint 持久化仍在推进中。
+Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 agent state、Plan/DAG、工具结果 cache、上下文树、mailbox 和 attach-mode subagent 已可运行；异步 subagent runner 和 checkpoint 持久化仍在推进中。
 
 ## 环境要求
 

@@ -1,6 +1,6 @@
 # XBot Hermes
 
-Hermes is a lightweight, single-user local agent built around a high-quality context loop: explicit system prompt construction, permission interrupts, active ask, context compression, file-backed task state, and a future context tree with rewind and subagents.
+Hermes is a lightweight, single-user local agent built around a high-quality context loop: explicit system prompt construction, permission interrupts, active ask, context compression, file-backed agent DAG state, and a future context tree with rewind and subagents.
 
 The current codebase is in an early development stage. The main loop, LangGraph ReAct flow, permission checks, config loading, and basic tool surface exist. Some planned capabilities, such as full subagents, mailbox, persistent context tree, and tool-result cache hooks, are documented as design targets rather than complete runtime behavior.
 
@@ -13,7 +13,7 @@ Hermes is meant to be a personal agent, not a multi-tenant service. The main des
 - **Permission-first tools**: tool calls go through allow/deny/ask rules; sensitive actions interrupt for confirmation.
 - **System sandbox**: when enabled, host-touching tools run inside bubblewrap with explicit resource mounts and deny/ask masking.
 - **Active ask**: the agent can pause and ask the user for missing intent or decisions.
-- **File-backed task state**: each thread gets a task directory with append-only runtime and graph logs plus materialized YAML state.
+- **File-backed agent state**: each session gets one primary DAG state directory with append-only runtime and graph logs plus materialized YAML state.
 - **Context compression**: when context grows too large, older history becomes a compacted summary node.
 - **Context tree**: future message history is a tree, supporting branches, compacted nodes, rewind, and tree inspection.
 - **Subagents**: future synchronous and asynchronous workers can inherit or start fresh context.
@@ -38,7 +38,7 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 | Context tree and rewind | Planned |
 | Subagents | P0 record tools |
 | Mailbox | Planned |
-| File-backed task state | Implemented MVP |
+| File-backed agent state | Implemented MVP |
 | SQLite persistence | Planned as optional index |
 | Runtime persistence default | `InMemorySaver` / `InMemoryStore` |
 
@@ -59,7 +59,7 @@ See [docs/architecture.md](./docs/architecture.md) for the full Hermes architect
 │   ├── tool_runtime.py         # Tool guardrails, interrupts, sandbox execution hooks
 │   ├── planning.py            # Executable plan DAG validation and scheduling helpers
 │   ├── skills.py              # Skill discovery and loading
-│   ├── state.py               # File-backed task state and event materialization
+│   ├── state.py               # File-backed agent DAG state and event materialization
 │   ├── llm.py                 # LLM factory
 │   ├── graph.py               # LangGraph state graph
 │   ├── interaction.py         # P0 interaction runtime and normalized events
@@ -189,15 +189,16 @@ START -> agent -> tools -> agent -> END
 
 Permission confirmation is handled inside the tools node via LangGraph interrupt/resume.
 
-## File-Backed Task State
+## File-Backed Agent State
 
-`HermesInteraction.create()` initializes a task directory at:
+`HermesInteraction.create()` initializes one agent DAG state directory per session at:
 
 ```text
-data/sessions/<session_id>/tasks/<thread_id>/
+data/sessions/<session_id>/state/
 ```
 
 The directory contains `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`. `events.jsonl` and `graph.jsonl` are append-only logs; `state.yaml` is materialized from those logs so runtime state can be inspected without replaying LangGraph internals.
+LangGraph checkpoints are stored separately under `data/sessions/<session_id>/saver/`. Attach-mode subagents use `data/sessions/<session_id>/subagents/<subagent_id>/state/` and their own `saver/`.
 
 Large tool results are cached under `data/sessions/<session_id>/cache/tool-results/` when the runtime is created through `HermesInteraction.create()`. The model receives a `cache://tool-result/<digest>` ref and can read focused slices with `cache_read`.
 
@@ -213,7 +214,7 @@ The system prompt also instructs the model to use task mode for complex multi-st
 | `shell` | Runs inside bubblewrap when sandbox is enabled |
 | `filesystem_read` | Reads through the sandbox backend |
 | `task_begin` / `plan_autofill` / `plan_next` / `plan_update` | Enter task mode, grow a standard DAG skeleton, and drive execution |
-| `task_status` | Inspect task state and receive the next recommended DAG action |
+| `task_status` | Inspect agent state and receive the next recommended DAG action |
 | `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect task summaries |
 | `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, subagents, and per-node DAG activity |

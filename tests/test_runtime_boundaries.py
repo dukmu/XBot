@@ -289,8 +289,13 @@ def test_runtime_paths_drive_session_and_personality_dirs(temp_data_dir):
         resource_paths = {rule.path for rule in sandbox_config.resources}
 
         assert paths.workspace_dir == temp_data_dir / "sessions" / "analysis" / "workspace"
+        assert paths.state_dir == temp_data_dir / "sessions" / "analysis" / "state"
+        assert paths.saver_dir == temp_data_dir / "sessions" / "analysis" / "saver"
+        assert paths.langgraph_checkpoint_path == temp_data_dir / "sessions" / "analysis" / "saver" / "langgraph.pkl"
         assert paths.personality_dir == temp_data_dir / "personalities" / "hermes"
         assert "sessions/analysis/workspace" in resource_paths
+        assert "sessions/analysis/state" in resource_paths
+        assert "sessions/analysis/tasks" not in resource_paths
         assert "personalities/hermes/memory.md" in resource_paths
     finally:
         configure_runtime_paths(
@@ -382,8 +387,8 @@ def test_interaction_startup_uses_explicit_runtime_context(user_context, temp_da
     assert "Personality: ctx-personality" in payloads
 
 
-def test_task_state_store_initializes_file_backed_task(temp_data_dir):
-    """A task directory should expose the file-as-state contract."""
+def test_task_state_store_initializes_file_backed_state(temp_data_dir):
+    """A state directory should expose the file-as-state contract."""
     store = TaskStateStore.create(
         tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
         thread_id="analysis/thread",
@@ -836,7 +841,7 @@ async def test_mailbox_tools_use_bound_task_state(temp_data_dir):
 
 @pytest.mark.asyncio
 async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_data_dir):
-    """Attach-mode subagent should execute in a child runtime when task state is bound."""
+    """Attach-mode subagent should execute in a child runtime when agent state is bound."""
     write_local_runtime(temp_data_dir)
     configure_runtime_paths(data_dir=temp_data_dir, session_id="parent", personality_id="default")
     parent_workspace = temp_data_dir / "sessions" / "parent" / "workspace"
@@ -873,7 +878,10 @@ async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_d
     assert manifest["child_session_id"] == "parent"
     assert manifest["child_thread_id"] == f"subagent-{subagent_id}"
     assert manifest["workspace"] == str(parent_workspace)
-    assert (temp_data_dir / "sessions" / "parent" / "tasks" / f"subagent-{subagent_id}").exists()
+    assert manifest["child_task_state"] == str(temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "state")
+    assert (temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "state" / "plan.yaml").exists()
+    assert (temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "saver" / "langgraph.pkl").exists()
+    assert not (temp_data_dir / "sessions" / "parent" / "tasks" / f"subagent-{subagent_id}").exists()
     sandbox_token = set_runtime_sandbox(sandbox)
     state_token = configure_runtime_task_state(store)
     try:
@@ -889,7 +897,7 @@ async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_d
 
 @pytest.mark.asyncio
 async def test_context_tree_tools_use_bound_task_state(temp_data_dir):
-    """Agent-facing context tools should operate on the current task state."""
+    """Agent-facing context tools should operate on the current agent state."""
     store = TaskStateStore.create(
         tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
         thread_id="context-tools",
@@ -1023,7 +1031,7 @@ def test_tool_result_cache_can_read_persisted_results(temp_data_dir):
 
 @pytest.mark.asyncio
 async def test_interaction_records_file_state_events(mock_llm, user_context, temp_data_dir):
-    """HermesInteraction should persist user-visible runtime events to task state."""
+    """HermesInteraction should persist user-visible runtime events to agent state."""
     from xbot.interaction import HermesInteraction
     from xbot.graph import build_agent_graph
 

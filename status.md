@@ -2,13 +2,13 @@
 
 ## Objective
 
-Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed task state, append-only events, explicit runtime contracts, and verification coverage.
+Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
 
 Current continuation objective: make the personality configuration system consistent and intuitive, clean old config logic, replace brittle coverage with behavior-oriented smoke tests, and prove an isolated code refactor run is auditable with the current DeepSeek provider.
 
 ## Current Scope
 
-- Phase 1: Add file-backed task state without replacing LangGraph.
+- Phase 1: Add file-backed agent DAG state without replacing LangGraph.
 - Phase 2: Add explicit runtime contract records at the interaction boundary.
 - Phase 3: Move context-frame construction out of the LangGraph graph module.
 - Phase 4: Persist large tool-result cache entries to files.
@@ -19,7 +19,7 @@ Current continuation objective: make the personality configuration system consis
 
 - [x] Read `plan.md` and `task.md`.
 - [x] Confirmed current gap: runtime state is in-memory and not task-file-backed.
-- [x] Implement file-backed task directory and append-only logs.
+- [x] Implement file-backed agent state directory and append-only logs.
 - [x] Connect `HermesInteraction` to the file-backed state store.
 - [x] Add tests for event replay/materialized state and interaction logging.
 - [x] Run verification commands.
@@ -31,7 +31,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Loop decoupling progress: tool guardrails, permission/sandbox interrupt handling, and tool-result cache hooks moved into `xbot/tool_runtime.py`.
 - [x] Loop decoupling progress: context compaction moved into `xbot/compaction.py`.
 - [x] Runtime context progress: `xbot/runtime.py` adds explicit `RuntimeContext`, and `HermesInteraction` uses it for session/personality/thread/task/run identity at the boundary.
-- [x] Verification phase progress: `xbot/verification.py` verifies task files, plan DAG validity, append-only log counts, and `state.yaml` materialized consistency.
+- [x] Verification phase progress: `xbot/verification.py` verifies agent state files, plan DAG validity, append-only log counts, and `state.yaml` materialized consistency.
 - [x] Runtime path isolation progress: `xbot.config` uses context-local runtime paths instead of a single process-global `_RUNTIME_PATHS`.
 - [x] Personality layout progress: canonical config is now `data/personalities/<id>/personality.yaml`, `instructions.md`, `memory.md`, `permissions.json`, `sandbox.json`, and `skills/`.
 - [x] Old config logic cleanup: `xbot.config` no longer reads `data/personality`, `AGENT.md`, `MEMORY.md`, `person.yaml`, or global `data/config/agent|permissions|sandbox`.
@@ -41,7 +41,8 @@ Current continuation objective: make the personality configuration system consis
 - [x] Context tree MVP: `context_tree.jsonl` records append-only context nodes, `state.yaml` materializes head/node counts, and `context_rewind` moves the head without deleting history.
 - [x] Mailbox MVP: `mailbox.jsonl` records send/read acknowledgements, `state.yaml` materializes pending counts, and agent-facing tools can send/read messages.
 - [x] Subagent MVP: `subagent_create(mode="attach")` runs a child thread inside the parent session, accesses the main workspace, writes a result, and reports back through parent mailbox.
-- [x] Checkpoint persistence MVP: `FileBackedSaver` persists LangGraph checkpoints to `data/sessions/<id>/checkpoints/langgraph.pkl` and reloads them across saver instances.
+- [x] Checkpoint persistence MVP: `FileBackedSaver` persists LangGraph checkpoints to `data/sessions/<id>/saver/langgraph.pkl` and reloads them across saver instances.
+- [x] Agent state layout MVP: primary agent DAG state now lives at `data/sessions/<id>/state/`; attach subagents use `subagents/<id>/state/` and their own `saver/`.
 - [x] Debug tools MVP: `debug_analyze` summarizes task DAG, plan, state, context tree, mailbox, and subagent manifests.
 - [x] Event-write performance MVP: append-only logs remain immediate, while materialized `state.yaml` rewrites are batched during turn event projection.
 - [x] Task mode MVP: `task_begin` records global goal, replaces executable DAG, writes `context.md`, and `plan_next`/`plan_update` actively drive nodes.
@@ -68,44 +69,47 @@ Current continuation objective: make the personality configuration system consis
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Latest full verification passed: `uv run pytest -q` (`70 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after summary/context projection changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after summary/context projection changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`72 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after DAG attribution and memory tools: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after DAG attribution and memory tools: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`73 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after task-mode guard changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after task-mode guard changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`74 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after single-active DAG scheduler changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after single-active DAG scheduler changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`75 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after task-mode prompt contract changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after task-mode prompt contract changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`76 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after plan autofill changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after plan autofill changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`77 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after task guidance changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after task guidance changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
+- Latest full verification passed: `uv run pytest -q` (`77 passed`).
+- Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
+- Real DeepSeek smoke passed after agent state layout changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 
 ## Acceptance Audit
 
-- Phase 1 file-backed task state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`.
+- Phase 1 file-backed agent state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`.
 - Append-only runtime and graph logs: complete. `TaskStateStore` appends JSONL events and materializes `state.yaml`.
-- Interaction integration: complete. `HermesInteraction` records user/resume turns and normalized interaction events when a `TaskStateStore` is present; `create()` initializes one under `data/sessions/<session_id>/tasks/<thread_id>/`.
+- Interaction integration: complete. `HermesInteraction` records user/resume turns and normalized interaction events when a `TaskStateStore` is present; `create()` initializes the primary DAG state under `data/sessions/<session_id>/state/`.
 - Runtime contracts: complete for this pass. `RunRecord` and `TurnRecord` are explicit Pydantic models and are used at the interaction boundary.
-- Verification coverage: complete for this pass. Tests cover task directory initialization, materialization from event logs, and interaction event persistence.
+- Verification coverage: complete for this pass. Tests cover agent state initialization, materialization from event logs, and interaction event persistence.
 - Out of scope by plan: multi-agent execution, mailbox, rewind/context tree, and replacing LangGraph checkpoint persistence.
 - Loop decoupling: complete for the MVP. Context construction lives in `xbot/context.py`, context compaction lives in `xbot/compaction.py`, and tool guard/interrupt/cache hooks live in `xbot/tool_runtime.py`.
 - Tool-result cache persistence: complete for MVP. `HermesInteraction.create()` configures `GLOBAL_TOOL_RESULT_CACHE` to write under the session cache directory.
 - Plan/DAG state: complete for MVP. `plan.yaml` is validated as a DAG, `state.yaml` includes a scheduler view, and prior plan versions are stored under `checkpoints/plans`.
 - Explicit runtime context: complete for MVP. Session, personality, thread, task, run, trace, and path identifiers are represented by `RuntimeContext`; legacy global path helpers remain for tools/config compatibility.
-- Verification phase: complete for MVP. `verify_task_state()` checks required task files, plan validity, event counts, graph-event counts, and plan projection errors.
+- Verification phase: complete for MVP. `verify_task_state()` checks required agent state files, plan validity, event counts, graph-event counts, and plan projection errors.
 - Runtime path isolation: complete for MVP. Existing helper APIs remain, but the underlying path state is context-local and covered by tests.
 - Personality config system: complete locally. Directory layout is canonical and lower-case under `data/personalities`.
-- Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable task files.
+- Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable agent state files.
 - Context tree/rewind: MVP complete. Remaining scope is context projection from tree branches into model prompts and richer branch inspection commands.
 - Mailbox: MVP complete. Remaining scope is wiring runtime background events onto the mailbox queue.
 - Subagent: attach-mode MVP complete. Remaining scope is true async detach runner, budgets/timeouts, cancellation, and child workspace diff handoff.

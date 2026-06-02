@@ -6,10 +6,12 @@ XBot 的本地配置现在只有两个顶层概念：
 data/
   config/                    # 用户与 provider 等全局配置
   personalities/<id>/        # 某个 agent personality 的完整配置
-  sessions/<id>/             # 某次隔离运行的 workspace/cache/tasks
+  sessions/<id>/             # 某次隔离运行的 workspace/cache/state/saver
 ```
 
 不再读取旧的 `data/personality/`、`AGENT.md`、`MEMORY.md`、`person.yaml` 或 `data/config/agent.yaml`。
+
+`session_id` 是一次隔离运行的目录命名空间；`personality_id` 选择 agent 配置；`thread_id` 只作为 LangGraph checkpoint 的线程键；`task_id` 是 DAG state 主体标识，主 agent 固定为 `agent`，subagent 使用自己的 id。
 
 ## 加载顺序
 
@@ -129,7 +131,7 @@ data/personalities/default/
   "resources": [
     {"path": "sessions/<session_id>/workspace", "access": "readwrite", "recursive": true},
     {"path": "sessions/<session_id>/subagents", "access": "readwrite", "recursive": true},
-    {"path": "sessions/<session_id>/tasks", "access": "readonly", "recursive": true},
+    {"path": "sessions/<session_id>/state", "access": "readonly", "recursive": true},
     {"path": "personalities/<personality_id>", "access": "readonly", "recursive": true},
     {"path": "personalities/<personality_id>/memory.md", "access": "readwrite", "recursive": false},
     {"path": "skills", "access": "readonly", "recursive": true},
@@ -140,7 +142,7 @@ data/personalities/default/
 
 ## 可审计运行产物
 
-每次 `HermesInteraction.create()` 会在 `data/sessions/<session_id>/tasks/<thread_id>/` 创建任务状态：
+每次 `HermesInteraction.create()` 会在 `data/sessions/<session_id>/state/` 创建主 agent DAG 状态；LangGraph saver 位于 `data/sessions/<session_id>/saver/`。Attach-mode subagent 使用自己的 `data/sessions/<session_id>/subagents/<subagent_id>/state/` 和 `saver/`：
 
 ```text
 task.yaml

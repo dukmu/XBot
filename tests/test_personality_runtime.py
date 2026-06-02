@@ -121,6 +121,11 @@ async def test_smoke_provider_refactors_in_isolated_workspace(temp_data_dir):
     assert runtime.provider_config.name == "smoke"
     assert runtime.provider_config.type == "smoke"
     assert runtime.state_store is not None
+    assert runtime.state_store.task_id == "agent"
+    assert runtime.state_store.paths.root == temp_data_dir / "sessions" / "smoke-refactor" / "state"
+    assert runtime.runtime_context.task_dir == runtime.state_store.paths.root
+    assert runtime.runtime_context.paths.langgraph_checkpoint_path == temp_data_dir / "sessions" / "smoke-refactor" / "saver" / "langgraph.pkl"
+    assert not (temp_data_dir / "sessions" / "smoke-refactor" / "tasks" / "refactor-calculator").exists()
     checks = verify_task_state(runtime.state_store)
     assert verification_passed(checks)
     assert runtime.state_store.paths.events_jsonl.exists()
