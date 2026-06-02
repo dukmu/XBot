@@ -43,6 +43,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Subagent MVP: `subagent_create(mode="attach")` runs a child thread inside the parent session, accesses the main workspace, writes a result, and reports back through parent mailbox.
 - [x] Checkpoint persistence MVP: `FileBackedSaver` persists LangGraph checkpoints to `data/sessions/<id>/saver/langgraph.pkl` and reloads them across saver instances.
 - [x] Agent state layout MVP: primary agent DAG state now lives at `data/sessions/<id>/state/`; attach subagents use `subagents/<id>/state/` and their own `saver/`.
+- [x] Trace persistence guard MVP: detailed normalized `InteractionEvent` traces are no longer persisted by default; enable with `XBOT_TRACE_EVENTS=1` or `trace_events=True`.
 - [x] Debug tools MVP: `debug_analyze` summarizes task DAG, plan, state, context tree, mailbox, and subagent manifests.
 - [x] Event-write performance MVP: append-only logs remain immediate, while materialized `state.yaml` rewrites are batched during turn event projection.
 - [x] Task mode MVP: `task_begin` records global goal, replaces executable DAG, writes `context.md`, and `plan_next`/`plan_update` actively drive nodes.
@@ -91,6 +92,9 @@ Current continuation objective: make the personality configuration system consis
 - Latest full verification passed: `uv run pytest -q` (`77 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed after agent state layout changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
+- Latest full verification passed: `uv run pytest -q` (`78 passed`).
+- Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
+- Real DeepSeek smoke passed after trace persistence guard changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 

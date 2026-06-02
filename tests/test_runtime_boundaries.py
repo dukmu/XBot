@@ -1060,6 +1060,7 @@ async def test_interaction_records_file_state_events(mock_llm, user_context, tem
         tools=[],
         database_path=":memory:",
         state_store=store,
+        trace_events=True,
     )
 
     result = await runtime.send_user_message("hello")
@@ -1076,6 +1077,48 @@ async def test_interaction_records_file_state_events(mock_llm, user_context, tem
     assert state["turn_count"] == 1
     assert state["interaction_event_counts"]["by_kind"]["message"] >= 1
     assert any(message.get("content") == "persisted answer" for message in serialized_messages)
+
+
+@pytest.mark.asyncio
+async def test_interaction_trace_events_are_disabled_by_default(mock_llm, user_context, temp_data_dir):
+    """Detailed InteractionEvent traces should not be written unless explicitly enabled."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+
+    mock_llm.set_response_sequence([{"content": "transient answer"}])
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="interaction-no-trace",
+        session_id="default",
+        personality_id="default",
+    )
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "interaction_no_trace_test"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[],
+        database_path=":memory:",
+        state_store=store,
+    )
+
+    result = await runtime.send_user_message("hello")
+    events = list(read_jsonl(store.paths.events_jsonl))
+    state = yaml.safe_load(store.paths.state_yaml.read_text(encoding="utf-8"))
+
+    assert any(getattr(event.payload, "content", None) == "transient answer" for event in result.events)
+    assert [event.get("type") for event in events] == ["turn_started", "turn_finished"]
+    assert state["interaction_event_counts"]["by_kind"] == {}
 
 
 def test_terminal_does_not_duplicate_tool_call_blocks(capsys):

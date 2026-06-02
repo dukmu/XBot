@@ -70,6 +70,7 @@ data/sessions/<session_id>/state/
 - 当复杂任务需要受控执行时，agent 或用户通过 `task_begin` 将该 state 切换到 `mode=task`。任务模式下，`goal.md` 是全局目标，`plan.yaml` 是可执行 DAG，`context.md` 是给模型看的当前任务投影。
 - system prompt 明确要求复杂多步工作先进入 task mode，并在 task mode 内通过 `plan_next`/`plan_update` 推进 DAG，避免只有工具存在但模型不知道该使用。
 - `events.jsonl` 是 runtime 事件流，包括 turn start/finish 和 normalized `InteractionEvent`。
+- 详细 normalized `InteractionEvent` trace 默认不写入本地事件流，避免长会话性能瓶颈；设置 `XBOT_TRACE_EVENTS=1` 或构造 runtime 时开启 `trace_events=True` 才会落盘。
 - `graph.jsonl` 是执行轨迹投影，包括 turn node、tool call、interrupt、message artifact 等事件。
 - `context_tree.jsonl` 是上下文树事件流；turn/message/tool/error 会生成节点，rewind 只写入 head movement。
 - `mailbox.jsonl` 是 runtime/parent/subagent 通信队列；send/read/ack 都是 append-only 事件。

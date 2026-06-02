@@ -23,7 +23,8 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - 工具调用：`shell`、`filesystem_*`、`ask`、`compact`、`context_head`、`context_rewind`、`mailbox_send`、`mailbox_read`、`skill_load`、memory 和 P0 task record 工具。
 - 工具结果 cache：大结果 file-backed cache，可通过新 cache 实例读取持久化内容。
 - 交互 runtime：batch/stream 两种模式，合并 tool confirmation，interrupt resume，`/reset` 对应的 clean thread 语义。
-- 文件化任务 state：任务目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl`/`mailbox.jsonl` append-only 日志、`state.yaml` materialized view、interaction 事件落盘。
+- Trace persistence：详细 `InteractionEvent` trace 默认不写入本地事件流，显式开启 trace 时才持久化。
+- 文件化 agent state：状态目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl`/`mailbox.jsonl` append-only 日志、`state.yaml` materialized view、turn 事件默认落盘，详细 interaction trace 显式开启才落盘。
 - 上下文树/rewind：turn/message/tool 事件生成 context 节点，`context_rewind` 移动 head 但保留历史。
 - Mailbox：send/read/ack 都写入 append-only 队列，`state.yaml` 投影 pending count。
 - Subagent：attach 模式在 parent session 下运行 child thread，访问 main workspace，写 result 并通过 mailbox 回传。
