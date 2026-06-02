@@ -209,6 +209,8 @@ Large tool results are cached under `data/sessions/<session_id>/cache/tool-resul
 |------|------------------|
 | `shell` | Runs inside bubblewrap when sandbox is enabled |
 | `filesystem_read` | Reads through the sandbox backend |
+| `task_begin` / `plan_next` / `plan_update` | Enter task mode and drive the executable DAG |
+| `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, and subagents |
 | `filesystem_write` | Writes through the sandbox backend |
 | `filesystem_list` | Lists through the sandbox backend |
 | `ask` | Triggers a `user_ask` interrupt/resume flow |

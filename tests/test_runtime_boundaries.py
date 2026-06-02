@@ -33,9 +33,15 @@ from xbot.tools import (
     filesystem_write,
     mailbox_read,
     mailbox_send,
+    plan_add_nodes,
+    plan_next,
+    plan_update,
     shell,
     subagent_create,
     subagent_wait,
+    task_begin,
+    task_exit,
+    task_status,
 )
 from xbot.cache import ToolResultCache
 from xbot.planning import materialize_plan_state, select_ready_node, validate_plan
@@ -369,6 +375,69 @@ def test_task_state_store_initializes_file_backed_task(temp_data_dir):
     assert store.paths.mailbox_jsonl.exists()
     assert store.paths.claims_yaml.exists()
     assert store.paths.artifacts_dir.exists()
+    assert yaml.safe_load(store.paths.task_yaml.read_text(encoding="utf-8"))["mode"] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_read_locates_pattern_with_line_context(temp_data_dir):
+    """Read tool should support targeted line/pattern inspection."""
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    target = workspace / "module.py"
+    target.write_text("def a():\n    pass\n\ndef target():\n    return 42\n", encoding="utf-8")
+    sandbox = SandboxPolicy(SandboxConfig(enabled=False), data_root=temp_data_dir, workspace_root=workspace)
+    token = set_runtime_sandbox(sandbox)
+    try:
+        located = await filesystem_read.ainvoke({"path": "module.py", "pattern": "target", "context_lines": 1})
+        ranged = await filesystem_read.ainvoke({"path": "module.py", "line_start": 4, "line_end": 5})
+    finally:
+        reset_runtime_sandbox(token)
+
+    assert "@@ match:4 lines 3-5 @@" in located
+    assert "4: def target():" in located
+    assert "@@ range lines 4-5 @@" in ranged
+    assert "5:     return 42" in ranged
+
+
+@pytest.mark.asyncio
+async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
+    """Task mode should make goal, DAG, status, and context.md actionable."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="task-mode",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        started = await task_begin.ainvoke(
+            {
+                "goal": "Refactor a small project",
+                "steps_json": '["Inspect files", "Edit implementation"]',
+            }
+        )
+        first = await plan_next.ainvoke({})
+        updated = await plan_update.ainvoke({"node_id": "n001", "status": "verified", "reason": "inspection done"})
+        added = await plan_add_nodes.ainvoke(
+            {
+                "nodes_json": '[{"id":"n_verify","type":"verification","title":"Run tests","depends_on":["n002"],"status":"pending"}]',
+                "reason": "need verification",
+            }
+        )
+        status = await task_status.ainvoke({})
+        exited = await task_exit.ainvoke({"status": "completed", "reason": "done"})
+    finally:
+        reset_runtime_task_state(token)
+
+    assert '"mode": "task"' in started
+    assert '"id": "n001"' in first
+    assert '"verified_nodes"' in updated
+    assert "n_verify" in added
+    assert "Refactor a small project" in store.paths.goal_md.read_text(encoding="utf-8")
+    context = store.paths.context_md.read_text(encoding="utf-8")
+    assert "## Active DAG Node" in context
+    assert "n_verify" in context
+    assert '"mode": "task"' in status
+    assert '"mode": "chat"' in exited
 
 
 def test_task_state_store_materializes_events(temp_data_dir):
