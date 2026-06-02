@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from xbot.hooks import LoopHooks, build_default_hooks
+from xbot.hooks.core import LoopHooks
+from xbot.hooks import load_standard_hooks
 from xbot.registry import ToolRegistry, bootstrap_registry
-from xbot.tool_runtime import register_default_guard_hooks
 
 
 @pytest.fixture
@@ -26,10 +26,8 @@ def temp_data_dir():
 
 
 def make_default_hooks() -> LoopHooks:
-    """Create a LoopHooks with all default guard hooks registered."""
-    hooks = build_default_hooks()
-    register_default_guard_hooks(hooks)
-    return hooks
+    """Create a LoopHooks with all standard hooks registered."""
+    return load_standard_hooks()
 
 
 def make_default_registry() -> ToolRegistry:
