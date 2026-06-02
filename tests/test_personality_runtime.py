@@ -6,9 +6,11 @@ from pathlib import Path
 import yaml
 
 from xbot.checkpoint import FileBackedSaver
+from xbot.builtin_tools.subagent import subagent_create
 from xbot.config import configure_runtime_paths, default_sandbox_config, load_agent_config, load_agent_prompt, load_memory
 from xbot.interaction import HermesInteraction
-from xbot.state import read_jsonl
+from xbot.sandbox import reset_runtime_sandbox, set_runtime_sandbox
+from xbot.state import configure_runtime_task_state, read_jsonl, reset_runtime_task_state
 from xbot.verification import verification_passed, verify_task_state
 
 
@@ -221,3 +223,52 @@ async def test_runtime_processes_mailbox_as_background_events(temp_data_dir):
     assert any(event.get("event") == "mailbox_message_acknowledged" and event.get("message_id") == message["message_id"] for event in mailbox_events)
     assert any(event.get("type") == "turn_started" and event.get("input_kind") == "background_event" for event in read_jsonl(runtime.state_store.paths.events_jsonl))
     assert any("Refactor complete" in str(getattr(event.payload, "content", event.payload)) for event in result.events)
+
+
+async def test_runtime_processes_detached_subagents_under_parent_session(temp_data_dir):
+    """Detached subagents should be picked up later without creating sibling sessions."""
+    write_local_runtime(temp_data_dir)
+    session_id = "detach-parent"
+    workspace = temp_data_dir / "sessions" / session_id / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "calculator.py"
+    target.write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id=session_id,
+        personality_id="default",
+        thread_id="parent-thread",
+    )
+    assert runtime.state_store is not None
+    state_token = configure_runtime_task_state(runtime.state_store)
+    sandbox_token = set_runtime_sandbox(runtime.sandbox)
+    try:
+        created = await subagent_create.ainvoke(
+            {"task": "Refactor calculator.py to improve readability.", "name": "worker", "mode": "detach"}
+        )
+    finally:
+        reset_runtime_sandbox(sandbox_token)
+        reset_runtime_task_state(state_token)
+
+    assert "status: pending" in created
+    result = await runtime.process_detached_subagents()
+
+    manifests = sorted((temp_data_dir / "sessions" / session_id / "subagents").glob("worker_*/manifest.json"))
+    assert manifests
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    subagent_id = manifest["subagent_id"]
+    parent_graph = list(read_jsonl(runtime.state_store.paths.graph_jsonl))
+    state = runtime.state_store.materialize_state()
+
+    assert "return a + b" in target.read_text(encoding="utf-8")
+    assert manifest["mode"] == "detach"
+    assert manifest["status"] == "completed"
+    assert manifest["child_session_id"] == session_id
+    assert manifest["child_task_state"] == str(temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state")
+    assert (temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state" / "state.yaml").exists()
+    assert (temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "saver" / "langgraph.pkl").exists()
+    assert not list((temp_data_dir / "sessions").glob(f"{session_id}__subagent__*"))
+    assert state["mailbox"]["pending_by_recipient"]["parent"] == 1
+    assert any(event.get("event") == "subagent_finished" and event.get("id") == subagent_id for event in parent_graph)
+    assert any(event.kind == "status" and "mailbox notification sent" in str(event.payload) for event in result.events)
