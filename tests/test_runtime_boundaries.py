@@ -12,9 +12,10 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from tests.test_personality_runtime import write_local_runtime
 from xbot.config import configure_runtime_paths
-from xbot.context import build_system_prompt
+from xbot.context import get_system_prompt
 from xbot.models import PermissionConfig, SandboxConfig, UserContext
 from xbot.permissions import PermissionSystem
+from tests.conftest import make_default_hooks, make_default_registry
 from xbot.sandbox import SandboxPolicy, reset_runtime_sandbox, set_runtime_sandbox
 from xbot.runtime import RuntimeContext
 from xbot.state import (
@@ -114,6 +115,8 @@ async def test_sandbox_enabled_requires_tool_registration(mock_llm):
             store=None,
             permission_system=PermissionSystem(PermissionConfig(default="allow")),
             sandbox_policy=SandboxPolicy(SandboxConfig(enabled=True)),
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
         )
 
 
@@ -122,11 +125,10 @@ def test_system_prompt_contains_task_mode_operating_rules(temp_data_dir):
     write_local_runtime(temp_data_dir)
     configure_runtime_paths(data_dir=temp_data_dir, session_id="default", personality_id="default")
 
-    prompt = build_system_prompt(
-        {
-            "messages": [],
-            "user_context": UserContext(user_id="u", user_name="User", platform="test", session_type="private"),
-        },
+    user_ctx = UserContext(user_id="u", user_name="User", platform="test", session_type="private")
+    prompt = get_system_prompt(
+        user_context=user_ctx,
+        agent_role="A helpful assistant",
         sandbox_summary="sandbox disabled",
     )
 
@@ -1158,6 +1160,8 @@ async def test_interaction_records_file_state_events(mock_llm, user_context, tem
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1208,6 +1212,8 @@ async def test_interaction_trace_events_are_disabled_by_default(mock_llm, user_c
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1300,6 +1306,8 @@ async def test_interaction_stream_emits_deltas_without_final_duplicate(mock_llm,
         checkpointer=MemorySaver(),
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1340,6 +1348,8 @@ async def test_interaction_stream_normalizes_tool_call_events(mock_llm, user_con
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1391,6 +1401,8 @@ async def test_interaction_stream_trace_records_events_at_live_plan_node(mock_ll
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1440,6 +1452,8 @@ async def test_interaction_stream_preserves_zero_arg_tool_calls(mock_llm, user_c
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1479,6 +1493,8 @@ async def test_interaction_stream_hides_prepare_context_and_reports_compaction(m
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         max_messages_before_compress=1,
         keep_recent_messages=1,
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1520,6 +1536,8 @@ async def test_interaction_batch_does_not_persist_compaction_event(mock_llm, use
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
         max_messages_before_compress=1,
         keep_recent_messages=1,
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1663,6 +1681,8 @@ async def test_interaction_result_only_emits_new_messages(mock_llm, user_context
         checkpointer=MemorySaver(),
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1706,6 +1726,8 @@ async def test_interaction_interrupt_keeps_message_before_prompt(mock_llm, user_
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="ask")),
         sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,
@@ -1769,6 +1791,8 @@ async def test_tool_confirm_combines_permission_and_sandbox_asks(mock_llm, user_
         store=None,
         permission_system=PermissionSystem(PermissionConfig(default="ask")),
         sandbox_policy=sandbox_policy,
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
     )
     runtime = HermesInteraction(
         user_context=user_context,

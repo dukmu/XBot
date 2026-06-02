@@ -58,6 +58,7 @@ from xbot.tools import (
     get_all_tools,
 )
 from xbot.permissions import PermissionSystem
+from tests.conftest import make_default_hooks, make_default_registry
 from xbot.sandbox import SandboxPolicy
 
 
@@ -159,6 +160,8 @@ async def test_shell_tool_call(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,  # Use memory store for tests
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_shell"}}
@@ -193,6 +196,8 @@ async def test_multiple_tool_calls(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_multi_tool"}}
@@ -227,6 +232,8 @@ async def test_restart_with_checkpoint(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     thread_id = "test_restart"
@@ -271,6 +278,8 @@ async def test_reconnect_scenario(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_reconnect"}}
@@ -309,6 +318,8 @@ async def test_subagent_attach_mode(mock_llm, tools, user_context, temp_data_dir
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_subagent_attach"}}
@@ -355,6 +366,8 @@ async def test_subagent_detach_mode(mock_llm, tools, user_context, temp_data_dir
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_subagent_detach"}}
@@ -395,6 +408,8 @@ async def test_subagent_list(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_subagent_list"}}
@@ -429,6 +444,8 @@ async def test_cron_job_execution(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_cron"}}
@@ -476,6 +493,8 @@ async def test_subagent_tool_call(mock_llm, tools, user_context, temp_data_dir):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_subagent_tool"}}
@@ -525,6 +544,8 @@ async def test_permission_allow(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_permission_allow"}}
@@ -568,6 +589,8 @@ async def test_permission_deny(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_permission_deny"}}
@@ -603,6 +626,8 @@ async def test_permission_ask_flow(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_permission_ask"}}
@@ -666,6 +691,8 @@ async def test_subagent_permission_inheritance(mock_llm, tools, user_context, te
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_subagent_perms"}}
@@ -702,6 +729,8 @@ async def test_human_in_loop_permission(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     config = {"configurable": {"thread_id": "test_hitl"}}
@@ -734,6 +763,8 @@ async def test_human_in_loop_resume(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     thread_id = "test_hitl_resume"
@@ -782,6 +813,8 @@ async def test_persistence_checkpoint_restore(mock_llm, tools, user_context, tem
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     
     thread_id = "test_persistence"
@@ -809,6 +842,8 @@ async def test_persistence_checkpoint_restore(mock_llm, tools, user_context, tem
         checkpointer=restored_checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
     mock_llm.set_response_sequence([{"content": "Second message"}])
     input_state2 = {
@@ -840,6 +875,8 @@ async def test_persistence_store_archive(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=store,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
 
     config = {"configurable": {"thread_id": "test_store"}}
@@ -871,6 +908,8 @@ async def test_linear_compression_reduces_message_chain(mock_llm, tools, user_co
         checkpointer=checkpointer,
         store=None,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
         max_messages_before_compress=4,
         keep_recent_messages=2,
     )
@@ -923,6 +962,8 @@ async def test_full_workflow(mock_llm, tools, user_context):
         checkpointer=checkpointer,
         store=store,
         permission_system=permission_system,
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
     )
 
     thread_id = "test_full_workflow"

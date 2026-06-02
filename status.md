@@ -118,12 +118,14 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - Hook system (`xbot/hooks.py`): 6 loop stages, short-circuit semantics, registration API.
 - Tool registry (`xbot/registry.py`): dynamic tool management, sandbox mode tracking, `filesystem` wildcard expansion.
 - Cache-friendly context: memoized system prompt per params, DAG suffix at end of message list.
-- **Hook migration complete**: `sandbox_permission_guard_hook`, `active_ask_hook`, `cache_result_hook`, `compact_result_hook` → registered via `register_default_guard_hooks`.
-- `make_tools_node_with_hooks` orchestrates full guard pipeline when hooks registered; falls back to inline `make_tool_node` when no guards.
-- `make_simple_tool_node` reads pre-computed denials from shared guard context (for hook-orchestrated path).
-- **Code cleanup**: removed 30+ dead items (unused imports, dead functions, stale config paths, duplicate property).
+- **All guard logic in hooks**: `sandbox_permission_guard_hook`, `active_ask_hook`, `cache_result_hook`, `compact_result_hook`.
+- **No backward-compatibility fallbacks**: removed `run_guarded_tool_call`, `make_tool_node` (old), `build_system_prompt` (legacy), `_has_guard_hooks()` fork, `filter_tools` (legacy), `validate_tool_sandbox_modes` (legacy), `_session_id`/`_personality_id` fallback branches.
+- `build_hook_tools_node` in `tool_runtime.py` — unified tools node with full guard orchestration.
+- `build_agent_graph` requires `hooks` + `tool_registry` — no optional fallback.
+- `conftest.py` with `make_default_hooks()` and `make_default_registry()` helpers for tests.
+- **Code cleanup**: removed 40+ dead items (wrappers, legacy functions, duplicate properties, unused imports, dead fallback paths).
 - **Doc cleanup**: README status table updated, architecture.md stale sections fixed.
-- All 97 tests pass. Compile OK.
+- 97 tests pass. DeepSeek smoke PASSED. Compile OK.
 
 ## Notes (master)
 
