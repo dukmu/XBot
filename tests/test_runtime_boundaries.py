@@ -691,18 +691,30 @@ async def test_claim_tools_record_and_verify_structured_claims(temp_data_dir):
                     "claim": "Calculator spacing was refactored.",
                     "evidence": "calculator.py contains `return a + b`.",
                     "status": "verified",
+                    "confidence": 0.95,
+                    "evidence_refs_json": '["artifact:calculator.py", "graph:g000001"]',
                 }
             )
         )
         listed = json.loads(await claim_list.ainvoke({"status": "verified"}))
+        status = json.loads(await task_status.ainvoke({}))
+        debug = json.loads(await debug_analyze.ainvoke({}))
     finally:
         reset_runtime_task_state(token)
 
     state = store.materialize_state()
+    context = store.paths.context_md.read_text(encoding="utf-8")
     checks = verify_task_state(store)
 
     assert added["claim_id"] == "claim_000001"
+    assert added["confidence"] == 0.95
+    assert added["evidence_refs"] == ["artifact:calculator.py", "graph:g000001"]
     assert listed[0]["claim"] == "Calculator spacing was refactored."
+    assert "## Relevant Claims" in context
+    assert "Calculator spacing was refactored." in context
+    assert status["semantic_state"]["claims"]["verified_count"] == 1
+    assert status["semantic_state"]["checks"]["claims_are_valid"] == "passed"
+    assert debug["semantic_state"]["checks"]["summaries_are_structured"]["status"] == "passed"
     assert state["claims"]["count"] == 1
     assert state["claims"]["verified_count"] == 1
     assert verification_passed(checks)

@@ -36,6 +36,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] `xbot/compaction.py` — compaction is now auditable: keeps unresolved tool-call groups, writes summary source refs/range metadata, records durable `context_compacted` graph events, and appends context-tree nodes when task state is bound.
 - [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata. `xbot/tools.py` is now a compatibility re-export only.
 - [x] Runtime restart consistency: `HermesInteraction.create()` resumes the existing file-backed session state and checkpoint path, restores the turn counter from materialized append-only state, and treats LangGraph `InMemoryStore` as executor-local scratch only.
+- [x] Semantic state progress: claims now carry confidence/evidence refs/invalidates/superseded metadata, relevant claims project into `context.md`, and `task_status`/`debug_analyze` report claim and summary health.
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
 - [x] Latest full verification passed: `uv run pytest -q` (`104 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
