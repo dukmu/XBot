@@ -2032,16 +2032,51 @@ class TestToolRegistry:
         from xbot.registry import bootstrap_registry
 
         registry = bootstrap_registry()
-        assert len(registry) > 10
+        assert len(registry) == 35
         # Verify key tools are present
         assert registry.registered("shell")
         assert registry.registered("filesystem_read")
         assert registry.registered("task_begin")
+        assert registry.registered("task_status")
+        assert registry.registered("task_exit")
+        assert registry.registered("plan_add_nodes")
         assert registry.registered("plan_next")
         assert registry.registered("debug_analyze")
         # Verify sandbox modes
         assert registry.sandbox_mode("shell") == "sandboxed"
         assert registry.sandbox_mode("debug_analyze") == "host"
+
+    def test_bootstrap_registry_filter_auto_includes_cache_read(self):
+        from xbot.registry import bootstrap_registry
+
+        registry = bootstrap_registry()
+        result = registry.filter(["shell"])
+
+        assert [tool.name for tool in result] == ["shell", "cache_read"]
+
+    def test_builtin_tools_are_complete_base_tools_with_sandbox_modes(self):
+        from langchain_core.tools import BaseTool
+        from xbot.builtin_tools import TOOL_SANDBOX_MODE, get_all_tools
+
+        tools = get_all_tools()
+        names = [tool.name for tool in tools]
+
+        assert len(tools) == 35
+        assert all(isinstance(tool, BaseTool) for tool in tools)
+        assert len(names) == len(set(names))
+        assert set(names) == set(TOOL_SANDBOX_MODE)
+        assert {"task_begin", "task_status", "task_exit", "plan_add_nodes"} <= set(names)
+
+    def test_legacy_tools_module_is_a_builtin_bridge(self):
+        from xbot import builtin_tools
+        from xbot import tools as legacy_tools
+
+        builtin_names = {tool.name for tool in builtin_tools.get_all_tools()}
+        legacy_names = {tool.name for tool in legacy_tools.get_all_tools()}
+
+        assert legacy_names == builtin_names
+        assert legacy_tools.TOOL_SANDBOX_MODE == builtin_tools.TOOL_SANDBOX_MODE
+        assert legacy_tools.plan_add_nodes is builtin_tools.plan.plan_add_nodes
 
 
 # ============================================================================
