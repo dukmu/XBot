@@ -30,7 +30,7 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
 - DAG event attribution：turn/tool/artifact/summary 图事件归因到 active plan node，`state.yaml.dag` 和 `plan_node_history` 可审计节点执行历史。
-- Task mode：`task_begin` 写入目标和 DAG，`plan_next`/`plan_update` 推进节点，`context.md` 真实投影任务状态。
+- Task mode：`task_begin` 写入目标和 DAG，`plan_next`/`plan_update` 推进节点，plan mutation/scheduling 离开 task mode 会被拒绝，`completed` 退出要求 DAG 已完成，`context.md` 真实投影任务状态和节点结果。
 - Summaries/mailbox projection：summary artifacts 和 pending mailbox 会进入 `context.md`。
 - Read locator：`filesystem_read` 支持 pattern、line range、context lines 和截断。
 - Memory tools：长期记忆以结构化条目追加，并可通过 `memory_list`/`memory_search` 查询。

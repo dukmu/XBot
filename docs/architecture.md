@@ -88,7 +88,9 @@ data/sessions/<session_id>/tasks/<thread_id>/
 - `task_status()`：读取当前 goal/plan/context 投影。
 - `task_exit()`：退出任务模式，保留 DAG 和事件历史。
 
-任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。
+任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。`plan_add_nodes`、`plan_next`、`plan_update` 只能在 task mode 中执行；`task_exit(status="completed")` 会检查 DAG，存在 ready/pending/running/blocked/failed 节点时拒绝完成退出。需要中止时必须显式用 `cancelled` 或 `failed` 状态退出。
+
+`context.md` 会投影 active/running/ready/pending 节点，也会保留最近 completed 节点和 blocked/failed 节点，使模型能看到 DAG 执行结果，而不是只看到下一步。
 
 `state.yaml` 的计划投影示例：
 

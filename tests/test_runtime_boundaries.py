@@ -429,6 +429,10 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
                 "reason": "need verification",
             }
         )
+        second = await plan_next.ainvoke({})
+        await plan_update.ainvoke({"node_id": "n002", "status": "verified", "reason": "implementation done"})
+        verify = await plan_next.ainvoke({})
+        await plan_update.ainvoke({"node_id": "n_verify", "status": "verified", "reason": "tests passed"})
         status = await task_status.ainvoke({})
         exited = await task_exit.ainvoke({"status": "completed", "reason": "done"})
     finally:
@@ -436,6 +440,8 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
 
     assert '"mode": "task"' in started
     assert '"id": "n001"' in first
+    assert '"id": "n002"' in second
+    assert '"id": "n_verify"' in verify
     assert '"verified_nodes"' in updated
     assert "n_verify" in added
     assert "Refactor a small project" in store.paths.goal_md.read_text(encoding="utf-8")
@@ -444,6 +450,36 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
     assert "n_verify" in context
     assert '"mode": "task"' in status
     assert '"mode": "chat"' in exited
+
+
+@pytest.mark.asyncio
+async def test_task_mode_enforces_plan_scope_and_completion(temp_data_dir):
+    """Plan tools should be task-scoped, and completed exit should require a finished DAG."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="task-mode-guards",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        with pytest.raises(ValueError, match="outside task mode"):
+            await plan_add_nodes.ainvoke({"nodes_json": '[{"id":"n001","title":"Orphan"}]'})
+
+        await task_begin.ainvoke({"goal": "Guarded task", "steps_json": '["Do work"]'})
+        status = json.loads(await task_status.ainvoke({}))
+        assert status["completion_errors"]
+        with pytest.raises(ValueError, match="unfinished plan nodes"):
+            await task_exit.ainvoke({"status": "completed"})
+
+        await plan_next.ainvoke({})
+        await plan_update.ainvoke({"node_id": "n001", "status": "verified"})
+        exited = json.loads(await task_exit.ainvoke({"status": "completed"}))
+    finally:
+        reset_runtime_task_state(token)
+
+    assert exited["mode"] == "chat"
+    assert exited["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -806,6 +842,7 @@ def test_task_state_store_versions_plan_updates(temp_data_dir):
         session_id="default",
         personality_id="default",
     )
+    store.begin_task_mode(goal="Version the executable plan", nodes=[], reason="test setup")
 
     updated = store.add_plan_nodes(
         [
