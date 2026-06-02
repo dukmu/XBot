@@ -26,14 +26,16 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
   - System prompt memoized per parameter combination (stable prefix → KV-cache friendly).
   - DAG suffix (`build_dag_suffix`) appended at end of message list after history.
   - Context structure: `[SystemMessage: stable prompt] [history...] [SystemMessage: DAG suffix]`.
+  - Provider context can now be built from explicit `RuntimeFrame`/`ContextProjection`; `context.py` no longer reads runtime task contextvars or config files directly.
 - [x] `xbot/graph.py` refactored with hook support:
   - `make_agent_node`, `make_prepare_context_node_with_hooks`, and the tools node all accept `LoopHooks`.
   - `build_agent_graph` requires `hooks` and `tool_registry`; no old fallback path.
 - [x] `xbot/tool_runtime.py` — tools node passes `ToolRegistry` into hook context; guard hooks now read sandbox metadata from registry instead of old `tools.py`.
 - [x] `xbot/interaction.py` — `HermesInteraction.create()` bootstraps `ToolRegistry` and `LoopHooks`, passes them to graph.
+- [x] `xbot/runtime.py` — added `RuntimeFrame`, `PersonalityProjection`, `TaskProjection`, `SandboxProjection`, and `ToolRegistrySnapshot`; `HermesInteraction` builds a frame for each user turn.
 - [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata. `xbot/tools.py` is now a compatibility re-export only.
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
-- [x] Latest full verification passed: `uv run pytest -q` (`100 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`101 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 

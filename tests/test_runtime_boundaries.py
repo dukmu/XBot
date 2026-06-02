@@ -2107,70 +2107,98 @@ class TestCacheFriendlyContext:
         assert "changed notice" in prompt3
 
     def test_build_dag_suffix_contains_task_context(self, temp_data_dir):
-        from xbot.config import configure_runtime_paths
         from xbot.context import build_dag_suffix
-        from xbot.state import TaskStateStore, configure_runtime_task_state, reset_runtime_task_state
 
-        paths = configure_runtime_paths(session_id="dag-suffix-test", personality_id="default", data_dir=temp_data_dir)
-        store = TaskStateStore.create(
-            tasks_root=temp_data_dir / "state",
-            thread_id="test-thread",
-            session_id="dag-suffix-test",
-            personality_id="default",
-            task_id="agent",
-            direct_root=True,
-            goal="# Goal\n\nTest task.\n",
+        suffix = build_dag_suffix(
+            sandbox_summary="sandbox: off",
+            user_context=UserContext(user_id="test-user", user_name="Tester"),
+            task_context="# Task\nactive node: n1",
+            pending_mailbox_items=2,
         )
-        # Populate context.md so the suffix can read it
-        store.project_context()
-        token = configure_runtime_task_state(store)
-        try:
-            suffix = build_dag_suffix(sandbox_summary="sandbox: off")
-            assert "# Current State" in suffix
-            assert "# Task State Projection" in suffix
-        finally:
-            reset_runtime_task_state(token)
+        assert "# Current State" in suffix
+        assert "# Task State Projection" in suffix
+        assert "active node: n1" in suffix
+        assert "pending_mailbox_items: 2" in suffix
 
     def test_context_messages_has_dag_suffix_at_end(self, temp_data_dir):
         from xbot.config import configure_runtime_paths
         from xbot.context import build_context_messages, invalidate_system_prompt_cache
-        from xbot.state import TaskStateStore, configure_runtime_task_state, reset_runtime_task_state
         from langchain_core.messages import HumanMessage
 
         invalidate_system_prompt_cache()
 
         paths = configure_runtime_paths(session_id="ctx-msg-test", personality_id="default", data_dir=temp_data_dir)
-        store = TaskStateStore.create(
-            tasks_root=temp_data_dir / "state",
-            thread_id="test-thread",
-            session_id="ctx-msg-test",
-            personality_id="default",
-            task_id="agent",
-            direct_root=True,
-            goal="# Goal\n\nTest context.\n",
+        user_ctx = UserContext(user_id="test-user", user_name="Tester")
+        state = {
+            "user_context": user_ctx.model_dump(),
+            "agent_role": "test assistant",
+            "active_subagents": [],
+            "system_notice": "",
+        }
+        messages = build_context_messages(
+            state,
+            sandbox_summary="sandbox: enabled",
+            message_chain=[HumanMessage(content="hello")],
         )
-        token = configure_runtime_task_state(store)
-        try:
-            user_ctx = UserContext(user_id="test-user", user_name="Tester")
-            state = {
-                "user_context": user_ctx.model_dump(),
-                "agent_role": "test assistant",
-                "active_subagents": [],
-                "system_notice": "",
-            }
-            messages = build_context_messages(
-                state,
-                sandbox_summary="sandbox: enabled",
-                message_chain=[HumanMessage(content="hello")],
-            )
 
-            assert len(messages) >= 2
-            # First message is system prompt
-            assert "test assistant" in messages[0].content or "# Agent Instructions" in messages[0].content
-            # Last message is DAG suffix
-            assert "# Current State" in messages[-1].content
-            assert "# Task State Projection" in messages[-1].content
-            # User message is in the middle
-            assert messages[1].content == "hello"
-        finally:
-            reset_runtime_task_state(token)
+        assert len(messages) >= 2
+        # First message is system prompt
+        assert "test assistant" in messages[0].content or "# Agent Instructions" in messages[0].content
+        # Last message is DAG suffix
+        assert "# Current State" in messages[-1].content
+        assert "# Task State Projection" in messages[-1].content
+        # User message is in the middle
+        assert messages[1].content == "hello"
+
+    def test_context_messages_use_runtime_frame_projection(self, temp_data_dir):
+        from langchain_core.messages import HumanMessage
+        from xbot.config import RuntimePaths
+        from xbot.context import build_context_messages, invalidate_system_prompt_cache
+        from xbot.runtime import (
+            PersonalityProjection,
+            RuntimeFrame,
+            SandboxProjection,
+            TaskProjection,
+            ToolRegistrySnapshot,
+        )
+
+        invalidate_system_prompt_cache()
+        user_ctx = UserContext(user_id="frame-user", user_name="Frame User")
+        frame = RuntimeFrame(
+            runtime=RuntimeContext(
+                paths=RuntimePaths(data_dir=temp_data_dir, session_id="frame-session", personality_id="default"),
+                thread_id="frame-thread",
+                task_id="agent",
+                run_id="run_frame",
+                trace_id="trace_frame",
+            ),
+            user=user_ctx,
+            personality=PersonalityProjection(
+                name="default",
+                agent_role="Frame-specific engineer",
+                system_template="User: {{ user_context.user_name }}\nRole: {{ agent_config.agent_role }}",
+                instructions="Use explicit frame instructions.",
+                memory="Frame memory entry.",
+                skills_summary="Frame skill summary.",
+            ),
+            sandbox=SandboxProjection(summary="frame sandbox"),
+            tools=ToolRegistrySnapshot(names=("shell",), sandbox_modes={"shell": "sandboxed"}),
+            task=TaskProjection(context_text="Frame task projection.", pending_mailbox_items=3),
+            system_notice="frame notice",
+            active_subagents=("child-a",),
+        )
+
+        messages = build_context_messages(
+            {"runtime_frame": frame},
+            sandbox_summary="ignored sandbox",
+            message_chain=[HumanMessage(content="hello")],
+        )
+
+        assert "Frame-specific engineer" in messages[0].content
+        assert "Use explicit frame instructions." in messages[0].content
+        assert "Frame memory entry." in messages[0].content
+        assert "Frame skill summary." in messages[0].content
+        assert "frame sandbox" in messages[0].content
+        assert "Frame task projection." in messages[-1].content
+        assert "pending_mailbox_items: 3" in messages[-1].content
+        assert "active_subagents: 1" in messages[-1].content
