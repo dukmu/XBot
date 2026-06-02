@@ -30,6 +30,7 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
 - Task mode：`task_begin` 写入目标和 DAG，`plan_next`/`plan_update` 推进节点，`context.md` 真实投影任务状态。
+- Summaries/mailbox projection：summary artifacts 和 pending mailbox 会进入 `context.md`。
 - Read locator：`filesystem_read` 支持 pattern、line range、context lines 和截断。
 - Verification 阶段：校验任务目录文件、计划 DAG、事件计数和 materialized state 一致性。
 - Provider/smoke refactor：隔离 data dir 中通过 `HermesInteraction` 执行 `calculator.py` 重构并验证 audit state。

@@ -37,6 +37,9 @@ from xbot.tools import (
     plan_next,
     plan_update,
     shell,
+    summary_add,
+    summary_list,
+    summary_read,
     subagent_create,
     subagent_wait,
     task_begin,
@@ -438,6 +441,48 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
     assert "n_verify" in context
     assert '"mode": "task"' in status
     assert '"mode": "chat"' in exited
+
+
+@pytest.mark.asyncio
+async def test_summary_tools_project_into_context(temp_data_dir):
+    """Summaries should be durable artifacts and visible in context.md."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="summary-tools",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        added = json.loads(await summary_add.ainvoke({"content": "User prefers DAG-first execution.", "reason": "preference"}))
+        listed = json.loads(await summary_list.ainvoke({"limit": 2}))
+        content = await summary_read.ainvoke({"summary_id": added["summary_id"]})
+    finally:
+        reset_runtime_task_state(token)
+
+    context = store.paths.context_md.read_text(encoding="utf-8")
+    state = store.materialize_state()
+    assert added["summary_id"] == "summary_000001"
+    assert listed[0]["summary_id"] == "summary_000001"
+    assert "DAG-first" in content
+    assert "## Recent Summaries" in context
+    assert "DAG-first" in context
+    assert state["summaries"]["count"] == 1
+
+
+def test_project_context_includes_pending_mailbox(temp_data_dir):
+    """Pending mailbox items should influence task context projection."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="mailbox-context",
+        session_id="default",
+        personality_id="default",
+    )
+    store.send_mailbox_message(sender="runtime", recipient="agent", subject="review", content="Check active node")
+    context = store.paths.context_md.read_text(encoding="utf-8")
+
+    assert "## Pending Mailbox" in context
+    assert "Check active node" in context
 
 
 def test_task_state_store_materializes_events(temp_data_dir):
