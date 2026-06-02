@@ -204,6 +204,7 @@ Large tool results are cached under `data/sessions/<session_id>/cache/tool-resul
 `plan.yaml` is an executable DAG, not only notes. The runtime validates node dependencies, exposes `ready_nodes` and `active_node` in `state.yaml`, and checkpoints prior plan versions under `checkpoints/plans/` when the plan changes.
 Runtime events, graph projections, artifacts, and summaries are attributed to the current running plan node when task mode is active. `state.yaml` exposes per-node DAG activity, and `plan_node_history` can inspect the event history for a specific node.
 Plan mutation and scheduling tools require task mode. A task cannot exit with `completed` while the DAG still has unfinished, blocked, or failed nodes; use `cancelled` or `failed` for explicit early exits.
+The system prompt also instructs the model to use task mode for complex multi-step work and to drive the DAG through `plan_next` / `plan_update`.
 
 ## Built-in Tools
 

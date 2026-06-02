@@ -19,6 +19,7 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - 系统 sandbox：工具注册、默认 deny、ask 一次性授权、symlink escape、shell 预检和 bubblewrap 子进程隔离。
 - Runtime paths：session/personality 路径派生和 context-local 隔离。
 - Personality config：canonical `data/personalities/<id>/` 布局、instructions/memory 加载、personality-scoped permissions/sandbox。
+- Prompt contract：system prompt 包含 task mode 操作规则，要求复杂多步工作使用 `task_begin` 和 DAG 推进工具。
 - 工具调用：`shell`、`filesystem_*`、`ask`、`compact`、`context_head`、`context_rewind`、`mailbox_send`、`mailbox_read`、`skill_load`、memory 和 P0 task record 工具。
 - 工具结果 cache：大结果 file-backed cache，可通过新 cache 实例读取持久化内容。
 - 交互 runtime：batch/stream 两种模式，合并 tool confirmation，interrupt resume，`/reset` 对应的 clean thread 语义。

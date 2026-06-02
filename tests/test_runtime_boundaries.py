@@ -12,7 +12,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from tests.test_personality_runtime import write_local_runtime
 from xbot.config import configure_runtime_paths
-from xbot.models import PermissionConfig, SandboxConfig
+from xbot.context import build_system_prompt
+from xbot.models import PermissionConfig, SandboxConfig, UserContext
 from xbot.permissions import PermissionSystem
 from xbot.sandbox import SandboxPolicy, reset_runtime_sandbox, set_runtime_sandbox
 from xbot.runtime import RuntimeContext
@@ -111,6 +112,24 @@ async def test_sandbox_enabled_requires_tool_registration(mock_llm):
             permission_system=PermissionSystem(PermissionConfig(default="allow")),
             sandbox_policy=SandboxPolicy(SandboxConfig(enabled=True)),
         )
+
+
+def test_system_prompt_contains_task_mode_operating_rules(temp_data_dir):
+    """The model should receive task-mode operating rules, not only task tools."""
+    write_local_runtime(temp_data_dir)
+    configure_runtime_paths(data_dir=temp_data_dir, session_id="default", personality_id="default")
+
+    prompt = build_system_prompt(
+        {
+            "messages": [],
+            "user_context": UserContext(user_id="u", user_name="User", platform="test", session_type="private"),
+        },
+        sandbox_summary="sandbox disabled",
+    )
+
+    assert "enter task mode with task_begin" in prompt
+    assert "drive the DAG through plan_next and plan_update" in prompt
+    assert "Do not call task_exit with completed" in prompt
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
