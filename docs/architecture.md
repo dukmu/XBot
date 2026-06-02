@@ -93,7 +93,7 @@ data/sessions/<session_id>/state/
 - `plan_add_nodes(nodes_json)`：向 DAG 追加节点，保持计划版本化。
 - `plan_autofill(scope, constraints_json)`：为当前任务补齐标准 inspect/implement/verify/report DAG 骨架，已有同类型节点时不重复创建。
 - `plan_next()`：由调度器选择 ready node，并将其标记为 running；如果已有 running node，则返回当前 running node，不启动第二个节点。
-- `plan_update(node_id, status)`：推进节点到 `verified`、`failed`、`blocked` 等状态。
+- `plan_update(node_id, status)`：推进节点到 `completed`/`verified`、`failed`、`blocked` 等状态；`completed` 和 `verified` 都会解锁后续依赖。
 - `plan_node_history(node_id)`：读取归因到某个 DAG 节点的 graph events。
 - `task_status()`：读取当前 goal/plan/context 投影，并返回 `next_action` 建议（例如 `plan_next`、`plan_update`、`task_exit`）。
 - `task_exit()`：退出任务模式，保留 DAG 和事件历史。

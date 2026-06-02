@@ -33,7 +33,7 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新在 `versions/plans/index.yaml` 记录变更前后快照。
 - DAG event attribution：turn/tool/artifact/summary 图事件归因到 active plan node，`state.yaml.dag` 和 `plan_node_history` 可审计节点执行历史。
-- Task mode：`task_begin` 写入目标和 DAG，`plan_autofill` 补齐 inspect/implement/verify/report 骨架，`plan_next`/`plan_update` 推进节点，调度器保持单 running node，plan mutation/scheduling 离开 task mode 会被拒绝，`completed` 退出要求 DAG 已完成，`context.md` 真实投影任务状态和节点结果。
+- Task mode：`task_begin` 写入目标和 DAG，`plan_autofill` 补齐 inspect/implement/verify/report 骨架，`plan_next`/`plan_update` 推进节点，`completed`/`verified` 节点都会解锁后续依赖，调度器保持单 running node，plan mutation/scheduling 离开 task mode 会被拒绝，`completed` 退出要求 DAG 已完成，`context.md` 真实投影任务状态和节点结果。
 - Summaries/mailbox projection：summary artifacts 和 pending mailbox 会进入 `context.md`。
 - Claims/summaries verification：`claim_add` 写入带 evidence/status 的 claim，summary markdown 带 front matter，`verify_task_state` 会校验结构。
 - Read locator：`filesystem_read` 支持 pattern、line range、context lines 和截断。
@@ -70,7 +70,7 @@ mock_llm.set_response_sequence([
 
 `xbot.smoke_llm.SmokeRefactorLLM` 是端到端行为测试替身。它不直接改文件，而是通过真实 `filesystem_read` / `filesystem_write` 工具完成一个小型 Python 重构，用来验证 runtime、personality config、permissions、agent state 和 audit log。
 
-`scripts/provider_smoke_refactor.py` 使用真实 provider，默认读取 `DEEPSEEK_API_TOKEN` 和 `DEEPSEEK_OPENAI_BASE_URL`，模型默认是已验收通过的 `deepseek-v4-flash`。它会在隔离目录生成完整配置和 workspace，连续执行两个 refactor 任务，并开启 trace 验证 `task_begin`、`plan_autofill`、`plan_add_nodes`、`plan_next`、`plan_update`、`filesystem_read/write`、`summary_add`、`claim_add`、`compact`、`task_status` 等工具轨迹。该脚本不属于普通单元测试，因为它依赖外部 provider 配额和网络。
+`scripts/provider_smoke_refactor.py` 使用真实 provider，默认读取 `DEEPSEEK_API_TOKEN` 和 `DEEPSEEK_OPENAI_BASE_URL`，模型默认是已验收通过的 `deepseek-v4-flash`。它会在隔离目录生成完整配置和 workspace，连续执行两个 refactor 任务，并开启 trace 验证 `task_begin`、`plan_autofill`、`plan_add_nodes`、`plan_next`、`plan_update`、`filesystem_read/write`、`summary_add`、`claim_add`、`compact`、`task_status` 等工具轨迹、关键工具 DAG 归因、无持久化 token delta、DAG 活动计数和 claims/summaries。该脚本不属于普通单元测试，因为它依赖外部 provider 配额和网络。
 
 ## 写新测试的原则
 

@@ -1009,6 +1009,54 @@ def test_plan_dag_reports_missing_dependencies():
     assert materialize_plan_state(plan)["status"] == "invalid"
 
 
+def test_completed_plan_nodes_satisfy_dependencies(temp_data_dir):
+    """Models often use completed; it should unlock dependent DAG nodes."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="completed-deps",
+        session_id="default",
+        personality_id="default",
+    )
+    store.begin_task_mode(
+        goal="Accept completed status",
+        nodes=[
+            {"id": "n001", "title": "Inspect", "depends_on": ["n_goal"], "status": "ready"},
+            {"id": "n002", "title": "Implement", "depends_on": ["n001"], "status": "pending"},
+        ],
+        reason="test",
+    )
+    store.update_plan_node_status("n001", "completed", reason="inspection done")
+    state = store.materialize_state()
+
+    assert state["plan"]["ready_nodes"] == ["n002"]
+    assert "n001" in state["plan"]["verified_nodes"]
+    assert "n001" in state["plan"]["completed_nodes"]
+
+
+def test_post_completion_artifacts_attribute_to_last_successful_node(temp_data_dir):
+    """Report artifacts created before task_exit should not lose DAG attribution."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="post-completion-artifacts",
+        session_id="default",
+        personality_id="default",
+    )
+    store.begin_task_mode(
+        goal="Attribute report artifacts",
+        nodes=[
+            {"id": "n_report", "type": "report", "title": "Report", "depends_on": ["n_goal"], "status": "ready", "priority": 10},
+        ],
+        reason="test",
+    )
+    store.update_plan_node_status("n_report", "completed", reason="report done")
+    summary = store.record_summary(content="Done.", reason="post report", source="test")
+
+    graph_events = list(read_jsonl(store.paths.graph_jsonl))
+
+    assert summary["plan_node_id"] == "n_report"
+    assert any(event.get("id") == summary["summary_id"] and event.get("plan_node_id") == "n_report" for event in graph_events)
+
+
 def test_task_state_store_versions_plan_updates(temp_data_dir):
     """Plan changes should create a new version and keep prior versions on disk."""
     store = TaskStateStore.create(

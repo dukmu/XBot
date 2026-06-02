@@ -128,6 +128,7 @@ async def run(
         "task_begin -> plan_autofill -> plan_next -> filesystem_read -> filesystem_write -> "
         "plan_update -> summary_add -> claim_add -> compact -> task_status. "
         "Refactor calculator.py only by changing `return a+b` to `return a + b`. "
+        "The claim_add claim/evidence must explicitly mention calculator.py. "
         "After finishing every DAG node, call task_exit with completed."
     )
     assert_no_runtime_errors(data_dir, workspace, calculator, runtime, result1)
@@ -138,6 +139,7 @@ async def run(
         "plan_update -> summary_add -> claim_add -> task_status. "
         "Refactor stats.py only by changing `return total/count` to `return total / count`. "
         "The plan_add_nodes call must add one task-specific verification node. "
+        "The claim_add claim/evidence must explicitly mention stats.py. "
         "After finishing every DAG node, call task_exit with completed."
     )
     assert_no_runtime_errors(data_dir, workspace, stats, runtime, result2)
@@ -201,13 +203,20 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
     events = list(read_jsonl(runtime.state_store.paths.events_jsonl))
     graph_events = list(read_jsonl(runtime.state_store.paths.graph_jsonl))
     tool_names = []
+    attributed_tools = set()
     for event in graph_events:
         if event.get("event") != "tool_call_observed":
             continue
         payload = event.get("payload") or {}
         name = payload.get("name") or payload.get("tool")
         if name:
-            tool_names.append(str(name))
+            tool_name = str(name)
+            tool_names.append(tool_name)
+            if event.get("plan_node_id"):
+                attributed_tools.add(tool_name)
+    if any(event.get("type") == "summary_created" and event.get("source") == "compaction" for event in events):
+        tool_names.append("compact")
+        attributed_tools.add("compact")
     required = {
         "task_begin",
         "plan_autofill",
@@ -224,14 +233,41 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
     missing = sorted(required - set(tool_names))
     if missing:
         raise SystemExit(f"Smoke failed: missing required tool trace(s): {missing}; observed={tool_names}")
+    required_order = ["task_begin", "plan_autofill", "plan_next", "filesystem_read", "filesystem_write", "summary_add", "claim_add"]
+    positions = {name: tool_names.index(name) for name in required_order if name in tool_names}
+    if list(positions.values()) != sorted(positions.values()):
+        raise SystemExit(f"Smoke failed: required tool order was not preserved: {positions}; observed={tool_names}")
+    attribution_required = {
+        "plan_next",
+        "plan_update",
+        "filesystem_read",
+        "filesystem_write",
+        "summary_add",
+        "claim_add",
+        "task_status",
+    }
+    missing_attribution = sorted(attribution_required - attributed_tools)
+    if missing_attribution:
+        raise SystemExit(
+            f"Smoke failed: required tool trace(s) missing DAG attribution: {missing_attribution}; "
+            f"attributed={sorted(attributed_tools)}"
+        )
+    if any(event.get("type") == "interaction_event" and event.get("kind") == "message_delta" for event in events):
+        raise SystemExit("Smoke failed: token delta events should not be persisted in detailed trace")
     if sum(1 for event in events if event.get("type") == "task_mode_started") < 2:
         raise SystemExit("Smoke failed: expected two task_mode_started events")
     if sum(1 for event in events if event.get("type") == "task_mode_exited" and event.get("status") == "completed") < 2:
         raise SystemExit("Smoke failed: expected two completed task_mode_exited events")
     claims = (runtime.state_store.materialize_state().get("claims") or {}).get("count", 0)
     summaries = (runtime.state_store.materialize_state().get("summaries") or {}).get("count", 0)
+    dag_counts = (runtime.state_store.materialize_state().get("dag") or {}).get("node_event_counts") or {}
+    if not dag_counts:
+        raise SystemExit("Smoke failed: expected DAG node activity counts")
     if claims < 2 or summaries < 2:
         raise SystemExit(f"Smoke failed: expected at least two claims and summaries, got claims={claims} summaries={summaries}")
+    claim_text = json.dumps(runtime.state_store.claims(), ensure_ascii=False).lower()
+    if "calculator.py" not in claim_text or "stats.py" not in claim_text:
+        raise SystemExit("Smoke failed: expected verified claims for both calculator.py and stats.py")
 
 
 def read_jsonl(path: Path) -> list[dict]:
