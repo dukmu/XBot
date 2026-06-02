@@ -245,7 +245,13 @@ async def test_runtime_processes_detached_subagents_under_parent_session(temp_da
     sandbox_token = set_runtime_sandbox(runtime.sandbox)
     try:
         created = await subagent_create.ainvoke(
-            {"task": "Refactor calculator.py to improve readability.", "name": "worker", "mode": "detach"}
+            {
+                "task": "Refactor calculator.py to improve readability.",
+                "name": "worker",
+                "mode": "detach",
+                "timeout_seconds": 30,
+                "turn_budget": 2,
+            }
         )
     finally:
         reset_runtime_sandbox(sandbox_token)
@@ -264,6 +270,9 @@ async def test_runtime_processes_detached_subagents_under_parent_session(temp_da
     assert "return a + b" in target.read_text(encoding="utf-8")
     assert manifest["mode"] == "detach"
     assert manifest["status"] == "completed"
+    assert manifest["timeout_seconds"] == 30
+    assert manifest["turn_budget"] == 2
+    assert manifest["turns_used"] == 1
     assert manifest["child_session_id"] == session_id
     assert manifest["child_task_state"] == str(temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state")
     assert (temp_data_dir / "sessions" / session_id / "subagents" / subagent_id / "state" / "state.yaml").exists()
