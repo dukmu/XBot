@@ -59,6 +59,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Task guidance MVP: `task_status` and `debug_analyze` expose `next_action` recommendations for chat/ready/running/blocked/completed DAG states.
 - [x] Claims/summary structure MVP: `claim_add`/`claim_list` write structured evidence claims, summaries use markdown front matter, and `verify_task_state` checks both.
 - [x] Subagent DAG/debug MVP: attach-mode subagents start with their own delegation DAG, parent graph records delegated/finished events, and `debug_analyze` expands child DAG summaries.
+- [x] Live stream trace attribution MVP: when trace is enabled, stream events are persisted at event time, token deltas are not persisted, and tool calls keep the active DAG node attribution.
 
 ## Notes
 
@@ -80,6 +81,9 @@ Current continuation objective: make the personality configuration system consis
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed after task-mode guard changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`79 passed`).
+- Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
+- Latest DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, two consecutive DAG tasks, trajectory validation enabled).
+- Latest full verification passed: `uv run pytest -q` (`80 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Latest full verification passed: `uv run pytest -q` (`74 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.

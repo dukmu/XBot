@@ -1311,6 +1311,67 @@ async def test_interaction_stream_normalizes_tool_call_events(mock_llm, user_con
 
 
 @pytest.mark.asyncio
+async def test_interaction_stream_trace_records_events_at_live_plan_node(mock_llm, user_context, temp_data_dir):
+    """Streaming trace should persist tool calls while the matching DAG node is active."""
+    from xbot.interaction import HermesInteraction
+    from xbot.graph import build_agent_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mock_llm.set_response_sequence(
+        [
+            {
+                "content": "begin",
+                "tool_calls": [{"name": "task_begin", "args": {"goal": "Trace DAG", "steps_json": '["Inspect"]'}, "id": "call_begin"}],
+            },
+            {
+                "content": "next",
+                "tool_calls": [{"name": "plan_next", "args": {"reason": "inspect"}, "id": "call_next"}],
+            },
+            {"content": "done"},
+        ]
+    )
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="stream-live-trace",
+        session_id="default",
+        personality_id="default",
+    )
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[task_begin, plan_next],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False)),
+    )
+    runtime = HermesInteraction(
+        user_context=user_context,
+        agent_config=type("AgentCfg", (), {"name": "test", "max_context_tokens": 8000})(),
+        provider_config=type("ProviderCfg", (), {"name": "mock", "model": "mock"})(),
+        graph=graph,
+        graph_config={"configurable": {"thread_id": "stream_live_trace"}},
+        sandbox=SandboxPolicy(SandboxConfig(enabled=False)),
+        tools=[task_begin, plan_next],
+        database_path=":memory:",
+        state_store=store,
+        trace_events=True,
+    )
+
+    events = [event async for event in runtime.stream_user_message("start")]
+    graph_events = list(read_jsonl(store.paths.graph_jsonl))
+    persisted_events = list(read_jsonl(store.paths.events_jsonl))
+
+    assert any(event.kind == "tool_call" for event in events)
+    assert any(
+        event.get("event") == "tool_call_observed"
+        and event.get("payload", {}).get("name") == "plan_next"
+        and event.get("plan_node_id") == "n001"
+        for event in graph_events
+    )
+    assert not any(event.get("kind") == "message_delta" for event in persisted_events)
+
+
+@pytest.mark.asyncio
 async def test_interaction_stream_preserves_zero_arg_tool_calls(mock_llm, user_context):
     """Zero-argument tools are valid and should be emitted from final updates."""
     from xbot.interaction import HermesInteraction
