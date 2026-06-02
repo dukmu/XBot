@@ -1,6 +1,7 @@
 """Focused runtime boundary tests for Hermes."""
 
 import shutil
+import json
 import yaml
 
 import pytest
@@ -27,6 +28,7 @@ from xbot.tools import (
     compact,
     context_head,
     context_rewind,
+    debug_analyze,
     filesystem_read,
     filesystem_write,
     mailbox_read,
@@ -403,6 +405,35 @@ def test_task_state_store_materializes_events(temp_data_dir):
     assert events[-1]["type"] == "turn_finished"
 
 
+def test_task_state_store_batches_materialized_state_writes(temp_data_dir):
+    """Batching should avoid rewriting state.yaml for every event projection."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="materialize-batch",
+        session_id="default",
+        personality_id="default",
+    )
+    original = store.write_materialized_state
+    calls = 0
+
+    def counted_write():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    store.write_materialized_state = counted_write
+    store.record_turn_events(
+        turn_id="turn_000001",
+        events=[
+            type("Evt", (), {"kind": "message", "source": "agent", "payload": "one"})(),
+            type("Evt", (), {"kind": "tool_call", "source": "agent", "payload": {"name": "shell"}})(),
+            type("Evt", (), {"kind": "message", "source": "agent", "payload": "two"})(),
+        ],
+    )
+
+    assert calls == 1
+
+
 def test_context_tree_rewind_moves_head_without_deleting_history(temp_data_dir):
     """Rewind should move the context head while preserving append-only history."""
     store = TaskStateStore.create(
@@ -509,19 +540,29 @@ async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_d
 
     assert "Subagent worker_" in result
     assert "completed" in result
-    child_sessions = sorted((temp_data_dir / "sessions").glob("parent__subagent__worker_*"))
-    assert child_sessions
-    child_workspace_file = child_sessions[0] / "workspace" / "calculator.py"
-    assert "return a + b" in child_workspace_file.read_text(encoding="utf-8")
+    assert not list((temp_data_dir / "sessions").glob("parent__subagent__worker_*"))
+    assert "return a + b" in (parent_workspace / "calculator.py").read_text(encoding="utf-8")
     mailbox = store.materialize_state()["mailbox"]
     assert mailbox["pending_by_recipient"]["parent"] == 1
-    subagent_id = child_sessions[0].name.removeprefix("parent__subagent__")
+    manifests = sorted((temp_data_dir / "sessions" / "parent" / "subagents").glob("worker_*/manifest.json"))
+    assert manifests
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    subagent_id = manifest["subagent_id"]
+    assert manifest["child_session_id"] == "parent"
+    assert manifest["child_thread_id"] == f"subagent-{subagent_id}"
+    assert manifest["workspace"] == str(parent_workspace)
+    assert (temp_data_dir / "sessions" / "parent" / "tasks" / f"subagent-{subagent_id}").exists()
     sandbox_token = set_runtime_sandbox(sandbox)
+    state_token = configure_runtime_task_state(store)
     try:
         wait_result = await subagent_wait.ainvoke({"subagent_id": subagent_id})
+        debug = json.loads(await debug_analyze.ainvoke({}))
     finally:
         reset_runtime_sandbox(sandbox_token)
+        reset_runtime_task_state(state_token)
     assert "completed" in wait_result
+    assert debug["subagents"][0]["child_session_id"] == "parent"
+    assert debug["task"]["thread_id"] == "parent-task"
 
 
 @pytest.mark.asyncio

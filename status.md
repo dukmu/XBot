@@ -40,8 +40,10 @@ Current continuation objective: make the personality configuration system consis
 - [x] Real DeepSeek provider smoke completed successfully.
 - [x] Context tree MVP: `context_tree.jsonl` records append-only context nodes, `state.yaml` materializes head/node counts, and `context_rewind` moves the head without deleting history.
 - [x] Mailbox MVP: `mailbox.jsonl` records send/read acknowledgements, `state.yaml` materializes pending counts, and agent-facing tools can send/read messages.
-- [x] Subagent MVP: `subagent_create(mode="attach")` runs an isolated child `HermesInteraction`, writes a result, and reports back through parent mailbox.
+- [x] Subagent MVP: `subagent_create(mode="attach")` runs a child thread inside the parent session, accesses the main workspace, writes a result, and reports back through parent mailbox.
 - [x] Checkpoint persistence MVP: `FileBackedSaver` persists LangGraph checkpoints to `data/sessions/<id>/checkpoints/langgraph.pkl` and reloads them across saver instances.
+- [x] Debug tools MVP: `debug_analyze` summarizes task DAG, plan, state, context tree, mailbox, and subagent manifests.
+- [x] Event-write performance MVP: append-only logs remain immediate, while materialized `state.yaml` rewrites are batched during turn event projection.
 
 ## Notes
 
@@ -53,9 +55,9 @@ Current continuation objective: make the personality configuration system consis
 - Full compile verification passed: `python -m py_compile main.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py`.
 - Latest local verification passed: `uv run pytest -q` (`60 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Latest full verification passed: `uv run pytest -q` (`65 passed`).
+- Latest full verification passed: `uv run pytest -q` (`66 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after checkpoint persistence change: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
+- Real DeepSeek smoke passed after subagent/runtime fixes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/tasks/calculator-refactor/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 
@@ -79,3 +81,4 @@ Current continuation objective: make the personality configuration system consis
 - Mailbox: MVP complete. Remaining scope is wiring runtime background events onto the mailbox queue.
 - Subagent: attach-mode MVP complete. Remaining scope is true async detach runner, budgets/timeouts, cancellation, and child workspace diff handoff.
 - Persistence: checkpoint MVP complete via file-backed saver. Remaining scope is replacing pickle-backed checkpoint/store with official SQLite/Postgres packages when available.
+- Current subagent layout note: new child runs stay under the parent session. Existing `data/sessions/*__subagent__*` directories are historical manual-run artifacts from the earlier implementation and were not deleted.

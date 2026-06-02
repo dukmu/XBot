@@ -118,7 +118,8 @@ python main.py --print-thoughts
 - `filesystem_*` 会按 sandbox 或 workspace 边界访问本地文件。
 - 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
-- `subagent_create(mode="attach")` 会同步运行隔离 child runtime；`detach` 仍是 pending record，等待后续后台 runner。
+- `subagent_create(mode="attach")` 会在当前 session 下同步运行 child thread，并访问 main workspace；`detach` 仍是 pending record，等待后续后台 runner。
+- `debug_analyze` 可检查当前 task 的 DAG、plan、state、context tree、mailbox 和 subagent manifest。
 
 ## 验证安装
 

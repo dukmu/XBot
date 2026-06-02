@@ -25,7 +25,9 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - 文件化任务 state：任务目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl`/`mailbox.jsonl` append-only 日志、`state.yaml` materialized view、interaction 事件落盘。
 - 上下文树/rewind：turn/message/tool 事件生成 context 节点，`context_rewind` 移动 head 但保留历史。
 - Mailbox：send/read/ack 都写入 append-only 队列，`state.yaml` 投影 pending count。
-- Subagent：attach 模式运行隔离 child runtime，复制 parent workspace，写 result 并通过 mailbox 回传。
+- Subagent：attach 模式在 parent session 下运行 child thread，访问 main workspace，写 result 并通过 mailbox 回传。
+- Debug tools：`debug_analyze` 汇总 DAG、plan、state、context tree、mailbox 和 subagent manifest。
+- File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。
 - Verification 阶段：校验任务目录文件、计划 DAG、事件计数和 materialized state 一致性。
 - Provider/smoke refactor：隔离 data dir 中通过 `HermesInteraction` 执行 `calculator.py` 重构并验证 audit state。
