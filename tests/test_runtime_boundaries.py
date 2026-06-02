@@ -566,6 +566,37 @@ async def test_plan_autofill_adds_standard_dag_skeleton(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_task_status_reports_next_action(temp_data_dir):
+    """Task status should guide the agent toward the next DAG operation."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="task-next-action",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        chat_status = json.loads(await task_status.ainvoke({}))
+        await task_begin.ainvoke({"goal": "Guide next action", "steps_json": '["Inspect"]'})
+        ready_status = json.loads(await task_status.ainvoke({}))
+        await plan_next.ainvoke({})
+        running_status = json.loads(await task_status.ainvoke({}))
+        await plan_update.ainvoke({"node_id": "n001", "status": "verified"})
+        complete_status = json.loads(await task_status.ainvoke({}))
+        debug = json.loads(await debug_analyze.ainvoke({}))
+    finally:
+        reset_runtime_task_state(token)
+
+    assert chat_status["next_action"]["action"] == "task_begin"
+    assert ready_status["next_action"]["action"] == "plan_next"
+    assert ready_status["next_action"]["node_id"] == "n001"
+    assert running_status["next_action"]["action"] == "plan_update"
+    assert running_status["next_action"]["node_id"] == "n001"
+    assert complete_status["next_action"]["action"] == "task_exit"
+    assert debug["task"]["next_action"]["action"] == "task_exit"
+
+
+@pytest.mark.asyncio
 async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
     """Turn, tool, artifact, and summary events should point at the active DAG node."""
     store = TaskStateStore.create(

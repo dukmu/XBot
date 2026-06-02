@@ -87,7 +87,7 @@ data/sessions/<session_id>/tasks/<thread_id>/
 - `plan_next()`：由调度器选择 ready node，并将其标记为 running；如果已有 running node，则返回当前 running node，不启动第二个节点。
 - `plan_update(node_id, status)`：推进节点到 `verified`、`failed`、`blocked` 等状态。
 - `plan_node_history(node_id)`：读取归因到某个 DAG 节点的 graph events。
-- `task_status()`：读取当前 goal/plan/context 投影。
+- `task_status()`：读取当前 goal/plan/context 投影，并返回 `next_action` 建议（例如 `plan_next`、`plan_update`、`task_exit`）。
 - `task_exit()`：退出任务模式，保留 DAG 和事件历史。
 
 任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。如果任务缺少可执行结构，agent 可以先用 `plan_autofill` 生成标准骨架，再用 `plan_add_nodes` 做任务特定扩展。调度器保持单 running node，不允许通过连续 `plan_next` 并行打开多个 DAG 节点。`plan_add_nodes`、`plan_autofill`、`plan_next`、`plan_update` 只能在 task mode 中执行；`task_exit(status="completed")` 会检查 DAG，存在 ready/pending/running/blocked/failed 节点时拒绝完成退出。需要中止时必须显式用 `cancelled` 或 `failed` 状态退出。
@@ -374,6 +374,7 @@ tools -> execute or return denial
 - subagent manifest 摘要
 
 `debug_analyze(scope="dag")` 会收窄到 DAG/plan/subagent 视图，包含 plan node 表、`state.yaml.dag` 活动投影，以及最近事件按 `plan_node_id` 和事件类型聚合后的计数。
+默认 `debug_analyze` 也会给出 task `next_action`，用于定位当前 DAG 卡在哪一步。
 
 ### Mailbox
 
