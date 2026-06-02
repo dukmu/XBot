@@ -33,9 +33,10 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] `xbot/tool_runtime.py` — tools node passes `ToolRegistry` into hook context; guard hooks now read sandbox metadata from registry instead of old `tools.py`.
 - [x] `xbot/interaction.py` — `HermesInteraction.create()` bootstraps `ToolRegistry` and `LoopHooks`, passes them to graph.
 - [x] `xbot/runtime.py` — added `RuntimeFrame`, `PersonalityProjection`, `TaskProjection`, `SandboxProjection`, and `ToolRegistrySnapshot`; `HermesInteraction` builds a frame for each user turn.
+- [x] `xbot/compaction.py` — compaction is now auditable: keeps unresolved tool-call groups, writes summary source refs/range metadata, records durable `context_compacted` graph events, and appends context-tree nodes when task state is bound.
 - [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata. `xbot/tools.py` is now a compatibility re-export only.
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
-- [x] Latest full verification passed: `uv run pytest -q` (`101 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`103 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 

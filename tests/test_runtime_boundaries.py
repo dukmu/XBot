@@ -1627,6 +1627,65 @@ def test_split_for_compaction_preserves_tool_call_groups():
     assert all(message not in to_compress for message in [ai, tool_result])
 
 
+def test_split_for_compaction_keeps_unresolved_tool_calls():
+    """Compaction must not hide unresolved assistant tool calls."""
+    from xbot.graph import split_for_compaction
+
+    old = HumanMessage(content="old")
+    ai = AIMessage(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
+    recent = HumanMessage(content="recent")
+
+    to_compress, keep = split_for_compaction([old, ai, recent], keep_recent_messages=1)
+
+    assert old in to_compress
+    assert ai in keep
+    assert recent in keep
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_records_auditable_compaction_state(mock_llm, temp_data_dir):
+    """Compaction should create durable summary, graph, and context-tree audit records."""
+    from xbot.graph import make_prepare_context_node
+
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "state",
+        thread_id="compact-audit",
+        session_id="compact-audit",
+        personality_id="default",
+        task_id="agent",
+        direct_root=True,
+        goal="# Goal\n\nAudit compaction.\n",
+    )
+    mock_llm.set_response_sequence([{"content": "summary with source markers"}])
+    node = make_prepare_context_node(
+        mock_llm,
+        max_messages_before_compress=1,
+        max_context_chars=10_000,
+        keep_recent_messages=1,
+    )
+    messages = [
+        HumanMessage(content="first", id="m_first"),
+        AIMessage(content="second", id="m_second"),
+        HumanMessage(content="recent", id="m_recent"),
+    ]
+
+    token = configure_runtime_task_state(store)
+    try:
+        result = await node({"messages": messages})
+    finally:
+        reset_runtime_task_state(token)
+
+    assert result["compression_requested"] is False
+    assert result["messages"][1].additional_kwargs["summary_of"] == ["m_first", "m_second"]
+    summary = store.latest_summaries(limit=1)[0]
+    assert summary["source_message_refs"] == ["m_first", "m_second"]
+    assert summary["source_range"] == "m_first..m_second"
+    graph_events = list(read_jsonl(store.paths.graph_jsonl))
+    assert any(event.get("event") == "context_compacted" and event.get("summary_id") == summary["summary_id"] for event in graph_events)
+    context_events = list(read_jsonl(store.paths.context_tree_jsonl))
+    assert any(event.get("kind") == "context_compacted" and event.get("payload", {}).get("summary_id") == summary["summary_id"] for event in context_events)
+
+
 def test_interaction_reset_thread_clears_render_state(user_context):
     """Reset should move to a clean thread and clear interaction-side caches."""
     from xbot.interaction import HermesInteraction
