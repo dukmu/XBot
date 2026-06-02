@@ -369,6 +369,8 @@ tools -> execute or return denial
 - context tree 和 mailbox 投影
 - subagent manifest 摘要
 
+`debug_analyze(scope="dag")` 会收窄到 DAG/plan/subagent 视图，包含 plan node 表、`state.yaml.dag` 活动投影，以及最近事件按 `plan_node_id` 和事件类型聚合后的计数。
+
 ### Mailbox
 
 先不实现双 mailbox。推荐先实现统一 `EventQueue`：

@@ -469,6 +469,7 @@ async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
         )
         store.record_summary(content="Inspection finished.", reason="node progress", source="test")
         history = json.loads(await plan_node_history.ainvoke({"node_id": "n001"}))
+        debug = json.loads(await debug_analyze.ainvoke({"scope": "dag"}))
     finally:
         reset_runtime_task_state(token)
 
@@ -477,6 +478,9 @@ async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
     assert any(event.get("plan_node_id") == "n001" and event.get("type") == "summary" for event in graph_events)
     assert store.materialize_state()["dag"]["node_event_counts"]["n001"] >= 3
     assert any(event.get("plan_node_id") == "n001" for event in history)
+    assert any(node["id"] == "n001" for node in debug["plan"]["nodes"])
+    assert debug["dag"]["activity"]["node_event_counts"]["n001"] >= 3
+    assert "tool_call_observed" in debug["dag"]["event_counts_by_node_and_type"]["n001"]
 
 
 @pytest.mark.asyncio

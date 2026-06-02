@@ -213,7 +213,7 @@ Runtime events, graph projections, artifacts, and summaries are attributed to th
 | `task_begin` / `plan_next` / `plan_update` | Enter task mode and drive the executable DAG |
 | `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect task summaries |
-| `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, and subagents |
+| `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, subagents, and per-node DAG activity |
 | `filesystem_write` | Writes through the sandbox backend |
 | `filesystem_list` | Lists through the sandbox backend |
 | `ask` | Triggers a `user_ask` interrupt/resume flow |

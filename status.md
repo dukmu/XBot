@@ -49,6 +49,7 @@ Current continuation objective: make the personality configuration system consis
 - [x] Summary/context MVP: compaction and `summary_add` write durable summary artifacts, and latest summaries plus pending mailbox project into `context.md`.
 - [x] DAG attribution MVP: task-mode graph events and summaries carry `plan_node_id`; `state.yaml` exposes per-node DAG activity and `plan_node_history` inspects a node's event trail.
 - [x] Memory tools MVP: `memory_update` writes structured entries, while `memory_list` and `memory_search` make long-term memory queryable.
+- [x] Debug DAG view MVP: `debug_analyze(scope="dag")` exposes plan nodes, per-node activity, recent graph events, and event counts grouped by node/type.
 
 ## Notes
 
