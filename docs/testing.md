@@ -27,8 +27,8 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 - 文件化 agent state：状态目录初始化、`events.jsonl`/`graph.jsonl`/`context_tree.jsonl`/`mailbox.jsonl` append-only 日志、`state.yaml` materialized view、turn 事件默认落盘，详细 interaction trace 显式开启才落盘。
 - 上下文树/rewind：turn/message/tool 事件生成 context 节点，`context_rewind` 移动 head 但保留历史。
 - Mailbox：send/read/ack 都写入 append-only 队列，`state.yaml` 投影 pending count。
-- Subagent：attach 模式在 parent session 下运行 child thread，访问 main workspace，写 result 并通过 mailbox 回传。
-- Debug tools：`debug_analyze` 汇总 DAG、plan、state、context tree、mailbox 和 subagent manifest，`scope="dag"` 聚合每个 plan node 的事件类型计数。
+- Subagent：attach 模式在 parent session 下运行 child thread，访问 main workspace，child 进入自己的 task-mode DAG，parent graph 记录 delegated/finished 事件，写 result 并通过 mailbox 回传。
+- Debug tools：`debug_analyze` 汇总 DAG、plan、state、context tree、mailbox、subagent manifest 和 child DAG 摘要，`scope="dag"` 聚合每个 plan node 的事件类型计数。
 - Task guidance：`task_status` 和 `debug_analyze` 返回 `next_action`，覆盖 chat、ready、running、blocked/failed、completed 等状态。
 - File write performance：批量事件记录只 materialize 一次 `state.yaml`，避免每条投影事件都重写状态文件。
 - Plan/DAG state：校验缺失依赖、选择 ready verification node、计划更新版本化到 `checkpoints/plans`。

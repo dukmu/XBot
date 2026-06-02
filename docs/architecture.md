@@ -357,7 +357,8 @@ tools -> execute or return denial
 当前 `subagent_*` 已有 MVP worker：
 
 - `subagent_create(mode="attach")` 在真实 `HermesInteraction` 中同步启动 child thread，仍位于 parent session 下。
-- child runtime 访问 parent workspace，拥有自己的 agent DAG state、context tree、mailbox 和 audit log。
+- child runtime 访问 parent workspace，启动时进入自己的 task-mode DAG，拥有独立 agent DAG state、context tree、mailbox 和 audit log。
+- parent graph 记录 `subagent_delegated` / `subagent_finished` 事件，并按 parent active plan node 归因。
 - child 完成后写入 parent `subagents/<id>/result.txt`，并向 parent mailbox 发送 `subagent_completed` 或 `subagent_failed`。
 - `subagent_create(mode="detach")` 只创建 pending record，后续由后台 runner 接管。
 - child runtime 使用专门的 system notice，明确 subagent 身份、workspace 边界、父子协作方式和不要直接面向用户输出。
@@ -378,7 +379,7 @@ tools -> execute or return denial
 - 最近 DAG/runtime events
 - 每个 plan node 的 DAG 活动计数，配合 `plan_node_history` 做局部追踪
 - context tree 和 mailbox 投影
-- subagent manifest 摘要
+- subagent manifest 摘要，以及 child `state.yaml` / `plan.yaml` / DAG activity 摘要
 
 `debug_analyze(scope="dag")` 会收窄到 DAG/plan/subagent 视图，包含 plan node 表、`state.yaml.dag` 活动投影，以及最近事件按 `plan_node_id` 和事件类型聚合后的计数。
 默认 `debug_analyze` 也会给出 task `next_action`，用于定位当前 DAG 卡在哪一步。

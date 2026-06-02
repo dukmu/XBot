@@ -924,6 +924,14 @@ async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_d
     assert (temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "state" / "plan.yaml").exists()
     assert (temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "saver" / "langgraph.pkl").exists()
     assert not (temp_data_dir / "sessions" / "parent" / "tasks" / f"subagent-{subagent_id}").exists()
+    child_state = yaml.safe_load(
+        (temp_data_dir / "sessions" / "parent" / "subagents" / subagent_id / "state" / "state.yaml").read_text(encoding="utf-8")
+    )
+    assert child_state["mode"] == "task"
+    assert child_state["plan"]["ready_nodes"] == ["n_accept"]
+    parent_graph = list(read_jsonl(store.paths.graph_jsonl))
+    assert any(event.get("event") == "subagent_delegated" and event.get("id") == subagent_id for event in parent_graph)
+    assert any(event.get("event") == "subagent_finished" and event.get("id") == subagent_id for event in parent_graph)
     sandbox_token = set_runtime_sandbox(sandbox)
     state_token = configure_runtime_task_state(store)
     try:
@@ -934,6 +942,9 @@ async def test_attach_subagent_runs_child_runtime_and_reports_via_mailbox(temp_d
         reset_runtime_task_state(state_token)
     assert "completed" in wait_result
     assert debug["subagents"][0]["child_session_id"] == "parent"
+    assert debug["subagents"][0]["child_dag"]["mode"] == "task"
+    assert debug["subagents"][0]["child_dag"]["plan"]["node_count"] == 4
+    assert debug["subagents"][0]["child_dag"]["plan"]["ready_nodes"] == ["n_accept"]
     assert debug["task"]["thread_id"] == "parent-task"
 
 
