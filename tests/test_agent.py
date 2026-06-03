@@ -31,8 +31,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
 from xbot.models import UserContext, PermissionConfig, SandboxConfig
-from xbot.mock_llm import (
-    MockLLM,
+from xbot.mock_llm import MockLLM
+from xbot.mock_llm_sequences import (
     TOOL_CALL_SEQUENCE,
     MULTI_TOOL_SEQUENCE,
     PERMISSION_ASK_SEQUENCE,

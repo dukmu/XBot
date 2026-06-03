@@ -79,7 +79,8 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── server.py              # JSONL runtime server
 │   ├── terminal.py            # Protocol terminal client/renderer
 │   ├── tui.py                 # Protocol-driven curses TUI state/client
-│   └── mock_llm.py            # Test model
+│   ├── mock_llm.py            # Test model facade
+│   └── mock_llm_sequences.py  # Test response fixtures
 ├── docs/
 │   ├── README.md
 │   ├── architecture.md

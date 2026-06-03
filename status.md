@@ -8,6 +8,9 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 
 Latest update:
 
+- Mock LLM cleanup split deterministic model concerns into three modules: `xbot/mock_llm.py` is now the LangChain facade/config API, `xbot/mock_llm_responses.py` owns response selection/serialization/error injection/message builders, and `xbot/mock_llm_sequences.py` owns reusable test fixtures.
+- `mock_llm.py` is down from 427 to 278 lines after removing inline response builder logic and fixture constants.
+- Verification passed: targeted mock/runtime checks (`26 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, `git diff --check`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 157`).
 - State projection cleanup split prompt-visible `context.md` rendering into `xbot/state_context.py` and materialized `state.yaml` construction into `xbot/state_materialization.py`; `TaskStateStore` now prepares inputs and writes files instead of owning projection formatting.
 - `state.py` is down from 857 to 719 lines after removing inline context rendering and materialized-state dict construction.
 - Verification passed: targeted state projection tests (`31 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 227`).

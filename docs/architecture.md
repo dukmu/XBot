@@ -862,6 +862,9 @@ User input
 | `xbot/context.py` | ContextProjection -> provider messages |
 | `xbot/compaction.py` | Tool-safe message compaction and audit records |
 | `xbot/tool_runtime.py` | tools node guard/execution/cache hooks |
+| `xbot/mock_llm.py` | deterministic test chat model facade |
+| `xbot/mock_llm_responses.py` | mock response selection and message/chunk builders |
+| `xbot/mock_llm_sequences.py` | reusable mock response fixtures for tests |
 | `xbot/registry.py` | ToolRegistry and sandbox metadata |
 | `xbot/builtin_tools/` | canonical built-in tools |
 | `xbot/hooks/` | LoopHooks and standard guard/cache/compact hooks |

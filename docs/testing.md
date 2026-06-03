@@ -45,7 +45,13 @@ uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir 
 
 ## Mock LLM
 
-测试替身在 [xbot/mock_llm.py](/home/shefrin/repo/XBot/xbot/mock_llm.py)。它支持：
+测试替身分成三个边界：
+
+- [xbot/mock_llm.py](/home/shefrin/repo/XBot/xbot/mock_llm.py)：LangChain `BaseChatModel` facade 和测试配置 API。
+- [xbot/mock_llm_responses.py](/home/shefrin/repo/XBot/xbot/mock_llm_responses.py)：响应选择、消息序列化、错误注入和 AI message/chunk 构造。
+- [xbot/mock_llm_sequences.py](/home/shefrin/repo/XBot/xbot/mock_llm_sequences.py)：可复用响应序列 fixture。
+
+`MockLLM` 支持：
 
 - `set_response_sequence([...])`：按调用顺序返回文本或 tool call。
 - `chunk_size`：控制流式文本切片。
