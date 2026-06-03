@@ -460,23 +460,24 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
         await plan_update.ainvoke({"node_id": "n002", "status": "verified", "reason": "implementation done"})
         verify = await plan_next.ainvoke({})
         await plan_update.ainvoke({"node_id": "n_verify", "status": "verified", "reason": "tests passed"})
-        status = await task_status.ainvoke({})
-        exited = await task_exit.ainvoke({"status": "completed", "reason": "done"})
+        status = json.loads(await task_status.ainvoke({}))
+        exited = json.loads(await task_exit.ainvoke({"status": "completed", "reason": "done"}))
     finally:
         reset_runtime_task_state(token)
 
-    assert '"mode": "task"' in started
-    assert '"id": "n001"' in first
-    assert '"id": "n002"' in second
-    assert '"id": "n_verify"' in verify
-    assert '"verified_nodes"' in updated
-    assert "n_verify" in added
+    assert json.loads(started)["mode"] == "task"
+    assert json.loads(first)["node"]["id"] == "n001"
+    assert json.loads(second)["node"]["id"] == "n002"
+    assert json.loads(verify)["node"]["id"] == "n_verify"
+    assert json.loads(updated)["result"] == "n001 marked verified"
+    assert "n_verify" in json.loads(added)["added"]
     assert "Refactor a small project" in store.paths.goal_md.read_text(encoding="utf-8")
     context = store.paths.context_md.read_text(encoding="utf-8")
     assert "## Active DAG Node" in context
     assert "n_verify" in context
-    assert '"mode": "task"' in status
-    assert '"mode": "chat"' in exited
+    assert status["mode"] == "task"
+    assert status["completion_errors"] == []
+    assert exited["mode"] == "chat"
 
 
 @pytest.mark.asyncio
@@ -549,9 +550,9 @@ async def test_plan_next_keeps_single_running_node(temp_data_dir):
     finally:
         reset_runtime_task_state(token)
 
-    assert first["id"] == "n001"
-    assert second["id"] == "n001"
-    assert second["already_running"] is True
+    assert first["node"]["id"] == "n001"
+    assert second["node"]["id"] == "n001"
+    assert second["node"]["already_running"] is True
     assert state["running_nodes"] == ["n001"]
     assert "n002" in state["ready_nodes"]
 
@@ -582,7 +583,8 @@ async def test_plan_autofill_adds_standard_dag_skeleton(temp_data_dir):
         reset_runtime_task_state(token)
 
     assert filled["added"] == ["n_inspect", "n_implement", "n_verify", "n_report"]
-    assert duplicate["added"] == []
+    assert "added" not in duplicate
+    assert duplicate["result"] == "standard DAG already present"
     assert state["active_node"] == "n_inspect"
     assert state["ready_nodes"] == ["n_inspect"]
     plan = yaml.safe_load(store.paths.plan_yaml.read_text(encoding="utf-8"))
@@ -624,13 +626,14 @@ async def test_plan_update_records_node_result_summary_and_evidence(temp_data_di
     finally:
         reset_runtime_task_state(token)
 
-    assert updated["version"] >= 3
+    assert updated["plan_version"] >= 3
+    assert updated["next_action"]["action"] == "plan_next"
     assert node["summary"] == "Inspected target files."
     assert node["result"] == "calculator.py is the only target."
     assert node["evidence_refs"] == ["filesystem_read:calculator.py"]
     assert node["changed_files"] == ["calculator.py"]
-    assert "summary=Inspected target files." in context
-    assert "evidence_refs=[filesystem_read:calculator.py]" in context
+    assert "summary: Inspected target files." in context
+    assert "evidence: filesystem_read:calculator.py" in context
 
 
 @pytest.mark.asyncio
@@ -2649,6 +2652,25 @@ class TestToolRegistry:
         assert set(names) == set(TOOL_SANDBOX_MODE)
         assert set(names) == set(TOOL_EXECUTION_MODE)
         assert {"task_begin", "task_status", "task_exit", "plan_add_nodes"} <= set(names)
+
+    def test_core_tool_descriptions_explain_contracts(self):
+        from xbot.registry import bootstrap_registry
+
+        registry = bootstrap_registry()
+        expected_terms = {
+            "task_begin": ["Do not call it again", "Never put a tool-call order"],
+            "plan_add_nodes": ["node objects", "dependencies", "not which tool to call"],
+            "plan_update": ["durable execution facts", "evidence_refs_json", "completion_errors"],
+            "filesystem_write": ["complete content", "Read the file first", "locked"],
+            "memory_update": ["durable", "Do not store current task progress"],
+            "summary_add": ["cross-turn", "Do not call this for every small tool result"],
+            "cache_read": ["cache://", "query", "max_chars"],
+        }
+        for tool_name, terms in expected_terms.items():
+            description = registry.get(tool_name).description or ""
+            assert len(description) >= 180
+            for term in terms:
+                assert term in description
 
 # ============================================================================
 # Cache-friendly context tests
