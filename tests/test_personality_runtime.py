@@ -12,7 +12,8 @@ from xbot.builtin_tools.subagent import subagent_create
 from xbot.config import DATA_DIR, configure_runtime_paths, default_sandbox_config, load_agent_config, load_agent_prompt, load_memory
 from xbot.interaction import HermesInteraction
 from xbot.sandbox import reset_runtime_sandbox, set_runtime_sandbox
-from xbot.state import configure_runtime_task_state, read_jsonl, reset_runtime_task_state
+from xbot.state import configure_runtime_task_state, reset_runtime_task_state
+from xbot.state_projection import read_jsonl
 from xbot.verification import verification_passed, verify_task_state
 
 

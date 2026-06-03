@@ -21,11 +21,9 @@ from xbot.runtime import RuntimeContext
 from xbot.state import (
     TaskStateStore,
     configure_runtime_task_state,
-    materialize_context_tree_state,
-    materialize_mailbox_state,
-    read_jsonl,
     reset_runtime_task_state,
 )
+from xbot.state_projection import materialize_context_tree_state, materialize_mailbox_state, read_jsonl
 from xbot.builtin_tools import (
     compact,
     claim_add,
