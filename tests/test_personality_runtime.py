@@ -1,6 +1,8 @@
 """Behavioral tests for personality configuration and isolated smoke runs."""
 
 import json
+import sys
+from types import ModuleType
 from pathlib import Path
 
 import yaml
@@ -101,6 +103,33 @@ def test_personality_config_uses_canonical_layout_only(temp_data_dir):
         "personalities/default",
         "personalities/default/memory.md",
     }
+
+
+def test_runtime_create_loads_configured_hooks(temp_data_dir, monkeypatch):
+    """Configured hooks should be loaded by the runtime, not manually wired in tests."""
+    write_local_runtime(temp_data_dir)
+    module = ModuleType("xbot_personality_test_hooks")
+
+    async def after_agent_hook(ctx):
+        return None
+
+    module.after_agent_hook = after_agent_hook
+    monkeypatch.setitem(sys.modules, "xbot_personality_test_hooks", module)
+    personality_yaml = temp_data_dir / "personalities" / "default" / "personality.yaml"
+    config = yaml.safe_load(personality_yaml.read_text(encoding="utf-8"))
+    config["hooks"] = [{"stage": "after_agent", "target": "xbot_personality_test_hooks:after_agent_hook"}]
+    personality_yaml.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id="hook-runtime",
+        personality_id="default",
+        thread_id="hook-thread",
+    )
+
+    assert runtime.agent_config.hooks[0].target == "xbot_personality_test_hooks:after_agent_hook"
+    assert runtime.hooks is not None
+    assert runtime.hooks.after_agent[-1] is after_agent_hook
 
 
 async def test_smoke_provider_refactors_in_isolated_workspace(temp_data_dir):

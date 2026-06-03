@@ -1963,6 +1963,45 @@ class TestLoopHooks:
         for stage in hooks.STAGES:
             assert getattr(hooks, stage) == []
 
+    def test_load_standard_hooks_registers_configured_hooks_after_standard_hooks(self, monkeypatch):
+        from types import ModuleType
+        import asyncio
+        import sys
+
+        from xbot.hooks import load_standard_hooks
+
+        module = ModuleType("xbot_test_configured_hooks")
+
+        async def configured_hook(ctx):
+            ctx.setdefault("order", []).append("configured")
+            return None
+
+        module.configured_hook = configured_hook
+        monkeypatch.setitem(sys.modules, "xbot_test_configured_hooks", module)
+
+        hooks = load_standard_hooks(
+            [{"stage": "before_tools", "target": "xbot_test_configured_hooks:configured_hook"}]
+        )
+        ctx = {
+            "tool_calls": [],
+            "order": [],
+            "permission_system": None,
+            "sandbox_policy": None,
+            "tool_registry": None,
+        }
+
+        result = asyncio.run(hooks.run("before_tools", ctx))
+
+        assert result is None
+        assert ctx["order"] == ["configured"]
+        assert len(hooks.before_tools) >= 3
+
+    def test_configured_hook_target_must_be_importable(self):
+        from xbot.hooks import load_standard_hooks
+
+        with pytest.raises(ModuleNotFoundError):
+            load_standard_hooks([{"stage": "before_agent", "target": "missing_hook_module:hook"}])
+
 
 # ============================================================================
 # ToolRegistry tests
@@ -2054,9 +2093,9 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(tool_a)
-        registry.register(tool_b)
-        registry.register(tool_c)
+        registry.register(tool_a, sandbox_mode="host")
+        registry.register(tool_b, sandbox_mode="host")
+        registry.register(tool_c, sandbox_mode="host")
 
         result = registry.filter(["tool_c", "tool_a"])
         assert [t.name for t in result] == ["tool_c", "tool_a"]
@@ -2071,7 +2110,7 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(temp_tool)
+        registry.register(temp_tool, sandbox_mode="host")
         assert len(registry) == 1
 
         registry.unregister("temp_tool")
@@ -2098,6 +2137,19 @@ class TestToolRegistry:
 
         modes = registry.sandbox_modes()
         assert modes == {"sandboxed_tool": "sandboxed", "host_tool": "host"}
+
+    def test_register_many_requires_sandbox_metadata(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def tool_without_metadata(x: str) -> str:
+            """A tool."""
+            return x
+
+        registry = ToolRegistry()
+        with pytest.raises(ValueError, match="missing sandbox metadata"):
+            registry.register_many([tool_without_metadata], sandbox_modes={})
 
     def test_bootstrap_registry_loads_all_tools(self):
         from xbot.registry import bootstrap_registry

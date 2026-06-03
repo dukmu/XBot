@@ -21,7 +21,9 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 ### claude-refactor branch (current)
 
 - [x] `xbot/hooks/` — LoopHooks system with before/after hooks for all 6 stages, short-circuit support, registration API.
+- [x] Configurable hook loading: `AgentConfig.hooks` accepts deterministic `{stage, target}` hook specs, `load_standard_hooks()` appends them after standard hooks, and `HermesInteraction.create()` loads them from personality config.
 - [x] `xbot/registry.py` — ToolRegistry now bootstraps from canonical `xbot.builtin_tools`, supports dynamic register/unregister, sandbox mode tracking, `filesystem` wildcard expansion, and automatic `cache_read` exposure for enabled tool sets.
+- [x] Registry sandbox metadata is fail-closed: registration and bootstrap require explicit `host`/`sandboxed` metadata instead of silently defaulting missing entries to host.
 - [x] `xbot/context.py` refactored for cache-friendly context:
   - System prompt memoized per parameter combination (stable prefix → KV-cache friendly).
   - DAG suffix (`build_dag_suffix`) appended at end of message list after history.
@@ -40,7 +42,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Detached subagent runner MVP: pending `mode=detach` manifests are picked up by `HermesInteraction.process_detached_subagents()`, run under the parent session with timeout/turn budget metadata, write child DAG/checkpoint state under `subagents/<id>/`, and report back through parent graph events plus mailbox and workspace change handoff.
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
-- [x] Latest full verification passed: `uv run pytest -q` (`106 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`110 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
