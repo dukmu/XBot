@@ -8,9 +8,12 @@ import yaml
 
 from xbotv2.plugin.manifest import PluginManifest
 from xbotv2.plugin.base import PluginBase
+from xbotv2.plugin.loader import PluginLoader, _DefaultPlugin, resolve_dependencies
 from xbotv2.plugin.store import PluginStore
-from xbotv2.core.bootstrap import _DefaultPlugin, _resolve_dependencies
+from xbotv2.core.context import ContextBuilder
+from xbotv2.hooks.manager import HookManager
 from xbotv2.persistence.store import CoreStateStore
+from xbotv2.tools.registry import ToolRegistry
 
 
 # ------------------------------------------------------------------
@@ -39,7 +42,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("b"),
             _make_manifest_tuple("c"),
         ]
-        result = _resolve_dependencies(items)
+        result = resolve_dependencies(items)
         names = [m.name for m, _ in result]
         assert names == ["a", "b", "c"]
 
@@ -49,7 +52,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("a", deps=["b"]),
             _make_manifest_tuple("b"),
         ]
-        result = _resolve_dependencies(items)
+        result = resolve_dependencies(items)
         names = [m.name for m, _ in result]
         assert names.index("b") < names.index("a")
 
@@ -61,7 +64,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("c", deps=["d"]),
             _make_manifest_tuple("d"),
         ]
-        result = _resolve_dependencies(items)
+        result = resolve_dependencies(items)
         names = [m.name for m, _ in result]
         assert names.index("d") < names.index("b")
         assert names.index("d") < names.index("c")
@@ -74,7 +77,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("a", deps=["nonexistent"]),
         ]
         with pytest.raises(ValueError, match="nonexistent"):
-            _resolve_dependencies(items)
+            resolve_dependencies(items)
 
     def test_circular_dependency_raises(self):
         """A→B, B→A raises."""
@@ -83,7 +86,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("b", deps=["a"]),
         ]
         with pytest.raises(ValueError, match="Circular dependency"):
-            _resolve_dependencies(items)
+            resolve_dependencies(items)
 
     def test_chain_dependency(self):
         """Long chain: a→b→c→d."""
@@ -93,7 +96,7 @@ class TestDependencyResolution:
             _make_manifest_tuple("c", deps=["d"]),
             _make_manifest_tuple("d"),
         ]
-        result = _resolve_dependencies(items)
+        result = resolve_dependencies(items)
         names = [m.name for m, _ in result]
         assert names == ["d", "c", "b", "a"]
 
@@ -189,3 +192,46 @@ class TestPromptFragmentFiles:
         fragments = plugin.get_prompt_fragments()
 
         assert fragments["system_rules"] == "## Plugin Rules\nStay isolated.\n"
+
+
+class TestPluginLoader:
+    """PluginLoader discovery and registration."""
+
+    @pytest.mark.asyncio
+    async def test_loader_discovers_manifest_plugin_and_registers_fragment(self, tmp_path):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "simple"
+        prompts_dir = plugin_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "simple",
+                "version": "1.0.0",
+                "prompt_fragments": [
+                    {"stage": "system_instructions", "file": "prompts/instructions.md"},
+                ],
+            })
+        )
+        (prompts_dir / "instructions.md").write_text("Loader instructions\n")
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        context_builder = ContextBuilder()
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=HookManager(),
+            tool_registry=ToolRegistry(),
+            context_builder=context_builder,
+        )
+
+        manifests = loader.discover()
+        plugins = await loader.load()
+
+        assert [manifest.name for manifest, _ in manifests] == ["simple"]
+        assert len(plugins) == 1
+        assert "Loader instructions" in context_builder._fragments["system_instructions"]["simple"]

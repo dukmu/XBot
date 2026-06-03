@@ -28,10 +28,16 @@ are the primary freeze gate.
   preview before history persistence and JSONL emission.
 - Plugin prompt fragment files now resolve relative to the discovered plugin
   directory for both `PluginBase` subclasses and manifest-only default plugins.
+- Plugin discovery/loading now lives in `xbotv2.plugin.loader.PluginLoader`
+  instead of being hidden inside bootstrap, and core tests cover direct loader
+  discovery plus prompt fragment registration.
 - Root pytest configuration now includes `pythonpath = ["XBotv2", "."]`, so
   XBotv2 tests run from repository root without manual `PYTHONPATH`.
 - Documentation now uses the implemented 17 hook stages, not the stale 18-stage
   wording.
+- `CoreStateStore.materialize()` now delegates derived state construction to
+  the planned `persistence.materializer` module, and core tests cover that pure
+  function directly.
 - `provider: mock` can now be configured through `provider.yaml`, enabling
   deterministic subprocess smoke tests without a real LLM provider.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real

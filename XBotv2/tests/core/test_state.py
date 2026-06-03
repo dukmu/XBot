@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from xbotv2.persistence.materializer import build_materialized_state
 from xbotv2.persistence.store import CoreStateStore
 
 
@@ -102,6 +103,32 @@ class TestEventAppending:
 
 class TestMaterialization:
     """state.yaml materialized view."""
+
+    def test_materializer_pure_function_matches_state_shape(self):
+        """The planned materializer module owns derived state fields."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {"type": "turn_started"},
+                {"type": "mailbox_send"},
+                {"type": "mailbox_send"},
+                {"type": "mailbox_acknowledge"},
+                {"type": "error"},
+            ],
+            message_count=3,
+            plugin_states={"plugin_a": {"enabled": True}},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["turn_count"] == 1
+        assert state["event_count"] == 5
+        assert state["message_count"] == 3
+        assert state["status"] == "error"
+        assert state["mailbox_pending"] == 1
+        assert state["plugin_states"] == {"plugin_a": {"enabled": True}}
 
     def test_materialize_reflects_events(self, temp_data_dir):
         """Materialized state reflects appended events."""

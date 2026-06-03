@@ -18,7 +18,6 @@ Plugins are discovered from plugin directories listed in config.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,8 @@ from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.hooks.types import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.manifest import PluginManifest
+from xbotv2.plugin.loader import PluginLoader
+from xbotv2.plugin.loader import _DefaultPlugin, resolve_dependencies as _resolve_dependencies
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -207,196 +207,12 @@ async def _load_plugins(
     plugin_configs: dict[str, dict[str, Any]],
 ) -> None:
     """Discover, load, and wire plugins."""
-    import yaml
-
-    from xbotv2.plugin.store import PluginStore
-
-    manifests: list[tuple[PluginManifest, Path]] = []
-
-    # Discover
-    for plugin_dir in plugin_dirs:
-        if not plugin_dir.exists():
-            continue
-        for candidate in sorted(plugin_dir.iterdir()):
-            if not candidate.is_dir():
-                continue
-            manifest_path = candidate / "plugin.yaml"
-            if not manifest_path.exists():
-                continue
-            with open(manifest_path) as f:
-                data = yaml.safe_load(f) or {}
-            manifest = PluginManifest(**data)
-            manifest.plugin_dir = candidate
-            manifests.append((manifest, candidate))
-
-    if not manifests:
-        return
-
-    # Resolve dependency order (topological sort)
-    ordered = _resolve_dependencies(manifests)
-
-    # Load each plugin
-    for manifest, plugin_dir in ordered:
-        # Import the plugin module
-        plugin_pkg = f"builtin_plugins.{manifest.name}"
-        try:
-            importlib.import_module(plugin_pkg)
-        except ImportError:
-            # Try direct path import
-            import sys
-            sys.path.insert(0, str(plugin_dir.parent))
-            try:
-                importlib.import_module(manifest.name)
-            except ImportError:
-                continue
-            finally:
-                sys.path.pop(0)
-
-        # Create plugin store
-        plugin_store = PluginStore(state_store, manifest.name)
-
-        # Load plugin class
-        plugin = _instantiate_plugin(manifest, plugin_store, plugin_dir)
-
-        if plugin is not None:
-            # Initialize
-            config = plugin_configs.get(manifest.name, {})
-            await plugin.on_load(config)
-
-            # Register hooks, tools, prompt fragments
-            plugin.register_hooks(hook_manager)
-            plugin.register_tools(tool_registry)
-
-            for stage, text in plugin.get_prompt_fragments().items():
-                context_builder.register_fragment(stage, manifest.name, text)
-
-
-def _resolve_dependencies(
-    manifests: list[tuple[PluginManifest, Path]],
-) -> list[tuple[PluginManifest, Path]]:
-    """Topological sort by dependency. Raises on cycles or missing deps."""
-    name_to_item = {m.name: (m, p) for m, p in manifests}
-
-    # Check missing dependencies
-    for manifest, _ in manifests:
-        for dep in manifest.depends_on:
-            if dep not in name_to_item:
-                raise ValueError(
-                    f"Plugin '{manifest.name}' depends on '{dep}', "
-                    f"which is not available"
-                )
-
-    # Kahn's algorithm
-    in_degree: dict[str, int] = {m.name: len(m.depends_on) for m, _ in manifests}
-    adj: dict[str, list[str]] = {m.name: [] for m, _ in manifests}
-    for manifest, _ in manifests:
-        for dep in manifest.depends_on:
-            adj[dep].append(manifest.name)
-
-    queue = [name for name, deg in in_degree.items() if deg == 0]
-    result: list[tuple[PluginManifest, Path]] = []
-
-    while queue:
-        name = queue.pop(0)
-        result.append(name_to_item[name])
-        for neighbor in adj.get(name, []):
-            in_degree[neighbor] -= 1
-            if in_degree[neighbor] == 0:
-                queue.append(neighbor)
-
-    if len(result) != len(manifests):
-        remaining = [m.name for m, _ in manifests if m.name not in {r[0].name for r in result}]
-        raise ValueError(f"Circular dependency detected among plugins: {remaining}")
-
-    return result
-
-
-def _instantiate_plugin(
-    manifest: Any, plugin_store: Any, _plugin_dir: Path
-) -> Any | None:
-    """Try to instantiate a plugin class.
-
-    Args:
-        manifest: PluginManifest.
-        plugin_store: PluginStore for the plugin.
-        _plugin_dir: Plugin directory on disk (reserved for future use).
-    """
-    from xbotv2.plugin.base import PluginBase
-
-    # Convention: class name is <Name>Plugin
-    class_name = "".join(part.title() for part in manifest.name.split("_")) + "Plugin"
-
-    # Try the plugin's main module
-    for module_name in [
-        f"builtin_plugins.{manifest.name}.plugin",
-        f"{manifest.name}.plugin",
-        f"builtin_plugins.{manifest.name}",
-        manifest.name,
-    ]:
-        try:
-            module = importlib.import_module(module_name)
-            if hasattr(module, class_name):
-                cls = getattr(module, class_name)
-                if issubclass(cls, PluginBase):
-                    return cls(manifest, plugin_store)
-        except (ImportError, AttributeError):
-            continue
-
-    # Fallback: a default PluginBase subclass that uses manifest-driven registration
-    return _DefaultPlugin(manifest, plugin_store)
-
-
-class _DefaultPlugin:
-    """Minimal plugin that uses manifest-driven hook/tool registration."""
-
-    def __init__(self, manifest, store):
-        self.manifest = manifest
-        self.store = store
-
-    async def on_load(self, _config: dict[str, Any]) -> None:
-        """No-op: _DefaultPlugin needs no initialization."""
-
-    def register_hooks(self, manager):
-        from xbotv2.hooks.types import HookStage
-        for decl in self.manifest.hooks:
-            handler = self._resolve(decl.handler)
-            if handler:
-                manager.register(HookStage(decl.stage), handler)
-
-    def register_tools(self, registry):
-        for decl in self.manifest.tools:
-            tool = self._resolve(decl.handler)
-            if tool:
-                registry.register(
-                    tool,
-                    sandbox_mode=decl.sandbox_mode,
-                    execution_mode=decl.execution_mode,
-                    lock_fields=tuple(decl.lock_fields),
-                    owner_plugin=self.manifest.name,
-                )
-
-    def get_prompt_fragments(self):
-        fragments = {}
-        for decl in self.manifest.prompt_fragments:
-            if decl.handler:
-                handler = self._resolve(decl.handler)
-                if handler:
-                    fragments[decl.stage] = handler() if callable(handler) else str(handler)
-            elif decl.file:
-                try:
-                    base_dir = self.manifest.plugin_dir or Path.cwd()
-                    fragments[decl.stage] = (base_dir / decl.file).read_text()
-                except Exception:
-                    fragments[decl.stage] = ""
-        return fragments
-
-    @staticmethod
-    def _resolve(dotted_path: str):
-        try:
-            module_path, _, attr = dotted_path.partition(":")
-            if not attr:
-                return None
-            module = importlib.import_module(module_path)
-            return getattr(module, attr)
-        except Exception:
-            return None
+    loader = PluginLoader(
+        plugin_dirs=plugin_dirs,
+        state_store=state_store,
+        hook_manager=hook_manager,
+        tool_registry=tool_registry,
+        context_builder=context_builder,
+        plugin_configs=plugin_configs,
+    )
+    await loader.load()

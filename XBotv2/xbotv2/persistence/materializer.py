@@ -12,6 +12,7 @@ def build_materialized_state(
     thread_id: str,
     personality_id: str,
     events: list[dict[str, Any]],
+    message_count: int,
     plugin_states: dict[str, Any],
     artifacts_root: str,
 ) -> dict[str, Any]:
@@ -50,6 +51,7 @@ def build_materialized_state(
         "personality_id": personality_id,
         "turn_count": turn_count,
         "event_count": event_count,
+        "message_count": message_count,
         "status": status,
         "mailbox_pending": mailbox_pending,
         "plugin_states": plugin_states,

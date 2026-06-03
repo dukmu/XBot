@@ -27,6 +27,8 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from xbotv2.persistence.materializer import build_materialized_state
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -252,20 +254,16 @@ class CoreStateStore:
     def materialize(self) -> dict[str, Any]:
         """Build (and persist) the materialized state.yaml from events."""
         events = self.read_events()
-        state = {
-            "schema_version": self.SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "thread_id": self.thread_id,
-            "personality_id": self.personality_id,
-            "turn_count": sum(1 for e in events if e.get("type") == "turn_started"),
-            "event_count": len(events),
-            "message_count": self.message_count(),
-            "status": self._determine_status(events),
-            "mailbox_pending": self._count_mailbox_pending(events),
-            "plugin_states": self._read_all_plugin_states(),
-            "artifacts_root": str(self.artifacts_dir),
-            "updated_at": _now_iso(),
-        }
+        state = build_materialized_state(
+            schema_version=self.SCHEMA_VERSION,
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+            personality_id=self.personality_id,
+            events=events,
+            message_count=self.message_count(),
+            plugin_states=self._read_all_plugin_states(),
+            artifacts_root=str(self.artifacts_dir),
+        )
         with open(self.state_path, "w") as f:
             yaml.safe_dump(state, f, default_flow_style=False, sort_keys=False)
         return state
@@ -325,28 +323,6 @@ class CoreStateStore:
             if mid > max_id:
                 max_id = mid
         return max_id + 1
-
-    @staticmethod
-    def _determine_status(events: list[dict[str, Any]]) -> str:
-        for e in reversed(events):
-            if e.get("type") == "session_closed":
-                return "closed"
-            if e.get("type") == "error":
-                return "error"
-            if e.get("type") == "interrupted":
-                return "interrupted"
-        return "active"
-
-    @staticmethod
-    def _count_mailbox_pending(events: list[dict[str, Any]]) -> int:
-        sent = 0
-        acked = 0
-        for e in events:
-            if e.get("type") == "mailbox_send":
-                sent += 1
-            elif e.get("type") == "mailbox_acknowledge":
-                acked += 1
-        return max(0, sent - acked)
 
     def _read_all_plugin_states(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
