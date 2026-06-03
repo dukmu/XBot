@@ -198,9 +198,10 @@ class TestProviderConfigLoader:
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir(parents=True)
-        (config_dir / "provider.yaml").write_text("""
+        # config_dir is the data root; provider.yaml lives at config_dir/config/
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "provider.yaml").write_text("""
 default:
   provider: deepseek
   model: deepseek-chat
@@ -214,14 +215,14 @@ openai:
 """)
 
         # Load default → should get deepseek
-        c = load_provider_config(config_dir, "default")
+        c = load_provider_config(tmp_path, "default")
         assert c.provider == "deepseek"
         assert c.model == "deepseek-chat"
         assert c.base_url == "https://api.deepseek.com/v1"
         assert c.api_key == "sk-test-123"  # env var expanded
 
         # Load openai → should get openai section
-        c2 = load_provider_config(config_dir, "openai")
+        c2 = load_provider_config(tmp_path, "openai")
         assert c2.provider == "openai"
         assert c2.model == "gpt-4o"
         assert c2.api_key == "sk-openai-xxx"
@@ -232,46 +233,46 @@ openai:
 
         monkeypatch.setenv("MY_KEY", "expanded-value")
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir(parents=True)
-        (config_dir / "provider.yaml").write_text("""
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "provider.yaml").write_text("""
 test:
   provider: openai
   model: gpt-4
   api_key: ${MY_KEY}
 """)
 
-        c = load_provider_config(config_dir, "test")
+        c = load_provider_config(tmp_path, "test")
         assert c.api_key == "expanded-value"
 
     def test_missing_env_var_becomes_empty(self, tmp_path):
         """Unset env vars expand to empty string."""
         from xbotv2.config.loader import load_provider_config
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir(parents=True)
-        (config_dir / "provider.yaml").write_text("""
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "provider.yaml").write_text("""
 test:
   provider: openai
   model: gpt-4
   api_key: ${NONEXISTENT_VAR}
 """)
 
-        c = load_provider_config(config_dir, "test")
+        c = load_provider_config(tmp_path, "test")
         assert c.api_key == ""
 
     def test_fallback_to_default_key(self, tmp_path):
         """Unknown provider_name falls back to 'default' section."""
         from xbotv2.config.loader import load_provider_config
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir(parents=True)
-        (config_dir / "provider.yaml").write_text("""
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "provider.yaml").write_text("""
 default:
   provider: openai
   model: fallback-model
 """)
 
-        c = load_provider_config(config_dir, "nonexistent_provider")
+        c = load_provider_config(tmp_path, "nonexistent_provider")
         assert c.provider == "openai"
         assert c.model == "fallback-model"

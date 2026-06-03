@@ -62,13 +62,13 @@ def load_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_user_context(config_dir: Path) -> UserContext:
-    """Load user context from data/config/user.yaml."""
-    data = load_yaml(config_dir / "user.yaml")
+    """Load user context from <config_dir>/config/user.yaml."""
+    data = load_yaml(config_dir / "config" / "user.yaml")
     return UserContext(**data)
 
 
 def load_provider_config(config_dir: Path, provider_name: str = "default") -> ProviderConfig:
-    """Load provider config from data/config/provider.yaml.
+    """Load provider config from <config_dir>/config/provider.yaml.
 
     The provider.yaml file can contain multiple provider sections keyed
     by name (e.g. 'deepseek', 'lmstudio', 'openai'). The *provider_name*
@@ -76,7 +76,7 @@ def load_provider_config(config_dir: Path, provider_name: str = "default") -> Pr
 
     Environment variables like ${DEEPSEEK_API_KEY} are expanded at load time.
     """
-    all_data = load_yaml(config_dir / "provider.yaml")
+    all_data = load_yaml(config_dir / "config" / "provider.yaml")
     if not all_data:
         return ProviderConfig()
 
