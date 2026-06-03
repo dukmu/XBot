@@ -41,7 +41,7 @@ from xbot.mock_llm import (
     RECONNECT_SEQUENCE,
     CRON_JOB_SEQUENCE,
 )
-from xbot.tools import (
+from xbot.builtin_tools import (
     shell,
     filesystem_read,
     filesystem_write,
