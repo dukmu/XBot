@@ -135,9 +135,10 @@ async def run(
         trace_events=True,
     )
     result1 = await collect_stream(runtime, 
-        "Task 1. Use task mode and tools. Required path: "
+        "Task 1. Use task mode and tools. Tool order contract, do not put this list into steps_json: "
         "task_begin -> plan_autofill -> plan_next -> filesystem_read -> filesystem_write -> "
         "plan_update -> summary_add -> compact -> task_status. "
+        "Call task_begin with goal only; omit steps_json because plan_autofill will create the DAG. "
         "Refactor calculator.py only by changing `return a+b` to `return a + b`. "
         "At least one plan_update must include summary/result/evidence_refs_json mentioning calculator.py. "
         "After finishing every DAG node, call task_exit with completed."
@@ -145,9 +146,10 @@ async def run(
     assert_no_runtime_errors(data_dir, workspace, calculator, runtime, result1)
 
     result2 = await collect_stream(runtime,
-        "Task 2. Start a new task mode task. Required path: "
+        "Task 2. Start a new task mode task. Tool order contract, do not put this list into steps_json: "
         "task_begin -> plan_autofill -> plan_add_nodes -> plan_next -> filesystem_read -> filesystem_write -> "
         "plan_update -> summary_add -> task_status. "
+        "Call task_begin with goal only; omit steps_json because plan_autofill and plan_add_nodes will create the DAG. "
         "Refactor stats.py only by changing `return total/count` to `return total / count`. "
         "The plan_add_nodes call must add one task-specific verification node. "
         "At least one plan_update must include summary/result/evidence_refs_json mentioning stats.py. "

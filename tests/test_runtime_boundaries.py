@@ -480,6 +480,28 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_task_begin_rejects_mixed_steps_json_without_silent_filtering(temp_data_dir):
+    """steps_json parsing should validate shape only and never silently drop items."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="mixed-steps-json",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        with pytest.raises(ValueError, match="only strings or only node objects"):
+            await task_begin.ainvoke(
+                {
+                    "goal": "Reject malformed seed data",
+                    "steps_json": '["Inspect", {"id":"n002","title":"Implement"}]',
+                }
+            )
+    finally:
+        reset_runtime_task_state(token)
+
+
+@pytest.mark.asyncio
 async def test_task_mode_enforces_plan_scope_and_completion(temp_data_dir):
     """Plan tools should be task-scoped, and completed exit should require a finished DAG."""
     store = TaskStateStore.create(
@@ -2003,6 +2025,108 @@ async def test_disabled_sandbox_shell_does_not_mock_success():
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_uses_sequential_failure_barrier(mock_llm, user_context, temp_data_dir):
+    """Sequential state tools should stop later same-batch side effects on failure."""
+    from xbot.graph import build_agent_graph
+
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    target = workspace / "should_not_exist.txt"
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "state",
+        thread_id="tool-batch-barrier",
+        session_id="default",
+        personality_id="default",
+        direct_root=True,
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "already active"})
+        mock_llm.set_response_sequence(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "task_begin", "args": {"goal": "new task"}, "id": "call_begin"},
+                        {"name": "filesystem_write", "args": {"path": "should_not_exist.txt", "content": "bad"}, "id": "call_write"},
+                    ],
+                },
+                {"content": "done"},
+            ]
+        )
+        graph = build_agent_graph(
+            llm=mock_llm,
+            tools=[task_begin, filesystem_write],
+            checkpointer=MemorySaver(),
+            store=None,
+            permission_system=PermissionSystem(PermissionConfig(default="allow")),
+            sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False), data_root=temp_data_dir, workspace_root=workspace),
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
+        )
+        result = await graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="try batch")],
+                "user_context": user_context,
+            },
+            config={"configurable": {"thread_id": "tool-batch-barrier"}},
+        )
+    finally:
+        reset_runtime_task_state(token)
+
+    tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
+    assert tool_messages[0].name == "task_begin"
+    assert tool_messages[0].status == "error"
+    assert tool_messages[1].name == "filesystem_write"
+    assert tool_messages[1].status == "error"
+    assert "is a sequential barrier" in str(tool_messages[1].content)
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_parallel_filesystem_writes_run_in_same_batch(mock_llm, user_context, temp_data_dir):
+    """Parallel-safe filesystem writes should execute in one ToolNode batch with path locks."""
+    from xbot.graph import build_agent_graph
+
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    sandbox = SandboxPolicy(SandboxConfig(enabled=False), data_root=temp_data_dir, workspace_root=workspace)
+    mock_llm.set_response_sequence(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "filesystem_write", "args": {"path": "a.txt", "content": "a"}, "id": "call_a"},
+                    {"name": "filesystem_write", "args": {"path": "b.txt", "content": "b"}, "id": "call_b"},
+                ],
+            },
+            {"content": "done"},
+        ]
+    )
+    graph = build_agent_graph(
+        llm=mock_llm,
+        tools=[filesystem_write],
+        checkpointer=MemorySaver(),
+        store=None,
+        permission_system=PermissionSystem(PermissionConfig(default="allow")),
+        sandbox_policy=sandbox,
+        hooks=make_default_hooks(),
+        tool_registry=make_default_registry(),
+    )
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="write two files")],
+            "user_context": user_context,
+        },
+        config={"configurable": {"thread_id": "parallel-filesystem-writes"}},
+    )
+
+    tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
+    assert [message.name for message in tool_messages] == ["filesystem_write", "filesystem_write"]
+    assert all(getattr(message, "status", "success") != "error" for message in tool_messages)
+    assert (workspace / "a.txt").read_text(encoding="utf-8") == "a"
+    assert (workspace / "b.txt").read_text(encoding="utf-8") == "b"
+
+
+@pytest.mark.asyncio
 async def test_interaction_result_only_emits_new_messages(mock_llm, user_context):
     """The interaction layer should emit new events without replaying old history."""
     from xbot.interaction import HermesInteraction
@@ -2305,10 +2429,11 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(test_tool, sandbox_mode="sandboxed")
+        registry.register(test_tool, sandbox_mode="sandboxed", execution_mode="parallel")
 
         assert registry.get("test_tool") is test_tool
         assert registry.sandbox_mode("test_tool") == "sandboxed"
+        assert registry.execution_mode("test_tool") == "parallel"
         assert len(registry) == 1
         assert "test_tool" in registry
 
@@ -2318,6 +2443,7 @@ class TestToolRegistry:
         registry = ToolRegistry()
         assert registry.get("nonexistent") is None
         assert registry.sandbox_mode("nonexistent") == "unregistered"
+        assert registry.execution_mode("nonexistent") == "unregistered"
         assert not registry.registered("nonexistent")
 
     def test_filter_expands_filesystem_wildcard(self):
@@ -2345,10 +2471,10 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(filesystem_read, sandbox_mode="sandboxed")
-        registry.register(filesystem_write, sandbox_mode="sandboxed")
-        registry.register(filesystem_list, sandbox_mode="sandboxed")
-        registry.register(other_tool, sandbox_mode="host")
+        registry.register(filesystem_read, sandbox_mode="sandboxed", execution_mode="parallel")
+        registry.register(filesystem_write, sandbox_mode="sandboxed", execution_mode="parallel", lock_fields=("path",))
+        registry.register(filesystem_list, sandbox_mode="sandboxed", execution_mode="parallel")
+        registry.register(other_tool, sandbox_mode="host", execution_mode="sequential")
 
         result = registry.filter(["filesystem"])
         assert len(result) == 3
@@ -2377,9 +2503,9 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(tool_a, sandbox_mode="host")
-        registry.register(tool_b, sandbox_mode="host")
-        registry.register(tool_c, sandbox_mode="host")
+        registry.register(tool_a, sandbox_mode="host", execution_mode="parallel")
+        registry.register(tool_b, sandbox_mode="host", execution_mode="parallel")
+        registry.register(tool_c, sandbox_mode="host", execution_mode="parallel")
 
         result = registry.filter(["tool_c", "tool_a"])
         assert [t.name for t in result] == ["tool_c", "tool_a"]
@@ -2394,14 +2520,14 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(temp_tool, sandbox_mode="host")
+        registry.register(temp_tool, sandbox_mode="host", execution_mode="sequential")
         assert len(registry) == 1
 
         registry.unregister("temp_tool")
         assert len(registry) == 0
         assert registry.get("temp_tool") is None
 
-    def test_sandbox_modes_returns_all_modes(self):
+    def test_registry_metadata_returns_all_modes(self):
         from xbot.registry import ToolRegistry
         from langchain_core.tools import tool as lc_tool
 
@@ -2416,11 +2542,12 @@ class TestToolRegistry:
             return x
 
         registry = ToolRegistry()
-        registry.register(sandboxed_tool, sandbox_mode="sandboxed")
-        registry.register(host_tool, sandbox_mode="host")
+        registry.register(sandboxed_tool, sandbox_mode="sandboxed", execution_mode="parallel", lock_fields=("path",))
+        registry.register(host_tool, sandbox_mode="host", execution_mode="sequential")
 
-        modes = registry.sandbox_modes()
-        assert modes == {"sandboxed_tool": "sandboxed", "host_tool": "host"}
+        assert registry.sandbox_modes() == {"sandboxed_tool": "sandboxed", "host_tool": "host"}
+        assert registry.execution_modes() == {"sandboxed_tool": "parallel", "host_tool": "sequential"}
+        assert registry.lock_fields("sandboxed_tool") == ("path",)
 
     def test_register_many_requires_sandbox_metadata(self):
         from xbot.registry import ToolRegistry
@@ -2433,7 +2560,24 @@ class TestToolRegistry:
 
         registry = ToolRegistry()
         with pytest.raises(ValueError, match="missing sandbox metadata"):
-            registry.register_many([tool_without_metadata], sandbox_modes={})
+            registry.register_many([tool_without_metadata], sandbox_modes={}, execution_modes={})
+
+    def test_register_many_requires_execution_metadata(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def tool_without_execution_metadata(x: str) -> str:
+            """A tool."""
+            return x
+
+        registry = ToolRegistry()
+        with pytest.raises(ValueError, match="missing execution metadata"):
+            registry.register_many(
+                [tool_without_execution_metadata],
+                sandbox_modes={"tool_without_execution_metadata": "host"},
+                execution_modes={},
+            )
 
     def test_register_rejects_invalid_sandbox_mode(self):
         from xbot.registry import ToolRegistry
@@ -2446,7 +2590,20 @@ class TestToolRegistry:
 
         registry = ToolRegistry()
         with pytest.raises(ValueError, match="invalid sandbox mode"):
-            registry.register(invalid_mode_tool, sandbox_mode="unknown")  # type: ignore[arg-type]
+            registry.register(invalid_mode_tool, sandbox_mode="unknown", execution_mode="parallel")  # type: ignore[arg-type]
+
+    def test_register_rejects_invalid_execution_mode(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def invalid_execution_tool(x: str) -> str:
+            """A tool."""
+            return x
+
+        registry = ToolRegistry()
+        with pytest.raises(ValueError, match="invalid execution mode"):
+            registry.register(invalid_execution_tool, sandbox_mode="host", execution_mode="serial")  # type: ignore[arg-type]
 
     def test_bootstrap_registry_loads_all_tools(self):
         from xbot.registry import bootstrap_registry
@@ -2465,7 +2622,11 @@ class TestToolRegistry:
         # Verify sandbox modes
         assert registry.sandbox_mode("shell") == "sandboxed"
         assert registry.sandbox_mode("debug_analyze") == "host"
+        assert registry.execution_mode("filesystem_write") == "parallel"
+        assert registry.lock_fields("filesystem_write") == ("path",)
+        assert registry.execution_mode("task_begin") == "sequential"
         assert registry.validate_sandbox_modes() == []
+        assert registry.validate_execution_modes() == []
 
     def test_bootstrap_registry_filter_auto_includes_cache_read(self):
         from xbot.registry import bootstrap_registry
@@ -2475,9 +2636,9 @@ class TestToolRegistry:
 
         assert [tool.name for tool in result] == ["shell", "cache_read"]
 
-    def test_builtin_tools_are_complete_base_tools_with_sandbox_modes(self):
+    def test_builtin_tools_are_complete_base_tools_with_runtime_metadata(self):
         from langchain_core.tools import BaseTool
-        from xbot.builtin_tools import TOOL_SANDBOX_MODE, get_all_tools
+        from xbot.builtin_tools import TOOL_EXECUTION_MODE, TOOL_SANDBOX_MODE, get_all_tools
 
         tools = get_all_tools()
         names = [tool.name for tool in tools]
@@ -2486,6 +2647,7 @@ class TestToolRegistry:
         assert all(isinstance(tool, BaseTool) for tool in tools)
         assert len(names) == len(set(names))
         assert set(names) == set(TOOL_SANDBOX_MODE)
+        assert set(names) == set(TOOL_EXECUTION_MODE)
         assert {"task_begin", "task_status", "task_exit", "plan_add_nodes"} <= set(names)
 
 # ============================================================================
