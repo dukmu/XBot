@@ -8,6 +8,9 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 
 Latest update:
 
+- Interaction cleanup split internal event data and provider/LangGraph payload normalization into `xbot/interaction_events.py`; `HermesInteraction` now focuses on runtime config reload, graph invocation, RuntimeFrame construction, mailbox/background dispatch, and turn persistence.
+- `interaction.py` dropped duplicated message/usage/tool-call helper logic and is down from 904 to 547 lines; streamed tool-call assembly, message dedupe, usage extraction, and interrupt source selection live in `InteractionEventNormalizer`.
+- Verification passed: targeted interaction tests (`20 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 188`).
 - Sandbox cleanup split policy, shell preflight, backend execution, and shared types: `xbot/sandbox.py` now composes `sandbox_shell.py`, `sandbox_bwrap.py`, and `sandbox_types.py` instead of owning all parsing/mount/process details.
 - `sandbox.py` dropped migrated duplicate helpers and is down from 837 to 626 lines while keeping `SandboxPolicy` as the runtime-facing policy facade.
 - Verification passed: targeted sandbox tests (`18 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 208`).

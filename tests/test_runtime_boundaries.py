@@ -1928,18 +1928,18 @@ def test_interaction_reset_thread_clears_render_state(user_context):
         tools=[],
         database_path=":memory:",
     )
-    runtime._seen_message_keys.add("x")
-    runtime._streamed_message_keys.add("x")
-    runtime._streamed_tool_call_keys.add("x")
-    runtime._seen_runtime_event_keys.add("x")
+    runtime._normalizer._seen_message_keys.add("x")
+    runtime._normalizer._streamed_message_keys.add("x")
+    runtime._normalizer._streamed_tool_call_keys.add("x")
+    runtime._normalizer._seen_runtime_event_keys.add("x")
 
     runtime.reset_thread("clean")
 
     assert runtime.graph_config == {"configurable": {"thread_id": "clean"}}
-    assert not runtime._seen_message_keys
-    assert not runtime._streamed_message_keys
-    assert not runtime._streamed_tool_call_keys
-    assert not runtime._seen_runtime_event_keys
+    assert not runtime._normalizer._seen_message_keys
+    assert not runtime._normalizer._streamed_message_keys
+    assert not runtime._normalizer._streamed_tool_call_keys
+    assert not runtime._normalizer._seen_runtime_event_keys
 
 
 @pytest.mark.asyncio

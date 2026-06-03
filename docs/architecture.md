@@ -44,6 +44,7 @@ main.py
               -> HermesInteraction
                   -> RuntimeFrame
                   -> LangGraph executor
+                  -> InteractionEventNormalizer
                   -> TaskStateStore / checkpoint / cache
 ```
 
@@ -73,6 +74,12 @@ HermesInteraction
   - 处理 stream/resume/restart
   - 记录 turn events
 
+InteractionEventNormalizer
+  - 把 LangGraph/provider messages、updates、custom payloads 归一化为内部 InteractionEvent
+  - 去重 checkpoint/stream message
+  - 组装 streamed tool-call chunks
+  - 提取 usage metadata
+
 State / Tools / Hooks / Sandbox
   - append-only state 是事实源
   - ToolRegistry 是工具事实源
@@ -85,6 +92,7 @@ State / Tools / Hooks / Sandbox
 - UI 只知道 JSON protocol frame。
 - server 才能调用 `HermesInteraction`。
 - `InteractionEvent` 是 Python 内部事件，不是 wire contract。
+- `HermesInteraction` 不解析 UI 协议，也不直接承担 provider message 去重；event normalization 在 `xbot/interaction_events.py`。
 - LangChain message/chunk/ToolMessage 不能越过 server 边界。
 - tool lifecycle 必须通过 `tool_call_id` 串联。
 
@@ -845,6 +853,7 @@ User input
 |------|------|
 | `main.py` | Terminal protocol client launcher and `server` subcommand |
 | `xbot/interaction.py` | `HermesInteraction`，runtime turn/resume/stream 边界 |
+| `xbot/interaction_events.py` | internal event data and LangGraph/provider payload normalization |
 | `xbot/runtime.py` | RuntimeContext/RuntimeFrame/projections |
 | `xbot/graph.py` | LangGraph executor wiring |
 | `xbot/context.py` | ContextProjection -> provider messages |
