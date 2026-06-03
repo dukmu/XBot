@@ -176,7 +176,8 @@ data/sessions/<session_id>/state/
 
 实现边界：
 
-- `xbot/state.py` 的 `TaskStateStore` 是运行时状态门面：追加 JSONL 事件、维护 context tree/mailbox、触发 `state.yaml` 与 `context.md` materialization，并把 runtime event 归因到 DAG。
+- `xbot/state.py` 的 `TaskStateStore` 是运行时状态门面：记录 turn 生命周期、触发 `state.yaml` 与 `context.md` materialization，并协调各个文件化 state 子模块。
+- `xbot/state_event_logs.py` 的 `StateEventLogs` 管理 append-only JSONL：runtime events、graph projection、context tree、mailbox、event id/timestamp enrich。
 - `xbot/task_plan_store.py` 的 `TaskPlanStore` 管理 `task.yaml`、`goal.md`、`plan.yaml` 和 `versions/plans/`，负责 task mode、调度选择、plan mutation 和版本快照。
 - `xbot/state_records.py` 的 `StateRecords` 管理非 append-only 的结构化记录：summary markdown artifacts 与 `claims.yaml`。`TaskStateStore` 在记录创建后追加对应 runtime/graph event。
 - `xbot/state_projection.py` 只做纯 projection：从 JSONL rows materialize context tree、mailbox、DAG activity，不写文件。
@@ -863,6 +864,7 @@ User input
 | `xbot/builtin_tools/` | canonical built-in tools |
 | `xbot/hooks/` | LoopHooks and standard guard/cache/compact hooks |
 | `xbot/state.py` | TaskStateStore append-only runtime state facade |
+| `xbot/state_event_logs.py` | append-only runtime/graph/context/mailbox JSONL operations |
 | `xbot/task_plan_store.py` | task metadata, executable plan, and plan versions |
 | `xbot/state_records.py` | summary artifacts and structured claims |
 | `xbot/state_projection.py` | pure JSONL projection helpers |
