@@ -4,7 +4,7 @@
 
 Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
 
-Current continuation objective (branch `claude-refactor`): refactor to Hooked Loop + Pluggable architecture with cache-friendly DAG-as-backend context.
+Current continuation objective (branch `claude-refactor`): freeze the runtime/TUI client-server boundary, define a JSONL communication and event protocol, and then replace the legacy terminal adapter with a protocol client. Multi-agent expansion is paused.
 
 ## Current Scope
 
@@ -13,8 +13,9 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - Phase 3: Move context-frame construction out of the LangGraph graph module.
 - Phase 4: Persist large tool-result cache entries to files.
 - Phase 5: Make `plan.yaml` an executable DAG with validation, ready-node selection, and versioning.
-- Phase 6 (claude-refactor): Hook-enabled loop with pluggable tool registry and cache-friendly DAG context.
-- Preserve current terminal/runtime behavior while adding observability and recovery foundations.
+- Phase 6 (claude-refactor): Hook-enabled loop with pluggable tool registry and cache-friendly DAG context. Completed for the current main path.
+- Phase 7 (current): TUI C/S split, stable JSONL protocol, tool lifecycle events, and protocol-based terminal renderer.
+- Preserve runtime behavior while removing UI dependence on LangChain/LangGraph message internals.
 
 ## Progress
 
@@ -47,7 +48,10 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
 - [x] Latest full verification passed: `uv run pytest -q` (`111 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
-- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 194 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
+- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 274 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
+- [x] TUI/server planning reset: `plan.md` now treats `InteractionEvent` as an internal runtime event, defines the required JSONL protocol direction, and pauses multi-agent expansion until the C/S boundary and renderer are stable.
+- [x] Documentation reset: README, docs, AGENTS, and status now describe the current runtime architecture, C/S target, protocol boundary, and an end-to-end runtime data-flow example.
+- [ ] Protocol implementation pending: `xbot/protocol.py`, runtime server, protocol encoder, protocol renderer tests, and shell/exec lifecycle golden tests.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)
@@ -206,7 +210,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - Interaction integration: complete. `HermesInteraction` records user/resume turns and normalized interaction events when a `TaskStateStore` is present; `create()` initializes the primary DAG state under `data/sessions/<session_id>/state/`.
 - Runtime contracts: complete for this pass. `RunRecord` and `TurnRecord` are explicit Pydantic models and are used at the interaction boundary.
 - Verification coverage: complete for this pass. Tests cover agent state initialization, materialization from event logs, and interaction event persistence.
-- Out of scope by plan: multi-agent execution, mailbox, rewind/context tree, and replacing LangGraph checkpoint persistence.
+- Historical note: early plans treated multi-agent execution, mailbox, rewind/context tree, and checkpoint persistence as out of scope. Current branch has MVPs for mailbox/context tree/subagent/checkpoint; multi-agent expansion remains paused while TUI C/S work is prioritized.
 - Loop decoupling: complete for the MVP. Context construction lives in `xbot/context.py`, context compaction lives in `xbot/compaction.py`, and tool guard/interrupt/cache hooks live in `xbot/tool_runtime.py`.
 - Tool-result cache persistence: complete for MVP. `HermesInteraction.create()` configures `GLOBAL_TOOL_RESULT_CACHE` to write under the session cache directory.
 - Plan/DAG state: complete for MVP. `plan.yaml` is validated as a DAG, `state.yaml` includes a scheduler view, and plan change snapshots are indexed under `versions/plans`.
@@ -216,7 +220,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - Personality config system: complete locally. Directory layout is canonical and lower-case under `data/personalities`.
 - Isolated smoke behavior: complete with smoke model and real DeepSeek provider. The DeepSeek run changed `calculator.py` in an isolated workspace and produced auditable agent state files.
 - Context tree/rewind: MVP complete. Remaining scope is context projection from tree branches into model prompts and richer branch inspection commands.
-- Mailbox: MVP complete. Remaining scope is wiring runtime background events onto the mailbox queue.
-- Subagent: attach-mode MVP complete. Remaining scope is true async detach runner, budgets/timeouts, cancellation, and child workspace diff handoff.
+- Mailbox: MVP complete, including `HermesInteraction.process_mailbox()` background_event dispatch and append-only acknowledgement. Remaining scope is richer scheduling/policy, not needed for TUI C/S.
+- Subagent: attach-mode and detached runner MVP complete under parent session. Remaining scope is full async scheduler, richer budgets/cancellation, and multi-agent UI, all paused for now.
 - Persistence: checkpoint MVP complete via file-backed saver. Remaining scope is replacing pickle-backed checkpoint/store with official SQLite/Postgres packages when available.
 - Current subagent layout note: new child runs stay under the parent session. Existing `data/sessions/*__subagent__*` directories are historical manual-run artifacts from the earlier implementation and were not deleted.

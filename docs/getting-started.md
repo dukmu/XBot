@@ -2,7 +2,7 @@
 
 本指南帮助你在本地运行 XBot Hermes。
 
-Hermes 当前处于早期开发阶段：主循环、LangGraph、权限检查、文件化 agent state、Plan/DAG、工具结果 cache、上下文树、mailbox 和 attach-mode subagent 已可运行；异步 subagent runner 和 checkpoint 持久化仍在推进中。
+Hermes 当前处于 runtime 收口阶段：主循环、LangGraph executor、权限检查、文件化 agent state、Plan/DAG、工具结果 cache、上下文树、mailbox、attach/detach subagent MVP、hooks、ToolRegistry 和 checkpoint 持久化已可运行。下一阶段重点是把 legacy terminal 拆成 runtime server + protocol TUI client。
 
 ## 环境要求
 
@@ -94,7 +94,7 @@ skills: []
 }
 ```
 
-当前匹配顺序是 `deny -> allow -> default`。避免写出同一操作既 allow 又 deny 的规则。
+当前匹配顺序是 `deny -> allow -> ask -> default`。避免写出同一操作既 allow 又 deny 的规则；deny 永远优先。
 
 ## 启动
 
@@ -111,15 +111,18 @@ python main.py --print-thoughts
 
 启动后输入消息，使用 `/exit` 退出。
 
+当前 `main.py` 启动的是 legacy 同进程 terminal adapter。计划中的新 TUI 会通过 JSONL protocol 连接 runtime server；在该路径完成前，CLI 仍可用于本地调试。
+
 ## 当前运行特征
 
-- Runtime 默认使用 file-backed LangGraph checkpoint saver 和 `InMemoryStore`。
+- Runtime 默认使用 file-backed LangGraph checkpoint saver；LangGraph `InMemoryStore` 只作为 executor-local scratch。
 - sandbox 开启时，`shell` 在 bubblewrap 内执行；sandbox 关闭时，`shell` 不可用。
 - `filesystem_*` 会按 sandbox 或 workspace 边界访问本地文件。
 - 权限策略或 sandbox 资源策略为 `ask` 时，会通过一次合并的 `tool_confirm` interrupt/resume 请求用户确认。
 - `ask` 已接入 interrupt/resume 的基础流程。
-- `subagent_create(mode="attach")` 会在当前 session 下同步运行 child thread，并访问 main workspace；`detach` 仍是 pending record，等待后续后台 runner。
+- `subagent_create(mode="attach")` 会在当前 session 下同步运行 child thread，并访问 main workspace；`detach` MVP 会创建 pending manifest，可由当前 runtime 的 detached runner 处理，但 multi-agent 扩张当前暂停。
 - `debug_analyze` 可检查当前 task 的 DAG、plan、state、context tree、mailbox 和 subagent manifest。
+- terminal/TUI 重构前，工具调用显示仍来自 legacy terminal renderer；后续会改为只渲染 `tool.*` protocol events，解决 shell/exec lifecycle 显示歧义。
 
 ## 验证安装
 

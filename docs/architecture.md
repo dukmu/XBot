@@ -1,44 +1,139 @@
 # Hermes 架构与设计
 
-Hermes 是 XBot 的目标形态：一个轻量级、高质量、单用户、本地优先的 agent。核心循环已支持 Hook 注入、插件化工具注册和缓存友好的 DAG 上下文投影。上下文树、subagent (attach 模式) 和 mailbox 均已实现 MVP。
+Hermes 是 XBot 的目标形态：一个轻量级、单用户、本地优先、状态中心的 agent runtime。
 
-## 设计原则
+核心原则：
 
-1. **简单优先**：默认采用线性会话链；树、分支、异步任务只在主循环稳定后引入。
-2. **运行时契约优先**：先定义 Run、Turn、Interrupt、ContextFrame、ToolResultRef 等硬契约。
-3. **工具安全优先**：工具执行前有 input guardrail，执行后有 output guardrail。
-4. **上下文质量优先**：模型看到的是精心构造的 ContextFrame，不是原始数据库 dump。
-5. **副作用显式化**：rewind 只改变上下文 head，不回滚文件、shell、memory 等外部副作用。
-6. **系统沙箱优先**：所有会接触宿主资源的工具都必须通过系统级 sandbox 后端，不能只做 Python 级路径检查。deny/ask 必须在挂载层遮蔽，不能只在工具入口拦截。
+> State 是系统中心。LLM 是 planner/executor/verifier/summarizer 之一。UI 只是协议客户端。
 
-## 当前状态
+当前 `claude-refactor` 分支已经完成 runtime 主路径重构：可加载 built-in tools、`ToolRegistry`、`LoopHooks`、显式 `RuntimeFrame`、cache-friendly context、可审计 compaction、文件化 DAG state、claims/summaries 投影、restart recovery 和真实 provider smoke。下一阶段重点是把旧 terminal adapter 拆成 client/server 架构，并用稳定 JSONL 协议承载 TUI。
 
-| 能力 | 当前状态 | 说明 |
-|------|----------|------|
-| LangGraph ReAct 主循环 | 已实现 | `agent -> tools -> agent` |
-| Terminal runtime | 已实现 | 支持 interrupt/resume 的基本处理 |
-| Interaction runtime | 已实现 | `xbot.interaction` 统一发起 turn/resume 并输出标准事件，CLI 只是 adapter |
-| Provider 配置 | 已实现 | OpenAI/Anthropic 兼容 |
-| 权限 allow/deny/ask | 已实现 | 本轮改为 deny 优先 |
-| 系统级 sandbox | 已实现 MVP | `bwrap` 后端，工具默认拒绝，未知工具不放行，deny/ask 通过挂载遮蔽 |
-| 主动 ask | 本轮实现 | `ask` 工具触发 `user_ask` interrupt |
-| 工具过滤 | 本轮实现 | `agent.yaml` 的 `tools` 控制暴露工具 |
-| System state frame | 本轮实现 | 每次模型调用注入当前运行状态，不沉淀为历史 |
-| ToolResultRef/cache | 已实现 MVP | 大工具结果返回 ref，支持 `cache_read`，runtime 默认写入文件 cache |
-| 文件化任务 state | 已实现 MVP | `events.jsonl` / `graph.jsonl` append-only，`state.yaml` materialized view |
-| Plan/DAG state | 已实现 MVP | `plan.yaml` 校验依赖，materialize `ready_nodes`/`active_node`，版本写入 `versions/plans/index.yaml` |
-| Task mode | 已实现 MVP | `task_begin` 进入显式任务模式，`goal.md`/`plan.yaml`/`context.md` 共同驱动 DAG 执行 |
-| Summaries | 已实现 MVP | 压缩摘要和手动摘要以带 front matter 的 markdown 写入 `summaries/`，并投影进 `context.md` |
-| 上下文压缩 | 基础实现 | 进入 agent 前将旧线性消息压缩为摘要节点 |
-| 上下文树/rewind | 已实现 MVP | `context_tree.jsonl` append-only，`state.yaml` materialize head，`context_rewind` 只移动 head 不回滚副作用 |
-| mailbox | 已实现 MVP | `mailbox.jsonl` append-only，支持发送、读取、ack，`state.yaml` 投影 pending count |
-| subagent | 已实现 MVP | `attach` 模式在 parent session 内同步运行 child thread，共享 main workspace；`detach` 模式保留 pending record |
-| debug tools | 已实现 MVP | `debug_analyze` 汇总 task/DAG/plan/state/context/mailbox/subagent |
-| 持久化 | 已实现 MVP | LangGraph checkpoint 写入 `data/sessions/<id>/saver/langgraph.pkl`，store 仍为内存 |
+## 当前能力状态
 
-## 文件化任务 State
+| 能力 | 状态 | 说明 |
+|------|------|------|
+| LangGraph ReAct executor | 已实现 | `prepare_context -> agent -> tools -> prepare_context/END` |
+| Interaction runtime | 已实现 | `HermesInteraction` 统一发起 turn/resume/stream，并输出内部 normalized events |
+| Terminal adapter | 旧实现 | 仍与 runtime 同进程，直接解析 LangChain message；下一阶段替换为 protocol client |
+| RuntimeFrame | 已实现 | 每次 user turn/resume 都显式构建 frame/projection |
+| Context construction | 已实现 | `context.py` 从 `RuntimeFrame`/`ContextProjection` 构造消息，不再读取全局 state |
+| Context compaction | 已实现 | 保留 tool-call groups，写 summary source refs、graph event、context-tree node |
+| Tool registry | 已实现 | `xbot.builtin_tools` 是 canonical source，`ToolRegistry` 持有 sandbox metadata |
+| Hooked loop | 已实现 | before/after context/agent/tools hooks，可从 personality config 加载 |
+| Permission | 已实现 | deny -> allow -> ask -> default |
+| Sandbox | 已实现 MVP | bubblewrap fail-closed；未知 sandboxed 工具拒绝执行 |
+| Tool result cache | 已实现 | session-scoped file-backed cache，大结果用 `cache://` ref |
+| File-backed task state | 已实现 | append-only JSONL + materialized YAML |
+| Task mode / Plan DAG | 已实现 | `task_begin`、`plan_next`、`plan_update`、versioned `plan.yaml` |
+| Claims / summaries | 已实现 | claim evidence/confidence/supersede metadata 投影到 runtime state |
+| Context tree / rewind | 已实现 MVP | append-only tree，rewind 只移动 head，不回滚副作用 |
+| Mailbox | 已实现 MVP | append-only send/read/ack，runtime 可处理 pending mailbox |
+| Subagent | 暂停扩张 | attach/detach MVP 存在；当前计划不推进 multi-agent async scheduler |
+| Protocol server | 待实现 | 下一阶段新增 JSONL runtime server |
+| New TUI | 待实现 | 先协议，后 TUI；UI 不解析 LangChain/LangGraph 对象 |
 
-当前实现把文件化 state 放在 interaction runtime 外层，不替换 LangGraph 主循环：
+## 总体架构
+
+当前已实现 runtime：
+
+```text
+main.py
+  -> TerminalSession                         # 旧同进程 UI adapter
+      -> HermesInteraction
+          -> RuntimeFrame
+          -> LangGraph executor
+              -> prepare_context
+              -> agent
+              -> tools
+          -> TaskStateStore / checkpoint / cache
+```
+
+目标 C/S 架构：
+
+```text
+Client / TUI
+  - 读取用户输入
+  - 渲染 protocol events
+  - 发出 protocol commands
+  - 不 import LangChain/LangGraph/runtime/tools
+
+Transport
+  - MVP: JSONL over stdio
+  - Next: Unix domain socket
+  - Later: WebSocket
+
+Runtime Server
+  - 独占 HermesInteraction
+  - 管理 session/thread/personality lifecycle
+  - 把内部 InteractionEvent 编码为 protocol events
+  - 校验 interrupt/resume/cancel request
+
+HermesInteraction
+  - 构建 RuntimeFrame
+  - 调用 LangGraph executor
+  - 处理 stream/resume/restart
+  - 记录 turn events
+
+State / Tools / Hooks / Sandbox
+  - append-only state 是事实源
+  - ToolRegistry 是工具事实源
+  - LoopHooks 是 runtime 扩展点
+  - Sandbox 是宿主资源隔离层
+```
+
+关键边界：
+
+- UI 只知道 JSON protocol frame。
+- server 才能调用 `HermesInteraction`。
+- `InteractionEvent` 是 Python 内部事件，不是 wire contract。
+- LangChain message/chunk/ToolMessage 不能越过 server 边界。
+- tool lifecycle 必须通过 `tool_call_id` 串联。
+
+## 身份与路径模型
+
+四个 ID 不能混用：
+
+```text
+session_id      命名 workspace/cache/state/saver/subagents
+personality_id  选择 instructions/memory/permissions/sandbox/skills
+thread_id       LangGraph checkpoint conversation key
+task_id         DAG state subject；主 agent 是 agent，child 使用 subagent_id
+```
+
+主 agent state：
+
+```text
+data/sessions/<session_id>/state/
+```
+
+LangGraph checkpoint：
+
+```text
+data/sessions/<session_id>/saver/langgraph.pkl
+```
+
+Tool cache：
+
+```text
+data/sessions/<session_id>/cache/tool-results/
+```
+
+Subagent state：
+
+```text
+data/sessions/<session_id>/subagents/<subagent_id>/state/
+data/sessions/<session_id>/subagents/<subagent_id>/saver/
+```
+
+不允许恢复旧语义：
+
+- 主 agent 不创建 `tasks/default/`。
+- `thread_id` 不决定 state root。
+- subagent 不创建 sibling session。
+
+## 文件化 State
+
+每个 session 主 agent state 目录：
 
 ```text
 data/sessions/<session_id>/state/
@@ -54,399 +149,662 @@ data/sessions/<session_id>/state/
   claims.yaml
   artifacts/
   checkpoints/
-  versions/
+  versions/plans/
   summaries/
   locks/
 ```
 
 语义：
 
-- `state/` 是当前 session 主 agent 的唯一 DAG state；默认 `mode=chat`，用于记录普通对话和运行轨迹。
-- `saver/` 存放 LangGraph checkpoint，不和人类可审计的 DAG state 混在一起。
-- attach-mode subagent 拥有自己的 `subagents/<subagent_id>/state/` 和 `subagents/<subagent_id>/saver/`；它不是 parent 的第二个主任务目录。
-- `session_id` 是一次隔离运行的外层命名空间，决定 workspace/cache/state/saver/subagents 的根目录。
-- `personality_id` 选择 agent 的指令、memory、权限和 sandbox 配置。
-- `thread_id` 只用于 LangGraph 对话 checkpoint 的线程键，不再决定主 DAG state 目录。
-- `task_id` 是当前 DAG state 的主体标识；主 agent 固定为 `agent`，subagent 使用自己的 `subagent_id`。
-- 当复杂任务需要受控执行时，agent 或用户通过 `task_begin` 将该 state 切换到 `mode=task`。任务模式下，`goal.md` 是全局目标，`plan.yaml` 是可执行 DAG，`context.md` 是给模型看的当前任务投影。
-- system prompt 明确要求复杂多步工作先进入 task mode，并在 task mode 内通过 `plan_next`/`plan_update` 推进 DAG，避免只有工具存在但模型不知道该使用。
-- `events.jsonl` 是 runtime 事件流，包括 turn start/finish 和 normalized `InteractionEvent`。
-- 详细 normalized `InteractionEvent` trace 默认不写入本地事件流，避免长会话性能瓶颈；设置 `XBOT_TRACE_EVENTS=1` 或构造 runtime 时开启 `trace_events=True` 才会落盘。
-- `graph.jsonl` 是执行轨迹投影，包括 turn node、tool call、interrupt、message artifact 等事件。
-- `context_tree.jsonl` 是上下文树事件流；turn/message/tool/error 会生成节点，rewind 只写入 head movement。
-- `mailbox.jsonl` 是 runtime/parent/subagent 通信队列；send/read/ack 都是 append-only 事件。
-- `state.yaml` 是从 append-only 日志 materialize 出来的当前视图，不是 source of truth。
-- `plan.yaml` 是可校验 DAG，`xbot.planning` 检查缺失依赖/环并计算 `ready_nodes` 与 `active_node`。
-- 计划变更会在 `versions/plans/` 记录变更前后快照，`index.yaml` 保存 version/hash/path，`latest.yaml` 保存最新快照内容。
-- task mode 下的 turn、tool、artifact、summary 图事件会归因到当前 running/active plan node；`state.yaml.dag` 汇总每个节点的活动计数和最新事件。
-- `goal.md`、`context.md`、`claims.yaml` 是稳定文件边界；`claim_add` 写入带 evidence/status 的 claim，verification 会校验结构。
-- agent 可通过 `context_head` 读取当前上下文树投影，通过 `context_rewind` 将 head 移到既有节点。该操作不删除历史，也不回滚文件、shell、memory 等外部副作用。
-- agent 可通过 `mailbox_send` 和 `mailbox_read` 交换可审计消息。读取时可 ack；ack 不删除消息，只影响 pending 投影。
-- 压缩和 `summary_add` 产生的摘要写入 `summaries/summary_N.md`，文件包含 YAML front matter；最近摘要会投影到 `context.md`，verification 会校验摘要结构。
-- `memory_update` 追加结构化长期记忆；`memory_list` 和 `memory_search` 允许按条目读取和检索，而不是把 `memory.md` 当作不可查询的大文本。
+- `events.jsonl`：runtime turn events，append-only。
+- `graph.jsonl`：tool call、artifact、summary、interrupt 等执行轨迹投影，append-only。
+- `context_tree.jsonl`：turn/message/tool/summary/rewind/context_compacted 节点，append-only。
+- `mailbox.jsonl`：send/read/ack，append-only。
+- `state.yaml`：从 append-only logs materialize 出来的视图，不是事实源。
+- `context.md`：给模型看的任务投影。
+- `claims.yaml`：结构化 claims，包含 evidence、confidence、invalidates/superseded metadata。
+- `plan.yaml`：可执行 DAG，不是 markdown todo。
+- `versions/plans/`：每次 plan mutation 的 before/after snapshot。
+- `summaries/`：compaction/manual summary artifacts，带 source refs/ranges。
 
-### Task Mode And Plan Tools
+不可变约束：
 
-任务模式不是“一个额外目录”，而是当前 thread state 的执行模式：
+- 不修改旧 JSONL 行；修正通过新事件表达。
+- `state.yaml` 必须能从 logs 重建。
+- 大 payload 不直接写入 prompt；用 cache ref。
+- errors 被记录，不被删除。
 
-- `task_begin(goal, steps_json)`：记录全局目标，替换当前 DAG，写入 `goal.md` 和 `context.md`。
-- `plan_add_nodes(nodes_json)`：向 DAG 追加节点，保持计划版本化。
-- `plan_autofill(scope, constraints_json)`：为当前任务补齐标准 inspect/implement/verify/report DAG 骨架，已有同类型节点时不重复创建。
-- `plan_next()`：由调度器选择 ready node，并将其标记为 running；如果已有 running node，则返回当前 running node，不启动第二个节点。
-- `plan_update(node_id, status)`：推进节点到 `completed`/`verified`、`failed`、`blocked` 等状态；`completed` 和 `verified` 都会解锁后续依赖。
-- `plan_node_history(node_id)`：读取归因到某个 DAG 节点的 graph events。
-- `task_status()`：读取当前 goal/plan/context 投影，并返回 `next_action` 建议（例如 `plan_next`、`plan_update`、`task_exit`）。
-- `task_exit()`：退出任务模式，保留 DAG 和事件历史。
+## RuntimeFrame 与 Context
 
-任务模式下，agent 应先推进当前 active/running DAG 节点；不能把复杂任务退化为普通聊天列表。如果任务缺少可执行结构，agent 可以先用 `plan_autofill` 生成标准骨架，再用 `plan_add_nodes` 做任务特定扩展。调度器保持单 running node，不允许通过连续 `plan_next` 并行打开多个 DAG 节点。`plan_add_nodes`、`plan_autofill`、`plan_next`、`plan_update` 只能在 task mode 中执行；`task_exit(status="completed")` 会检查 DAG，存在 ready/pending/running/blocked/failed 节点时拒绝完成退出。需要中止时必须显式用 `cancelled` 或 `failed` 状态退出。
-
-`context.md` 会投影 active/running/ready/pending 节点，也会保留最近 completed 节点和 blocked/failed 节点，使模型能看到 DAG 执行结果，而不是只看到下一步。
-
-`state.yaml` 的计划投影示例：
-
-```yaml
-plan:
-  version: 2
-  status: active
-  active_node: n_verify_state
-  ready_nodes: [n_verify_state]
-  pending_nodes: []
-  errors: []
-```
-
-当前 LangGraph checkpoint 使用 `FileBackedSaver` 写入 session checkpoint 文件，`InMemoryStore` 仍只作为运行期 store。长期可审计状态以任务目录为准。
-
-## P0 硬契约
-
-Hermes 先围绕 5 个契约演进。
-
-### Run
-
-一次 agent 运行实例。建议字段：
-
-```yaml
-run_id: run_...
-thread_id: default
-started_at: ...
-current_turn_id: turn_...
-trace_id: trace_...
-```
-
-当前 interaction runtime 已生成 `RunRecord` 并关联 `task_id`，文件化 state 记录 turn/event；LangGraph checkpoint 通过 `FileBackedSaver` 持久化到 session checkpoint 文件。
-
-### Turn
-
-一次用户输入或 runtime 事件驱动的模型循环。建议字段：
-
-```yaml
-turn_id: turn_...
-run_id: run_...
-input_kind: user_message | interrupt_resume | background_event
-created_at: ...
-```
-
-### InterruptEvent
-
-所有用户打断都走统一结构，通过 `type` 区分语义。
-
-```yaml
-interrupt_id: int_...
-type: user_ask | tool_confirm
-question: ...
-tool_name: optional
-args: optional
-reasons: optional
-sandbox: optional
-permission: optional
-resume_schema: ...
-```
-
-当前实现使用 LangGraph interrupt payload，最小字段为 `type`、`question`、`tool_name`、`args`。
-
-### ContextFrame
-
-每次模型调用前构造一次 ContextFrame。
+每次 graph/model invocation 都由 `RuntimeFrame` 驱动：
 
 ```text
-ContextFrame =
-  SystemPrompt
-  + RuntimeState
-  + MessageChain
+RuntimeFrame
+  runtime: RuntimeContext
+  user: UserContext
+  personality: PersonalityProjection
+  sandbox: SandboxProjection
+  tools: ToolRegistrySnapshot
+  task: TaskProjection
+  system_notice
+  active_subagents
 ```
 
-重要约束：
+转换链：
 
-- Tool schema 由模型 API 绑定，不写进普通 prompt。
-- RuntimeState 是瞬时系统消息，不作为长期历史节点保存。
-- 原始 think/reasoning 不默认进入下一轮上下文。
-- 需要长期保留的思考结论应写成 assistant 消息、plan artifact 或 memory。
-
-### ToolResultRef
-
-大工具结果不直接塞回模型上下文，而是返回引用。
-
-```yaml
-ref: cache://tool-result/<id>
-mime_type: text/plain
-summary: ...
-size: 12345
-read_hint: use cache_read(ref, query or max_chars)
+```text
+RuntimeFrame
+  -> ContextProjection
+  -> ContextMessages
+  -> provider call
 ```
 
-小结果直接内联；大结果写入运行时 cache，通过 `cache_read` 按需读取。
+消息布局：
 
-### SandboxConfig
-
-Hermes 现在把沙箱当作独立于权限系统的第二层控制面：
-
-```yaml
-enabled: true
-backend: bubblewrap
-default: deny
-network: false
-timeout_seconds: 30
-max_output_chars: 20000
-resources:
-  - path: sessions/<session_id>/workspace
-    access: readwrite
-    recursive: true
-  - path: personalities/<personality_id>
-    access: readonly
+```text
+[SystemMessage: stable prefix]
+[history messages]
+[SystemMessage: dynamic task suffix]
 ```
 
-语义：
+stable prefix 包含：
 
-- `permissions` 决定一个 tool 能不能被调用。
-- `sandbox` 决定这个 tool 在宿主机上能看到什么。
-- `sandbox` 开启后，未注册工具默认拒绝。
-- `sandbox` 不是 Python 级路径过滤，而是 bubblewrap 级隔离。deny/ask 资源会被遮蔽，获批后只临时挂载精确路径。
-- `shell`、`filesystem_*`、`skill_load`、`subagent_create`、`memory_update` 等会碰宿主资源的工具，都必须走 sandbox 后端。
-- 如果 `bwrap` 不可用，sandboxed 工具失败闭合，不回退到宿主直接执行。
+- system template
+- personality instructions
+- memory
+- skills summary
+- stable runtime rules
+- sandbox summary
 
-## 当前主循环
+dynamic suffix 包含：
+
+- 当前 runtime state
+- `context.md` task projection
+- active/ready/running DAG nodes
+- pending mailbox count
+- active subagent count
+- relevant claims/summaries
+
+规则：
+
+- `context.py` 不直接读取 config/state contextvars。
+- graph checkpoint 只保存 serializable projection dict，不保存自定义 `RuntimeFrame` 对象。
+- compaction summary 作为 compacted history/context artifact，不伪装成普通 assistant message。
+
+## LangGraph Executor
+
+当前 executor 是三阶段 loop：
 
 ```text
 START
+  -> prepare_context
+       before_context hooks
+       compaction
+       after_context hooks
   -> agent
+       before_agent hooks
+       build ContextMessages
+       provider call
+       after_agent hooks
   -> tools
-       -> tool_confirm interrupt when approval is needed
-       -> user_ask interrupt when ask() is called
-       -> output guardrail / cache hook
-  -> agent
-  -> END
+       before_tools hooks
+       sandbox + permission + ask/confirm
+       execute tools
+       after_tools hooks
+  -> prepare_context or END
 ```
 
-当前 `prepare_context` 节点调用 `xbot.compaction` 执行压缩。
+LangGraph 是 executor，不是架构事实源。可审计 state 在 `TaskStateStore`，checkpoint 在 `FileBackedSaver`。
 
-## 交互运行时
+## Tools 与 Hooks
 
-P0 将“交互程序”和“终端 UI”拆开：
+工具事实源：
 
-- `xbot.interaction.HermesInteraction` 负责加载配置、构建图、发起用户 turn、resume interrupt、输出标准事件。
-- `xbot.runtime.RuntimeContext` 显式携带 `session_id`、`personality_id`、`thread_id`、`task_id`、`run_id`、`trace_id` 和路径集合。
-- `xbot.config` 使用 context-local runtime paths，工具/配置 helper 保持现有 API，但不再共享单个进程级 `_RUNTIME_PATHS`。
-- `xbot.terminal.TerminalSession` 只负责 CLI 输入、UTF-8 终端配置、事件渲染和确认提示。
-- 后续 agent 侧调用、TUI、mailbox runner 都应复用 `HermesInteraction`，不直接依赖 `main.py`。
-- `main.py` 只保留参数解析和启动终端 session。
+```text
+xbot/builtin_tools/
+  filesystem.py
+  task_mode.py
+  plan.py
+  summary.py
+  claims.py
+  memory.py
+  mailbox.py
+  subagent.py
+  debug.py
+  cache_tool.py
+  skill.py
+```
 
-当前事件最小结构：
+`xbot.tools` 只是兼容 re-export，不再定义第二套工具实现。
+
+`ToolRegistry` entry：
+
+```text
+name
+tool: BaseTool
+sandbox_mode: sandboxed | host
+```
+
+Hook stages：
+
+```text
+before_context
+after_context
+before_agent
+after_agent
+before_tools
+after_tools
+```
+
+标准 hooks 负责：
+
+- permission/sandbox guard
+- active `ask`
+- large result cache
+- compact requested handling
+- runtime/tool trace persistence
+
+guard hook 必须通过 `ToolRegistry` 查询 sandbox metadata，不能导入旧 `xbot.tools` 判断行为。
+
+## 权限与 Sandbox
+
+权限顺序：
+
+```text
+deny -> allow -> ask -> default
+```
+
+sandbox 是第二层控制面：
+
+- permission 决定工具能不能调用。
+- sandbox 决定工具在宿主机上能看到什么。
+- sandbox 开启后未知工具 fail closed。
+- bubblewrap 不可用时 sandboxed 工具失败，不回退 host execution。
+- deny/ask resource 必须在挂载层遮蔽，不只做 Python 路径检查。
+
+工具执行路径：
+
+```text
+agent tool call
+  -> ToolRegistry metadata
+  -> SandboxPolicy.guard_tool_call
+  -> PermissionSystem.check
+  -> optional tool_confirm interrupt
+  -> execute approved tool
+  -> ToolMessage or error ToolMessage
+  -> output cache hook
+```
+
+## Task Mode 与 Plan DAG
+
+任务模式是当前 state 的执行模式，不是另一个目录。
+
+核心工具：
+
+- `task_begin(goal, steps_json)`：进入 task mode，写 `goal.md`，替换 `plan.yaml`。
+- `plan_autofill(scope)`：补 inspect/implement/verify/report 骨架。
+- `plan_add_nodes(nodes_json)`：追加 DAG 节点并 version plan。
+- `plan_next()`：选择 ready node；已有 running node 时返回它。
+- `plan_update(node_id, status)`：推进 completed/verified/failed/blocked。
+- `plan_node_history(node_id)`：查看归因到节点的 graph events。
+- `task_status()`：读取 goal/plan/context/next_action。
+- `task_exit(status)`：退出 task mode；completed 时拒绝未完成 DAG。
+
+调度语义：
+
+- 单 active/running node。
+- verification nodes 优先。
+- `completed` 和 `verified` 都能解锁依赖。
+- blocked/failed 需要显式处理，不能假装完成。
+
+## Compaction
+
+compaction 是可审计 state transition：
+
+```text
+message history
+  -> split tool-safe groups
+  -> select old groups
+  -> summarize with source refs
+  -> write summaries/summary_N.md
+  -> append graph.jsonl context_compacted
+  -> append context_tree.jsonl compacted node
+  -> replace old groups with compacted summary message
+```
+
+约束：
+
+- AI tool-call message 与对应 ToolMessage 不拆开。
+- unresolved tool call/interrupt 不压缩。
+- summary artifact 记录 source message ids/ranges。
+- 用户只看到 runtime status，不看到 summary 作为 assistant answer。
+
+## 内部事件与 Wire Protocol
+
+内部 `InteractionEvent`：
 
 ```yaml
-kind: message | interrupt | status | error
+kind: message | message_delta | tool_call | interrupt | status | error
 source: agent | tool | runtime | permission | sandbox | user
-payload: ...
+payload: Any
 ```
 
-## 上下文构造
+它只用于 Python runtime 内部。跨进程必须使用 protocol frame：
 
-上下文构造代码集中在 `xbot.context`，上下文压缩代码集中在 `xbot.compaction`。LangGraph 节点只负责调用这些阶段并把结果提交给模型。这让后续 context projector/context tree 可以替换构造逻辑，而不需要重写工具节点。
+```json
+{
+  "protocol_version": "xbot.hermes.v1",
+  "frame_id": "frame_01H...",
+  "seq": 17,
+  "ts": "2026-06-03T12:00:00Z",
+  "direction": "server_to_client",
+  "type": "tool.call.started",
+  "session_id": "default",
+  "thread_id": "default",
+  "request_id": "req_01H...",
+  "payload": {
+    "tool_call_id": "call_01H...",
+    "name": "shell",
+    "args_json": {"command": "pwd"},
+    "args_preview": "pwd",
+    "sandbox_mode": "sandboxed",
+    "status": "pending"
+  }
+}
+```
 
-验证阶段集中在 `xbot.verification`，用于检查任务目录必需文件、`plan.yaml` DAG、append-only 日志计数和 `state.yaml` materialized view 是否一致。
-
-### SystemPrompt
-
-来源：
-
-- `data/config/system_template.md`
-- `data/personalities/<personality_id>/instructions.md`
-- `data/personalities/<personality_id>/memory.md`
-- skills 摘要
-
-SystemPrompt 负责角色、规则、工具使用约束和长期记忆。
-
-### RuntimeState
-
-RuntimeState 每次模型调用动态生成：
+Client commands：
 
 ```text
-# Runtime State
-time: 2026-05-20T...
-user: Alice (local_user)
-platform: local
-session_type: private
-active_subagents: 0
-pending_mailbox_items: 0
+hello
+session.open
+user.message
+interrupt.resume
+run.cancel
+ping
+shutdown
 ```
 
-RuntimeState 不进入 `state["messages"]`，避免时间、状态计数等瞬时信息污染历史。
-
-### MessageChain
-
-当前阶段仍使用 LangGraph `messages` 作为线性链。后续引入 context tree 后，MessageChain 从当前 head 选择一条 path 构造。
-
-## ask 与权限确认
-
-Hermes 区分两种 interrupt。
-
-### user_ask
-
-由 agent 主动调用 `ask(question)` 触发。用户回答后，回答作为 `ask` 工具结果返回给模型。
+Server events：
 
 ```text
-agent -> ask(question)
-runtime -> interrupt(type="user_ask")
-user -> answer
-tools -> ToolMessage("User answered: ...")
-agent -> continue
+hello.ok
+session.opened
+run.started
+turn.started
+message.delta
+message.completed
+tool.call.started
+tool.approval.requested
+tool.execution.started
+tool.result.completed
+tool.result.failed
+interrupt.requested
+status
+error
+turn.finished
+run.finished
 ```
 
-### tool_confirm
+Protocol invariants：
 
-由权限系统或 sandbox ask 触发。一个工具调用如果同时需要权限确认和 sandbox 资源确认，只向用户发出一次合并确认；拒绝后返回标准拒绝工具结果。
+- frame 必须 JSON serializable。
+- `seq` 在连接内单调递增。
+- `request_id` 串联一次 user message/resume/cancel。
+- `tool_call_id` 串联完整 tool lifecycle。
+- `interrupt_id` 串联 prompt/resume。
+- 大输出用 `cache://` ref。
+- UI 不解析 `AIMessage`、`AIMessageChunk`、`ToolMessage`。
+
+## 完整运行时例子
+
+场景：用户在 TUI 输入“检查当前目录并告诉我文件列表”。模型决定调用 `shell(command="pwd")` 和 `filesystem_list(path=".")`。
+
+### 1. Client 启动并握手
+
+Client 发：
+
+```json
+{"protocol_version":"xbot.hermes.v1","seq":1,"direction":"client_to_server","type":"hello","session_id":"demo","thread_id":"demo","request_id":"req_hello","payload":{"client_name":"xbot-tui","supported_protocols":["xbot.hermes.v1"]}}
+```
+
+Server 做：
+
+- 校验 protocol version。
+- 返回 server capability。
+- 不创建 runtime turn。
+
+Server 回：
+
+```json
+{"protocol_version":"xbot.hermes.v1","seq":1,"direction":"server_to_client","type":"hello.ok","session_id":"demo","thread_id":"demo","request_id":"req_hello","payload":{"selected_protocol":"xbot.hermes.v1"}}
+```
+
+### 2. Client 打开 session
+
+Client 发 `session.open`：
+
+```json
+{"protocol_version":"xbot.hermes.v1","seq":2,"direction":"client_to_server","type":"session.open","session_id":"demo","thread_id":"demo","request_id":"req_open","payload":{"personality_id":"default","streaming":true}}
+```
+
+Server 做：
+
+1. `configure_runtime_paths(session_id="demo", personality_id="default")`
+2. `ensure_session_dirs()`
+3. load user/provider/personality/permissions/sandbox/skills
+4. `bootstrap_registry()` 从 `xbot.builtin_tools` 加载工具和 sandbox metadata
+5. `load_standard_hooks(agent_config.hooks)`
+6. 创建 `TaskStateStore` at `data/sessions/demo/state/`
+7. 创建 `FileBackedSaver` at `data/sessions/demo/saver/langgraph.pkl`
+8. 创建 `HermesInteraction`
+
+产生文件：
 
 ```text
-agent -> tool_call
-permission -> deny | allow | ask
-sandbox -> deny | allow | ask
-ask -> interrupt(type="tool_confirm")
-user -> approved true/false
-tools -> execute or return denial
+data/sessions/demo/
+  workspace/
+  cache/tool-results/
+  saver/langgraph.pkl
+  state/task.yaml
+  state/goal.md
+  state/plan.yaml
+  state/events.jsonl
+  state/graph.jsonl
+  state/context_tree.jsonl
+  state/mailbox.jsonl
+  state/state.yaml
+  state/context.md
+  state/claims.yaml
 ```
 
-权限判断采用 deny 优先，避免危险规则被宽泛 allow 覆盖。
+Server 回 `session.opened`，payload 包含 session paths summary、enabled tools、sandbox summary。
 
-## 工具运行时
+### 3. Client 发送用户消息
 
-工具调用运行时集中在 `xbot.tool_runtime`，LangGraph 图只负责把 tool node 接入 loop。工具调用经过三层处理：
+Client 发：
 
-1. **Sandbox gate**：系统沙箱先判定工具是否注册、是否可执行、是否需要 ask。
-2. **Permission guardrail**：权限系统检查工具名和参数。
-3. **Execution**：由系统沙箱后端或 host-safe 路径执行工具。
-4. **Output guardrail**：大结果写 cache，返回 ToolResultRef。
+```json
+{"protocol_version":"xbot.hermes.v1","seq":3,"direction":"client_to_server","type":"user.message","session_id":"demo","thread_id":"demo","request_id":"req_001","payload":{"content":"检查当前目录并告诉我文件列表","input_id":"input_001","mode":"chat"}}
+```
 
-工具结果 cache 是开发阶段的内存实现。它不是长期记忆，也不保证跨进程恢复。
+Server 做：
 
-工具失败必须保持显式：工具函数不把异常伪装成普通成功文本；图边界将真实执行异常转换为 `ToolMessage(status="error")`。`GraphInterrupt` 不属于工具失败，必须继续冒泡给 interaction runtime 处理。
+1. 为 `req_001` 建立 active request。
+2. 调用 `HermesInteraction.stream_user_message(content)`。
+3. `TaskStateStore.record_turn_started()` 追加到 `events.jsonl`。
 
-## 已实现的复杂能力
+`events.jsonl` 新增：
 
-### 上下文树 (已实现 MVP)
+```json
+{"type":"turn_started","turn_id":"turn_000001","input_kind":"user_message","content":"检查当前目录并告诉我文件列表", "...":"..."}
+```
 
-`context_tree.jsonl` 记录 append-only 上下文节点，`state.yaml` materialize head 和 node 计数。`context_rewind` 移动 head 但不删除历史：
+Server 发：
 
-- `node_id`
-- `parent_id`
-- `current_head`
-- `compacted` 节点
-- `tree_path`
-- `rewind`
+```json
+{"type":"run.started","request_id":"req_001","payload":{"run_id":"run_...","trace_id":"trace_..."}}
+{"type":"turn.started","request_id":"req_001","payload":{"turn_id":"turn_000001","input_kind":"user_message"}}
+```
 
-明确约束：`rewind` 不回滚外部副作用，只改变后续上下文从哪个节点继续生长。
+### 4. Runtime 构建 RuntimeFrame
 
-### Subagent
+`HermesInteraction._user_input_state()` 调用 `_build_runtime_frame()`：
 
-当前 `subagent_*` 已有 MVP worker：
+```text
+RuntimeContext:
+  session_id=demo
+  personality_id=default
+  thread_id=demo
+  task_id=agent
+  run_id=run_...
+  trace_id=trace_...
+  state_dir=data/sessions/demo/state
+  checkpoint_path=data/sessions/demo/saver/langgraph.pkl
 
-- `subagent_create(mode="attach")` 在真实 `HermesInteraction` 中同步启动 child thread，仍位于 parent session 下。
-- child runtime 访问 parent workspace，启动时进入自己的 task-mode DAG，拥有独立 agent DAG state、context tree、mailbox 和 audit log。
-- parent graph 记录 `subagent_delegated` / `subagent_finished` 事件，并按 parent active plan node 归因。
-- child 完成后写入 parent `subagents/<id>/result.txt`，并向 parent mailbox 发送 `subagent_completed` 或 `subagent_failed`。
-- `subagent_create(mode="detach")` 只创建 pending record，后续由后台 runner 接管。
-- child runtime 使用专门的 system notice，明确 subagent 身份、workspace 边界、父子协作方式和不要直接面向用户输出。
+PersonalityProjection:
+  agent_role
+  system_template
+  instructions
+  memory
+  skills_summary
 
-后续路线：
+TaskProjection:
+  context_text = state/context.md
+  pending_mailbox_items = 0
 
-1. 真正异步 subagent：带 timeout、取消、max tool calls、权限继承策略。
-2. background runner：扫描 pending record，消费 mailbox 任务并写回结果。
-3. subagent workspace diff：把 child workspace 的变更以 patch/artifact 形式交给 parent 审核。
+ToolRegistrySnapshot:
+  names = enabled tool names
+  sandbox_modes = registry.sandbox_modes()
+```
 
-### Debug Tools
+Frame 被转换为 graph state：
 
-`debug_analyze` 是只读 host 工具，用来检查当前 task 的运行时结构：
+```text
+context_projection: {...serializable dict...}
+messages: [HumanMessage("检查当前目录并告诉我文件列表")]
+```
 
-- task/session/thread 路径
-- `state.yaml` 关键计数和状态
-- `plan.yaml` active/ready/errors
-- 最近 DAG/runtime events
-- 每个 plan node 的 DAG 活动计数，配合 `plan_node_history` 做局部追踪
-- context tree 和 mailbox 投影
-- subagent manifest 摘要，以及 child `state.yaml` / `plan.yaml` / DAG activity 摘要
+### 5. prepare_context 构建模型上下文
 
-`debug_analyze(scope="dag")` 会收窄到 DAG/plan/subagent 视图，包含 plan node 表、`state.yaml.dag` 活动投影，以及最近事件按 `plan_node_id` 和事件类型聚合后的计数。
-默认 `debug_analyze` 也会给出 task `next_action`，用于定位当前 DAG 卡在哪一步。
+LangGraph 进入 `prepare_context`：
 
-### Mailbox (已实现 MVP)
+1. 运行 `before_context` hooks。
+2. 判断是否需要 compaction。
+3. 如触发 compaction，写 summary artifact 和 `context_compacted` events。
+4. 运行 `after_context` hooks。
 
-`mailbox.jsonl` 记录 append-only 消息（send/read/ack）。`state.yaml` 投影 pending count。RuntimeState 显示未读高优先级摘要。后续路线：统一 `EventQueue` 抽象。
+本例第一轮不压缩。
 
-## 持久化策略
+`agent` 节点调用 `build_context_messages()`：
 
-当前阶段：
+```text
+[SystemMessage stable prefix]
+[HumanMessage 用户输入]
+[SystemMessage dynamic task suffix]
+```
 
-- `FileBackedSaver`，写入 `data/sessions/<session_id>/saver/langgraph.pkl`
-- `InMemoryStore`
-- file-backed tool cache
+模型看到的是显式 context，不读取 UI 状态。
 
-目标阶段：
+### 6. Agent 产生 tool calls
 
-| 数据 | 目标 |
-|------|------|
-| checkpoint | 官方 SQLite/Postgres saver |
-| tool cache metadata | SQLite |
-| large payload | SQLite/blob/filesystem hybrid |
-| context tree | SQLite |
-| EventQueue | SQLite |
+Provider 可能在 stream 中先发半成品：
 
-## 实现路线
+```text
+tool_call chunk: shell({})
+tool_call chunk: shell({"command":"pwd"})
+```
 
-### P0：稳定主循环
+`HermesInteraction._complete_tool_calls_from_chunk()` 只在参数完整时产生内部事件：
 
-- 工具过滤
-- deny 优先权限
-- 主动 ask interrupt
-- RuntimeState 注入
-- ToolResultRef/cache MVP
-- interaction runtime 与 terminal adapter 解耦
-- 默认系统 sandbox 与工具失败显式化
+```python
+InteractionEvent(
+  kind="tool_call",
+  source="agent",
+  payload={"id":"call_pwd","name":"shell","args":{"command":"pwd"}}
+)
+```
 
-### P1：压缩
+Server encoder 转成 protocol event：
 
-- 线性 MessageChain 压缩
-- compacted summary
-- facts/open threads/tool refs
+```json
+{"type":"tool.call.started","request_id":"req_001","payload":{"tool_call_id":"call_pwd","name":"shell","args_json":{"command":"pwd"},"args_preview":"pwd","sandbox_mode":"sandboxed","status":"pending"}}
+```
 
-### P2：最小上下文树
+UI 渲染 tool panel，但不执行工具、不解析 LangChain message。
 
-- node 表
-- current head
-- rewind
-- 明确 side-effect ledger
+### 7. tools 节点执行 guard
 
-### P3：后台能力
+`tools` 节点读取 AIMessage 的 tool calls：
 
-- 同步 worker
-- EventQueue
-- background task
-- 异步 subagent
+```text
+pending_tool_calls:
+  - shell(command="pwd")
+  - filesystem_list(path=".")
+```
+
+对每个 call：
+
+1. `ToolRegistry.sandbox_mode(name)`
+2. `SandboxPolicy.guard_tool_call(name, args, mode)`
+3. `PermissionSystem.check(name, args)`
+4. 如任一结果是 ask，构造合并 `tool_confirm` interrupt。
+
+如果 personality 允许 `filesystem_list` 但 shell 需要确认，server 发：
+
+```json
+{"type":"tool.approval.requested","request_id":"req_001","payload":{"interrupt_id":"intr_shell_001","tool_call_id":"call_pwd","name":"shell","question":"Tool 'shell' needs approval before execution.","permission_decision":"ask","sandbox_decision":"allow","args_preview":"pwd"}}
+{"type":"interrupt.requested","request_id":"req_001","payload":{"interrupt_id":"intr_shell_001","type":"tool_confirm","question":"Tool 'shell' needs approval before execution."}}
+```
+
+`events.jsonl` 记录 turn interrupted；checkpoint 保留当前 graph state。
+
+### 8. Client resume interrupt
+
+用户在 TUI 里批准。Client 发：
+
+```json
+{"protocol_version":"xbot.hermes.v1","seq":4,"direction":"client_to_server","type":"interrupt.resume","session_id":"demo","thread_id":"demo","request_id":"req_002","payload":{"interrupt_id":"intr_shell_001","approved":true,"idempotency_key":"resume_001"}}
+```
+
+Server 做：
+
+1. 校验当前 pending interrupt。
+2. 调用 `HermesInteraction.stream_resume({"approved": true})`。
+3. 继续同一个 LangGraph checkpoint。
+4. 追加新的 `interrupt_resume` turn event。
+
+### 9. Tool 真正执行
+
+Server 发 tool execution start：
+
+```json
+{"type":"tool.execution.started","request_id":"req_002","payload":{"tool_call_id":"call_pwd","name":"shell","execution_id":"exec_pwd_001","cwd":"data/sessions/demo/workspace","sandbox_mode":"sandboxed"}}
+```
+
+`shell` 工具调用 `SandboxPolicy.run_shell(command)`：
+
+- bubblewrap 创建隔离进程。
+- workspace 以 readwrite mount 暴露。
+- personality/config/state 按 policy readonly 或遮蔽。
+- network disabled。
+- stdout/stderr/max output/timeout 受 sandbox config 控制。
+
+工具返回 JSON 字符串：
+
+```json
+{"stdout":"/home/.../data/sessions/demo/workspace\n","stderr":"","exit_code":0}
+```
+
+Tool result cache hook 判断大小；小结果 inline，大结果写：
+
+```text
+data/sessions/demo/cache/tool-results/<digest>.json
+```
+
+Server 发：
+
+```json
+{"type":"tool.result.completed","request_id":"req_002","payload":{"tool_call_id":"call_pwd","name":"shell","execution_id":"exec_pwd_001","status":"completed","exit_code":0,"stdout":"/home/.../workspace\n","stderr":"","result_ref":null,"truncated":false}}
+```
+
+`graph.jsonl` 记录 tool call/result，并在 task mode 下带 `plan_node_id`。
+
+### 10. Agent 观察工具结果并回答
+
+LangGraph 回到 `prepare_context -> agent`：
+
+- 上一轮 AI tool call 和对应 ToolMessage 保持成组。
+- 如果消息过长，compaction 只压缩完整可安全 group。
+- dynamic suffix 更新 task/context projection。
+
+模型生成最终文本：
+
+```text
+当前 workspace 是 ...，文件包括 ...
+```
+
+Streaming 时 server 发：
+
+```json
+{"type":"message.delta","request_id":"req_002","payload":{"message_id":"msg_001","role":"assistant","content_delta":"当前 workspace 是","channel":"final","is_reasoning":false}}
+{"type":"message.delta","request_id":"req_002","payload":{"message_id":"msg_001","role":"assistant","content_delta":" ...","channel":"final","is_reasoning":false}}
+{"type":"message.completed","request_id":"req_002","payload":{"message_id":"msg_001","role":"assistant","content":"当前 workspace 是 ...，文件包括 ...","finish_reason":"stop"}}
+```
+
+### 11. Turn 完成并落盘
+
+`HermesInteraction._finish_turn()`：
+
+- 如果无 error/interrupt，turn status = `completed`。
+- `events.jsonl` 追加 `turn_finished`。
+- `state.yaml` materialize turn count、event counts、DAG projection。
+- `FileBackedSaver` 写 checkpoint。
+
+Server 发：
+
+```json
+{"type":"turn.finished","request_id":"req_002","payload":{"turn_id":"turn_000002","status":"completed"}}
+{"type":"run.finished","request_id":"req_002","payload":{"status":"completed"}}
+```
+
+最终数据流总结：
+
+```text
+User input
+  -> client command JSONL
+  -> server request router
+  -> HermesInteraction
+  -> RuntimeFrame
+  -> ContextProjection
+  -> LangGraph prepare_context/agent/tools
+  -> ToolRegistry + hooks + permission + sandbox
+  -> TaskStateStore append-only logs
+  -> internal InteractionEvent
+  -> protocol encoder
+  -> server event JSONL
+  -> TUI renderer
+```
+
+## 当前未完成与改进方向
+
+必须先做：
+
+1. `xbot/protocol.py`：Pydantic protocol envelope、commands、events、tool payloads。
+2. `InteractionEvent -> ProtocolEvent` encoder。
+3. `xbot/server.py`：stdio JSONL runtime server。
+4. protocol golden tests。
+5. terminal protocol renderer，删除 LangChain message parsing。
+6. shell/exec lifecycle tests。
+
+暂不推进：
+
+- multi-agent async scheduler。
+- worker pool。
+- 跨 agent TUI 面板。
+- WebSocket transport。
+- 替换 LangGraph。
+- SQLite/Postgres 持久化替代当前 file-backed checkpoint。
 
 ## 当前代码对应关系
 
 | 模块 | 职责 |
 |------|------|
-| `main.py` | Terminal runtime loop、interrupt resume、图执行 |
-| `xbot/graph.py` | LangGraph 节点、ContextFrame、工具 runtime |
-| `xbot/tools.py` | 内置工具、`cache_read` |
-| `xbot/cache.py` | 开发阶段内存 ToolResultRef cache |
-| `xbot/permissions.py` | deny/allow/ask 权限规则 |
-| `xbot/config.py` | YAML/JSON 配置加载和 runtime path 派生 |
-| `xbot/models.py` | Pydantic 配置模型和运行时契约模型 |
+| `main.py` | 当前 legacy terminal launcher；后续增加 server launcher |
+| `xbot/interaction.py` | `HermesInteraction`，runtime turn/resume/stream 边界 |
+| `xbot/runtime.py` | RuntimeContext/RuntimeFrame/projections |
+| `xbot/graph.py` | LangGraph executor wiring |
+| `xbot/context.py` | ContextProjection -> provider messages |
+| `xbot/compaction.py` | Tool-safe message compaction and audit records |
+| `xbot/tool_runtime.py` | tools node guard/execution/cache hooks |
+| `xbot/registry.py` | ToolRegistry and sandbox metadata |
+| `xbot/builtin_tools/` | canonical built-in tools |
+| `xbot/tools.py` | compatibility re-export only |
+| `xbot/hooks/` | LoopHooks and standard guard/cache/compact hooks |
+| `xbot/state.py` | TaskStateStore append-only logs and materialized view |
+| `xbot/checkpoint.py` | FileBackedSaver for LangGraph checkpoint |
+| `xbot/cache.py` | file-backed tool-result cache |
+| `xbot/sandbox.py` | bubblewrap sandbox policy/execution |
+| `xbot/permissions.py` | permission rules |
+| `xbot/verification.py` | state verification |
+| `xbot/terminal.py` | legacy CLI adapter; target is protocol renderer |

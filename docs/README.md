@@ -6,7 +6,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [架构与设计](./architecture.md) | Hermes 的目标架构、上下文树、ask/权限、cache、subagent、mailbox、实现路线 |
+| [架构与设计](./architecture.md) | Hermes 当前 runtime 架构、C/S 目标、协议边界、完整运行时数据流例子、未完成项 |
 | [快速开始](./getting-started.md) | 安装、配置、启动方式 |
 | [配置参考](./configuration.md) | 当前代码支持的配置字段，以及规划字段说明 |
 | [测试指南](./testing.md) | Mock LLM、单元测试和集成测试策略 |
@@ -44,8 +44,9 @@
 - 工具系统与工具结果 cache
 - 权限系统
 - 上下文树和 rewind
+- protocol runtime server 与 TUI client
 - subagent 生命周期
 - mailbox
 - SQLite 持久化
 
-拆分前，以 [架构与设计](./architecture.md) 作为这些主题的权威说明。
+拆分前，以 [架构与设计](./architecture.md) 作为这些主题的权威说明。当前 multi-agent 扩张暂停；新开发优先推进 runtime server、JSONL protocol 和 protocol renderer。

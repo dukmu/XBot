@@ -19,7 +19,7 @@ The runtime follows these hard rules:
 
 ```
 ./
-├── main.py                       # Terminal entry point (thin adapter)
+├── main.py                       # Legacy terminal entry point; target server launcher
 ├── pyproject.toml                # uv project metadata
 ├── README.md                     # User-facing overview
 ├── AGENTS.md                     # ← This file
@@ -36,7 +36,9 @@ The runtime follows these hard rules:
 │   ├── runtime.py                # RuntimeContext (session/personality/thread/task identity)
 │   ├── compaction.py             # Context compression (prepare_context node)
 │   ├── tool_runtime.py           # Tool guardrails, sandbox gate, interrupt handling
-│   ├── tools.py                  # All 34 built-in tools (hardcoded list)
+│   ├── registry.py               # ToolRegistry and sandbox metadata
+│   ├── builtin_tools/            # Canonical built-in tool package
+│   ├── tools.py                  # Compatibility re-export only
 │   ├── planning.py               # DAG validation, scheduler, plan materialization
 │   ├── state.py                  # TaskStateStore — file-backed agent DAG state (1300+ lines)
 │   ├── verification.py           # verify_task_state — 11 consistency checks
@@ -114,16 +116,16 @@ task_id     → DAG state subject; "agent" for main agent, subagent_id for child
 
 Do **not** create nested `task/default/` directories. The primary agent uses `state/` directly. Subagents use `subagents/<id>/state/`.
 
-## Built-in Tools (34 total)
+## Built-in Tools (35 total)
 
-All tools are defined in `tools.py` with the `@tool` decorator and listed in `get_all_tools()`. They are grouped by function:
+Tools are defined in `xbot/builtin_tools/` and loaded through `ToolRegistry`. `xbot/tools.py` is a compatibility re-export only. They are grouped by function:
 
 | Group | Tools |
 |-------|-------|
 | Filesystem | `shell`, `filesystem_read`, `filesystem_write`, `filesystem_list` |
 | Communication | `ask`, `message_send` |
 | Task mode | `task_begin`, `task_status`, `task_exit` |
-| Plan DAG | `plan_add_nodes`, `plan_autofill`, `plan_next`, `plan_update`, `plan_node_history` |
+| Plan DAG | `plan_add_nodes`, `plan_autofill`, `plan_next`, `plan_update`, `plan_node_history`, `plan_remove_node` |
 | Summary | `summary_add`, `summary_list`, `summary_read` |
 | Claims | `claim_add`, `claim_list` |
 | Subagent | `subagent_create`, `subagent_wait`, `subagent_list`, `subagent_stop` |
@@ -135,7 +137,7 @@ All tools are defined in `tools.py` with the `@tool` decorator and listed in `ge
 | Compaction | `compact` |
 | Skill | `skill_load` |
 
-Tools must be registered in `TOOL_SANDBOX_MODE` (tools.py:22-57) for sandbox to recognize them. Unknown tools are rejected when sandbox is enabled.
+Tools must be exported from `xbot.builtin_tools` and registered in canonical `TOOL_SANDBOX_MODE` metadata for sandbox to recognize them. Unknown tools are rejected when sandbox is enabled.
 
 ## Task Mode and DAG
 
@@ -185,14 +187,14 @@ When modifying this codebase, respect these constraints:
 ```bash
 uv run pytest -q                                    # All tests
 uv run pytest -q -k "task_state"                    # Specific filter
-python -m py_compile main.py xbot/*.py tests/*.py   # Compile check
+python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py
 ```
 
 ### Writing new tests
 
 - Use `temp_data_dir` fixture for file system tests — never touch real `data/sessions/default`.
 - Every graph test must use a unique `thread_id`.
-- New tools must be added to `TOOL_SANDBOX_MODE` and have a sandbox registration test.
+- New tools must be exported from `xbot.builtin_tools`, added to canonical `TOOL_SANDBOX_MODE`, and have registry/sandbox registration tests.
 - Test through `HermesInteraction` for user-visible events; test through `build_agent_graph` for message state.
 - For streaming, assert `InteractionEvent` objects, not raw provider chunks.
 - Compaction tests need at least two turns — compression happens before the next model call.
@@ -207,32 +209,33 @@ Requires real provider credentials. Validates: tool execution trail, DAG attribu
 
 ## Known Issues and Gaps
 
-### Architecture debt (not yet implemented)
+### Architecture debt (current)
 
 | Issue | Severity | Detail |
 |-------|----------|--------|
-| No hook/middleware system | 🔴 Critical | Loop stages are hardcoded; no before/after injection points. `task.md` Section 7 describes a `LoopHooks` class that doesn't exist. |
-| No plugin registry | 🔴 Critical | Tools are hardcoded in `get_all_tools()`. No dynamic discovery, no `ToolRegistry`. `task.md` Section 5.8 describes a `PluginRegistry` that doesn't exist. |
+| No C/S protocol boundary | 🔴 Critical | `TerminalSession` still runs in-process and renders LangChain message/chunk/tool objects. The next path is runtime server + JSONL protocol client. |
+| InteractionEvent is not a wire contract | 🔴 Critical | Internal `InteractionEvent.payload` is `Any`; protocol frames still need version, seq, request_id, turn_id, tool_call_id, and stable payload schemas. |
+| Tool lifecycle events incomplete | 🔴 Critical | shell/exec UI cannot reliably distinguish pending, approved, running, completed, failed, interrupted, sandbox denied, or permission denied. |
 | No schema migration | 🔴 Critical | `STATE_SCHEMA_VERSION=1` is written but never checked. YAML files have no upgrade path. Old task directories will silently fail on schema changes. |
 | Loop stages not separable | 🔴 Critical | Plan/Act/Observe/Verify exist only as LLM-called tools, not as loop-enforced stages. No executor interface for swapping strategies. |
-| Claims don't drive behavior | 🟡 Medium | Claims are stored but: not projected into `context.md`, missing `invalidates_if`/`superseded_by`/`confidence` fields, not used in verification beyond schema check. |
 | Context tree not in prompt | 🟡 Medium | `context_tree.jsonl` exists and is queryable via tools, but `project_context()` doesn't include tree nodes. The model can't "see" the tree without calling tools. |
-| Mailbox not runtime-level | 🟡 Medium | Mailbox is tool-accessible and visible in `context.md`, but the runtime doesn't auto-dispatch messages. `HermesInteraction` has no `process_mailbox` entry point. |
 | DAG scheduler incomplete | 🟡 Medium | Missing: unblock-chain priority, low-cost diagnosis priority, risk-level gating, parallel worker dispatch. |
-| Subagent system prompt basic | 🟡 Medium | Attach-mode subagent has basic prompt but hasn't been fully designed for its role. |
+| Multi-agent paused | 🟡 Medium | Attach/mailbox/detach MVP exists, but async scheduler and multi-agent UI are intentionally not being advanced now. |
 
 ### Test gaps
 
 - No event replay → state reconstruction test
-- No cross-restart recovery test (new HermesInteraction with same session_id)
+- Protocol golden tests are not implemented yet
+- No runtime server stdio JSONL tests yet
+- No protocol renderer tests for shell/exec lifecycle yet
 - No complex DAG topology tests (diamond, 5+ chains, partial multi-deps)
 - No subagent sandbox isolation test
-- No compaction semantic correctness test
+- No compaction semantic correctness test beyond source refs/group safety
 - `test_agent.py` uses wrong config path (`"personality"` singular, should be `"personalities"`)
 
 ### Code quality
 
-- 4 silent `except Exception: pass` (compaction.py:63, terminal.py:28/257, test_agent.py:654)
+- Silent or broad exception handling remains in terminal/test compatibility paths; check current line numbers before editing.
 - 8 unused test helper functions in test_agent.py (lines 65-97)
 - `RuntimePaths.tasks_dir` and `checkpoints_dir` defined but never used
 - `graph.py` imports `AIMessage`, `ToolMessage`, `split_for_compaction` but doesn't use them directly

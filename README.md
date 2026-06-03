@@ -1,23 +1,23 @@
 # XBot Hermes
 
-Hermes is a lightweight, single-user local agent built around a high-quality context loop: explicit system prompt construction, permission interrupts, active ask, context compression, file-backed agent DAG state, and a future context tree with rewind and subagents.
+Hermes is a lightweight, single-user local agent built around a state-centered runtime: explicit context construction, permission interrupts, active ask, auditable context compression, file-backed agent DAG state, hooks, a pluggable tool registry, and protocol-ready UI boundaries.
 
-The current codebase is in an early development stage. The main loop, LangGraph ReAct flow, permission checks, config loading, and basic tool surface exist. Some planned capabilities, such as full subagents, mailbox, persistent context tree, and tool-result cache hooks, are documented as design targets rather than complete runtime behavior.
+The current `claude-refactor` branch has a working runtime path with file-backed state, context tree, mailbox, attach/detach subagent MVPs, auditable compaction, claims/summaries, and real provider smoke coverage. The legacy terminal still runs in-process and directly renders LangChain objects; the next planned refactor is a JSONL client/server protocol so TUI clients render stable events instead of runtime internals.
 
 ## Design Intent
 
 Hermes is meant to be a personal agent, not a multi-tenant service. The main design goals are:
 
 - **Single-user local runtime**: one user, one local workspace, configurable local sessions.
-- **Explicit model context**: `system prompt + system state + message chain + optional think blocks`.
+- **Explicit model context**: `RuntimeFrame -> ContextProjection -> provider messages`.
 - **Permission-first tools**: tool calls go through allow/deny/ask rules; sensitive actions interrupt for confirmation.
 - **System sandbox**: when enabled, host-touching tools run inside bubblewrap with explicit resource mounts and deny/ask masking.
 - **Active ask**: the agent can pause and ask the user for missing intent or decisions.
 - **File-backed agent state**: each session gets one primary DAG state directory with append-only runtime and graph logs plus materialized YAML state.
 - **Context compression**: when context grows too large, older history becomes a compacted summary node.
-- **Context tree**: future message history is a tree, supporting branches, compacted nodes, rewind, and tree inspection.
-- **Subagents**: future synchronous and asynchronous workers can inherit or start fresh context.
-- **Tool cache hooks**: large tool results should be cached and referenced instead of copied wholesale into context.
+- **Context tree**: message/tool/summary/rewind nodes are append-only and inspectable.
+- **Protocol UI boundary**: terminal/TUI clients should consume JSONL protocol events, not LangChain message objects.
+- **Tool cache hooks**: large tool results are cached and referenced instead of copied wholesale into context.
 
 See [docs/architecture.md](./docs/architecture.md) for the full Hermes architecture.
 
@@ -28,7 +28,8 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 | Capability | Status |
 |------------|--------|
 | LangGraph ReAct loop | Implemented |
-| Terminal runtime | Implemented |
+| Terminal adapter | Legacy in-process adapter |
+| Runtime server protocol | Planned next |
 | Provider config | Implemented |
 | Permission allow/deny/ask | Implemented |
 | Permission interrupt confirmation | Basic implementation |
@@ -38,7 +39,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 | Tool result cache hooks | File-backed MVP |
 | Plan/DAG state | Implemented MVP |
 | Context tree and rewind | Implemented MVP |
-| Subagents (attach mode) | Implemented MVP |
+| Subagents (attach/detach MVP) | Implemented MVP; expansion paused |
 | Mailbox | Implemented MVP |
 | File-backed agent state | Implemented MVP |
 | Hooked loop architecture | Implemented (hooks.py + registry.py) |
@@ -51,7 +52,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 
 ```text
 ./
-├── main.py                    # Terminal entry point
+├── main.py                    # Legacy terminal entry point; target server launcher
 ├── pyproject.toml             # Project metadata and uv dependencies
 ├── README.md
 ├── AGENTS.md                  # Architecture guide for AI agents
@@ -62,7 +63,9 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── compaction.py           # Context compaction phase
 │   ├── context.py             # Context-frame construction
 │   ├── permissions.py         # Permission system
-│   ├── tools.py               # Built-in tools
+│   ├── registry.py            # ToolRegistry and sandbox metadata
+│   ├── tools.py               # Compatibility re-export for built-in tools
+│   ├── builtin_tools/         # Canonical built-in tools
 │   ├── tool_runtime.py         # Tool guardrails, interrupts, sandbox execution hooks
 │   ├── planning.py            # Executable plan DAG validation and scheduling helpers
 │   ├── skills.py              # Skill discovery and loading
@@ -72,7 +75,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── interaction.py         # P0 interaction runtime and normalized events
 │   ├── runtime.py             # Explicit runtime context
 │   ├── verification.py        # File-backed task-state verification helpers
-│   ├── terminal.py            # CLI terminal adapter
+│   ├── terminal.py            # Legacy CLI terminal adapter
 │   └── mock_llm.py            # Test model
 ├── docs/
 │   ├── README.md
@@ -99,8 +102,9 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
     │   └── default/
     │       ├── workspace/
     │       ├── cache/
-    │       ├── subagents/
-    │       └── tasks/
+    │       ├── saver/
+    │       ├── state/
+    │       └── subagents/
 ```
 
 ## Installation
@@ -183,15 +187,15 @@ python main.py --print-thoughts
 python main.py --no-sandbox
 ```
 
-The CLI is a thin adapter over `xbot.interaction.HermesInteraction`. If the active personality has no `sandbox.json`, the P0 runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
+The current CLI is a legacy thin adapter over `xbot.interaction.HermesInteraction`. The planned TUI path is a client/server split: a runtime server owns `HermesInteraction`, while terminal/TUI clients exchange JSONL protocol frames. If the active personality has no `sandbox.json`, the runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
 
 ## Runtime Graph
 
 Current graph:
 
 ```text
-START -> agent -> tools -> agent -> END
-              \-> compress -> agent
+START -> prepare_context -> agent -> tools -> prepare_context
+                                \-> END
 ```
 
 Permission confirmation is handled inside the tools node via LangGraph interrupt/resume.
@@ -209,7 +213,7 @@ LangGraph checkpoints are stored separately under `data/sessions/<session_id>/sa
 
 Large tool results are cached under `data/sessions/<session_id>/cache/tool-results/` when the runtime is created through `HermesInteraction.create()`. The model receives a `cache://tool-result/<digest>` ref and can read focused slices with `cache_read`.
 
-`plan.yaml` is an executable DAG, not only notes. The runtime validates node dependencies, exposes `ready_nodes` and `active_node` in `state.yaml`, and checkpoints prior plan versions under `checkpoints/plans/` when the plan changes.
+`plan.yaml` is an executable DAG, not only notes. The runtime validates node dependencies, exposes `ready_nodes` and `active_node` in `state.yaml`, and snapshots plan changes under `versions/plans/`.
 Runtime events, graph projections, artifacts, and summaries are attributed to the current running plan node when task mode is active. `state.yaml` exposes per-node DAG activity, and `plan_node_history` can inspect the event history for a specific node.
 Plan mutation and scheduling tools require task mode. A task cannot exit with `completed` while the DAG still has unfinished, blocked, or failed nodes; use `cancelled` or `failed` for explicit early exits.
 The system prompt also instructs the model to use task mode for complex multi-step work and to drive the DAG through `plan_next` / `plan_update`.
@@ -220,7 +224,7 @@ The system prompt also instructs the model to use task mode for complex multi-st
 |------|------------------|
 | `shell` | Runs inside bubblewrap when sandbox is enabled |
 | `filesystem_read` | Reads through the sandbox backend |
-| `task_begin` / `plan_autofill` / `plan_next` / `plan_update` | Enter task mode, grow a standard DAG skeleton, and drive execution |
+| `task_begin` / `plan_autofill` / `plan_next` / `plan_update` / `plan_remove_node` | Enter task mode, grow/edit a DAG skeleton, and drive execution |
 | `task_status` | Inspect agent state and receive the next recommended DAG action |
 | `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect structured task summaries |
@@ -231,10 +235,10 @@ The system prompt also instructs the model to use task mode for complex multi-st
 | `ask` | Triggers a `user_ask` interrupt/resume flow |
 | `message_send` | Emits a user-visible message through the interaction adapter |
 | `memory_update` / `memory_list` / `memory_search` | Append, list, and search structured long-term memory entries |
-| `subagent_create` | Creates a P0 task record and workspace; no worker starts |
-| `subagent_wait` | Reads a P0 task record status/result |
-| `subagent_list` | Lists task record directories |
-| `subagent_stop` | Marks a P0 task record as stopped |
+| `subagent_create` | Attach mode runs a child runtime under the parent session; detach creates a pending manifest for the MVP runner |
+| `subagent_wait` | Reads subagent manifest/status/result |
+| `subagent_list` | Lists subagent manifests |
+| `subagent_stop` | Marks a subagent as stopped |
 | `compact` | Requests context compaction on the next graph pass |
 | `skill_load` | Loads a `SKILL.md` file by name through sandbox when enabled |
 
