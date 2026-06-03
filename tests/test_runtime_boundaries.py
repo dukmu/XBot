@@ -758,6 +758,26 @@ async def test_task_status_reports_next_action(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_task_begin_without_nodes_guides_dag_creation(temp_data_dir):
+    """A root-only task is not complete; the agent must add executable nodes."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="root-only-task-next-action",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        started = json.loads(await task_begin.ainvoke({"goal": "Refactor calculator.py"}))
+        status = json.loads(await task_status.ainvoke({}))
+    finally:
+        reset_runtime_task_state(token)
+
+    assert started["next_action"]["action"] == "plan_autofill_or_add_nodes"
+    assert status["next_action"]["action"] == "plan_autofill_or_add_nodes"
+
+
+@pytest.mark.asyncio
 async def test_dag_events_are_attributed_to_active_plan_node(temp_data_dir):
     """Turn, tool, artifact, and summary events should point at the active DAG node."""
     store = TaskStateStore.create(
@@ -2056,8 +2076,8 @@ async def test_disabled_sandbox_shell_does_not_mock_success():
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_uses_sequential_failure_barrier(mock_llm, user_context, temp_data_dir):
-    """Sequential state tools should stop later same-batch side effects on failure."""
+async def test_tool_batch_runs_only_first_tool(mock_llm, user_context, temp_data_dir):
+    """Tool batches should execute only the first tool in P0 serial mode."""
     from xbot.graph import build_agent_graph
 
     workspace = temp_data_dir / "sessions" / "default" / "workspace"
@@ -2109,13 +2129,70 @@ async def test_tool_batch_uses_sequential_failure_barrier(mock_llm, user_context
     assert tool_messages[0].status == "error"
     assert tool_messages[1].name == "filesystem_write"
     assert tool_messages[1].status == "error"
-    assert "is a sequential barrier" in str(tool_messages[1].content)
+    assert "already running in this batch" in str(tool_messages[1].content)
     assert not target.exists()
 
 
 @pytest.mark.asyncio
-async def test_parallel_filesystem_writes_run_in_same_batch(mock_llm, user_context, temp_data_dir):
-    """Parallel-safe filesystem writes should execute in one ToolNode batch with path locks."""
+async def test_tool_batch_rejects_second_tool_even_when_first_is_parallel_safe(mock_llm, user_context, temp_data_dir):
+    """Serial mode rejects later same-batch tools regardless of metadata."""
+    from xbot.graph import build_agent_graph
+
+    workspace = temp_data_dir / "sessions" / "default" / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "input.txt").write_text("hello", encoding="utf-8")
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "state",
+        thread_id="sequential-tool-alone",
+        session_id="default",
+        personality_id="default",
+        direct_root=True,
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        mock_llm.set_response_sequence(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "filesystem_read", "args": {"path": "input.txt"}, "id": "call_read"},
+                        {"name": "task_begin", "args": {"goal": "new task"}, "id": "call_begin"},
+                    ],
+                },
+                {"content": "done"},
+            ]
+        )
+        graph = build_agent_graph(
+            llm=mock_llm,
+            tools=[filesystem_read, task_begin],
+            checkpointer=MemorySaver(),
+            store=None,
+            permission_system=PermissionSystem(PermissionConfig(default="allow")),
+            sandbox_policy=SandboxPolicy(SandboxConfig(enabled=False), data_root=temp_data_dir, workspace_root=workspace),
+            hooks=make_default_hooks(),
+            tool_registry=make_default_registry(),
+        )
+        result = await graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="try mixed batch")],
+                "user_context": user_context,
+            },
+            config={"configurable": {"thread_id": "sequential-tool-alone"}},
+        )
+    finally:
+        reset_runtime_task_state(token)
+
+    tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
+    assert tool_messages[0].name == "filesystem_read"
+    assert getattr(tool_messages[0], "status", "success") != "error"
+    assert tool_messages[1].name == "task_begin"
+    assert tool_messages[1].status == "error"
+    assert "already running in this batch" in str(tool_messages[1].content)
+
+
+@pytest.mark.asyncio
+async def test_same_batch_filesystem_writes_are_serialized_by_rejection(mock_llm, user_context, temp_data_dir):
+    """Filesystem writes currently run one per model turn to keep state simple."""
     from xbot.graph import build_agent_graph
 
     workspace = temp_data_dir / "sessions" / "default" / "workspace"
@@ -2152,9 +2229,10 @@ async def test_parallel_filesystem_writes_run_in_same_batch(mock_llm, user_conte
 
     tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
     assert [message.name for message in tool_messages] == ["filesystem_write", "filesystem_write"]
-    assert all(getattr(message, "status", "success") != "error" for message in tool_messages)
+    assert getattr(tool_messages[0], "status", "success") != "error"
+    assert tool_messages[1].status == "error"
     assert (workspace / "a.txt").read_text(encoding="utf-8") == "a"
-    assert (workspace / "b.txt").read_text(encoding="utf-8") == "b"
+    assert not (workspace / "b.txt").exists()
 
 
 @pytest.mark.asyncio
@@ -2653,7 +2731,7 @@ class TestToolRegistry:
         # Verify sandbox modes
         assert registry.sandbox_mode("shell") == "sandboxed"
         assert registry.sandbox_mode("debug_analyze") == "host"
-        assert registry.execution_mode("filesystem_write") == "parallel"
+        assert registry.execution_mode("filesystem_write") == "sequential"
         assert registry.lock_fields("filesystem_write") == ("path",)
         assert registry.execution_mode("task_begin") == "sequential"
         assert registry.validate_sandbox_modes() == []
@@ -2689,7 +2767,7 @@ class TestToolRegistry:
             "task_begin": ["Do not call it again", "Never put a tool-call order"],
             "plan_add_nodes": ["node objects", "dependencies", "not which tool to call"],
             "plan_update": ["durable execution facts", "evidence_refs_json", "completion_errors"],
-            "filesystem_write": ["complete content", "Read the file first", "locked"],
+            "filesystem_write": ["complete content", "Read the file first", "one tool per model turn"],
             "memory_update": ["durable", "Do not store current task progress"],
             "summary_add": ["cross-turn", "Do not call this for every small tool result"],
             "cache_read": ["cache://", "query", "max_chars"],
