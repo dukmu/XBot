@@ -8,7 +8,7 @@ tests/
   core/                     # Core tests (NO plugins loaded)
     conftest.py
     test_hooks.py           # HookManager, all 17 stages
-    test_state.py           # CoreStateStore, events, plugin state
+    test_state.py           # CoreStateStore, materializer, events, plugin state
     test_context.py         # ContextBuilder, fragments, cache
     test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
     test_tool_registry.py   # ToolRegistry, filtering
@@ -17,7 +17,7 @@ tests/
     test_permissions.py     # PermissionSystem
     test_engine.py          # Engine ReAct loop
     test_bootstrap.py       # Bootstrap sequence
-    test_plugin_loader.py   # Plugin discovery, deps
+    test_plugin_loader.py   # PluginLoader discovery, deps, manifest fragments
     test_protocol.py        # Protocol frames, provider config, subprocess server and terminal wrapper roundtrips
     test_tui_client.py      # Curses TUI state, queue drain, and runtime import boundary
   plugins/                  # Per-plugin tests (loads only that plugin)
@@ -90,6 +90,9 @@ uv run pytest XBotv2/tests/core/ -q
 
 # Specific test file
 uv run pytest XBotv2/tests/core/test_hooks.py -q
+
+# Plugin loader discovery and materialized state coverage
+uv run pytest XBotv2/tests/core/test_plugin_loader.py XBotv2/tests/core/test_state.py -q
 
 # JSONL protocol, stdio server subprocess, and terminal wrapper roundtrips
 uv run pytest XBotv2/tests/core/test_protocol.py -q
