@@ -357,6 +357,21 @@ def test_runtime_frame_refreshes_task_projection(temp_data_dir):
     assert "stale projection" not in frame.task.context_text
 
 
+def test_runtime_component_builder_uses_file_backed_config(temp_data_dir):
+    """Runtime component assembly should be isolated from interaction turn logic."""
+    from xbot.runtime_components import build_runtime_components
+
+    write_local_runtime(temp_data_dir)
+    paths = configure_runtime_paths(data_dir=temp_data_dir, session_id="components", personality_id="default")
+
+    components = build_runtime_components(checkpoint_path=paths.langgraph_checkpoint_path)
+
+    assert components.agent_config.name == "default"
+    assert components.provider_config.model == "smoke-refactor"
+    assert components.sandbox.enabled is False
+    assert {tool.name for tool in components.tools} >= {"filesystem_read", "filesystem_write", "message_send", "compact", "cache_read"}
+
+
 async def test_runtime_processes_mailbox_as_background_events(temp_data_dir):
     """Mailbox dispatch should use the same runtime state, checkpoint, and turn log."""
     write_local_runtime(temp_data_dir)

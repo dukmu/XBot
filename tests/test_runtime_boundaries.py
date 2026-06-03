@@ -1845,7 +1845,7 @@ def test_sanitize_message_chain_drops_orphan_tool_messages():
 
 def test_split_for_compaction_preserves_tool_call_groups():
     """Compaction windowing must not split assistant tool calls from results."""
-    from xbot.graph import split_for_compaction
+    from xbot.compaction import split_for_compaction
 
     ai = AIMessage(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
     tool_result = ToolMessage(content="ok", name="shell", tool_call_id="call_1")
@@ -1859,7 +1859,7 @@ def test_split_for_compaction_preserves_tool_call_groups():
 
 def test_split_for_compaction_keeps_unresolved_tool_calls():
     """Compaction must not hide unresolved assistant tool calls."""
-    from xbot.graph import split_for_compaction
+    from xbot.compaction import split_for_compaction
 
     old = HumanMessage(content="old")
     ai = AIMessage(content="", tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}])
