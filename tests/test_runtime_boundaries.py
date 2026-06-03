@@ -2260,14 +2260,12 @@ class TestCacheFriendlyContext:
         assert "active node: n1" in suffix
         assert "pending_mailbox_items: 2" in suffix
 
-    def test_context_messages_has_dag_suffix_at_end(self, temp_data_dir):
-        from xbot.config import configure_runtime_paths
+    def test_context_messages_requires_explicit_projection(self, temp_data_dir):
         from xbot.context import build_context_messages, invalidate_system_prompt_cache
         from langchain_core.messages import HumanMessage
 
         invalidate_system_prompt_cache()
 
-        paths = configure_runtime_paths(session_id="ctx-msg-test", personality_id="default", data_dir=temp_data_dir)
         user_ctx = UserContext(user_id="test-user", user_name="Tester")
         state = {
             "user_context": user_ctx.model_dump(),
@@ -2275,20 +2273,13 @@ class TestCacheFriendlyContext:
             "active_subagents": [],
             "system_notice": "",
         }
-        messages = build_context_messages(
-            state,
-            sandbox_summary="sandbox: enabled",
-            message_chain=[HumanMessage(content="hello")],
-        )
 
-        assert len(messages) >= 2
-        # First message is system prompt
-        assert "test assistant" in messages[0].content or "# Agent Instructions" in messages[0].content
-        # Last message is DAG suffix
-        assert "# Current State" in messages[-1].content
-        assert "# Task State Projection" in messages[-1].content
-        # User message is in the middle
-        assert messages[1].content == "hello"
+        with pytest.raises(ValueError, match="runtime_frame or context_projection"):
+            build_context_messages(
+                state,
+                sandbox_summary="sandbox: enabled",
+                message_chain=[HumanMessage(content="hello")],
+            )
 
     def test_context_messages_use_runtime_frame_projection(self, temp_data_dir):
         from langchain_core.messages import HumanMessage

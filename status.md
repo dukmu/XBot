@@ -30,6 +30,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
   - DAG suffix (`build_dag_suffix`) appended at end of message list after history.
   - Context structure: `[SystemMessage: stable prompt] [history...] [SystemMessage: DAG suffix]`.
   - Provider context can now be built from explicit `RuntimeFrame`/`ContextProjection`; `context.py` no longer reads runtime task contextvars or config files directly.
+  - Context construction now fails closed unless graph state carries explicit `context_projection` or a direct test `RuntimeFrame`; runtime graph checkpoints store only serializable projection dictionaries, not custom frame objects.
 - [x] `xbot/graph.py` refactored with hook support:
   - `make_agent_node`, `make_prepare_context_node_with_hooks`, and the tools node all accept `LoopHooks`.
   - `build_agent_graph` requires `hooks` and `tool_registry`; no old fallback path.
@@ -45,6 +46,7 @@ Current continuation objective (branch `claude-refactor`): refactor to Hooked Lo
 - [x] Registry/tool bridge tests added to prevent old-path-only coverage.
 - [x] Latest full verification passed: `uv run pytest -q` (`111 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
+- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 194 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)

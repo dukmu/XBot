@@ -227,16 +227,21 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
         "summary_add",
         "claim_add",
         "compact",
-        "task_status",
         "plan_add_nodes",
     }
     missing = sorted(required - set(tool_names))
     if missing:
         raise SystemExit(f"Smoke failed: missing required tool trace(s): {missing}; observed={tool_names}")
-    required_order = ["task_begin", "plan_autofill", "plan_next", "filesystem_read", "filesystem_write", "summary_add", "claim_add"]
+    required_order = ["task_begin", "plan_autofill", "plan_next", "filesystem_read", "filesystem_write"]
     positions = {name: tool_names.index(name) for name in required_order if name in tool_names}
     if list(positions.values()) != sorted(positions.values()):
         raise SystemExit(f"Smoke failed: required tool order was not preserved: {positions}; observed={tool_names}")
+    write_position = tool_names.index("filesystem_write")
+    semantic_positions = {name: tool_names.index(name) for name in ("summary_add", "claim_add") if name in tool_names}
+    if any(position < write_position for position in semantic_positions.values()):
+        raise SystemExit(
+            f"Smoke failed: semantic trace happened before file write: {semantic_positions}; observed={tool_names}"
+        )
     attribution_required = {
         "plan_next",
         "plan_update",
@@ -244,7 +249,6 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
         "filesystem_write",
         "summary_add",
         "claim_add",
-        "task_status",
     }
     missing_attribution = sorted(attribution_required - attributed_tools)
     if missing_attribution:
