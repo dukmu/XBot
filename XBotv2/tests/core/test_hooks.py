@@ -242,7 +242,7 @@ class TestHookContext:
 # ------------------------------------------------------------------
 
 class TestAllStages:
-    """All 18 stages are defined and work."""
+    """All 17 stages are defined and work."""
 
     def test_all_stages_exist(self):
         """Verify all 17 HookStage values."""

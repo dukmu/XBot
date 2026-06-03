@@ -250,6 +250,12 @@ class Engine:
                 sandbox_policy=self.sandbox_policy,
                 permission_system=self.permission_system,
             )
+
+            # AFTER_TOOLS hooks may redact/cache large outputs before they
+            # enter message history or cross the protocol boundary.
+            at_ctx = self._make_hook_context(HookStage.AFTER_TOOLS, tool_results=tool_messages)
+            await self.hook_manager.run(HookStage.AFTER_TOOLS, at_ctx, short_circuit=False)
+
             self._messages.extend(tool_messages)
 
             # Yield tool results
@@ -269,10 +275,6 @@ class Engine:
                     HookStage.ON_TOOL_MESSAGE, tool_results=[tm]
                 )
                 await self.hook_manager.run(HookStage.ON_TOOL_MESSAGE, t_ctx, short_circuit=False)
-
-            # AFTER_TOOLS hook
-            at_ctx = self._make_hook_context(HookStage.AFTER_TOOLS, tool_results=tool_messages)
-            await self.hook_manager.run(HookStage.AFTER_TOOLS, at_ctx, short_circuit=False)
 
         # 5. ON_TURN_END hook
         te_ctx = self._make_hook_context(HookStage.ON_TURN_END)

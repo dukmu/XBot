@@ -39,9 +39,9 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # Tools are defined in xbotv2.core.builtin_tools for clean separation.
 # ------------------------------------------------------------------
 
-from xbotv2.core.builtin_tools.base import BASE_TOOLS
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
 from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
+from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 # (tool, sandbox_mode, execution_mode, lock_fields)
 CORE_BASE_TOOLS = [
@@ -49,7 +49,6 @@ CORE_BASE_TOOLS = [
     (FILESYSTEM_TOOLS[0], "sandboxed", "parallel", ("path",)),   # filesystem_read
     (FILESYSTEM_TOOLS[1], "sandboxed", "sequential", ("path",)),  # filesystem_write
     (FILESYSTEM_TOOLS[2], "sandboxed", "parallel", ("path",)),   # filesystem_list
-    (BASE_TOOLS[0], "host", "sequential", ()),                    # ask
 ]
 
 
@@ -110,6 +109,10 @@ async def bootstrap(
     hook_manager = HookManager()
     tool_registry = ToolRegistry()
     context_builder = ContextBuilder()
+    hook_manager.register(
+        HookStage.AFTER_TOOLS,
+        make_tool_result_cache_hook(state_store),
+    )
 
     # 4. Register core base tools (always available)
     for tool, sandbox_mode, execution_mode, lock_fields in CORE_BASE_TOOLS:
@@ -123,7 +126,7 @@ async def bootstrap(
 
     # Apply tool filter from personality config (limits what the agent sees)
     if agent_config.tools:
-        tool_registry.filter(agent_config.tools)  # Validates tool names exist
+        tool_registry.restrict(agent_config.tools)
 
     # 5. Create SandboxPolicy + PermissionSystem
     sandbox = SandboxPolicy(
@@ -223,6 +226,7 @@ async def _load_plugins(
             with open(manifest_path) as f:
                 data = yaml.safe_load(f) or {}
             manifest = PluginManifest(**data)
+            manifest.plugin_dir = candidate
             manifests.append((manifest, candidate))
 
     if not manifests:
@@ -380,7 +384,8 @@ class _DefaultPlugin:
                     fragments[decl.stage] = handler() if callable(handler) else str(handler)
             elif decl.file:
                 try:
-                    fragments[decl.stage] = Path(decl.file).read_text()
+                    base_dir = self.manifest.plugin_dir or Path.cwd()
+                    fragments[decl.stage] = (base_dir / decl.file).read_text()
                 except Exception:
                     fragments[decl.stage] = ""
         return fragments

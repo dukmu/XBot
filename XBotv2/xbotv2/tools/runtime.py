@@ -24,9 +24,8 @@ async def execute_tools(
     Pipeline:
     1. Extract tool calls from the last AIMessage.
     2. Run before_tools hooks (sandbox/permission checks).
-    3. Handle interrupts (ask, tool_confirm).
-    4. Execute approved tools.
-    5. Return ToolMessages.
+    3. Execute approved tools.
+    4. Return ToolMessages.
 
     Args:
         tool_calls: List of {"name": str, "args": dict, "id": str} dicts.
@@ -66,7 +65,12 @@ async def execute_tools(
             if decision == "deny":
                 denials[tc["id"]] = f"Permission denied for tool: {tool_name}"
                 continue
-            # "ask" would trigger an interrupt in a real system; for now, allow
+            if decision == "ask":
+                denials[tc["id"]] = (
+                    f"Permission approval required for tool: {tool_name}. "
+                    "Interactive approval is not implemented in this runtime."
+                )
+                continue
 
         # Track sequential tools
         if entry.execution_mode == "sequential":
@@ -90,7 +94,9 @@ async def execute_tools(
             continue
 
         tool = entry.tool
-        args = tc.get("args", {})
+        args = dict(tc.get("args", {}))
+        if sandbox_policy and entry.sandbox_mode == "sandboxed":
+            args = _resolve_tool_paths(args, sandbox_policy)
 
         try:
             # Acquire resource locks for sequential tools
@@ -158,3 +164,14 @@ def extract_tool_calls(messages: list[BaseMessage]) -> list[dict[str, Any]]:
             for i, c in enumerate(calls)
         ]
     return []
+
+
+def _resolve_tool_paths(args: dict[str, Any], sandbox_policy: Any) -> dict[str, Any]:
+    """Rewrite path-like tool args to the sandbox-resolved absolute path."""
+    resolved = dict(args)
+    path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
+    for key in path_keys:
+        value = resolved.get(key)
+        if isinstance(value, str):
+            resolved[key] = sandbox_policy.resolve_tool_path(value)
+    return resolved

@@ -110,7 +110,11 @@ class SandboxPolicy:
             if access == "deny":
                 return False, f"Path denied: {resolved}"
             if access == "ask":
-                return True, ""  # Let permission system handle it
+                return (
+                    False,
+                    "Path approval required but interactive approval is not "
+                    f"implemented: {resolved}",
+                )
 
         return True, ""
 

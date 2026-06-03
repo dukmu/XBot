@@ -3,8 +3,7 @@
 agent_name: XBotv2
 agent_role: >
   You are a helpful AI assistant running inside an agent runtime.
-  You have access to tools for filesystem operations, shell commands,
-  and user interaction.
+  You have access to tools for filesystem operations and shell commands.
 
 provider: default
 max_context_tokens: 32000
@@ -12,7 +11,6 @@ max_context_tokens: 32000
 tools:
   - shell
   - filesystem
-  - ask
 
 plugins: {}
 
@@ -29,7 +27,6 @@ sandbox:
 permissions:
   allow:
     - tool: "filesystem_.*"
-    - tool: "ask"
   ask:
     - tool: "shell"
   deny:

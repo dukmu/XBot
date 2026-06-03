@@ -1,10 +1,16 @@
 {
   "allow": [
-    {"tool": "filesystem_.*"},
-    {"tool": "ask"}
+    {"tool": "filesystem_.*"}
   ],
   "ask": [
     {"tool": "shell"}
   ],
-  "deny": []
+  "deny": [
+    {
+      "tool": ".*",
+      "params": {
+        "command": "rm -rf /.*"
+      }
+    }
+  ]
 }

@@ -151,6 +151,28 @@ class TestToolGuard:
         # Cleanup
         symlink_path.unlink()
 
+    def test_ask_access_fails_closed_until_interactive_approval_exists(self, temp_workspace):
+        """Ask access does not implicitly allow sandboxed paths."""
+        ws = Path(temp_workspace)
+        gated = ws / "gated"
+        gated.mkdir()
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "resources": [
+                    {"path": str(gated), "access": "ask"},
+                ],
+            },
+            workspace_root=str(ws),
+        )
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_read", {"path": str(gated / "file.txt")}, "sandboxed"
+        )
+
+        assert allowed is False
+        assert "interactive approval is not implemented" in reason
+
 
 class TestPathResolution:
     """Path resolution against workspace/data roots."""

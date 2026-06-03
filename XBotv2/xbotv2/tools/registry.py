@@ -38,6 +38,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._entries: dict[str, ToolEntry] = {}
+        self._enabled_names: set[str] | None = None
 
     # ------------------------------------------------------------------
     # Registration
@@ -103,23 +104,31 @@ class ToolRegistry:
 
     def get(self, name: str) -> ToolEntry | None:
         """Return the ToolEntry for *name*, or None."""
+        if self._enabled_names is not None and name not in self._enabled_names:
+            return None
         return self._entries.get(name)
 
     def registered(self, name: str) -> bool:
         """Return whether *name* is registered."""
-        return name in self._entries
+        return name in self._entries and (
+            self._enabled_names is None or name in self._enabled_names
+        )
 
     def get_all(self) -> list[Any]:
         """Return all registered tool instances."""
-        return [e.tool for e in self._entries.values()]
+        return [entry.tool for name, entry in self._entries.items() if self._is_enabled(name)]
 
     def names(self) -> list[str]:
         """Return all registered tool names."""
-        return list(self._entries.keys())
+        return [name for name in self._entries if self._is_enabled(name)]
 
     def sandbox_modes(self) -> dict[str, RegisteredSandboxMode]:
         """Return {tool_name: sandbox_mode} for all registered tools."""
-        return {name: entry.sandbox_mode for name, entry in self._entries.items()}
+        return {
+            name: entry.sandbox_mode
+            for name, entry in self._entries.items()
+            if self._is_enabled(name)
+        }
 
     # ------------------------------------------------------------------
     # Filtering
@@ -160,8 +169,46 @@ class ToolRegistry:
 
         return result
 
+    def restrict(self, tool_names: list[str] | None) -> list[str]:
+        """Restrict visible/executable tools to the expanded tool names.
+
+        Raises ValueError if any requested selector does not match a registered
+        tool. The existing ``filter`` method remains a pure query helper.
+        """
+        if not tool_names:
+            self._enabled_names = None
+            return self.names()
+
+        expanded: set[str] = set()
+        missing: list[str] = []
+        for selector in tool_names:
+            matches = self._expand_selector(selector)
+            if not matches:
+                missing.append(selector)
+                continue
+            expanded.update(matches)
+
+        if missing:
+            raise ValueError(f"Unknown tool selector(s): {', '.join(missing)}")
+
+        self._enabled_names = expanded
+        return self.names()
+
     def __len__(self) -> int:
-        return len(self._entries)
+        return len(self.names())
 
     def __contains__(self, name: str) -> bool:
-        return name in self._entries
+        return self.registered(name)
+
+    def _expand_selector(self, selector: str) -> list[str]:
+        if selector.endswith("*"):
+            prefix = selector.rstrip("*")
+        else:
+            prefix = selector
+
+        if selector in self._entries:
+            return [selector]
+        return [name for name in self._entries if name.startswith(prefix)]
+
+    def _is_enabled(self, name: str) -> bool:
+        return self._enabled_names is None or name in self._enabled_names

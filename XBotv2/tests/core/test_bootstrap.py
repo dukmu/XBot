@@ -37,7 +37,37 @@ class TestBootstrapBasics:
         assert "filesystem_read" in tool_names
         assert "filesystem_write" in tool_names
         assert "filesystem_list" in tool_names
-        assert "ask" in tool_names
+        assert "ask" not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
+        """Personality tool selectors restrict tools passed to the model."""
+        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
+        personality.write_text("tools:\n  - filesystem_read\n")
+
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.tool_registry.names() == ["filesystem_read"]
+        assert [tool.name for tool in engine.tool_registry.get_all()] == ["filesystem_read"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_unknown_tool_filter_raises(self, temp_data_dir):
+        """Unknown tool selectors fail closed instead of exposing all tools."""
+        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
+        personality.write_text("tools:\n  - no_such_tool\n")
+
+        with pytest.raises(ValueError, match="Unknown tool selector"):
+            await bootstrap(
+                config_dir=str(temp_data_dir),
+                session_id="test-session",
+                thread_id="test-thread",
+                llm_override=MockLLM(responses=[]),
+            )
 
     @pytest.mark.asyncio
     async def test_bootstrap_engine_runs_turn(self, temp_data_dir, temp_workspace):

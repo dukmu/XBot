@@ -66,6 +66,14 @@ def create_llm(provider_config: Any) -> BaseChatModel:
     if base_url:
         base_url = _expand_env(base_url)
 
+    if provider == "mock":
+        responses = (
+            provider_config.get("mock_responses", [])
+            if isinstance(provider_config, dict)
+            else getattr(provider_config, "mock_responses", [])
+        )
+        return create_mock_llm(responses)
+
     # OpenAI-compatible providers (OpenAI, DeepSeek, LM Studio w/ OpenAI protocol)
     if provider in ("openai", "deepseek", "lmstudio-openai"):
         from langchain_openai import ChatOpenAI

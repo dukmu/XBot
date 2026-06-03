@@ -38,7 +38,7 @@ class ProtocolClient:
             await self._process.wait()
             self._process = None
 
-    def send(
+    async def send(
         self,
         frame_type: str,
         session_id: str,
@@ -59,6 +59,7 @@ class ProtocolClient:
         )
         if self._process and self._process.stdin:
             self._process.stdin.write(frame.to_json_line().encode("utf-8"))
+            await self._process.stdin.drain()
         return frame
 
     async def read_frame(self) -> ProtocolFrame | None:
@@ -118,30 +119,34 @@ class TerminalSession:
         await self._client.start()
 
         # Handshake
-        self._client.send(
+        await self._client.send(
             "hello",
             self._session_id,
             self._thread_id,
             {"client_name": "terminal", "personality_id": self._personality_id},
         )
         hello_ok = await self._client.read_frame()
-        if hello_ok and hello_ok.type != "hello_ok":
+        if hello_ok is None:
+            raise RuntimeError("Handshake failed: server closed stdout")
+        if hello_ok.type != "hello_ok":
             raise RuntimeError(f"Handshake failed: {hello_ok}")
 
         # Open session
-        self._client.send(
+        await self._client.send(
             "session.open",
             self._session_id,
             self._thread_id,
         )
         ready = await self._client.read_frame()
-        if ready and ready.type != "session_ready":
+        if ready is None:
+            raise RuntimeError("Session open failed: server closed stdout")
+        if ready.type != "session_ready":
             raise RuntimeError(f"Session open failed: {ready}")
 
     async def disconnect(self) -> None:
         """Shut down the server."""
         if self._client:
-            self._client.send("shutdown", self._session_id, self._thread_id)
+            await self._client.send("shutdown", self._session_id, self._thread_id)
             await self._client.stop()
 
     async def send_message(self, content: str):
@@ -149,7 +154,7 @@ class TerminalSession:
         if not self._client:
             raise RuntimeError("Not connected")
 
-        self._client.send(
+        await self._client.send(
             "user.message",
             self._session_id,
             self._thread_id,

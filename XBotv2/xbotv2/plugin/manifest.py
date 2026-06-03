@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -48,4 +48,9 @@ class PluginManifest(BaseModel):
     prompt_fragments: list[PromptFragmentDeclaration] = Field(default_factory=list)
     config_schema: dict | None = Field(
         default=None, description="JSON Schema for plugin config validation"
+    )
+    plugin_dir: Path | None = Field(
+        default=None,
+        exclude=True,
+        description="Runtime-only directory containing plugin.yaml",
     )

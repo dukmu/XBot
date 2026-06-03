@@ -139,6 +139,31 @@ class TestFiltering:
         result = tool_registry.filter(["nonexistent"])
         assert len(result) == 0
 
+    def test_restrict_limits_visible_and_executable_tools(self, tool_registry):
+        """Restrict changes registry visibility, unlike pure filter()."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+
+        enabled = tool_registry.restrict(["tool_a"])
+
+        assert enabled == ["tool_a"]
+        assert tool_registry.names() == ["tool_a"]
+        assert [tool.name for tool in tool_registry.get_all()] == ["tool_a"]
+        assert tool_registry.get("tool_a") is not None
+        assert tool_registry.get("tool_b") is None
+
+    def test_restrict_expands_prefix_and_rejects_unknown(self, tool_registry):
+        """Restrict supports group selectors but fails on unknown selectors."""
+        tool_registry.register(filesystem_read)
+        tool_registry.register(filesystem_write)
+        tool_registry.register(tool_a)
+
+        tool_registry.restrict(["filesystem"])
+        assert set(tool_registry.names()) == {"filesystem_read", "filesystem_write"}
+
+        with pytest.raises(ValueError, match="Unknown tool selector"):
+            tool_registry.restrict(["missing"])
+
 
 class TestQuery:
     """Query methods."""

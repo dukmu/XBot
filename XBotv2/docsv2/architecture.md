@@ -39,8 +39,10 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 
 ### Tool System (`xbotv2/tools/`)
 - `ToolRegistry` with sandbox/execution metadata
+- Personality tool selectors restrict visible/executable tools via `ToolRegistry.restrict()`
 - `SandboxPolicy` for resource access control
 - `PermissionSystem` with deny→allow→ask precedence
+- Default `AFTER_TOOLS` hook caches oversized tool results under session artifacts
 - Plugin ownership tracking for unload/reload
 
 ### Persistence (`xbotv2/persistence/`)
@@ -54,8 +56,9 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Instance-level caches (no module-level globals)
 
 ### Built-in Tools (`xbotv2/core/builtin_tools/`)
-- `base.py`: `ask` tool
 - `filesystem.py`: `filesystem_read`, `filesystem_write`, `filesystem_list`
+  - read/list return JSON text with path, size, mtime, count, and truncation metadata
+  - write supports overwrite, append, prepend, insert line, replace lines, regex replace, and unified diff patch modes
 - `shell.py`: `shell` tool
 
 ## Plugin Architecture
@@ -116,7 +119,7 @@ All such concepts live in plugin-owned state namespaces.
 | BEFORE_AGENT | Yes | Before LLM call (skills injection) |
 | AFTER_AGENT | Yes | After LLM call |
 | BEFORE_TOOLS | Yes | Before tool execution (sandbox guard) |
-| AFTER_TOOLS | Yes | After tool execution (cache) |
+| AFTER_TOOLS | Yes | After tool execution; default hook may cache/truncate large results before persistence/protocol emit |
 | ON_USER_MESSAGE | No | User input parsed |
 | ON_ASSISTANT_MESSAGE | No | LLM response received |
 | ON_TOOL_MESSAGE | No | Tool result received |

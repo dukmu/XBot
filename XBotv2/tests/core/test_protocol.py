@@ -1,7 +1,11 @@
 """Tests for the JSONL protocol layer."""
 
+import asyncio
 import json
+import os
+import sys
 
+import pytest
 from xbotv2.protocol.frames import (
     ProtocolFrame,
     ProtocolEncoder,
@@ -188,6 +192,19 @@ class TestProviderConfig:
         assert llm is not None
         assert len(llm.responses) == 1
 
+    def test_create_llm_from_mock_provider_config(self):
+        """Provider config can select deterministic MockLLM."""
+        from xbotv2.llm.client import create_llm
+        from xbotv2.llm.mock import MockLLM
+
+        llm = create_llm({
+            "provider": "mock",
+            "mock_responses": [{"content": "mocked"}],
+        })
+
+        assert isinstance(llm, MockLLM)
+        assert llm.responses == [{"content": "mocked"}]
+
 
 class TestProviderConfigLoader:
     """Provider config loading from multi-provider YAML — the original bug."""
@@ -276,3 +293,173 @@ default:
         c = load_provider_config(tmp_path, "nonexistent_provider")
         assert c.provider == "openai"
         assert c.model == "fallback-model"
+
+
+class TestRuntimeServerSubprocess:
+    """End-to-end JSONL stdio server roundtrip."""
+
+    @pytest.mark.asyncio
+    async def test_server_subprocess_roundtrip_with_mock_provider(self, tmp_path):
+        data_dir = _write_mock_data_dir(tmp_path)
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _send_frame(proc, "hello", session_id="s-sub", thread_id="t-sub")
+            hello = await _read_frame(proc)
+            assert hello.type == "hello_ok"
+            assert hello.session_id == "s-sub"
+            assert hello.thread_id == "t-sub"
+
+            await _send_frame(proc, "session.open", session_id="s-sub", thread_id="t-sub")
+            ready = await _read_frame(proc)
+            assert ready.type == "session_ready"
+            assert ready.session_id == "s-sub"
+            assert ready.thread_id == "t-sub"
+
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-sub",
+                thread_id="t-sub",
+                payload={"content": "hello"},
+            )
+            frames = []
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "turn_finished":
+                    break
+
+            assert [f.type for f in frames] == [
+                "turn_started",
+                "assistant_message",
+                "turn_finished",
+            ]
+            assistant = next(f for f in frames if f.type == "assistant_message")
+            assert assistant.payload["content"] == "hello from subprocess"
+            assert all(f.session_id == "s-sub" for f in frames)
+            assert all(f.thread_id == "t-sub" for f in frames)
+
+            await _send_frame(proc, "shutdown", session_id="s-sub", thread_id="t-sub")
+            shutdown = await _read_frame(proc)
+            assert shutdown.type == "shutdown_ok"
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+
+class TestTerminalSessionSubprocess:
+    """Terminal client wrapper roundtrip against JSONL server subprocess."""
+
+    @pytest.mark.asyncio
+    async def test_terminal_session_roundtrip_with_mock_provider(self, tmp_path, monkeypatch):
+        data_dir = _write_mock_data_dir(tmp_path)
+        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
+
+        from xbotv2.tui.terminal import TerminalSession
+
+        session = TerminalSession(
+            data_dir=data_dir,
+            personality_id="default",
+            provider_name="mock",
+        )
+        try:
+            await session.connect()
+            events = [event async for event in session.send_message("hello")]
+
+            assert [event["type"] for event in events] == [
+                "turn_started",
+                "assistant_message",
+                "turn_finished",
+            ]
+            assert events[1]["data"]["content"] == "hello from subprocess"
+        finally:
+            await session.disconnect()
+
+
+def _write_mock_data_dir(tmp_path):
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "personalities" / "default").mkdir(parents=True)
+    (data_dir / "config" / "user.yaml").write_text("user_id: test\nuser_name: Tester\n")
+    (data_dir / "config" / "provider.yaml").write_text(
+        """
+mock:
+  provider: mock
+  mock_responses:
+    - content: hello from subprocess
+"""
+    )
+    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+        """
+agent_name: TestBot
+agent_role: Test runtime
+tools: []
+permissions: {}
+sandbox:
+  enabled: false
+"""
+    )
+    return data_dir
+
+
+async def _send_frame(
+    proc,
+    frame_type: str,
+    *,
+    session_id: str,
+    thread_id: str,
+    payload: dict | None = None,
+):
+    frame = ProtocolFrame(
+        seq=1,
+        direction="client_to_server",
+        type=frame_type,
+        session_id=session_id,
+        thread_id=thread_id,
+        request_id="",
+        payload=payload or {},
+    )
+    proc.stdin.write(frame.to_json_line().encode("utf-8"))
+    await proc.stdin.drain()
+
+
+async def _read_frame(proc) -> ProtocolFrame:
+    line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
+    if not line:
+        stderr = await proc.stderr.read()
+        raise AssertionError(f"Server exited before frame. stderr={stderr.decode('utf-8')}")
+    return frame_from_json(line.decode("utf-8"))
+
+
+def _subprocess_pythonpath() -> str:
+    repo_root = os.getcwd()
+    paths = [str(os.path.join(repo_root, "XBotv2")), repo_root]
+    existing = os.environ.get("PYTHONPATH")
+    if existing:
+        paths.append(existing)
+    return os.pathsep.join(paths)

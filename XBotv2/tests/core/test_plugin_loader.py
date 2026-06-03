@@ -7,7 +7,10 @@ import pytest
 import yaml
 
 from xbotv2.plugin.manifest import PluginManifest
-from xbotv2.core.bootstrap import _resolve_dependencies
+from xbotv2.plugin.base import PluginBase
+from xbotv2.plugin.store import PluginStore
+from xbotv2.core.bootstrap import _DefaultPlugin, _resolve_dependencies
+from xbotv2.persistence.store import CoreStateStore
 
 
 # ------------------------------------------------------------------
@@ -131,3 +134,58 @@ class TestPluginManifest:
         assert len(m.tools) == 1
         assert m.tools[0].sandbox_mode == "host"
         assert len(m.prompt_fragments) == 1
+
+
+class TestPromptFragmentFiles:
+    """Static prompt fragments resolve relative to the plugin directory."""
+
+    def test_default_plugin_loads_prompt_file_relative_to_plugin_dir(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "simple"
+        prompts_dir = plugin_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (prompts_dir / "instructions.md").write_text("## Static Instructions\nUse care.\n")
+
+        manifest = PluginManifest(
+            name="simple",
+            version="1.0.0",
+            prompt_fragments=[
+                {"stage": "system_instructions", "file": "prompts/instructions.md"}
+            ],
+            plugin_dir=plugin_dir,
+        )
+        plugin = _DefaultPlugin(manifest, store=None)
+
+        fragments = plugin.get_prompt_fragments()
+
+        assert fragments["system_instructions"] == "## Static Instructions\nUse care.\n"
+
+    def test_plugin_base_loads_prompt_file_relative_to_plugin_dir(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "classy"
+        prompts_dir = plugin_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (prompts_dir / "rules.md").write_text("## Plugin Rules\nStay isolated.\n")
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        manifest = PluginManifest(
+            name="classy",
+            version="1.0.0",
+            prompt_fragments=[
+                {"stage": "system_rules", "file": "prompts/rules.md"}
+            ],
+            plugin_dir=plugin_dir,
+        )
+
+        class ClassyPlugin(PluginBase):
+            async def on_load(self, config: dict) -> None:
+                self._config = config
+
+        plugin = ClassyPlugin(manifest, PluginStore(state_store, "classy"))
+
+        fragments = plugin.get_prompt_fragments()
+
+        assert fragments["system_rules"] == "## Plugin Rules\nStay isolated.\n"

@@ -10,12 +10,15 @@ tests/
     test_hooks.py           # HookManager, all 17 stages
     test_state.py           # CoreStateStore, events, plugin state
     test_context.py         # ContextBuilder, fragments, cache
+    test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
     test_tool_registry.py   # ToolRegistry, filtering
+    test_tool_runtime_cache.py  # Sandbox path resolution, tool-result cache hook
     test_sandbox.py         # SandboxPolicy
     test_permissions.py     # PermissionSystem
     test_engine.py          # Engine ReAct loop
     test_bootstrap.py       # Bootstrap sequence
     test_plugin_loader.py   # Plugin discovery, deps
+    test_protocol.py        # Protocol frames, provider config, subprocess server roundtrip
   plugins/                  # Per-plugin tests (loads only that plugin)
     planning/
     compact/
@@ -76,16 +79,23 @@ assert llm.verify_tool_call_made("shell", min_count=1)
 
 ## Running Tests
 
+Run commands from the repository root. The root `pyproject.toml` sets
+`pythonpath = ["XBotv2", "."]`, so XBotv2 tests import the package without a
+manual `PYTHONPATH`.
+
 ```bash
 # All core tests
-python -m pytest tests/core/ -q
+uv run pytest XBotv2/tests/core/ -q
 
 # Specific test file
-python -m pytest tests/core/test_hooks.py -q
+uv run pytest XBotv2/tests/core/test_hooks.py -q
+
+# JSONL protocol and stdio server subprocess roundtrip
+uv run pytest XBotv2/tests/core/test_protocol.py -q
 
 # With verbose output
-python -m pytest tests/core/ -v
+uv run pytest XBotv2/tests/core/ -v
 
 # Run a single test
-python -m pytest tests/core/test_engine.py::TestEngineBasics::test_simple_text_response -v
+uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_text_response -v
 ```

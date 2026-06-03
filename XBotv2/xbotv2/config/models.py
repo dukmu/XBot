@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +25,7 @@ class ProviderConfig(BaseModel):
     api_key: str | None = Field(default=None)
     temperature: float = Field(default=0.7)
     max_tokens: int = Field(default=4096)
+    mock_responses: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HookConfig(BaseModel):

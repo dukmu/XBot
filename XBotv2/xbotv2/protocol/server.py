@@ -115,8 +115,8 @@ class RuntimeServer:
     # ------------------------------------------------------------------
 
     def _handle_hello(self, frame: ProtocolFrame) -> ProtocolFrame:
-        self._session_id = frame.payload.get("session_id", "default")
-        self._thread_id = frame.payload.get("thread_id", "agent")
+        self._session_id = frame.session_id or frame.payload.get("session_id", "default")
+        self._thread_id = frame.thread_id or frame.payload.get("thread_id", "agent")
         self._personality_id = frame.payload.get("personality_id", self._personality_id)
 
         self._encoder = ProtocolEncoder(

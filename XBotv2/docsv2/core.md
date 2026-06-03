@@ -17,10 +17,40 @@ stage by returning a truthy value.
 
 The engine works without any plugins. It provides:
 - Linear ReAct loop with context → LLM → tool execution
-- Core built-in tools: filesystem (read/write/list), shell, ask
+- Core built-in tools: filesystem (read/write/list) and shell
 - Sandbox and permission guards
+- Default tool-result caching for oversized outputs
 - Append-only event persistence
 - Session lifecycle (start, run turns, close)
+
+Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
+`ask` currently fails closed during tool execution because the JSONL/TUI
+interrupt-resume approval flow is not implemented yet.
+
+The previous placeholder `ask` tool is intentionally not registered in core:
+there is no complete event/protocol interaction path for pausing a turn and
+resuming with a user answer yet. User-interaction tools should be added only
+when the C/S protocol and TUI surfaces support the full interrupt flow.
+
+## Built-in Filesystem Tools
+
+Filesystem tools return JSON text instead of unstructured prose.
+`filesystem_read` includes content plus path, resolved path, size, mtime,
+line count, returned line count, and truncation flags. `filesystem_list`
+returns entry metadata and truncation information. `filesystem_write`
+supports these modes:
+
+- `overwrite`
+- `append`
+- `prepend`
+- `insert_line`
+- `replace_lines`
+- `regex_replace`
+- `apply_patch` using a single-file unified diff
+
+Sandboxed tool execution resolves path-like arguments to the configured
+workspace before invoking the tool, so relative paths are not interpreted
+against the process working directory.
 
 ## With Plugins
 
@@ -59,6 +89,15 @@ The context builder assembles provider message lists with injection points:
 - Instance-level cache (no module-level globals)
 - Invalidation on fragment registration or config change
 
+## Tool Result Cache
+
+Bootstrap registers a default `AFTER_TOOLS` hook from
+`xbotv2.tools.result_cache`. Before tool messages enter history or are emitted
+over JSONL, the hook writes oversized outputs to
+`state/artifacts/tool_results/` and replaces the inline content with a bounded
+summary containing the cache path, original size, preview size, and preview.
+This keeps long shell/read outputs from inflating the next context.
+
 ## Events
 
 All significant state changes are recorded as append-only events:
@@ -67,3 +106,4 @@ All significant state changes are recorded as append-only events:
 - `error`, `interrupted` — error states
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
+- `tool_result_cached` — large tool output persisted to artifacts and truncated inline
