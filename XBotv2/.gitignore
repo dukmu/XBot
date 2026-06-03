@@ -1,1 +1,3 @@
-data/
+# Ignore runtime session data but keep config files
+data/sessions/
+data/workspace/

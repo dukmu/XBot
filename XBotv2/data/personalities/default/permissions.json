@@ -1,0 +1,10 @@
+{
+  "allow": [
+    {"tool": "filesystem_.*"},
+    {"tool": "ask"}
+  ],
+  "ask": [
+    {"tool": "shell"}
+  ],
+  "deny": []
+}
