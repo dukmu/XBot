@@ -2002,6 +2002,23 @@ class TestLoopHooks:
         with pytest.raises(ModuleNotFoundError):
             load_standard_hooks([{"stage": "before_agent", "target": "missing_hook_module:hook"}])
 
+    def test_configured_hook_target_must_be_async(self, monkeypatch):
+        from types import ModuleType
+        import sys
+
+        from xbot.hooks import load_standard_hooks
+
+        module = ModuleType("xbot_test_sync_hooks")
+
+        def sync_hook(ctx):
+            return None
+
+        module.sync_hook = sync_hook
+        monkeypatch.setitem(sys.modules, "xbot_test_sync_hooks", module)
+
+        with pytest.raises(ValueError, match="must be async"):
+            load_standard_hooks([{"stage": "before_agent", "target": "xbot_test_sync_hooks:sync_hook"}])
+
 
 # ============================================================================
 # ToolRegistry tests
