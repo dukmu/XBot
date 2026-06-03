@@ -2,12 +2,13 @@
 
 ## Objective
 
-Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
+Follow `AGENTS.md` and `plan.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
 
 Current continuation objective (branch `claude-refactor`): harden the runtime/TUI client-server boundary, expand the JSONL communication and event protocol, and build a richer protocol TUI. Multi-agent expansion is paused.
 
 Latest update:
 
+- Obsolete standalone evidence-state tools have been removed from the current design. DAG node `summary`/`result`/`evidence_refs` now carry task-local execution facts; writable memory remains as cross-lifecycle state.
 - Mock LLM cleanup split deterministic model concerns into three modules: `xbot/mock_llm.py` is now the LangChain facade/config API, `xbot/mock_llm_responses.py` owns response selection/serialization/error injection/message builders, and `xbot/mock_llm_sequences.py` owns reusable test fixtures.
 - `mock_llm.py` is down from 427 to 278 lines after removing inline response builder logic and fixture constants.
 - Verification passed: targeted mock/runtime checks (`26 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, `git diff --check`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 157`).
@@ -23,8 +24,8 @@ Latest update:
 - Sandbox cleanup split policy, shell preflight, backend execution, and shared types: `xbot/sandbox.py` now composes `sandbox_shell.py`, `sandbox_bwrap.py`, and `sandbox_types.py` instead of owning all parsing/mount/process details.
 - `sandbox.py` dropped migrated duplicate helpers and is down from 837 to 626 lines while keeping `SandboxPolicy` as the runtime-facing policy facade.
 - Verification passed: targeted sandbox tests (`18 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 208`).
-- State architecture cleanup split `TaskStateStore` into focused state layers: append-only runtime facade (`xbot/state.py`), executable DAG file store (`xbot/task_plan_store.py`), and summary/claim record store (`xbot/state_records.py`).
-- `state.py` no longer owns plan version hashing, plan mutation algorithms, summary markdown parsing, or claims YAML mutation; it records audit events and refreshes materialized projections after delegated state changes.
+- State architecture cleanup split `TaskStateStore` into focused state layers: append-only runtime facade (`xbot/state.py`), executable DAG file store (`xbot/task_plan_store.py`), and summary record store (`xbot/state_records.py`).
+- `state.py` no longer owns plan version hashing, plan mutation algorithms, or summary markdown parsing; it records audit events and refreshes materialized projections after delegated state changes.
 - Verification passed: `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 186`).
 - Curses TUI now uses a transcript-first replay state instead of a static tools/messages split panel.
 - Transcript entries are derived only from protocol frames and include user/assistant messages, live assistant streams, tool lifecycle, cache refs/summaries, usage totals, interrupts, and errors.
@@ -68,7 +69,7 @@ Latest update:
 - [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata.
 - [x] Compatibility tool bridge removed: `xbot/tools.py` no longer exists; normal imports use `xbot.builtin_tools` or `ToolRegistry`.
 - [x] Runtime restart consistency: `HermesInteraction.create()` resumes the existing file-backed session state and checkpoint path, restores the turn counter from materialized append-only state, and treats LangGraph `InMemoryStore` as executor-local scratch only.
-- [x] Semantic state progress: claims now carry confidence/evidence refs/invalidates/superseded metadata, relevant claims project into `context.md`, and `task_status`/`debug_analyze` report claim and summary health.
+- [x] Semantic state progress: DAG nodes now carry summary/result/evidence refs, node facts project into `context.md`, and `task_status`/`debug_analyze` report DAG and summary health.
 - [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Detached subagent runner MVP: pending `mode=detach` manifests are picked up by `HermesInteraction.process_detached_subagents()`, run under the parent session with timeout/turn budget metadata, write child DAG/checkpoint state under `subagents/<id>/`, and report back through parent graph events plus mailbox and workspace change handoff.
 - [x] Registry integrity tests added to prevent incomplete canonical built-in tool metadata.
@@ -82,13 +83,13 @@ Latest update:
 - [x] Curses TUI live MVP implemented: `main.py tui` starts a protocol client, `xbot/server.py` flushes frames incrementally, `xbot/tui.py` drains a background reader queue, and tests cover live frame drain plus message stream, tool lifecycle, cache metadata/ref, usage, and interrupt replay.
 - [x] Alice local personality config verified: enabled tools, allow/ask rules, workspace readwrite sandbox, state readonly sandbox, and memory readwrite sandbox are covered by config tests.
 - [x] Cache and usage protocol hardening: large cached tool results include summary/preview/metadata in tool result payloads, and usage is normalized as `usage.updated` frames for terminal/TUI display.
-- [x] System prompt few-shot examples added for DAG planning, tools/permissions/workspace/sandbox, cache reads, memory, and claims.
+- [x] System prompt few-shot examples added for DAG planning, tools/permissions/workspace/sandbox, cache reads, and memory.
 - [ ] TUI remains MVP-level for layout controls: next step is scroll panes, explicit approval controls, cancel command, and golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay fixtures.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)
 
-- [x] Read `plan.md` and `task.md`.
+- [x] Read `plan.md`.
 - [x] Confirmed current gap: runtime state is in-memory and not task-file-backed.
 - [x] Implement file-backed agent state directory and append-only logs.
 - [x] Connect `HermesInteraction` to the file-backed state store.
@@ -119,7 +120,7 @@ Latest update:
 
 ## Progress
 
-- [x] Read `plan.md` and `task.md`.
+- [x] Read `plan.md`.
 - [x] Confirmed current gap: runtime state is in-memory and not task-file-backed.
 - [x] Implement file-backed agent state directory and append-only logs.
 - [x] Connect `HermesInteraction` to the file-backed state store.
@@ -159,7 +160,7 @@ Latest update:
 - [x] Task-mode prompt contract MVP: system prompt tells the model to use `task_begin` for complex multi-step work and drive the DAG through `plan_next`/`plan_update`.
 - [x] Plan autofill MVP: `plan_autofill` grows a standard inspect/implement/verify/report DAG skeleton and skips duplicate stage types.
 - [x] Task guidance MVP: `task_status` and `debug_analyze` expose `next_action` recommendations for chat/ready/running/blocked/completed DAG states.
-- [x] Claims/summary structure MVP: `claim_add`/`claim_list` write structured evidence claims, summaries use markdown front matter, and `verify_task_state` checks both.
+- [x] Summary structure MVP: summaries use markdown front matter and DAG node facts carry task-local evidence.
 - [x] Subagent DAG/debug MVP: attach-mode subagents start with their own delegation DAG, parent graph records delegated/finished events, and `debug_analyze` expands child DAG summaries.
 - [x] Live stream trace attribution MVP: when trace is enabled, stream events are persisted at event time, token deltas are not persisted, and tool calls keep the active DAG node attribution.
 - [x] Plan success-state MVP: `completed` and `verified` both satisfy DAG dependencies, avoiding provider-specific wording from deadlocking the scheduler.
@@ -210,7 +211,7 @@ Latest update:
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Latest full verification passed: `uv run pytest -q` (`82 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Latest strict DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, two consecutive DAG tasks, compact accepted via tool/runtime event, key tools DAG-attributed, no persisted token deltas, calculator.py and stats.py claims both present).
+- Latest strict DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, two consecutive DAG tasks, compact accepted via tool/runtime event, key tools DAG-attributed, no persisted token deltas, calculator.py and stats.py evidence present).
 - Latest full verification passed: `uv run pytest -q` (`74 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
 - Real DeepSeek smoke passed after single-active DAG scheduler changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
@@ -231,13 +232,13 @@ Latest update:
 - Real DeepSeek smoke passed after trace persistence guard changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The successful run is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Latest full verification passed: `uv run pytest -q` (`79 passed`).
 - Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py tests/test_agent.py tests/test_runtime_boundaries.py tests/test_personality_runtime.py`.
-- Real DeepSeek smoke passed after dual-task trajectory changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The run completed two refactor tasks, verified required task/DAG/compact/claim/summary/file tool traces, and is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
+- Real DeepSeek smoke passed after dual-task trajectory changes: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke`. The run completed two refactor tasks, verified required task/DAG/compact/summary/file tool traces, and is auditable at `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`.
 - Context tree targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "context_tree or task_state_store_materializes_events or verify_task_state or tool_sandbox"` (`4 passed`).
 - Checkpoint persistence targeted verification passed: `uv run pytest -q tests/test_agent.py::test_persistence_checkpoint_restore` (`1 passed`).
 
 ## Acceptance Audit
 
-- Phase 1 file-backed agent state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `versions/`, `summaries/`, and `locks/`.
+- Phase 1 file-backed agent state: complete. `xbot/state.py` creates `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `artifacts/`, `checkpoints/`, `versions/`, `summaries/`, and `locks/`.
 - Append-only runtime and graph logs: complete. `TaskStateStore` appends JSONL events and materializes `state.yaml`.
 - Interaction integration: complete. `HermesInteraction` records user/resume turns and normalized interaction events when a `TaskStateStore` is present; `create()` initializes the primary DAG state under `data/sessions/<session_id>/state/`.
 - Runtime contracts: complete for this pass. `RunRecord` and `TurnRecord` are explicit Pydantic models and are used at the interaction boundary.

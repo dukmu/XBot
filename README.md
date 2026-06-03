@@ -2,7 +2,7 @@
 
 Hermes is a lightweight, single-user local agent built around a state-centered runtime: explicit context construction, permission interrupts, active ask, auditable context compression, file-backed agent DAG state, hooks, a pluggable tool registry, and protocol-ready UI boundaries.
 
-The current `claude-refactor` branch has a working runtime path with file-backed state, context tree, mailbox, attach/detach subagent MVPs, auditable compaction, claims/summaries, real provider smoke coverage, and a JSONL client/server protocol boundary for terminal/TUI clients.
+The current `claude-refactor` branch has a working runtime path with file-backed state, context tree, mailbox, attach/detach subagent MVPs, auditable compaction, summaries, real provider smoke coverage, and a JSONL client/server protocol boundary for terminal/TUI clients.
 
 ## Design Intent
 
@@ -213,7 +213,7 @@ Permission confirmation is handled inside the tools node via LangGraph interrupt
 data/sessions/<session_id>/state/
 ```
 
-The directory contains `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `claims.yaml`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`. `events.jsonl` and `graph.jsonl` are append-only logs; `state.yaml` is materialized from those logs so runtime state can be inspected without replaying LangGraph internals.
+The directory contains `task.yaml`, `goal.md`, `plan.yaml`, `events.jsonl`, `graph.jsonl`, `state.yaml`, `context.md`, `artifacts/`, `checkpoints/`, `summaries/`, and `locks/`. `events.jsonl` and `graph.jsonl` are append-only logs; `state.yaml` is materialized from those logs so runtime state can be inspected without replaying LangGraph internals.
 LangGraph checkpoints are stored separately under `data/sessions/<session_id>/saver/`. Attach-mode subagents use `data/sessions/<session_id>/subagents/<subagent_id>/state/` and their own `saver/`.
 
 Large tool results are cached under `data/sessions/<session_id>/cache/tool-results/` when the runtime is created through `HermesInteraction.create()`. The model receives a `cache://tool-result/<digest>` ref and can read focused slices with `cache_read`.
@@ -233,7 +233,6 @@ The system prompt also instructs the model to use task mode for complex multi-st
 | `task_status` | Inspect agent state and receive the next recommended DAG action |
 | `plan_node_history` | Inspect DAG events attributed to one plan node |
 | `summary_add` / `summary_list` / `summary_read` | Persist and inspect structured task summaries |
-| `claim_add` / `claim_list` | Record and inspect verifiable claims with evidence |
 | `debug_analyze` | Inspect task DAG, plan, state, context, mailbox, subagents, and per-node DAG activity |
 | `filesystem_write` | Writes through the sandbox backend |
 | `filesystem_list` | Lists through the sandbox backend |

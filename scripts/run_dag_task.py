@@ -7,7 +7,7 @@ DAG: {1,2} → 3 → {4→5, 6} → 7
 Usage:
     python scripts/run_dag_task.py [--data-dir /tmp/xbot-dag-task]
 
-Requires DEEPSEEK_API_TOKEN and DEEPSEEK_OPENAI_BASE_URL env vars.
+Defaults to a local OpenAI-compatible server at http://127.0.0.1:1234/v1.
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ TASK_INSTRUCTIONS = """完成一个纯Python最小二乘法工程，先计划步
 """
 
 
-def setup_isolated_workspace(data_dir: Path) -> None:
+def setup_isolated_workspace(data_dir: Path, *, base_url: str, api_key: str, model: str) -> None:
     """Create a fresh isolated XBot data directory."""
     if data_dir.exists():
         shutil.rmtree(data_dir)
@@ -96,14 +96,13 @@ The runtime appends instructions, memory, skills, sandbox, and conversation belo
         "session_type": "private",
     }))
 
-    # Provider config uses env vars (same as the real provider.yaml)
     config_dir.joinpath("provider.yaml").write_text(yaml.dump({
-        "name": "deepseek",
+        "name": "openai",
         "type": "openai",
-        "base_url": "${DEEPSEEK_OPENAI_BASE_URL}",
-        "api_key": "${DEEPSEEK_API_TOKEN}",
-        "model": "deepseek-v4-flash",
-        "max_concurrent": 2,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "max_concurrent": 1,
     }))
 
     # Personality with all tools and permissive settings
@@ -112,7 +111,7 @@ The runtime appends instructions, memory, skills, sandbox, and conversation belo
 
     personality_dir.joinpath("personality.yaml").write_text(yaml.dump({
         "name": "default",
-        "provider": "deepseek",
+        "provider": "openai",
         "agent_role": "A Python engineer that builds small, well-tested projects step by step.",
         "max_context_tokens": 16000,
         "include_reasoning": False,
@@ -121,7 +120,6 @@ The runtime appends instructions, memory, skills, sandbox, and conversation belo
             "task_begin", "task_status", "task_exit",
             "plan_add_nodes", "plan_autofill", "plan_next", "plan_update", "plan_node_history",
             "summary_add", "summary_list",
-            "claim_add", "claim_list",
             "compact", "debug_analyze",
             "ask", "message_send",
         ],
@@ -137,8 +135,8 @@ When given a complex task:
 2. Use plan_autofill to create a standard inspect/implement/verify/report DAG.
 3. Use plan_next and plan_update to drive the DAG step by step.
 4. Use filesystem_read/write for code, and shell for running scripts.
-5. Use summary_add to record key findings.
-6. Use claim_add to record verifiable claims.
+5. Use plan_update summary/result/evidence_refs_json to record node evidence.
+6. Use summary_add for larger task summaries when useful.
 
 Always verify your work by running it. Never call task_exit with completed while DAG nodes are unfinished.
 """)
@@ -159,10 +157,13 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="/tmp/xbot-dag-task")
     parser.add_argument("--session-id", default="dag-task")
+    parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1"))
+    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY") or os.environ.get("LM_API_TOKEN") or "")
+    parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "qwen/qwen3-1.7b"))
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
-    setup_isolated_workspace(data_dir)
+    setup_isolated_workspace(data_dir, base_url=args.base_url, api_key=args.api_key, model=args.model)
 
     runtime = HermesInteraction.create(
         session_id=args.session_id,

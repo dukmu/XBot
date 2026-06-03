@@ -9,6 +9,7 @@
 | [架构与设计](./architecture.md) | Hermes 当前 runtime 架构、C/S 目标、协议边界、完整运行时数据流例子、未完成项 |
 | [快速开始](./getting-started.md) | 安装、配置、启动方式 |
 | [配置参考](./configuration.md) | 当前代码支持的配置字段，以及规划字段说明 |
+| [Task Mode 与 DAG 示例](./task-mode.md) | `task_begin`、动态 DAG、completion errors、节点摘要和证据示例 |
 | [测试指南](./testing.md) | Mock LLM、单元测试和集成测试策略 |
 
 ## 推荐阅读顺序
@@ -17,13 +18,15 @@
 
 1. [快速开始](./getting-started.md)
 2. [配置参考](./configuration.md)
-3. [架构与设计](./architecture.md)
+3. [Task Mode 与 DAG 示例](./task-mode.md)
+4. [架构与设计](./architecture.md)
 
 开发者：
 
 1. [架构与设计](./architecture.md)
-2. [配置参考](./configuration.md)
-3. [测试指南](./testing.md)
+2. [Task Mode 与 DAG 示例](./task-mode.md)
+3. [配置参考](./configuration.md)
+4. [测试指南](./testing.md)
 
 ## 重要约定
 

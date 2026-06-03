@@ -14,10 +14,10 @@
 
 - `data/sessions/<session_id>/state/` 是主 agent 的文件化 DAG state。
 - `events.jsonl`、`graph.jsonl`、`context_tree.jsonl`、`mailbox.jsonl` 是 append-only source of truth。
-- `state.yaml`、`context.md`、`claims.yaml`、summaries、artifacts、plan versions 是 materialized/projection 层。
+- `state.yaml`、`context.md`、summaries、artifacts、plan versions 是 materialized/projection 层。
 - Task mode 通过 `goal.md`、可执行 `plan.yaml`、`plan_next`、`plan_update` 和 DAG attribution 驱动复杂任务。
 - LangGraph checkpoint 只是 executor recovery，不是人类可审计 state。
-- Context compaction、claims、summaries 必须留下证据链，不能只在 prompt 中隐式发生。
+- Context compaction、DAG node evidence、summaries 必须留下证据链，不能只在 prompt 中隐式发生。
 
 上一轮没有解决的问题也要继续承认：
 
@@ -35,7 +35,7 @@
 - `LoopHooks` 可配置加载，guard hooks 通过 registry 查工具 metadata。
 - `RuntimeFrame` / `ContextProjection` 已成为 context 构建输入，`context.py` 不再静默读取全局 runtime state。
 - Compaction 已写 summary source refs、graph event、context-tree node。
-- Restart consistency、claims projection、mailbox dispatcher、detached subagent MVP 都已有测试覆盖。
+- Restart consistency、DAG evidence projection、mailbox dispatcher、detached subagent MVP 都已有测试覆盖。
 - 最新验证已通过：`uv run pytest -q`、compile check、`scripts/provider_smoke_refactor.py` real provider smoke。
 
 terminal/TUI 侧已经完成 C/S MVP，仍需继续完善：
@@ -458,9 +458,9 @@ RuntimeFrame
 
 - `context.py` 不读取全局 config/state。
 - stable system prefix 与 dynamic task suffix 分离。
-- claims/summaries/task projection 都来自 frame/projection。
+- DAG node evidence、summaries、task projection 都来自 frame/projection。
 - compaction 必须保留 tool-call group，不压掉 unresolved interrupt。
-- compaction 不压缩 active/running DAG、ready/blocked/failed 状态、claims、summaries、goal、plan、cache/evidence refs；这些由文件化 state 和 dynamic suffix 保留。
+- compaction 不压缩 active/running DAG、ready/blocked/failed 状态、DAG node evidence、summaries、goal、plan、cache/evidence refs；这些由文件化 state 和 dynamic suffix 保留。
 - summary artifact 必须写 source refs/ranges。
 - `context_compacted` 是 runtime status/protocol event，不作为 assistant message 输出。
 - 每次 `user.message` 边界刷新 runtime 配置并重建 graph 依赖，保持同一 checkpoint/state；`interrupt.resume` 不刷新。

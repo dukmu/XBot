@@ -19,8 +19,6 @@
     {"tool": "summary_add", "params": {}},
     {"tool": "summary_list", "params": {}},
     {"tool": "summary_read", "params": {}},
-    {"tool": "claim_add", "params": {}},
-    {"tool": "claim_list", "params": {}},
     {"tool": "compact", "params": {}},
     {"tool": "context_head", "params": {}},
     {"tool": "context_rewind", "params": {}},

@@ -17,6 +17,7 @@ Hard rules:
 - Large tool outputs use cache refs instead of entering prompt context directly.
 - Complex work uses executable DAG task mode, not a markdown todo list.
 - Do not keep legacy code for compatibility.
+- Do not write hidden special cases. Provider/model/tool differences must be expressed as explicit config, schemas, capability metadata, prompts, validators, or tests.
 
 ## Repository Map
 
@@ -88,7 +89,6 @@ Materialized/projection files:
 ```text
 state.yaml
 context.md
-claims.yaml
 summaries/*.md
 versions/plans/*
 ```

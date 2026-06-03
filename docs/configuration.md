@@ -40,15 +40,15 @@ session_type: "private"
 
 ## provider.yaml
 
-DeepSeek 使用 OpenAI-compatible API：
+本地 LLM Studio 使用标准 OpenAI-compatible API。Provider 类型仍然是 `openai`，LLM Studio 只是 `base_url` 指向的本地服务：
 
 ```yaml
-name: "deepseek"
+name: "openai"
 type: "openai"
-base_url: "${DEEPSEEK_OPENAI_BASE_URL}"
-api_key: "${DEEPSEEK_API_TOKEN}"
-model: "deepseek-v4-flash"
-max_concurrent: 2
+base_url: "http://127.0.0.1:1234/v1"
+api_key: ""  # Leave empty for local LM Studio without auth; use ${OPENAI_API_KEY} or ${LM_API_TOKEN} when auth is enabled.
+model: "qwen/qwen3-1.7b"
+max_concurrent: 1
 ```
 
 `type` 支持 `anthropic`、`openai` 和 `smoke`。`smoke` 只用于本地端到端测试，不访问网络。
@@ -57,7 +57,7 @@ max_concurrent: 2
 
 ```yaml
 name: "default"
-provider: "deepseek"
+provider: "openai"
 agent_role: "A local code-focused assistant that makes small, auditable changes."
 max_context_tokens: 8000
 include_reasoning: false
@@ -70,14 +70,14 @@ tools:
   - task_begin
   - task_status
   - task_exit
+  - plan_add_nodes
   - plan_autofill
   - plan_next
   - plan_update
+  - plan_node_history
   - summary_add
   - summary_list
   - summary_read
-  - claim_add
-  - claim_list
   - compact
   - skill_load
 skills: []
@@ -159,7 +159,6 @@ context_tree.jsonl
 mailbox.jsonl
 state.yaml
 context.md
-claims.yaml
 artifacts/
 checkpoints/
 versions/

@@ -26,8 +26,6 @@ from xbot.state import (
 from xbot.state_projection import materialize_context_tree_state, materialize_mailbox_state, read_jsonl
 from xbot.builtin_tools import (
     compact,
-    claim_add,
-    claim_list,
     context_head,
     context_rewind,
     debug_analyze,
@@ -131,11 +129,11 @@ def test_system_prompt_contains_task_mode_operating_rules(temp_data_dir):
     )
 
     assert "enter task mode with task_begin" in prompt
-    assert "use plan_autofill" in prompt
+    assert "plan_autofill or plan_add_nodes" in prompt
     assert "drive the DAG through plan_next and plan_update" in prompt
-    assert "Do not call task_exit with completed" in prompt
-    assert "summary_add and claim_add" in prompt
-    assert "each changed file should have an explicit claim_add entry" in prompt
+    assert "task_status reports completion_errors" in prompt
+    assert "plan_update summary/result/evidence_refs" in prompt
+    assert "memory_update only for durable user/project facts" in prompt
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
@@ -409,7 +407,6 @@ def test_task_state_store_initializes_file_backed_state(temp_data_dir):
     assert store.paths.context_md.exists()
     assert store.paths.context_tree_jsonl.exists()
     assert store.paths.mailbox_jsonl.exists()
-    assert store.paths.claims_yaml.exists()
     assert store.paths.artifacts_dir.exists()
     assert yaml.safe_load(store.paths.task_yaml.read_text(encoding="utf-8"))["mode"] == "chat"
 
@@ -573,6 +570,108 @@ async def test_plan_autofill_adds_standard_dag_skeleton(temp_data_dir):
     assert "unit tests pass" in by_id["n_verify"]["success_criteria"]
     assert "patch is scoped" in by_id["n_implement"]["success_criteria"]
 
+@pytest.mark.asyncio
+async def test_plan_update_records_node_result_summary_and_evidence(temp_data_dir):
+    """DAG nodes should carry their own execution facts."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="node-facts",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Complete with node evidence"})
+        await plan_autofill.ainvoke({"scope": "refactor"})
+        await plan_next.ainvoke({})
+        updated = json.loads(
+            await plan_update.ainvoke(
+                {
+                    "node_id": "n_inspect",
+                    "status": "verified",
+                    "reason": "inspection done",
+                    "summary": "Inspected target files.",
+                    "result": "calculator.py is the only target.",
+                    "evidence_refs_json": '["filesystem_read:calculator.py"]',
+                    "changed_files_json": '["calculator.py"]',
+                }
+            )
+        )
+        context = store.paths.context_md.read_text(encoding="utf-8")
+        node = next(node for node in store.plan_store.load_plan()["nodes"] if node["id"] == "n_inspect")
+    finally:
+        reset_runtime_task_state(token)
+
+    assert updated["version"] >= 3
+    assert node["summary"] == "Inspected target files."
+    assert node["result"] == "calculator.py is the only target."
+    assert node["evidence_refs"] == ["filesystem_read:calculator.py"]
+    assert node["changed_files"] == ["calculator.py"]
+    assert "summary=Inspected target files." in context
+    assert "evidence_refs=[filesystem_read:calculator.py]" in context
+
+
+@pytest.mark.asyncio
+async def test_plan_update_accepts_object_form_evidence_args(temp_data_dir):
+    """OpenAI-compatible local models sometimes send object-shaped evidence args."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="node-evidence-object-args",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Record object-shaped evidence"})
+        await plan_add_nodes.ainvoke(
+            {
+                "nodes_json": '[{"id":"n001","title":"Do work","depends_on":[],"status":"ready"}]',
+            }
+        )
+        await plan_update.ainvoke(
+            {
+                "node_id": "n001",
+                "status": "verified",
+                "evidence_refs_json": '{"file":"calculator.py"}',
+                "changed_files_json": '{"calculator.py":"modified"}',
+            }
+        )
+        node = next(node for node in store.plan_store.load_plan()["nodes"] if node["id"] == "n001")
+    finally:
+        reset_runtime_task_state(token)
+
+    assert node["evidence_refs"] == ["file:calculator.py"]
+    assert node["changed_files"] == ["calculator.py:modified"]
+
+
+@pytest.mark.asyncio
+async def test_task_completion_uses_dag_state(temp_data_dir):
+    """Completed exit should be controlled by DAG node status."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="completion-with-node-evidence",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Complete with node evidence", "steps_json": '["Do work"]'})
+        await plan_next.ainvoke({})
+        await plan_update.ainvoke(
+            {
+                "node_id": "n001",
+                "status": "verified",
+                "summary": "Work completed.",
+                "result": "DAG node carries completion evidence.",
+                "evidence_refs_json": '["node:n001"]',
+            }
+        )
+        exited = json.loads(await task_exit.ainvoke({"status": "completed"}))
+    finally:
+        reset_runtime_task_state(token)
+
+    assert exited["status"] == "completed"
+
 
 @pytest.mark.asyncio
 async def test_task_status_reports_next_action(temp_data_dir):
@@ -672,53 +771,6 @@ async def test_summary_tools_project_into_context(temp_data_dir):
     assert "DAG-first" in context
     assert state["summaries"]["count"] == 1
     assert state["summaries"]["latest"]["reason"] == "preference"
-
-
-@pytest.mark.asyncio
-async def test_claim_tools_record_and_verify_structured_claims(temp_data_dir):
-    """Claims should be structured, listable, and verified by runtime checks."""
-    store = TaskStateStore.create(
-        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
-        thread_id="claim-tools",
-        session_id="default",
-        personality_id="default",
-    )
-    token = configure_runtime_task_state(store)
-    try:
-        added = json.loads(
-            await claim_add.ainvoke(
-                {
-                    "claim": "Calculator spacing was refactored.",
-                    "evidence": "calculator.py contains `return a + b`.",
-                    "status": "verified",
-                    "confidence": 0.95,
-                    "evidence_refs_json": '["artifact:calculator.py", "graph:g000001"]',
-                }
-            )
-        )
-        listed = json.loads(await claim_list.ainvoke({"status": "verified"}))
-        status = json.loads(await task_status.ainvoke({}))
-        debug = json.loads(await debug_analyze.ainvoke({}))
-    finally:
-        reset_runtime_task_state(token)
-
-    state = store.materialize_state()
-    context = store.paths.context_md.read_text(encoding="utf-8")
-    checks = verify_task_state(store)
-
-    assert added["claim_id"] == "claim_000001"
-    assert added["confidence"] == 0.95
-    assert added["evidence_refs"] == ["artifact:calculator.py", "graph:g000001"]
-    assert listed[0]["claim"] == "Calculator spacing was refactored."
-    assert "## Relevant Claims" in context
-    assert "Calculator spacing was refactored." in context
-    assert status["semantic_state"]["claims"]["verified_count"] == 1
-    assert status["semantic_state"]["checks"]["claims_are_valid"] == "passed"
-    assert debug["semantic_state"]["checks"]["summaries_are_structured"]["status"] == "passed"
-    assert state["claims"]["count"] == 1
-    assert state["claims"]["verified_count"] == 1
-    assert verification_passed(checks)
-    assert any(check.name == "claims_are_valid" and check.status == "passed" for check in checks)
 
 
 def test_project_context_includes_pending_mailbox(temp_data_dir):
@@ -1133,7 +1185,6 @@ def test_verify_task_state_checks_materialized_counts(temp_data_dir):
         "mailbox_event_count_matches_state",
         "mailbox_is_valid",
         "plan_projection_has_no_errors",
-        "claims_are_valid",
         "summaries_are_structured",
     }
 
@@ -2384,11 +2435,24 @@ class TestToolRegistry:
         with pytest.raises(ValueError, match="missing sandbox metadata"):
             registry.register_many([tool_without_metadata], sandbox_modes={})
 
+    def test_register_rejects_invalid_sandbox_mode(self):
+        from xbot.registry import ToolRegistry
+        from langchain_core.tools import tool as lc_tool
+
+        @lc_tool
+        def invalid_mode_tool(x: str) -> str:
+            """A tool."""
+            return x
+
+        registry = ToolRegistry()
+        with pytest.raises(ValueError, match="invalid sandbox mode"):
+            registry.register(invalid_mode_tool, sandbox_mode="unknown")  # type: ignore[arg-type]
+
     def test_bootstrap_registry_loads_all_tools(self):
         from xbot.registry import bootstrap_registry
 
         registry = bootstrap_registry()
-        assert len(registry) == 35
+        assert len(registry) == 33
         # Verify key tools are present
         assert registry.registered("shell")
         assert registry.registered("filesystem_read")
@@ -2401,6 +2465,7 @@ class TestToolRegistry:
         # Verify sandbox modes
         assert registry.sandbox_mode("shell") == "sandboxed"
         assert registry.sandbox_mode("debug_analyze") == "host"
+        assert registry.validate_sandbox_modes() == []
 
     def test_bootstrap_registry_filter_auto_includes_cache_read(self):
         from xbot.registry import bootstrap_registry
@@ -2417,7 +2482,7 @@ class TestToolRegistry:
         tools = get_all_tools()
         names = [tool.name for tool in tools]
 
-        assert len(tools) == 35
+        assert len(tools) == 33
         assert all(isinstance(tool, BaseTool) for tool in tools)
         assert len(names) == len(set(names))
         assert set(names) == set(TOOL_SANDBOX_MODE)

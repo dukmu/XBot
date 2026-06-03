@@ -32,12 +32,12 @@ def main() -> None:
     parser.add_argument("--data-dir", default="/tmp/xbot-provider-smoke", help="Isolated data directory")
     parser.add_argument("--keep", action="store_true", help="Do not clear the data directory first")
     parser.add_argument("--env-file", help="Optional shell env file to load before resolving env vars")
-    parser.add_argument("--provider-name", default="deepseek")
+    parser.add_argument("--provider-name", default="openai")
     parser.add_argument("--provider-type", choices=["openai", "anthropic"], default="openai")
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_TOKEN")
+    parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--base-url", help="Provider base URL")
-    parser.add_argument("--base-url-env", default="DEEPSEEK_OPENAI_BASE_URL")
-    parser.add_argument("--model", default="deepseek-v4-flash", help="Provider model name")
+    parser.add_argument("--base-url-env", default="OPENAI_BASE_URL")
+    parser.add_argument("--model", default="qwen/qwen3-1.7b", help="Provider model name")
     parser.add_argument("--model-env", help="Optional env var to override --model")
     parser.add_argument("--session-id", help="Session id; defaults to '<provider-name>-smoke'")
     parser.add_argument("--thread-id", default="calculator-refactor")
@@ -47,12 +47,15 @@ def main() -> None:
         load_env_file(Path(args.env_file).expanduser())
 
     session_id = args.session_id or f"{args.provider_name}-smoke"
-    base_url = args.base_url or os.environ.get(args.base_url_env)
+    base_url = args.base_url or os.environ.get(args.base_url_env) or "http://127.0.0.1:1234"
     model = (os.environ.get(args.model_env) if args.model_env else None) or args.model
+    if args.provider_type == "openai":
+        base_url = normalize_openai_base_url(base_url)
     if not base_url:
         raise SystemExit(f"{args.base_url_env} or --base-url is required")
-    if not os.environ.get(args.api_key_env):
-        raise SystemExit(f"{args.api_key_env} is required")
+    if args.provider_type == "openai":
+        token = os.environ.get(args.api_key_env) or os.environ.get("LM_API_TOKEN") or ""
+        os.environ[args.api_key_env] = token
 
     asyncio.run(
         run(
@@ -84,6 +87,14 @@ def load_env_file(path: Path) -> None:
         if not key or not key.replace("_", "").isalnum():
             continue
         os.environ.setdefault(key, shlex.split(value, comments=False, posix=True)[0] if value.strip() else "")
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """Accept an LM Studio server root and produce an OpenAI API base URL."""
+    trimmed = base_url.rstrip("/")
+    if trimmed.endswith("/v1"):
+        return trimmed
+    return f"{trimmed}/v1"
 
 
 async def run(
@@ -126,9 +137,9 @@ async def run(
     result1 = await collect_stream(runtime, 
         "Task 1. Use task mode and tools. Required path: "
         "task_begin -> plan_autofill -> plan_next -> filesystem_read -> filesystem_write -> "
-        "plan_update -> summary_add -> claim_add -> compact -> task_status. "
+        "plan_update -> summary_add -> compact -> task_status. "
         "Refactor calculator.py only by changing `return a+b` to `return a + b`. "
-        "The claim_add claim/evidence must explicitly mention calculator.py. "
+        "At least one plan_update must include summary/result/evidence_refs_json mentioning calculator.py. "
         "After finishing every DAG node, call task_exit with completed."
     )
     assert_no_runtime_errors(data_dir, workspace, calculator, runtime, result1)
@@ -136,10 +147,10 @@ async def run(
     result2 = await collect_stream(runtime,
         "Task 2. Start a new task mode task. Required path: "
         "task_begin -> plan_autofill -> plan_add_nodes -> plan_next -> filesystem_read -> filesystem_write -> "
-        "plan_update -> summary_add -> claim_add -> task_status. "
+        "plan_update -> summary_add -> task_status. "
         "Refactor stats.py only by changing `return total/count` to `return total / count`. "
         "The plan_add_nodes call must add one task-specific verification node. "
-        "The claim_add claim/evidence must explicitly mention stats.py. "
+        "At least one plan_update must include summary/result/evidence_refs_json mentioning stats.py. "
         "After finishing every DAG node, call task_exit with completed."
     )
     assert_no_runtime_errors(data_dir, workspace, stats, runtime, result2)
@@ -225,7 +236,6 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
         "filesystem_read",
         "filesystem_write",
         "summary_add",
-        "claim_add",
         "compact",
         "plan_add_nodes",
     }
@@ -237,7 +247,7 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
     if list(positions.values()) != sorted(positions.values()):
         raise SystemExit(f"Smoke failed: required tool order was not preserved: {positions}; observed={tool_names}")
     write_position = tool_names.index("filesystem_write")
-    semantic_positions = {name: tool_names.index(name) for name in ("summary_add", "claim_add") if name in tool_names}
+    semantic_positions = {name: tool_names.index(name) for name in ("summary_add",) if name in tool_names}
     if any(position < write_position for position in semantic_positions.values()):
         raise SystemExit(
             f"Smoke failed: semantic trace happened before file write: {semantic_positions}; observed={tool_names}"
@@ -248,7 +258,6 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
         "filesystem_read",
         "filesystem_write",
         "summary_add",
-        "claim_add",
     }
     missing_attribution = sorted(attribution_required - attributed_tools)
     if missing_attribution:
@@ -262,16 +271,15 @@ def assert_execution_trace(runtime: HermesInteraction) -> None:
         raise SystemExit("Smoke failed: expected two task_mode_started events")
     if sum(1 for event in events if event.get("type") == "task_mode_exited" and event.get("status") == "completed") < 2:
         raise SystemExit("Smoke failed: expected two completed task_mode_exited events")
-    claims = (runtime.state_store.materialize_state().get("claims") or {}).get("count", 0)
     summaries = (runtime.state_store.materialize_state().get("summaries") or {}).get("count", 0)
     dag_counts = (runtime.state_store.materialize_state().get("dag") or {}).get("node_event_counts") or {}
     if not dag_counts:
         raise SystemExit("Smoke failed: expected DAG node activity counts")
-    if claims < 2 or summaries < 2:
-        raise SystemExit(f"Smoke failed: expected at least two claims and summaries, got claims={claims} summaries={summaries}")
-    claim_text = json.dumps(runtime.state_store.claims(), ensure_ascii=False).lower()
-    if "calculator.py" not in claim_text or "stats.py" not in claim_text:
-        raise SystemExit("Smoke failed: expected verified claims for both calculator.py and stats.py")
+    if summaries < 2:
+        raise SystemExit(f"Smoke failed: expected at least two summaries, got summaries={summaries}")
+    plan_text = json.dumps(runtime.state_store.plan_store.load_plan(), ensure_ascii=False).lower()
+    if "calculator.py" not in plan_text or "stats.py" not in plan_text:
+        raise SystemExit("Smoke failed: expected DAG node evidence for both calculator.py and stats.py")
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -351,7 +359,6 @@ def seed_runtime(
                     "plan_next",
                     "plan_update",
                     "summary_add",
-                    "claim_add",
                     "compact",
                 ],
                 "skills": [],
@@ -362,7 +369,7 @@ def seed_runtime(
     )
     (personality / "instructions.md").write_text(
         "For code refactors, obey the required tool path in the user request exactly. "
-        "Use task mode, grow and execute the DAG, record a summary and claim, and keep changes minimal.\n",
+        "Use task mode, grow and execute the DAG, record node summaries/evidence, and keep changes minimal.\n",
         encoding="utf-8",
     )
     (personality / "memory.md").write_text("No memory.\n", encoding="utf-8")
@@ -376,7 +383,6 @@ def seed_runtime(
                     {"tool": "task_.*", "params": {}},
                     {"tool": "plan_.*", "params": {}},
                     {"tool": "summary_.*", "params": {}},
-                    {"tool": "claim_.*", "params": {}},
                     {"tool": "compact", "params": {}},
                 ],
             },

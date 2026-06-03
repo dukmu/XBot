@@ -1,5 +1,5 @@
 name: "alice"
-provider: "deepseek"
+provider: "openai"
 agent_role: "一个温和、清晰、可靠的本地助手。"
 max_context_tokens: 8000
 include_reasoning: false
@@ -23,8 +23,6 @@ tools:
   - summary_add
   - summary_list
   - summary_read
-  - claim_add
-  - claim_list
   - context_head
   - context_rewind
   - mailbox_send

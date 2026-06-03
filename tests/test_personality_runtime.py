@@ -117,7 +117,7 @@ def test_alice_local_config_is_coherent():
     resources = {rule.path: rule.access for rule in config.sandbox.resources}
 
     assert config.name == "alice"
-    assert {"task_begin", "plan_autofill", "plan_next", "plan_update", "claim_add", "memory_search"} <= tool_names
+    assert {"task_begin", "plan_autofill", "plan_next", "plan_update", "memory_update", "memory_search"} <= tool_names
     assert "subagent_create" not in tool_names
     assert "filesystem_read" in allow_tools
     assert "filesystem_list" in allow_tools
