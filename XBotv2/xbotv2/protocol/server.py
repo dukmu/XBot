@@ -13,11 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from xbotv2.core.bootstrap import bootstrap
-from xbotv2.llm.client import create_llm
 from xbotv2.protocol.frames import (
     ProtocolEncoder,
     ProtocolFrame,
-    PROTOCOL_VERSION,
     frame_from_json,
 )
 
@@ -37,7 +35,7 @@ class RuntimeServer:
         personality_id: str = "default",
         provider_name: str = "default",
     ) -> None:
-        self._data_dir = Path(data_dir)
+        self._data_dir = Path(data_dir).resolve()
         self._personality_id = personality_id
         self._provider_name = provider_name
         self._engine = None
@@ -133,7 +131,7 @@ class RuntimeServer:
         """Bootstrap the engine and open a session."""
         try:
             self._engine = await bootstrap(
-                config_dir=self._data_dir,
+                config_dir=str(self._data_dir),
                 personality_id=self._personality_id,
                 provider_name=self._provider_name,
                 session_id=self._session_id,
@@ -141,7 +139,6 @@ class RuntimeServer:
             )
             await self._engine.start_session()
 
-            # Send session ready
             writer.write(
                 self._encoder.encode_session_ready(
                     agent_name=getattr(self._engine.config, "agent_name", "XBotv2")
@@ -208,7 +205,6 @@ class RuntimeServer:
         return None
 
     def _handle_shutdown(self, frame: ProtocolFrame) -> ProtocolFrame | None:
-        """Shut down the server."""
         if self._encoder:
             return self._encoder.encode_shutdown_ok()
         return self._make_frame("shutdown_ok", {}, frame.request_id)

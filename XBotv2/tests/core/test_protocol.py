@@ -187,3 +187,91 @@ class TestProviderConfig:
         llm = create_mock_llm([{"content": "test"}])
         assert llm is not None
         assert len(llm.responses) == 1
+
+
+class TestProviderConfigLoader:
+    """Provider config loading from multi-provider YAML — the original bug."""
+
+    def test_selects_named_provider_section(self, tmp_path, monkeypatch):
+        """load_provider_config selects the correct YAML section."""
+        from xbotv2.config.loader import load_provider_config
+
+        monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "provider.yaml").write_text("""
+default:
+  provider: deepseek
+  model: deepseek-chat
+  base_url: https://api.deepseek.com/v1
+  api_key: ${TEST_API_KEY}
+
+openai:
+  provider: openai
+  model: gpt-4o
+  api_key: sk-openai-xxx
+""")
+
+        # Load default → should get deepseek
+        c = load_provider_config(config_dir, "default")
+        assert c.provider == "deepseek"
+        assert c.model == "deepseek-chat"
+        assert c.base_url == "https://api.deepseek.com/v1"
+        assert c.api_key == "sk-test-123"  # env var expanded
+
+        # Load openai → should get openai section
+        c2 = load_provider_config(config_dir, "openai")
+        assert c2.provider == "openai"
+        assert c2.model == "gpt-4o"
+        assert c2.api_key == "sk-openai-xxx"
+
+    def test_env_var_expansion_in_nested_section(self, tmp_path, monkeypatch):
+        """${VAR} patterns are expanded in provider sections."""
+        from xbotv2.config.loader import load_provider_config
+
+        monkeypatch.setenv("MY_KEY", "expanded-value")
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "provider.yaml").write_text("""
+test:
+  provider: openai
+  model: gpt-4
+  api_key: ${MY_KEY}
+""")
+
+        c = load_provider_config(config_dir, "test")
+        assert c.api_key == "expanded-value"
+
+    def test_missing_env_var_becomes_empty(self, tmp_path):
+        """Unset env vars expand to empty string."""
+        from xbotv2.config.loader import load_provider_config
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "provider.yaml").write_text("""
+test:
+  provider: openai
+  model: gpt-4
+  api_key: ${NONEXISTENT_VAR}
+""")
+
+        c = load_provider_config(config_dir, "test")
+        assert c.api_key == ""
+
+    def test_fallback_to_default_key(self, tmp_path):
+        """Unknown provider_name falls back to 'default' section."""
+        from xbotv2.config.loader import load_provider_config
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "provider.yaml").write_text("""
+default:
+  provider: openai
+  model: fallback-model
+""")
+
+        c = load_provider_config(config_dir, "nonexistent_provider")
+        assert c.provider == "openai"
+        assert c.model == "fallback-model"

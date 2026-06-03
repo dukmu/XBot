@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,39 @@ You are {agent_name}, {agent_role}.
 User: {user_name} ({user_id})
 Platform: {platform}
 """
+
+
+def _expand_env(value: str) -> str:
+    """Replace ${VAR} or $VAR patterns with environment variable values."""
+    if not isinstance(value, str):
+        return value
+    pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+    def replacer(match):
+        var_name = match.group(1)
+        return os.environ.get(var_name, "")
+
+    return pattern.sub(replacer, value)
+
+
+def _expand_env_in_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Recursively expand env vars in all string values of a dict."""
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            result[key] = _expand_env(value)
+        elif isinstance(value, dict):
+            result[key] = _expand_env_in_dict(value)
+        elif isinstance(value, list):
+            result[key] = [
+                _expand_env_in_dict(item) if isinstance(item, dict)
+                else _expand_env(item) if isinstance(item, str)
+                else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    return result
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -32,15 +67,27 @@ def load_user_context(config_dir: Path) -> UserContext:
     return UserContext(**data)
 
 
-def load_provider_config(config_dir: Path, _provider_name: str = "default") -> ProviderConfig:
+def load_provider_config(config_dir: Path, provider_name: str = "default") -> ProviderConfig:
     """Load provider config from data/config/provider.yaml.
 
-    Args:
-        config_dir: Root data directory.
-        _provider_name: Reserved for multi-provider support (currently unused).
+    The provider.yaml file can contain multiple provider sections keyed
+    by name (e.g. 'deepseek', 'lmstudio', 'openai'). The *provider_name*
+    selects which section to use; falls back to the 'default' key.
+
+    Environment variables like ${DEEPSEEK_API_KEY} are expanded at load time.
     """
-    data = load_yaml(config_dir / "provider.yaml")
-    return ProviderConfig(**data)
+    all_data = load_yaml(config_dir / "provider.yaml")
+    if not all_data:
+        return ProviderConfig()
+
+    # Select the named provider section, falling back to 'default'
+    section = all_data.get(provider_name) or all_data.get("default", {})
+    if not section:
+        return ProviderConfig()
+
+    # Expand env vars
+    section = _expand_env_in_dict(section)
+    return ProviderConfig(**section)
 
 
 def load_agent_config(config_dir: Path, personality_id: str = "default") -> AgentConfig:

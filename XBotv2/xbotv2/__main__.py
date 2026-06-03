@@ -1,16 +1,16 @@
 """XBotv2 — Plugin-extensible AI agent runtime.
 
 Usage:
-    python -m xbotv2                        # Interactive terminal mode
-    python -m xbotv2 --mode server          # JSONL stdio server
-    python -m xbotv2 --mode tui             # Curses TUI
-    python -m xbotv2 --mode once "prompt"   # Single-shot query
+    python main.py                              # Interactive terminal mode
+    python main.py --mode server                # JSONL stdio server
+    python main.py --mode once "prompt"         # Single-shot query
+    python main.py --provider deepseek          # Use DeepSeek provider
 
 Options:
     --data-dir PATH     Data directory (default: data)
     --personality ID    Personality to use (default: default)
     --provider NAME     Provider config to use (default: default)
-    --mode MODE         Run mode: server, terminal, tui, once
+    --mode MODE         Run mode: server, terminal, once
     --help              Show this help
 """
 
@@ -37,7 +37,7 @@ def main():
     parser.add_argument(
         "--mode",
         default="terminal",
-        choices=["server", "terminal", "tui", "once"],
+        choices=["server", "terminal", "once"],
         help="Run mode (default: terminal)",
     )
     parser.add_argument(
@@ -49,8 +49,6 @@ def main():
         _run_server(args)
     elif args.mode == "terminal":
         _run_terminal(args)
-    elif args.mode == "tui":
-        _run_tui(args)
     elif args.mode == "once":
         _run_once(args)
     else:
@@ -58,7 +56,7 @@ def main():
 
 
 def _run_server(args):
-    """Run the JSONL stdio server."""
+    """Run the JSONL stdio server (for C/S mode with TUI clients)."""
     from xbotv2.protocol.server import run_stdio_server
 
     asyncio.run(run_stdio_server(
@@ -69,84 +67,104 @@ def _run_server(args):
 
 
 def _run_terminal(args):
-    """Run interactive terminal mode."""
-    from xbotv2.tui.terminal import TerminalSession
+    """Run interactive terminal mode using direct engine."""
+    asyncio.run(_terminal_loop(args))
 
-    async def interactive():
-        async with TerminalSession(
-            data_dir=args.data_dir,
+
+async def _terminal_loop(args):
+    """Direct engine terminal session — reads from stdin, prints responses."""
+    from xbotv2.core.bootstrap import bootstrap
+
+    data_dir = Path(args.data_dir).resolve()
+
+    print(f"XBotv2 ({args.personality}) [{args.provider}] — type /quit to exit\n")
+
+    try:
+        engine = await bootstrap(
+            config_dir=str(data_dir),
             personality_id=args.personality,
             provider_name=args.provider,
-        ) as session:
-            print(f"XBotv2 ({args.personality}) — type /quit to exit\n")
-            while True:
-                try:
-                    user_input = input("> ")
-                except (EOFError, KeyboardInterrupt):
-                    print("\nGoodbye.")
-                    break
+            session_id="terminal",
+            thread_id="agent",
+        )
+        await engine.start_session()
+    except Exception as exc:
+        print(f"Error starting engine: {exc}")
+        return
 
-                if not user_input.strip():
-                    continue
-                if user_input.strip() == "/quit":
-                    print("Goodbye.")
-                    break
+    while True:
+        try:
+            user_input = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            break
 
-                async for response in session.send_message(user_input):
-                    rtype = response["type"]
-                    data = response["data"]
+        if not user_input.strip():
+            continue
+        if user_input.strip() == "/quit":
+            print("Goodbye.")
+            break
 
-                    if rtype == "assistant_message":
-                        content = data.get("content", "")
-                        tool_calls = data.get("tool_calls")
-                        if content:
-                            print(content)
-                        if tool_calls:
-                            print(f"\n[tool calls: {len(tool_calls)}]")
-                    elif rtype == "tool_result":
-                        print(f"  [{data.get('tool_call_id', '')}]: {data.get('content', '')[:200]}")
-                    elif rtype == "error":
-                        print(f"\nError: {data.get('message', 'unknown')}")
-                    elif rtype == "status":
-                        print(f"[{data.get('text', '')}]")
+        try:
+            async for event in engine.run_turn(user_input):
+                etype = event.get("type", "")
+                data = event.get("data", {})
 
-    asyncio.run(interactive())
+                if etype == "assistant_message":
+                    content = data.get("content", "")
+                    tool_calls = data.get("tool_calls")
+                    if content:
+                        print(content)
+                    if tool_calls:
+                        print(f"\n[tool calls: {len(tool_calls)}]")
+                elif etype == "tool_result":
+                    tc_id = data.get("tool_call_id", "")
+                    content = data.get("content", "")
+                    print(f"  [{tc_id}]: {content[:200]}")
+                elif etype == "error":
+                    print(f"\nError: {data.get('message', 'unknown')}")
+        except Exception as exc:
+            print(f"\nError: {exc}")
 
-
-def _run_tui(args):
-    """Run curses TUI mode."""
-    print("TUI mode not yet implemented. Use --mode terminal for now.")
-    sys.exit(1)
+    await engine.close_session()
 
 
 def _run_once(args):
     """Run a single prompt and exit."""
-    from xbotv2.tui.terminal import TerminalSession
+    from xbotv2.core.bootstrap import bootstrap
 
     if not args.prompt:
         print("Error: --mode once requires a prompt argument")
         sys.exit(1)
 
+    data_dir = Path(args.data_dir).resolve()
+
     async def single_shot():
-        async with TerminalSession(
-            data_dir=args.data_dir,
+        engine = await bootstrap(
+            config_dir=str(data_dir),
             personality_id=args.personality,
             provider_name=args.provider,
-        ) as session:
-            async for response in session.send_message(args.prompt):
-                rtype = response["type"]
-                data = response["data"]
+            session_id="once",
+            thread_id="agent",
+        )
+        await engine.start_session()
 
-                if rtype == "assistant_message":
-                    content = data.get("content", "")
-                    if content:
-                        print(content)
-                elif rtype == "tool_result":
-                    tc_id = data.get('tool_call_id', '')
-                    content = data.get('content', '')
-                    print(f"\n[{tc_id}]: {content[:300]}")
-                elif rtype == "error":
-                    print(f"\nError: {data.get('message', 'unknown')}")
+        async for event in engine.run_turn(args.prompt):
+            etype = event.get("type", "")
+            data = event.get("data", {})
+
+            if etype == "assistant_message":
+                content = data.get("content", "")
+                if content:
+                    print(content)
+            elif etype == "tool_result":
+                tc_id = data.get("tool_call_id", "")
+                content = data.get("content", "")
+                print(f"\n[{tc_id}]: {content[:300]}")
+            elif etype == "error":
+                print(f"\nError: {data.get('message', 'unknown')}")
+
+        await engine.close_session()
 
     asyncio.run(single_shot())
 
