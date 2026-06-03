@@ -46,15 +46,18 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 - [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Detached subagent runner MVP: pending `mode=detach` manifests are picked up by `HermesInteraction.process_detached_subagents()`, run under the parent session with timeout/turn budget metadata, write child DAG/checkpoint state under `subagents/<id>/`, and report back through parent graph events plus mailbox and workspace change handoff.
 - [x] Registry integrity tests added to prevent incomplete canonical built-in tool metadata.
-- [x] Latest full verification passed: `uv run pytest -q` (`113 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`120 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
-- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 423 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
+- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 253 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`; one earlier retry failed due provider incomplete chunked read).
 - [x] TUI/server planning reset: `plan.md` now treats `InteractionEvent` as an internal runtime event, defines the required JSONL protocol direction, and pauses multi-agent expansion until the C/S boundary and renderer are stable.
 - [x] Documentation reset: README, docs, AGENTS, and status now describe the current runtime architecture, C/S target, protocol boundary, and an end-to-end runtime data-flow example.
 - [x] Protocol MVP implemented: `xbot/protocol.py`, `xbot/server.py`, protocol terminal renderer, server handshake/session-open test, and shell/exec lifecycle renderer tests.
 - [x] Legacy direct terminal runtime path removed: `main.py` terminal mode starts a protocol client and `main.py server` owns `HermesInteraction`.
-- [x] Curses TUI MVP implemented: `main.py tui` starts a protocol client, `xbot/tui.py` maintains replayable UI state from protocol frames, and tests cover message stream, tool lifecycle, cache ref, and interrupt replay.
-- [ ] TUI remains MVP-level: next step is nonblocking input/event pump, richer protocol UI layout, and golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay fixtures.
+- [x] Curses TUI live MVP implemented: `main.py tui` starts a protocol client, `xbot/server.py` flushes frames incrementally, `xbot/tui.py` drains a background reader queue, and tests cover live frame drain plus message stream, tool lifecycle, cache metadata/ref, usage, and interrupt replay.
+- [x] Alice local personality config verified: enabled tools, allow/ask rules, workspace readwrite sandbox, state readonly sandbox, and memory readwrite sandbox are covered by config tests.
+- [x] Cache and usage protocol hardening: large cached tool results include summary/preview/metadata in tool result payloads, and usage is normalized as `usage.updated` frames for terminal/TUI display.
+- [x] System prompt few-shot examples added for DAG planning, tools/permissions/workspace/sandbox, cache reads, memory, and claims.
+- [ ] TUI remains MVP-level for layout controls: next step is scroll panes, explicit approval controls, cancel command, and golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay fixtures.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)

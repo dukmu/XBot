@@ -529,15 +529,17 @@ RuntimeFrame
 
 - 已新增 `xbot/tui.py`，包含 `TuiState`、message/tool state models 和 `CursesTuiClient`。
 - 已新增 `main.py tui` 入口，启动协议 client 并连接 `main.py server`。
-- 已实现左侧工具/interrupt/error 区、主消息区、状态栏和输入行。
-- 已支持 event replay：`TuiState.apply(frame)` 只消费 protocol frames，测试覆盖 message stream、tool lifecycle、cache ref 和 interrupt。
-- 后续增强：nonblocking server event pump、可滚动 panes、更明确的 approval controls、golden JSONL fixtures。
+- 已实现左侧工具/interrupt/error 区、主消息区、usage 状态栏和输入行。
+- 已支持 live event pump：`xbot/server.py` 逐 frame flush，`CursesTuiClient` 用后台 reader 持续接收 protocol frames，输入不会阻塞到整轮结束才刷新。
+- 已支持 event replay：`TuiState.apply(frame)` 只消费 protocol frames，测试覆盖 message stream、tool lifecycle、cache metadata/ref、usage 和 interrupt。
+- 后续增强：可滚动 panes、更明确的 approval controls、cancel 命令、golden JSONL fixtures。
 
 验收：
 
 - TUI 不 import `HermesInteraction`。
 - TUI 可连接 stdio server。
 - 同一 JSONL 事件日志可在测试中 replay。
+- live server frames 可以逐帧进入 TUI state。
 - TUI 不解析 `AIMessage`、`AIMessageChunk` 或 `ToolMessage`。
 
 ### Phase E：保持无回退
@@ -592,10 +594,10 @@ Golden tests：
 
 ## 推进顺序
 
-1. 已完成协议模型、stdio runtime server、protocol encoder、terminal renderer、shell/exec lifecycle 展示和 curses TUI MVP。
+1. 已完成协议模型、stdio runtime server、protocol encoder、terminal renderer、shell/exec lifecycle 展示、live curses TUI MVP、cache metadata 和 usage protocol event。
 2. 下一步补 golden JSONL fixtures，覆盖 handshake、message stream、tool lifecycle、interrupt/resume、runtime error。
 3. 再补 server request serialization、interrupt idempotency、cancel/failure-kind/cache-ref 测试。
-4. 增强 curses TUI 的 nonblocking event pump、scroll panes、approval controls。
+4. 增强 curses TUI 的 scroll panes、approval controls 和 cancel command。
 5. 需要更丰富 UI 时，再增加 Textual/Rich 或 Node.js adapter；adapter 只能复用现有 JSONL protocol。
 6. 保持无 legacy direct UI path。
 
@@ -610,7 +612,8 @@ Golden tests：
 - 所有跨进程数据必须是 JSON serializable protocol frame。
 - tool lifecycle 必须有 `tool_call_id`。
 - interrupt/resume 必须有 `interrupt_id` 和 `request_id`。
-- 大输出必须走 cache ref。
+- 大输出必须走 cache ref，并携带 summary、preview、size/line_count metadata。
+- usage 必须作为统一 runtime/protocol event 统计并显示，不能只存在 provider 私有字段里。
 - append-only state 仍是事实源。
 - multi-agent 暂停，直到 C/S 和 TUI 稳定。
 

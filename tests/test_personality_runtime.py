@@ -9,7 +9,7 @@ import yaml
 
 from xbot.checkpoint import FileBackedSaver
 from xbot.builtin_tools.subagent import subagent_create
-from xbot.config import configure_runtime_paths, default_sandbox_config, load_agent_config, load_agent_prompt, load_memory
+from xbot.config import DATA_DIR, configure_runtime_paths, default_sandbox_config, load_agent_config, load_agent_prompt, load_memory
 from xbot.interaction import HermesInteraction
 from xbot.sandbox import reset_runtime_sandbox, set_runtime_sandbox
 from xbot.state import configure_runtime_task_state, read_jsonl, reset_runtime_task_state
@@ -103,6 +103,47 @@ def test_personality_config_uses_canonical_layout_only(temp_data_dir):
         "personalities/default",
         "personalities/default/memory.md",
     }
+
+
+def test_alice_local_config_is_coherent():
+    """Alice should expose tools that match its permission and sandbox policy."""
+    paths = configure_runtime_paths(data_dir=DATA_DIR, session_id="alice-test", personality_id="alice")
+
+    config = load_agent_config()
+    tool_names = set(config.tools)
+    allow_tools = {rule.tool for rule in config.permissions.allow}
+    ask_tools = {rule.tool for rule in config.permissions.ask}
+    resources = {rule.path: rule.access for rule in config.sandbox.resources}
+
+    assert config.name == "alice"
+    assert {"task_begin", "plan_autofill", "plan_next", "plan_update", "claim_add", "memory_search"} <= tool_names
+    assert "subagent_create" not in tool_names
+    assert "filesystem_read" in allow_tools
+    assert "filesystem_list" in allow_tools
+    assert "filesystem.*" not in allow_tools
+    assert "filesystem_write" in ask_tools
+    assert "memory_update" in ask_tools
+    assert resources[f"sessions/{paths.session_id}/workspace"] == "readwrite"
+    assert resources[f"sessions/{paths.session_id}/state"] == "readonly"
+    assert resources[f"personalities/{paths.personality_id}/memory.md"] == "readwrite"
+
+
+def test_permission_wildcards_validate_tool_prefixes(temp_data_dir):
+    """Permission validation accepts both filesystem.* and task_.* style prefixes."""
+    write_local_runtime(temp_data_dir)
+    paths = configure_runtime_paths(data_dir=temp_data_dir, session_id="wildcard", personality_id="default")
+    permissions_path = paths.personality_permissions_path
+    data = json.loads(permissions_path.read_text(encoding="utf-8"))
+    data["allow"].append({"tool": "task_.*", "params": {}})
+    permissions_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    personality_path = paths.personality_config_path
+    personality = yaml.safe_load(personality_path.read_text(encoding="utf-8"))
+    personality["tools"].extend(["task_begin", "task_status", "task_exit"])
+    personality_path.write_text(yaml.safe_dump(personality, sort_keys=False), encoding="utf-8")
+
+    config = load_agent_config()
+
+    assert any(rule.tool == "task_.*" for rule in config.permissions.allow)
 
 
 def test_runtime_create_loads_configured_hooks(temp_data_dir, monkeypatch):

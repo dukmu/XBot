@@ -29,7 +29,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 |------------|--------|
 | LangGraph ReAct loop | Implemented |
 | Terminal adapter | Protocol client |
-| Curses TUI | Implemented MVP |
+| Curses TUI | Live protocol MVP |
 | Runtime server protocol | Implemented MVP |
 | Provider config | Implemented |
 | Permission allow/deny/ask | Implemented |
@@ -37,7 +37,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 | System sandbox | Implemented MVP |
 | Active ask | Basic implementation |
 | Context compression | Basic linear implementation |
-| Tool result cache hooks | File-backed MVP |
+| Tool result cache hooks | File-backed with metadata |
 | Plan/DAG state | Implemented MVP |
 | Context tree and rewind | Implemented MVP |
 | Subagents (attach/detach MVP) | Implemented MVP; expansion paused |

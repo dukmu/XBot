@@ -115,9 +115,9 @@ C/S 测试优先级如下：
 
 - `xbot/protocol.py` schema encode/decode tests。
 - JSONL golden fixtures：handshake、session.open、message stream、tool lifecycle、interrupt/resume、runtime error。
-- server tests：同一 session/thread 只允许一个 active request，interrupt resume 校验 `interrupt_id` 和 idempotency key。
+- server tests：同一 session/thread 只允许一个 active request，interrupt resume 校验 `interrupt_id` 和 idempotency key；live clients use `stream_handle` so frames can be flushed incrementally.
 - renderer tests：terminal/TUI 只消费 protocol events，不 import LangChain/LangGraph，不读取 `ToolMessage`。
-- replay tests：同一 JSONL event log 可以重建相同 UI state；当前 `TuiState` 已覆盖 message stream、tool lifecycle、cache ref 和 interrupt replay，后续补 golden fixture 文件。
+- replay tests：同一 JSONL event log 可以重建相同 UI state；当前 `TuiState` 已覆盖 message stream、tool lifecycle、cache metadata/ref、usage 和 interrupt replay，后续补 golden fixture 文件。
 
 ## 暂不覆盖
 

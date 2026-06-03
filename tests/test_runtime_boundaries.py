@@ -1316,6 +1316,68 @@ def test_protocol_terminal_renders_shell_exec_lifecycle(capsys):
     assert "/tmp/workspace" in output
 
 
+def test_cache_result_includes_summary_preview_and_metadata(tmp_path):
+    """Large cached results should expose more than a cache ref."""
+    cache = ToolResultCache(max_inline_chars=8, persist_dir=tmp_path)
+
+    content = "alpha\n" * 20
+    cached = cache.maybe_cache(content)
+
+    assert "ref: cache://tool-result/" in cached
+    assert "summary:" in cached
+    assert "preview:" in cached
+    assert "metadata:" in cached
+    ref = next(line.removeprefix("ref: ").strip() for line in cached.splitlines() if line.startswith("ref: "))
+    metadata = cache.metadata(ref)
+    assert metadata["found"] is True
+    assert metadata["line_count"] == 20
+    assert metadata["preview"]
+
+
+def test_protocol_encoder_extracts_cache_metadata_from_tool_result():
+    """Protocol tool result payloads should carry cache summary and metadata."""
+    from xbot.interaction import InteractionEvent
+    from xbot.protocol import ProtocolEncoder
+
+    content = "\n".join(
+        [
+            "Tool result cached.",
+            "ref: cache://tool-result/abc",
+            "summary: 100 chars, 2 lines. First line: alpha",
+            "preview: alpha beta",
+            'metadata: {"found": true, "line_count": 2, "preview": "alpha beta", "ref": "cache://tool-result/abc", "size": 100}',
+            "read_hint: Use cache_read.",
+        ]
+    )
+    message = ToolMessage(content=content, name="filesystem_read", tool_call_id="call_cache")
+    encoder = ProtocolEncoder(session_id="s", thread_id="t")
+
+    frames = encoder.encode_interaction_event(InteractionEvent("message", "tool", message), request_id="req")
+    completed = [frame for frame in frames if frame.type == "tool.result.completed"][-1]
+
+    assert completed.payload["result_ref"] == "cache://tool-result/abc"
+    assert completed.payload["summary"].startswith("100 chars")
+    assert completed.payload["preview"] == "alpha beta"
+    assert completed.payload["metadata"]["line_count"] == 2
+
+
+def test_protocol_encoder_emits_accumulated_usage():
+    """Usage is a first-class protocol event with running totals."""
+    from xbot.interaction import InteractionEvent
+    from xbot.protocol import ProtocolEncoder
+
+    encoder = ProtocolEncoder(session_id="s", thread_id="t")
+
+    first = encoder.encode_interaction_event(InteractionEvent("usage", "runtime", {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}), request_id="req")
+    second = encoder.encode_interaction_event(InteractionEvent("usage", "runtime", {"input_tokens": 5, "output_tokens": 6, "total_tokens": 11}), request_id="req")
+
+    assert first[0].type == "usage.updated"
+    assert first[0].payload["total"]["total_tokens"] == 7
+    assert second[0].payload["total"]["input_tokens"] == 8
+    assert second[0].payload["total"]["output_tokens"] == 10
+    assert second[0].payload["total"]["total_tokens"] == 18
+
+
 def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
     """The TUI state is derived only from protocol frames."""
     from xbot.protocol import ProtocolFrame
@@ -1329,8 +1391,9 @@ def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
         ProtocolFrame(seq=4, direction="server_to_client", type="message.completed", session_id="s", thread_id="t", request_id="req", payload={"message_id": "m1", "role": "assistant", "content": "hello world"}),
         ProtocolFrame(seq=5, direction="server_to_client", type="tool.call.started", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell", "args_preview": "pwd", "status": "pending"}),
         ProtocolFrame(seq=6, direction="server_to_client", type="tool.execution.started", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell"}),
-        ProtocolFrame(seq=7, direction="server_to_client", type="tool.result.completed", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell", "exit_code": 0, "result_ref": "cache://tool-result/abc"}),
-        ProtocolFrame(seq=8, direction="server_to_client", type="interrupt.requested", session_id="s", thread_id="t", request_id="req", payload={"interrupt_id": "intr_1", "type": "tool_confirm", "question": "Allow?"}),
+        ProtocolFrame(seq=7, direction="server_to_client", type="tool.result.completed", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell", "exit_code": 0, "result_ref": "cache://tool-result/abc", "summary": "cached shell result"}),
+        ProtocolFrame(seq=8, direction="server_to_client", type="usage.updated", session_id="s", thread_id="t", request_id="req", payload={"total": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}}),
+        ProtocolFrame(seq=9, direction="server_to_client", type="interrupt.requested", session_id="s", thread_id="t", request_id="req", payload={"interrupt_id": "intr_1", "type": "tool_confirm", "question": "Allow?"}),
     ]
 
     for frame in frames:
@@ -1341,11 +1404,38 @@ def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
     assert state._open_stream == {}
     assert state.tools["call_1"].status == "completed"
     assert state.tools["call_1"].result_ref == "cache://tool-result/abc"
+    assert state.tools["call_1"].summary == "cached shell result"
+    assert state.usage["total_tokens"] == 15
     assert state.pending_interrupt["interrupt_id"] == "intr_1"
     rendered = "\n".join(state.lines(width=80, height=16))
     assert "Tools" in rendered
     assert "Messages" in rendered
     assert "Interrupt" in rendered
+    assert "total:15" in rendered
+
+
+def test_tui_client_drains_background_frames_without_blocking():
+    """The curses TUI can apply frames delivered by its reader queue."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.terminal import TerminalOptions
+    from xbot.tui import CursesTuiClient
+
+    client = CursesTuiClient(TerminalOptions())
+    client._frames.put(
+        ProtocolFrame(
+            seq=1,
+            direction="server_to_client",
+            type="message.completed",
+            session_id="default",
+            thread_id="default",
+            request_id="req",
+            payload={"message_id": "m", "role": "assistant", "content": "live"},
+        )
+    )
+
+    client._drain_frames()
+
+    assert client.state.messages[-1].content == "live"
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1473,23 @@ async def test_runtime_server_jsonl_handshake_and_session_open(temp_data_dir):
     assert open_responses[-1].type == "session.ready"
     assert server.runtime is not None
     assert server.runtime.state_store.paths.root == temp_data_dir / "sessions" / "proto" / "state"
+
+
+@pytest.mark.asyncio
+async def test_runtime_server_stream_handle_yields_frames_incrementally(temp_data_dir):
+    """stream_handle should expose protocol frames as an async stream for live UIs."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.server import RuntimeServer
+
+    write_local_runtime(temp_data_dir)
+    server = RuntimeServer(data_dir=temp_data_dir)
+    hello = ProtocolFrame(seq=1, direction="client_to_server", type="hello", session_id="proto", thread_id="proto", request_id="req_hello", payload={})
+
+    seen = []
+    async for frame in server.stream_handle(hello):
+        seen.append(frame.type)
+
+    assert seen == ["hello.ok"]
 
 
 def test_stream_tool_call_waits_for_complete_args(user_context):
