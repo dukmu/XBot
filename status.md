@@ -11,6 +11,8 @@ Latest update:
 - Curses TUI now uses a transcript-first replay state instead of a static tools/messages split panel.
 - Transcript entries are derived only from protocol frames and include user/assistant messages, live assistant streams, tool lifecycle, cache refs/summaries, usage totals, interrupts, and errors.
 - Targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "protocol or tui"` (`7 passed`).
+- Runtime now reloads personality/provider/tools/hooks/permissions/sandbox and prompt-visible text at each `user.message` boundary while preserving checkpoint and file-backed state. `interrupt.resume` intentionally does not reload.
+- RuntimeFrame task projection now refreshes `context.md` instead of reading a stale materialized projection.
 
 ## Current Scope
 

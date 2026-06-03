@@ -80,6 +80,7 @@ mock_llm.set_response_sequence([
 - 触碰宿主文件系统的测试使用 `temp_data_dir`，不要依赖真实 `data/sessions/default`。
 - 对流式输出只断言 normalized `InteractionEvent`，不要让 terminal renderer 重新拼 provider chunk。
 - 测试压缩时至少跑两轮对话，因为 `prepare_context` 会在下一次模型调用前压缩旧历史。
+- 测试 runtime reload 时通过 `HermesInteraction` 或 protocol/server 路径，不直接调用 config loader；`user.message` 应刷新配置，`interrupt.resume` 不刷新。
 
 ## 常见断言点
 
@@ -108,6 +109,13 @@ Context compacted: summarized 2 messages, kept 1 recent messages.
 ```
 
 Runtime events 通过 LangGraph custom stream 发出，不进入持久 graph state；交互层按事件 id 去重。
+
+压缩策略测试应覆盖：
+
+- unresolved tool call/interrupt 不被压缩。
+- AI tool-call message 与匹配 ToolMessage 保持成组。
+- active/running DAG、ready/blocked/failed 状态、claims、summaries、goal、plan、cache/evidence refs 不依赖压缩 history 保留，而是从文件化 state 和 dynamic suffix 投影。
+- summary artifact 写 source refs/ranges，UI 只收到 runtime status。
 
 ### Protocol / TUI
 

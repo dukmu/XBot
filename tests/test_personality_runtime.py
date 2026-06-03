@@ -260,6 +260,103 @@ async def test_runtime_restart_restores_checkpoint_and_file_state(temp_data_dir)
     )
 
 
+async def test_runtime_reloads_config_at_user_message_boundary(temp_data_dir):
+    """New user messages should rebuild runtime config while preserving state/checkpoint."""
+    write_local_runtime(temp_data_dir)
+    session_id = "reload-runtime"
+    thread_id = "reload-thread"
+    workspace = temp_data_dir / "sessions" / session_id / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "calculator.py").write_text("def add(a, b):\n    return a+b\n", encoding="utf-8")
+
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id=session_id,
+        personality_id="default",
+        thread_id=thread_id,
+    )
+    first_graph = runtime.graph
+    assert runtime.provider_config.model == "smoke-refactor"
+    assert runtime.sandbox.enabled is False
+
+    provider_yaml = temp_data_dir / "config" / "provider.yaml"
+    provider = yaml.safe_load(provider_yaml.read_text(encoding="utf-8"))
+    provider["model"] = "smoke-refactor-v2"
+    provider_yaml.write_text(yaml.safe_dump(provider, sort_keys=False), encoding="utf-8")
+
+    personality_yaml = temp_data_dir / "personalities" / "default" / "personality.yaml"
+    personality = yaml.safe_load(personality_yaml.read_text(encoding="utf-8"))
+    personality["agent_role"] = "Reloaded role."
+    personality["tools"] = ["message_send", "compact"]
+    personality_yaml.write_text(yaml.safe_dump(personality, sort_keys=False), encoding="utf-8")
+    (temp_data_dir / "personalities" / "default" / "memory.md").write_text("Reloaded memory.\n", encoding="utf-8")
+    (temp_data_dir / "config" / "system_template.md").write_text("Reloaded {{ agent_config.agent_role }}\n", encoding="utf-8")
+    (temp_data_dir / "personalities" / "default" / "permissions.json").write_text(
+        json.dumps({"default": "ask", "allow": [{"tool": "message_send", "params": {}}, {"tool": "compact", "params": {}}]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (temp_data_dir / "personalities" / "default" / "sandbox.json").write_text(
+        json.dumps({"enabled": True, "backend": "bubblewrap", "default": "deny", "resources": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    result = await runtime.send_user_message("Continue with reloaded config.")
+
+    assert runtime.graph is not first_graph
+    assert runtime.provider_config.model == "smoke-refactor-v2"
+    assert runtime.agent_config.agent_role == "Reloaded role."
+    assert runtime.agent_config.permissions.default == "ask"
+    assert runtime.sandbox.enabled is True
+    assert [tool.name for tool in runtime.tools] == ["message_send", "compact", "cache_read"]
+    assert runtime.runtime_context.langgraph_checkpoint_path == temp_data_dir / "sessions" / session_id / "saver" / "langgraph.pkl"
+    assert runtime.state_store.materialize_state()["turn_count"] == 1
+    assert any(event.kind == "status" and "Runtime config reloaded" in str(event.payload) for event in result.events)
+    frame = runtime._build_runtime_frame(active_subagents=[])
+    assert frame.personality.system_template == "Reloaded {{ agent_config.agent_role }}\n"
+    assert frame.personality.memory == "Reloaded memory.\n"
+
+
+async def test_runtime_resume_does_not_reload_config(temp_data_dir):
+    """Interrupt resume keeps the original approval/runtime boundary."""
+    write_local_runtime(temp_data_dir)
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id="resume-no-reload",
+        personality_id="default",
+        thread_id="resume-no-reload",
+    )
+    original_graph = runtime.graph
+    provider_yaml = temp_data_dir / "config" / "provider.yaml"
+    provider = yaml.safe_load(provider_yaml.read_text(encoding="utf-8"))
+    provider["model"] = "changed-before-resume"
+    provider_yaml.write_text(yaml.safe_dump(provider, sort_keys=False), encoding="utf-8")
+
+    result = await runtime.resume({"approved": True})
+
+    assert runtime.graph is original_graph
+    assert runtime.provider_config.model == "smoke-refactor"
+    assert not any(event.kind == "status" and "Runtime config reloaded" in str(event.payload) for event in result.events)
+
+
+def test_runtime_frame_refreshes_task_projection(temp_data_dir):
+    """Dynamic suffix input should rebuild context.md instead of reading stale projection."""
+    write_local_runtime(temp_data_dir)
+    runtime = HermesInteraction.create(
+        data_dir=temp_data_dir,
+        session_id="projection-refresh",
+        personality_id="default",
+        thread_id="projection-refresh",
+    )
+    assert runtime.state_store is not None
+    runtime.state_store.paths.context_md.write_text("stale projection\n", encoding="utf-8")
+    runtime.state_store.begin_task_mode(goal="Fresh DAG goal")
+
+    frame = runtime._build_runtime_frame(active_subagents=[])
+
+    assert "Fresh DAG goal" in frame.task.context_text
+    assert "stale projection" not in frame.task.context_text
+
+
 async def test_runtime_processes_mailbox_as_background_events(temp_data_dir):
     """Mailbox dispatch should use the same runtime state, checkpoint, and turn log."""
     write_local_runtime(temp_data_dir)

@@ -460,8 +460,10 @@ RuntimeFrame
 - stable system prefix 与 dynamic task suffix 分离。
 - claims/summaries/task projection 都来自 frame/projection。
 - compaction 必须保留 tool-call group，不压掉 unresolved interrupt。
+- compaction 不压缩 active/running DAG、ready/blocked/failed 状态、claims、summaries、goal、plan、cache/evidence refs；这些由文件化 state 和 dynamic suffix 保留。
 - summary artifact 必须写 source refs/ranges。
 - `context_compacted` 是 runtime status/protocol event，不作为 assistant message 输出。
+- 每次 `user.message` 边界刷新 runtime 配置并重建 graph 依赖，保持同一 checkpoint/state；`interrupt.resume` 不刷新。
 
 ## TUI 重构计划
 
@@ -616,6 +618,7 @@ Golden tests：
 - 大输出必须走 cache ref，并携带 summary、preview、size/line_count metadata。
 - usage 必须作为统一 runtime/protocol event 统计并显示，不能只存在 provider 私有字段里。
 - append-only state 仍是事实源。
+- 每次用户消息开始前刷新 memory、prompt、personality、permissions、sandbox、tools、hooks、provider/model；旧历史中已存在的旧工具调用作为历史证据保留，新一轮可调用工具只来自最新配置。
 - multi-agent 暂停，直到 C/S 和 TUI 稳定。
 
 简单即最优：一条 runtime 主路径，一个协议，一个 renderer，一个可审计 state。

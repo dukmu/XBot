@@ -175,7 +175,19 @@ data/sessions/<session_id>/state/
 
 ## RuntimeFrame 与 Context
 
-每次 graph/model invocation 都由 `RuntimeFrame` 驱动：
+每次 `user.message` 边界会重新加载 runtime 可见配置，并重建本轮 graph 依赖：
+
+- `personality.yaml`
+- `permissions.json`
+- `sandbox.json`
+- provider/model config
+- tools registry snapshot
+- hooks
+- memory、instructions、system template、skills summary
+
+刷新保留同一个 `session_id`、`thread_id`、`state_dir` 和 LangGraph checkpoint path。历史消息、DAG、claims、summaries 和 cache 继续从文件化 state/checkpoint 恢复。`interrupt.resume` 不触发刷新，避免审批对象和实际执行边界不一致。
+
+每次 provider call 都由当前 `RuntimeFrame` 驱动：
 
 ```text
 RuntimeFrame
@@ -218,7 +230,7 @@ stable prefix 包含：
 dynamic suffix 包含：
 
 - 当前 runtime state
-- `context.md` task projection
+- freshly projected `context.md` task projection
 - active/ready/running DAG nodes
 - pending mailbox count
 - active subagent count
@@ -377,6 +389,29 @@ message history
 - unresolved tool call/interrupt 不压缩。
 - summary artifact 记录 source message ids/ranges。
 - 用户只看到 runtime status，不看到 summary 作为 assistant answer。
+
+不压缩：
+
+- unresolved tool call。
+- unresolved interrupt。
+- 当前 turn 和最近窗口内的原始消息。
+- active/running DAG node、ready nodes、blocked/failed nodes。
+- claims、summaries、goal、plan；这些由文件化 state 和 dynamic suffix 投影。
+- cache refs、evidence refs、plan node refs。
+
+可压缩：
+
+- 旧的自然语言对话。
+- 已有 `cache://` ref 的旧大工具输出。
+- 已完成 DAG node 的过程性细节。
+- 重复 runtime/status 文本。
+
+保留形式：
+
+- compacted summary message 进入 provider history。
+- `summaries/*.md` 写 source refs/ranges。
+- `graph.jsonl` 和 `context_tree.jsonl` 写 compact event/node。
+- `state.yaml` / `context.md` 投影 latest summaries 和 relevant claims。
 
 ## 内部事件与 Wire Protocol
 

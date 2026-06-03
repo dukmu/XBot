@@ -136,6 +136,8 @@ def test_system_prompt_contains_task_mode_operating_rules(temp_data_dir):
     assert "use plan_autofill" in prompt
     assert "drive the DAG through plan_next and plan_update" in prompt
     assert "Do not call task_exit with completed" in prompt
+    assert "summary_add and claim_add" in prompt
+    assert "each changed file should have an explicit claim_add entry" in prompt
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
