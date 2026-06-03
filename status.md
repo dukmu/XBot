@@ -8,6 +8,9 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 
 Latest update:
 
+- State architecture cleanup split `TaskStateStore` into focused state layers: append-only runtime facade (`xbot/state.py`), executable DAG file store (`xbot/task_plan_store.py`), and summary/claim record store (`xbot/state_records.py`).
+- `state.py` no longer owns plan version hashing, plan mutation algorithms, summary markdown parsing, or claims YAML mutation; it records audit events and refreshes materialized projections after delegated state changes.
+- Verification passed: `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 186`).
 - Curses TUI now uses a transcript-first replay state instead of a static tools/messages split panel.
 - Transcript entries are derived only from protocol frames and include user/assistant messages, live assistant streams, tool lifecycle, cache refs/summaries, usage totals, interrupts, and errors.
 - Targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "protocol or tui"` (`7 passed`).

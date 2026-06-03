@@ -166,6 +166,13 @@ data/sessions/<session_id>/state/
 - `versions/plans/`：每次 plan mutation 的 before/after snapshot。
 - `summaries/`：compaction/manual summary artifacts，带 source refs/ranges。
 
+实现边界：
+
+- `xbot/state.py` 的 `TaskStateStore` 是运行时状态门面：追加 JSONL 事件、维护 context tree/mailbox、触发 `state.yaml` 与 `context.md` materialization，并把 runtime event 归因到 DAG。
+- `xbot/task_plan_store.py` 的 `TaskPlanStore` 管理 `task.yaml`、`goal.md`、`plan.yaml` 和 `versions/plans/`，负责 task mode、调度选择、plan mutation 和版本快照。
+- `xbot/state_records.py` 的 `StateRecords` 管理非 append-only 的结构化记录：summary markdown artifacts 与 `claims.yaml`。`TaskStateStore` 在记录创建后追加对应 runtime/graph event。
+- `xbot/state_projection.py` 只做纯 projection：从 JSONL rows materialize context tree、mailbox、DAG activity，不写文件。
+
 不可变约束：
 
 - 不修改旧 JSONL 行；修正通过新事件表达。
@@ -839,7 +846,10 @@ User input
 | `xbot/registry.py` | ToolRegistry and sandbox metadata |
 | `xbot/builtin_tools/` | canonical built-in tools |
 | `xbot/hooks/` | LoopHooks and standard guard/cache/compact hooks |
-| `xbot/state.py` | TaskStateStore append-only logs and materialized view |
+| `xbot/state.py` | TaskStateStore append-only runtime state facade |
+| `xbot/task_plan_store.py` | task metadata, executable plan, and plan versions |
+| `xbot/state_records.py` | summary artifacts and structured claims |
+| `xbot/state_projection.py` | pure JSONL projection helpers |
 | `xbot/checkpoint.py` | FileBackedSaver for LangGraph checkpoint |
 | `xbot/cache.py` | file-backed tool-result cache |
 | `xbot/sandbox.py` | bubblewrap sandbox policy/execution |
