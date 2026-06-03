@@ -18,7 +18,7 @@ tests/
     test_engine.py          # Engine ReAct loop
     test_bootstrap.py       # Bootstrap sequence
     test_plugin_loader.py   # Plugin discovery, deps
-    test_protocol.py        # Protocol frames, provider config, subprocess server roundtrip
+    test_protocol.py        # Protocol frames, provider config, subprocess server and terminal wrapper roundtrips
   plugins/                  # Per-plugin tests (loads only that plugin)
     planning/
     compact/
@@ -90,7 +90,7 @@ uv run pytest XBotv2/tests/core/ -q
 # Specific test file
 uv run pytest XBotv2/tests/core/test_hooks.py -q
 
-# JSONL protocol and stdio server subprocess roundtrip
+# JSONL protocol, stdio server subprocess, and terminal wrapper roundtrips
 uv run pytest XBotv2/tests/core/test_protocol.py -q
 
 # With verbose output

@@ -36,6 +36,9 @@ and terminal client skeleton. Core tests are the primary freeze gate.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
   JSONL stdio subprocess and verifies `hello`, `session.open`, `user.message`,
   and `shutdown` frame flow with stable session/thread IDs.
+- `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
+  against that server subprocess and verifies the client wrapper message
+  roundtrip with a deterministic mock provider.
 
 ## Remaining Weak Points
 
@@ -46,8 +49,8 @@ and terminal client skeleton. Core tests are the primary freeze gate.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.
-- The subprocess test covers server JSONL roundtrip directly; a terminal client
-  wrapper test and curses TUI are still missing.
+- The subprocess tests cover direct server JSONL and non-curses terminal wrapper
+  roundtrips; curses TUI coverage is still missing.
 
 ## Freeze Gates
 
