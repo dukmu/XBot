@@ -4,7 +4,7 @@
 
 Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-centered Hermes runtime with file-backed agent DAG state, append-only events, explicit runtime contracts, and verification coverage.
 
-Current continuation objective (branch `claude-refactor`): freeze the runtime/TUI client-server boundary, define a JSONL communication and event protocol, and then replace the legacy terminal adapter with a protocol client. Multi-agent expansion is paused.
+Current continuation objective (branch `claude-refactor`): harden the runtime/TUI client-server boundary, expand the JSONL communication and event protocol, and build a richer protocol TUI. Multi-agent expansion is paused.
 
 ## Current Scope
 
@@ -35,23 +35,25 @@ Current continuation objective (branch `claude-refactor`): freeze the runtime/TU
 - [x] `xbot/graph.py` refactored with hook support:
   - `make_agent_node`, `make_prepare_context_node_with_hooks`, and the tools node all accept `LoopHooks`.
   - `build_agent_graph` requires `hooks` and `tool_registry`; no old fallback path.
-- [x] `xbot/tool_runtime.py` — tools node passes `ToolRegistry` into hook context; guard hooks now read sandbox metadata from registry instead of old `tools.py`.
+- [x] `xbot/tool_runtime.py` — tools node passes `ToolRegistry` into hook context; guard hooks now read sandbox metadata from registry.
 - [x] `xbot/interaction.py` — `HermesInteraction.create()` bootstraps `ToolRegistry` and `LoopHooks`, passes them to graph.
 - [x] `xbot/runtime.py` — added `RuntimeFrame`, `PersonalityProjection`, `TaskProjection`, `SandboxProjection`, and `ToolRegistrySnapshot`; `HermesInteraction` builds a frame for each user turn.
 - [x] `xbot/compaction.py` — compaction is now auditable: keeps unresolved tool-call groups, writes summary source refs/range metadata, records durable `context_compacted` graph events, and appends context-tree nodes when task state is bound.
-- [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata. `xbot/tools.py` is now a compatibility re-export only.
-- [x] Tests and normal imports now use `xbot.builtin_tools` as the canonical import surface; `xbot.tools` remains covered only by the dedicated compatibility bridge test.
+- [x] `xbot/builtin_tools/` — canonical built-in tool source complete: 35 `BaseTool` objects, no duplicate names, complete sandbox metadata.
+- [x] Compatibility tool bridge removed: `xbot/tools.py` no longer exists; normal imports use `xbot.builtin_tools` or `ToolRegistry`.
 - [x] Runtime restart consistency: `HermesInteraction.create()` resumes the existing file-backed session state and checkpoint path, restores the turn counter from materialized append-only state, and treats LangGraph `InMemoryStore` as executor-local scratch only.
 - [x] Semantic state progress: claims now carry confidence/evidence refs/invalidates/superseded metadata, relevant claims project into `context.md`, and `task_status`/`debug_analyze` report claim and summary health.
 - [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Detached subagent runner MVP: pending `mode=detach` manifests are picked up by `HermesInteraction.process_detached_subagents()`, run under the parent session with timeout/turn budget metadata, write child DAG/checkpoint state under `subagents/<id>/`, and report back through parent graph events plus mailbox and workspace change handoff.
-- [x] Registry/tool bridge tests added to prevent old-path-only coverage.
-- [x] Latest full verification passed: `uv run pytest -q` (`111 passed`).
+- [x] Registry integrity tests added to prevent incomplete canonical built-in tool metadata.
+- [x] Latest full verification passed: `uv run pytest -q` (`112 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
-- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 274 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
+- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 191 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
 - [x] TUI/server planning reset: `plan.md` now treats `InteractionEvent` as an internal runtime event, defines the required JSONL protocol direction, and pauses multi-agent expansion until the C/S boundary and renderer are stable.
 - [x] Documentation reset: README, docs, AGENTS, and status now describe the current runtime architecture, C/S target, protocol boundary, and an end-to-end runtime data-flow example.
-- [ ] Protocol implementation pending: `xbot/protocol.py`, runtime server, protocol encoder, protocol renderer tests, and shell/exec lifecycle golden tests.
+- [x] Protocol MVP implemented: `xbot/protocol.py`, `xbot/server.py`, protocol terminal renderer, server handshake/session-open test, and shell/exec lifecycle renderer tests.
+- [x] Legacy direct terminal runtime path removed: `main.py` terminal mode starts a protocol client and `main.py server` owns `HermesInteraction`.
+- [ ] TUI still basic: next step is richer protocol UI layout and more golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)

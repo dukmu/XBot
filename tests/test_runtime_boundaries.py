@@ -1248,33 +1248,109 @@ async def test_interaction_trace_events_are_disabled_by_default(mock_llm, user_c
     assert state["interaction_event_counts"]["by_kind"] == {}
 
 
-def test_terminal_does_not_duplicate_tool_call_blocks(capsys):
+def test_protocol_encoder_does_not_duplicate_tool_call_blocks():
     """Providers may expose tool calls in both content_blocks and tool_calls."""
-    from xbot.terminal import TerminalOptions, TerminalRenderer
+    from xbot.interaction import InteractionEvent
+    from xbot.protocol import ProtocolEncoder
 
     message = AIMessage(
         content=[{"type": "tool_call", "name": "shell", "args": {"command": "pwd"}, "id": "call_1"}],
         tool_calls=[{"name": "shell", "args": {"command": "pwd"}, "id": "call_1", "type": "tool_call"}],
     )
-    renderer = TerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
+    encoder = ProtocolEncoder(session_id="s", thread_id="t")
 
-    renderer.message(message)
-    output = capsys.readouterr().out
+    frames = encoder.encode_interaction_event(InteractionEvent("message", "agent", message), request_id="req")
 
-    assert output.count("Tool Call>") == 1
+    assert [frame.type for frame in frames].count("tool.call.started") == 1
 
 
-def test_terminal_renders_normalized_tool_call_event(capsys):
-    """Terminal should render complete tool-call events, not assemble chunks."""
+def test_protocol_terminal_renders_tool_call_list_payload(capsys):
+    """Terminal renders protocol tool events, including list payloads from runtime normalization."""
     from xbot.interaction import InteractionEvent
-    from xbot.terminal import TerminalOptions, TerminalRenderer
+    from xbot.protocol import ProtocolEncoder
+    from xbot.terminal import ProtocolTerminalRenderer, TerminalOptions
 
-    renderer = TerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
-    renderer.event(InteractionEvent("tool_call", "agent", {"name": "shell", "args": {"command": "pwd"}}))
+    encoder = ProtocolEncoder(session_id="s", thread_id="t")
+    frames = encoder.encode_interaction_event(
+        InteractionEvent(
+            "tool_call",
+            "agent",
+            [
+                {"name": "shell", "args": {"command": "pwd"}, "id": "call_1"},
+                {"name": "filesystem_list", "args": {"path": "."}, "id": "call_2"},
+            ],
+        ),
+        request_id="req",
+    )
+    renderer = ProtocolTerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
+
+    for frame in frames:
+        renderer.frame(frame)
 
     output = capsys.readouterr().out
-    assert output.count("Tool Call>") == 1
-    assert "{'command': 'pwd'}" in output
+    assert output.count("Tool Call>") == 2
+    assert "shell(pwd)" in output
+
+
+def test_protocol_terminal_renders_shell_exec_lifecycle(capsys):
+    """Shell/exec results render from protocol lifecycle events, not ToolMessage parsing in the UI."""
+    from xbot.interaction import InteractionEvent
+    from xbot.protocol import ProtocolEncoder
+    from xbot.terminal import ProtocolTerminalRenderer, TerminalOptions
+
+    encoder = ProtocolEncoder(session_id="s", thread_id="t")
+    message = ToolMessage(
+        content=json.dumps({"stdout": "/tmp/workspace\n", "stderr": "", "exit_code": 0}),
+        name="shell",
+        tool_call_id="call_1",
+    )
+    frames = encoder.encode_interaction_event(InteractionEvent("message", "tool", message), request_id="req")
+    renderer = ProtocolTerminalRenderer(agent_name="default", options=TerminalOptions(print_tools=True))
+
+    for frame in frames:
+        renderer.frame(frame)
+
+    output = capsys.readouterr().out
+    assert "Tool shell> running" in output
+    assert "Tool shell> exit_code=0" in output
+    assert "/tmp/workspace" in output
+
+
+@pytest.mark.asyncio
+async def test_runtime_server_jsonl_handshake_and_session_open(temp_data_dir):
+    """Runtime server owns HermesInteraction behind protocol frames."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.server import RuntimeServer
+
+    write_local_runtime(temp_data_dir)
+    server = RuntimeServer(data_dir=temp_data_dir)
+    hello = ProtocolFrame(
+        seq=1,
+        direction="client_to_server",
+        type="hello",
+        session_id="proto",
+        thread_id="proto",
+        request_id="req_hello",
+        payload={"client_name": "test"},
+    )
+    opened = ProtocolFrame(
+        seq=2,
+        direction="client_to_server",
+        type="session.open",
+        session_id="proto",
+        thread_id="proto",
+        request_id="req_open",
+        payload={"personality_id": "default", "streaming": True},
+    )
+
+    hello_responses = await server.handle(hello)
+    open_responses = await server.handle(opened)
+
+    assert hello_responses[-1].type == "hello.ok"
+    assert any(frame.type == "session.opened" for frame in open_responses)
+    assert open_responses[-1].type == "session.ready"
+    assert server.runtime is not None
+    assert server.runtime.state_store.paths.root == temp_data_dir / "sessions" / "proto" / "state"
 
 
 def test_stream_tool_call_waits_for_complete_args(user_context):
@@ -2206,18 +2282,6 @@ class TestToolRegistry:
         assert len(names) == len(set(names))
         assert set(names) == set(TOOL_SANDBOX_MODE)
         assert {"task_begin", "task_status", "task_exit", "plan_add_nodes"} <= set(names)
-
-    def test_legacy_tools_module_is_a_builtin_bridge(self):
-        from xbot import builtin_tools
-        from xbot import tools as legacy_tools
-
-        builtin_names = {tool.name for tool in builtin_tools.get_all_tools()}
-        legacy_names = {tool.name for tool in legacy_tools.get_all_tools()}
-
-        assert legacy_names == builtin_names
-        assert legacy_tools.TOOL_SANDBOX_MODE == builtin_tools.TOOL_SANDBOX_MODE
-        assert legacy_tools.plan_add_nodes is builtin_tools.plan.plan_add_nodes
-
 
 # ============================================================================
 # Cache-friendly context tests

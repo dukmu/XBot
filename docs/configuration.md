@@ -27,7 +27,7 @@ data/
 | Sandbox | `data/personalities/<personality_id>/sandbox.json` | 加载为 `SandboxConfig`，不存在时使用保守默认 |
 | Skills | `data/skills/*/SKILL.md` 与 `data/personalities/<personality_id>/skills/*/SKILL.md` | 生成 skills 摘要 |
 
-当前 CLI 支持通过 `--session-id` / `XBOT_SESSION_ID` 和 `--personality-id` / `XBOT_PERSONALITY_ID` 选择本地 session 与 personality。计划中的 runtime server 会在 `session.open` protocol command 中接收同样的 `session_id`、`thread_id` 和 `personality_id`；这些字段的路径语义不变。
+当前 CLI 支持通过 `--session-id` / `XBOT_SESSION_ID` 和 `--personality-id` / `XBOT_PERSONALITY_ID` 选择本地 session 与 personality。runtime server 在 `session.open` protocol command 中接收同样的 `session_id`、`thread_id` 和 `personality_id`；这些字段的路径语义不变。
 
 ## user.yaml
 
@@ -171,7 +171,7 @@ locks/
 
 ## UI / Server 配置方向
 
-当前没有独立 server 配置文件。下一阶段的 C/S 重构保持配置来源简单：
+当前没有独立 server 配置文件。C/S 路径保持配置来源简单：
 
 - server 复用现有 `data/config/*` 和 `data/personalities/<id>/*`。
 - client/TUI 不读取 provider、permissions、sandbox 或 state 文件。

@@ -2,7 +2,7 @@
 
 ## 定位
 
-本计划面向当前 `claude-refactor` 分支。上一轮 runtime 重构已经把核心方向基本收口：可加载 built-in tools、显式 hooks、明确的 RuntimeFrame、可审计 compaction、文件化 state、真实 provider smoke 都已经通过。下一阶段不再继续扩张 multi-agent；当前重点是把交互入口从旧 terminal adapter 中拆出来，形成稳定的 client/server 边界和事件协议。
+本计划面向当前 `claude-refactor` 分支。上一轮 runtime 重构已经把核心方向基本收口：可加载 built-in tools、显式 hooks、明确的 RuntimeFrame、可审计 compaction、文件化 state、真实 provider smoke 都已经通过。当前不继续扩张 multi-agent；重点是把交互入口固定为 client/server 边界和稳定事件协议，并在此基础上重构 TUI。
 
 方向保持不变：
 
@@ -21,10 +21,10 @@
 
 上一轮没有解决的问题也要继续承认：
 
-- UI/terminal 仍不是稳定协议客户端。
+- UI/terminal 必须只作为协议客户端。
 - normalized `InteractionEvent` 只是 Python 内部对象，不是跨进程 wire contract。
-- tool call、interrupt、streaming delta 的事件生命周期没有完整 schema。
-- terminal 对 LangChain message/chunk 的直接解析仍然会把 provider 内部结构泄漏到 UI。
+- tool call、interrupt、streaming delta 必须有完整 schema。
+- terminal/TUI 不允许解析 LangChain message/chunk/tool object。
 
 ## 当前分支审查结论
 
@@ -38,14 +38,14 @@
 - Restart consistency、claims projection、mailbox dispatcher、detached subagent MVP 都已有测试覆盖。
 - 最新验证已通过：`uv run pytest -q`、compile check、`scripts/provider_smoke_refactor.py` real provider smoke。
 
-但 terminal/TUI 侧仍是旧结构：
+terminal/TUI 侧已经完成 C/S MVP，仍需继续完善：
 
-- `main.py` 直接构建 `HermesInteraction` 和 `TerminalSession`，没有 runtime server。
-- `TerminalSession` 同时负责输入循环、render、interrupt prompt、resume 调用。
-- `TerminalRenderer` 直接消费 LangChain `AIMessage`、`AIMessageChunk`、`ToolMessage`。
-- tool call 显示由 UI 层从 `content_blocks`、`tool_calls` 或 `InteractionEvent.payload` 自行拼接。
-- `InteractionEvent.payload` 是 `Any`，没有协议版本、事件序号、request correlation、tool call 生命周期状态。
-- 对 shell/exec 这类工具，UI 只能从工具名和 args 猜测运行状态，无法可靠区分 queued、approved、running、completed、failed、interrupted。
+- `main.py` terminal 模式启动 protocol client；`main.py server` 才创建 `HermesInteraction`。
+- `xbot/protocol.py` 定义 JSONL frame 和 internal event encoder。
+- `xbot/server.py` 实现 stdio runtime server。
+- `xbot/terminal.py` 只渲染 protocol frames。
+- shell/exec 已有 `tool.call.started -> tool.execution.started -> tool.result.*` renderer tests。
+- 后续仍需补齐 interrupt/resume、failure kinds、cache refs、replay golden tests 和更完整 TUI 布局。
 
 结论：runtime 主路径已经接近一致；下一步不是继续堆功能，而是把 UI 边界切干净。TUI 必须只消费稳定 wire events，不能解析 LangChain 对象。
 
@@ -103,7 +103,7 @@ Tool shell> exit_code=0
 
 ### 4. Interrupt/Resume 没有跨进程协议
 
-当前 terminal 在同进程内直接调用 `runtime.resume(payload)`。C/S 后必须区分：
+protocol client/server 必须区分：
 
 - server 发出 `interrupt.requested`
 - client 渲染确认或问题
@@ -113,7 +113,7 @@ Tool shell> exit_code=0
 
 ### 5. Runtime 与 UI 仍在同一控制流
 
-`TerminalSession` 的 while-loop 是用户输入循环，也是 runtime 调用方。这让 UI bug 可以影响 runtime 生命周期，也让真实 TUI、headless client、测试 replay、远程控制都没有共同入口。
+旧的 direct-runtime terminal 路径已经移除。后续真实 TUI、headless client、测试 replay、远程控制都必须复用 JSONL protocol。
 
 ### 6. Multi-agent 暂停
 
@@ -471,10 +471,10 @@ RuntimeFrame
 
 工作：
 
-- 新增 `xbot/protocol.py`，使用 Pydantic 定义 envelope、commands、events、tool payloads。
-- 新增 internal `InteractionEvent -> ProtocolEvent` encoder。
-- 定义 protocol version mismatch 的 fail-closed 行为。
-- 增加 golden JSONL fixtures。
+- 已新增 `xbot/protocol.py`，使用 Pydantic 定义 envelope、commands、events、tool payloads。
+- 已新增 internal `InteractionEvent -> ProtocolEvent` encoder。
+- 已定义 protocol version mismatch 的 fail-closed 行为。
+- 待补充更完整 golden JSONL fixtures。
 
 验收：
 
@@ -488,17 +488,17 @@ RuntimeFrame
 
 工作：
 
-- 新增 `xbot/server.py`，封装 `HermesInteraction.create()`。
-- 实现 stdio JSONL server：读 client commands，写 server events。
-- `main.py` 改成 thin launcher：可启动 legacy terminal 或 server。
+- 已新增 `xbot/server.py`，封装 `HermesInteraction.create()`。
+- 已实现 stdio JSONL server：读 client commands，写 server events。
+- `main.py` 是 thin launcher：terminal client 或 server。
 - server 负责 request serialization；同一 session/thread 默认一次只跑一个 active request。
 - interrupt 状态由 server 保存，并校验 resume 的 `interrupt_id`。
 
 验收：
 
-- headless test 通过 stdio/内存 transport 完成 `hello -> session.open -> user.message -> events`。
-- interrupt/resume roundtrip 有协议测试。
-- cancel 命令不会破坏 append-only state。
+- headless test 已覆盖 `hello -> session.open`。
+- 待补 `user.message`、interrupt/resume roundtrip。
+- cancel 命令仍待实现；不能破坏 append-only state。
 
 ### Phase C：Terminal Client 替换
 
@@ -506,8 +506,8 @@ RuntimeFrame
 
 工作：
 
-- `xbot/terminal.py` 改为协议客户端 renderer。
-- 删除 terminal 对 `AIMessage`、`AIMessageChunk`、`ToolMessage` 的直接解析。
+- `xbot/terminal.py` 已改为协议客户端 renderer。
+- terminal 已删除对 `AIMessage`、`AIMessageChunk`、`ToolMessage` 的直接解析。
 - tool call 显示只基于 `tool.*` events。
 - shell/exec 输出根据 `tool.result.*` 渲染，支持 inline/ref/truncated。
 - approval prompt 只基于 `interrupt.requested` / `tool.approval.requested`。
@@ -517,7 +517,7 @@ RuntimeFrame
 - `shell({'command': ...})` 半成品不会显示。
 - 同一 tool call 不重复显示。
 - exec/shell 的 start/result/failure 显示顺序稳定。
-- 现有 terminal tests 迁移到 protocol renderer tests。
+- 现有 terminal tests 已迁移到 protocol renderer tests。
 
 ### Phase D：新 TUI
 
@@ -539,20 +539,15 @@ RuntimeFrame
 - TUI 可连接 stdio server。
 - 同一 JSONL 事件日志可在测试中 replay。
 
-### Phase E：清理旧入口
+### Phase E：保持无回退
 
-目标：只保留一条运行时语义。
-
-工作：
-
-- legacy direct terminal 入口标记 deprecated。
-- `TerminalSession(runtime)` 形态删除或降级为测试 shim。
-- 文档只描述 server/client 路径。
+目标：只保留一条运行时语义，不保留 legacy direct terminal。
 
 验收：
 
 - 用户入口仍简单：`python main.py` 或 `python main.py server`。
 - 不存在 UI 直接解析 LangChain message 的主路径。
+- 不存在 `TerminalSession(runtime)` direct-runtime 入口。
 
 ## 测试计划
 
@@ -602,7 +597,7 @@ Golden tests：
 4. 把 terminal 改成 protocol renderer。
 5. 修复 shell/exec tool lifecycle 展示。
 6. 再做 Rich/Textual TUI。
-7. 最后清理 legacy direct UI path。
+7. 保持无 legacy direct UI path。
 
 不要先做 UI 皮肤。先把事件模型做对。
 

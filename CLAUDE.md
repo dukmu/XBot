@@ -8,7 +8,7 @@ XBot Hermes — single-user local agent runtime. State-centric architecture: fil
 
 ## Start Here
 
-Read [`AGENTS.md`](./AGENTS.md) for the full agent guide covering architecture, conventions, current subsystem status, known issues, and development workflow.
+Read [`AGENTS.md`](./AGENTS.md) for stable project constraints. Read [`status.md`](./status.md) for current progress and [`plan.md`](./plan.md) for the active refactor plan.
 
 ## Quick Reference
 
@@ -21,7 +21,7 @@ uv run pytest -q
 ### Compile check
 
 ```bash
-python -m py_compile main.py xbot/*.py tests/*.py
+python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py
 ```
 
 ### Smoke test (needs provider)
@@ -43,7 +43,10 @@ python main.py
 | `xbot/state.py`       | File-backed agent DAG state (1300+ lines, most critical module) |
 | `xbot/graph.py`       | LangGraph 3-node ReAct loop                                     |
 | `xbot/interaction.py` | Main runtime entry point                                        |
-| `xbot/tools.py`       | All 34 built-in tools                                           |
+| `xbot/protocol.py`    | JSONL client/server protocol                                    |
+| `xbot/server.py`      | Runtime server owning `HermesInteraction`                       |
+| `xbot/terminal.py`    | Protocol terminal client/renderer                               |
+| `xbot/builtin_tools/` | Canonical built-in tools                                        |
 | `xbot/planning.py`    | DAG validation and deterministic scheduler                      |
 | `xbot/context.py`     | System prompt assembly                                          |
 | `status.md`           | Implementation progress log                                     |

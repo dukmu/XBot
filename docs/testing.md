@@ -89,7 +89,7 @@ mock_llm.set_response_sequence([
 
 ### Tool Call 流式归一化
 
-provider 可能先发 `shell({})` 形态的半成品，再发完整参数。交互层必须只发出完整内部 `tool_call` 事件；下一阶段 server 必须把它编码为稳定的 `tool.call.started` protocol event。终端/TUI 只渲染 protocol event，不解析 `AIMessage`、`AIMessageChunk` 或 `ToolMessage`。
+provider 可能先发 `shell({})` 形态的半成品，再发完整参数。交互层必须只发出完整内部 `tool_call` 事件；server 必须把它编码为稳定的 `tool.call.started` protocol event。终端/TUI 只渲染 protocol event，不解析 `AIMessage`、`AIMessageChunk` 或 `ToolMessage`。
 
 新增协议测试应覆盖：
 
@@ -111,7 +111,7 @@ Runtime events 通过 LangGraph custom stream 发出，不进入持久 graph sta
 
 ### Protocol / TUI
 
-下一阶段新增 C/S 后，测试优先级如下：
+C/S 测试优先级如下：
 
 - `xbot/protocol.py` schema encode/decode tests。
 - JSONL golden fixtures：handshake、session.open、message stream、tool lifecycle、interrupt/resume、runtime error。

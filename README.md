@@ -2,7 +2,7 @@
 
 Hermes is a lightweight, single-user local agent built around a state-centered runtime: explicit context construction, permission interrupts, active ask, auditable context compression, file-backed agent DAG state, hooks, a pluggable tool registry, and protocol-ready UI boundaries.
 
-The current `claude-refactor` branch has a working runtime path with file-backed state, context tree, mailbox, attach/detach subagent MVPs, auditable compaction, claims/summaries, and real provider smoke coverage. The legacy terminal still runs in-process and directly renders LangChain objects; the next planned refactor is a JSONL client/server protocol so TUI clients render stable events instead of runtime internals.
+The current `claude-refactor` branch has a working runtime path with file-backed state, context tree, mailbox, attach/detach subagent MVPs, auditable compaction, claims/summaries, real provider smoke coverage, and a JSONL client/server protocol boundary for terminal/TUI clients.
 
 ## Design Intent
 
@@ -28,8 +28,8 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 | Capability | Status |
 |------------|--------|
 | LangGraph ReAct loop | Implemented |
-| Terminal adapter | Legacy in-process adapter |
-| Runtime server protocol | Planned next |
+| Terminal adapter | Protocol client |
+| Runtime server protocol | Implemented MVP |
 | Provider config | Implemented |
 | Permission allow/deny/ask | Implemented |
 | Permission interrupt confirmation | Basic implementation |
@@ -52,7 +52,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 
 ```text
 ./
-├── main.py                    # Legacy terminal entry point; target server launcher
+├── main.py                    # Terminal client launcher and server subcommand
 ├── pyproject.toml             # Project metadata and uv dependencies
 ├── README.md
 ├── AGENTS.md                  # Architecture guide for AI agents
@@ -64,7 +64,6 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── context.py             # Context-frame construction
 │   ├── permissions.py         # Permission system
 │   ├── registry.py            # ToolRegistry and sandbox metadata
-│   ├── tools.py               # Compatibility re-export for built-in tools
 │   ├── builtin_tools/         # Canonical built-in tools
 │   ├── tool_runtime.py         # Tool guardrails, interrupts, sandbox execution hooks
 │   ├── planning.py            # Executable plan DAG validation and scheduling helpers
@@ -75,7 +74,9 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── interaction.py         # P0 interaction runtime and normalized events
 │   ├── runtime.py             # Explicit runtime context
 │   ├── verification.py        # File-backed task-state verification helpers
-│   ├── terminal.py            # Legacy CLI terminal adapter
+│   ├── protocol.py            # JSONL C/S protocol schema and encoder
+│   ├── server.py              # JSONL runtime server
+│   ├── terminal.py            # Protocol terminal client/renderer
 │   └── mock_llm.py            # Test model
 ├── docs/
 │   ├── README.md
@@ -187,7 +188,7 @@ python main.py --print-thoughts
 python main.py --no-sandbox
 ```
 
-The current CLI is a legacy thin adapter over `xbot.interaction.HermesInteraction`. The planned TUI path is a client/server split: a runtime server owns `HermesInteraction`, while terminal/TUI clients exchange JSONL protocol frames. If the active personality has no `sandbox.json`, the runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
+The CLI is a protocol client. It starts a JSONL runtime server subprocess; only the server owns `xbot.interaction.HermesInteraction`. Terminal/TUI rendering consumes protocol frames and does not parse LangChain messages. If the active personality has no `sandbox.json`, the runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
 
 ## Runtime Graph
 
