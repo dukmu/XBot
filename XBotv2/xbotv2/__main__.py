@@ -2,6 +2,7 @@
 
 Usage:
     python main.py                              # Interactive terminal mode
+    python main.py --mode tui                   # Curses protocol TUI
     python main.py --mode server                # JSONL stdio server
     python main.py --mode once "prompt"         # Single-shot query
     python main.py --provider deepseek          # Use DeepSeek provider
@@ -10,7 +11,7 @@ Options:
     --data-dir PATH     Data directory (default: data)
     --personality ID    Personality to use (default: default)
     --provider NAME     Provider config to use (default: default)
-    --mode MODE         Run mode: server, terminal, once
+    --mode MODE         Run mode: server, terminal, tui, once
     --help              Show this help
 """
 
@@ -37,7 +38,7 @@ def main():
     parser.add_argument(
         "--mode",
         default="terminal",
-        choices=["server", "terminal", "once"],
+        choices=["server", "terminal", "tui", "once"],
         help="Run mode (default: terminal)",
     )
     parser.add_argument(
@@ -47,6 +48,8 @@ def main():
 
     if args.mode == "server":
         _run_server(args)
+    elif args.mode == "tui":
+        _run_tui(args)
     elif args.mode == "terminal":
         _run_terminal(args)
     elif args.mode == "once":
@@ -69,6 +72,18 @@ def _run_server(args):
 def _run_terminal(args):
     """Run interactive terminal mode using direct engine."""
     asyncio.run(_terminal_loop(args))
+
+
+def _run_tui(args):
+    """Run curses TUI over the JSONL protocol client/server boundary."""
+    from xbotv2.tui.client import CursesTuiClient
+
+    client = CursesTuiClient(
+        data_dir=args.data_dir,
+        personality_id=args.personality,
+        provider_name=args.provider,
+    )
+    asyncio.run(client.run())
 
 
 async def _terminal_loop(args):

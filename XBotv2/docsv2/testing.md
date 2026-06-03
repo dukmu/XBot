@@ -19,6 +19,7 @@ tests/
     test_bootstrap.py       # Bootstrap sequence
     test_plugin_loader.py   # Plugin discovery, deps
     test_protocol.py        # Protocol frames, provider config, subprocess server and terminal wrapper roundtrips
+    test_tui_client.py      # Curses TUI state, queue drain, and runtime import boundary
   plugins/                  # Per-plugin tests (loads only that plugin)
     planning/
     compact/
@@ -92,6 +93,9 @@ uv run pytest XBotv2/tests/core/test_hooks.py -q
 
 # JSONL protocol, stdio server subprocess, and terminal wrapper roundtrips
 uv run pytest XBotv2/tests/core/test_protocol.py -q
+
+# Curses TUI state and import boundary coverage
+uv run pytest XBotv2/tests/core/test_tui_client.py -q
 
 # With verbose output
 uv run pytest XBotv2/tests/core/ -v

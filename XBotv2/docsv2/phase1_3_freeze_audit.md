@@ -3,7 +3,8 @@
 ## Current Status
 
 Phase 1-3 have a working core foundation, plugin loader, protocol frames/server,
-and terminal client skeleton. Core tests are the primary freeze gate.
+non-curses terminal wrapper, and protocol-driven curses TUI shell. Core tests
+are the primary freeze gate.
 
 ## Fixed Before Freeze
 
@@ -39,18 +40,22 @@ and terminal client skeleton. Core tests are the primary freeze gate.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.
+- Added `xbotv2/tui/client.py`, a protocol-driven curses TUI shell with
+  replayable `TuiState`, background event queue draining, and a `--mode tui`
+  CLI entrypoint. Core tests cover frame application, rendering, queue draining,
+  and the TUI/runtime dependency boundary.
 
 ## Remaining Weak Points
 
 - Permission and sandbox `ask` decisions still do not interrupt and resume a
   turn through JSONL/TUI. This is now a feature gap; the current runtime fails
   closed instead.
-- `xbotv2/tui/terminal.py` exists, but the planned curses client is not present.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.
 - The subprocess tests cover direct server JSONL and non-curses terminal wrapper
-  roundtrips; curses TUI coverage is still missing.
+  roundtrips. Curses screen-level behavior is covered only by state/queue/import
+  smoke tests, not by an interactive terminal golden test.
 
 ## Freeze Gates
 
@@ -65,5 +70,7 @@ python -m py_compile \
   XBotv2/xbotv2/tools/runtime.py \
   XBotv2/xbotv2/tools/result_cache.py \
   XBotv2/xbotv2/plugin/manifest.py \
-  XBotv2/xbotv2/plugin/base.py
+  XBotv2/xbotv2/plugin/base.py \
+  XBotv2/xbotv2/tui/client.py \
+  XBotv2/xbotv2/tui/terminal.py
 ```

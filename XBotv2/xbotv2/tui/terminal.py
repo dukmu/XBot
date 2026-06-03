@@ -91,13 +91,15 @@ class TerminalSession:
         data_dir: Path | str = "data",
         personality_id: str = "default",
         provider_name: str = "default",
+        session_id: str = "default",
+        thread_id: str = "agent",
     ) -> None:
         self._data_dir = str(data_dir)
         self._personality_id = personality_id
         self._provider_name = provider_name
         self._client: ProtocolClient | None = None
-        self._session_id = "default"
-        self._thread_id = "agent"
+        self._session_id = session_id
+        self._thread_id = thread_id
 
     async def __aenter__(self) -> "TerminalSession":
         await self.connect()
