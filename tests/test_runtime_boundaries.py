@@ -459,7 +459,28 @@ async def test_task_mode_tools_drive_goal_plan_and_context(temp_data_dir):
         second = await plan_next.ainvoke({})
         await plan_update.ainvoke({"node_id": "n002", "status": "verified", "reason": "implementation done"})
         verify = await plan_next.ainvoke({})
-        await plan_update.ainvoke({"node_id": "n_verify", "status": "verified", "reason": "tests passed"})
+        store.append_event(
+            {
+                "type": "interaction_event",
+                "turn_id": "turn_000001",
+                "kind": "message",
+                "source": "tool",
+                "payload": {
+                    "message_type": "tool",
+                    "name": "filesystem_read",
+                    "status": "success",
+                    "content": "verified target files",
+                },
+            }
+        )
+        await plan_update.ainvoke(
+            {
+                "node_id": "n_verify",
+                "status": "verified",
+                "reason": "tests passed",
+                "evidence_refs_json": ["filesystem_read:verification"],
+            }
+        )
         status = json.loads(await task_status.ainvoke({}))
         exited = json.loads(await task_exit.ainvoke({"status": "completed", "reason": "done"}))
     finally:
@@ -608,6 +629,20 @@ async def test_plan_update_records_node_result_summary_and_evidence(temp_data_di
         await task_begin.ainvoke({"goal": "Complete with node evidence"})
         await plan_autofill.ainvoke({"scope": "refactor"})
         await plan_next.ainvoke({})
+        store.append_event(
+            {
+                "type": "interaction_event",
+                "turn_id": "turn_000001",
+                "kind": "message",
+                "source": "tool",
+                "payload": {
+                    "message_type": "tool",
+                    "name": "filesystem_read",
+                    "status": "success",
+                    "content": "read calculator.py",
+                },
+            }
+        )
         updated = json.loads(
             await plan_update.ainvoke(
                 {
@@ -695,6 +730,87 @@ async def test_plan_update_accepts_native_list_and_plain_string_refs(temp_data_d
 
     assert node["evidence_refs"] == ["filesystem_read:calculator.py"]
     assert node["changed_files"] == ["calculator.py"]
+
+
+@pytest.mark.asyncio
+async def test_plan_update_rejects_standard_node_success_without_observed_evidence(temp_data_dir):
+    """Standard DAG nodes cannot be marked successful with invented tool evidence."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="reject-invented-evidence",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Refactor with evidence guard"})
+        await plan_autofill.ainvoke({"scope": "refactor"})
+        with pytest.raises(ValueError, match="implementation node n_implement requires evidence_refs"):
+            await plan_update.ainvoke(
+                {
+                    "node_id": "n_implement",
+                    "status": "verified",
+                    "summary": "Claimed implementation.",
+                    "result": "Claimed file changed.",
+                    "evidence_refs_json": ["filesystem_read:calculator.py"],
+                }
+            )
+        with pytest.raises(ValueError, match="not observed"):
+            await plan_update.ainvoke(
+                {
+                    "node_id": "n_implement",
+                    "status": "verified",
+                    "summary": "Claimed implementation.",
+                    "result": "Claimed file changed.",
+                    "evidence_refs_json": ["filesystem_write:calculator.py"],
+                }
+            )
+    finally:
+        reset_runtime_task_state(token)
+
+
+@pytest.mark.asyncio
+async def test_plan_update_allows_standard_node_success_with_observed_evidence(temp_data_dir):
+    """Observed successful tool results can support standard DAG node success."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="accept-observed-evidence",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Refactor with evidence guard"})
+        await plan_autofill.ainvoke({"scope": "refactor"})
+        store.append_event(
+            {
+                "type": "interaction_event",
+                "turn_id": "turn_000001",
+                "kind": "message",
+                "source": "tool",
+                "payload": {
+                    "message_type": "tool",
+                    "name": "filesystem_write",
+                    "status": "success",
+                    "content": "wrote calculator.py",
+                },
+            }
+        )
+        result = json.loads(
+            await plan_update.ainvoke(
+                {
+                    "node_id": "n_implement",
+                    "status": "verified",
+                    "summary": "Implemented file change.",
+                    "result": "calculator.py changed.",
+                    "evidence_refs_json": ["filesystem_write:calculator.py"],
+                }
+            )
+        )
+    finally:
+        reset_runtime_task_state(token)
+
+    assert result["status"] == "verified"
 
 
 @pytest.mark.asyncio
