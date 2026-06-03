@@ -867,8 +867,9 @@ async def test_task_status_reports_next_action(temp_data_dir):
     assert chat_status["next_action"]["action"] == "task_begin"
     assert ready_status["next_action"]["action"] == "plan_next"
     assert ready_status["next_action"]["node_id"] == "n001"
-    assert running_status["next_action"]["action"] == "plan_update"
+    assert running_status["next_action"]["action"] == "execute_node"
     assert running_status["next_action"]["node_id"] == "n001"
+    assert running_status["next_action"]["then"] == "plan_update"
     assert complete_status["next_action"]["action"] == "task_exit"
     assert debug["task"]["next_action"]["action"] == "task_exit"
 
@@ -891,6 +892,51 @@ async def test_task_begin_without_nodes_guides_dag_creation(temp_data_dir):
 
     assert started["next_action"]["action"] == "plan_autofill_or_add_nodes"
     assert status["next_action"]["action"] == "plan_autofill_or_add_nodes"
+
+
+@pytest.mark.asyncio
+async def test_running_standard_node_guides_execution_before_plan_update(temp_data_dir):
+    """Running standard nodes should suggest real tools before status updates."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="running-node-guidance",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Refactor calculator.py"})
+        await plan_autofill.ainvoke({"scope": "refactor"})
+        store.append_event(
+            {
+                "type": "interaction_event",
+                "turn_id": "turn_000001",
+                "kind": "message",
+                "source": "tool",
+                "payload": {
+                    "message_type": "tool",
+                    "name": "filesystem_read",
+                    "status": "success",
+                    "content": "read calculator.py",
+                },
+            }
+        )
+        await plan_update.ainvoke(
+            {
+                "node_id": "n_inspect",
+                "status": "verified",
+                "evidence_refs_json": ["filesystem_read:calculator.py"],
+            }
+        )
+        await plan_next.ainvoke({})
+        status = json.loads(await task_status.ainvoke({}))
+    finally:
+        reset_runtime_task_state(token)
+
+    assert status["next_action"]["action"] == "execute_node"
+    assert status["next_action"]["node_id"] == "n_implement"
+    assert "filesystem_write" in status["next_action"]["suggested_tools"]
+    assert status["next_action"]["then"] == "plan_update"
 
 
 @pytest.mark.asyncio
