@@ -29,6 +29,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 |------------|--------|
 | LangGraph ReAct loop | Implemented |
 | Terminal adapter | Protocol client |
+| Curses TUI | Implemented MVP |
 | Runtime server protocol | Implemented MVP |
 | Provider config | Implemented |
 | Permission allow/deny/ask | Implemented |
@@ -77,6 +78,7 @@ For AI agents and developers working on this codebase, read [AGENTS.md](./AGENTS
 │   ├── protocol.py            # JSONL C/S protocol schema and encoder
 │   ├── server.py              # JSONL runtime server
 │   ├── terminal.py            # Protocol terminal client/renderer
+│   ├── tui.py                 # Protocol-driven curses TUI state/client
 │   └── mock_llm.py            # Test model
 ├── docs/
 │   ├── README.md
@@ -186,9 +188,10 @@ Useful flags:
 python main.py --print-tools
 python main.py --print-thoughts
 python main.py --no-sandbox
+python main.py tui
 ```
 
-The CLI is a protocol client. It starts a JSONL runtime server subprocess; only the server owns `xbot.interaction.HermesInteraction`. Terminal/TUI rendering consumes protocol frames and does not parse LangChain messages. If the active personality has no `sandbox.json`, the runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
+The CLI and TUI are protocol clients. They start a JSONL runtime server subprocess; only the server owns `xbot.interaction.HermesInteraction`. Rendering consumes protocol frames and does not parse LangChain messages. If the active personality has no `sandbox.json`, the runtime enables a conservative bubblewrap sandbox by default. Use `--no-sandbox` only for debugging.
 
 ## Runtime Graph
 

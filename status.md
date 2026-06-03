@@ -14,7 +14,7 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 - Phase 4: Persist large tool-result cache entries to files.
 - Phase 5: Make `plan.yaml` an executable DAG with validation, ready-node selection, and versioning.
 - Phase 6 (claude-refactor): Hook-enabled loop with pluggable tool registry and cache-friendly DAG context. Completed for the current main path.
-- Phase 7 (current): TUI C/S split, stable JSONL protocol, tool lifecycle events, and protocol-based terminal renderer.
+- Phase 7 (current): TUI C/S split, stable JSONL protocol, tool lifecycle events, protocol-based terminal renderer, and curses protocol TUI MVP.
 - Preserve runtime behavior while removing UI dependence on LangChain/LangGraph message internals.
 
 ## Progress
@@ -46,14 +46,15 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 - [x] Runtime mailbox dispatcher: `HermesInteraction.process_mailbox()` turns pending mailbox messages into `background_event` turns on the same RuntimeFrame/graph/checkpoint path, acknowledges successful messages append-only, and projects active subagent manifests into the frame.
 - [x] Detached subagent runner MVP: pending `mode=detach` manifests are picked up by `HermesInteraction.process_detached_subagents()`, run under the parent session with timeout/turn budget metadata, write child DAG/checkpoint state under `subagents/<id>/`, and report back through parent graph events plus mailbox and workspace change handoff.
 - [x] Registry integrity tests added to prevent incomplete canonical built-in tool metadata.
-- [x] Latest full verification passed: `uv run pytest -q` (`112 passed`).
+- [x] Latest full verification passed: `uv run pytest -q` (`113 passed`).
 - [x] Latest compile verification passed: `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`.
-- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 191 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
+- [x] Latest real DeepSeek smoke passed: `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, 423 events emitted, auditable state under `/tmp/xbot-deepseek-smoke/sessions/deepseek-smoke/state/`).
 - [x] TUI/server planning reset: `plan.md` now treats `InteractionEvent` as an internal runtime event, defines the required JSONL protocol direction, and pauses multi-agent expansion until the C/S boundary and renderer are stable.
 - [x] Documentation reset: README, docs, AGENTS, and status now describe the current runtime architecture, C/S target, protocol boundary, and an end-to-end runtime data-flow example.
 - [x] Protocol MVP implemented: `xbot/protocol.py`, `xbot/server.py`, protocol terminal renderer, server handshake/session-open test, and shell/exec lifecycle renderer tests.
 - [x] Legacy direct terminal runtime path removed: `main.py` terminal mode starts a protocol client and `main.py server` owns `HermesInteraction`.
-- [ ] TUI still basic: next step is richer protocol UI layout and more golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay.
+- [x] Curses TUI MVP implemented: `main.py tui` starts a protocol client, `xbot/tui.py` maintains replayable UI state from protocol frames, and tests cover message stream, tool lifecycle, cache ref, and interrupt replay.
+- [ ] TUI remains MVP-level: next step is nonblocking input/event pump, richer protocol UI layout, and golden tests for interrupt/resume, deny/failure kinds, cache refs, and replay fixtures.
 - [ ] Multi-agent remains MVP-only: mailbox, attach-mode subagents, and child runtime layout exist, but there is not yet a full async runner/scheduler.
 
 ### master branch (completed)

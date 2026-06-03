@@ -16,7 +16,7 @@ Hard rules:
 - Tool calls pass permission checks and sandbox policy before execution.
 - Large tool outputs use cache refs instead of entering prompt context directly.
 - Complex work uses executable DAG task mode, not a markdown todo list.
-- Never Keep Legacy code for compactiability
+- Do not keep legacy code for compatibility.
 
 ## Repository Map
 
@@ -33,6 +33,7 @@ Hard rules:
 │   ├── protocol.py         # C/S protocol schema and event encoding
 │   ├── server.py           # Runtime server transport
 │   ├── terminal.py         # Terminal client/renderer
+│   ├── tui.py              # Curses protocol TUI client/state
 │   ├── runtime.py          # RuntimeContext and RuntimeFrame
 │   ├── context.py          # ContextProjection -> provider messages
 │   ├── compaction.py       # Auditable context compaction

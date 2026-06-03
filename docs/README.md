@@ -49,4 +49,4 @@
 - mailbox
 - SQLite 持久化
 
-拆分前，以 [架构与设计](./architecture.md) 作为这些主题的权威说明。当前 multi-agent 扩张暂停；新开发优先推进 runtime server、JSONL protocol 和 protocol renderer。
+拆分前，以 [架构与设计](./architecture.md) 作为这些主题的权威说明。当前 multi-agent 扩张暂停；新开发优先加固 runtime server、JSONL protocol、protocol renderer 和 curses TUI replay。

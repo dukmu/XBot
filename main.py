@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from xbot.server import run_stdio_server
 from xbot.terminal import TerminalClientSession, TerminalOptions
+from xbot.tui import CursesTuiClient
 
 
 async def main() -> None:
@@ -21,6 +22,9 @@ async def main() -> None:
 
     terminal_parser = subparsers.add_parser("terminal", help="Run the terminal protocol client")
     _add_common_terminal_args(terminal_parser)
+
+    tui_parser = subparsers.add_parser("tui", help="Run the curses protocol TUI")
+    _add_common_terminal_args(tui_parser)
 
     server_parser = subparsers.add_parser("server", help="Run the JSONL runtime server on stdio")
     server_parser.add_argument("--data-dir", default=None, help="Runtime data directory")
@@ -36,16 +40,17 @@ async def main() -> None:
     if getattr(args, "no_sandbox", False):
         os.environ["XBOT_SANDBOX"] = "disabled"
 
-    session = TerminalClientSession(
-        TerminalOptions(
-            streaming=getattr(args, "streaming", False),
-            print_thoughts=getattr(args, "print_thoughts", False),
-            print_tools=getattr(args, "print_tools", False),
-            session_id=getattr(args, "session_id", None) or os.environ.get("XBOT_SESSION_ID", "default"),
-            personality_id=getattr(args, "personality_id", None) or os.environ.get("XBOT_PERSONALITY_ID", "default"),
-        )
+    options = TerminalOptions(
+        streaming=getattr(args, "streaming", False),
+        print_thoughts=getattr(args, "print_thoughts", False),
+        print_tools=getattr(args, "print_tools", False),
+        session_id=getattr(args, "session_id", None) or os.environ.get("XBOT_SESSION_ID", "default"),
+        personality_id=getattr(args, "personality_id", None) or os.environ.get("XBOT_PERSONALITY_ID", "default"),
     )
-    await session.run()
+    if args.mode == "tui":
+        await CursesTuiClient(options).run()
+    else:
+        await TerminalClientSession(options).run()
 
 
 def _add_common_terminal_args(parser) -> None:

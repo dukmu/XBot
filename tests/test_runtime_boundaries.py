@@ -1316,6 +1316,38 @@ def test_protocol_terminal_renders_shell_exec_lifecycle(capsys):
     assert "/tmp/workspace" in output
 
 
+def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
+    """The TUI state is derived only from protocol frames."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.tui import TuiState
+
+    state = TuiState(session_id="s", thread_id="t")
+    frames = [
+        ProtocolFrame(seq=1, direction="server_to_client", type="session.opened", session_id="s", thread_id="t", request_id="open", payload={"agent_name": "default"}),
+        ProtocolFrame(seq=2, direction="server_to_client", type="session.ready", session_id="s", thread_id="t", request_id="open", payload={}),
+        ProtocolFrame(seq=3, direction="server_to_client", type="message.delta", session_id="s", thread_id="t", request_id="req", payload={"message_id": "m1", "role": "assistant", "content_delta": "hello", "is_reasoning": False}),
+        ProtocolFrame(seq=4, direction="server_to_client", type="message.completed", session_id="s", thread_id="t", request_id="req", payload={"message_id": "m1", "role": "assistant", "content": "hello world"}),
+        ProtocolFrame(seq=5, direction="server_to_client", type="tool.call.started", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell", "args_preview": "pwd", "status": "pending"}),
+        ProtocolFrame(seq=6, direction="server_to_client", type="tool.execution.started", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell"}),
+        ProtocolFrame(seq=7, direction="server_to_client", type="tool.result.completed", session_id="s", thread_id="t", request_id="req", payload={"tool_call_id": "call_1", "name": "shell", "exit_code": 0, "result_ref": "cache://tool-result/abc"}),
+        ProtocolFrame(seq=8, direction="server_to_client", type="interrupt.requested", session_id="s", thread_id="t", request_id="req", payload={"interrupt_id": "intr_1", "type": "tool_confirm", "question": "Allow?"}),
+    ]
+
+    for frame in frames:
+        state.apply(frame)
+
+    assert state.agent_name == "default"
+    assert state.messages[-1].content == "hello world"
+    assert state._open_stream == {}
+    assert state.tools["call_1"].status == "completed"
+    assert state.tools["call_1"].result_ref == "cache://tool-result/abc"
+    assert state.pending_interrupt["interrupt_id"] == "intr_1"
+    rendered = "\n".join(state.lines(width=80, height=16))
+    assert "Tools" in rendered
+    assert "Messages" in rendered
+    assert "Interrupt" in rendered
+
+
 @pytest.mark.asyncio
 async def test_runtime_server_jsonl_handshake_and_session_open(temp_data_dir):
     """Runtime server owns HermesInteraction behind protocol frames."""

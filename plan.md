@@ -117,7 +117,7 @@ protocol client/server 必须区分：
 
 ### 6. Multi-agent 暂停
 
-当前分支已有 attach/mailbox/detached MVP，但用户明确要求暂时不推进 multi-agent。后续计划只保留已有能力的兼容性，不新增 async scheduler、worker pool、跨 agent UI 面板或 mailbox 自动化。
+当前分支已有 attach/mailbox/detached MVP，但用户明确要求暂时不推进 multi-agent。后续计划不扩张这些能力，不新增 async scheduler、worker pool、跨 agent UI 面板或 mailbox 自动化。
 
 ## 目标模型
 
@@ -523,21 +523,22 @@ RuntimeFrame
 
 目标：在稳定协议上做真正 TUI，而不是改旧静态 UI。
 
-推荐先用 Python Textual/Rich，原因是与 Python server 同仓、测试和打包成本低；Node.js TUI 可作为协议客户端后续加入，不影响 server。
+当前先落地 stdlib curses MVP，原因是依赖面最小、能立即验证 C/S 边界和 replayable state。Textual/Rich 或 Node.js TUI 只能作为后续 protocol adapter 加入，不能改变 server/runtime 契约。
 
 工作：
 
-- 左侧：session/thread/status。
-- 中间：message stream。
-- 右侧：tool lifecycle panel。
-- 底部：input、interrupt prompt、approval controls。
-- 支持 event replay：从 golden JSONL 或 live server 渲染相同 UI state。
+- 已新增 `xbot/tui.py`，包含 `TuiState`、message/tool state models 和 `CursesTuiClient`。
+- 已新增 `main.py tui` 入口，启动协议 client 并连接 `main.py server`。
+- 已实现左侧工具/interrupt/error 区、主消息区、状态栏和输入行。
+- 已支持 event replay：`TuiState.apply(frame)` 只消费 protocol frames，测试覆盖 message stream、tool lifecycle、cache ref 和 interrupt。
+- 后续增强：nonblocking server event pump、可滚动 panes、更明确的 approval controls、golden JSONL fixtures。
 
 验收：
 
 - TUI 不 import `HermesInteraction`。
 - TUI 可连接 stdio server。
 - 同一 JSONL 事件日志可在测试中 replay。
+- TUI 不解析 `AIMessage`、`AIMessageChunk` 或 `ToolMessage`。
 
 ### Phase E：保持无回退
 
@@ -591,13 +592,12 @@ Golden tests：
 
 ## 推进顺序
 
-1. 写协议模型和 golden tests。
-2. 写 stdio runtime server。
-3. 写 protocol encoder，覆盖 message/tool/interrupt/status/error。
-4. 把 terminal 改成 protocol renderer。
-5. 修复 shell/exec tool lifecycle 展示。
-6. 再做 Rich/Textual TUI。
-7. 保持无 legacy direct UI path。
+1. 已完成协议模型、stdio runtime server、protocol encoder、terminal renderer、shell/exec lifecycle 展示和 curses TUI MVP。
+2. 下一步补 golden JSONL fixtures，覆盖 handshake、message stream、tool lifecycle、interrupt/resume、runtime error。
+3. 再补 server request serialization、interrupt idempotency、cancel/failure-kind/cache-ref 测试。
+4. 增强 curses TUI 的 nonblocking event pump、scroll panes、approval controls。
+5. 需要更丰富 UI 时，再增加 Textual/Rich 或 Node.js adapter；adapter 只能复用现有 JSONL protocol。
+6. 保持无 legacy direct UI path。
 
 不要先做 UI 皮肤。先把事件模型做对。
 
