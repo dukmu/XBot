@@ -670,6 +670,34 @@ async def test_plan_update_accepts_object_form_evidence_args(temp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_plan_update_accepts_native_list_and_plain_string_refs(temp_data_dir):
+    """OpenAI-compatible providers may pass native arrays for json-ish fields."""
+    store = TaskStateStore.create(
+        tasks_root=temp_data_dir / "sessions" / "default" / "tasks",
+        thread_id="native-evidence-refs",
+        session_id="default",
+        personality_id="default",
+    )
+    token = configure_runtime_task_state(store)
+    try:
+        await task_begin.ainvoke({"goal": "Record native evidence"})
+        await plan_update.ainvoke(
+            {
+                "node_id": "n_goal",
+                "status": "verified",
+                "evidence_refs_json": ["filesystem_read:calculator.py"],
+                "changed_files_json": "calculator.py",
+            }
+        )
+        node = next(node for node in store.plan_store.load_plan()["nodes"] if node["id"] == "n_goal")
+    finally:
+        reset_runtime_task_state(token)
+
+    assert node["evidence_refs"] == ["filesystem_read:calculator.py"]
+    assert node["changed_files"] == ["calculator.py"]
+
+
+@pytest.mark.asyncio
 async def test_task_completion_uses_dag_state(temp_data_dir):
     """Completed exit should be controlled by DAG node status."""
     store = TaskStateStore.create(
