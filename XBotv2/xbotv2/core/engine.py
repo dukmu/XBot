@@ -72,20 +72,35 @@ class Engine:
     # ------------------------------------------------------------------
 
     async def start_session(self) -> None:
-        """Execute ON_SESSION_START hooks and initialize session."""
+        """Create a new session. Runs ON_SESSION_START hooks.
+
+        If previous message history exists on disk, it is loaded
+        (this session is a resume from persisted state).
+        """
         self._session = SessionInfo(
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
             personality_id=self.state_store.personality_id,
         )
 
-        ctx = self._make_hook_context(HookStage.ON_SESSION_START)
-        await self.hook_manager.run(HookStage.ON_SESSION_START, ctx, short_circuit=False)
+        # Restore persisted messages if any exist
+        if self.state_store.message_count() > 0:
+            self._messages = self.state_store.read_messages()
+            self._turn_count = self.state_store.read_state().get("turn_count", 0)
+            self._session.turn_count = self._turn_count
+            ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
+            await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
+        else:
+            ctx = self._make_hook_context(HookStage.ON_SESSION_START)
+            await self.hook_manager.run(HookStage.ON_SESSION_START, ctx, short_circuit=False)
 
     async def resume_session(self) -> None:
-        """Execute ON_SESSION_RESUME hooks (after checkpoint restore)."""
+        """Explicit resume: load persisted state and run ON_SESSION_RESUME hooks."""
         state = self.state_store.read_state()
         self._turn_count = state.get("turn_count", 0)
+
+        # Restore message history from disk
+        self._messages = self.state_store.read_messages()
 
         self._session = SessionInfo(
             session_id=self.state_store.session_id,
@@ -96,6 +111,13 @@ class Engine:
 
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
+
+    async def close_session(self) -> None:
+        """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
+        self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
+        self._save_messages()
+        ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
+        await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
 
     async def close_session(self) -> None:
         """Execute ON_SESSION_CLOSE hooks."""
@@ -257,11 +279,31 @@ class Engine:
         await self.hook_manager.run(HookStage.ON_TURN_END, te_ctx, short_circuit=False)
 
         self.state_store.append_event("turn_finished", {"turn": self._turn_count})
+
+        # Persist all messages to disk after each turn
+        self._save_messages()
+
         yield {"type": "turn_finished", "data": {"turn": self._turn_count}}
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _save_messages(self) -> None:
+        """Persist messages and materialize state after each turn.
+
+        Uses truncate-then-append to keep the message log in sync with
+        the current message list (compaction may remove old messages).
+        Also materializes state.yaml so turn_count et al. are current.
+        """
+        self.state_store.clear_messages()
+        self.state_store.append_messages(self._messages)
+        self.state_store.materialize()
+
+    def _restore_messages(self) -> int:
+        """Load messages from disk into memory. Returns count loaded."""
+        self._messages = self.state_store.read_messages()
+        return len(self._messages)
 
     def _make_hook_context(
         self,
