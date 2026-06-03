@@ -340,6 +340,13 @@ sandbox 是第二层控制面：
 - bubblewrap 不可用时 sandboxed 工具失败，不回退 host execution。
 - deny/ask resource 必须在挂载层遮蔽，不只做 Python 路径检查。
 
+实现边界：
+
+- `xbot/sandbox.py` 的 `SandboxPolicy` 是策略门面：解析 runtime config、做 resource decision、处理 one-call approval，并组合执行后端。
+- `xbot/sandbox_types.py` 定义 sandbox 共享数据结构和 literal aliases，避免策略层和后端互相导入。
+- `xbot/sandbox_shell.py` 只做保守 shell path preflight，用于提前发现明显的 path/redirect ask-deny；真实隔离仍由 bubblewrap enforcement 完成。
+- `xbot/sandbox_bwrap.py` 是 bubblewrap 后端：构建 mount argv、启动子进程、处理 timeout/output truncation，不参与权限决策。
+
 工具执行路径：
 
 ```text
@@ -852,7 +859,10 @@ User input
 | `xbot/state_projection.py` | pure JSONL projection helpers |
 | `xbot/checkpoint.py` | FileBackedSaver for LangGraph checkpoint |
 | `xbot/cache.py` | file-backed tool-result cache |
-| `xbot/sandbox.py` | bubblewrap sandbox policy/execution |
+| `xbot/sandbox.py` | sandbox resource-policy facade |
+| `xbot/sandbox_types.py` | shared sandbox types and decisions |
+| `xbot/sandbox_shell.py` | shell path preflight parser |
+| `xbot/sandbox_bwrap.py` | bubblewrap execution backend |
 | `xbot/permissions.py` | permission rules |
 | `xbot/verification.py` | state verification |
 | `xbot/terminal.py` | Protocol terminal client/renderer |

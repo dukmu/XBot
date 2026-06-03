@@ -8,6 +8,9 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 
 Latest update:
 
+- Sandbox cleanup split policy, shell preflight, backend execution, and shared types: `xbot/sandbox.py` now composes `sandbox_shell.py`, `sandbox_bwrap.py`, and `sandbox_types.py` instead of owning all parsing/mount/process details.
+- `sandbox.py` dropped migrated duplicate helpers and is down from 837 to 626 lines while keeping `SandboxPolicy` as the runtime-facing policy facade.
+- Verification passed: targeted sandbox tests (`18 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 208`).
 - State architecture cleanup split `TaskStateStore` into focused state layers: append-only runtime facade (`xbot/state.py`), executable DAG file store (`xbot/task_plan_store.py`), and summary/claim record store (`xbot/state_records.py`).
 - `state.py` no longer owns plan version hashing, plan mutation algorithms, summary markdown parsing, or claims YAML mutation; it records audit events and refreshes materialized projections after delegated state changes.
 - Verification passed: `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 186`).
