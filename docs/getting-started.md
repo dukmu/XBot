@@ -114,7 +114,7 @@ python main.py tui
 
 当前 `main.py` 默认启动 protocol terminal client，并自动连接 `main.py server` JSONL runtime server 子进程。只有 server 创建 `HermesInteraction`。
 
-`python main.py tui` 启动同一协议上的 curses TUI。TUI 维护自己的 replayable `TuiState`，只消费 `session.*`、`run.*`、`message.*`、`tool.*`、`interrupt.*`、`error` protocol frames，不读取 runtime state 文件，也不解析 LangChain/LangGraph 对象。
+`python main.py tui` 启动同一协议上的 curses TUI。TUI 维护自己的 replayable `TuiState`，以 transcript 为主线展示用户消息、assistant 流式输出、tool lifecycle、cache 摘要、usage totals、interrupt 和 error；它只消费 `session.*`、`run.*`、`message.*`、`tool.*`、`usage.*`、`interrupt.*`、`error` protocol frames，不读取 runtime state 文件，也不解析 LangChain/LangGraph 对象。
 
 ## 当前运行特征
 

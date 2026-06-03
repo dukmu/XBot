@@ -45,7 +45,7 @@ terminal/TUI 侧已经完成 C/S MVP，仍需继续完善：
 - `xbot/server.py` 实现 stdio runtime server。
 - `xbot/terminal.py` 只渲染 protocol frames。
 - shell/exec 已有 `tool.call.started -> tool.execution.started -> tool.result.*` renderer tests。
-- 后续仍需补齐 interrupt/resume、failure kinds、cache refs、replay golden tests 和更完整 TUI 布局。
+- 后续仍需补齐 interrupt/resume、failure kinds、cache refs、replay golden tests、scrollback、快捷审批和 cancel 命令。
 
 结论：runtime 主路径已经接近一致；下一步不是继续堆功能，而是把 UI 边界切干净。TUI 必须只消费稳定 wire events，不能解析 LangChain 对象。
 
@@ -529,10 +529,11 @@ RuntimeFrame
 
 - 已新增 `xbot/tui.py`，包含 `TuiState`、message/tool state models 和 `CursesTuiClient`。
 - 已新增 `main.py tui` 入口，启动协议 client 并连接 `main.py server`。
-- 已实现左侧工具/interrupt/error 区、主消息区、usage 状态栏和输入行。
+- 已改为 transcript-first replay state：用户消息、assistant 流、tool lifecycle、cache ref/summary、usage totals、interrupt 和 error 都进入同一时间线。
+- 已实现顶部 session/status/usage、主体 transcript 和底部输入行。
 - 已支持 live event pump：`xbot/server.py` 逐 frame flush，`CursesTuiClient` 用后台 reader 持续接收 protocol frames，输入不会阻塞到整轮结束才刷新。
-- 已支持 event replay：`TuiState.apply(frame)` 只消费 protocol frames，测试覆盖 message stream、tool lifecycle、cache metadata/ref、usage 和 interrupt。
-- 后续增强：可滚动 panes、更明确的 approval controls、cancel 命令、golden JSONL fixtures。
+- 已支持 event replay：`TuiState.apply(frame)` 只消费 protocol frames，测试覆盖 transcript 顺序、message stream、tool lifecycle、cache metadata/ref、usage 和 interrupt。
+- 后续增强：scrollback panes、更明确的 approval controls、cancel 命令、golden JSONL fixtures。
 
 验收：
 
@@ -594,10 +595,10 @@ Golden tests：
 
 ## 推进顺序
 
-1. 已完成协议模型、stdio runtime server、protocol encoder、terminal renderer、shell/exec lifecycle 展示、live curses TUI MVP、cache metadata 和 usage protocol event。
+1. 已完成协议模型、stdio runtime server、protocol encoder、terminal renderer、shell/exec lifecycle 展示、transcript-first live curses TUI、cache metadata 和 usage protocol event。
 2. 下一步补 golden JSONL fixtures，覆盖 handshake、message stream、tool lifecycle、interrupt/resume、runtime error。
 3. 再补 server request serialization、interrupt idempotency、cancel/failure-kind/cache-ref 测试。
-4. 增强 curses TUI 的 scroll panes、approval controls 和 cancel command。
+4. 增强 curses TUI 的 scrollback panes、approval controls 和 cancel command。
 5. 需要更丰富 UI 时，再增加 Textual/Rich 或 Node.js adapter；adapter 只能复用现有 JSONL protocol。
 6. 保持无 legacy direct UI path。
 

@@ -1408,8 +1408,9 @@ def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
     assert state.usage["total_tokens"] == 15
     assert state.pending_interrupt["interrupt_id"] == "intr_1"
     rendered = "\n".join(state.lines(width=80, height=16))
-    assert "Tools" in rendered
-    assert "Messages" in rendered
+    assert "default> hello world" in rendered
+    assert "Tool shell [completed]" in rendered
+    assert "cached shell result" in rendered
     assert "Interrupt" in rendered
     assert "total:15" in rendered
 

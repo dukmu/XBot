@@ -6,6 +6,12 @@ Follow `plan.md` under the constraints from `task.md`: move XBot toward a state-
 
 Current continuation objective (branch `claude-refactor`): harden the runtime/TUI client-server boundary, expand the JSONL communication and event protocol, and build a richer protocol TUI. Multi-agent expansion is paused.
 
+Latest update:
+
+- Curses TUI now uses a transcript-first replay state instead of a static tools/messages split panel.
+- Transcript entries are derived only from protocol frames and include user/assistant messages, live assistant streams, tool lifecycle, cache refs/summaries, usage totals, interrupts, and errors.
+- Targeted verification passed: `uv run pytest -q tests/test_runtime_boundaries.py -k "protocol or tui"` (`7 passed`).
+
 ## Current Scope
 
 - Phase 1: Add file-backed agent DAG state without replacing LangGraph.
