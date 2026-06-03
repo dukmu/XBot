@@ -180,6 +180,8 @@ data/sessions/<session_id>/state/
 - `xbot/state_event_logs.py` 的 `StateEventLogs` 管理 append-only JSONL：runtime events、graph projection、context tree、mailbox、event id/timestamp enrich。
 - `xbot/task_plan_store.py` 的 `TaskPlanStore` 管理 `task.yaml`、`goal.md`、`plan.yaml` 和 `versions/plans/`，负责 task mode、调度选择、plan mutation 和版本快照。
 - `xbot/state_records.py` 的 `StateRecords` 管理非 append-only 的结构化记录：summary markdown artifacts 与 `claims.yaml`。`TaskStateStore` 在记录创建后追加对应 runtime/graph event。
+- `xbot/state_context.py` 渲染 prompt-visible `context.md`，只接收已准备好的 DAG/mailbox/summary/claim 输入。
+- `xbot/state_materialization.py` 构造 `state.yaml` dict，集中处理 turn counts、DAG activity、mailbox/context-tree projection 和 claims/summaries counters。
 - `xbot/state_projection.py` 只做纯 projection：从 JSONL rows materialize context tree、mailbox、DAG activity，不写文件。
 
 不可变约束：
@@ -865,6 +867,8 @@ User input
 | `xbot/hooks/` | LoopHooks and standard guard/cache/compact hooks |
 | `xbot/state.py` | TaskStateStore append-only runtime state facade |
 | `xbot/state_event_logs.py` | append-only runtime/graph/context/mailbox JSONL operations |
+| `xbot/state_context.py` | prompt-visible `context.md` rendering |
+| `xbot/state_materialization.py` | materialized `state.yaml` projection builder |
 | `xbot/task_plan_store.py` | task metadata, executable plan, and plan versions |
 | `xbot/state_records.py` | summary artifacts and structured claims |
 | `xbot/state_projection.py` | pure JSONL projection helpers |

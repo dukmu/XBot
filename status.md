@@ -8,6 +8,9 @@ Current continuation objective (branch `claude-refactor`): harden the runtime/TU
 
 Latest update:
 
+- State projection cleanup split prompt-visible `context.md` rendering into `xbot/state_context.py` and materialized `state.yaml` construction into `xbot/state_materialization.py`; `TaskStateStore` now prepares inputs and writes files instead of owning projection formatting.
+- `state.py` is down from 857 to 719 lines after removing inline context rendering and materialized-state dict construction.
+- Verification passed: targeted state projection tests (`31 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 227`).
 - State log cleanup split append-only runtime/graph/context-tree/mailbox JSONL operations into `xbot/state_event_logs.py`; `TaskStateStore` now delegates event id enrichment, context rewind validation, mailbox append/read, and interaction-event graph projection.
 - `state.py` is down from 987 to 857 lines after removing event-log numbering and graph projection helpers from the state facade.
 - Verification passed: targeted state-log tests (`14 passed`), `uv run pytest -q` (`124 passed`), `python -m py_compile main.py scripts/provider_smoke_refactor.py xbot/*.py xbot/builtin_tools/*.py xbot/hooks/*.py tests/*.py`, and `uv run python scripts/provider_smoke_refactor.py --env-file ~/env.sh --data-dir /tmp/xbot-deepseek-smoke` (`SMOKE PASSED`, `events_emitted: 329`).
