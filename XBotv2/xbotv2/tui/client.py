@@ -199,6 +199,7 @@ class CursesTuiClient:
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         await self.session.connect()
+        self.state.status = "Ready"
         try:
             await asyncio.to_thread(curses.wrapper, self._run_curses)
         finally:

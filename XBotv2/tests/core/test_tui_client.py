@@ -2,7 +2,9 @@
 
 import ast
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from xbotv2.protocol.frames import ProtocolFrame
 from xbotv2.tui.client import CursesTuiClient, TuiState
 
@@ -56,6 +58,19 @@ def test_curses_client_records_reader_errors():
 
     assert client.state.status == "Error"
     assert client.state.errors == ["reader failed"]
+
+
+@pytest.mark.asyncio
+async def test_curses_client_marks_ready_after_session_connect():
+    client = CursesTuiClient()
+    client.session.connect = AsyncMock()
+    client.session.disconnect = AsyncMock()
+
+    with patch("xbotv2.tui.client.curses.wrapper") as wrapper:
+        await client.run()
+
+    wrapper.assert_called_once()
+    assert client.state.status == "Ready"
 
 
 def test_tui_modules_do_not_import_runtime_boundaries():
