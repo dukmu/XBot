@@ -36,6 +36,9 @@ are the primary freeze gate.
   broken plugin configuration.
 - Root pytest configuration now includes `pythonpath = ["XBotv2", "."]`, so
   XBotv2 tests run from repository root without manual `PYTHONPATH`.
+- Personality-declared hooks in `personality.yaml` are now resolved and
+  registered during bootstrap; invalid hook targets fail loudly instead of
+  being silently ignored.
 - Documentation now uses the implemented 33 hook stages, including user intake,
   source-tagged context component, pre-bind tool schema, provider error,
   per-tool-call, and persistence hooks needed for future token estimation,

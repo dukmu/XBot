@@ -70,6 +70,62 @@ class TestBootstrapBasics:
             )
 
     @pytest.mark.asyncio
+    async def test_bootstrap_registers_personality_hooks(
+        self, temp_data_dir, tmp_path, monkeypatch
+    ):
+        """Personality-declared hooks are resolved and registered."""
+        hook_dir = tmp_path / "hook_modules"
+        hook_dir.mkdir()
+        (hook_dir / "test_personality_hooks.py").write_text(
+            """
+async def before_user_message(ctx):
+    return {"user_input": ctx.user_input + " from hook"}
+"""
+        )
+        monkeypatch.syspath_prepend(str(hook_dir))
+
+        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
+        personality.write_text(
+            """
+hooks:
+  - stage: before_user_message_accept
+    target: test_personality_hooks:before_user_message
+"""
+        )
+
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            llm_override=MockLLM(responses=[{"content": "ok"}]),
+        )
+
+        events = [e async for e in engine.run_turn("hello")]
+
+        assert events[-1]["type"] == "turn_finished"
+        assert engine.messages[0].content == "hello from hook"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_invalid_personality_hook_raises(self, temp_data_dir):
+        """Broken personality hook declarations fail loudly."""
+        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
+        personality.write_text(
+            """
+hooks:
+  - stage: on_turn_start
+    target: missing_module:nope
+"""
+        )
+
+        with pytest.raises(ModuleNotFoundError):
+            await bootstrap(
+                config_dir=str(temp_data_dir),
+                session_id="test-session",
+                thread_id="test-thread",
+                llm_override=MockLLM(responses=[]),
+            )
+
+    @pytest.mark.asyncio
     async def test_bootstrap_engine_runs_turn(self, temp_data_dir, temp_workspace):
         """Engine from bootstrap can run a turn."""
         engine = await bootstrap(

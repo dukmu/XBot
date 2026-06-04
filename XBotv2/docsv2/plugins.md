@@ -6,6 +6,11 @@ XBotv2 plugins are independent Python packages that extend the core engine
 through hooks, tools, and prompt fragments. Plugins are discovered,
 loaded, and wired at bootstrap time.
 
+Personality files can also register direct hooks with a `hooks:` list using
+`stage` and `target: module:function`. These hooks are resolved during
+bootstrap and fail loudly if the target cannot be imported. Plugin manifests
+remain the preferred mechanism for reusable extension packages.
+
 ## Plugin Manifest
 
 Each plugin directory contains a `plugin.yaml`:

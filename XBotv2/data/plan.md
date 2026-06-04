@@ -320,16 +320,17 @@ updated_at: str
    - `ask` is not a core tool until the protocol/TUI interrupt-resume flow is implemented
    - filesystem tools return JSON metadata and support structured read/list/write operations
    - default `AFTER_TOOLS` hook caches oversized tool outputs under session artifacts before persistence/protocol emit
-7. Create SandboxPolicy + PermissionSystem
-8. Discover plugins from plugin dirs
-9. Resolve plugin dependency order (topological sort)
-10. Initialize plugins (on_load) with their config sections
-11. Register plugin hooks → HookManager
-12. Register plugin tools → ToolRegistry
-13. Register plugin prompt fragments → ContextBuilder
-14. Create LLM client
-15. Run ON_SESSION_INIT hooks
-16. Return fully-wired Engine
+7. Register personality-declared hooks from `hooks:` config entries; invalid targets fail loudly
+8. Create SandboxPolicy + PermissionSystem
+9. Discover plugins from plugin dirs
+10. Resolve plugin dependency order (topological sort)
+11. Initialize plugins (on_load) with their config sections
+12. Register plugin hooks → HookManager
+13. Register plugin tools → ToolRegistry
+14. Register plugin prompt fragments → ContextBuilder
+15. Create LLM client
+16. Run ON_SESSION_INIT hooks
+17. Return fully-wired Engine
 ```
 
 ## How Each Current Feature Becomes a Plugin

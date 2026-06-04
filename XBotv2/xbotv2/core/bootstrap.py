@@ -18,6 +18,7 @@ Plugins are discovered from plugin directories listed in config.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,7 @@ async def bootstrap(
         HookStage.AFTER_TOOLS,
         make_tool_result_cache_hook(state_store),
     )
+    _register_configured_hooks(agent_config, hook_manager)
 
     # 4. Register core base tools (always available)
     for tool, sandbox_mode, execution_mode, lock_fields in CORE_BASE_TOOLS:
@@ -216,3 +218,23 @@ async def _load_plugins(
         plugin_configs=plugin_configs,
     )
     await loader.load()
+
+
+def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> None:
+    """Register hooks declared directly in the personality config."""
+    for decl in getattr(agent_config, "hooks", []) or []:
+        hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl.target))
+
+
+def _resolve_hook_target(target: str) -> Any:
+    """Resolve ``module:function`` hook targets from personality config."""
+    if ":" not in target:
+        raise ValueError(f"Invalid hook target {target!r}; expected 'module:function'")
+    module_path, attr_name = target.split(":", 1)
+    if not module_path or not attr_name:
+        raise ValueError(f"Invalid hook target {target!r}; expected 'module:function'")
+    module = importlib.import_module(module_path)
+    try:
+        return getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ImportError(f"Hook target {target!r} does not exist") from exc

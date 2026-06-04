@@ -28,6 +28,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - **33 lifecycle stages**: session (4), turn (2), user intake (2),
   loop/request (14), message (3), tool call (4), persistence (2), system
   events (2)
+- Personality configs may register hooks with `hooks:` entries using
+  `module:function` targets; broken targets fail during bootstrap
 - Loop hooks short-circuit on truthy return
 - Guard hooks that short-circuit without a structured result fail closed with a
   bounded `hook_short_circuit_rejected` error instead of continuing silently
