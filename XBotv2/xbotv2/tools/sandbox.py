@@ -112,8 +112,8 @@ class SandboxPolicy:
             if access == "ask":
                 return (
                     False,
-                    "Path approval required but interactive approval is not "
-                    f"implemented: {resolved}",
+                    "Path approval required. A permission.response can record "
+                    f"the decision, but this call fails closed: {resolved}",
                 )
 
         return True, ""

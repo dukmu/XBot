@@ -48,7 +48,7 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
 
 
 @pytest.mark.asyncio
-async def test_permission_ask_fails_closed_until_interactive_approval_exists(temp_workspace):
+async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspace):
     registry = ToolRegistry()
     registry.register(filesystem_write, sandbox_mode="sandboxed")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
@@ -61,7 +61,8 @@ async def test_permission_ask_fails_closed_until_interactive_approval_exists(tem
     )
 
     assert results[0].status == "error"
-    assert "Interactive approval is not implemented" in results[0].content
+    assert "permission.response can record the decision" in results[0].content
+    assert "fails closed and is not replayed" in results[0].content
     assert not (temp_workspace / "blocked.txt").exists()
 
 

@@ -151,7 +151,7 @@ class TestToolGuard:
         # Cleanup
         symlink_path.unlink()
 
-    def test_ask_access_fails_closed_until_interactive_approval_exists(self, temp_workspace):
+    def test_ask_access_fails_closed_until_tool_replay_exists(self, temp_workspace):
         """Ask access does not implicitly allow sandboxed paths."""
         ws = Path(temp_workspace)
         gated = ws / "gated"
@@ -171,7 +171,8 @@ class TestToolGuard:
         )
 
         assert allowed is False
-        assert "interactive approval is not implemented" in reason
+        assert "permission.response can record the decision" in reason
+        assert "fails closed" in reason
 
 
 class TestPathResolution:

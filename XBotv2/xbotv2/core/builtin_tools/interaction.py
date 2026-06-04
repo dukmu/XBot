@@ -36,7 +36,10 @@ def ask_user(question: str, options: list[str] | None = None) -> dict:
         options: Optional suggested answers.
     """
     return {
-        "content": "User input requested. Resume is not implemented yet.",
+        "content": (
+            "User input requested. The answer can be recorded with user.input; "
+            "turn resume is not implemented yet."
+        ),
         "status": "error",
         "turn_complete": True,
         "events": [

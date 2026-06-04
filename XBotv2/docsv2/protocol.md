@@ -33,8 +33,9 @@ and materializes `state.yaml` with `status: closed`.
 
 - `send_message` emits `client_message` and does not stop the current turn.
 - `ask_user` emits `user_input_required`, appends an `interrupted` state event,
-  and stops the current turn. Resume is not implemented yet, so the payload
-  includes `resume_supported: false`. The event carries a stable
+  and stops the current turn. Answers can be recorded with `user.input`, but
+  turn resume is not implemented yet, so the payload includes
+  `resume_supported: false`. The event carries a stable
   `request_id` (`user_input:<tool_call_id>`), `source`, and `tool_call_id` so a
   later `user.input` command can correlate the answer.
 - A later `turn_started` reactivates the materialized session status after an

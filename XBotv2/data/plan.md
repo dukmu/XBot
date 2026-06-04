@@ -346,7 +346,7 @@ interruption raised during that same turn.
 6. Register core base tools: filesystem, shell, and interaction tools (always available)
    - legacy placeholder `ask` is not a core tool
    - `send_message` emits non-blocking `client_message` events
-   - `ask_user` emits `user_input_required`, marks the session interrupted, and stops the current turn until resume exists
+   - `ask_user` emits `user_input_required`, marks the session interrupted, and records answers through `user.input`; turn resume is future work
    - filesystem tools return JSON metadata and support structured read/list/write operations
    - default `AFTER_TOOLS` hook caches oversized tool outputs under session artifacts before persistence/protocol emit
 7. Register personality-declared hooks from `hooks:` config entries; invalid targets fail loudly

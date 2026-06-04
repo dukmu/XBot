@@ -36,9 +36,9 @@ are the primary freeze gate.
   than the restricted visible view, so plugin unload removes hidden plugin
   tools reliably.
 - Permission and sandbox `ask` decisions now emit protocol-visible
-  `permission_request` events and fail closed until protocol/TUI interactive
-  approval exists; they are no longer treated as implicit allow. Denials emit
-  `permission_denied`.
+  `permission_request` events and fail closed until approved tool-call replay
+  exists; they are no longer treated as implicit allow. Response commands can
+  record the decision. Denials emit `permission_denied`.
 - Added a default `AFTER_TOOLS` hook that caches oversized tool results under
   `state/artifacts/tool_results/` and replaces inline results with a bounded
   preview before history persistence and JSONL emission. Cache metadata is

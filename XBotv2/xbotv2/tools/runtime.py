@@ -122,7 +122,8 @@ async def execute_tools(
             if decision == "ask":
                 denials[tc["id"]] = (
                     f"Permission approval required for tool: {tool_name}. "
-                    "Interactive approval is not implemented in this runtime."
+                    "A permission.response can record the decision; "
+                    "the current tool call fails closed and is not replayed."
                 )
                 denial_events[tc["id"]] = [_permission_client_event(
                     HookStage.ON_PERMISSION_REQUEST,

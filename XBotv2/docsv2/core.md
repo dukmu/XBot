@@ -32,8 +32,8 @@ dot, underscore, and dash before any session paths are created.
 
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
 the `ask` decision currently emits a `permission_request` event and fails
-closed during tool execution because the JSONL/TUI interrupt-resume approval
-flow is not implemented yet. Request events include a stable
+closed during tool execution because approved tool-call replay is not
+implemented yet. Request events include a stable
 `permission:<tool_call_id>` request id. `permission.response` records a
 matching `permission_response` event and clears the pending request, but does
 not replay the denied tool call yet. Denials emit `permission_denied`. Both
