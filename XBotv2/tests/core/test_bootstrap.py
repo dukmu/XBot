@@ -25,6 +25,20 @@ class TestBootstrapBasics:
         assert engine.turn_count == 0
 
     @pytest.mark.asyncio
+    async def test_bootstrap_rejects_path_like_identifiers(self, temp_data_dir, tmp_path):
+        """Runtime identifiers cannot escape the configured data directory."""
+        with pytest.raises(ValueError, match="session_id"):
+            await bootstrap(
+                config_dir=str(temp_data_dir),
+                session_id="../escape",
+                thread_id="test-thread",
+                personality_id="default",
+                llm_override=MockLLM(responses=[]),
+            )
+
+        assert not (tmp_path / "escape").exists()
+
+    @pytest.mark.asyncio
     async def test_bootstrap_registers_core_tools(self, temp_data_dir):
         """Core base tools are always registered."""
         engine = await bootstrap(

@@ -452,6 +452,56 @@ class TestRuntimeServerSubprocess:
             await _stop_process(proc)
 
     @pytest.mark.asyncio
+    async def test_server_rejects_path_like_session_ids(self, tmp_path):
+        data_dir = _write_mock_data_dir(tmp_path)
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _send_frame(
+                proc,
+                "hello",
+                session_id="../escape",
+                thread_id="t-sub",
+                request_id="req-hello",
+            )
+            assert (await _read_frame(proc)).type == "hello_ok"
+
+            await _send_frame(
+                proc,
+                "session.open",
+                session_id="../escape",
+                thread_id="t-sub",
+                request_id="req-open",
+            )
+            error = await _read_frame(proc)
+            assert error.type == "error"
+            assert error.request_id == "req-open"
+            assert error.payload["code"] == "session_open_failed"
+            assert "session_id" in error.payload["message"]
+            assert not (tmp_path / "escape").exists()
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
     async def test_server_subprocess_roundtrip_with_mock_provider(self, tmp_path):
         data_dir = _write_mock_data_dir(tmp_path)
         env = {

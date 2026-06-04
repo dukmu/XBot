@@ -121,6 +121,10 @@ are the primary freeze gate.
   event-only sessions, such as a session that was opened and then closed before
   any user message, run `ON_SESSION_RESUME` instead of being misclassified as
   brand-new.
+- Bootstrap now validates `personality_id`, `provider_name`, `session_id`, and
+  `thread_id` before constructing config or session paths. Protocol
+  `session.open` fails closed for path-like identifiers, preventing traversal
+  outside the configured `sessions/` root.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

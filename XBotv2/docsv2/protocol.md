@@ -20,6 +20,10 @@ Core Phase 1-3 events covered by subprocess tests:
 Every streamed frame for a `user.message` request preserves the incoming
 `request_id` in the envelope.
 
+Runtime identifiers from protocol frames are validated before bootstrap creates
+session paths. Path-like or empty identifiers fail closed as bounded
+`session_open_failed` errors.
+
 `shutdown` closes the active engine session before emitting `shutdown_ok`.
 That path runs `ON_SESSION_CLOSE`, appends `session_closed`, saves messages,
 and materializes `state.yaml` with `status: closed`.

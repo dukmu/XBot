@@ -72,6 +72,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Plugin states as opaque blobs in `plugin_states/`
 - Session start uses existing events or messages to distinguish resume from a
   brand-new session, so event-only sessions still run `ON_SESSION_RESUME`.
+- Bootstrap validates runtime identifiers before constructing session paths,
+  preventing protocol-provided IDs from escaping `sessions/`.
 
 ### Context Building (`xbotv2/core/context.py`)
 - Pluggable fragment injection points

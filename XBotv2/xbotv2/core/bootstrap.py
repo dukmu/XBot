@@ -19,6 +19,7 @@ Plugins are discovered from plugin directories listed in config.
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,8 @@ from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
 from xbotv2.core.builtin_tools.interaction import INTERACTION_TOOLS
 from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # (tool, sandbox_mode, execution_mode, lock_fields)
 CORE_BASE_TOOLS = [
@@ -87,6 +90,10 @@ async def bootstrap(
         A fully-wired Engine ready to run turns.
     """
     config_dir = Path(config_dir)
+    _validate_identifier("personality_id", personality_id)
+    _validate_identifier("provider_name", provider_name)
+    _validate_identifier("session_id", session_id)
+    _validate_identifier("thread_id", thread_id)
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
@@ -202,6 +209,13 @@ async def bootstrap(
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
+
+def _validate_identifier(field: str, value: str) -> None:
+    if not value or value in {".", ".."} or not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} must be a non-empty identifier using letters, numbers, '.', '_', or '-'"
+        )
+
 
 async def _load_plugins(
     plugin_dirs: list[Path],

@@ -26,6 +26,9 @@ The engine works without any plugins. It provides:
 
 LLM providers are selected explicitly. Unknown provider names raise a
 configuration error instead of silently falling back to another protocol.
+Bootstrap validates runtime identifiers (`personality_id`, `provider_name`,
+`session_id`, `thread_id`) with a conservative whitelist of letters, numbers,
+dot, underscore, and dash before any session paths are created.
 
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
 the `ask` decision currently emits a `permission_request` event and fails
