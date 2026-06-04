@@ -43,3 +43,7 @@ Every streamed frame for a `user.message` request preserves the incoming
   core, LangChain, or LangGraph modules.
 - `TuiState` renders assistant messages, tool calls/results, errors, client
   notices, approval requests, denials, and user-input requests.
+- TUI state treats approval requests, permission denials, user-input requests,
+  and errors as terminal notice states for that turn. A following
+  `turn_finished` frame updates the turn number but does not overwrite the
+  visible waiting/denied/error status.

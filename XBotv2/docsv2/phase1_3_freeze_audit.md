@@ -109,6 +109,10 @@ are the primary freeze gate.
   ToolMessage status/artifacts, public `additional_kwargs`, and provider
   `response_metadata`. Internal `xbotv2_` side-channel kwargs stay out of
   restored history because their events are persisted separately.
+- TUI state now preserves approval-required, permission-denied,
+  waiting-for-user, and error statuses across the following `turn_finished`
+  frame, matching the materialized interruption/error semantics instead of
+  briefly showing a misleading ready state.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

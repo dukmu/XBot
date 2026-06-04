@@ -19,6 +19,13 @@ from typing import Any
 from xbotv2.protocol.frames import ProtocolFrame
 from xbotv2.tui.terminal import TerminalSession
 
+_TERMINAL_NOTICE_STATUSES = {
+    "Approval required",
+    "Permission denied",
+    "Waiting for user",
+    "Error",
+}
+
 
 @dataclass
 class TuiMessage:
@@ -80,7 +87,8 @@ class TuiState:
             self.status = "Running"
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
-            self.status = "Ready"
+            if self.status not in _TERMINAL_NOTICE_STATUSES:
+                self.status = "Ready"
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
             if content:
