@@ -20,6 +20,7 @@ class TestBootstrapBasics:
             session_id="test-session",
             thread_id="test-thread",
             personality_id="default",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[{"content": "Hello!"}]),
         )
         assert engine is not None
@@ -34,6 +35,7 @@ class TestBootstrapBasics:
                 session_id="../escape",
                 thread_id="test-thread",
                 personality_id="default",
+                plugin_dirs=[],
                 llm_override=MockLLM(responses=[]),
             )
 
@@ -46,6 +48,7 @@ class TestBootstrapBasics:
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
         tool_names = engine.tool_registry.names()
@@ -68,6 +71,7 @@ class TestBootstrapBasics:
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
 
@@ -85,6 +89,7 @@ class TestBootstrapBasics:
                 config_dir=str(temp_data_dir),
                 session_id="test-session",
                 thread_id="test-thread",
+                plugin_dirs=[],
                 llm_override=MockLLM(responses=[]),
             )
 
@@ -159,6 +164,7 @@ hooks:
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[{"content": "ok"}]),
         )
 
@@ -184,6 +190,7 @@ hooks:
                 config_dir=str(temp_data_dir),
                 session_id="test-session",
                 thread_id="test-thread",
+                plugin_dirs=[],
                 llm_override=MockLLM(responses=[]),
             )
 
@@ -233,6 +240,7 @@ class ConfiguredPlugin(PluginBase):
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[{"content": "Hello from bootstrap!"}]),
         )
         # Override workspace for the sandbox
@@ -250,6 +258,7 @@ class ConfiguredPlugin(PluginBase):
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
+            plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
         state = engine.state_store.read_state()
