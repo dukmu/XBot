@@ -58,6 +58,9 @@ are the primary freeze gate.
 - Plugin unloading now has a real cleanup path: `PluginLoader.unload()` calls
   `on_unload()`, unregisters recorded hooks, tools, and prompt fragments, and
   releases temporary import paths when no plugins remain loaded.
+- Plugin load failures now also release loader-added import paths that are not
+  needed by already loaded plugins, so broken plugins cannot pollute later
+  imports in the same process.
 - Plugin import setup now keeps external plugin roots importable while loaded
   and drops stale `sys.modules` entries when the same plugin name is loaded
   from a different directory, avoiding handler-resolution bugs during tests or

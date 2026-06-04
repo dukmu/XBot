@@ -456,7 +456,7 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 - `test_protocol.py` — frame serialization/deserialization, encoder, provider config, stdio server subprocess roundtrip, interaction event streaming
 - `test_sandbox.py` — guard_tool_call, path resolution, denials, one-call approvals
 - `test_permissions.py` — deny→allow→ask precedence
-- `test_plugin_loader.py` — discovery, dependency resolution, cycle detection
+- `test_plugin_loader.py` — discovery, dependency resolution, cycle detection, rollback/import-path cleanup
 
 ### Plugin Tests (`tests/plugins/<name>/`) — loads ONLY that plugin
 

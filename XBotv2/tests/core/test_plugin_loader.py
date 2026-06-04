@@ -1,6 +1,7 @@
 """Tests for PluginLoader — discovery, dependency resolution, loading."""
 
 import tempfile
+import sys
 from pathlib import Path
 
 import pytest
@@ -329,6 +330,47 @@ def plugin_tool() -> str:
         assert "broken" not in context_builder._fragments.get("system_instructions", {})
         assert loader.loaded_plugins == []
         assert loader._records == {}
+
+    @pytest.mark.asyncio
+    async def test_loader_releases_import_path_after_failed_load(self, tmp_path):
+        """A failed plugin load does not leave loader-added sys.path entries."""
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "broken"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            """
+from xbotv2.plugin.base import PluginBase
+
+class BrokenPlugin(PluginBase):
+    async def on_load(self, config):
+        raise RuntimeError("load failed")
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "broken", "version": "1.0.0"})
+        )
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=HookManager(),
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+        )
+
+        assert str(plugins_root) not in sys.path
+        with pytest.raises(RuntimeError, match="load failed"):
+            await loader.load()
+
+        assert str(plugins_root) not in sys.path
+        assert loader.loaded_plugins == []
+        assert loader._import_paths == []
 
     @pytest.mark.asyncio
     async def test_loader_unloads_manifest_plugin_resources(self, tmp_path, monkeypatch):

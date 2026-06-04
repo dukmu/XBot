@@ -83,18 +83,32 @@ class PluginLoader:
         """Discover, instantiate, initialize, and register plugins."""
         ordered = self.resolve_order(self.discover())
         for manifest, plugin_dir in ordered:
-            self._ensure_importable(manifest, plugin_dir)
-            plugin_store = PluginStore(self.state_store, manifest.name)
-            plugin = instantiate_plugin(manifest, plugin_store)
-
-            await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
+            plugin = None
+            on_load_completed = False
+            import_path_checkpoint = len(self._import_paths)
             try:
+                self._ensure_importable(manifest, plugin_dir)
+                plugin_store = PluginStore(self.state_store, manifest.name)
+                plugin = instantiate_plugin(manifest, plugin_store)
+
+                await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
+                on_load_completed = True
                 self._records[manifest.name] = self._register(plugin)
             except Exception:
-                try:
-                    await plugin.on_unload()
-                finally:
-                    raise
+                if plugin is not None and on_load_completed:
+                    try:
+                        await plugin.on_unload()
+                    finally:
+                        if not self.loaded_plugins:
+                            self._release_import_paths()
+                        else:
+                            self._release_import_paths_since(import_path_checkpoint)
+                        raise
+                if not self.loaded_plugins:
+                    self._release_import_paths()
+                else:
+                    self._release_import_paths_since(import_path_checkpoint)
+                raise
             self.loaded_plugins.append(plugin)
         return list(self.loaded_plugins)
 
@@ -226,12 +240,15 @@ class PluginLoader:
                 sys.modules.pop(name, None)
 
     def _release_import_paths(self) -> None:
-        for path in reversed(self._import_paths):
+        self._release_import_paths_since(0)
+
+    def _release_import_paths_since(self, index: int) -> None:
+        for path in reversed(self._import_paths[index:]):
             try:
                 sys.path.remove(path)
             except ValueError:
                 pass
-        self._import_paths.clear()
+        del self._import_paths[index:]
 
 
 def resolve_dependencies(
