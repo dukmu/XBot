@@ -117,7 +117,7 @@ class Engine:
         self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
         ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
         await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
-        self._save_messages()
+        await self._save_messages()
 
     # ------------------------------------------------------------------
     # Turn execution
@@ -144,7 +144,7 @@ class Engine:
                 error=exc,
             )
             await self.hook_manager.run(HookStage.ON_ERROR, ctx, short_circuit=False)
-            self._save_messages()
+            await self._save_messages()
             yield {
                 "type": "error",
                 "data": {
@@ -158,10 +158,39 @@ class Engine:
 
         Yields event dicts: {"type": str, "data": {...}}
         """
+        accept_ctx = self._make_hook_context(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        accept_result = await self.hook_manager.run(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            accept_ctx,
+            short_circuit=True,
+        )
+        if isinstance(accept_result, dict):
+            if "user_input" in accept_result:
+                user_input = str(accept_result["user_input"])
+            if "event" in accept_result:
+                yield accept_result["event"]
+                if accept_result.get("turn_complete", True):
+                    return
+        elif accept_result is not None:
+            return
+
         self._turn_count += 1
 
         # 1. Record user message
         self._messages.append(HumanMessage(content=user_input))
+
+        accepted_ctx = self._make_hook_context(
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            accepted_ctx,
+            short_circuit=False,
+        )
 
         # 2. ON_USER_MESSAGE hook
         um_ctx = self._make_hook_context(HookStage.ON_USER_MESSAGE, user_input=user_input)
@@ -191,18 +220,80 @@ class Engine:
                 if isinstance(short_circuit, dict) and "messages" in short_circuit:
                     self._messages = short_circuit["messages"]
 
-            # Build context messages
-            context_messages = self.context_builder.build(
-                messages=self._messages,
-                agent_name=getattr(self.config, "agent_name", "XBotv2"),
-                agent_role=getattr(self.config, "agent_role", ""),
-                user_name="User",
-                user_id="default-user",
-                instructions=getattr(self.config, "instructions", ""),
-                memory=getattr(self.config, "memory", ""),
-                sandbox_summary=self.sandbox_policy.describe() if self.sandbox_policy else "",
-                turn_count=self._turn_count,
+            context_kwargs = {
+                "messages": self._messages,
+                "agent_name": getattr(self.config, "agent_name", "XBotv2"),
+                "agent_role": getattr(self.config, "agent_role", ""),
+                "user_name": "User",
+                "user_id": "default-user",
+                "instructions": getattr(self.config, "instructions", ""),
+                "memory": getattr(self.config, "memory", ""),
+                "sandbox_summary": self.sandbox_policy.describe() if self.sandbox_policy else "",
+                "turn_count": self._turn_count,
+            }
+            bcb_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT_BUILD)
+            build_result = await self.hook_manager.run(
+                HookStage.BEFORE_CONTEXT_BUILD,
+                bcb_ctx,
+                short_circuit=True,
             )
+            if isinstance(build_result, dict):
+                if "messages" in build_result:
+                    self._messages = build_result["messages"]
+                    context_kwargs["messages"] = self._messages
+                if "context_kwargs" in build_result:
+                    context_kwargs.update(build_result["context_kwargs"])
+                if "event" in build_result:
+                    yield build_result["event"]
+                    turn_complete = bool(build_result.get("turn_complete", True))
+                    break
+
+            if hasattr(self.context_builder, "build_components"):
+                # Build source-tagged context components and provider messages.
+                context_components = self.context_builder.build_components(
+                    **context_kwargs,
+                )
+                component_ctx = self._make_hook_context(
+                    HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+                    context_components=context_components,
+                )
+                component_result = await self.hook_manager.run(
+                    HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+                    component_ctx,
+                    short_circuit=False,
+                )
+                if component_ctx.context_components is not None:
+                    context_components = component_ctx.context_components
+                if isinstance(component_result, dict) and "context_components" in component_result:
+                    context_components = component_result["context_components"]
+
+                context_messages = self.context_builder.messages_from_components(
+                    context_components
+                )
+            else:
+                context_messages = self.context_builder.build(
+                    **context_kwargs,
+                )
+
+            ac_ctx = self._make_hook_context(
+                HookStage.AFTER_CONTEXT,
+                context_messages=context_messages,
+            )
+            context_result = await self.hook_manager.run(
+                HookStage.AFTER_CONTEXT,
+                ac_ctx,
+                short_circuit=True,
+            )
+            if isinstance(context_result, dict):
+                if "context_messages" in context_result:
+                    context_messages = context_result["context_messages"]
+                elif "messages" in context_result:
+                    context_messages = context_result["messages"]
+                if "event" in context_result:
+                    yield context_result["event"]
+                    turn_complete = bool(context_result.get("turn_complete", True))
+                    break
+
             acb_ctx = self._make_hook_context(
                 HookStage.AFTER_CONTEXT_BUILD,
                 context_messages=context_messages,
@@ -212,9 +303,6 @@ class Engine:
                 acb_ctx,
                 short_circuit=False,
             )
-
-            ac_ctx = self._make_hook_context(HookStage.AFTER_CONTEXT)
-            await self.hook_manager.run(HookStage.AFTER_CONTEXT, ac_ctx, short_circuit=False)
 
             # --- agent ---
             ba_ctx = self._make_hook_context(HookStage.BEFORE_AGENT)
@@ -227,8 +315,35 @@ class Engine:
                 turn_complete = True
                 break
 
-            # Call LLM (bind tools if available)
+            # Select and bind tools if available.
             tools = self.tool_registry.get_all()
+            pre_schema_request = {
+                "messages": context_messages,
+                "tools": tools,
+                "llm": self.llm,
+            }
+            pre_schema_ctx = self._make_hook_context(
+                HookStage.BEFORE_TOOL_SCHEMA_BIND,
+                context_messages=context_messages,
+                model_request=pre_schema_request,
+            )
+            pre_schema_result = await self.hook_manager.run(
+                HookStage.BEFORE_TOOL_SCHEMA_BIND,
+                pre_schema_ctx,
+                short_circuit=True,
+            )
+            if isinstance(pre_schema_result, dict):
+                if "tools" in pre_schema_result:
+                    tools = pre_schema_result["tools"]
+                    pre_schema_request["tools"] = tools
+                if "messages" in pre_schema_result:
+                    context_messages = pre_schema_result["messages"]
+                    pre_schema_request["messages"] = context_messages
+                if "event" in pre_schema_result:
+                    yield pre_schema_result["event"]
+                    turn_complete = bool(pre_schema_result.get("turn_complete", True))
+                    break
+
             try:
                 llm_with_tools = self.llm.bind_tools(tools) if tools else self.llm
             except NotImplementedError:
@@ -264,6 +379,16 @@ class Engine:
                     model_request["messages"] = request_result["messages"]
                 if "tools" in request_result:
                     model_request["tools"] = request_result["tools"]
+                    try:
+                        model_request["llm"] = (
+                            self.llm.bind_tools(model_request["tools"])
+                            if model_request["tools"]
+                            else self.llm
+                        )
+                    except NotImplementedError:
+                        model_request["llm"] = self.llm
+                if "llm" in request_result:
+                    model_request["llm"] = request_result["llm"]
                 if "event" in request_result:
                     yield request_result["event"]
                     turn_complete = bool(request_result.get("turn_complete", True))
@@ -272,7 +397,21 @@ class Engine:
             context_messages = model_request["messages"]
             tools = model_request["tools"]
             llm_with_tools = model_request["llm"]
-            response = await llm_with_tools.ainvoke(context_messages)
+            try:
+                response = await llm_with_tools.ainvoke(context_messages)
+            except Exception as exc:
+                err_ctx = self._make_hook_context(
+                    HookStage.ON_MODEL_REQUEST_ERROR,
+                    context_messages=context_messages,
+                    model_request=model_request,
+                    error=exc,
+                )
+                await self.hook_manager.run(
+                    HookStage.ON_MODEL_REQUEST_ERROR,
+                    err_ctx,
+                    short_circuit=False,
+                )
+                raise
             self._messages.append(response)
 
             # Yield assistant message
@@ -303,7 +442,20 @@ class Engine:
 
             # AFTER_AGENT hook
             aa_ctx = self._make_hook_context(HookStage.AFTER_AGENT, agent_response=response)
-            await self.hook_manager.run(HookStage.AFTER_AGENT, aa_ctx, short_circuit=False)
+            agent_result = await self.hook_manager.run(
+                HookStage.AFTER_AGENT, aa_ctx, short_circuit=True
+            )
+            if agent_result is not None:
+                if isinstance(agent_result, dict):
+                    if "messages" in agent_result:
+                        self._messages.extend(agent_result["messages"])
+                    if "event" in agent_result:
+                        yield agent_result["event"]
+                    turn_complete = bool(agent_result.get("turn_complete", True))
+                else:
+                    turn_complete = True
+                if turn_complete:
+                    break
 
             # Check for tool calls
             tool_calls = getattr(response, "tool_calls", None)
@@ -322,6 +474,16 @@ class Engine:
 
             # Normalize tool calls
             normalized_calls = self._normalize_tool_calls(tool_calls)
+            parsed_ctx = self._make_hook_context(
+                HookStage.ON_TOOL_CALLS_PARSED,
+                tool_calls=normalized_calls,
+                agent_response=response,
+            )
+            await self.hook_manager.run(
+                HookStage.ON_TOOL_CALLS_PARSED,
+                parsed_ctx,
+                short_circuit=False,
+            )
             yield {
                 "type": "tool_calls_started",
                 "data": {"tool_calls": normalized_calls},
@@ -334,12 +496,18 @@ class Engine:
                 self.tool_registry,
                 sandbox_policy=self.sandbox_policy,
                 permission_system=self.permission_system,
+                hook_manager=self.hook_manager,
+                hook_context_factory=self._make_hook_context,
             )
 
             # AFTER_TOOLS hooks may redact/cache large outputs before they
             # enter message history or cross the protocol boundary.
             at_ctx = self._make_hook_context(HookStage.AFTER_TOOLS, tool_results=tool_messages)
-            await self.hook_manager.run(HookStage.AFTER_TOOLS, at_ctx, short_circuit=False)
+            tools_result = await self.hook_manager.run(
+                HookStage.AFTER_TOOLS, at_ctx, short_circuit=True
+            )
+            if isinstance(tools_result, dict) and "tool_results" in tools_result:
+                tool_messages = tools_result["tool_results"]
 
             self._messages.extend(tool_messages)
 
@@ -361,6 +529,16 @@ class Engine:
                 )
                 await self.hook_manager.run(HookStage.ON_TOOL_MESSAGE, t_ctx, short_circuit=False)
 
+            if tools_result is not None:
+                if isinstance(tools_result, dict):
+                    if "event" in tools_result:
+                        yield tools_result["event"]
+                    turn_complete = bool(tools_result.get("turn_complete", True))
+                else:
+                    turn_complete = True
+                if turn_complete:
+                    break
+
         # 5. ON_TURN_END hook
         te_ctx = self._make_hook_context(HookStage.ON_TURN_END)
         await self.hook_manager.run(HookStage.ON_TURN_END, te_ctx, short_circuit=False)
@@ -368,7 +546,7 @@ class Engine:
         self.state_store.append_event("turn_finished", {"turn": self._turn_count})
 
         # Persist all messages to disk after each turn
-        self._save_messages()
+        await self._save_messages()
 
         yield {"type": "turn_finished", "data": {"turn": self._turn_count}}
 
@@ -376,16 +554,20 @@ class Engine:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _save_messages(self) -> None:
+    async def _save_messages(self) -> None:
         """Persist messages and materialize state after each turn.
 
         Uses truncate-then-append to keep the message log in sync with
         the current message list (compaction may remove old messages).
         Also materializes state.yaml so turn_count et al. are current.
         """
+        before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
+        await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
         self.state_store.clear_messages()
         self.state_store.append_messages(self._messages)
         self.state_store.materialize()
+        after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
+        await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
 
     def _restore_messages(self) -> int:
         """Load messages from disk into memory. Returns count loaded."""
@@ -397,11 +579,15 @@ class Engine:
         stage: HookStage,
         *,
         user_input: str | None = None,
+        context_components: list[Any] | None = None,
         context_messages: list[Any] | None = None,
         agent_response: Any = None,
         model_request: dict[str, Any] | None = None,
         model_response: Any = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        tool_call: dict[str, Any] | None = None,
         tool_results: list[Any] | None = None,
+        tool_result: Any = None,
         error: Exception | None = None,
     ) -> HookContext:
         """Build a HookContext for the current engine state."""
@@ -419,11 +605,15 @@ class Engine:
             ),
             emit=lambda e: self.state_store.append_event("hook_event", e),
             user_input=user_input,
+            context_components=context_components,
             context_messages=context_messages,
             agent_response=agent_response,
             model_request=model_request,
             model_response=model_response,
+            tool_calls=tool_calls,
+            tool_call=tool_call,
             tool_results=tool_results,
+            tool_result=tool_result,
             error=error,
         )
 

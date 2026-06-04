@@ -8,6 +8,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
+from xbotv2.hooks.types import HookStage
+
 logger = logging.getLogger("xbotv2.tools.runtime")
 
 
@@ -17,6 +19,8 @@ async def execute_tools(
     *,
     sandbox_policy: Any = None,  # SandboxPolicy
     permission_system: Any = None,  # PermissionSystem
+    hook_manager: Any = None,
+    hook_context_factory: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
 ) -> list[ToolMessage]:
     """Execute tool calls through the guard pipeline.
@@ -32,6 +36,8 @@ async def execute_tools(
         registry: ToolRegistry instance.
         sandbox_policy: SandboxPolicy instance (optional).
         permission_system: PermissionSystem instance (optional).
+        hook_manager: HookManager instance (optional).
+        hook_context_factory: callable that builds HookContext objects.
         workspace_root: Workspace root for path resolution.
 
     Returns:
@@ -48,6 +54,12 @@ async def execute_tools(
 
         if entry is None:
             denials[tc["id"]] = f"Tool not registered: {tool_name}"
+            await _emit_tool_denied(
+                hook_manager,
+                hook_context_factory,
+                tc,
+                denials[tc["id"]],
+            )
             continue
 
         # Sandbox guard
@@ -57,6 +69,7 @@ async def execute_tools(
             )
             if not allowed:
                 denials[tc["id"]] = reason
+                await _emit_tool_denied(hook_manager, hook_context_factory, tc, reason)
                 continue
 
         # Permission guard
@@ -64,11 +77,23 @@ async def execute_tools(
             decision = permission_system.check(tool_name, tc.get("args", {}))
             if decision == "deny":
                 denials[tc["id"]] = f"Permission denied for tool: {tool_name}"
+                await _emit_tool_denied(
+                    hook_manager,
+                    hook_context_factory,
+                    tc,
+                    denials[tc["id"]],
+                )
                 continue
             if decision == "ask":
                 denials[tc["id"]] = (
                     f"Permission approval required for tool: {tool_name}. "
                     "Interactive approval is not implemented in this runtime."
+                )
+                await _emit_tool_denied(
+                    hook_manager,
+                    hook_context_factory,
+                    tc,
+                    denials[tc["id"]],
                 )
                 continue
 
@@ -98,6 +123,77 @@ async def execute_tools(
         if sandbox_policy and entry.sandbox_mode == "sandboxed":
             args = _resolve_tool_paths(args, sandbox_policy)
 
+        before_result = await _run_tool_hook(
+            hook_manager,
+            hook_context_factory,
+            HookStage.BEFORE_TOOL_CALL,
+            tool_call={**tc, "args": args},
+            short_circuit=True,
+        )
+        if isinstance(before_result, dict):
+            if "tool_call" in before_result:
+                tc = {**tc, **before_result["tool_call"]}
+                tool_name = tc["name"]
+                entry = registry.get(tool_name)
+                if entry is None:
+                    message = ToolMessage(
+                        content=f"Error: Tool not registered: {tool_name}",
+                        tool_call_id=tool_id,
+                        status="error",
+                    )
+                    results.append(message)
+                    await _emit_tool_denied(
+                        hook_manager,
+                        hook_context_factory,
+                        tc,
+                        f"Tool not registered: {tool_name}",
+                    )
+                    continue
+                tool = entry.tool
+                args = dict(tc.get("args", {}))
+            if "args" in before_result:
+                args = dict(before_result["args"])
+            if "tool_result" in before_result:
+                message = _coerce_tool_message(before_result["tool_result"], tool_id)
+                results.append(message)
+                await _run_tool_hook(
+                    hook_manager,
+                    hook_context_factory,
+                    HookStage.AFTER_TOOL_CALL,
+                    tool_call={**tc, "args": args},
+                    tool_result=message,
+                    short_circuit=False,
+                )
+                continue
+            if "deny_reason" in before_result:
+                message = ToolMessage(
+                    content=f"Error: {before_result['deny_reason']}",
+                    tool_call_id=tool_id,
+                    status="error",
+                )
+                results.append(message)
+                await _emit_tool_denied(
+                    hook_manager,
+                    hook_context_factory,
+                    tc,
+                    str(before_result["deny_reason"]),
+                )
+                continue
+        elif before_result is not None:
+            message = ToolMessage(
+                content=f"Error: Tool call blocked by hook: {tool_name}",
+                tool_call_id=tool_id,
+                status="error",
+            )
+            results.append(message)
+            await _emit_tool_denied(
+                hook_manager,
+                hook_context_factory,
+                tc,
+                f"Tool call blocked by hook: {tool_name}",
+            )
+            continue
+
         try:
             # Acquire resource locks for sequential tools
             if tool_name in sequential_tools:
@@ -117,19 +213,38 @@ async def execute_tools(
                 result = f"Tool {tool_name} is not callable"
 
             content = str(result) if not isinstance(result, str) else result
-            results.append(ToolMessage(
+            message = ToolMessage(
                 content=content,
                 tool_call_id=tool_id,
                 status="success",
-            ))
+            )
+            results.append(message)
+            await _run_tool_hook(
+                hook_manager,
+                hook_context_factory,
+                HookStage.AFTER_TOOL_CALL,
+                tool_call={**tc, "args": args},
+                tool_result=message,
+                short_circuit=False,
+            )
 
         except Exception as exc:
             logger.exception("Tool %s failed", tool_name)
-            results.append(ToolMessage(
+            message = ToolMessage(
                 content=f"Error executing {tool_name}: {exc}",
                 tool_call_id=tool_id,
                 status="error",
-            ))
+            )
+            results.append(message)
+            await _run_tool_hook(
+                hook_manager,
+                hook_context_factory,
+                HookStage.AFTER_TOOL_CALL,
+                tool_call={**tc, "args": args},
+                tool_result=message,
+                error=exc,
+                short_circuit=False,
+            )
 
     # Clear one-call sandbox approvals
     if sandbox_policy and hasattr(sandbox_policy, "clear_one_call_approvals"):
@@ -175,3 +290,52 @@ def _resolve_tool_paths(args: dict[str, Any], sandbox_policy: Any) -> dict[str, 
         if isinstance(value, str):
             resolved[key] = sandbox_policy.resolve_tool_path(value)
     return resolved
+
+
+async def _emit_tool_denied(
+    hook_manager: Any,
+    hook_context_factory: Any,
+    tool_call: dict[str, Any],
+    reason: str,
+) -> None:
+    await _run_tool_hook(
+        hook_manager,
+        hook_context_factory,
+        HookStage.ON_TOOL_DENIED,
+        tool_call=tool_call,
+        error=PermissionError(reason),
+        short_circuit=False,
+    )
+
+
+async def _run_tool_hook(
+    hook_manager: Any,
+    hook_context_factory: Any,
+    stage: HookStage,
+    *,
+    tool_call: dict[str, Any],
+    tool_result: ToolMessage | None = None,
+    error: Exception | None = None,
+    short_circuit: bool,
+) -> Any:
+    if hook_manager is None or hook_context_factory is None:
+        return None
+    ctx = hook_context_factory(
+        stage,
+        tool_call=tool_call,
+        tool_result=tool_result,
+        error=error,
+    )
+    return await hook_manager.run(stage, ctx, short_circuit=short_circuit)
+
+
+def _coerce_tool_message(value: Any, tool_call_id: str) -> ToolMessage:
+    if isinstance(value, ToolMessage):
+        return value
+    if isinstance(value, dict):
+        return ToolMessage(
+            content=str(value.get("content", "")),
+            tool_call_id=str(value.get("tool_call_id", tool_call_id)),
+            status=value.get("status", "success"),
+        )
+    return ToolMessage(content=str(value), tool_call_id=tool_call_id, status="success")

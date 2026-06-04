@@ -247,17 +247,22 @@ class TestAllStages:
     def test_all_stages_exist(self):
         """Verify all HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 21
+        assert len(stages) == 33
         stage_values = {s.value for s in stages}
 
         expected = {
             "on_session_init", "on_session_start", "on_session_resume", "on_session_close",
             "on_turn_start", "on_turn_end",
-            "before_context", "after_context", "after_context_build",
-            "before_agent", "after_tool_schema_bind", "before_model_request",
-            "after_model_response", "after_agent",
+            "before_user_message_accept", "after_user_message_accept",
+            "before_context", "before_context_build", "after_context",
+            "after_context_components_build", "after_context_build",
+            "before_agent", "before_tool_schema_bind", "after_tool_schema_bind",
+            "before_model_request", "after_model_response", "on_model_request_error",
+            "after_agent",
             "before_tools", "after_tools",
             "on_user_message", "on_assistant_message", "on_tool_message",
+            "on_tool_calls_parsed", "before_tool_call", "after_tool_call",
+            "on_tool_denied", "before_state_persist", "after_state_persist",
             "on_error", "on_config_reload",
         }
         assert stage_values == expected
@@ -266,6 +271,9 @@ class TestAllStages:
         """Only loop stages permit short-circuit."""
         from xbotv2.hooks.types import SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_CONTEXT in SHORT_CIRCUIT_STAGES
+        assert HookStage.BEFORE_CONTEXT_BUILD in SHORT_CIRCUIT_STAGES
+        assert HookStage.BEFORE_TOOL_SCHEMA_BIND in SHORT_CIRCUIT_STAGES
+        assert HookStage.BEFORE_TOOL_CALL in SHORT_CIRCUIT_STAGES
         assert HookStage.AFTER_TOOLS in SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_MODEL_REQUEST in SHORT_CIRCUIT_STAGES
         assert HookStage.AFTER_CONTEXT_BUILD not in SHORT_CIRCUIT_STAGES

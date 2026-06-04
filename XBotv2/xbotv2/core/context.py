@@ -16,6 +16,7 @@ Message structure (cache-friendly):
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,18 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolM
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class ContextComponent:
+    """A source-tagged context section before provider message conversion."""
+
+    role: str
+    source: str
+    content: str
+    plugin_name: str | None = None
+    stage: str | None = None
+    message: BaseMessage | None = None
 
 
 class ContextBuilder:
@@ -113,10 +126,8 @@ class ContextBuilder:
             system_notice: Runtime notice.
             turn_count, mailbox_pending, active_subagents: Current state.
         """
-        result: list[BaseMessage] = []
-
-        # 1. Stable system prefix (memoized)
-        result.append(SystemMessage(content=self._build_system_prefix(
+        return self.messages_from_components(self.build_components(
+            messages=messages,
             agent_name=agent_name,
             agent_role=agent_role,
             user_name=user_name,
@@ -125,41 +136,115 @@ class ContextBuilder:
             memory=memory,
             sandbox_summary=sandbox_summary,
             system_notice=system_notice,
-        )))
+            turn_count=turn_count,
+            mailbox_pending=mailbox_pending,
+            active_subagents=active_subagents,
+        ))
 
-        # 2. Plugin fragments: system_instructions stage
-        for text in self._fragments["system_instructions"].values():
+    def build_components(
+        self,
+        *,
+        messages: list[BaseMessage],
+        agent_name: str = "XBotv2",
+        agent_role: str = "",
+        user_name: str = "User",
+        user_id: str = "default-user",
+        instructions: str = "",
+        memory: str = "",
+        sandbox_summary: str = "",
+        system_notice: str = "",
+        turn_count: int = 0,
+        mailbox_pending: int = 0,
+        active_subagents: int = 0,
+    ) -> list[ContextComponent]:
+        """Build source-tagged context components in provider render order."""
+        components: list[ContextComponent] = []
+
+        components.append(ContextComponent(
+            role="system",
+            source="system_prefix",
+            content=self._build_system_prefix(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                user_name=user_name,
+                user_id=user_id,
+                instructions=instructions,
+                memory=memory,
+                sandbox_summary=sandbox_summary,
+                system_notice=system_notice,
+            ),
+        ))
+
+        for plugin_name, text in self._fragments["system_instructions"].items():
             if text.strip():
-                result.append(SystemMessage(content=text))
+                components.append(ContextComponent(
+                    role="system",
+                    source="plugin_fragment",
+                    content=text,
+                    plugin_name=plugin_name,
+                    stage="system_instructions",
+                ))
 
-        # 3. Runtime rules (hardcoded — plugins can add via system_rules stage)
-        rules = self._build_rules(mailbox_pending)
-        result.append(SystemMessage(content=rules))
+        components.append(ContextComponent(
+            role="system",
+            source="runtime_rules",
+            content=self._build_rules(mailbox_pending),
+        ))
 
-        # 4. Plugin fragments: system_rules stage
-        for text in self._fragments["system_rules"].values():
+        for plugin_name, text in self._fragments["system_rules"].items():
             if text.strip():
-                result.append(SystemMessage(content=text))
+                components.append(ContextComponent(
+                    role="system",
+                    source="plugin_fragment",
+                    content=text,
+                    plugin_name=plugin_name,
+                    stage="system_rules",
+                ))
 
-        # 5. History (sanitized)
-        result.extend(self._sanitize_history(messages))
+        for message in self._sanitize_history(messages):
+            components.append(ContextComponent(
+                role=getattr(message, "type", "message"),
+                source="history",
+                content=str(getattr(message, "content", "")),
+                message=message,
+            ))
 
-        # 6. Plugin fragments: dag_suffix stage (dynamic)
         suffix_parts: list[str] = []
-        for text in self._fragments["dag_suffix"].values():
+        suffix_owners: list[str] = []
+        for plugin_name, text in self._fragments["dag_suffix"].items():
             if text.strip():
                 suffix_parts.append(text)
+                suffix_owners.append(plugin_name)
 
-        # 7. Current state (always last)
-        suffix_parts.append(self._build_current_state(
+        current_state = self._build_current_state(
             turn_count=turn_count,
             mailbox_pending=mailbox_pending,
             active_subagents=active_subagents,
             user_name=user_name,
             user_id=user_id,
+        )
+        suffix_parts.append(current_state)
+        components.append(ContextComponent(
+            role="system",
+            source="context_suffix",
+            content="\n\n".join(suffix_parts),
+            plugin_name=",".join(suffix_owners) if suffix_owners else None,
+            stage="dag_suffix" if suffix_owners else None,
         ))
-        result.append(SystemMessage(content="\n\n".join(suffix_parts)))
 
+        return components
+
+    @staticmethod
+    def messages_from_components(components: list[ContextComponent]) -> list[BaseMessage]:
+        """Convert source-tagged components into provider messages."""
+        result: list[BaseMessage] = []
+        for component in components:
+            if component.message is not None:
+                result.append(component.message)
+            elif component.role == "system":
+                result.append(SystemMessage(content=component.content))
+            else:
+                result.append(SystemMessage(content=component.content))
         return result
 
     # ------------------------------------------------------------------

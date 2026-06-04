@@ -27,14 +27,22 @@ class HookStage(enum.Enum):
     ON_TURN_START = "on_turn_start"
     ON_TURN_END = "on_turn_end"
 
+    # -- User message intake ----------------------------------------------
+    BEFORE_USER_MESSAGE_ACCEPT = "before_user_message_accept"
+    AFTER_USER_MESSAGE_ACCEPT = "after_user_message_accept"
+
     # -- Loop lifecycle (short-circuit enabled) ---------------------------
     BEFORE_CONTEXT = "before_context"
+    BEFORE_CONTEXT_BUILD = "before_context_build"
     AFTER_CONTEXT = "after_context"
+    AFTER_CONTEXT_COMPONENTS_BUILD = "after_context_components_build"
     AFTER_CONTEXT_BUILD = "after_context_build"
     BEFORE_AGENT = "before_agent"
+    BEFORE_TOOL_SCHEMA_BIND = "before_tool_schema_bind"
     AFTER_TOOL_SCHEMA_BIND = "after_tool_schema_bind"
     BEFORE_MODEL_REQUEST = "before_model_request"
     AFTER_MODEL_RESPONSE = "after_model_response"
+    ON_MODEL_REQUEST_ERROR = "on_model_request_error"
     AFTER_AGENT = "after_agent"
     BEFORE_TOOLS = "before_tools"
     AFTER_TOOLS = "after_tools"
@@ -44,6 +52,16 @@ class HookStage(enum.Enum):
     ON_ASSISTANT_MESSAGE = "on_assistant_message"
     ON_TOOL_MESSAGE = "on_tool_message"
 
+    # -- Tool call lifecycle ----------------------------------------------
+    ON_TOOL_CALLS_PARSED = "on_tool_calls_parsed"
+    BEFORE_TOOL_CALL = "before_tool_call"
+    AFTER_TOOL_CALL = "after_tool_call"
+    ON_TOOL_DENIED = "on_tool_denied"
+
+    # -- Persistence lifecycle --------------------------------------------
+    BEFORE_STATE_PERSIST = "before_state_persist"
+    AFTER_STATE_PERSIST = "after_state_persist"
+
     # -- System events ----------------------------------------------------
     ON_ERROR = "on_error"
     ON_CONFIG_RELOAD = "on_config_reload"
@@ -52,11 +70,14 @@ class HookStage(enum.Enum):
 # Stages that permit short-circuit (first truthy return stops execution)
 SHORT_CIRCUIT_STAGES = frozenset({
     HookStage.BEFORE_CONTEXT,
+    HookStage.BEFORE_CONTEXT_BUILD,
     HookStage.AFTER_CONTEXT,
     HookStage.BEFORE_MODEL_REQUEST,
     HookStage.BEFORE_AGENT,
+    HookStage.BEFORE_TOOL_SCHEMA_BIND,
     HookStage.AFTER_AGENT,
     HookStage.BEFORE_TOOLS,
+    HookStage.BEFORE_TOOL_CALL,
     HookStage.AFTER_TOOLS,
 })
 
@@ -103,10 +124,14 @@ class HookContext:
 
     # Stage-specific data (populated by engine before hook execution)
     user_input: str | None = None
+    context_components: list[Any] | None = None
     context_messages: list[Any] | None = None
     agent_response: Any | None = None
     model_request: dict[str, Any] | None = None
     model_response: Any | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call: dict[str, Any] | None = None
     tool_results: list[Any] | None = None
+    tool_result: Any | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None

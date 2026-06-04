@@ -1,19 +1,29 @@
 # Token Budget And Fine-Grained Hooks
 
 This document records the Phase 1-3 freeze analysis for token estimation,
-usage accounting, budget control, and the next hook surface needed to support
-them as plugins. It is intentionally a design checkpoint, not an implemented
-runtime contract.
+usage accounting, budget control, and the hook surface that supports them as
+plugins. The hook surface described here is implemented in core; the token
+estimator/statistics/budget plugin itself is still future work.
 
 ## Current State
 
 XBotv2 currently has a provider-facing hook path:
 
+- `BEFORE_USER_MESSAGE_ACCEPT` and `AFTER_USER_MESSAGE_ACCEPT` bracket user
+  input admission into history.
+- `BEFORE_CONTEXT_BUILD` can prepare context-builder inputs.
+- `AFTER_CONTEXT_COMPONENTS_BUILD` observes source-tagged context components.
 - `AFTER_CONTEXT_BUILD` observes the final provider message list.
+- `BEFORE_TOOL_SCHEMA_BIND` can filter tools before provider binding.
 - `AFTER_TOOL_SCHEMA_BIND` observes the selected tools and request metadata.
 - `BEFORE_MODEL_REQUEST` can replace messages/tools or short-circuit the
   provider call.
 - `AFTER_MODEL_RESPONSE` observes the raw model response.
+- `ON_MODEL_REQUEST_ERROR` observes provider request failures.
+- `ON_TOOL_CALLS_PARSED`, `BEFORE_TOOL_CALL`, `AFTER_TOOL_CALL`, and
+  `ON_TOOL_DENIED` expose tool-call lifecycle metadata.
+- `BEFORE_STATE_PERSIST` and `AFTER_STATE_PERSIST` bracket message persistence
+  and state materialization.
 
 There is no dedicated token estimator, token statistics collector, or token
 budget controller yet. Existing related mechanisms are narrower:
@@ -21,26 +31,26 @@ budget controller yet. Existing related mechanisms are narrower:
 - `AgentConfig.max_context_tokens` is configured but not enforced.
 - Provider `max_tokens` limits output size only.
 - `CoreStateStore.message_count()` tracks message count, not token cost.
-- `ContextBuilder` memoizes the stable system prefix string but does not expose
-  per-source prompt metadata.
+- `ContextBuilder` memoizes the stable system prefix string and exposes
+  source-tagged context components, but no token counter consumes them yet.
 - The default tool-result cache hook truncates oversized tool output by
   character count and stores the full content under session artifacts.
 
 ## Freeze Risk
 
-Without source-level token accounting, future compact/planning/skills plugins
-can silently consume context budget with static prompt fragments, tool schemas,
-or history growth. A budget plugin can only make coarse decisions from the
-current final message list. That is enough to fail closed before a model call,
-but not enough to explain or optimize the budget by source.
+Without a token-budget plugin, future compact/planning/skills plugins can still
+silently consume context budget with static prompt fragments, tool schemas, or
+history growth. The implemented hook surface now provides the raw evidence
+needed to explain and optimize budget by source, but no runtime module consumes
+that evidence yet.
 
 The Phase 1-3 core can freeze as a plugin-capable foundation, but token
-budgeting should remain a documented Phase 4+ plugin target until these
-extension points are added.
+budgeting should remain a documented Phase 4+ plugin target until estimator,
+statistics, and policy modules are added.
 
-## Hook Stages Worth Adding
+## Implemented Hook Stages
 
-Add these in priority order when implementing token budget plugins:
+These stages are now available for token budget plugins:
 
 | Stage | Purpose |
 |-------|---------|
@@ -102,27 +112,21 @@ Responsibilities:
 - Short-circuit the provider call with a structured `token_budget_exceeded`
   event when no safe request can be built.
 
-## Suggested Rollout
+## Remaining Rollout
 
-1. Add hook stages and `HookContext` fields for user acceptance, context
-   components, tool calls, tool-call result metadata, and provider errors.
-2. Extend `ContextBuilder` with an optional source-tagged component build path
-   while keeping the existing `build()` API compatible.
-3. Move tool filtering before provider `bind_tools()` so
-   `BEFORE_TOOL_SCHEMA_BIND` can affect the actual bound client.
-4. Implement `token_budget` in observe-only mode: estimator plus stats, no
+1. Implement `token_budget` in observe-only mode: estimator plus stats, no
    request rejection.
-5. Enable soft/hard budget policy after stats are persisted and covered by
+2. Enable soft/hard budget policy after stats are persisted and covered by
    tests.
 
 ## Evidence Required Before Freezing This Surface
 
-- Unit tests prove every new hook receives the intended context fields.
+- Core tests prove every new hook receives the intended context fields.
 - Engine tests prove tool filtering happens before provider binding.
 - Engine tests prove provider errors trigger `ON_MODEL_REQUEST_ERROR` and still
   flow through `ON_ERROR`.
-- Context tests prove component metadata preserves render order and plugin
-  ownership.
+- Context/engine tests prove component metadata preserves render order and
+  plugin ownership.
 - Token plugin tests prove estimate-only mode persists source breakdowns without
   changing runtime behavior.
 - Budget plugin tests prove hard-limit short-circuit avoids provider calls and

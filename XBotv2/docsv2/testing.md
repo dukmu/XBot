@@ -7,7 +7,7 @@ tests/
   conftest.py               # Shared fixtures: temp_data_dir, temp_workspace
   core/                     # Core tests (NO plugins loaded)
     conftest.py
-    test_hooks.py           # HookManager, all 21 stages
+    test_hooks.py           # HookManager, all 33 stages
     test_state.py           # CoreStateStore, materializer, events, plugin state
     test_context.py         # ContextBuilder, fragments, cache
     test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
@@ -115,5 +115,7 @@ estimation and budget control are frozen. The important future checks are:
 - context component metadata preserves source, plugin owner, and render order
 - tool-schema filtering happens before provider binding
 - provider request failures trigger a provider-specific hook plus `ON_ERROR`
+- user intake, tool-call lifecycle, and persistence hooks receive the intended
+  context fields
 - observe-only token stats persist source breakdowns without changing behavior
 - hard budget failures short-circuit before any provider call

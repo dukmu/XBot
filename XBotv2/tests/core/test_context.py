@@ -125,6 +125,63 @@ class TestFragmentInjection:
         assert len(messages) > 0
 
 
+class TestContextComponents:
+    """Source-tagged context components for token accounting."""
+
+    def test_build_components_preserves_source_and_owner_metadata(self, context_builder):
+        context_builder.register_fragment(
+            "system_instructions", "skills", "## Skills\nUse skills."
+        )
+        context_builder.register_fragment(
+            "system_rules", "compact", "## Compact\nStay small."
+        )
+        components = context_builder.build_components(
+            messages=[HumanMessage(content="hello")],
+            agent_name="TestBot",
+        )
+
+        sources = [component.source for component in components]
+        assert sources[:3] == [
+            "system_prefix",
+            "plugin_fragment",
+            "runtime_rules",
+        ]
+        assert "history" in sources
+        assert sources[-1] == "context_suffix"
+
+        skills = next(
+            component
+            for component in components
+            if component.plugin_name == "skills"
+        )
+        assert skills.stage == "system_instructions"
+        assert "Skills" in skills.content
+
+        compact = next(
+            component
+            for component in components
+            if component.plugin_name == "compact"
+        )
+        assert compact.stage == "system_rules"
+        assert "Compact" in compact.content
+
+    def test_messages_from_components_roundtrips_to_build_shape(self, context_builder):
+        raw_messages = [HumanMessage(content="hello")]
+        direct = context_builder.build(messages=raw_messages, agent_name="TestBot")
+        via_components = context_builder.messages_from_components(
+            context_builder.build_components(messages=raw_messages, agent_name="TestBot")
+        )
+
+        assert [type(message) for message in via_components] == [
+            type(message) for message in direct
+        ]
+        assert via_components[0].content == direct[0].content
+        assert via_components[1].content == direct[1].content
+        assert via_components[2].content == direct[2].content
+        assert "Current State" in via_components[-1].content
+        assert "Current State" in direct[-1].content
+
+
 class TestCacheIsolation:
     """System prefix caching is instance-level, not module-level."""
 

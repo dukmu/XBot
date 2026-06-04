@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tools import tool as langchain_tool
 
 from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
+from xbotv2.core.context import ContextBuilder, ContextComponent
 from xbotv2.hooks.manager import HookManager
 from xbotv2.hooks.types import HookStage
 from xbotv2.llm.mock import MockLLM
@@ -18,6 +18,12 @@ from xbotv2.tools.sandbox import SandboxPolicy
 def echo(message: str) -> str:
     """Echo a message back."""
     return f"Echo: {message}"
+
+
+@langchain_tool
+def shout(message: str) -> str:
+    """Uppercase a message."""
+    return message.upper()
 
 
 def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
@@ -291,6 +297,293 @@ class TestEngineHooks:
             "turn_finished",
         ]
         assert llm.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_user_message_accept_hooks_can_rewrite_input(self, state_store, temp_workspace):
+        """User intake hooks run before history is recorded."""
+        llm = MockLLM(responses=[{"content": "ok"}])
+        registry = ToolRegistry()
+        calls = []
+
+        async def before_accept(ctx):
+            calls.append(("before", ctx.user_input))
+            return {"user_input": "rewritten"}
+
+        async def after_accept(ctx):
+            calls.append(("after", ctx.user_input, ctx.state["messages"][-1].content))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, before_accept)
+        hook_manager.register(HookStage.AFTER_USER_MESSAGE_ACCEPT, after_accept)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("original")]
+
+        assert events[-1]["type"] == "turn_finished"
+        assert calls == [("before", "original"), ("after", "rewritten", "rewritten")]
+        assert engine.messages[0].content == "rewritten"
+
+    @pytest.mark.asyncio
+    async def test_context_component_and_build_hooks_fire(self, state_store, temp_workspace):
+        """Context hooks expose source-tagged components before provider messages."""
+        llm = MockLLM(responses=[{"content": "ok"}])
+        registry = ToolRegistry()
+        calls = []
+
+        async def before_context_build(ctx):
+            calls.append(("before_build", ctx.stage))
+            return {"context_kwargs": {"instructions": "from hook"}}
+
+        async def after_components(ctx):
+            calls.append((
+                "components",
+                [component.source for component in ctx.context_components],
+            ))
+            ctx.context_components = [
+                *ctx.context_components,
+                ContextComponent(
+                    role="system",
+                    source="hook_component",
+                    content="## Hook Component\nvisible",
+                ),
+            ]
+
+        async def after_context_build(ctx):
+            calls.append(("messages", [message.content for message in ctx.context_messages]))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_CONTEXT_BUILD, before_context_build)
+        hook_manager.register(HookStage.AFTER_CONTEXT_COMPONENTS_BUILD, after_components)
+        hook_manager.register(HookStage.AFTER_CONTEXT_BUILD, after_context_build)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert calls[0] == ("before_build", HookStage.BEFORE_CONTEXT_BUILD)
+        assert "system_prefix" in calls[1][1]
+        assert "history" in calls[1][1]
+        assert any("from hook" in content for content in calls[2][1])
+        assert any("Hook Component" in content for content in calls[2][1])
+
+    @pytest.mark.asyncio
+    async def test_before_tool_schema_bind_filters_actual_bound_tools(
+        self, state_store, temp_workspace
+    ):
+        """Tool schema hooks run before provider bind_tools is called."""
+        class RecordingLLM(MockLLM):
+            def __init__(self):
+                super().__init__([{"content": "ok"}])
+                object.__setattr__(self, "bound_names", None)
+
+            def bind_tools(self, tools, **kwargs):
+                object.__setattr__(self, "bound_names", [tool.name for tool in tools])
+                return self
+
+        llm = RecordingLLM()
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+
+        async def filter_tools(ctx):
+            assert [tool.name for tool in ctx.model_request["tools"]] == ["echo"]
+            return {"tools": []}
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_TOOL_SCHEMA_BIND, filter_tools)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert llm.bound_names is None
+
+    @pytest.mark.asyncio
+    async def test_before_model_request_rebinds_when_tools_change(
+        self, state_store, temp_workspace
+    ):
+        """Late request hooks that change tools also update the bound client."""
+        class RecordingLLM(MockLLM):
+            def __init__(self):
+                super().__init__([{"content": "ok"}])
+                object.__setattr__(self, "bound_history", [])
+
+            def bind_tools(self, tools, **kwargs):
+                self.bound_history.append([tool.name for tool in tools])
+                return self
+
+        llm = RecordingLLM()
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+        registry.register(shout, sandbox_mode="host")
+
+        async def keep_echo(ctx):
+            return {"tools": [tool for tool in ctx.model_request["tools"] if tool.name == "echo"]}
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, keep_echo)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert llm.bound_history == [["echo", "shout"], ["echo"]]
+
+    @pytest.mark.asyncio
+    async def test_model_request_error_hook_runs_before_on_error(self, state_store, temp_workspace):
+        """Provider-call failures get a provider-specific hook and then ON_ERROR."""
+        llm = MockLLM(responses=[])
+        registry = ToolRegistry()
+        calls = []
+
+        async def on_model_error(ctx):
+            calls.append(("model", type(ctx.error).__name__))
+
+        async def on_error(ctx):
+            calls.append(("engine", type(ctx.error).__name__))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.ON_MODEL_REQUEST_ERROR, on_model_error)
+        hook_manager.register(HookStage.ON_ERROR, on_error)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("test")]
+
+        assert events[-1]["type"] == "error"
+        assert calls == [("model", "RuntimeError"), ("engine", "RuntimeError")]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_lifecycle_hooks_fire(self, state_store, temp_workspace):
+        """Parsed, per-call before/after, and denial hooks are visible."""
+        llm = MockLLM(responses=[
+            {
+                "content": "tools",
+                "tool_calls": [
+                    {"name": "echo", "args": {"message": "hi"}, "id": "call_ok"},
+                    {"name": "missing", "args": {}, "id": "call_bad"},
+                ],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+        calls = []
+
+        async def parsed(ctx):
+            calls.append(("parsed", [call["name"] for call in ctx.tool_calls]))
+
+        async def before_call(ctx):
+            calls.append(("before", ctx.tool_call["name"]))
+
+        async def after_call(ctx):
+            calls.append(("after", ctx.tool_call["name"], ctx.tool_result.status))
+
+        async def denied(ctx):
+            calls.append(("denied", ctx.tool_call["name"], type(ctx.error).__name__))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.ON_TOOL_CALLS_PARSED, parsed)
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, before_call)
+        hook_manager.register(HookStage.AFTER_TOOL_CALL, after_call)
+        hook_manager.register(HookStage.ON_TOOL_DENIED, denied)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("test")]
+
+        assert events[-1]["type"] == "turn_finished"
+        assert ("parsed", ["echo", "missing"]) in calls
+        assert ("before", "echo") in calls
+        assert ("after", "echo", "success") in calls
+        assert ("denied", "missing", "PermissionError") in calls
+
+    @pytest.mark.asyncio
+    async def test_state_persist_hooks_fire(self, state_store, temp_workspace):
+        """Persistence hooks bracket message materialization."""
+        llm = MockLLM(responses=[{"content": "ok"}])
+        registry = ToolRegistry()
+        calls = []
+
+        async def before_persist(ctx):
+            calls.append(("before", len(ctx.state["messages"]), state_store.message_count()))
+
+        async def after_persist(ctx):
+            calls.append(("after", len(ctx.state["messages"]), state_store.message_count()))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, before_persist)
+        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert calls[0] == ("before", 2, 0)
+        assert calls[1] == ("after", 2, 2)
 
 
 class TestEngineState:

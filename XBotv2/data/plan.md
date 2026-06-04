@@ -24,7 +24,7 @@ XBotv2/
       bootstrap.py             # Full bootstrap sequence
     hooks/                     # Complete hook lifecycle
       manager.py               # HookManager: register, execute, lifecycle stages
-      types.py                 # HookStage enum (21 stages), HookContext dataclass
+      types.py                 # HookStage enum (33 stages), HookContext dataclass
     plugin/                    # Plugin system
       loader.py                # PluginLoader: discover, resolve deps, load
       base.py                  # PluginBase abstract class
@@ -118,7 +118,7 @@ Plugins register fragments at named stages: `system_prefix`, `system_instruction
 
 Cache invalidation uses explicit cache objects (constructor-injected), not module-level globals — this fixes the current test leakage problem.
 
-## Hook System (21 Stages)
+## Hook System (33 Stages)
 
 ### Stage Definitions (`xbotv2/hooks/types.py`)
 
@@ -134,14 +134,22 @@ class HookStage(Enum):
     ON_TURN_START = "on_turn_start"           # User message received
     ON_TURN_END = "on_turn_end"               # Turn processing complete
 
+    # User message intake
+    BEFORE_USER_MESSAGE_ACCEPT = "before_user_message_accept"
+    AFTER_USER_MESSAGE_ACCEPT = "after_user_message_accept"
+
     # Loop lifecycle (short-circuit on truthy return)
     BEFORE_CONTEXT = "before_context"         # Before context assembly
+    BEFORE_CONTEXT_BUILD = "before_context_build"  # Before ContextBuilder runs
     AFTER_CONTEXT = "after_context"           # After context assembly
+    AFTER_CONTEXT_COMPONENTS_BUILD = "after_context_components_build"  # Source-tagged components built
     AFTER_CONTEXT_BUILD = "after_context_build"  # Final provider messages built
     BEFORE_AGENT = "before_agent"             # Before LLM call
+    BEFORE_TOOL_SCHEMA_BIND = "before_tool_schema_bind"  # Before provider tool binding
     AFTER_TOOL_SCHEMA_BIND = "after_tool_schema_bind"  # Tools selected/bound for request
     BEFORE_MODEL_REQUEST = "before_model_request"  # Final provider request gate
     AFTER_MODEL_RESPONSE = "after_model_response"  # Raw provider response received
+    ON_MODEL_REQUEST_ERROR = "on_model_request_error"  # Provider request failed
     AFTER_AGENT = "after_agent"               # After LLM call
     BEFORE_TOOLS = "before_tools"             # Before tool execution
     AFTER_TOOLS = "after_tools"               # After tool execution
@@ -150,6 +158,16 @@ class HookStage(Enum):
     ON_USER_MESSAGE = "on_user_message"       # User input parsed
     ON_ASSISTANT_MESSAGE = "on_assistant_message"  # LLM response received
     ON_TOOL_MESSAGE = "on_tool_message"       # Tool result received
+
+    # Tool call lifecycle
+    ON_TOOL_CALLS_PARSED = "on_tool_calls_parsed"
+    BEFORE_TOOL_CALL = "before_tool_call"
+    AFTER_TOOL_CALL = "after_tool_call"
+    ON_TOOL_DENIED = "on_tool_denied"
+
+    # Persistence lifecycle
+    BEFORE_STATE_PERSIST = "before_state_persist"
+    AFTER_STATE_PERSIST = "after_state_persist"
 
     # System events
     ON_ERROR = "on_error"                     # Error occurred
@@ -172,11 +190,15 @@ class HookContext:
     emit: Callable[[Event], None]      # Emit system events
     # Stage-specific (populated by engine):
     user_input: str | None = None
+    context_components: list[Any] | None = None
     context_messages: list[Any] | None = None
     agent_response: Any | None = None
     model_request: dict[str, Any] | None = None
     model_response: Any | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call: dict[str, Any] | None = None
     tool_results: list | None = None
+    tool_result: Any | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None
 ```
@@ -186,9 +208,10 @@ class HookContext:
 - **LOOP/pre-request hooks** (before/after context/agent/tools and before_model_request): short-circuit on first truthy return — used by compact/plugin guards to replace messages, deny execution, or stop before provider calls
 - **All other hooks** (session, turn, message, error, config): all registered functions always run; errors are logged, not propagated
 - **ON_SESSION_INIT hooks** can register tools via `ctx.tools.register()`
-- `AFTER_CONTEXT_BUILD`, `AFTER_TOOL_SCHEMA_BIND`, `BEFORE_MODEL_REQUEST`, and
-  `AFTER_MODEL_RESPONSE` expose the provider-facing request surface needed by
-  future token estimation, usage statistics, and token budget control plugins.
+- User intake, source-tagged context components, pre-bind tool filtering,
+  provider request errors, per-tool call lifecycle hooks, and persistence
+  hooks expose the request surface needed by future token estimation, usage
+  statistics, and token budget control plugins.
 
 ## Plugin System
 
