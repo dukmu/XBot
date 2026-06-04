@@ -124,6 +124,36 @@ def test_curses_client_records_reader_errors():
     assert client.state.errors == ["reader failed"]
 
 
+def test_curses_client_routes_text_to_live_user_input_queue():
+    client = CursesTuiClient()
+    client._loop = object()
+    client.state.apply_event({
+        "type": "user_input_required",
+        "data": {"request_id": "user_input:c1", "question": "Proceed?"},
+    })
+
+    client._send_text("yes")
+
+    assert client._answers.get_nowait() == "yes"
+    assert client.state.messages == []
+    assert client._pending == set()
+
+
+def test_curses_client_routes_text_to_live_permission_queue():
+    client = CursesTuiClient()
+    client._loop = object()
+    client.state.apply_event({
+        "type": "permission_request",
+        "data": {"request_id": "permission:c1", "reason": "approve?"},
+    })
+
+    client._send_text("yes")
+
+    assert client._permission_decisions.get_nowait() == "allow"
+    assert client.state.messages == []
+    assert client._pending == set()
+
+
 @pytest.mark.asyncio
 async def test_curses_client_marks_ready_after_session_connect():
     client = CursesTuiClient()

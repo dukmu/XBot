@@ -185,9 +185,10 @@ are the primary freeze gate.
   implemented modules yet. The core now exposes the needed hook surface and
   source-tagged context metadata, but no plugin consumes it yet.
 - The subprocess tests cover direct server JSONL, interaction event streaming,
-  and non-curses terminal wrapper roundtrips. Curses screen-level behavior is
-  covered only by state/queue/import/render smoke tests, not by an interactive
-  terminal golden test.
+  live user-input and permission responses, and non-curses terminal wrapper
+  roundtrips. Curses behavior is covered by state/render, queue draining,
+  dependency-boundary, and live interaction routing tests, but not by an
+  interactive terminal golden test.
 
 ## Freeze Gates
 
