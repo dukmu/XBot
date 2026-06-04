@@ -80,7 +80,7 @@ These stages are now available for token budget plugins:
 | `BEFORE_TOOL_CALL` | Per-tool-call gate for permissions, auditing, and argument rewrites; rewritten ids and sandboxed paths are honored. |
 | `AFTER_TOOL_CALL` | Per-tool-call result observation before batch-level `AFTER_TOOLS`. |
 | `ON_TOOL_CALL_FAILURE` | Observe tool exceptions with the generated error ToolMessage. |
-| `POST_TOOL_BATCH` | Observe all tool calls and results in one batch. |
+| `POST_TOOL_BATCH` | Observe all tool calls and results in one batch after per-call rewrites. |
 | `ON_TOOL_DENIED` | Structured event for sandbox or permission denial. |
 | `ON_CLIENT_EVENT` | Observe client-directed events such as `client_message`, `user_input_required`, and permission notices. |
 | `ON_STOP` | Record successful turn stop reason. |

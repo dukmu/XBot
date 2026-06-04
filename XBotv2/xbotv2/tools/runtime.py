@@ -44,6 +44,7 @@ async def execute_tools(
         List of ToolMessage instances (one per tool call).
     """
     results: list[ToolMessage] = []
+    observed_tool_calls: list[dict[str, Any]] = []
     denials: dict[str, str] = {}  # tool_call_id → reason
     denial_events: dict[str, list[dict[str, Any]]] = {}
     sequential_tools: set[str] = set()
@@ -154,6 +155,7 @@ async def execute_tools(
         tool_id = tc["id"]
 
         if tool_id in denials:
+            observed_tool_calls.append(tc)
             results.append(ToolMessage(
                 content=f"Error: {denials[tool_id]}",
                 tool_call_id=tool_id,
@@ -191,6 +193,7 @@ async def execute_tools(
                         tool_call_id=tool_id,
                         status="error",
                     )
+                    observed_tool_calls.append(tc)
                     results.append(message)
                     await _emit_tool_denied(
                         hook_manager,
@@ -209,6 +212,7 @@ async def execute_tools(
                     args = _resolve_tool_paths(args, sandbox_policy)
             if "tool_result" in before_result:
                 message = _coerce_tool_message(before_result["tool_result"], tool_id)
+                observed_tool_calls.append({**tc, "args": args})
                 results.append(message)
                 await _run_tool_hook(
                     hook_manager,
@@ -225,6 +229,7 @@ async def execute_tools(
                     tool_call_id=tool_id,
                     status="error",
                 )
+                observed_tool_calls.append({**tc, "args": args})
                 results.append(message)
                 await _emit_tool_denied(
                     hook_manager,
@@ -239,6 +244,7 @@ async def execute_tools(
                 tool_call_id=tool_id,
                 status="error",
             )
+            observed_tool_calls.append({**tc, "args": args})
             results.append(message)
             await _emit_tool_denied(
                 hook_manager,
@@ -273,6 +279,7 @@ async def execute_tools(
                 status=message_payload["status"],
                 additional_kwargs=message_payload["additional_kwargs"],
             )
+            observed_tool_calls.append({**tc, "args": args})
             results.append(message)
             await _run_tool_hook(
                 hook_manager,
@@ -290,6 +297,7 @@ async def execute_tools(
                 tool_call_id=tool_id,
                 status="error",
             )
+            observed_tool_calls.append({**tc, "args": args})
             results.append(message)
             await _run_tool_hook(
                 hook_manager,
@@ -317,7 +325,7 @@ async def execute_tools(
     if hook_manager is not None and hook_context_factory is not None:
         ctx = hook_context_factory(
             HookStage.POST_TOOL_BATCH,
-            tool_calls=tool_calls,
+            tool_calls=observed_tool_calls,
             tool_results=results,
         )
         await hook_manager.run(HookStage.POST_TOOL_BATCH, ctx, short_circuit=False)

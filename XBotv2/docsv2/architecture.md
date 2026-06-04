@@ -180,7 +180,7 @@ until a later explicit turn/session event reactivates the store.
 | BEFORE_TOOL_CALL | Yes | Per-tool call gate/rewrite; rewritten ids and sandboxed paths are honored |
 | AFTER_TOOL_CALL | No | Per-tool call result observed |
 | ON_TOOL_CALL_FAILURE | No | Tool callable raised an exception |
-| POST_TOOL_BATCH | No | Batch-level observation after all requested tools finish or fail closed |
+| POST_TOOL_BATCH | No | Batch-level observation after all requested tools finish or fail closed; tool calls reflect per-call rewrites |
 | ON_TOOL_DENIED | No | Tool call denied by registry, sandbox, permission, or hook |
 | ON_CLIENT_EVENT | No | Client-directed event about to be persisted and streamed |
 | BEFORE_STATE_PERSIST | No | Before message persistence and materialization |

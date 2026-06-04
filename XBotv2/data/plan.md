@@ -24,7 +24,7 @@ XBotv2/
       bootstrap.py             # Full bootstrap sequence
     hooks/                     # Complete hook lifecycle
       manager.py               # HookManager: register, execute, lifecycle stages
-      types.py                 # HookStage enum (41 stages), HookContext dataclass
+      types.py                 # HookStage enum (42 stages), HookContext dataclass
     plugin/                    # Plugin system
       loader.py                # PluginLoader: discover, resolve deps, load
       base.py                  # PluginBase abstract class
@@ -118,7 +118,7 @@ Plugins register fragments at named stages: `system_prefix`, `system_instruction
 
 Cache invalidation uses explicit cache objects (constructor-injected), not module-level globals — this fixes the current test leakage problem.
 
-## Hook System (41 Stages)
+## Hook System (42 Stages)
 
 ### Stage Definitions (`xbotv2/hooks/types.py`)
 
@@ -172,6 +172,7 @@ class HookStage(Enum):
     ON_TOOL_CALL_FAILURE = "on_tool_call_failure"
     POST_TOOL_BATCH = "post_tool_batch"
     ON_TOOL_DENIED = "on_tool_denied"
+    ON_CLIENT_EVENT = "on_client_event"
 
     # Persistence lifecycle
     BEFORE_STATE_PERSIST = "before_state_persist"
@@ -210,6 +211,7 @@ class HookContext:
     stop_reason: str | None = None
     compact_reason: str | None = None
     permission_decision: str | None = None
+    client_event: dict[str, Any] | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None
 ```
@@ -221,9 +223,9 @@ class HookContext:
 - **ON_SESSION_INIT hooks** can register tools via `ctx.tools.register()`
 - User intake, source-tagged context components, pre-bind tool filtering,
   provider request errors, compaction, permission, per-tool call and batch
-  lifecycle hooks, stop/failure hooks, and persistence hooks expose the request
-  surface needed by future token estimation, usage statistics, and token budget
-  control plugins.
+  lifecycle hooks, client-directed events, stop/failure hooks, and persistence
+  hooks expose the request surface needed by future token estimation, usage
+  statistics, and token budget control plugins.
 
 ## Plugin System
 

@@ -152,8 +152,17 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
             ctx.tool_result.tool_call_id,
         ))
 
+    async def post_batch(ctx):
+        calls.append((
+            "batch",
+            ctx.tool_calls[0]["id"],
+            ctx.tool_calls[0]["args"]["path"],
+            ctx.tool_results[0].tool_call_id,
+        ))
+
     hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_tool_call)
     hook_manager.register(HookStage.AFTER_TOOL_CALL, after_tool_call)
+    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
 
     results = await execute_tools(
         [{"name": "filesystem_write", "args": {"path": "old.txt", "content": "no"}, "id": "old_id"}],
@@ -171,6 +180,12 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     assert calls[0] == ("before", "old_id", str(temp_workspace / "old.txt"))
     assert calls[1] == (
         "after",
+        "rewritten_id",
+        str(temp_workspace / "rewritten.txt"),
+        "rewritten_id",
+    )
+    assert calls[2] == (
+        "batch",
         "rewritten_id",
         str(temp_workspace / "rewritten.txt"),
         "rewritten_id",

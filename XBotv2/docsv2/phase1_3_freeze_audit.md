@@ -51,11 +51,11 @@ are the primary freeze gate.
 - Personality-declared hooks in `personality.yaml` are now resolved and
   registered during bootstrap; invalid hook targets fail loudly instead of
   being silently ignored.
-- Documentation now uses the implemented 41 hook stages, including user intake,
+- Documentation now uses the implemented 42 hook stages, including user intake,
   source-tagged context component, pre-bind tool schema, provider error,
   stop/failure, pre/post compact, permission request/denied, per-tool-call,
-  tool batch, and persistence hooks needed for future token estimation,
-  statistics, and budget control plugins.
+  tool batch, client-event, and persistence hooks needed for future token
+  estimation, statistics, and budget control plugins.
 - Bootstrap now passes externally supplied `plugin_configs` through to
   `PluginLoader`, while preserving personality plugin config overrides.
 - Added `docsv2/token_budget_hooks.md` to record the current token-estimation
@@ -101,6 +101,9 @@ are the primary freeze gate.
   `ToolMessage.tool_call_id` and re-run sandbox path resolution for rewritten
   calls, so tool lifecycle hooks cannot desynchronize protocol-visible IDs or
   execute rewritten paths outside the workspace.
+- `POST_TOOL_BATCH` now receives the actual per-result tool calls after
+  `BEFORE_TOOL_CALL` rewrites and sandbox path resolution, keeping batch-level
+  auditing aligned with per-tool hooks and protocol-visible result IDs.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.
