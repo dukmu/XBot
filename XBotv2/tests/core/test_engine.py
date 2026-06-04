@@ -299,6 +299,52 @@ class TestEngineHooks:
         assert llm.call_count == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stage",
+        [
+            HookStage.BEFORE_CONTEXT,
+            HookStage.BEFORE_CONTEXT_BUILD,
+            HookStage.AFTER_CONTEXT,
+            HookStage.BEFORE_TOOL_SCHEMA_BIND,
+            HookStage.BEFORE_MODEL_REQUEST,
+        ],
+    )
+    async def test_unstructured_guard_short_circuit_emits_error(
+        self, state_store, temp_workspace, stage
+    ):
+        """Guard hooks cannot accidentally short-circuit and still call the provider."""
+        llm = MockLLM(responses=[{"content": "Should not be called"}])
+        registry = ToolRegistry()
+
+        async def stop(ctx):
+            return True
+
+        hook_manager = HookManager()
+        hook_manager.register(stage, stop)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("test")]
+
+        assert [event["type"] for event in events] == [
+            "turn_started",
+            "error",
+            "turn_finished",
+        ]
+        assert events[1]["data"]["code"] == "hook_short_circuit_rejected"
+        assert events[1]["data"]["stage"] == stage.value
+        assert llm.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_user_message_accept_hooks_can_rewrite_input(self, state_store, temp_workspace):
         """User intake hooks run before history is recorded."""
         llm = MockLLM(responses=[{"content": "ok"}])

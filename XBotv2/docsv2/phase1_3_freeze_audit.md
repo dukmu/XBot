@@ -63,6 +63,10 @@ are the primary freeze gate.
 - User-intake hook short-circuits now emit a bounded `user_message_rejected`
   error if the hook does not provide its own event, so protocol clients never
   hang on a pre-history rejection.
+- Pre-context and pre-request guard hook short-circuits now fail closed with a
+  bounded `hook_short_circuit_rejected` error when a hook returns a bare truthy
+  value instead of a structured result; this prevents accidental provider calls
+  after a plugin intended to stop execution.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

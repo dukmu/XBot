@@ -29,6 +29,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   loop/request (14), message (3), tool call (4), persistence (2), system
   events (2)
 - Loop hooks short-circuit on truthy return
+- Guard hooks that short-circuit without a structured result fail closed with a
+  bounded `hook_short_circuit_rejected` error instead of continuing silently
 - Fine-grained request hooks expose source-tagged context components, final
   provider messages, pre-bind and post-bind tools, provider request metadata,
   provider responses, provider errors, per-tool call lifecycle, and persistence
@@ -148,3 +150,9 @@ All such concepts live in plugin-owned state namespaces.
 | AFTER_STATE_PERSIST | No | After message persistence and materialization |
 | ON_ERROR | No | Error occurred |
 | ON_CONFIG_RELOAD | No | Config was reloaded |
+
+Short-circuit guard hooks should return a structured dict when they want to
+rewrite context, tools, messages, or emit a custom event. A bare truthy return
+from pre-context/pre-request guard stages is treated as a rejection and converted
+to a bounded error event so protocol clients do not hang and provider calls do
+not continue accidentally.

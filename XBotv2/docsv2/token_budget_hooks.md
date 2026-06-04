@@ -25,6 +25,11 @@ XBotv2 currently has a provider-facing hook path:
 - `BEFORE_STATE_PERSIST` and `AFTER_STATE_PERSIST` bracket message persistence
   and state materialization.
 
+Pre-context and pre-request guard hooks must return structured dicts for
+rewrites or custom stop events. A bare truthy short-circuit is converted to a
+bounded `hook_short_circuit_rejected` error so a budget plugin cannot
+accidentally let a provider request continue after it intended to stop.
+
 There is no dedicated token estimator, token statistics collector, or token
 budget controller yet. Existing related mechanisms are narrower:
 

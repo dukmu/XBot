@@ -235,6 +235,10 @@ class Engine:
                 # Hook short-circuited — could be compaction replacing messages
                 if isinstance(short_circuit, dict) and "messages" in short_circuit:
                     self._messages = short_circuit["messages"]
+                elif not isinstance(short_circuit, dict):
+                    yield self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
+                    turn_complete = True
+                    break
 
             context_kwargs = {
                 "messages": self._messages,
@@ -263,6 +267,10 @@ class Engine:
                     yield build_result["event"]
                     turn_complete = bool(build_result.get("turn_complete", True))
                     break
+            elif build_result is not None:
+                yield self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT_BUILD)
+                turn_complete = True
+                break
 
             if hasattr(self.context_builder, "build_components"):
                 # Build source-tagged context components and provider messages.
@@ -309,6 +317,10 @@ class Engine:
                     yield context_result["event"]
                     turn_complete = bool(context_result.get("turn_complete", True))
                     break
+            elif context_result is not None:
+                yield self._default_hook_rejection_event(HookStage.AFTER_CONTEXT)
+                turn_complete = True
+                break
 
             acb_ctx = self._make_hook_context(
                 HookStage.AFTER_CONTEXT_BUILD,
@@ -359,6 +371,10 @@ class Engine:
                     yield pre_schema_result["event"]
                     turn_complete = bool(pre_schema_result.get("turn_complete", True))
                     break
+            elif pre_schema_result is not None:
+                yield self._default_hook_rejection_event(HookStage.BEFORE_TOOL_SCHEMA_BIND)
+                turn_complete = True
+                break
 
             try:
                 llm_with_tools = self.llm.bind_tools(tools) if tools else self.llm
@@ -409,6 +425,10 @@ class Engine:
                     yield request_result["event"]
                     turn_complete = bool(request_result.get("turn_complete", True))
                     break
+            elif request_result is not None:
+                yield self._default_hook_rejection_event(HookStage.BEFORE_MODEL_REQUEST)
+                turn_complete = True
+                break
 
             context_messages = model_request["messages"]
             tools = model_request["tools"]
@@ -589,6 +609,17 @@ class Engine:
         """Load messages from disk into memory. Returns count loaded."""
         self._messages = self.state_store.read_messages()
         return len(self._messages)
+
+    @staticmethod
+    def _default_hook_rejection_event(stage: HookStage) -> dict[str, Any]:
+        return {
+            "type": "error",
+            "data": {
+                "code": "hook_short_circuit_rejected",
+                "message": f"Hook {stage.value} short-circuited without a structured result.",
+                "stage": stage.value,
+            },
+        }
 
     def _make_hook_context(
         self,
