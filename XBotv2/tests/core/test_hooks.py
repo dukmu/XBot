@@ -188,6 +188,35 @@ class TestHookExecution:
         assert order == ["fail", "good"]
 
     @pytest.mark.asyncio
+    async def test_strict_lifecycle_hook_errors_run_all_then_raise(
+        self, hook_manager, hook_context
+    ):
+        """Critical lifecycle stages run all callbacks, then expose failures."""
+        order = []
+
+        async def failing_hook(ctx):
+            order.append("fail")
+            raise RuntimeError("persist failed")
+
+        async def good_hook(ctx):
+            order.append("good")
+
+        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, failing_hook)
+        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, good_hook)
+
+        hook_context.stage = HookStage.BEFORE_STATE_PERSIST
+        with pytest.raises(ExceptionGroup, match="before_state_persist") as exc_info:
+            await hook_manager.run(
+                HookStage.BEFORE_STATE_PERSIST,
+                hook_context,
+                short_circuit=False,
+            )
+
+        assert order == ["fail", "good"]
+        assert len(exc_info.value.exceptions) == 1
+        assert isinstance(exc_info.value.exceptions[0], RuntimeError)
+
+    @pytest.mark.asyncio
     async def test_hook_error_in_loop_raises(self, hook_manager, hook_context):
         """An error in a loop hook propagates (short_circuit=True)."""
         async def failing_hook(ctx):

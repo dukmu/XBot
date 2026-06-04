@@ -203,6 +203,13 @@ until a later explicit turn/session event reactivates the store.
 | ON_ERROR | No | Error occurred |
 | ON_CONFIG_RELOAD | No | Config was reloaded |
 
+Most non-short-circuit hooks log failures and continue so observation plugins
+do not break the run. Critical lifecycle stages (`ON_SESSION_INIT`,
+`ON_SESSION_CLOSE`, `BEFORE_STATE_PERSIST`, `AFTER_STATE_PERSIST`) still run all
+registered callbacks, then raise an `ExceptionGroup` if any failed. This keeps
+plugin cleanup and persistence failures visible while preserving deterministic
+hook ordering.
+
 Short-circuit guard hooks should return a structured dict when they want to
 rewrite context, tools, messages, or emit a custom event. A bare truthy return
 from pre-context/pre-request guard stages is treated as a rejection and converted

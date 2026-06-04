@@ -6,7 +6,13 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from xbotv2.hooks.types import HookFn, HookStage, HookContext, SHORT_CIRCUIT_STAGES
+from xbotv2.hooks.types import (
+    HookFn,
+    HookStage,
+    HookContext,
+    SHORT_CIRCUIT_STAGES,
+    STRICT_FAILURE_STAGES,
+)
 
 logger = logging.getLogger("xbotv2.hooks")
 
@@ -20,9 +26,10 @@ class HookManager:
     Hooks run in registration order. For loop hooks (before/after context,
     agent, tools), the first truthy return value short-circuits the stage.
 
-    For lifecycle hooks (session, turn, message, error, config), all
+    For most lifecycle hooks (session, turn, message, error, config), all
     registered callbacks always run; errors are logged and do not prevent
-    other callbacks from executing.
+    other callbacks from executing. Strict lifecycle stages still run all
+    callbacks, but raise an ExceptionGroup after the stage completes.
 
     Usage::
 
@@ -90,16 +97,24 @@ class HookManager:
 
         ctx.stage = stage
 
+        errors: list[BaseException] = []
+        strict_failure = stage in STRICT_FAILURE_STAGES and not short_circuit
+
         for hook in self._hooks.get(stage, []):
             try:
                 result = await hook(ctx)
                 if short_circuit and result is not None:
                     ctx.short_circuit_result = result
                     return result
-            except Exception:
+            except Exception as exc:
                 if short_circuit:
                     raise
+                if strict_failure:
+                    errors.append(exc)
                 logger.exception("Hook %r failed for stage %s — continuing", hook, stage.value)
+
+        if errors:
+            raise ExceptionGroup(f"Hook failures for stage {stage.value}", errors)
 
         return None
 

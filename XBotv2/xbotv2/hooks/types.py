@@ -97,6 +97,15 @@ TOOL_REGISTRATION_STAGES = frozenset({
     HookStage.ON_CONFIG_RELOAD,
 })
 
+# Stages where hook failures must be visible to the caller. The manager still
+# runs all registered callbacks, then raises an ExceptionGroup if any failed.
+STRICT_FAILURE_STAGES = frozenset({
+    HookStage.ON_SESSION_INIT,
+    HookStage.ON_SESSION_CLOSE,
+    HookStage.BEFORE_STATE_PERSIST,
+    HookStage.AFTER_STATE_PERSIST,
+})
+
 
 HookFn = Callable[["HookContext"], "Any | None"]
 

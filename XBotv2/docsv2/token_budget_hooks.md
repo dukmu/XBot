@@ -89,6 +89,11 @@ These stages are now available for token budget plugins:
 | `BEFORE_STATE_PERSIST` | Snapshot plugin stats before message-log replacement and materialization. |
 | `AFTER_STATE_PERSIST` | Confirm stable message ids, persistence, and materialized bookkeeping events. |
 
+Persistence hooks are strict failure stages: all registered callbacks run, but
+any failure is raised after the stage. Token accounting plugins should treat
+that as the durable checkpoint boundary and fail loudly if their persisted
+budget/statistics state cannot be written or verified.
+
 Do not add per-fragment hooks first. Source-tagged context components are a
 cleaner surface: they keep ordering deterministic and avoid turning prompt
 rendering into a large hook matrix.

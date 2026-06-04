@@ -65,6 +65,10 @@ are the primary freeze gate.
   stop/failure, pre/post compact, permission request/denied, per-tool-call,
   tool batch, client-event, and persistence hooks needed for future token
   estimation, statistics, and budget control plugins.
+- Critical hook stages now fail visibly: `ON_SESSION_INIT`,
+  `ON_SESSION_CLOSE`, `BEFORE_STATE_PERSIST`, and `AFTER_STATE_PERSIST` run all
+  callbacks, then raise an `ExceptionGroup` if any hook failed. Observation
+  stages such as `ON_TURN_START` continue to log-and-continue.
 - Bootstrap now passes externally supplied `plugin_configs` through to
   `PluginLoader`, while preserving personality plugin config overrides.
 - Added `docsv2/token_budget_hooks.md` to record the current token-estimation

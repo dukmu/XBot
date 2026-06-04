@@ -183,6 +183,14 @@ class HookStage(Enum):
     ON_CONFIG_RELOAD = "on_config_reload"     # Config was reloaded
 ```
 
+Hook failure semantics:
+
+- Short-circuit guard stages propagate the first exception immediately.
+- Normal observation stages log hook failures and continue.
+- Critical lifecycle stages (`ON_SESSION_INIT`, `ON_SESSION_CLOSE`,
+  `BEFORE_STATE_PERSIST`, `AFTER_STATE_PERSIST`) run every registered callback
+  and then raise an `ExceptionGroup` if any callback failed.
+
 ### HookContext
 
 Every hook receives a structured context:
