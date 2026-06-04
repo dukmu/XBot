@@ -81,6 +81,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `interaction.py`: `send_message` emits non-blocking `client_message` events;
   `ask_user` emits `user_input_required`, marks the session interrupted, and
   stops the current turn until a future resume protocol exists
+- Client-directed events from interaction tools and permission decisions pass
+  through `ON_CLIENT_EVENT` before persistence and protocol streaming.
 
 ### Protocol & TUI (`xbotv2/protocol/`, `xbotv2/tui/`)
 - JSONL `ProtocolFrame` envelopes preserve session/thread/request correlation.
@@ -180,6 +182,7 @@ until a later explicit turn/session event reactivates the store.
 | ON_TOOL_CALL_FAILURE | No | Tool callable raised an exception |
 | POST_TOOL_BATCH | No | Batch-level observation after all requested tools finish or fail closed |
 | ON_TOOL_DENIED | No | Tool call denied by registry, sandbox, permission, or hook |
+| ON_CLIENT_EVENT | No | Client-directed event about to be persisted and streamed |
 | BEFORE_STATE_PERSIST | No | Before message persistence and materialization |
 | AFTER_STATE_PERSIST | No | After message persistence and materialization |
 | ON_ERROR | No | Error occurred |

@@ -595,6 +595,16 @@ class Engine:
             # Yield tool results
             for tm in tool_messages:
                 for client_event in getattr(tm, "additional_kwargs", {}).get("xbotv2_events", []):
+                    event_ctx = self._make_hook_context(
+                        HookStage.ON_CLIENT_EVENT,
+                        tool_result=tm,
+                        client_event=client_event,
+                    )
+                    await self.hook_manager.run(
+                        HookStage.ON_CLIENT_EVENT,
+                        event_ctx,
+                        short_circuit=False,
+                    )
                     if client_event.get("type") == "user_input_required":
                         self.state_store.append_event("interrupted", client_event.get("data", {}))
                     else:
@@ -718,6 +728,7 @@ class Engine:
         stop_reason: str | None = None,
         compact_reason: str | None = None,
         permission_decision: str | None = None,
+        client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
     ) -> HookContext:
         """Build a HookContext for the current engine state."""
@@ -747,6 +758,7 @@ class Engine:
             stop_reason=stop_reason,
             compact_reason=compact_reason,
             permission_decision=permission_decision,
+            client_event=client_event,
             error=error,
         )
 

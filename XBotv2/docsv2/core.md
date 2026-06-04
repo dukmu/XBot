@@ -28,9 +28,11 @@ LLM providers are selected explicitly. Unknown provider names raise a
 configuration error instead of silently falling back to another protocol.
 
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
-`ask` currently emits a `permission_request` event and fails closed during tool
-execution because the JSONL/TUI interrupt-resume approval flow is not
-implemented yet. Denials emit `permission_denied`.
+the `ask` decision currently emits a `permission_request` event and fails
+closed during tool execution because the JSONL/TUI interrupt-resume approval
+flow is not implemented yet. Denials emit `permission_denied`. Both decisions
+also pass through dedicated permission hooks and the generic `ON_CLIENT_EVENT`
+hook before they are streamed to clients.
 
 The previous placeholder `ask` tool is intentionally not registered in core.
 Core now exposes two event-driven interaction tools instead:
@@ -40,6 +42,10 @@ Core now exposes two event-driven interaction tools instead:
 - `ask_user`: emits `user_input_required`, appends an `interrupted` event, and
   stops the current turn. Resuming from the answer is still a protocol/TUI
   feature gap.
+
+All client-directed interaction events pass through `ON_CLIENT_EVENT` before
+persistence and protocol emission, so plugins can audit or meter them without
+depending on tool-result internals.
 
 ## Built-in Filesystem Tools
 

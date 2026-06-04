@@ -260,7 +260,7 @@ class TestAllStages:
     def test_all_stages_exist(self):
         """Verify all HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 41
+        assert len(stages) == 42
         stage_values = {s.value for s in stages}
 
         expected = {
@@ -278,7 +278,8 @@ class TestAllStages:
             "on_tool_calls_parsed", "on_permission_request", "on_permission_denied",
             "before_tool_call", "after_tool_call", "on_tool_call_failure",
             "post_tool_batch",
-            "on_tool_denied", "before_state_persist", "after_state_persist",
+            "on_tool_denied", "on_client_event",
+            "before_state_persist", "after_state_persist",
             "on_error", "on_config_reload",
         }
         assert stage_values == expected

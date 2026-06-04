@@ -24,6 +24,8 @@ XBotv2 currently has a provider-facing hook path:
   `ON_TOOL_CALL_FAILURE` expose tool-call lifecycle metadata.
 - `ON_PERMISSION_REQUEST`, `ON_PERMISSION_DENIED`, `ON_TOOL_DENIED`, and
   `POST_TOOL_BATCH` expose policy and batch execution metadata.
+- `ON_CLIENT_EVENT` exposes interaction traffic before events are persisted
+  and streamed to clients.
 - `PRE_COMPACT` and `POST_COMPACT` bracket message-history replacement.
 - `ON_STOP` and `ON_STOP_FAILURE` expose final turn outcome and failure
   reasons.
@@ -80,6 +82,7 @@ These stages are now available for token budget plugins:
 | `ON_TOOL_CALL_FAILURE` | Observe tool exceptions with the generated error ToolMessage. |
 | `POST_TOOL_BATCH` | Observe all tool calls and results in one batch. |
 | `ON_TOOL_DENIED` | Structured event for sandbox or permission denial. |
+| `ON_CLIENT_EVENT` | Observe client-directed events such as `client_message`, `user_input_required`, and permission notices. |
 | `ON_STOP` | Record successful turn stop reason. |
 | `ON_STOP_FAILURE` | Record turn or stop failure reason. |
 | `BEFORE_STATE_PERSIST` | Snapshot plugin stats before materialization. |

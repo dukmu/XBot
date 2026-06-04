@@ -65,6 +65,7 @@ class HookStage(enum.Enum):
     ON_TOOL_CALL_FAILURE = "on_tool_call_failure"
     POST_TOOL_BATCH = "post_tool_batch"
     ON_TOOL_DENIED = "on_tool_denied"
+    ON_CLIENT_EVENT = "on_client_event"
 
     # -- Persistence lifecycle --------------------------------------------
     BEFORE_STATE_PERSIST = "before_state_persist"
@@ -145,5 +146,6 @@ class HookContext:
     stop_reason: str | None = None
     compact_reason: str | None = None
     permission_decision: str | None = None
+    client_event: dict[str, Any] | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None

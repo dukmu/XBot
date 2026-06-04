@@ -31,6 +31,9 @@ Every streamed frame for a `user.message` request preserves the incoming
   during that same turn.
 - Permission and sandbox ask decisions emit `permission_request` and fail
   closed. Denials emit `permission_denied`.
+- Before client-directed events are persisted and streamed, core runs the
+  generic `ON_CLIENT_EVENT` hook so plugins can audit, meter, or mirror
+  interaction traffic.
 
 ## Client Coverage
 

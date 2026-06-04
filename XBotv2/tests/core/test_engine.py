@@ -68,6 +68,23 @@ def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
     )
 
 
+def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace, hook_manager):
+    """Create a minimal engine with a supplied hook manager."""
+    return Engine(
+        llm=mock_llm,
+        tool_registry=tool_registry,
+        hook_manager=hook_manager,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=None,
+    )
+
+
 class TestEngineBasics:
     """Basic ReAct loop behavior."""
 
@@ -844,6 +861,44 @@ class TestEngineHooks:
         assert state_store.read_state()["status"] == "interrupted"
 
     @pytest.mark.asyncio
+    async def test_client_event_hook_observes_interaction_events(self, state_store, temp_workspace):
+        """Client event hooks observe send-message and ask-user events."""
+        llm = MockLLM(responses=[
+            {
+                "content": "notify",
+                "tool_calls": [
+                    {"name": "send_notice", "args": {"message": "heads up"}, "id": "c1"},
+                    {"name": "request_input", "args": {"question": "Proceed?"}, "id": "c2"},
+                ],
+            },
+            {"content": "should not run"},
+        ])
+        registry = ToolRegistry()
+        registry.register(send_notice, sandbox_mode="host")
+        registry.register(request_input, sandbox_mode="host")
+        hook_manager = HookManager()
+        observed = []
+
+        async def on_client_event(ctx):
+            observed.append((ctx.client_event["type"], ctx.tool_result.tool_call_id))
+
+        hook_manager.register(HookStage.ON_CLIENT_EVENT, on_client_event)
+        engine = make_engine_with_hooks(
+            llm,
+            registry,
+            state_store,
+            temp_workspace,
+            hook_manager,
+        )
+
+        _ = [e async for e in engine.run_turn("interact")]
+
+        assert observed == [
+            ("client_message", "c1"),
+            ("user_input_required", "c2"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_new_turn_reactivates_interrupted_session(self, state_store, temp_workspace):
         """A later turn can move an interrupted session back to active."""
         llm = MockLLM(responses=[
@@ -892,6 +947,40 @@ class TestEngineHooks:
         permission_event = next(e for e in events if e["type"] == "permission_request")
         assert permission_event["data"]["tool_call"]["name"] == "echo"
         assert permission_event["data"]["resume_supported"] is False
+
+    @pytest.mark.asyncio
+    async def test_client_event_hook_observes_permission_request(self, state_store, temp_workspace):
+        """Permission ask decisions also pass through the generic client-event hook."""
+        llm = MockLLM(responses=[
+            {
+                "content": "write",
+                "tool_calls": [{"name": "echo", "args": {"message": "hi"}, "id": "c1"}],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+        hook_manager = HookManager()
+        observed = []
+
+        async def on_client_event(ctx):
+            observed.append(ctx.client_event["type"])
+
+        hook_manager.register(HookStage.ON_CLIENT_EVENT, on_client_event)
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="ask"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("need approval")]
+
+        assert observed == ["permission_request"]
 
 
 class TestEngineState:
