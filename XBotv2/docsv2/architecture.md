@@ -121,7 +121,7 @@ All such concepts live in plugin-owned state namespaces.
 | ON_SESSION_CLOSE | No | Cleanup, finalize |
 | ON_TURN_START | No | User message received |
 | ON_TURN_END | No | Turn complete |
-| BEFORE_USER_MESSAGE_ACCEPT | Yes | Validate or rewrite user input before history |
+| BEFORE_USER_MESSAGE_ACCEPT | Yes | Validate or rewrite user input before history; silent rejection becomes a bounded error |
 | AFTER_USER_MESSAGE_ACCEPT | No | User input accepted into history |
 | BEFORE_CONTEXT | Yes | Before context assembly (compact) |
 | BEFORE_CONTEXT_BUILD | Yes | Before ContextBuilder runs |

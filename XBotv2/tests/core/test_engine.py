@@ -334,6 +334,79 @@ class TestEngineHooks:
         assert engine.messages[0].content == "rewritten"
 
     @pytest.mark.asyncio
+    async def test_user_message_accept_short_circuit_emits_error(
+        self, state_store, temp_workspace
+    ):
+        """Input-intake hooks cannot silently leave protocol clients waiting."""
+        llm = MockLLM(responses=[{"content": "should not run"}])
+        registry = ToolRegistry()
+
+        async def reject(ctx):
+            return True
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, reject)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("blocked")]
+
+        assert events == [
+            {
+                "type": "error",
+                "data": {
+                    "code": "user_message_rejected",
+                    "message": "User message was rejected before entering history.",
+                },
+            }
+        ]
+        assert engine.turn_count == 0
+        assert engine.messages == []
+        assert llm.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_user_message_accept_structured_stop_emits_default_error(
+        self, state_store, temp_workspace
+    ):
+        """Structured intake stops without an event still produce a bounded error."""
+        llm = MockLLM(responses=[{"content": "should not run"}])
+        registry = ToolRegistry()
+
+        async def reject(ctx):
+            return {"turn_complete": True}
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, reject)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("blocked")]
+
+        assert events[0]["type"] == "error"
+        assert events[0]["data"]["code"] == "user_message_rejected"
+        assert engine.turn_count == 0
+        assert engine.messages == []
+        assert llm.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_context_component_and_build_hooks_fire(self, state_store, temp_workspace):
         """Context hooks expose source-tagged components before provider messages."""
         llm = MockLLM(responses=[{"content": "ok"}])

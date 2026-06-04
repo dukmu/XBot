@@ -174,7 +174,23 @@ class Engine:
                 yield accept_result["event"]
                 if accept_result.get("turn_complete", True):
                     return
+            elif accept_result.get("turn_complete"):
+                yield {
+                    "type": "error",
+                    "data": {
+                        "code": "user_message_rejected",
+                        "message": "User message was rejected before entering history.",
+                    },
+                }
+                return
         elif accept_result is not None:
+            yield {
+                "type": "error",
+                "data": {
+                    "code": "user_message_rejected",
+                    "message": "User message was rejected before entering history.",
+                },
+            }
             return
 
         self._turn_count += 1

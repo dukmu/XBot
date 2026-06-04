@@ -54,7 +54,7 @@ These stages are now available for token budget plugins:
 
 | Stage | Purpose |
 |-------|---------|
-| `BEFORE_USER_MESSAGE_ACCEPT` | Validate or reject user input before it enters history. |
+| `BEFORE_USER_MESSAGE_ACCEPT` | Validate or reject user input before it enters history; silent rejection becomes a bounded error. |
 | `AFTER_USER_MESSAGE_ACCEPT` | Record the accepted user-message delta. |
 | `BEFORE_CONTEXT_BUILD` | Let plugins prepare context-build parameters before assembly. |
 | `AFTER_CONTEXT_COMPONENTS_BUILD` | Expose source-tagged context components before they become provider messages. |

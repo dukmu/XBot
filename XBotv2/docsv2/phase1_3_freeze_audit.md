@@ -60,6 +60,9 @@ are the primary freeze gate.
 - Protocol server input validation now returns bounded `error` frames for
   malformed JSON and empty `user.message` payloads instead of silently logging
   or leaving clients waiting.
+- User-intake hook short-circuits now emit a bounded `user_message_rejected`
+  error if the hook does not provide its own event, so protocol clients never
+  hang on a pre-history rejection.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.
