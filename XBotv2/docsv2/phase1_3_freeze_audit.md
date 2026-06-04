@@ -195,18 +195,6 @@ Run from repository root:
 
 ```bash
 uv run pytest XBotv2/tests/core/ -q
-python -m py_compile \
-  XBotv2/xbotv2/core/bootstrap.py \
-  XBotv2/xbotv2/core/engine.py \
-  XBotv2/xbotv2/core/builtin_tools/filesystem.py \
-  XBotv2/xbotv2/core/builtin_tools/interaction.py \
-  XBotv2/xbotv2/tools/runtime.py \
-  XBotv2/xbotv2/tools/result_cache.py \
-  XBotv2/xbotv2/plugin/manifest.py \
-  XBotv2/xbotv2/plugin/base.py \
-  XBotv2/xbotv2/plugin/loader.py \
-  XBotv2/xbotv2/persistence/materializer.py \
-  XBotv2/xbotv2/persistence/store.py \
-  XBotv2/xbotv2/tui/client.py \
-  XBotv2/xbotv2/tui/terminal.py
+python -m compileall -q XBotv2/xbotv2
+git diff --check
 ```

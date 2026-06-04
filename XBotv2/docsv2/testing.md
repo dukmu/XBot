@@ -115,6 +115,16 @@ uv run pytest XBotv2/tests/core/ -v
 uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_text_response -v
 ```
 
+## Freeze Gate
+
+Use the same gate before freezing Phase 1-3 or committing runtime changes:
+
+```bash
+uv run pytest XBotv2/tests/core/ -q
+python -m compileall -q XBotv2/xbotv2
+git diff --check
+```
+
 ## Planned Token Budget Tests
 
 `docsv2/token_budget_hooks.md` defines the evidence required before token

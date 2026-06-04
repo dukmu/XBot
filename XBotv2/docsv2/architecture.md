@@ -25,7 +25,7 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Pure linear execution — works without any plugins
 
 ### Hook System (`xbotv2/hooks/`)
-- **41 lifecycle stages**: session, turn/stop, user intake, loop/request,
+- **42 lifecycle stages**: session, turn/stop, user intake, loop/request,
   compaction, message, permission/tool call, tool batch, persistence, and
   system events
 - Personality configs may register hooks with `hooks:` entries using
