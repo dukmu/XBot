@@ -9,7 +9,7 @@ from xbotv2.core.builtin_tools.filesystem import filesystem_write
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage
+from xbotv2.hooks.types import HookContext, HookStage, SessionInfo
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -60,6 +60,56 @@ async def test_permission_ask_fails_closed_until_interactive_approval_exists(tem
 
 
 @pytest.mark.asyncio
+async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_workspace):
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
+    hook_manager = HookManager()
+    calls = []
+
+    async def rewrite_tool_call(ctx):
+        calls.append(("before", ctx.tool_call["id"], ctx.tool_call["args"]["path"]))
+        return {
+            "tool_call": {
+                "id": "rewritten_id",
+                "args": {"path": "rewritten.txt", "content": "ok"},
+            }
+        }
+
+    async def after_tool_call(ctx):
+        calls.append((
+            "after",
+            ctx.tool_call["id"],
+            ctx.tool_call["args"]["path"],
+            ctx.tool_result.tool_call_id,
+        ))
+
+    hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_tool_call)
+    hook_manager.register(HookStage.AFTER_TOOL_CALL, after_tool_call)
+
+    results = await execute_tools(
+        [{"name": "filesystem_write", "args": {"path": "old.txt", "content": "no"}, "id": "old_id"}],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        hook_manager=hook_manager,
+        hook_context_factory=_hook_context,
+    )
+
+    assert results[0].status == "success"
+    assert results[0].tool_call_id == "rewritten_id"
+    assert not (temp_workspace / "old.txt").exists()
+    assert (temp_workspace / "rewritten.txt").read_text(encoding="utf-8") == "ok"
+    assert calls[0] == ("before", "old_id", str(temp_workspace / "old.txt"))
+    assert calls[1] == (
+        "after",
+        "rewritten_id",
+        str(temp_workspace / "rewritten.txt"),
+        "rewritten_id",
+    )
+
+
+@pytest.mark.asyncio
 async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
     registry = ToolRegistry()
     registry.register(large_output, sandbox_mode="host")
@@ -104,3 +154,11 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
 
     event_types = [event["type"] for event in state_store.read_events()]
     assert "tool_result_cached" in event_types
+
+
+def _hook_context(stage, **kwargs):
+    return HookContext(
+        stage=stage,
+        session=SessionInfo(session_id="s", thread_id="t", personality_id="p"),
+        **kwargs,
+    )

@@ -67,6 +67,10 @@ are the primary freeze gate.
   bounded `hook_short_circuit_rejected` error when a hook returns a bare truthy
   value instead of a structured result; this prevents accidental provider calls
   after a plugin intended to stop execution.
+- Per-tool `BEFORE_TOOL_CALL` rewrites now update the resulting
+  `ToolMessage.tool_call_id` and re-run sandbox path resolution for rewritten
+  calls, so tool lifecycle hooks cannot desynchronize protocol-visible IDs or
+  execute rewritten paths outside the workspace.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

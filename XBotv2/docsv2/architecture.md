@@ -143,7 +143,7 @@ All such concepts live in plugin-owned state namespaces.
 | ON_ASSISTANT_MESSAGE | No | LLM response received |
 | ON_TOOL_MESSAGE | No | Tool result received |
 | ON_TOOL_CALLS_PARSED | No | Assistant tool calls normalized |
-| BEFORE_TOOL_CALL | Yes | Per-tool call gate/rewrite |
+| BEFORE_TOOL_CALL | Yes | Per-tool call gate/rewrite; rewritten ids and sandboxed paths are honored |
 | AFTER_TOOL_CALL | No | Per-tool call result observed |
 | ON_TOOL_DENIED | No | Tool call denied by registry, sandbox, permission, or hook |
 | BEFORE_STATE_PERSIST | No | Before message persistence and materialization |

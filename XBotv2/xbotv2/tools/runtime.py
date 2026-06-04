@@ -133,6 +133,7 @@ async def execute_tools(
         if isinstance(before_result, dict):
             if "tool_call" in before_result:
                 tc = {**tc, **before_result["tool_call"]}
+                tool_id = tc.get("id", tool_id)
                 tool_name = tc["name"]
                 entry = registry.get(tool_name)
                 if entry is None:
@@ -151,8 +152,12 @@ async def execute_tools(
                     continue
                 tool = entry.tool
                 args = dict(tc.get("args", {}))
+                if sandbox_policy and entry.sandbox_mode == "sandboxed":
+                    args = _resolve_tool_paths(args, sandbox_policy)
             if "args" in before_result:
                 args = dict(before_result["args"])
+                if sandbox_policy and entry.sandbox_mode == "sandboxed":
+                    args = _resolve_tool_paths(args, sandbox_policy)
             if "tool_result" in before_result:
                 message = _coerce_tool_message(before_result["tool_result"], tool_id)
                 results.append(message)
