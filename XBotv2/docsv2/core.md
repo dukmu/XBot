@@ -49,11 +49,12 @@ Core now exposes two event-driven interaction tools instead:
 
 - `send_message`: emits a non-blocking `client_message` event and lets the
   current ReAct turn continue.
-- `ask_user`: emits `user_input_required`, appends an `interrupted` event, and
-  stops the current turn. Resuming from the answer is still a protocol/TUI
-  feature gap. Runtime-normalized events include a stable
-  `user_input:<tool_call_id>` request id; `user.input` records the answer and
-  clears the pending request.
+- `ask_user`: emits `user_input_required` and waits for a matching live
+  `user.input` frame on the active protocol connection. The answer is returned
+  to the model as the tool result, so the same ReAct turn can continue.
+  Runtime-normalized events include a stable `user_input:<tool_call_id>`
+  request id. Timeouts return a no-reply tool result; client disconnect records
+  cancellation and stops the current turn without durable resume.
 
 All client-directed interaction events pass through `ON_CLIENT_EVENT` before
 persistence and protocol emission, so plugins can audit or meter them without
@@ -153,10 +154,12 @@ All significant state changes are recorded as append-only events:
 - `session_closed` — session termination from direct engine close or protocol
   `shutdown`
 - `error`, `interrupted` — error states
+- `turn_cancelled` — live interaction cancellation such as client disconnect
 - `client_message`, `user_input_required` — user interaction events from tools
 - `permission_request`, `permission_denied` — permission/sandbox decisions
-- `user_input_response`, `permission_response` — client responses recorded by
-  JSONL protocol commands, including the original pending request snapshot
+- `user_input_response`, `user_input_cancelled`, `permission_response` — client
+  responses or live interaction cancellations, including the original pending
+  request snapshot
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
 - `tool_result_cached` — large tool output persisted to artifacts and truncated inline

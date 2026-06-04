@@ -101,9 +101,10 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   - write supports overwrite, append, prepend, insert line, replace lines, regex replace, and unified diff patch modes
 - `shell.py`: `shell` tool
 - `interaction.py`: `send_message` emits non-blocking `client_message` events;
-  `ask_user` emits `user_input_required`, marks the session interrupted, and
-  stops the current turn. `user.input` records the answer; turn resume remains
-  future work.
+  `ask_user` emits `user_input_required`, waits for a live `user.input` on the
+  active client connection, and returns the answer, timeout, or cancellation as
+  the tool result. Timeout lets the ReAct loop continue with a no-reply result;
+  client disconnect records cancellation and stops the current turn.
 - Client-directed events from interaction tools and permission decisions pass
   through `ON_CLIENT_EVENT` before persistence and protocol streaming.
 
@@ -112,7 +113,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Interaction events (`client_message`, `permission_request`,
   `permission_denied`, `user_input_required`) are streamed to clients.
 - `TerminalSession` passes through server events until `turn_finished` or
-  `error`, and can submit user-input and permission responses.
+  `error`, can answer live `ask_user` requests through an input provider, and
+  can submit permission responses.
 - `TuiState` renders assistant messages, tool activity, errors, client notices,
   approvals, denials, user-input requests, and interaction response
   acknowledgements without importing runtime code.

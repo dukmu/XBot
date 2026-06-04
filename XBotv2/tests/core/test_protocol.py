@@ -616,7 +616,7 @@ class TestRuntimeServerSubprocess:
                         },
                     ],
                 },
-                {"content": "should not run"},
+                {"content": "answer received"},
             ],
         )
         env = {
@@ -651,16 +651,31 @@ class TestRuntimeServerSubprocess:
                 payload={"content": "trigger"},
             )
             frames = []
+            answered = False
             while True:
                 frame = await _read_frame(proc)
                 frames.append(frame)
+                if frame.type == "user_input_required" and not answered:
+                    await _send_frame(
+                        proc,
+                        "user.input",
+                        session_id="s-events",
+                        thread_id="t-events",
+                        request_id="req-answer",
+                        payload={
+                            "request_id": frame.payload["request_id"],
+                            "answer": "yes",
+                        },
+                    )
+                    answered = True
                 if frame.type == "turn_finished":
                     break
 
             frame_types = [frame.type for frame in frames]
             assert "client_message" in frame_types
             assert "user_input_required" in frame_types
-            assert frame_types.count("assistant_message") == 1
+            assert "user_input_recorded" in frame_types
+            assert frame_types.count("assistant_message") == 2
             assert all(frame.request_id == "req-events" for frame in frames)
             notice = next(frame for frame in frames if frame.type == "client_message")
             question = next(frame for frame in frames if frame.type == "user_input_required")
@@ -668,28 +683,25 @@ class TestRuntimeServerSubprocess:
             assert question.payload["question"] == "Proceed?"
             assert question.payload["request_id"] == "user_input:call_ask"
             assert question.payload["source"] == "ask_user"
-            assert question.payload["resume_supported"] is False
+            assert question.payload["resume_supported"] is True
+            tool_result = next(
+                frame
+                for frame in frames
+                if frame.type == "tool_result"
+                and frame.payload["tool_call_id"] == "call_ask"
+            )
+            assert "User answered: yes" in tool_result.payload["content"]
 
             state_path = data_dir / "sessions" / "s-events" / "state" / "state.yaml"
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
-            assert state["pending_interactions"][0]["request_id"] == "user_input:call_ask"
-
-            await _send_frame(
-                proc,
-                "user.input",
-                session_id="s-events",
-                thread_id="t-events",
-                request_id="req-answer",
-                payload={"request_id": "user_input:call_ask", "answer": "yes"},
-            )
-            recorded = await _read_frame(proc)
-            assert recorded.type == "user_input_recorded"
-            assert recorded.request_id == "req-answer"
-            assert recorded.payload["request_id"] == "user_input:call_ask"
-            assert recorded.payload["resume_supported"] is False
-            assert recorded.payload["pending_interactions"] == []
-            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
             assert state["pending_interactions"] == []
+            recorded = next(frame for frame in frames if frame.type == "user_input_recorded")
+            assert recorded.type == "user_input_recorded"
+            assert recorded.request_id == "req-events"
+            assert recorded.payload["request_id"] == "user_input:call_ask"
+            assert recorded.payload["resume_supported"] is True
+            assert recorded.payload["status"] == "answered"
+            assert recorded.payload["pending_interactions"] == []
             events_path = data_dir / "sessions" / "s-events" / "state" / "events.jsonl"
             events = [json.loads(line) for line in events_path.read_text().splitlines()]
             response_event = next(event for event in events if event["type"] == "user_input_response")
@@ -792,6 +804,78 @@ class TestRuntimeServerSubprocess:
             await _stop_process(proc)
 
     @pytest.mark.asyncio
+    async def test_server_stops_live_ask_when_client_disconnects(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["ask_user"],
+            mock_responses=[
+                {
+                    "content": "ask",
+                    "tool_calls": [
+                        {
+                            "name": "ask_user",
+                            "args": {"question": "Proceed?"},
+                            "id": "call_ask",
+                        }
+                    ],
+                },
+                {"content": "should not run"},
+            ],
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-disconnect", thread_id="t-disconnect")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-disconnect",
+                thread_id="t-disconnect",
+                request_id="req-disconnect",
+                payload={"content": "trigger"},
+            )
+            frames = []
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "user_input_required":
+                    proc.stdin.close()
+                    break
+
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            assert [frame.type for frame in frames].count("assistant_message") == 1
+            state_path = data_dir / "sessions" / "s-disconnect" / "state" / "state.yaml"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["status"] == "interrupted"
+            assert state["pending_interactions"] == []
+            events_path = data_dir / "sessions" / "s-disconnect" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            cancelled = next(event for event in events if event["type"] == "user_input_cancelled")
+            assert cancelled["payload"]["status"] == "disconnected"
+        finally:
+            if proc.returncode is None:
+                await _stop_process(proc)
+
+    @pytest.mark.asyncio
     async def test_server_rejects_unknown_interaction_response(self, tmp_path):
         data_dir = _write_mock_data_dir(tmp_path)
         env = {
@@ -880,7 +964,8 @@ class TestTerminalSessionSubprocess:
                             "id": "call_ask",
                         }
                     ],
-                }
+                },
+                {"content": "finished"},
             ],
         )
         monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
@@ -894,16 +979,20 @@ class TestTerminalSessionSubprocess:
         )
         try:
             await session.connect()
-            events = [event async for event in session.send_message("hello")]
-            request = next(event for event in events if event["type"] == "user_input_required")
+            events = [
+                event
+                async for event in session.send_message_with_input(
+                    "hello",
+                    input_provider=lambda payload: "yes",
+                )
+            ]
 
-            response = await session.submit_user_input(
-                request["data"]["request_id"],
-                "yes",
-            )
-
-            assert response["type"] == "user_input_recorded"
-            assert response["data"]["pending_interactions"] == []
+            assert [event["type"] for event in events].count("assistant_message") == 2
+            recorded = next(event for event in events if event["type"] == "user_input_recorded")
+            assert recorded["data"]["status"] == "answered"
+            assert recorded["data"]["pending_interactions"] == []
+            tool_result = next(event for event in events if event["type"] == "tool_result")
+            assert "User answered: yes" in tool_result["data"]["content"]
         finally:
             await session.disconnect()
 

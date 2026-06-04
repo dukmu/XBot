@@ -11,16 +11,19 @@ are the primary freeze gate.
 - Removed the placeholder core `ask` tool. Core now registers event-driven
   `send_message` and `ask_user` tools instead: `send_message` emits a
   non-blocking `client_message`, while `ask_user` emits `user_input_required`,
-  marks the session interrupted, and stops the current turn until a future
-  resume protocol is implemented.
+  waits for a live `user.input` reply on the active protocol connection, and
+  returns the answer as a tool result so the current ReAct turn can continue.
+  Timeouts return a no-reply tool result. Client disconnect records
+  cancellation and stops the current turn without durable resume.
 - Interaction and permission request events now carry stable correlation
   metadata (`user_input:<tool_call_id>` and `permission:<tool_call_id>` request
   ids plus source/tool-call metadata). `state.yaml` materializes unresolved
   requests as `pending_interactions` from the append-only event log.
-- JSONL protocol now accepts `user.input` and `permission.response` commands,
-  records `user_input_response` / `permission_response` events, returns bounded
-  `*_recorded` acknowledgements, clears matching `pending_interactions`, and
-  stores the original pending request snapshot on the response event.
+- JSONL protocol now accepts live `user.input` and `permission.response`
+  commands, records `user_input_response` / `user_input_cancelled` /
+  `permission_response` events, returns bounded `*_recorded`
+  acknowledgements, clears matching `pending_interactions`, and stores the
+  original pending request snapshot on the response event.
 - Expanded filesystem tools:
   - `filesystem_read` returns JSON content plus path, size, mtime, line count,
     returned line count, and truncation flags.

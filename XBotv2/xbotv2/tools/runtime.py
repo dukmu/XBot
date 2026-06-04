@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
+from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.hooks.types import HookStage
 
 logger = logging.getLogger("xbotv2.tools.runtime")
@@ -21,6 +22,7 @@ async def execute_tools(
     permission_system: Any = None,  # PermissionSystem
     hook_manager: Any = None,
     hook_context_factory: Any = None,
+    client_interaction_handler: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
 ) -> list[ToolMessage]:
     """Execute tool calls through the guard pipeline.
@@ -38,6 +40,8 @@ async def execute_tools(
         permission_system: PermissionSystem instance (optional).
         hook_manager: HookManager instance (optional).
         hook_context_factory: callable that builds HookContext objects.
+        client_interaction_handler: async callable for blocking interaction
+            events such as ask_user.
         workspace_root: Workspace root for path resolution.
 
     Returns:
@@ -273,6 +277,24 @@ async def execute_tools(
             else:
                 result = f"Tool {tool_name} is not callable"
 
+            if _is_user_input_wait_result(result):
+                message = await _tool_message_from_user_input_wait(
+                    result,
+                    tool_id,
+                    client_interaction_handler,
+                )
+                observed_tool_calls.append({**tc, "args": args})
+                results.append(message)
+                await _run_tool_hook(
+                    hook_manager,
+                    hook_context_factory,
+                    HookStage.AFTER_TOOL_CALL,
+                    tool_call={**tc, "args": args},
+                    tool_result=message,
+                    short_circuit=False,
+                )
+                continue
+
             message_payload = _message_payload_from_result(result, tool_id)
             message = ToolMessage(
                 content=message_payload["content"],
@@ -291,6 +313,8 @@ async def execute_tools(
                 short_circuit=False,
             )
 
+        except UserInputDisconnected:
+            raise
         except Exception as exc:
             logger.exception("Tool %s failed", tool_name)
             message = ToolMessage(
@@ -445,12 +469,86 @@ def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[st
             data["request_id"] = f"user_input:{tool_call_id}"
         data.setdefault("source", "ask_user")
         data.setdefault("tool_call_id", tool_call_id)
+        data.setdefault("resume_supported", True)
     elif event_type == "client_message":
         data.setdefault("source", "send_message")
         data.setdefault("tool_call_id", tool_call_id)
 
     normalized["data"] = data
     return normalized
+
+
+def _is_user_input_wait_result(result: Any) -> bool:
+    return isinstance(result, dict) and bool(result.get("wait_for_user"))
+
+
+async def _tool_message_from_user_input_wait(
+    result: dict[str, Any],
+    tool_call_id: str,
+    client_interaction_handler: Any,
+) -> ToolMessage:
+    events = [
+        _normalize_client_event(event, tool_call_id)
+        for event in result.get("events", [])
+    ]
+    event = next(
+        (
+            item
+            for item in events
+            if isinstance(item, dict) and item.get("type") == "user_input_required"
+        ),
+        None,
+    )
+    if event is None:
+        return ToolMessage(
+            content="Error: ask_user did not produce a user_input_required event.",
+            tool_call_id=tool_call_id,
+            status="error",
+        )
+    if client_interaction_handler is None:
+        request_id = str((event.get("data") or {}).get("request_id") or "")
+        return ToolMessage(
+            content=(
+                "No user reply was received because this runtime does not "
+                "support live user input."
+            ),
+            tool_call_id=tool_call_id,
+            status="success",
+            additional_kwargs={
+                "xbotv2_events": events,
+                "xbotv2_user_input_result": {
+                    "request_id": request_id,
+                    "status": "cancelled",
+                    "reason": "live_user_input_unsupported",
+                },
+            },
+        )
+
+    response = await client_interaction_handler(
+        event,
+        timeout_seconds=result.get("timeout_seconds"),
+        tool_call_id=tool_call_id,
+    )
+    status = str(response.get("status") or "")
+    if status == "answered":
+        answer = response.get("answer", "")
+        content = f"User answered: {answer}"
+    elif status == "disconnected":
+        raise UserInputDisconnected(
+            f"Client disconnected while waiting for {response.get('request_id')}"
+        )
+    elif status == "timeout":
+        content = "No user reply was received before the ask_user timeout."
+    elif status == "cancelled":
+        reason = response.get("reason") or "cancelled"
+        content = f"No user reply was received because the request was cancelled: {reason}"
+    else:
+        content = "No user reply was received."
+    return ToolMessage(
+        content=content,
+        tool_call_id=tool_call_id,
+        status="success",
+    )
 
 
 async def _run_tool_hook(

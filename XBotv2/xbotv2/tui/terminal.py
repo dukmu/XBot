@@ -9,7 +9,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Awaitable, Callable, TextIO
 
 from xbotv2.protocol.frames import ProtocolFrame, frame_from_json
 
@@ -153,6 +153,15 @@ class TerminalSession:
 
     async def send_message(self, content: str):
         """Send a user message and yield responses."""
+        async for event in self.send_message_with_input(content):
+            yield event
+
+    async def send_message_with_input(
+        self,
+        content: str,
+        input_provider: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
+    ):
+        """Send a user message and optionally answer live ask_user requests."""
         if not self._client:
             raise RuntimeError("Not connected")
 
@@ -172,6 +181,20 @@ class TerminalSession:
                 "type": frame.type,
                 "data": frame.payload,
             }
+
+            if frame.type == "user_input_required" and input_provider is not None:
+                answer = input_provider(frame.payload)
+                if hasattr(answer, "__await__"):
+                    answer = await answer
+                await self._client.send(
+                    "user.input",
+                    self._session_id,
+                    self._thread_id,
+                    {
+                        "request_id": frame.payload.get("request_id", ""),
+                        "answer": answer,
+                    },
+                )
 
             if frame.type in ("turn_finished", "error"):
                 break

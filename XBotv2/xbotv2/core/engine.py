@@ -20,6 +20,11 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from xbotv2.core.interactions import (
+    UserInputDisconnected,
+    UserInputResult,
+    UserInputWaiter,
+)
 from xbotv2.core.state import SessionInfo
 from xbotv2.hooks.types import HookContext, HookStage
 
@@ -66,6 +71,8 @@ class Engine:
         self._messages: list[BaseMessage] = []
         self._session: SessionInfo | None = None
         self._turn_count = 0
+        self._user_input_waiter = UserInputWaiter()
+        self._client_event_sink: Any | None = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -113,10 +120,29 @@ class Engine:
 
     async def close_session(self) -> None:
         """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
+        self.cancel_pending_user_inputs("session_closed")
         self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
         ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
         await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
         await self._save_messages()
+
+    def set_client_event_sink(self, sink: Any | None) -> Any | None:
+        """Install a live protocol sink for client-directed events."""
+        previous = self._client_event_sink
+        self._client_event_sink = sink
+        return previous
+
+    def submit_user_input(self, request_id: str, answer: Any) -> UserInputResult:
+        """Answer a live ask_user request owned by this engine."""
+        return self._user_input_waiter.answer(request_id, answer)
+
+    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> UserInputResult:
+        """Cancel one live ask_user request."""
+        return self._user_input_waiter.cancel(request_id, reason)
+
+    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[UserInputResult]:
+        """Cancel all live ask_user requests."""
+        return self._user_input_waiter.cancel_all(reason)
 
     # ------------------------------------------------------------------
     # Turn execution
@@ -127,6 +153,17 @@ class Engine:
         try:
             async for event in self._run_turn_impl(user_input):
                 yield event
+        except UserInputDisconnected as exc:
+            logger.info("Turn stopped because the client disconnected during ask_user")
+            self.state_store.append_event(
+                "turn_cancelled",
+                {
+                    "turn": self._turn_count,
+                    "reason": "client_disconnected",
+                    "message": str(exc),
+                },
+            )
+            await self._save_messages()
         except Exception as exc:
             logger.exception("Turn failed")
             self.state_store.append_event(
@@ -578,6 +615,11 @@ class Engine:
                 permission_system=self.permission_system,
                 hook_manager=self.hook_manager,
                 hook_context_factory=self._make_hook_context,
+                client_interaction_handler=(
+                    self._handle_user_input_request
+                    if self._client_event_sink is not None
+                    else None
+                ),
             )
 
             # AFTER_TOOLS hooks may redact/cache large outputs before they
@@ -594,23 +636,15 @@ class Engine:
             # Yield tool results
             for tm in tool_messages:
                 for client_event in getattr(tm, "additional_kwargs", {}).get("xbotv2_events", []):
-                    event_ctx = self._make_hook_context(
-                        HookStage.ON_CLIENT_EVENT,
-                        tool_result=tm,
-                        client_event=client_event,
+                    await self._record_client_event(client_event, tool_result=tm)
+                    user_input_result = getattr(tm, "additional_kwargs", {}).get(
+                        "xbotv2_user_input_result"
                     )
-                    await self.hook_manager.run(
-                        HookStage.ON_CLIENT_EVENT,
-                        event_ctx,
-                        short_circuit=False,
-                    )
-                    if client_event.get("type") == "user_input_required":
-                        self.state_store.append_event("interrupted", client_event.get("data", {}))
-                    else:
-                        self.state_store.append_event(
-                            client_event.get("type", "client_event"),
-                            client_event.get("data", {}),
-                        )
+                    if (
+                        client_event.get("type") == "user_input_required"
+                        and isinstance(user_input_result, dict)
+                    ):
+                        self.record_user_input_result(client_event, user_input_result)
                     yield client_event
 
                 yield {
@@ -692,6 +726,98 @@ class Engine:
         self.state_store.materialize()
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
+
+    async def _handle_user_input_request(
+        self,
+        client_event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
+        """Emit a user-input request and wait for the live client answer."""
+        await self._record_client_event(client_event)
+        sink_result: dict[str, Any] | None = None
+        if self._client_event_sink is not None:
+            sink_result = await self._client_event_sink(
+                client_event,
+                timeout_seconds=timeout_seconds,
+                tool_call_id=tool_call_id,
+            )
+            if sink_result.get("status") == "disconnected":
+                if not sink_result.get("persisted"):
+                    self.record_user_input_result(client_event, sink_result)
+                raise UserInputDisconnected(
+                    f"Client disconnected while waiting for {sink_result.get('request_id')}"
+                )
+        if sink_result is None:
+            request_id = str((client_event.get("data") or {}).get("request_id") or "")
+            wait_timeout = 0 if timeout_seconds is None else timeout_seconds
+            result = await self._user_input_waiter.wait(request_id, wait_timeout)
+            sink_result = {
+                "request_id": result.request_id,
+                "status": result.status,
+                "answer": result.answer,
+                "reason": result.reason,
+            }
+        if not sink_result.get("persisted"):
+            self.record_user_input_result(client_event, sink_result)
+        return sink_result
+
+    def record_user_input_result(
+        self,
+        client_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a live ask_user completion and refresh materialized state."""
+        self._record_user_input_completion(client_event, result)
+        return self.state_store.materialize()
+
+    async def _record_client_event(
+        self,
+        client_event: dict[str, Any],
+        *,
+        tool_result: Any = None,
+    ) -> None:
+        event_ctx = self._make_hook_context(
+            HookStage.ON_CLIENT_EVENT,
+            tool_result=tool_result,
+            client_event=client_event,
+        )
+        await self.hook_manager.run(
+            HookStage.ON_CLIENT_EVENT,
+            event_ctx,
+            short_circuit=False,
+        )
+        self.state_store.append_event(
+            client_event.get("type", "client_event"),
+            client_event.get("data", {}),
+        )
+
+    def _record_user_input_completion(
+        self,
+        client_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        data = client_event.get("data") or {}
+        request_id = str(result.get("request_id") or data.get("request_id") or "")
+        status = str(result.get("status") or "cancelled")
+        payload = {
+            "request_id": request_id,
+            "request_type": "user_input_required",
+            "request_source": data.get("source", "ask_user"),
+            "request_payload": data,
+        }
+        if status == "answered":
+            self.state_store.append_event("user_input_response", {
+                **payload,
+                "answer": result.get("answer", ""),
+            })
+            return
+        self.state_store.append_event("user_input_cancelled", {
+            **payload,
+            "status": status,
+            "reason": result.get("reason") or status,
+        })
 
     def _restore_messages(self) -> int:
         """Load messages from disk into memory. Returns count loaded."""

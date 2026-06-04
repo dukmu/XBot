@@ -60,30 +60,15 @@ class RuntimeServer:
         writer = asyncio.StreamWriter(writer_transport, writer_protocol, reader, asyncio.get_event_loop())
 
         while True:
-            try:
-                line = await reader.readline()
-            except (EOFError, ConnectionError):
-                break
-
-            if not line:
-                break
-
-            try:
-                line = line.decode("utf-8").strip()
-                if not line:
+            frame, response = await self._read_client_frame(reader)
+            if frame is None:
+                if response:
+                    writer.write(response.to_json_line().encode("utf-8"))
+                    await writer.drain()
                     continue
-                frame = frame_from_json(line)
-            except Exception as exc:
-                logger.error("Failed to parse frame: %s", exc)
-                response = self._make_frame("error", {
-                    "code": "invalid_frame",
-                    "message": f"Invalid protocol frame: {exc}",
-                })
-                writer.write(response.to_json_line().encode("utf-8"))
-                await writer.drain()
-                continue
+                break
 
-            response = await self._dispatch(frame, writer)
+            response = await self._dispatch(frame, reader, writer)
 
             if response:
                 writer.write(response.to_json_line().encode("utf-8"))
@@ -96,7 +81,12 @@ class RuntimeServer:
     # Command dispatch
     # ------------------------------------------------------------------
 
-    async def _dispatch(self, frame: ProtocolFrame, writer: Any) -> ProtocolFrame | None:
+    async def _dispatch(
+        self,
+        frame: ProtocolFrame,
+        reader: Any,
+        writer: Any,
+    ) -> ProtocolFrame | None:
         cmd = frame.type
 
         if cmd == "hello":
@@ -106,7 +96,7 @@ class RuntimeServer:
             return await self._handle_session_open(frame, writer)
 
         if cmd == "user.message":
-            return await self._handle_user_message(frame, writer)
+            return await self._handle_user_message(frame, reader, writer)
 
         if cmd == "user.input":
             return await self._handle_user_input(frame)
@@ -168,7 +158,7 @@ class RuntimeServer:
         return None
 
     async def _handle_user_message(
-        self, frame: ProtocolFrame, writer: Any
+        self, frame: ProtocolFrame, reader: Any, writer: Any
     ) -> ProtocolFrame | None:
         """Process a user message through the engine."""
         if self._engine is None:
@@ -185,6 +175,13 @@ class RuntimeServer:
             }, frame.request_id)
 
         encoder = self._encoder
+        previous_sink = self._engine.set_client_event_sink(
+            self._make_live_user_input_sink(
+                reader=reader,
+                writer=writer,
+                turn_request_id=frame.request_id,
+            )
+        )
 
         try:
             async for event in self._engine.run_turn(content):
@@ -225,11 +222,13 @@ class RuntimeServer:
         except Exception as exc:
             logger.exception("Turn failed")
             return encoder.encode_error(str(exc), request_id=frame.request_id)
+        finally:
+            self._engine.set_client_event_sink(previous_sink)
 
         return None
 
     async def _handle_user_input(self, frame: ProtocolFrame) -> ProtocolFrame | None:
-        """Record a client answer for a pending ask_user request."""
+        """Record a standalone answer for a materialized ask_user request."""
         if self._engine is None:
             return self._make_frame("error", {
                 "code": "no_session",
@@ -365,6 +364,172 @@ class RuntimeServer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _read_client_frame(
+        self,
+        reader: Any,
+    ) -> tuple[ProtocolFrame | None, ProtocolFrame | None]:
+        try:
+            line = await reader.readline()
+        except (EOFError, ConnectionError):
+            return None, None
+
+        if not line:
+            return None, None
+
+        try:
+            text = line.decode("utf-8").strip()
+            if not text:
+                return None, self._make_frame("error", {
+                    "code": "invalid_frame",
+                    "message": "Empty protocol frame.",
+                })
+            return frame_from_json(text), None
+        except Exception as exc:
+            logger.error("Failed to parse frame: %s", exc)
+            return None, self._make_frame("error", {
+                "code": "invalid_frame",
+                "message": f"Invalid protocol frame: {exc}",
+            })
+
+    async def _write_frame(self, writer: Any, frame: ProtocolFrame) -> None:
+        writer.write(frame.to_json_line().encode("utf-8"))
+        await writer.drain()
+
+    def _make_live_user_input_sink(
+        self,
+        *,
+        reader: Any,
+        writer: Any,
+        turn_request_id: str,
+    ) -> Any:
+        async def sink(
+            client_event: dict[str, Any],
+            *,
+            timeout_seconds: float | None = None,
+            tool_call_id: str = "",
+        ) -> dict[str, Any]:
+            del tool_call_id
+            encoder = self._encoder
+            event_type = str(client_event.get("type") or "client_event")
+            event_data = client_event.get("data") or {}
+            request_id = str(event_data.get("request_id") or "")
+            try:
+                await self._write_frame(
+                    writer,
+                    encoder.encode(event_type, event_data, request_id=turn_request_id),
+                )
+            except (BrokenPipeError, ConnectionError, RuntimeError):
+                return {
+                    "request_id": request_id,
+                    "status": "disconnected",
+                    "reason": "client_disconnected",
+                }
+
+            response = await self._wait_for_live_user_input(
+                reader=reader,
+                writer=writer,
+                request_id=request_id,
+                client_event=client_event,
+                timeout_seconds=timeout_seconds,
+            )
+            state = self._engine.record_user_input_result(client_event, response)
+            if response["status"] != "disconnected":
+                await self._write_frame(
+                    writer,
+                    encoder.encode(
+                        "user_input_recorded",
+                        {
+                            "request_id": request_id,
+                            "status": response["status"],
+                            "resume_supported": True,
+                            "pending_interactions": state.get("pending_interactions", []),
+                        },
+                        request_id=turn_request_id,
+                    ),
+                )
+            response["persisted"] = True
+            return response
+
+        return sink
+
+    async def _wait_for_live_user_input(
+        self,
+        *,
+        reader: Any,
+        writer: Any,
+        request_id: str,
+        client_event: dict[str, Any],
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
+        while True:
+            try:
+                frame, error = await asyncio.wait_for(
+                    self._read_client_frame(reader),
+                    timeout=None if timeout_seconds is None else float(timeout_seconds),
+                )
+            except asyncio.TimeoutError:
+                return {
+                    "request_id": request_id,
+                    "status": "timeout",
+                    "reason": "timeout",
+                }
+            if frame is None:
+                if error is not None:
+                    await self._write_frame(writer, error)
+                    continue
+                return {
+                    "request_id": request_id,
+                    "status": "disconnected",
+                    "reason": "client_disconnected",
+                }
+
+            if frame.type == "shutdown":
+                return {
+                    "request_id": request_id,
+                    "status": "disconnected",
+                    "reason": "shutdown",
+                }
+
+            if frame.type != "user.input":
+                await self._write_frame(
+                    writer,
+                    self._make_frame(
+                        "error",
+                        {
+                            "code": "interaction_pending",
+                            "message": (
+                                "A user.input response is required before other "
+                                "commands can be processed."
+                            ),
+                            "request_id": request_id,
+                        },
+                        frame.request_id,
+                    ),
+                )
+                continue
+
+            payload_request_id = str(frame.payload.get("request_id", "")).strip()
+            if payload_request_id != request_id:
+                await self._write_frame(
+                    writer,
+                    self._make_frame(
+                        "error",
+                        {
+                            "code": "invalid_request",
+                            "message": f"No pending user input request: {payload_request_id}",
+                            "expected_request_id": request_id,
+                        },
+                        frame.request_id,
+                    ),
+                )
+                continue
+
+            return {
+                "request_id": request_id,
+                "status": "answered",
+                "answer": frame.payload.get("answer", ""),
+            }
 
     def _make_frame(
         self, event_type: str, payload: dict[str, Any], request_id: str = ""

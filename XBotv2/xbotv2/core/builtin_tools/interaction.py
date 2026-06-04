@@ -28,20 +28,26 @@ def send_message(message: str, level: str = "info") -> dict:
 
 
 @langchain_tool
-def ask_user(question: str, options: list[str] | None = None) -> dict:
-    """Ask the client user for input and stop the current turn.
+def ask_user(
+    question: str,
+    options: list[str] | None = None,
+    timeout_seconds: float | None = None,
+) -> dict:
+    """Ask the client user for input before continuing the current turn.
 
     Args:
         question: Question text to show to the user.
         options: Optional suggested answers.
+        timeout_seconds: Optional timeout. None waits until the client answers
+            or disconnects.
     """
     return {
         "content": (
-            "User input requested. The answer can be recorded with user.input; "
-            "turn resume is not implemented yet."
+            "User input requested. Waiting for user.input before continuing "
+            "the current turn."
         ),
-        "status": "error",
-        "turn_complete": True,
+        "wait_for_user": True,
+        "timeout_seconds": timeout_seconds,
         "events": [
             {
                 "type": "user_input_required",
@@ -50,7 +56,7 @@ def ask_user(question: str, options: list[str] | None = None) -> dict:
                     "source": "ask_user",
                     "question": question,
                     "options": options or [],
-                    "resume_supported": False,
+                    "timeout_seconds": timeout_seconds,
                 },
             }
         ],

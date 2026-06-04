@@ -66,6 +66,7 @@ class TuiState:
     transcript: list[TuiTranscriptEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     turn: int = 0
+    pending_user_input_request_id: str | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
 
     def apply_frame(self, frame: ProtocolFrame) -> None:
@@ -122,6 +123,7 @@ class TuiState:
             )
         elif event_type == "user_input_required":
             self.status = "Waiting for user"
+            self.pending_user_input_request_id = str(data.get("request_id") or "") or None
             question = str(data.get("question") or "User input required.")
             options = data.get("options")
             if isinstance(options, list) and options:
@@ -129,9 +131,10 @@ class TuiState:
             self.append_notice("user_input_required", question)
         elif event_type == "user_input_recorded":
             self.status = "Ready"
+            self.pending_user_input_request_id = None
             self.append_notice(
                 "user_input_recorded",
-                str(data.get("request_id") or "User input recorded."),
+                str(data.get("status") or data.get("request_id") or "User input recorded."),
             )
         elif event_type == "permission_response_recorded":
             self.status = "Ready"
@@ -254,6 +257,7 @@ class CursesTuiClient:
         self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: set[Future] = set()
+        self._answers: queue.Queue[str] = queue.Queue()
         self._closed = False
 
     async def run(self) -> None:
@@ -312,6 +316,10 @@ class CursesTuiClient:
     def _send_text(self, text: str) -> None:
         if self._loop is None:
             raise RuntimeError("CursesTuiClient is not running")
+        pending_request_id = self.state.pending_user_input_request_id
+        if pending_request_id:
+            self._answers.put(text)
+            return
         self.state.append_message("user", text)
         future = asyncio.run_coroutine_threadsafe(self._collect_response(text), self._loop)
         self._pending.add(future)
@@ -319,10 +327,17 @@ class CursesTuiClient:
 
     async def _collect_response(self, text: str) -> None:
         try:
-            async for event in self.session.send_message(text):
+            async for event in self.session.send_message_with_input(
+                text,
+                input_provider=self._answer_live_input,
+            ):
                 self._events.put(event)
         except BaseException as exc:
             self._events.put(exc)
+
+    async def _answer_live_input(self, payload: dict[str, Any]) -> str:
+        del payload
+        return await asyncio.to_thread(self._answers.get)
 
     def _drain_events(self) -> None:
         while True:

@@ -37,7 +37,7 @@ def build_materialized_state(
             status = "active"
         elif t == "error":
             status = "error"
-        elif t == "interrupted":
+        elif t in {"interrupted", "turn_cancelled"}:
             status = "interrupted"
 
     # Mailbox pending

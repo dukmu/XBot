@@ -37,15 +37,14 @@ def send_notice(message: str) -> dict:
 
 @langchain_tool
 def request_input(question: str) -> dict:
-    """Emit a user-input event and stop the current turn."""
+    """Emit a user-input event and wait for a live client answer."""
     return {
         "content": "waiting for user",
-        "status": "error",
-        "turn_complete": True,
+        "wait_for_user": True,
         "events": [
             {
                 "type": "user_input_required",
-                "data": {"question": question, "resume_supported": False},
+                "data": {"question": question},
             }
         ],
     }
@@ -844,14 +843,14 @@ class TestEngineHooks:
         assert notice["data"]["tool_call_id"] == "c1"
 
     @pytest.mark.asyncio
-    async def test_ask_user_event_interrupts_turn(self, state_store, temp_workspace):
-        """ask-user style tools emit an input request and mark the session interrupted."""
+    async def test_ask_user_without_live_client_cancels_and_continues(self, state_store, temp_workspace):
+        """ask-user style tools do not hang when no live client can answer."""
         llm = MockLLM(responses=[
             {
                 "content": "ask",
                 "tool_calls": [{"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}],
             },
-            {"content": "should not run"},
+            {"content": "continued without an answer"},
         ])
         registry = ToolRegistry()
         registry.register(request_input, sandbox_mode="host")
@@ -863,10 +862,13 @@ class TestEngineHooks:
         assert input_event["data"]["request_id"] == "user_input:c1"
         assert input_event["data"]["source"] == "ask_user"
         assert input_event["data"]["tool_call_id"] == "c1"
-        assert llm.call_count == 1
+        assert input_event["data"]["resume_supported"] is True
+        tool_result = next(e for e in events if e["type"] == "tool_result")
+        assert "does not support live user input" in tool_result["data"]["content"]
+        assert llm.call_count == 2
         state = state_store.read_state()
-        assert state["status"] == "interrupted"
-        assert state["pending_interactions"][0]["request_id"] == "user_input:c1"
+        assert state["status"] == "active"
+        assert state["pending_interactions"] == []
 
     @pytest.mark.asyncio
     async def test_client_event_hook_observes_interaction_events(self, state_store, temp_workspace):
@@ -879,7 +881,7 @@ class TestEngineHooks:
                     {"name": "request_input", "args": {"question": "Proceed?"}, "id": "c2"},
                 ],
             },
-            {"content": "should not run"},
+            {"content": "continued"},
         ])
         registry = ToolRegistry()
         registry.register(send_notice, sandbox_mode="host")
@@ -888,7 +890,8 @@ class TestEngineHooks:
         observed = []
 
         async def on_client_event(ctx):
-            observed.append((ctx.client_event["type"], ctx.tool_result.tool_call_id))
+            tool_call_id = getattr(ctx.tool_result, "tool_call_id", None)
+            observed.append((ctx.client_event["type"], tool_call_id))
 
         hook_manager.register(HookStage.ON_CLIENT_EVENT, on_client_event)
         engine = make_engine_with_hooks(
@@ -907,21 +910,24 @@ class TestEngineHooks:
         ]
 
     @pytest.mark.asyncio
-    async def test_new_turn_reactivates_interrupted_session(self, state_store, temp_workspace):
-        """A later turn can move an interrupted session back to active."""
+    async def test_new_turn_after_ask_user_without_live_client_stays_active(self, state_store, temp_workspace):
+        """A direct engine caller without live input support does not leave the session interrupted."""
         llm = MockLLM(responses=[
             {
                 "content": "ask",
                 "tool_calls": [{"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}],
             },
-            {"content": "resumed manually"},
+            {"content": "continued without answer"},
+            {"content": "next turn"},
         ])
         registry = ToolRegistry()
         registry.register(request_input, sandbox_mode="host")
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         _ = [e async for e in engine.run_turn("ask")]
-        assert state_store.read_state()["status"] == "interrupted"
+        state = state_store.read_state()
+        assert state["status"] == "active"
+        assert state["pending_interactions"] == []
 
         _ = [e async for e in engine.run_turn("continue")]
 

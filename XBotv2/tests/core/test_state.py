@@ -216,6 +216,42 @@ class TestMaterialization:
 
         assert state["status"] == "interrupted"
 
+    def test_turn_cancelled_interrupts_without_pending_interaction(self):
+        """A cancelled live turn is interrupted but does not leave a stale request."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {"type": "turn_started"},
+                {
+                    "event_id": 1,
+                    "type": "user_input_required",
+                    "payload": {"request_id": "user_input:c1", "source": "ask_user"},
+                },
+                {
+                    "event_id": 2,
+                    "type": "user_input_cancelled",
+                    "payload": {
+                        "request_id": "user_input:c1",
+                        "status": "disconnected",
+                    },
+                },
+                {
+                    "event_id": 3,
+                    "type": "turn_cancelled",
+                    "payload": {"reason": "client_disconnected"},
+                },
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["status"] == "interrupted"
+        assert state["pending_interactions"] == []
+
     def test_mailbox_pending_count(self, temp_data_dir):
         """Mailbox pending = sent - acknowledged."""
         root = temp_data_dir / "sessions" / "test" / "state"

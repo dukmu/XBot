@@ -33,24 +33,28 @@ interactions.
 ## Interaction Semantics
 
 - `send_message` emits `client_message` and does not stop the current turn.
-- `ask_user` emits `user_input_required`, appends an `interrupted` state event,
-  and stops the current turn. Answers can be recorded with `user.input`, but
-  turn resume is not implemented yet, so the payload includes
-  `resume_supported: false`. The event carries a stable
-  `request_id` (`user_input:<tool_call_id>`), `source`, and `tool_call_id` so a
-  later `user.input` command can correlate the answer.
+- `ask_user` is a live human-in-the-loop tool. During an active `user.message`
+  stream it emits `user_input_required`, waits for a matching `user.input`
+  frame on the same connection, and returns the answer as the tool result so
+  the ReAct loop can continue. The event carries a stable `request_id`
+  (`user_input:<tool_call_id>`), `source`, `tool_call_id`, and
+  `resume_supported: true`.
+- If `ask_user` times out, core records `user_input_cancelled`, returns a
+  no-reply tool result, and lets the agent continue. If the client disconnects
+  while waiting, core records `user_input_cancelled` plus `turn_cancelled`,
+  leaves the materialized status `interrupted`, and does not continue the
+  current turn.
 - A later `turn_started` reactivates the materialized session status after an
   interruption or error; `turn_finished` does not clear an interruption raised
   during that same turn.
 - Permission and sandbox ask decisions emit `permission_request` and fail
   closed. Request events carry `request_id` (`permission:<tool_call_id>`) and
   `source`; denials emit `permission_denied`.
-- `user.input` records a `user_input_response` event and returns
-  `user_input_recorded`. `permission.response` records a `permission_response`
-  event and returns `permission_response_recorded`. Both commands clear the
-  matching `pending_interactions` entry but do not resume the interrupted turn
-  yet. Response events include a snapshot of the original pending request
-  payload for audit and future replay logic.
+- A live `user.input` records a `user_input_response` event and returns
+  `user_input_recorded` before the tool result is emitted. `permission.response`
+  records a `permission_response` event and returns
+  `permission_response_recorded`. Response events include a snapshot of the
+  original pending request payload for audit and future replay logic.
 - `state.yaml` materializes unresolved interaction requests as
   `pending_interactions`, rebuilt from the append-only event log.
 - Before client-directed events are persisted and streamed, core runs the
@@ -60,14 +64,15 @@ interactions.
 ## Client Coverage
 
 - `TerminalSession` streams every server frame until `turn_finished` or
-  `error`, and exposes helper methods for `user.input` and
-  `permission.response`.
+  `error`; `send_message_with_input()` can answer live `ask_user` requests
+  through an input provider. Helper methods remain for standalone
+  `user.input` and `permission.response` commands.
 - `CursesTuiClient` consumes protocol events only; it does not import runtime,
   core, LangChain, or LangGraph modules.
 - `TuiState` renders assistant messages, tool calls/results, errors, client
   notices, approval requests, denials, user-input requests, and recorded
   response acknowledgements.
 - TUI state treats approval requests, permission denials, user-input requests,
-  and errors as terminal notice states for that turn. A following
-  `turn_finished` frame updates the turn number but does not overwrite the
-  visible waiting/denied/error status.
+  and errors as terminal notice states for that turn. During a live
+  `ask_user`, the next typed line is sent as the answer instead of starting a
+  new user turn.

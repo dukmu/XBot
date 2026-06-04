@@ -347,7 +347,7 @@ interruption raised during that same turn.
 6. Register core base tools: filesystem, shell, and interaction tools (always available)
    - legacy placeholder `ask` is not a core tool
    - `send_message` emits non-blocking `client_message` events
-   - `ask_user` emits `user_input_required`, marks the session interrupted, and records answers through `user.input`; turn resume is future work
+   - `ask_user` emits `user_input_required`, waits for a live `user.input` on the active protocol connection, and returns the answer, timeout, or cancellation as the tool result
    - filesystem tools return JSON metadata and support structured read/list/write operations
    - default `AFTER_TOOLS` hook caches oversized tool outputs under session artifacts before persistence/protocol emit
 7. Register personality-declared hooks from `hooks:` config entries; invalid targets fail loudly
@@ -436,7 +436,8 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
   materialized as `pending_interactions` in `state.yaml`
 - client response commands (`user.input`, `permission.response`) append
   response events with the original request snapshot and clear matching pending
-  interactions; turn/tool replay is intentionally not part of Phase 1-3
+  interactions; live `ask_user` responses continue the current ReAct turn, while
+  client disconnect records cancellation and stops the turn
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
 - `CursesTuiClient` — background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop
