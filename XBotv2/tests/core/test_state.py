@@ -174,6 +174,47 @@ class TestMaterialization:
         store.append_event("session_closed", {})
         assert store.materialize()["status"] == "closed"
 
+    def test_turn_started_reactivates_after_error_or_interrupt(self):
+        """A new turn can move a session out of error/interrupted status."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {"type": "turn_started"},
+                {"type": "error"},
+                {"type": "turn_started"},
+                {"type": "turn_finished"},
+                {"type": "interrupted"},
+                {"type": "turn_started"},
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["status"] == "active"
+
+    def test_turn_finished_does_not_clear_same_turn_interrupt(self):
+        """An ask-user interrupt remains visible after the turn finishes."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {"type": "turn_started"},
+                {"type": "interrupted"},
+                {"type": "turn_finished"},
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["status"] == "interrupted"
+
     def test_mailbox_pending_count(self, temp_data_dir):
         """Mailbox pending = sent - acknowledged."""
         root = temp_data_dir / "sessions" / "test" / "state"

@@ -317,6 +317,10 @@ artifacts_root: str
 updated_at: str
 ```
 
+Status is derived from ordered events. `turn_started` reactivates prior
+`error` or `interrupted` sessions; `turn_finished` does not clear an
+interruption raised during that same turn.
+
 **No more:** `mode`, `plan`, `dag`, `phase`, `context_tree`, `summaries`, `goal`, `active_node`, `ready_nodes`, `running_nodes`, `blocked_nodes`, etc. Those are all plugin concerns.
 
 ## Bootstrap Sequence

@@ -26,6 +26,9 @@ Every streamed frame for a `user.message` request preserves the incoming
 - `ask_user` emits `user_input_required`, appends an `interrupted` state event,
   and stops the current turn. Resume is not implemented yet, so the payload
   includes `resume_supported: false`.
+- A later `turn_started` reactivates the materialized session status after an
+  interruption or error; `turn_finished` does not clear an interruption raised
+  during that same turn.
 - Permission and sandbox ask decisions emit `permission_request` and fail
   closed. Denials emit `permission_denied`.
 

@@ -215,8 +215,9 @@ class CoreStateStore:
         """
         if not self.messages_path.exists() or keep_last <= 0:
             if self.messages_path.exists():
+                removed = self.message_count()
                 self.messages_path.unlink()
-                return 0
+                return removed
             return 0
 
         all_msgs = list(_iter_jsonl(self.messages_path))

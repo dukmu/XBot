@@ -25,19 +25,20 @@ def build_materialized_state(
     turn_count = sum(1 for e in events if e.get("type") == "turn_started")
     event_count = len(events)
 
-    # Determine status from the last relevant event
+    # Determine status from ordered events. A new turn re-activates sessions
+    # after prior error/interrupted states; turn_finished does not clear an
+    # interruption that happened during the same turn.
     status = "active"
-    for e in reversed(events):
+    for e in events:
         t = e.get("type")
         if t == "session_closed":
             status = "closed"
-            break
-        if t == "error":
+        elif t == "turn_started":
+            status = "active"
+        elif t == "error":
             status = "error"
-            break
-        if t == "interrupted":
+        elif t == "interrupted":
             status = "interrupted"
-            break
 
     # Mailbox pending
     sent = sum(1 for e in events if e.get("type") == "mailbox_send")

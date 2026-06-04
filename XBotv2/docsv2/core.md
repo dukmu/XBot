@@ -115,3 +115,7 @@ All significant state changes are recorded as append-only events:
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
 - `tool_result_cached` — large tool output persisted to artifacts and truncated inline
+
+`state.yaml` status is rebuilt from ordered events. A new `turn_started`
+reactivates prior `error` or `interrupted` sessions, while `turn_finished`
+does not hide an interruption raised during the same turn.

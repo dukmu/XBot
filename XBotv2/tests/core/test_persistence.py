@@ -149,6 +149,18 @@ class TestMessagePersistence:
         assert restored[0].content == "keep1"
         assert restored[1].content == "keep2"
 
+    def test_truncate_keep_zero_returns_removed_count(self, store):
+        """Truncating all messages returns the number deleted."""
+        store.append_messages([
+            HumanMessage(content="old1"),
+            HumanMessage(content="old2"),
+        ])
+
+        removed = store.truncate_messages(keep_last=0)
+
+        assert removed == 2
+        assert store.message_count() == 0
+
     def test_has_existing_session(self, store):
         """Session detection works based on stored messages."""
         assert store.has_existing_session() is False

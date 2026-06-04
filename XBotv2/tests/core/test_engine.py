@@ -844,6 +844,27 @@ class TestEngineHooks:
         assert state_store.read_state()["status"] == "interrupted"
 
     @pytest.mark.asyncio
+    async def test_new_turn_reactivates_interrupted_session(self, state_store, temp_workspace):
+        """A later turn can move an interrupted session back to active."""
+        llm = MockLLM(responses=[
+            {
+                "content": "ask",
+                "tool_calls": [{"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}],
+            },
+            {"content": "resumed manually"},
+        ])
+        registry = ToolRegistry()
+        registry.register(request_input, sandbox_mode="host")
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        _ = [e async for e in engine.run_turn("ask")]
+        assert state_store.read_state()["status"] == "interrupted"
+
+        _ = [e async for e in engine.run_turn("continue")]
+
+        assert state_store.read_state()["status"] == "active"
+
+    @pytest.mark.asyncio
     async def test_permission_request_event_reaches_client(self, state_store, temp_workspace):
         """Permission ask decisions are protocol-visible events."""
         llm = MockLLM(responses=[

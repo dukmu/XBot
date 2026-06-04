@@ -67,6 +67,11 @@ are the primary freeze gate.
 - `CoreStateStore.materialize()` now delegates derived state construction to
   the planned `persistence.materializer` module, and core tests cover that pure
   function directly.
+- Materialized status now follows ordered event semantics: a later
+  `turn_started` reactivates prior `error`/`interrupted` sessions, while
+  `turn_finished` does not hide an interruption from the same turn.
+- `CoreStateStore.truncate_messages(keep_last=0)` now returns the actual
+  number of deleted messages, matching the method contract used by compaction.
 - `provider: mock` can now be configured through `provider.yaml`, enabling
   deterministic subprocess smoke tests without a real LLM provider.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
