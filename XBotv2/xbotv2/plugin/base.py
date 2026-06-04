@@ -96,11 +96,12 @@ class PluginBase(ABC):
 
                 plugin_dir = self.manifest.plugin_dir or Path.cwd()
                 file_path = plugin_dir / decl.file
-                try:
-                    with open(file_path) as f:
-                        fragments[decl.stage] = f.read()
-                except FileNotFoundError:
-                    fragments[decl.stage] = ""
+                if not file_path.exists():
+                    raise FileNotFoundError(
+                        f"Plugin '{self.manifest.name}' prompt fragment file not found: {file_path}"
+                    )
+                with open(file_path) as f:
+                    fragments[decl.stage] = f.read()
 
         return fragments
 

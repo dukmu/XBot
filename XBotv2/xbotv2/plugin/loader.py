@@ -73,8 +73,6 @@ class PluginLoader:
             self._ensure_importable(manifest, plugin_dir)
             plugin_store = PluginStore(self.state_store, manifest.name)
             plugin = instantiate_plugin(manifest, plugin_store)
-            if plugin is None:
-                continue
 
             await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
             self._register(plugin)
@@ -177,44 +175,46 @@ class _DefaultPlugin:
 
     def register_hooks(self, manager: HookManager) -> None:
         for decl in self.manifest.hooks:
-            handler = self._resolve(decl.handler)
-            if handler:
-                manager.register(HookStage(decl.stage), handler)
+            manager.register(HookStage(decl.stage), self._resolve(decl.handler))
 
     def register_tools(self, registry: ToolRegistry) -> None:
         for decl in self.manifest.tools:
-            tool = self._resolve(decl.handler)
-            if tool:
-                registry.register(
-                    tool,
-                    sandbox_mode=decl.sandbox_mode,
-                    execution_mode=decl.execution_mode,
-                    lock_fields=tuple(decl.lock_fields),
-                    owner_plugin=self.manifest.name,
-                )
+            registry.register(
+                self._resolve(decl.handler),
+                sandbox_mode=decl.sandbox_mode,
+                execution_mode=decl.execution_mode,
+                lock_fields=tuple(decl.lock_fields),
+                owner_plugin=self.manifest.name,
+            )
 
     def get_prompt_fragments(self) -> dict[str, str]:
         fragments: dict[str, str] = {}
         for decl in self.manifest.prompt_fragments:
             if decl.handler:
                 handler = self._resolve(decl.handler)
-                if handler:
-                    fragments[decl.stage] = handler() if callable(handler) else str(handler)
+                fragments[decl.stage] = handler() if callable(handler) else str(handler)
             elif decl.file:
-                try:
-                    base_dir = self.manifest.plugin_dir or Path.cwd()
-                    fragments[decl.stage] = (base_dir / decl.file).read_text()
-                except Exception:
-                    fragments[decl.stage] = ""
+                base_dir = self.manifest.plugin_dir or Path.cwd()
+                file_path = base_dir / decl.file
+                if not file_path.exists():
+                    raise FileNotFoundError(
+                        f"Plugin '{self.manifest.name}' prompt fragment file not found: {file_path}"
+                    )
+                fragments[decl.stage] = file_path.read_text()
         return fragments
 
     @staticmethod
-    def _resolve(dotted_path: str) -> Any | None:
+    def _resolve(dotted_path: str) -> Any:
+        module_path, _, attr = dotted_path.partition(":")
+        if not attr:
+            raise ValueError(f"Invalid handler path (missing ':attr'): {dotted_path!r}")
         try:
-            module_path, _, attr = dotted_path.partition(":")
-            if not attr:
-                return None
             module = importlib.import_module(module_path)
+        except ImportError as exc:
+            raise ImportError(f"Could not import plugin handler module {module_path!r}") from exc
+        try:
             return getattr(module, attr)
-        except Exception:
-            return None
+        except AttributeError as exc:
+            raise AttributeError(
+                f"Plugin handler {attr!r} not found in module {module_path!r}"
+            ) from exc

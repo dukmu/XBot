@@ -31,6 +31,9 @@ are the primary freeze gate.
 - Plugin discovery/loading now lives in `xbotv2.plugin.loader.PluginLoader`
   instead of being hidden inside bootstrap, and core tests cover direct loader
   discovery plus prompt fragment registration.
+- Manifest-only plugin hook/tool handlers and prompt fragment files now fail
+  loudly when a declaration cannot be resolved instead of silently skipping
+  broken plugin configuration.
 - Root pytest configuration now includes `pythonpath = ["XBotv2", "."]`, so
   XBotv2 tests run from repository root without manual `PYTHONPATH`.
 - Documentation now uses the implemented 17 hook stages, not the stale 18-stage

@@ -193,6 +193,35 @@ class TestPromptFragmentFiles:
 
         assert fragments["system_rules"] == "## Plugin Rules\nStay isolated.\n"
 
+    def test_default_plugin_missing_prompt_file_raises(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "broken"
+        plugin_dir.mkdir(parents=True)
+        manifest = PluginManifest(
+            name="broken",
+            version="1.0.0",
+            prompt_fragments=[
+                {"stage": "system_instructions", "file": "prompts/missing.md"}
+            ],
+            plugin_dir=plugin_dir,
+        )
+        plugin = _DefaultPlugin(manifest, store=None)
+
+        with pytest.raises(FileNotFoundError, match="prompt fragment file not found"):
+            plugin.get_prompt_fragments()
+
+    def test_default_plugin_invalid_handler_raises(self):
+        manifest = PluginManifest(
+            name="broken",
+            version="1.0.0",
+            hooks=[
+                {"stage": "on_session_init", "handler": "missing_handler_path"}
+            ],
+        )
+        plugin = _DefaultPlugin(manifest, store=None)
+
+        with pytest.raises(ValueError, match="Invalid handler path"):
+            plugin.register_hooks(HookManager())
+
 
 class TestPluginLoader:
     """PluginLoader discovery and registration."""
