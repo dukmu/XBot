@@ -122,6 +122,10 @@ session resume: message `id`, `name`, AI `tool_calls`, ToolMessage
 `xbotv2_` are not restored into message history because those side-channel
 events are persisted separately in `events.jsonl`.
 
+`Engine.start_session()` treats either persisted events or persisted messages
+as an existing session and runs `ON_SESSION_RESUME`. Only a store with neither
+events nor messages runs `ON_SESSION_START`.
+
 ## Events
 
 All significant state changes are recorded as append-only events:

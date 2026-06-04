@@ -70,6 +70,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   `additional_kwargs`, and provider `response_metadata`
 - `state.yaml` — materialized view (rebuildable from events)
 - Plugin states as opaque blobs in `plugin_states/`
+- Session start uses existing events or messages to distinguish resume from a
+  brand-new session, so event-only sessions still run `ON_SESSION_RESUME`.
 
 ### Context Building (`xbotv2/core/context.py`)
 - Pluggable fragment injection points

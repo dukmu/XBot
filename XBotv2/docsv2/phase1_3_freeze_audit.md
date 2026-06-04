@@ -117,6 +117,10 @@ are the primary freeze gate.
   `shutdown_ok`, so JSONL/TUI exits run `ON_SESSION_CLOSE`, append
   `session_closed`, save messages, and materialize closed state like direct CLI
   exits.
+- `Engine.start_session()` now uses `CoreStateStore.has_existing_session()` so
+  event-only sessions, such as a session that was opened and then closed before
+  any user message, run `ON_SESSION_RESUME` instead of being misclassified as
+  brand-new.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

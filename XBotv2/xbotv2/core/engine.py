@@ -74,8 +74,8 @@ class Engine:
     async def start_session(self) -> None:
         """Create a new session. Runs ON_SESSION_START hooks.
 
-        If previous message history exists on disk, it is loaded
-        (this session is a resume from persisted state).
+        If previous persisted state exists on disk, message history and turn
+        count are loaded and ON_SESSION_RESUME hooks run.
         """
         self._session = SessionInfo(
             session_id=self.state_store.session_id,
@@ -83,8 +83,7 @@ class Engine:
             personality_id=self.state_store.personality_id,
         )
 
-        # Restore persisted messages if any exist
-        if self.state_store.message_count() > 0:
+        if self.state_store.has_existing_session():
             self._messages = self.state_store.read_messages()
             self._turn_count = self.state_store.read_state().get("turn_count", 0)
             self._session.turn_count = self._turn_count

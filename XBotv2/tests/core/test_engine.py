@@ -1036,6 +1036,35 @@ class TestEngineState:
         assert "on_session_close" in calls
 
     @pytest.mark.asyncio
+    async def test_start_session_resumes_event_only_state(self, state_store, temp_workspace):
+        """Existing event logs without messages are still resumed sessions."""
+        state_store.append_event("session_closed", {"turn_count": 0})
+        llm = MockLLM(responses=[])
+        registry = ToolRegistry()
+        calls = []
+
+        async def record_call(ctx):
+            calls.append(ctx.stage.value)
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.ON_SESSION_START, record_call)
+        hook_manager.register(HookStage.ON_SESSION_RESUME, record_call)
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        await engine.start_session()
+
+        assert calls == ["on_session_resume"]
+
+    @pytest.mark.asyncio
     async def test_close_session_materializes_closed_status(self, state_store, temp_workspace):
         """Session close persists the closed materialized state."""
         llm = MockLLM(responses=[])
