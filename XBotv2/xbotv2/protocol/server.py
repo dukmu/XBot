@@ -426,34 +426,43 @@ class RuntimeServer:
                     "reason": "client_disconnected",
                 }
 
-            response = await self._wait_for_live_user_input(
+            response = await self._wait_for_live_interaction(
                 reader=reader,
                 writer=writer,
                 request_id=request_id,
                 client_event=client_event,
                 timeout_seconds=timeout_seconds,
             )
-            state = self._engine.record_user_input_result(client_event, response)
+            if event_type == "permission_request":
+                state = self._engine.record_permission_result(client_event, response)
+                ack_type = "permission_response_recorded"
+                ack_payload = {
+                    "request_id": request_id,
+                    "decision": response.get("decision", ""),
+                    "status": response["status"],
+                    "resume_supported": True,
+                    "pending_interactions": state.get("pending_interactions", []),
+                }
+            else:
+                state = self._engine.record_user_input_result(client_event, response)
+                ack_type = "user_input_recorded"
+                ack_payload = {
+                    "request_id": request_id,
+                    "status": response["status"],
+                    "resume_supported": True,
+                    "pending_interactions": state.get("pending_interactions", []),
+                }
             if response["status"] != "disconnected":
                 await self._write_frame(
                     writer,
-                    encoder.encode(
-                        "user_input_recorded",
-                        {
-                            "request_id": request_id,
-                            "status": response["status"],
-                            "resume_supported": True,
-                            "pending_interactions": state.get("pending_interactions", []),
-                        },
-                        request_id=turn_request_id,
-                    ),
+                    encoder.encode(ack_type, ack_payload, request_id=turn_request_id),
                 )
             response["persisted"] = True
             return response
 
         return sink
 
-    async def _wait_for_live_user_input(
+    async def _wait_for_live_interaction(
         self,
         *,
         reader: Any,
@@ -462,6 +471,12 @@ class RuntimeServer:
         client_event: dict[str, Any],
         timeout_seconds: float | None,
     ) -> dict[str, Any]:
+        event_type = str(client_event.get("type") or "")
+        expected_command = (
+            "permission.response"
+            if event_type == "permission_request"
+            else "user.input"
+        )
         while True:
             try:
                 frame, error = await asyncio.wait_for(
@@ -491,7 +506,7 @@ class RuntimeServer:
                     "reason": "shutdown",
                 }
 
-            if frame.type != "user.input":
+            if frame.type != expected_command:
                 await self._write_frame(
                     writer,
                     self._make_frame(
@@ -499,7 +514,7 @@ class RuntimeServer:
                         {
                             "code": "interaction_pending",
                             "message": (
-                                "A user.input response is required before other "
+                                f"A {expected_command} response is required before other "
                                 "commands can be processed."
                             ),
                             "request_id": request_id,
@@ -517,7 +532,7 @@ class RuntimeServer:
                         "error",
                         {
                             "code": "invalid_request",
-                            "message": f"No pending user input request: {payload_request_id}",
+                            "message": f"No pending interaction request: {payload_request_id}",
                             "expected_request_id": request_id,
                         },
                         frame.request_id,
@@ -529,6 +544,7 @@ class RuntimeServer:
                 "request_id": request_id,
                 "status": "answered",
                 "answer": frame.payload.get("answer", ""),
+                "decision": frame.payload.get("decision", ""),
             }
 
     def _make_frame(

@@ -712,7 +712,7 @@ class TestRuntimeServerSubprocess:
             await _stop_process(proc)
 
     @pytest.mark.asyncio
-    async def test_server_records_permission_response(self, tmp_path):
+    async def test_server_live_permission_allow_continues_tool_call(self, tmp_path):
         data_dir = _write_mock_data_dir(
             tmp_path,
             tools=["send_message"],
@@ -767,9 +767,23 @@ class TestRuntimeServerSubprocess:
                 payload={"content": "trigger"},
             )
             frames = []
+            approved = False
             while True:
                 frame = await _read_frame(proc)
                 frames.append(frame)
+                if frame.type == "permission_request" and not approved:
+                    await _send_frame(
+                        proc,
+                        "permission.response",
+                        session_id="s-perm",
+                        thread_id="t-perm",
+                        request_id="req-perm-response",
+                        payload={
+                            "request_id": frame.payload["request_id"],
+                            "decision": "allow",
+                        },
+                    )
+                    approved = True
                 if frame.type == "turn_finished":
                     break
 
@@ -777,23 +791,15 @@ class TestRuntimeServerSubprocess:
             assert permission.payload["request_id"] == "permission:call_perm"
             state_path = data_dir / "sessions" / "s-perm" / "state" / "state.yaml"
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
-            assert state["pending_interactions"][0]["request_id"] == "permission:call_perm"
-
-            await _send_frame(
-                proc,
-                "permission.response",
-                session_id="s-perm",
-                thread_id="t-perm",
-                request_id="req-perm-response",
-                payload={"request_id": "permission:call_perm", "decision": "allow"},
-            )
-            recorded = await _read_frame(proc)
-            assert recorded.type == "permission_response_recorded"
-            assert recorded.request_id == "req-perm-response"
-            assert recorded.payload["decision"] == "allow"
-            assert recorded.payload["pending_interactions"] == []
-            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
             assert state["pending_interactions"] == []
+            recorded = next(frame for frame in frames if frame.type == "permission_response_recorded")
+            assert recorded.type == "permission_response_recorded"
+            assert recorded.request_id == "req-perm"
+            assert recorded.payload["decision"] == "allow"
+            assert recorded.payload["status"] == "answered"
+            assert recorded.payload["pending_interactions"] == []
+            assert any(frame.type == "client_message" for frame in frames)
+            assert [frame.type for frame in frames].count("assistant_message") == 2
             events_path = data_dir / "sessions" / "s-perm" / "state" / "events.jsonl"
             events = [json.loads(line) for line in events_path.read_text().splitlines()]
             response_event = next(event for event in events if event["type"] == "permission_response")
@@ -870,6 +876,84 @@ class TestRuntimeServerSubprocess:
             events_path = data_dir / "sessions" / "s-disconnect" / "state" / "events.jsonl"
             events = [json.loads(line) for line in events_path.read_text().splitlines()]
             cancelled = next(event for event in events if event["type"] == "user_input_cancelled")
+            assert cancelled["payload"]["status"] == "disconnected"
+        finally:
+            if proc.returncode is None:
+                await _stop_process(proc)
+
+    @pytest.mark.asyncio
+    async def test_server_stops_live_permission_when_client_disconnects(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["send_message"],
+            mock_responses=[
+                {
+                    "content": "notice",
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "args": {"message": "needs approval"},
+                            "id": "call_perm",
+                        }
+                    ],
+                },
+                {"content": "should not run"},
+            ],
+            permissions=(
+                "permissions:\n"
+                "  ask:\n"
+                "    - tool: send_message\n"
+            ),
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-perm-drop", thread_id="t-perm-drop")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-perm-drop",
+                thread_id="t-perm-drop",
+                request_id="req-perm-drop",
+                payload={"content": "trigger"},
+            )
+            frames = []
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "permission_request":
+                    proc.stdin.close()
+                    break
+
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            assert [frame.type for frame in frames].count("assistant_message") == 1
+            assert not any(frame.type == "client_message" for frame in frames)
+            state_path = data_dir / "sessions" / "s-perm-drop" / "state" / "state.yaml"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["status"] == "interrupted"
+            assert state["pending_interactions"] == []
+            events_path = data_dir / "sessions" / "s-perm-drop" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            cancelled = next(event for event in events if event["type"] == "permission_cancelled")
             assert cancelled["payload"]["status"] == "disconnected"
         finally:
             if proc.returncode is None:

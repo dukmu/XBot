@@ -92,6 +92,7 @@ def _pending_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "user_input_response",
             "user_input_cancelled",
             "permission_response",
+            "permission_cancelled",
             "permission_denied",
         } and request_id:
             pending.pop(str(request_id), None)

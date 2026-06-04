@@ -160,8 +160,9 @@ class TerminalSession:
         self,
         content: str,
         input_provider: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
+        permission_provider: Callable[[dict[str, Any]], Awaitable[str] | str] | None = None,
     ):
-        """Send a user message and optionally answer live ask_user requests."""
+        """Send a user message and optionally answer live interaction requests."""
         if not self._client:
             raise RuntimeError("Not connected")
 
@@ -193,6 +194,19 @@ class TerminalSession:
                     {
                         "request_id": frame.payload.get("request_id", ""),
                         "answer": answer,
+                    },
+                )
+            elif frame.type == "permission_request" and permission_provider is not None:
+                decision = permission_provider(frame.payload)
+                if hasattr(decision, "__await__"):
+                    decision = await decision
+                await self._client.send(
+                    "permission.response",
+                    self._session_id,
+                    self._thread_id,
+                    {
+                        "request_id": frame.payload.get("request_id", ""),
+                        "decision": str(decision),
                     },
                 )
 

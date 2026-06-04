@@ -23,6 +23,7 @@ async def execute_tools(
     hook_manager: Any = None,
     hook_context_factory: Any = None,
     client_interaction_handler: Any = None,
+    permission_interaction_handler: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
 ) -> list[ToolMessage]:
     """Execute tool calls through the guard pipeline.
@@ -42,6 +43,8 @@ async def execute_tools(
         hook_context_factory: callable that builds HookContext objects.
         client_interaction_handler: async callable for blocking interaction
             events such as ask_user.
+        permission_interaction_handler: async callable for live permission
+            approvals.
         workspace_root: Workspace root for path resolution.
 
     Returns:
@@ -94,6 +97,22 @@ async def execute_tools(
                     "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
                     reason,
                 )
+                if permission_stage == HookStage.ON_PERMISSION_REQUEST:
+                    response = await _resolve_live_permission(
+                        denial_events[tc["id"]][0],
+                        permission_interaction_handler,
+                        tc,
+                    )
+                    if response.get("decision") == "allow":
+                        continue
+                    denials[tc["id"]] = _permission_denial_reason(response, reason)
+                    await _emit_tool_denied(
+                        hook_manager,
+                        hook_context_factory,
+                        tc,
+                        denials[tc["id"]],
+                    )
+                    continue
                 await _emit_tool_denied(hook_manager, hook_context_factory, tc, reason)
                 continue
 
@@ -126,8 +145,8 @@ async def execute_tools(
             if decision == "ask":
                 denials[tc["id"]] = (
                     f"Permission approval required for tool: {tool_name}. "
-                    "A permission.response can record the decision; "
-                    "the current tool call fails closed and is not replayed."
+                    "No live permission handler is available, so this call "
+                    "fails closed."
                 )
                 denial_events[tc["id"]] = [_permission_client_event(
                     HookStage.ON_PERMISSION_REQUEST,
@@ -141,6 +160,21 @@ async def execute_tools(
                     HookStage.ON_PERMISSION_REQUEST,
                     tc,
                     decision,
+                    denials[tc["id"]],
+                )
+                response = await _resolve_live_permission(
+                    denial_events[tc["id"]][0],
+                    permission_interaction_handler,
+                    tc,
+                )
+                if response.get("decision") == "allow":
+                    denials.pop(tc["id"], None)
+                    denial_events.pop(tc["id"], None)
+                    if entry.execution_mode == "sequential":
+                        sequential_tools.add(tool_name)
+                    continue
+                denials[tc["id"]] = _permission_denial_reason(
+                    response,
                     denials[tc["id"]],
                 )
                 await _emit_tool_denied(
@@ -549,6 +583,44 @@ async def _tool_message_from_user_input_wait(
         tool_call_id=tool_call_id,
         status="success",
     )
+
+
+async def _resolve_live_permission(
+    event: dict[str, Any],
+    permission_interaction_handler: Any,
+    tool_call: dict[str, Any],
+) -> dict[str, Any]:
+    if permission_interaction_handler is None:
+        return {
+            "status": "unsupported",
+            "decision": "deny",
+            "reason": "live_permission_unsupported",
+        }
+    response = await permission_interaction_handler(
+        event,
+        timeout_seconds=None,
+        tool_call_id=str(tool_call.get("id", "")),
+    )
+    decision = str(response.get("decision") or "").lower()
+    if response.get("status") == "answered" and decision == "allow":
+        return {**response, "decision": "allow"}
+    if response.get("status") == "answered" and decision == "deny":
+        return {**response, "decision": "deny", "reason": "denied_by_user"}
+    return {**response, "decision": "deny"}
+
+
+def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
+    status = str(response.get("status") or "")
+    reason = str(response.get("reason") or status)
+    if status == "timeout":
+        return "Permission request timed out; tool call denied."
+    if status == "answered" and response.get("decision") == "deny":
+        return "Permission denied by user."
+    if status == "cancelled":
+        return f"Permission request cancelled; tool call denied: {reason}"
+    if status == "unsupported":
+        return fallback
+    return fallback
 
 
 async def _run_tool_hook(

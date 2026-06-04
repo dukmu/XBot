@@ -21,9 +21,9 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from xbotv2.core.interactions import (
-    UserInputDisconnected,
-    UserInputResult,
-    UserInputWaiter,
+    InteractionDisconnected,
+    InteractionResult,
+    InteractionWaiter,
 )
 from xbotv2.core.state import SessionInfo
 from xbotv2.hooks.types import HookContext, HookStage
@@ -71,7 +71,8 @@ class Engine:
         self._messages: list[BaseMessage] = []
         self._session: SessionInfo | None = None
         self._turn_count = 0
-        self._user_input_waiter = UserInputWaiter()
+        self._user_input_waiter = InteractionWaiter()
+        self._permission_waiter = InteractionWaiter()
         self._client_event_sink: Any | None = None
 
     # ------------------------------------------------------------------
@@ -121,6 +122,7 @@ class Engine:
     async def close_session(self) -> None:
         """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
         self.cancel_pending_user_inputs("session_closed")
+        self.cancel_pending_permissions("session_closed")
         self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
         ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
         await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
@@ -132,17 +134,29 @@ class Engine:
         self._client_event_sink = sink
         return previous
 
-    def submit_user_input(self, request_id: str, answer: Any) -> UserInputResult:
+    def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
         """Answer a live ask_user request owned by this engine."""
-        return self._user_input_waiter.answer(request_id, answer)
+        return self._user_input_waiter.answer(request_id, answer=answer)
 
-    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> UserInputResult:
+    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
         """Cancel one live ask_user request."""
         return self._user_input_waiter.cancel(request_id, reason)
 
-    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[UserInputResult]:
+    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[InteractionResult]:
         """Cancel all live ask_user requests."""
         return self._user_input_waiter.cancel_all(reason)
+
+    def submit_permission_response(
+        self,
+        request_id: str,
+        decision: str,
+    ) -> InteractionResult:
+        """Answer a live permission request owned by this engine."""
+        return self._permission_waiter.answer(request_id, decision=decision)
+
+    def cancel_pending_permissions(self, reason: str = "cancelled") -> list[InteractionResult]:
+        """Cancel all live permission requests."""
+        return self._permission_waiter.cancel_all(reason)
 
     # ------------------------------------------------------------------
     # Turn execution
@@ -153,8 +167,8 @@ class Engine:
         try:
             async for event in self._run_turn_impl(user_input):
                 yield event
-        except UserInputDisconnected as exc:
-            logger.info("Turn stopped because the client disconnected during ask_user")
+        except InteractionDisconnected as exc:
+            logger.info("Turn stopped because the client disconnected during an interaction")
             self.state_store.append_event(
                 "turn_cancelled",
                 {
@@ -620,6 +634,11 @@ class Engine:
                     if self._client_event_sink is not None
                     else None
                 ),
+                permission_interaction_handler=(
+                    self._handle_permission_request
+                    if self._client_event_sink is not None
+                    else None
+                ),
             )
 
             # AFTER_TOOLS hooks may redact/cache large outputs before they
@@ -746,7 +765,7 @@ class Engine:
             if sink_result.get("status") == "disconnected":
                 if not sink_result.get("persisted"):
                     self.record_user_input_result(client_event, sink_result)
-                raise UserInputDisconnected(
+                raise InteractionDisconnected(
                     f"Client disconnected while waiting for {sink_result.get('request_id')}"
                 )
         if sink_result is None:
@@ -763,6 +782,42 @@ class Engine:
             self.record_user_input_result(client_event, sink_result)
         return sink_result
 
+    async def _handle_permission_request(
+        self,
+        client_event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
+        """Emit a permission request and wait for the live client decision."""
+        await self._record_client_event(client_event)
+        sink_result: dict[str, Any] | None = None
+        if self._client_event_sink is not None:
+            sink_result = await self._client_event_sink(
+                client_event,
+                timeout_seconds=timeout_seconds,
+                tool_call_id=tool_call_id,
+            )
+            if sink_result.get("status") == "disconnected":
+                if not sink_result.get("persisted"):
+                    self.record_permission_result(client_event, sink_result)
+                raise InteractionDisconnected(
+                    f"Client disconnected while waiting for {sink_result.get('request_id')}"
+                )
+        if sink_result is None:
+            request_id = str((client_event.get("data") or {}).get("request_id") or "")
+            wait_timeout = 0 if timeout_seconds is None else timeout_seconds
+            result = await self._permission_waiter.wait(request_id, wait_timeout)
+            sink_result = {
+                "request_id": result.request_id,
+                "status": result.status,
+                "decision": result.decision,
+                "reason": result.reason,
+            }
+        if not sink_result.get("persisted"):
+            self.record_permission_result(client_event, sink_result)
+        return sink_result
+
     def record_user_input_result(
         self,
         client_event: dict[str, Any],
@@ -770,6 +825,15 @@ class Engine:
     ) -> dict[str, Any]:
         """Persist a live ask_user completion and refresh materialized state."""
         self._record_user_input_completion(client_event, result)
+        return self.state_store.materialize()
+
+    def record_permission_result(
+        self,
+        client_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a live permission completion and refresh materialized state."""
+        self._record_permission_completion(client_event, result)
         return self.state_store.materialize()
 
     async def _record_client_event(
@@ -814,6 +878,32 @@ class Engine:
             })
             return
         self.state_store.append_event("user_input_cancelled", {
+            **payload,
+            "status": status,
+            "reason": result.get("reason") or status,
+        })
+
+    def _record_permission_completion(
+        self,
+        client_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        data = client_event.get("data") or {}
+        request_id = str(result.get("request_id") or data.get("request_id") or "")
+        status = str(result.get("status") or "cancelled")
+        payload = {
+            "request_id": request_id,
+            "request_type": "permission_request",
+            "request_source": data.get("source", "permission_system"),
+            "request_payload": data,
+        }
+        if status == "answered":
+            self.state_store.append_event("permission_response", {
+                **payload,
+                "decision": result.get("decision", ""),
+            })
+            return
+        self.state_store.append_event("permission_cancelled", {
             **payload,
             "status": status,
             "reason": result.get("reason") or status,

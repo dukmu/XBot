@@ -47,14 +47,17 @@ interactions.
 - A later `turn_started` reactivates the materialized session status after an
   interruption or error; `turn_finished` does not clear an interruption raised
   during that same turn.
-- Permission and sandbox ask decisions emit `permission_request` and fail
+- Permission and sandbox ask decisions emit `permission_request`, wait for a
+  matching live `permission.response`, and continue the current tool call when
+  the client allows it. Deny, timeout, disconnect, or non-live runtimes fail
   closed. Request events carry `request_id` (`permission:<tool_call_id>`) and
   `source`; denials emit `permission_denied`.
 - A live `user.input` records a `user_input_response` event and returns
-  `user_input_recorded` before the tool result is emitted. `permission.response`
-  records a `permission_response` event and returns
-  `permission_response_recorded`. Response events include a snapshot of the
-  original pending request payload for audit and future replay logic.
+  `user_input_recorded` before the tool result is emitted. A live
+  `permission.response` records a `permission_response` event and returns
+  `permission_response_recorded` before the approved tool result is emitted.
+  Response events include a snapshot of the original pending request payload
+  for audit.
 - `state.yaml` materializes unresolved interaction requests as
   `pending_interactions`, rebuilt from the append-only event log.
 - Before client-directed events are persisted and streamed, core runs the

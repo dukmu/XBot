@@ -7,40 +7,41 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class UserInputCancelled(RuntimeError):
-    """Raised when a live user-input request is cancelled by the client."""
+class InteractionCancelled(RuntimeError):
+    """Raised when a live interaction is cancelled by the client."""
 
 
-class UserInputDisconnected(RuntimeError):
-    """Raised when the live client disconnects during ask_user."""
+class InteractionDisconnected(RuntimeError):
+    """Raised when the live client disconnects during an interaction."""
 
 
-class UserInputNotPending(RuntimeError):
-    """Raised when a response targets no live user-input request."""
+class InteractionNotPending(RuntimeError):
+    """Raised when a response targets no live interaction request."""
 
 
 @dataclass
-class UserInputResult:
-    """Result returned to the waiting ask_user tool call."""
+class InteractionResult:
+    """Result returned to a waiting live interaction."""
 
     request_id: str
     status: str
     answer: Any = None
+    decision: str = ""
     reason: str = ""
 
 
-class UserInputWaiter:
-    """Tracks live ask_user requests for one engine instance."""
+class InteractionWaiter:
+    """Tracks live interaction requests for one engine instance."""
 
     def __init__(self) -> None:
-        self._pending: dict[str, asyncio.Future[UserInputResult]] = {}
+        self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
 
-    async def wait(self, request_id: str, timeout_seconds: float | None) -> UserInputResult:
+    async def wait(self, request_id: str, timeout_seconds: float | None) -> InteractionResult:
         """Wait for a matching answer, timeout, or cancellation."""
         if request_id in self._pending:
-            raise UserInputNotPending(f"Duplicate pending user input request: {request_id}")
+            raise InteractionNotPending(f"Duplicate pending interaction request: {request_id}")
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[UserInputResult] = loop.create_future()
+        future: asyncio.Future[InteractionResult] = loop.create_future()
         self._pending[request_id] = future
         try:
             if timeout_seconds is None:
@@ -48,7 +49,7 @@ class UserInputWaiter:
             try:
                 return await asyncio.wait_for(future, timeout=float(timeout_seconds))
             except asyncio.TimeoutError:
-                return UserInputResult(
+                return InteractionResult(
                     request_id=request_id,
                     status="timeout",
                     reason="timeout",
@@ -56,26 +57,33 @@ class UserInputWaiter:
         finally:
             self._pending.pop(request_id, None)
 
-    def answer(self, request_id: str, answer: Any) -> UserInputResult:
+    def answer(
+        self,
+        request_id: str,
+        *,
+        answer: Any = None,
+        decision: str = "",
+    ) -> InteractionResult:
         """Resolve one pending request with a client answer."""
         future = self._pending.get(request_id)
         if future is None:
-            raise UserInputNotPending(f"No live user input request: {request_id}")
-        result = UserInputResult(
+            raise InteractionNotPending(f"No live interaction request: {request_id}")
+        result = InteractionResult(
             request_id=request_id,
             status="answered",
             answer=answer,
+            decision=decision,
         )
         if not future.done():
             future.set_result(result)
         return result
 
-    def cancel(self, request_id: str, reason: str = "cancelled") -> UserInputResult:
+    def cancel(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
         """Resolve one pending request as cancelled."""
         future = self._pending.get(request_id)
         if future is None:
-            raise UserInputNotPending(f"No live user input request: {request_id}")
-        result = UserInputResult(
+            raise InteractionNotPending(f"No live interaction request: {request_id}")
+        result = InteractionResult(
             request_id=request_id,
             status="cancelled",
             reason=reason,
@@ -84,13 +92,13 @@ class UserInputWaiter:
             future.set_result(result)
         return result
 
-    def cancel_all(self, reason: str = "cancelled") -> list[UserInputResult]:
+    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
         """Cancel every live request and return the emitted results."""
         results = []
         for request_id in list(self._pending):
             try:
                 results.append(self.cancel(request_id, reason))
-            except UserInputNotPending:
+            except InteractionNotPending:
                 continue
         return results
 
@@ -99,3 +107,10 @@ class UserInputWaiter:
 
     def pending_request_ids(self) -> list[str]:
         return list(self._pending)
+
+
+UserInputCancelled = InteractionCancelled
+UserInputDisconnected = InteractionDisconnected
+UserInputNotPending = InteractionNotPending
+UserInputResult = InteractionResult
+UserInputWaiter = InteractionWaiter

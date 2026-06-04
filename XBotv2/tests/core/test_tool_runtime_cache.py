@@ -61,9 +61,37 @@ async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspa
     )
 
     assert results[0].status == "error"
-    assert "permission.response can record the decision" in results[0].content
-    assert "fails closed and is not replayed" in results[0].content
+    assert "No live permission handler is available" in results[0].content
+    assert "fails closed" in results[0].content
     assert not (temp_workspace / "blocked.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
+    seen = []
+
+    async def approve(event, **kwargs):
+        seen.append((event["type"], event["data"]["request_id"], kwargs["tool_call_id"]))
+        return {
+            "request_id": event["data"]["request_id"],
+            "status": "answered",
+            "decision": "allow",
+        }
+
+    results = await execute_tools(
+        [{"name": "filesystem_write", "args": {"path": "allowed.txt", "content": "ok"}, "id": "c1"}],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="ask"),
+        permission_interaction_handler=approve,
+    )
+
+    assert seen == [("permission_request", "permission:c1", "c1")]
+    assert results[0].status == "success"
+    assert (temp_workspace / "allowed.txt").read_text(encoding="utf-8") == "ok"
 
 
 @pytest.mark.asyncio

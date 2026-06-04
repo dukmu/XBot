@@ -76,7 +76,7 @@ These stages are now available for token budget plugins:
 | `BEFORE_TOOL_SCHEMA_BIND` | Let plugins filter visible tools before provider binding. |
 | `ON_MODEL_REQUEST_ERROR` | Distinguish provider-call failures from generic engine errors. |
 | `ON_TOOL_CALLS_PARSED` | Observe normalized tool calls before execution. |
-| `ON_PERMISSION_REQUEST` | Observe sandbox or permission ask decisions before they fail closed. |
+| `ON_PERMISSION_REQUEST` | Observe sandbox or permission ask decisions before live approval or fail-closed denial. |
 | `ON_PERMISSION_DENIED` | Observe sandbox or permission denials. |
 | `BEFORE_TOOL_CALL` | Per-tool-call gate for permissions, auditing, and argument rewrites; rewritten ids and sandboxed paths are honored. |
 | `AFTER_TOOL_CALL` | Per-tool-call result observation before batch-level `AFTER_TOOLS`. |

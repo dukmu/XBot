@@ -69,7 +69,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
     after one tool guard pass
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;
-  ask currently fails closed after recording a correlated pending request
+  live ask decisions wait for `permission.response` and continue the current
+  tool call when allowed; non-live ask decisions fail closed
 - Default `AFTER_TOOLS` hook caches oversized tool results under session
   artifacts and records cache metadata on both events and ToolMessage artifacts
 - Plugin ownership tracking plus explicit unregister for unload/reload

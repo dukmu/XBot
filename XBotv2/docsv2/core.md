@@ -30,15 +30,14 @@ Bootstrap validates runtime identifiers (`personality_id`, `provider_name`,
 `session_id`, `thread_id`) with a conservative whitelist of letters, numbers,
 dot, underscore, and dash before any session paths are created.
 
-Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
-the `ask` decision currently emits a `permission_request` event and fails
-closed during tool execution because approved tool-call replay is not
-implemented yet. Request events include a stable
-`permission:<tool_call_id>` request id. `permission.response` records a
-matching `permission_response` event and clears the pending request, but does
-not replay the denied tool call yet. Denials emit `permission_denied`. Both
-decisions also pass through dedicated permission hooks and the generic
-`ON_CLIENT_EVENT` hook before they are streamed to clients.
+Permission rules support the tri-state `allow`/`deny`/`ask` model. During an
+active protocol turn, `ask` emits a `permission_request`, waits for a matching
+live `permission.response`, and continues the current tool call when the client
+allows it. Deny, timeout, or non-live runtimes fail closed. Request events
+include a stable `permission:<tool_call_id>` request id; response and
+cancellation events clear the matching pending request. Denials emit
+`permission_denied`. Permission decisions also pass through dedicated
+permission hooks and the generic `ON_CLIENT_EVENT` hook before streaming.
 
 Sandbox one-call approvals are real transient grants: a matching
 path/tool-name approval consumes itself during sandbox `ask` evaluation and

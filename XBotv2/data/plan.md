@@ -436,8 +436,9 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
   materialized as `pending_interactions` in `state.yaml`
 - client response commands (`user.input`, `permission.response`) append
   response events with the original request snapshot and clear matching pending
-  interactions; live `ask_user` responses continue the current ReAct turn, while
-  client disconnect records cancellation and stops the turn
+  interactions; live `ask_user` and permission responses continue the current
+  ReAct turn or tool call, while client disconnect records cancellation and
+  stops the turn
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
 - `CursesTuiClient` — background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop

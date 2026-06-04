@@ -67,6 +67,7 @@ class TuiState:
     errors: list[str] = field(default_factory=list)
     turn: int = 0
     pending_user_input_request_id: str | None = None
+    pending_permission_request_id: str | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
 
     def apply_frame(self, frame: ProtocolFrame) -> None:
@@ -111,6 +112,7 @@ class TuiState:
             self.append_notice("client_message", str(data.get("message") or data))
         elif event_type == "permission_request":
             self.status = "Approval required"
+            self.pending_permission_request_id = str(data.get("request_id") or "") or None
             self.append_notice(
                 "permission_request",
                 str(data.get("reason") or "Tool approval required."),
@@ -138,6 +140,7 @@ class TuiState:
             )
         elif event_type == "permission_response_recorded":
             self.status = "Ready"
+            self.pending_permission_request_id = None
             request_id = str(data.get("request_id") or "permission")
             decision = str(data.get("decision") or "recorded")
             self.append_notice(
@@ -258,6 +261,7 @@ class CursesTuiClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: set[Future] = set()
         self._answers: queue.Queue[str] = queue.Queue()
+        self._permission_decisions: queue.Queue[str] = queue.Queue()
         self._closed = False
 
     async def run(self) -> None:
@@ -320,6 +324,9 @@ class CursesTuiClient:
         if pending_request_id:
             self._answers.put(text)
             return
+        if self.state.pending_permission_request_id:
+            self._permission_decisions.put(_parse_permission_decision(text))
+            return
         self.state.append_message("user", text)
         future = asyncio.run_coroutine_threadsafe(self._collect_response(text), self._loop)
         self._pending.add(future)
@@ -330,6 +337,7 @@ class CursesTuiClient:
             async for event in self.session.send_message_with_input(
                 text,
                 input_provider=self._answer_live_input,
+                permission_provider=self._answer_live_permission,
             ):
                 self._events.put(event)
         except BaseException as exc:
@@ -338,6 +346,10 @@ class CursesTuiClient:
     async def _answer_live_input(self, payload: dict[str, Any]) -> str:
         del payload
         return await asyncio.to_thread(self._answers.get)
+
+    async def _answer_live_permission(self, payload: dict[str, Any]) -> str:
+        del payload
+        return await asyncio.to_thread(self._permission_decisions.get)
 
     def _drain_events(self) -> None:
         while True:
@@ -402,3 +414,10 @@ def _notice_label(kind: str) -> str:
         "permission_response_recorded": "Approval",
     }
     return labels.get(kind, "Event")
+
+
+def _parse_permission_decision(text: str) -> str:
+    normalized = text.strip().lower()
+    if normalized in {"allow", "approve", "approved", "yes", "y"}:
+        return "allow"
+    return "deny"

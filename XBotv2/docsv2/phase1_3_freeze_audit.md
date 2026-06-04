@@ -40,9 +40,10 @@ are the primary freeze gate.
   than the restricted visible view, so plugin unload removes hidden plugin
   tools reliably.
 - Permission and sandbox `ask` decisions now emit protocol-visible
-  `permission_request` events and fail closed until approved tool-call replay
-  exists; they are no longer treated as implicit allow. Response commands can
-  record the decision. Denials emit `permission_denied`.
+  `permission_request` events, wait for live `permission.response` decisions
+  during active protocol turns, and continue the current tool call when allowed.
+  Deny, timeout, disconnect, and non-live runtimes fail closed. Denials emit
+  `permission_denied`.
 - Sandbox one-call approvals now participate in guard evaluation and are
   consumed after one matching path/tool call instead of being inert bookkeeping.
 - Added a default `AFTER_TOOLS` hook that caches oversized tool results under
@@ -177,10 +178,6 @@ are the primary freeze gate.
 
 ## Remaining Weak Points
 
-- Permission and sandbox `ask` decisions still do not resume a turn through
-  JSONL/TUI after approval. The current runtime emits a correlated request
-  event, records it in `pending_interactions`, accepts a response command, and
-  fails closed; turn/tool-call resume is the remaining feature gap.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.

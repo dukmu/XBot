@@ -91,6 +91,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     assert "Answer> user_input:c1" in rendered
 
     state.apply_frame(_frame("permission_request", {"request_id": "permission:c2"}))
+    assert state.pending_permission_request_id == "permission:c2"
     state.apply_frame(
         _frame(
             "permission_response_recorded",
@@ -99,6 +100,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     )
 
     assert state.status == "Ready"
+    assert state.pending_permission_request_id is None
     rendered = "\n".join(state.lines(width=80, height=8))
     assert "Approval> permission:c2: allow" in rendered
 
