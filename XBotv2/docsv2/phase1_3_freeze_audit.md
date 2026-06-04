@@ -13,8 +13,9 @@ are the primary freeze gate.
   non-blocking `client_message`, while `ask_user` emits `user_input_required`,
   waits for a live `user.input` reply on the active protocol connection, and
   returns the answer as a tool result so the current ReAct turn can continue.
-  Timeouts return a no-reply tool result. Client disconnect records
-  cancellation and stops the current turn without durable resume.
+  The request advertises `resume_supported: false`: timeouts return a no-reply
+  tool result, while client disconnect records cancellation and stops the
+  current turn without durable resume.
 - Interaction and permission request events now carry stable correlation
   metadata (`user_input:<tool_call_id>` and `permission:<tool_call_id>` request
   ids plus source/tool-call metadata). `state.yaml` materializes unresolved

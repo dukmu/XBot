@@ -38,7 +38,8 @@ interactions.
   frame on the same connection, and returns the answer as the tool result so
   the ReAct loop can continue. The event carries a stable `request_id`
   (`user_input:<tool_call_id>`), `source`, `tool_call_id`, and
-  `resume_supported: true`.
+  `resume_supported: false` because pending questions are not durable across
+  client disconnects or server restarts.
 - If `ask_user` times out, core records `user_input_cancelled`, returns a
   no-reply tool result, and lets the agent continue. If the client disconnects
   while waiting, core records `user_input_cancelled` plus `turn_cancelled`,

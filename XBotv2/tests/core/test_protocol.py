@@ -683,7 +683,7 @@ class TestRuntimeServerSubprocess:
             assert question.payload["question"] == "Proceed?"
             assert question.payload["request_id"] == "user_input:call_ask"
             assert question.payload["source"] == "ask_user"
-            assert question.payload["resume_supported"] is True
+            assert question.payload["resume_supported"] is False
             tool_result = next(
                 frame
                 for frame in frames
@@ -699,7 +699,7 @@ class TestRuntimeServerSubprocess:
             assert recorded.type == "user_input_recorded"
             assert recorded.request_id == "req-events"
             assert recorded.payload["request_id"] == "user_input:call_ask"
-            assert recorded.payload["resume_supported"] is True
+            assert recorded.payload["resume_supported"] is False
             assert recorded.payload["status"] == "answered"
             assert recorded.payload["pending_interactions"] == []
             events_path = data_dir / "sessions" / "s-events" / "state" / "events.jsonl"

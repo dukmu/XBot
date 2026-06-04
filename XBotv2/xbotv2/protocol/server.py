@@ -440,7 +440,7 @@ class RuntimeServer:
                     "request_id": request_id,
                     "decision": response.get("decision", ""),
                     "status": response["status"],
-                    "resume_supported": True,
+                    "resume_supported": False,
                     "pending_interactions": state.get("pending_interactions", []),
                 }
             else:
@@ -449,7 +449,7 @@ class RuntimeServer:
                 ack_payload = {
                     "request_id": request_id,
                     "status": response["status"],
-                    "resume_supported": True,
+                    "resume_supported": False,
                     "pending_interactions": state.get("pending_interactions", []),
                 }
             if response["status"] != "disconnected":

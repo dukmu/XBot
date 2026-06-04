@@ -503,7 +503,7 @@ def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[st
             data["request_id"] = f"user_input:{tool_call_id}"
         data.setdefault("source", "ask_user")
         data.setdefault("tool_call_id", tool_call_id)
-        data.setdefault("resume_supported", True)
+        data.setdefault("resume_supported", False)
     elif event_type == "client_message":
         data.setdefault("source", "send_message")
         data.setdefault("tool_call_id", tool_call_id)

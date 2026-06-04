@@ -862,7 +862,7 @@ class TestEngineHooks:
         assert input_event["data"]["request_id"] == "user_input:c1"
         assert input_event["data"]["source"] == "ask_user"
         assert input_event["data"]["tool_call_id"] == "c1"
-        assert input_event["data"]["resume_supported"] is True
+        assert input_event["data"]["resume_supported"] is False
         tool_result = next(e for e in events if e["type"] == "tool_result")
         assert "does not support live user input" in tool_result["data"]["content"]
         assert llm.call_count == 2
