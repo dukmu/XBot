@@ -6,6 +6,26 @@ Phase 1-3 have a working core foundation, plugin loader, protocol frames/server,
 non-curses terminal wrapper, and protocol-driven curses TUI shell. Core tests
 are the primary freeze gate.
 
+## Freeze Evidence Matrix
+
+This matrix maps `data/plan.md` Phase 1-3 and verification requirements to
+current evidence. Phase 4 plugin migration and Phase 5 all-plugin integration
+remain outside the Phase 1-3 freeze gate.
+
+| Requirement | Status | Evidence |
+|-------------|--------|----------|
+| Phase 1 core foundation: hooks, state, tools, context, engine, persistence, LLM mock/provider config | Covered | `tests/core/test_hooks.py`, `test_state.py`, `test_tool_registry.py`, `test_tool_runtime_cache.py`, `test_builtin_filesystem.py`, `test_context.py`, `test_engine.py`, `test_protocol.py` provider tests |
+| Phase 2 plugin system: manifest, base, store, loader, bootstrap plugin wiring | Covered | `tests/core/test_plugin_loader.py`, `test_state.py::TestPluginState`, `test_bootstrap.py` plugin config/tool selector tests |
+| Phase 3 protocol and TUI: JSONL frames/server, non-curses terminal wrapper, curses state/client boundary | Covered | `tests/core/test_protocol.py` subprocess server and `TerminalSession` tests; `tests/core/test_tui_client.py` state/render/queue/boundary tests |
+| Verification 1: core tests pass with zero plugins | Covered | `bootstrap(plugin_dirs=[])` tests plus `--no-plugins` protocol subprocess tests; freeze gate runs `uv run pytest XBotv2/tests/core/ -q` |
+| Verification 5: plugin absence test | Covered | `test_bootstrap.py::TestBootstrapNoPlugins::test_engine_without_plugins_works` and explicit plugin-dir resolution tests |
+| Verification 6: protocol server mock-provider roundtrip | Covered | `test_protocol.py::TestRuntimeServerSubprocess::test_server_subprocess_roundtrip_with_mock_provider`, launched with `--no-plugins` |
+| Verification 7: non-curses TUI client wrapper roundtrip | Covered | `test_protocol.py::TestTerminalSessionSubprocess::*`, with `TerminalSession(no_plugins=True)` |
+| Verification 8: curses TUI import/boundary smoke | Covered with limitation | `test_tui_client.py` covers replayable state, rendering, queue draining, live interaction routing, no-plugin forwarding, and runtime import boundary; no interactive terminal golden test yet |
+| Verification 2: each migrated plugin's tests pass independently | Not in Phase 1-3 scope | Phase 4 plugin directories still have no manifests/tools; this becomes required when each plugin is migrated |
+| Verification 3: all-plugin integration tests pass | Not in Phase 1-3 scope | Phase 5 target after plugin migration |
+| Verification 4: real smoke test with production personality/provider | Deferred | Current subprocess smoke uses deterministic `provider: mock`; real-provider smoke should be added after Phase 4/5 configuration stabilizes |
+
 ## Fixed Before Freeze
 
 - Removed the placeholder core `ask` tool. Core now registers event-driven
