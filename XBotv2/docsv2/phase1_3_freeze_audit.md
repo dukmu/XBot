@@ -113,6 +113,10 @@ are the primary freeze gate.
   waiting-for-user, and error statuses across the following `turn_finished`
   frame, matching the materialized interruption/error semantics instead of
   briefly showing a misleading ready state.
+- Protocol `shutdown` now calls `Engine.close_session()` before returning
+  `shutdown_ok`, so JSONL/TUI exits run `ON_SESSION_CLOSE`, append
+  `session_closed`, save messages, and materialize closed state like direct CLI
+  exits.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

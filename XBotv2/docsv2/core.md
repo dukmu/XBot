@@ -126,7 +126,8 @@ events are persisted separately in `events.jsonl`.
 
 All significant state changes are recorded as append-only events:
 - `turn_started`, `turn_finished` — turn boundaries
-- `session_closed` — session termination
+- `session_closed` — session termination from direct engine close or protocol
+  `shutdown`
 - `error`, `interrupted` — error states
 - `client_message`, `user_input_required` — user interaction events from tools
 - `permission_request`, `permission_denied` — permission/sandbox decisions

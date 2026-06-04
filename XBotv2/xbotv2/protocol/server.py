@@ -108,7 +108,7 @@ class RuntimeServer:
             return await self._handle_user_message(frame, writer)
 
         if cmd == "shutdown":
-            return self._handle_shutdown(frame)
+            return await self._handle_shutdown(frame)
 
         return self._make_frame("error", {
             "code": "unknown_command",
@@ -221,7 +221,25 @@ class RuntimeServer:
 
         return None
 
-    def _handle_shutdown(self, frame: ProtocolFrame) -> ProtocolFrame | None:
+    async def _handle_shutdown(self, frame: ProtocolFrame) -> ProtocolFrame | None:
+        if self._engine is not None:
+            try:
+                await self._engine.close_session()
+            except Exception as exc:
+                logger.exception("Session close failed")
+                encoder = self._encoder
+                if encoder:
+                    return encoder.encode_error(
+                        str(exc),
+                        code="session_close_failed",
+                        request_id=frame.request_id,
+                    )
+                return self._make_frame(
+                    "error",
+                    {"code": "session_close_failed", "message": str(exc)},
+                    frame.request_id,
+                )
+
         if self._encoder:
             return self._encoder.encode_shutdown_ok(request_id=frame.request_id)
         return self._make_frame("shutdown_ok", {}, frame.request_id)

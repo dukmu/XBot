@@ -6,6 +6,7 @@ import os
 import sys
 
 import pytest
+import yaml
 from xbotv2.protocol.frames import (
     ProtocolFrame,
     ProtocolEncoder,
@@ -537,6 +538,10 @@ class TestRuntimeServerSubprocess:
             shutdown = await _read_frame(proc)
             assert shutdown.type == "shutdown_ok"
             assert shutdown.request_id == "req-shutdown"
+
+            state_path = data_dir / "sessions" / "s-sub" / "state" / "state.yaml"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["status"] == "closed"
         finally:
             await _stop_process(proc)
 
