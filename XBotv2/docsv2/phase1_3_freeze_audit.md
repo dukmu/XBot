@@ -50,6 +50,9 @@ are the primary freeze gate.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
   JSONL stdio subprocess and verifies `hello`, `session.open`, `user.message`,
   and `shutdown` frame flow with stable session/thread IDs.
+- Protocol encoder/server responses now preserve the client `request_id` in
+  the frame envelope for command acknowledgements and all turn event frames,
+  so TUI and external clients can correlate streamed responses.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

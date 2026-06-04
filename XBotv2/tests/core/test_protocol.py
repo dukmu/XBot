@@ -130,6 +130,14 @@ class TestProtocolEncoder:
         assert frame.session_id == "my-session"
         assert frame.thread_id == "my-thread"
 
+    def test_request_id_in_envelope_not_payload(self):
+        """Request correlation stays in the protocol envelope."""
+        encoder = ProtocolEncoder(session_id="s1", thread_id="t1")
+        frame = encoder.encode_assistant_message("Hello!", request_id="req-123")
+
+        assert frame.request_id == "req-123"
+        assert "request_id" not in frame.payload
+
 
 class TestProviderConfig:
     """LLM client factory tests."""
@@ -323,23 +331,38 @@ class TestRuntimeServerSubprocess:
         )
 
         try:
-            await _send_frame(proc, "hello", session_id="s-sub", thread_id="t-sub")
+            await _send_frame(
+                proc,
+                "hello",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-hello",
+            )
             hello = await _read_frame(proc)
             assert hello.type == "hello_ok"
             assert hello.session_id == "s-sub"
             assert hello.thread_id == "t-sub"
+            assert hello.request_id == "req-hello"
 
-            await _send_frame(proc, "session.open", session_id="s-sub", thread_id="t-sub")
+            await _send_frame(
+                proc,
+                "session.open",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-open",
+            )
             ready = await _read_frame(proc)
             assert ready.type == "session_ready"
             assert ready.session_id == "s-sub"
             assert ready.thread_id == "t-sub"
+            assert ready.request_id == "req-open"
 
             await _send_frame(
                 proc,
                 "user.message",
                 session_id="s-sub",
                 thread_id="t-sub",
+                request_id="req-user-1",
                 payload={"content": "hello"},
             )
             frames = []
@@ -358,10 +381,18 @@ class TestRuntimeServerSubprocess:
             assert assistant.payload["content"] == "hello from subprocess"
             assert all(f.session_id == "s-sub" for f in frames)
             assert all(f.thread_id == "t-sub" for f in frames)
+            assert all(f.request_id == "req-user-1" for f in frames)
 
-            await _send_frame(proc, "shutdown", session_id="s-sub", thread_id="t-sub")
+            await _send_frame(
+                proc,
+                "shutdown",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-shutdown",
+            )
             shutdown = await _read_frame(proc)
             assert shutdown.type == "shutdown_ok"
+            assert shutdown.request_id == "req-shutdown"
         finally:
             if proc.returncode is None:
                 proc.terminate()
@@ -433,6 +464,7 @@ async def _send_frame(
     *,
     session_id: str,
     thread_id: str,
+    request_id: str = "",
     payload: dict | None = None,
 ):
     frame = ProtocolFrame(
@@ -441,7 +473,7 @@ async def _send_frame(
         type=frame_type,
         session_id=session_id,
         thread_id=thread_id,
-        request_id="",
+        request_id=request_id,
         payload=payload or {},
     )
     proc.stdin.write(frame.to_json_line().encode("utf-8"))

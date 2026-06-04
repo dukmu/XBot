@@ -123,7 +123,7 @@ class RuntimeServer:
             session_id=self._session_id,
             thread_id=self._thread_id,
         )
-        return self._encoder.encode_hello_ok()
+        return self._encoder.encode_hello_ok(request_id=frame.request_id)
 
     async def _handle_session_open(
         self, frame: ProtocolFrame, writer: Any
@@ -141,7 +141,8 @@ class RuntimeServer:
 
             writer.write(
                 self._encoder.encode_session_ready(
-                    agent_name=getattr(self._engine.config, "agent_name", "XBotv2")
+                    agent_name=getattr(self._engine.config, "agent_name", "XBotv2"),
+                    request_id=frame.request_id,
                 ).to_json_line().encode("utf-8")
             )
             await writer.drain()
@@ -176,37 +177,45 @@ class RuntimeServer:
                 event_data = event.get("data", {})
 
                 if event_type == "turn_started":
-                    f = encoder.encode_turn_started(event_data.get("turn", 0))
+                    f = encoder.encode_turn_started(
+                        event_data.get("turn", 0), request_id=frame.request_id
+                    )
                 elif event_type == "turn_finished":
-                    f = encoder.encode_turn_finished(event_data.get("turn", 0))
+                    f = encoder.encode_turn_finished(
+                        event_data.get("turn", 0), request_id=frame.request_id
+                    )
                 elif event_type == "assistant_message":
                     f = encoder.encode_assistant_message(
                         event_data.get("content", ""),
                         event_data.get("tool_calls"),
+                        request_id=frame.request_id,
                     )
                 elif event_type == "tool_calls_started":
-                    f = encoder.encode_tool_calls_started(event_data.get("tool_calls", []))
+                    f = encoder.encode_tool_calls_started(
+                        event_data.get("tool_calls", []), request_id=frame.request_id
+                    )
                 elif event_type == "tool_result":
                     f = encoder.encode_tool_result(
                         event_data.get("tool_call_id", ""),
                         event_data.get("content", ""),
                         event_data.get("status", "success"),
+                        request_id=frame.request_id,
                     )
                 else:
-                    f = encoder.encode(event_type, event_data)
+                    f = encoder.encode(event_type, event_data, request_id=frame.request_id)
 
                 writer.write(f.to_json_line().encode("utf-8"))
                 await writer.drain()
 
         except Exception as exc:
             logger.exception("Turn failed")
-            return encoder.encode_error(str(exc))
+            return encoder.encode_error(str(exc), request_id=frame.request_id)
 
         return None
 
     def _handle_shutdown(self, frame: ProtocolFrame) -> ProtocolFrame | None:
         if self._encoder:
-            return self._encoder.encode_shutdown_ok()
+            return self._encoder.encode_shutdown_ok(request_id=frame.request_id)
         return self._make_frame("shutdown_ok", {}, frame.request_id)
 
     # ------------------------------------------------------------------
