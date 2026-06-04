@@ -336,6 +336,59 @@ def plugin_tool() -> str:
         assert loader.loaded_plugins == []
 
     @pytest.mark.asyncio
+    async def test_loader_records_hidden_tools_for_unload(self, tmp_path, monkeypatch):
+        """Plugin tools hidden by registry restrictions are still unload-tracked."""
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "simple"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("")
+        (plugin_dir / "tools.py").write_text(
+            """
+from langchain_core.tools import tool
+
+@tool
+def plugin_tool() -> str:
+    \"\"\"Plugin tool.\"\"\"
+    return "ok"
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "simple",
+                "version": "1.0.0",
+                "tools": [{"handler": "simple.tools:plugin_tool"}],
+            })
+        )
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        tool_registry = ToolRegistry()
+        core_tool = type("CoreTool", (), {"name": "core_tool"})()
+        tool_registry.register(core_tool)
+        tool_registry.restrict(["core_tool"])
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=HookManager(),
+            tool_registry=tool_registry,
+            context_builder=ContextBuilder(),
+        )
+
+        await loader.load()
+
+        assert "plugin_tool" in tool_registry.registered_names()
+        assert tool_registry.get("plugin_tool") is None
+        assert loader._records["simple"].tool_names == ["plugin_tool"]
+
+        assert await loader.unload("simple") is True
+        assert "plugin_tool" not in tool_registry.registered_names()
+
+    @pytest.mark.asyncio
     async def test_loader_calls_plugin_on_unload(self, tmp_path, monkeypatch):
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "classy"

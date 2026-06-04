@@ -25,6 +25,9 @@ are the primary freeze gate.
   plugin tools are registered, so selectors can enable plugin tools and both
   the model and runtime see only enabled tools. Unknown selectors fail closed
   instead of silently exposing all registered tools.
+- Plugin loader resource tracking now uses all registered tool names rather
+  than the restricted visible view, so plugin unload removes hidden plugin
+  tools reliably.
 - Permission and sandbox `ask` decisions now emit protocol-visible
   `permission_request` events and fail closed until protocol/TUI interactive
   approval exists; they are no longer treated as implicit allow. Denials emit

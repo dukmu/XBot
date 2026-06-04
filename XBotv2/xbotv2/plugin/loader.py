@@ -133,7 +133,7 @@ class PluginLoader:
             stage: list(self.hook_manager._hooks.get(stage, []))
             for stage in HookStage
         }
-        before_tools = set(self.tool_registry.names())
+        before_tools = set(self.tool_registry.registered_names())
         before_fragments = {
             stage: set(self.context_builder._fragments.get(stage, {}))
             for stage in self.context_builder.FRAGMENT_STAGES
@@ -151,7 +151,11 @@ class PluginLoader:
             for fn in current[len(previous):]:
                 hook_refs.append((stage, fn))
 
-        tool_names = [name for name in self.tool_registry.names() if name not in before_tools]
+        tool_names = [
+            name
+            for name in self.tool_registry.registered_names()
+            if name not in before_tools
+        ]
         fragment_stages = [
             stage
             for stage in self.context_builder.FRAGMENT_STAGES

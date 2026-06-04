@@ -57,6 +57,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `ToolRegistry` with sandbox/execution metadata
 - Personality tool selectors restrict visible/executable tools via
   `ToolRegistry.restrict()` after core and plugin tools are registered
+- Registry introspection distinguishes visible names from all registered names
+  so plugin unload tracking is not affected by restrictions
 - `SandboxPolicy` for resource access control
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;

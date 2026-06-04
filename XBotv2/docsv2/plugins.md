@@ -57,9 +57,11 @@ closed during bootstrap.
 `PluginLoader.unload(name)` removes resources registered by that plugin:
 hook callbacks, tool registry entries, and prompt fragments. Manifest-only
 default plugins use a no-op `on_unload()` but still have registered resources
-removed. `unload_all()` unloads in reverse load order. External plugin module
-paths stay importable while plugins are loaded and stale modules are dropped
-when the same plugin name is loaded from a different directory.
+removed. Tool unload tracking uses all registered tool names, not only the
+currently visible/restricted tool view, so hidden plugin tools are still
+cleaned up. `unload_all()` unloads in reverse load order. External plugin
+module paths stay importable while plugins are loaded and stale modules are
+dropped when the same plugin name is loaded from a different directory.
 
 ## PluginBase
 

@@ -131,6 +131,10 @@ class ToolRegistry:
         """Return all registered tool names."""
         return [name for name in self._entries if self._is_enabled(name)]
 
+    def registered_names(self) -> list[str]:
+        """Return all registered tool names, ignoring visibility restrictions."""
+        return list(self._entries)
+
     def sandbox_modes(self) -> dict[str, RegisteredSandboxMode]:
         """Return {tool_name: sandbox_mode} for all registered tools."""
         return {

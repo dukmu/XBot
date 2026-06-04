@@ -185,6 +185,15 @@ class TestQuery:
         tool_registry.register(tool_b)
         assert set(tool_registry.names()) == {"tool_a", "tool_b"}
 
+    def test_registered_names_ignores_restrictions(self, tool_registry):
+        """Introspection can see hidden registered tools."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+        tool_registry.restrict(["tool_a"])
+
+        assert tool_registry.names() == ["tool_a"]
+        assert set(tool_registry.registered_names()) == {"tool_a", "tool_b"}
+
     def test_get_all(self, tool_registry):
         """Get all tool instances."""
         tool_registry.register(tool_a)
