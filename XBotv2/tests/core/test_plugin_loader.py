@@ -373,6 +373,73 @@ class BrokenPlugin(PluginBase):
         assert loader._import_paths == []
 
     @pytest.mark.asyncio
+    async def test_loader_rolls_back_already_loaded_plugins_when_later_plugin_fails(
+        self, tmp_path
+    ):
+        """load() is atomic: later failures unload earlier plugins from that call."""
+        plugins_root = tmp_path / "plugins"
+        first_dir = plugins_root / "first"
+        first_dir.mkdir(parents=True)
+        (first_dir / "__init__.py").write_text(
+            """
+from xbotv2.plugin.base import PluginBase
+
+class FirstPlugin(PluginBase):
+    async def on_load(self, config):
+        pass
+
+    async def on_unload(self):
+        await self.store.set("unloaded", True)
+
+    def register_hooks(self, manager):
+        async def on_turn_start(ctx):
+            pass
+        manager.register("on_turn_start", on_turn_start)
+"""
+        )
+        (first_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "first", "version": "1.0.0"})
+        )
+        broken_dir = plugins_root / "broken"
+        broken_dir.mkdir(parents=True)
+        (broken_dir / "__init__.py").write_text(
+            """
+from xbotv2.plugin.base import PluginBase
+
+class BrokenPlugin(PluginBase):
+    async def on_load(self, config):
+        raise RuntimeError("broken load")
+"""
+        )
+        (broken_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "broken", "version": "1.0.0", "depends_on": ["first"]})
+        )
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        hook_manager = HookManager()
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=hook_manager,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+        )
+
+        with pytest.raises(RuntimeError, match="broken load"):
+            await loader.load()
+
+        assert loader.loaded_plugins == []
+        assert loader._records == {}
+        assert loader._import_paths == []
+        assert hook_manager.count("on_turn_start") == 0
+        assert state_store.get_plugin_state("first")["unloaded"] is True
+
+    @pytest.mark.asyncio
     async def test_loader_unloads_manifest_plugin_resources(self, tmp_path, monkeypatch):
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "simple"

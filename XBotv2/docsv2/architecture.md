@@ -54,7 +54,9 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   tools, prompt fragments, and temporary import paths; failed loads release
   any loader-added import paths that are not needed by already loaded plugins.
 - Failed plugin registration rolls back newly registered hooks, tools, and
-  fragments before the load error escapes.
+  fragments before the load error escapes. A failure later in `load()` unloads
+  plugins loaded earlier in the same call so bootstrap does not keep a partial
+  plugin graph.
 
 ### Tool System (`xbotv2/tools/`)
 - `ToolRegistry` with sandbox/execution metadata

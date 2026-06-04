@@ -55,6 +55,9 @@ are the primary freeze gate.
 - Plugin registration failures now roll back newly registered hooks, tools, and
   prompt fragments before re-raising the original load error; if `on_load()`
   already ran, `on_unload()` is called for plugin-local cleanup.
+- `PluginLoader.load()` is now atomic across the load call: if a later plugin
+  fails, plugins loaded earlier in that call are unloaded and their registered
+  resources are removed before the error escapes.
 - Plugin unloading now has a real cleanup path: `PluginLoader.unload()` calls
   `on_unload()`, unregisters recorded hooks, tools, and prompt fragments, and
   releases temporary import paths when no plugins remain loaded.

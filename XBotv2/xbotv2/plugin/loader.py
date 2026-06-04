@@ -103,11 +103,13 @@ class PluginLoader:
                             self._release_import_paths()
                         else:
                             self._release_import_paths_since(import_path_checkpoint)
+                            await self.unload_all()
                         raise
                 if not self.loaded_plugins:
                     self._release_import_paths()
                 else:
                     self._release_import_paths_since(import_path_checkpoint)
+                    await self.unload_all()
                 raise
             self.loaded_plugins.append(plugin)
         return list(self.loaded_plugins)
