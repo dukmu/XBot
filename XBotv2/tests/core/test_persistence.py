@@ -1,5 +1,6 @@
 """Tests for message history persistence and session restore."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -159,6 +160,27 @@ class TestMessagePersistence:
         assert restored[0].content == "first"
         assert restored[3].content == "done"
 
+    def test_replace_messages_preserves_existing_message_ids(self, store):
+        store.append_messages([
+            HumanMessage(content="first"),
+            AIMessage(content="response"),
+        ])
+        before = _raw_messages(store)
+
+        count = store.replace_messages([
+            HumanMessage(content="first"),
+            AIMessage(content="response"),
+            HumanMessage(content="second"),
+        ])
+
+        after = _raw_messages(store)
+        assert count == 3
+        assert after[0]["msg_id"] == before[0]["msg_id"]
+        assert after[0]["ts"] == before[0]["ts"]
+        assert after[1]["msg_id"] == before[1]["msg_id"]
+        assert after[1]["ts"] == before[1]["ts"]
+        assert after[2]["msg_id"] == 3
+
     def test_message_ids_are_sequential(self, store):
         d1 = store.append_message(HumanMessage(content="m1"))
         d2 = store.append_message(HumanMessage(content="m2"))
@@ -300,6 +322,31 @@ class TestEnginePersistence:
         assert engine2.turn_count == 2
 
     @pytest.mark.asyncio
+    async def test_engine_save_preserves_existing_message_ids(self, temp_data_dir, temp_workspace):
+        """Repeated turn saves do not churn ids for unchanged history messages."""
+        store = CoreStateStore.create(
+            temp_data_dir / "state",
+            session_id="s1", thread_id="t1", personality_id="p",
+        )
+        llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
+        registry = ToolRegistry()
+
+        engine = make_engine(llm, registry, store, temp_workspace)
+        await engine.start_session()
+        _ = [e async for e in engine.run_turn("turn 1")]
+        first_save = _raw_messages(store)
+
+        _ = [e async for e in engine.run_turn("turn 2")]
+        second_save = _raw_messages(store)
+
+        assert second_save[0]["content"] == first_save[0]["content"]
+        assert second_save[0]["msg_id"] == first_save[0]["msg_id"]
+        assert second_save[0]["ts"] == first_save[0]["ts"]
+        assert second_save[1]["content"] == first_save[1]["content"]
+        assert second_save[1]["msg_id"] == first_save[1]["msg_id"]
+        assert second_save[1]["ts"] == first_save[1]["ts"]
+
+    @pytest.mark.asyncio
     async def test_resume_session_explicit(self, temp_data_dir, temp_workspace):
         """Explicit resume_session loads messages and turn count."""
         store = CoreStateStore.create(
@@ -406,3 +453,13 @@ class TestEnginePersistence:
 
         state = store.materialize()
         assert state["message_count"] == 2
+
+
+def _raw_messages(store: CoreStateStore) -> list[dict]:
+    if not store.messages_path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in store.messages_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]

@@ -241,6 +241,41 @@ class CoreStateStore:
             self.append_message(msg)
         return len(messages)
 
+    def replace_messages(self, messages: list[BaseMessage]) -> int:
+        """Replace the message log while preserving ids for unchanged messages.
+
+        Used by the engine after each turn. Compaction can remove old messages,
+        but retained messages keep their existing ``msg_id`` and ``ts`` so
+        audits and plugin references do not churn on every save.
+        """
+        previous = list(_iter_jsonl(self.messages_path))
+        previous_by_key: dict[str, list[dict[str, Any]]] = {}
+        for entry in previous:
+            key = _message_identity_key(entry)
+            previous_by_key.setdefault(key, []).append(entry)
+
+        rewritten: list[dict[str, Any]] = []
+        next_id = max((entry.get("msg_id", 0) for entry in previous), default=0) + 1
+        for msg in messages:
+            d = message_to_dict(msg)
+            key = _message_identity_key(d)
+            matches = previous_by_key.get(key) or []
+            if matches:
+                old = matches.pop(0)
+                d["msg_id"] = old.get("msg_id", next_id)
+                d["ts"] = old.get("ts", _now_iso())
+            else:
+                d["msg_id"] = next_id
+                d["ts"] = _now_iso()
+                next_id += 1
+            rewritten.append(d)
+
+        self.messages_path.write_text("")
+        with open(self.messages_path, "a") as f:
+            for d in rewritten:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return len(rewritten)
+
     def read_messages(self) -> list[BaseMessage]:
         """Read all messages from the log, deserialized."""
         raw = _read_jsonl(self.messages_path)
@@ -388,6 +423,11 @@ class CoreStateStore:
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Read all lines from a JSONL file."""
     return list(_iter_jsonl(path))
+
+
+def _message_identity_key(d: dict[str, Any]) -> str:
+    payload = {k: v for k, v in d.items() if k not in {"msg_id", "ts"}}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _iter_jsonl(path: Path):

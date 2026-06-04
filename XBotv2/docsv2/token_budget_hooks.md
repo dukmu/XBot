@@ -85,8 +85,8 @@ These stages are now available for token budget plugins:
 | `ON_CLIENT_EVENT` | Observe client-directed events such as `client_message`, `user_input_required`, and permission notices. |
 | `ON_STOP` | Record successful turn stop reason. |
 | `ON_STOP_FAILURE` | Record turn or stop failure reason. |
-| `BEFORE_STATE_PERSIST` | Snapshot plugin stats before materialization. |
-| `AFTER_STATE_PERSIST` | Confirm persistence and emit bookkeeping events. |
+| `BEFORE_STATE_PERSIST` | Snapshot plugin stats before message-log replacement and materialization. |
+| `AFTER_STATE_PERSIST` | Confirm stable message ids, persistence, and materialized bookkeeping events. |
 
 Do not add per-fragment hooks first. Source-tagged context components are a
 cleaner surface: they keep ordering deterministic and avoid turning prompt

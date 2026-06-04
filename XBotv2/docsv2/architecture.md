@@ -69,6 +69,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Append-only `messages.jsonl` — resumable message history with message
   id/name, tool calls, tool result metadata, artifacts, public
   `additional_kwargs`, and provider `response_metadata`
+- Engine saves rewrite `messages.jsonl` from current history while preserving
+  `msg_id`/`ts` for unchanged retained messages
 - `state.yaml` — materialized view (rebuildable from events)
 - Plugin states as opaque blobs in `plugin_states/`
 - Session start uses existing events or messages to distinguish resume from a

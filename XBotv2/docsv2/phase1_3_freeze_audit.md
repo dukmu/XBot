@@ -110,6 +110,9 @@ are the primary freeze gate.
   ToolMessage status/artifacts, public `additional_kwargs`, and provider
   `response_metadata`. Internal `xbotv2_` side-channel kwargs stay out of
   restored history because their events are persisted separately.
+- Engine message saves now preserve `msg_id` and `ts` for unchanged retained
+  history rows while still replacing the log from current in-memory history, so
+  compaction does not cause avoidable audit identifier churn.
 - TUI state now preserves approval-required, permission-denied,
   waiting-for-user, and error statuses across the following `turn_finished`
   frame, matching the materialized interruption/error semantics instead of

@@ -688,8 +688,7 @@ class Engine:
         """
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
-        self.state_store.clear_messages()
-        self.state_store.append_messages(self._messages)
+        self.state_store.replace_messages(self._messages)
         self.state_store.materialize()
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
