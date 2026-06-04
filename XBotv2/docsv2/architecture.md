@@ -55,7 +55,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 
 ### Tool System (`xbotv2/tools/`)
 - `ToolRegistry` with sandbox/execution metadata
-- Personality tool selectors restrict visible/executable tools via `ToolRegistry.restrict()`
+- Personality tool selectors restrict visible/executable tools via
+  `ToolRegistry.restrict()` after core and plugin tools are registered
 - `SandboxPolicy` for resource access control
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;

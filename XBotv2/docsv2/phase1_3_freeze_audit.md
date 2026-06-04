@@ -21,9 +21,10 @@ are the primary freeze gate.
     replace lines, regex replacement, and single-file unified diff patch modes.
 - Sandboxed tool execution resolves path-like arguments to the workspace before
   invoking the tool.
-- Personality tool selectors now call `ToolRegistry.restrict()`, so the model
-  and runtime see only enabled tools. Unknown selectors fail closed instead of
-  silently exposing all registered tools.
+- Personality tool selectors now call `ToolRegistry.restrict()` after core and
+  plugin tools are registered, so selectors can enable plugin tools and both
+  the model and runtime see only enabled tools. Unknown selectors fail closed
+  instead of silently exposing all registered tools.
 - Permission and sandbox `ask` decisions now emit protocol-visible
   `permission_request` events and fail closed until protocol/TUI interactive
   approval exists; they are no longer treated as implicit allow. Denials emit

@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import yaml
 
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.llm.mock import MockLLM
@@ -86,6 +87,49 @@ class TestBootstrapBasics:
                 thread_id="test-thread",
                 llm_override=MockLLM(responses=[]),
             )
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_tool_filter_can_select_plugin_tools(
+        self, temp_data_dir, tmp_path, monkeypatch
+    ):
+        """Personality tool selectors are applied after plugin tools load."""
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "simple"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("")
+        (plugin_dir / "tools.py").write_text(
+            """
+from langchain_core.tools import tool
+
+@tool
+def plugin_tool() -> str:
+    \"\"\"Plugin tool.\"\"\"
+    return "plugin ok"
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "simple",
+                "version": "1.0.0",
+                "tools": [{"handler": "simple.tools:plugin_tool"}],
+            })
+        )
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
+        personality.write_text("tools:\n  - plugin_tool\n")
+
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            plugin_dirs=[plugins_root],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.tool_registry.names() == ["plugin_tool"]
+        assert [tool.name for tool in engine.tool_registry.get_all()] == ["plugin_tool"]
+        assert engine.tool_registry.get("filesystem_read") is None
 
     @pytest.mark.asyncio
     async def test_bootstrap_registers_personality_hooks(

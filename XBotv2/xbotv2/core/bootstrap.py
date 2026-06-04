@@ -136,10 +136,6 @@ async def bootstrap(
             owner_plugin=None,  # Core-owned
         )
 
-    # Apply tool filter from personality config (limits what the agent sees)
-    if agent_config.tools:
-        tool_registry.restrict(agent_config.tools)
-
     # 5. Create SandboxPolicy + PermissionSystem
     sandbox = SandboxPolicy(
         agent_config.sandbox,
@@ -166,6 +162,11 @@ async def bootstrap(
             state_store,
             _plugin_configs,
         )
+
+    # Apply tool filter from personality config after plugins are loaded so
+    # selectors can reference either core or plugin-provided tools.
+    if agent_config.tools:
+        tool_registry.restrict(agent_config.tools)
 
     # 7. Create LLM client
     if llm_override is not None:

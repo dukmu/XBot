@@ -45,8 +45,14 @@ prompt_fragments:
 4. **Initialization**: `on_load(config)` called
 5. **Registration**: Hooks → HookManager, Tools → ToolRegistry,
    Fragments → ContextBuilder
-6. **Runtime**: Plugin hooks execute during engine lifecycle
-7. **Unload**: `on_unload()` called, hooks/tools/fragments removed
+6. **Tool selection**: personality `tools:` selectors restrict the complete
+   core+plugin registry
+7. **Runtime**: Plugin hooks execute during engine lifecycle
+8. **Unload**: `on_unload()` called, hooks/tools/fragments removed
+
+Because tool selection happens after plugin registration, personality files can
+enable plugin-provided tools by name or prefix. Unknown selectors still fail
+closed during bootstrap.
 
 `PluginLoader.unload(name)` removes resources registered by that plugin:
 hook callbacks, tool registry entries, and prompt fragments. Manifest-only
