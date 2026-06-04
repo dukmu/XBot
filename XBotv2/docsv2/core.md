@@ -113,6 +113,15 @@ over JSONL, the hook writes oversized outputs to
 summary containing the cache path, original size, preview size, and preview.
 This keeps long shell/read outputs from inflating the next context.
 
+## Message Persistence
+
+`messages.jsonl` stores enough LangChain message metadata for deterministic
+session resume: message `id`, `name`, AI `tool_calls`, ToolMessage
+`tool_call_id`, `status`, `artifact`, provider-facing `additional_kwargs`, and
+`response_metadata`. Internal `additional_kwargs` whose keys start with
+`xbotv2_` are not restored into message history because those side-channel
+events are persisted separately in `events.jsonl`.
+
 ## Events
 
 All significant state changes are recorded as append-only events:

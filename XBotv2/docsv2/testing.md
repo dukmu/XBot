@@ -123,8 +123,10 @@ estimation and budget control are frozen. The important future checks are:
 - context component metadata preserves source, plugin owner, and render order
 - tool-schema filtering happens before provider binding
 - provider request failures trigger a provider-specific hook plus `ON_ERROR`
-- user intake, tool-call lifecycle, and persistence hooks receive the intended
-  context fields
+- user intake, tool-call lifecycle, client-event, and persistence hooks receive
+  the intended context fields
+- message persistence round-trips provider/tool metadata while filtering
+  internal `xbotv2_` side-channel kwargs from restored history
 - stop, compaction, permission, failure, and post-tool-batch hooks receive the
   intended context fields
 - observe-only token stats persist source breakdowns without changing behavior

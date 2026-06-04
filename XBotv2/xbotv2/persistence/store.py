@@ -44,15 +44,32 @@ def message_to_dict(msg: BaseMessage) -> dict[str, Any]:
         "type": type(msg).__name__,
         "content": _serialize_content(msg.content),
     }
+    msg_id = getattr(msg, "id", None)
+    if msg_id:
+        d["lc_id"] = msg_id
+    msg_name = getattr(msg, "name", None)
+    if msg_name:
+        d["name"] = msg_name
+    additional_kwargs = _public_additional_kwargs(
+        getattr(msg, "additional_kwargs", {}) or {}
+    )
+    if additional_kwargs:
+        d["additional_kwargs"] = _json_safe(additional_kwargs)
+    response_metadata = getattr(msg, "response_metadata", {}) or {}
+    if response_metadata:
+        d["response_metadata"] = _json_safe(response_metadata)
     if isinstance(msg, AIMessage):
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
-            d["tool_calls"] = list(tool_calls)
+            d["tool_calls"] = _json_safe(list(tool_calls))
     if isinstance(msg, ToolMessage):
         d["tool_call_id"] = getattr(msg, "tool_call_id", "")
         status = getattr(msg, "status", None)
         if status:
             d["status"] = status
+        artifact = getattr(msg, "artifact", None)
+        if artifact is not None:
+            d["artifact"] = _json_safe(artifact)
     return d
 
 
@@ -60,24 +77,33 @@ def dict_to_message(d: dict[str, Any]) -> BaseMessage:
     """Deserialize a dict back to a LangChain message."""
     msg_type = d.get("type", "AIMessage")
     content = d.get("content", "")
+    kwargs = {
+        "id": d.get("lc_id"),
+        "name": d.get("name"),
+        "additional_kwargs": d.get("additional_kwargs") or {},
+        "response_metadata": d.get("response_metadata") or {},
+    }
+    kwargs = {k: v for k, v in kwargs.items() if v not in (None, {}, "")}
 
     if msg_type == "HumanMessage":
-        return HumanMessage(content=content)
+        return HumanMessage(content=content, **kwargs)
     elif msg_type == "AIMessage":
         tool_calls = d.get("tool_calls")
         if tool_calls:
-            return AIMessage(content=content, tool_calls=tool_calls)
-        return AIMessage(content=content)
+            return AIMessage(content=content, tool_calls=tool_calls, **kwargs)
+        return AIMessage(content=content, **kwargs)
     elif msg_type == "ToolMessage":
         return ToolMessage(
             content=content,
             tool_call_id=d.get("tool_call_id", ""),
             status=d.get("status", "success"),
+            artifact=d.get("artifact"),
+            **kwargs,
         )
     elif msg_type == "SystemMessage":
-        return SystemMessage(content=content)
+        return SystemMessage(content=content, **kwargs)
     else:
-        return AIMessage(content=content)
+        return AIMessage(content=content, **kwargs)
 
 
 def _serialize_content(content: Any) -> str:
@@ -92,6 +118,24 @@ def _serialize_content(content: Any) -> str:
                 parts.append(block.get("text", ""))
         return "\n".join(parts)
     return str(content)
+
+
+def _public_additional_kwargs(value: dict[str, Any]) -> dict[str, Any]:
+    """Return kwargs that are safe to restore into provider-facing history."""
+    return {k: v for k, v in value.items() if not str(k).startswith("xbotv2_")}
+
+
+def _json_safe(value: Any) -> Any:
+    """Best-effort conversion of metadata to JSON-serializable values."""
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        return str(value)
 
 
 # ------------------------------------------------------------------

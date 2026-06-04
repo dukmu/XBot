@@ -104,6 +104,11 @@ are the primary freeze gate.
 - `POST_TOOL_BATCH` now receives the actual per-result tool calls after
   `BEFORE_TOOL_CALL` rewrites and sandbox path resolution, keeping batch-level
   auditing aligned with per-tool hooks and protocol-visible result IDs.
+- Message persistence now round-trips standard LangChain metadata needed for
+  deterministic resume and plugin audits: message id/name, AI tool calls,
+  ToolMessage status/artifacts, public `additional_kwargs`, and provider
+  `response_metadata`. Internal `xbotv2_` side-channel kwargs stay out of
+  restored history because their events are persisted separately.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

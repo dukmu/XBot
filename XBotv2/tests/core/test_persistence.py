@@ -56,6 +56,22 @@ class TestMessageSerialization:
         assert len(restored.tool_calls) == 1
         assert restored.tool_calls[0]["name"] == "shell"
 
+    def test_ai_message_metadata_roundtrip(self):
+        msg = AIMessage(
+            content="response text",
+            id="msg-ai-1",
+            name="assistant",
+            additional_kwargs={"refusal": None, "provider_note": {"a": 1}},
+            response_metadata={"model_name": "mock", "token_usage": {"total_tokens": 9}},
+        )
+        d = message_to_dict(msg)
+        restored = dict_to_message(d)
+        assert isinstance(restored, AIMessage)
+        assert restored.id == "msg-ai-1"
+        assert restored.name == "assistant"
+        assert restored.additional_kwargs["provider_note"] == {"a": 1}
+        assert restored.response_metadata["token_usage"]["total_tokens"] == 9
+
     def test_tool_message_roundtrip(self):
         msg = ToolMessage(content="output", tool_call_id="call_1", status="success")
         d = message_to_dict(msg)
@@ -63,6 +79,30 @@ class TestMessageSerialization:
         assert isinstance(restored, ToolMessage)
         assert restored.content == "output"
         assert restored.tool_call_id == "call_1"
+
+    def test_tool_message_metadata_roundtrip_filters_internal_kwargs(self):
+        msg = ToolMessage(
+            content="output",
+            tool_call_id="call_1",
+            status="success",
+            id="msg-tool-1",
+            name="filesystem_read",
+            artifact={"path": "file.txt", "bytes": 12},
+            additional_kwargs={
+                "visible": "kept",
+                "xbotv2_events": [{"type": "client_message", "data": {}}],
+                "xbotv2_turn_complete": True,
+            },
+            response_metadata={"duration_ms": 5},
+        )
+        d = message_to_dict(msg)
+        restored = dict_to_message(d)
+        assert isinstance(restored, ToolMessage)
+        assert restored.id == "msg-tool-1"
+        assert restored.name == "filesystem_read"
+        assert restored.artifact == {"path": "file.txt", "bytes": 12}
+        assert restored.additional_kwargs == {"visible": "kept"}
+        assert restored.response_metadata == {"duration_ms": 5}
 
     def test_system_message_roundtrip(self):
         msg = SystemMessage(content="system instructions")
