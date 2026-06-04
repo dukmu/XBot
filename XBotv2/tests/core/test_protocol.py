@@ -7,6 +7,7 @@ import sys
 
 import pytest
 import yaml
+from xbotv2.protocol.server import RuntimeServer
 from xbotv2.protocol.frames import (
     ProtocolFrame,
     ProtocolEncoder,
@@ -348,6 +349,65 @@ default:
 
 class TestRuntimeServerSubprocess:
     """End-to-end JSONL stdio server roundtrip."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_server_no_plugins_passes_empty_plugin_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        """RuntimeServer no-plugin mode reaches bootstrap, not only CLI args."""
+        captured = {}
+
+        class DummyEngine:
+            config = type("Config", (), {"agent_name": "Dummy"})()
+
+            async def start_session(self):
+                captured["started"] = True
+
+        async def fake_bootstrap(**kwargs):
+            captured.update(kwargs)
+            return DummyEngine()
+
+        class DummyWriter:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            async def drain(self):
+                captured["drained"] = True
+
+        monkeypatch.setattr("xbotv2.protocol.server.bootstrap", fake_bootstrap)
+        server = RuntimeServer(data_dir=tmp_path, provider_name="mock", no_plugins=True)
+        hello = ProtocolFrame(
+            seq=1,
+            direction="client_to_server",
+            type="hello",
+            session_id="s-core",
+            thread_id="t-core",
+            request_id="req-hello",
+        )
+        server._handle_hello(hello)
+        writer = DummyWriter()
+
+        response = await server._handle_session_open(
+            ProtocolFrame(
+                seq=2,
+                direction="client_to_server",
+                type="session.open",
+                session_id="s-core",
+                thread_id="t-core",
+                request_id="req-open",
+            ),
+            writer,
+        )
+
+        assert response is None
+        assert captured["plugin_dirs"] == []
+        assert captured["session_id"] == "s-core"
+        assert captured["thread_id"] == "t-core"
+        assert captured["started"] is True
+        assert b"session_ready" in writer.writes[0]
 
     @pytest.mark.asyncio
     async def test_server_returns_error_for_malformed_json_and_continues(self, tmp_path):
