@@ -19,7 +19,8 @@ are the primary freeze gate.
   requests as `pending_interactions` from the append-only event log.
 - JSONL protocol now accepts `user.input` and `permission.response` commands,
   records `user_input_response` / `permission_response` events, returns bounded
-  `*_recorded` acknowledgements, and clears matching `pending_interactions`.
+  `*_recorded` acknowledgements, clears matching `pending_interactions`, and
+  stores the original pending request snapshot on the response event.
 - Expanded filesystem tools:
   - `filesystem_read` returns JSON content plus path, size, mtime, line count,
     returned line count, and truncation flags.

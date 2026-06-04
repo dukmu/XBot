@@ -690,6 +690,12 @@ class TestRuntimeServerSubprocess:
             assert recorded.payload["pending_interactions"] == []
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
             assert state["pending_interactions"] == []
+            events_path = data_dir / "sessions" / "s-events" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            response_event = next(event for event in events if event["type"] == "user_input_response")
+            assert response_event["payload"]["request_type"] == "user_input_required"
+            assert response_event["payload"]["request_source"] == "ask_user"
+            assert response_event["payload"]["request_payload"]["question"] == "Proceed?"
         finally:
             await _stop_process(proc)
 
@@ -776,6 +782,12 @@ class TestRuntimeServerSubprocess:
             assert recorded.payload["pending_interactions"] == []
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
             assert state["pending_interactions"] == []
+            events_path = data_dir / "sessions" / "s-perm" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            response_event = next(event for event in events if event["type"] == "permission_response")
+            assert response_event["payload"]["request_type"] == "permission_request"
+            assert response_event["payload"]["request_source"] == "permission_system"
+            assert response_event["payload"]["request_payload"]["tool_call"]["id"] == "call_perm"
         finally:
             await _stop_process(proc)
 

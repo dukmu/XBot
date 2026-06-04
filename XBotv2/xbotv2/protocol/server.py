@@ -259,6 +259,7 @@ class RuntimeServer:
         store.append_event("user_input_response", {
             "request_id": request_id,
             "answer": answer,
+            **_pending_response_context(pending),
         })
         state = store.materialize()
 
@@ -315,6 +316,7 @@ class RuntimeServer:
         store.append_event("permission_response", {
             "request_id": request_id,
             "decision": decision,
+            **_pending_response_context(pending),
         })
         state = store.materialize()
 
@@ -390,6 +392,16 @@ def _find_pending_interaction(
         ):
             return interaction
     return None
+
+
+def _pending_response_context(pending: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_type": pending.get("type", ""),
+        "request_source": pending.get("source", ""),
+        "request_payload": pending.get("payload", {}),
+        "request_event_id": pending.get("event_id"),
+        "request_ts": pending.get("ts", ""),
+    }
 
 
 async def run_stdio_server(

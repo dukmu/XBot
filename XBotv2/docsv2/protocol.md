@@ -49,7 +49,8 @@ interactions.
   `user_input_recorded`. `permission.response` records a `permission_response`
   event and returns `permission_response_recorded`. Both commands clear the
   matching `pending_interactions` entry but do not resume the interrupted turn
-  yet.
+  yet. Response events include a snapshot of the original pending request
+  payload for audit and future replay logic.
 - `state.yaml` materializes unresolved interaction requests as
   `pending_interactions`, rebuilt from the append-only event log.
 - Before client-directed events are persisted and streamed, core runs the
