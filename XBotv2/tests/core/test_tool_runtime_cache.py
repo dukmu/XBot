@@ -230,13 +230,21 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert "[Tool result cached]" in tool_event["data"]["content"]
     assert "[Tool result cached]" in tool_message.content
     assert "x" * 100 not in tool_message.content
+    assert tool_message.artifact["kind"] == "cached_tool_result"
+    assert tool_message.artifact["tool_call_id"] == "call_large"
 
     cache_files = list((Path(state_store.artifacts_dir) / "tool_results").glob("*.txt"))
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
 
-    event_types = [event["type"] for event in state_store.read_events()]
-    assert "tool_result_cached" in event_types
+    cache_event = next(event for event in state_store.read_events() if event["type"] == "tool_result_cached")
+    assert cache_event["payload"]["cache_path"] == str(cache_files[0])
+    assert cache_event["payload"]["sha256"] == tool_message.artifact["sha256"]
+
+    restored_tool_message = next(
+        m for m in state_store.read_messages() if type(m).__name__ == "ToolMessage"
+    )
+    assert restored_tool_message.artifact == tool_message.artifact
 
 
 def _hook_context(stage, **kwargs):

@@ -49,17 +49,20 @@ def make_tool_result_cache_hook(
                 preview_chars=preview_chars,
             )
             message.content = replacement
+            artifact = {
+                "kind": "cached_tool_result",
+                "tool_call_id": tool_call_id,
+                "cache_path": str(path),
+                "original_chars": len(content),
+                "inline_chars": len(replacement),
+                "sha256": digest,
+            }
+            message.artifact = artifact
 
             if hasattr(state_store, "append_event"):
                 state_store.append_event(
                     "tool_result_cached",
-                    {
-                        "tool_call_id": tool_call_id,
-                        "cache_path": str(path),
-                        "original_chars": len(content),
-                        "inline_chars": len(replacement),
-                        "sha256": digest,
-                    },
+                    artifact,
                 )
 
         return None

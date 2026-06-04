@@ -61,7 +61,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;
   ask currently fails closed until resume is implemented
-- Default `AFTER_TOOLS` hook caches oversized tool results under session artifacts
+- Default `AFTER_TOOLS` hook caches oversized tool results under session
+  artifacts and records cache metadata on both events and ToolMessage artifacts
 - Plugin ownership tracking plus explicit unregister for unload/reload
 
 ### Persistence (`xbotv2/persistence/`)

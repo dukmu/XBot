@@ -114,7 +114,9 @@ Bootstrap registers a default `AFTER_TOOLS` hook from
 over JSONL, the hook writes oversized outputs to
 `state/artifacts/tool_results/` and replaces the inline content with a bounded
 summary containing the cache path, original size, preview size, and preview.
-This keeps long shell/read outputs from inflating the next context.
+The same cache metadata is stored on `ToolMessage.artifact` and in the
+`tool_result_cached` event. This keeps long shell/read outputs from inflating
+the next context while preserving a structured pointer to the full artifact.
 
 ## Message Persistence
 

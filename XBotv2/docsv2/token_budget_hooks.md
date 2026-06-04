@@ -46,7 +46,8 @@ budget controller yet. Existing related mechanisms are narrower:
 - `ContextBuilder` memoizes the stable system prefix string and exposes
   source-tagged context components, but no token counter consumes them yet.
 - The default tool-result cache hook truncates oversized tool output by
-  character count and stores the full content under session artifacts.
+  character count, stores the full content under session artifacts, and records
+  structured cache metadata on ToolMessage artifacts.
 
 ## Freeze Risk
 

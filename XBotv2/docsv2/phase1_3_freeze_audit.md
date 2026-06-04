@@ -31,7 +31,9 @@ are the primary freeze gate.
   `permission_denied`.
 - Added a default `AFTER_TOOLS` hook that caches oversized tool results under
   `state/artifacts/tool_results/` and replaces inline results with a bounded
-  preview before history persistence and JSONL emission.
+  preview before history persistence and JSONL emission. Cache metadata is
+  stored in both `tool_result_cached` events and the persisted ToolMessage
+  artifact.
 - Plugin prompt fragment files now resolve relative to the discovered plugin
   directory for both `PluginBase` subclasses and manifest-only default plugins.
 - Plugin discovery/loading now lives in `xbotv2.plugin.loader.PluginLoader`
