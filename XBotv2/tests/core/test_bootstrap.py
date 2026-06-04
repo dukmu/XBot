@@ -1,4 +1,4 @@
-"""Tests for the bootstrap sequence — engine with zero plugins."""
+"""Tests for bootstrap with explicit no-plugin or temporary-plugin modes."""
 
 import json
 
@@ -268,7 +268,7 @@ class ConfiguredPlugin(PluginBase):
 
 
 class TestBootstrapNoPlugins:
-    """Engine works correctly with zero plugins."""
+    """Engine works correctly in explicit no-plugin mode."""
 
     def test_explicit_empty_plugin_dirs_disables_builtin_scan(self, tmp_path):
         """Explicit no-plugin mode stays pure even when built-ins exist."""

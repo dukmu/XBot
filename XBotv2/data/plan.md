@@ -61,7 +61,7 @@ XBotv2/
     subagent/                  # Subagent management
 
   tests/
-    core/                      # Core tests (NO plugins loaded)
+    core/                      # Core tests (no built-in/Phase4 plugins loaded)
     plugins/                   # Per-plugin test directories
     integration/               # Full integration tests
 
@@ -450,14 +450,14 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 
 ## Testing Strategy
 
-### Core Tests (`tests/core/`) — NO plugins loaded
+### Core Tests (`tests/core/`) — no built-in/Phase4 plugins loaded
 
 - `test_engine.py` — ReAct loop with MockLLM, base tools only
 - `test_hooks.py` — each HookStage tested independently with synthetic hooks
 - `test_state.py` — CoreStateStore append-only behavior
 - `test_context.py` — ContextBuilder fragment injection, cache isolation
 - `test_tool_registry.py` — registration, filtering, plugin ownership
-- `test_bootstrap.py` — bootstrap with zero plugins, bootstrap with test plugins
+- `test_bootstrap.py` — bootstrap with explicit no-plugin mode and temporary test plugins only
 - `test_protocol.py` — frame serialization/deserialization, encoder, provider config, stdio server subprocess roundtrip, interaction event streaming
 - `test_sandbox.py` — guard_tool_call, path resolution, denials, one-call approvals
 - `test_permissions.py` — deny→allow→ask precedence
@@ -528,7 +528,7 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 
 ## Verification
 
-1. **Core tests pass with zero plugins**: from repo root, `uv run pytest XBotv2/tests/core/ -q`
+1. **Core tests pass without built-in/Phase4 plugins**: from repo root, run `uv run python XBotv2/scripts/phase1_3_freeze_gate.py`
 2. **Each plugin's tests pass independently**: from repo root, `uv run pytest XBotv2/tests/plugins/planning/ -q`
 3. **Integration tests pass**: from repo root, `uv run pytest XBotv2/tests/integration/ -q`
 4. **Smoke test**: Run engine with personality config, send messages, verify responses

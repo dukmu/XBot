@@ -1,4 +1,4 @@
-"""Core test fixtures — NO plugins loaded."""
+"""Core test fixtures — no built-in/Phase4 plugins loaded."""
 
 import pytest
 

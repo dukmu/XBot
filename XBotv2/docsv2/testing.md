@@ -5,7 +5,7 @@
 ```
 tests/
   conftest.py               # Shared fixtures: temp_data_dir, temp_workspace
-  core/                     # Core tests (NO plugins loaded)
+  core/                     # Core tests (no built-in/Phase4 plugins loaded)
     conftest.py
     test_hooks.py           # HookManager, all 42 stages
     test_state.py           # CoreStateStore, materializer, events, plugin state
@@ -35,9 +35,10 @@ tests/
 3. **`temp_data_dir` only**: Never write to real `data/sessions/`
 4. **MockLLM**: Deterministic, configurable response sequences
 5. **Each test creates its own engine**: No shared state between tests
-6. **Core tests load zero plugins**: Test the engine in its purest form
-   through explicit `plugin_dirs=[]`; this remains true even after built-in
-   plugin manifests exist.
+6. **Core tests do not load built-in/Phase4 plugins**: Pure-core cases use
+   explicit `plugin_dirs=[]`; plugin mechanism tests may load temporary test
+   plugins from `tmp_path`. This remains true after built-in plugin manifests
+   exist.
 
 ## Fixtures
 
@@ -120,11 +121,18 @@ uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_te
 ## Freeze Gate
 
 Core subprocess tests launch `python -m xbotv2 --mode server --no-plugins`;
-direct bootstrap tests use explicit `plugin_dirs=[]` where they need a
-pure-core engine. This keeps Phase 1-3 gates independent of future Phase 4
-built-in plugin manifests.
+direct bootstrap tests declare `plugin_dirs` explicitly. Pure-core cases use
+`plugin_dirs=[]`; plugin-system cases use only temporary test plugin dirs.
+This keeps Phase 1-3 gates independent of future Phase 4 built-in plugin
+manifests.
 
 Use the same gate before freezing Phase 1-3 or committing runtime changes:
+
+```bash
+uv run python XBotv2/scripts/phase1_3_freeze_gate.py
+```
+
+The script expands to:
 
 ```bash
 uv run pytest XBotv2/tests/core/ -q
