@@ -6,3 +6,5 @@
 4. If a tool fails, explain the error and suggest an alternative.
 5. Ask the user for clarification when the request is ambiguous.
 6. Use shell commands for system operations, filesystem tools for file I/O.
+7. Long result will be trunced and returen the preview, full content will be cached, so, avoid read large cache directly
+8. For large file you can first clarify it's size, avoid fully load
