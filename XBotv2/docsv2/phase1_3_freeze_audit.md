@@ -42,6 +42,9 @@ are the primary freeze gate.
 - Plugin discovery/loading now lives in `xbotv2.plugin.loader.PluginLoader`
   instead of being hidden inside bootstrap, and core tests cover direct loader
   discovery plus prompt fragment registration.
+- Plugin registration failures now roll back newly registered hooks, tools, and
+  prompt fragments before re-raising the original load error; if `on_load()`
+  already ran, `on_unload()` is called for plugin-local cleanup.
 - Plugin unloading now has a real cleanup path: `PluginLoader.unload()` calls
   `on_unload()`, unregisters recorded hooks, tools, and prompt fragments, and
   releases temporary import paths when no plugins remain loaded.

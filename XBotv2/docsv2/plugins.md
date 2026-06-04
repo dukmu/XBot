@@ -54,6 +54,11 @@ Because tool selection happens after plugin registration, personality files can
 enable plugin-provided tools by name or prefix. Unknown selectors still fail
 closed during bootstrap.
 
+If plugin registration fails after `on_load()` succeeds, the loader rolls back
+the plugin's newly registered hooks, tools, and prompt fragments before
+re-raising the original error. It then calls `on_unload()` so partially
+initialized plugin resources can clean themselves up.
+
 `PluginLoader.unload(name)` removes resources registered by that plugin:
 hook callbacks, tool registry entries, and prompt fragments. Manifest-only
 default plugins use a no-op `on_unload()` but still have registered resources

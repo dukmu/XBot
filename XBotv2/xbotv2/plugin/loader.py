@@ -88,7 +88,13 @@ class PluginLoader:
             plugin = instantiate_plugin(manifest, plugin_store)
 
             await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
-            self._records[manifest.name] = self._register(plugin)
+            try:
+                self._records[manifest.name] = self._register(plugin)
+            except Exception:
+                try:
+                    await plugin.on_unload()
+                finally:
+                    raise
             self.loaded_plugins.append(plugin)
         return list(self.loaded_plugins)
 
@@ -139,35 +145,57 @@ class PluginLoader:
             for stage in self.context_builder.FRAGMENT_STAGES
         }
 
-        plugin.register_hooks(self.hook_manager)
-        plugin.register_tools(self.tool_registry)
-        for stage, text in plugin.get_prompt_fragments().items():
-            self.context_builder.register_fragment(stage, plugin_name, text)
+        try:
+            plugin.register_hooks(self.hook_manager)
+            plugin.register_tools(self.tool_registry)
+            for stage, text in plugin.get_prompt_fragments().items():
+                self.context_builder.register_fragment(stage, plugin_name, text)
 
-        hook_refs: list[tuple[HookStage, Any]] = []
+            hook_refs: list[tuple[HookStage, Any]] = []
+            for stage in HookStage:
+                previous = before_hooks.get(stage, [])
+                current = list(self.hook_manager._hooks.get(stage, []))
+                for fn in current[len(previous):]:
+                    hook_refs.append((stage, fn))
+
+            tool_names = [
+                name
+                for name in self.tool_registry.registered_names()
+                if name not in before_tools
+            ]
+            fragment_stages = [
+                stage
+                for stage in self.context_builder.FRAGMENT_STAGES
+                if plugin_name in self.context_builder._fragments.get(stage, {})
+                and plugin_name not in before_fragments.get(stage, set())
+            ]
+            return LoadedPluginRecord(
+                plugin=plugin,
+                hook_refs=hook_refs,
+                tool_names=tool_names,
+                fragment_stages=fragment_stages,
+            )
+        except Exception:
+            self._rollback_registration(plugin_name, before_hooks, before_tools, before_fragments)
+            raise
+
+    def _rollback_registration(
+        self,
+        plugin_name: str,
+        before_hooks: dict[HookStage, list[Any]],
+        before_tools: set[str],
+        before_fragments: dict[str, set[str]],
+    ) -> None:
         for stage in HookStage:
-            previous = before_hooks.get(stage, [])
-            current = list(self.hook_manager._hooks.get(stage, []))
-            for fn in current[len(previous):]:
-                hook_refs.append((stage, fn))
-
-        tool_names = [
-            name
-            for name in self.tool_registry.registered_names()
-            if name not in before_tools
-        ]
-        fragment_stages = [
-            stage
-            for stage in self.context_builder.FRAGMENT_STAGES
-            if plugin_name in self.context_builder._fragments.get(stage, {})
-            and plugin_name not in before_fragments.get(stage, set())
-        ]
-        return LoadedPluginRecord(
-            plugin=plugin,
-            hook_refs=hook_refs,
-            tool_names=tool_names,
-            fragment_stages=fragment_stages,
-        )
+            self.hook_manager._hooks[stage] = before_hooks.get(stage, [])
+        for tool_name in list(self.tool_registry.registered_names()):
+            if tool_name not in before_tools:
+                self.tool_registry.unregister(tool_name)
+        self.tool_registry.unregister_plugin_tools(plugin_name)
+        for stage in self.context_builder.FRAGMENT_STAGES:
+            if plugin_name in self.context_builder._fragments.get(stage, {}):
+                if plugin_name not in before_fragments.get(stage, set()):
+                    self.context_builder.unregister_fragment(stage, plugin_name)
 
     def _ensure_importable(self, manifest: PluginManifest, plugin_dir: Path) -> None:
         plugin_pkg = f"builtin_plugins.{manifest.name}"

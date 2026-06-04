@@ -266,6 +266,71 @@ class TestPluginLoader:
         assert "Loader instructions" in context_builder._fragments["system_instructions"]["simple"]
 
     @pytest.mark.asyncio
+    async def test_loader_rolls_back_partial_registration_on_failure(self, tmp_path, monkeypatch):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "broken"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("")
+        (plugin_dir / "hooks.py").write_text(
+            """
+async def on_turn_start(ctx):
+    ctx.emit({"hook": "called"})
+"""
+        )
+        (plugin_dir / "tools.py").write_text(
+            """
+from langchain_core.tools import tool
+
+@tool
+def plugin_tool() -> str:
+    \"\"\"Plugin tool.\"\"\"
+    return "ok"
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "broken",
+                "version": "1.0.0",
+                "hooks": [
+                    {"stage": "on_turn_start", "handler": "broken.hooks:on_turn_start"},
+                ],
+                "tools": [
+                    {"handler": "broken.tools:plugin_tool"},
+                ],
+                "prompt_fragments": [
+                    {"stage": "system_instructions", "file": "prompts/missing.md"},
+                ],
+            })
+        )
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        hook_manager = HookManager()
+        tool_registry = ToolRegistry()
+        context_builder = ContextBuilder()
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=hook_manager,
+            tool_registry=tool_registry,
+            context_builder=context_builder,
+        )
+
+        with pytest.raises(FileNotFoundError, match="prompt fragment file not found"):
+            await loader.load()
+
+        assert hook_manager.count("on_turn_start") == 0
+        assert "plugin_tool" not in tool_registry.registered_names()
+        assert "broken" not in context_builder._fragments.get("system_instructions", {})
+        assert loader.loaded_plugins == []
+        assert loader._records == {}
+
+    @pytest.mark.asyncio
     async def test_loader_unloads_manifest_plugin_resources(self, tmp_path, monkeypatch):
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "simple"

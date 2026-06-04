@@ -52,6 +52,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Plugins register: hooks, tools, prompt fragments
 - `PluginLoader.unload()` calls `on_unload()` and removes recorded hooks,
   tools, prompt fragments, and temporary import paths.
+- Failed plugin registration rolls back newly registered hooks, tools, and
+  fragments before the load error escapes.
 
 ### Tool System (`xbotv2/tools/`)
 - `ToolRegistry` with sandbox/execution metadata
