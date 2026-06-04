@@ -74,6 +74,10 @@ are the primary freeze gate.
   number of deleted messages, matching the method contract used by compaction.
 - `provider: mock` can now be configured through `provider.yaml`, enabling
   deterministic subprocess smoke tests without a real LLM provider.
+- `MockLLM` now records the actual request messages, stop values, kwargs, and
+  normalized response tool calls for context/assertion-heavy plugin tests.
+- Unknown provider names now fail closed with `ValueError` instead of silently
+  falling back to OpenAI-compatible defaults.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
   JSONL stdio subprocess and verifies `hello`, `session.open`, `user.message`,
   and `shutdown` frame flow with stable session/thread IDs.

@@ -24,6 +24,9 @@ The engine works without any plugins. It provides:
 - Append-only event persistence
 - Session lifecycle (start, run turns, close)
 
+LLM providers are selected explicitly. Unknown provider names raise a
+configuration error instead of silently falling back to another protocol.
+
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
 `ask` currently emits a `permission_request` event and fails closed during tool
 execution because the JSONL/TUI interrupt-resume approval flow is not

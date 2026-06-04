@@ -213,6 +213,48 @@ class TestProviderConfig:
         assert isinstance(llm, MockLLM)
         assert llm.responses == [{"content": "mocked"}]
 
+    def test_unknown_provider_raises(self):
+        """Unknown provider names fail closed instead of silently using OpenAI."""
+        from xbotv2.llm.client import create_llm
+
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            create_llm({"provider": "not-a-provider", "model": "x"})
+
+    def test_mock_llm_records_input_messages(self):
+        """MockLLM call history records the actual request messages."""
+        from langchain_core.messages import HumanMessage
+        from xbotv2.llm.mock import MockLLM
+
+        llm = MockLLM([{"content": "ok"}])
+        response = llm.invoke([HumanMessage(content="hello")])
+
+        assert response.content == "ok"
+        assert llm.call_count == 1
+        assert [message.content for message in llm.get_call_messages(0)] == ["hello"]
+
+    def test_mock_llm_records_normalized_tool_calls(self):
+        """MockLLM call history records normalized tool calls from responses."""
+        from langchain_core.messages import HumanMessage
+        from xbotv2.llm.mock import MockLLM
+
+        llm = MockLLM([
+            {
+                "content": "using tool",
+                "tool_calls": [{"name": "shell", "args": {"command": "pwd"}, "id": "c1"}],
+            }
+        ])
+        llm.invoke([HumanMessage(content="run")])
+
+        assert llm.verify_tool_call_made("shell")
+        assert llm._mock_call_history[0]["tool_calls"] == [
+            {
+                "name": "shell",
+                "args": {"command": "pwd"},
+                "id": "c1",
+                "type": "tool_call",
+            }
+        ]
+
 
 class TestProviderConfigLoader:
     """Provider config loading from multi-provider YAML — the original bug."""

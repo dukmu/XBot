@@ -458,7 +458,7 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 1. **No module-level state** — all caches, registries are constructor-injected objects
 2. **No ContextVar leakage** — `autouse` fixtures reset after each test
 3. **`temp_data_dir` only** — never real `data/sessions/`
-4. **MockLLM** — deterministic, configurable response sequences
+4. **MockLLM** — deterministic, configurable response sequences, with recorded request messages for context assertions
 5. **Each test creates its own engine** — no shared state between tests
 
 ## Implementation Phases

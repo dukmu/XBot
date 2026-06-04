@@ -56,6 +56,7 @@ tests/
 ## MockLLM
 
 ```python
+from langchain_core.messages import HumanMessage
 from xbotv2.llm.mock import MockLLM
 
 # Simple text responses
@@ -76,6 +77,10 @@ llm = MockLLM(responses=[
 
 # Verify tool calls
 assert llm.verify_tool_call_made("shell", min_count=1)
+
+# Verify request context passed to the provider
+llm.invoke([HumanMessage(content="check context")])
+assert [m.content for m in llm.get_call_messages(0)] == ["check context"]
 ```
 
 ## Running Tests

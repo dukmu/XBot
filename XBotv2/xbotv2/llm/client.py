@@ -106,16 +106,10 @@ def create_llm(provider_config: Any) -> BaseChatModel:
 
         return ChatAnthropic(**kwargs)
 
-    # Fallback: try OpenAI protocol
-    from langchain_openai import ChatOpenAI
-
-    kwargs = dict(model=model, temperature=temperature, max_tokens=max_tokens)
-    if base_url:
-        kwargs["base_url"] = base_url
-    if api_key:
-        kwargs["api_key"] = api_key
-
-    return ChatOpenAI(**kwargs)
+    raise ValueError(
+        f"Unsupported LLM provider {provider!r}. "
+        "Use one of: openai, deepseek, lmstudio-openai, anthropic, lmstudio, mock."
+    )
 
 
 # For testing: return a MockLLM

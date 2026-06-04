@@ -45,6 +45,13 @@ class MockLLM(BaseChatModel):
     ) -> ChatResult:
         response = self._next_response()
         msg = self._to_aimessage(response)
+        self._record_call(
+            messages=messages,
+            stop=stop,
+            kwargs=kwargs,
+            response=msg,
+            raw_response=response,
+        )
         return ChatResult(generations=[ChatGeneration(message=msg)])
 
     async def _agenerate(
@@ -69,6 +76,13 @@ class MockLLM(BaseChatModel):
     ) -> Any:
         response = self._next_response()
         msg = self._to_aimessage(response)
+        self._record_call(
+            messages=messages,
+            stop=stop,
+            kwargs=kwargs,
+            response=msg,
+            raw_response=response,
+        )
         for chunk in [msg]:
             yield chunk
 
@@ -145,13 +159,27 @@ class MockLLM(BaseChatModel):
         else:
             msg = AIMessage(content=content)
 
-        # Record call
-        self._mock_call_history.append({
-            "content": content,
-            "tool_calls": tool_calls or [],
-        })
-
         return msg
+
+    def _record_call(
+        self,
+        *,
+        messages: list[BaseMessage],
+        stop: list[str] | None,
+        kwargs: dict[str, Any],
+        response: AIMessage,
+        raw_response: dict[str, Any],
+    ) -> None:
+        """Record one provider call for assertions in tests."""
+        self._mock_call_history.append({
+            "messages": list(messages),
+            "stop": list(stop) if stop else None,
+            "kwargs": dict(kwargs),
+            "content": response.content,
+            "tool_calls": getattr(response, "tool_calls", []) or [],
+            "response": response,
+            "raw_response": dict(raw_response),
+        })
 
     @property
     def _llm_type(self) -> str:
