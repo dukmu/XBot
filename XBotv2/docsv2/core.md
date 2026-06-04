@@ -164,3 +164,5 @@ All significant state changes are recorded as append-only events:
 `state.yaml` status is rebuilt from ordered events. A new `turn_started`
 reactivates prior `error` or `interrupted` sessions, while `turn_finished`
 does not hide an interruption raised during the same turn.
+`session_closed` materializes `status: closed` and clears unresolved
+`pending_interactions`.

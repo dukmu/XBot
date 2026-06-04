@@ -27,7 +27,8 @@ session paths. Path-like or empty identifiers fail closed as bounded
 
 `shutdown` closes the active engine session before emitting `shutdown_ok`.
 That path runs `ON_SESSION_CLOSE`, appends `session_closed`, saves messages,
-and materializes `state.yaml` with `status: closed`.
+and materializes `state.yaml` with `status: closed` and no pending
+interactions.
 
 ## Interaction Semantics
 

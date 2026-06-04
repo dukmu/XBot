@@ -145,6 +145,8 @@ are the primary freeze gate.
   `shutdown_ok`, so JSONL/TUI exits run `ON_SESSION_CLOSE`, append
   `session_closed`, save messages, and materialize closed state like direct CLI
   exits.
+- `session_closed` now clears materialized `pending_interactions`, so a closed
+  session cannot continue to advertise stale user-input or permission requests.
 - `Engine.start_session()` now uses `CoreStateStore.has_existing_session()` so
   event-only sessions, such as a session that was opened and then closed before
   any user message, run `ON_SESSION_RESUME` instead of being misclassified as

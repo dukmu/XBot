@@ -320,6 +320,7 @@ turn_count: int
 event_count: int
 status: active | error | interrupted | closed
 mailbox_pending: int
+pending_interactions: list[dict]   # Rebuilt from user/permission request events; cleared on response or close
 plugin_states:          # Opaque — core never reads, only persists
   planning: {...}
   compact: {...}

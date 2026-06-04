@@ -160,7 +160,8 @@ All such concepts live in plugin-owned state namespaces.
 Status is derived from ordered events. `turn_started` reactivates a session
 after a prior `error` or `interrupted` status; `turn_finished` does not clear
 an interruption raised during the same turn. `session_closed` remains closed
-until a later explicit turn/session event reactivates the store.
+until a later explicit turn/session event reactivates the store and clears
+materialized `pending_interactions`.
 
 ## Hook Lifecycle
 

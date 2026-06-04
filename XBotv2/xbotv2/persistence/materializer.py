@@ -84,12 +84,15 @@ def _pending_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
             continue
 
+        if event_type == "session_closed":
+            pending.clear()
+            continue
+
         if event_type in {
             "user_input_response",
             "user_input_cancelled",
             "permission_response",
             "permission_denied",
-            "session_closed",
         } and request_id:
             pending.pop(str(request_id), None)
 

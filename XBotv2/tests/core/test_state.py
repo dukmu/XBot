@@ -272,6 +272,34 @@ class TestMaterialization:
         ]
         assert state["pending_interactions"][0]["type"] == "permission_request"
 
+    def test_session_closed_clears_pending_interactions(self):
+        """Closing a session clears unresolved user and permission requests."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {
+                    "event_id": 1,
+                    "type": "user_input_required",
+                    "payload": {"request_id": "user_input:c1"},
+                },
+                {
+                    "event_id": 2,
+                    "type": "permission_request",
+                    "payload": {"request_id": "permission:c2"},
+                },
+                {"event_id": 3, "type": "session_closed", "payload": {}},
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["status"] == "closed"
+        assert state["pending_interactions"] == []
+
 
 class TestPluginState:
     """Plugin state isolation."""
