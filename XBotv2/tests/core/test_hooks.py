@@ -242,18 +242,20 @@ class TestHookContext:
 # ------------------------------------------------------------------
 
 class TestAllStages:
-    """All 17 stages are defined and work."""
+    """All hook stages are defined and work."""
 
     def test_all_stages_exist(self):
-        """Verify all 17 HookStage values."""
+        """Verify all HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 17
+        assert len(stages) == 21
         stage_values = {s.value for s in stages}
 
         expected = {
             "on_session_init", "on_session_start", "on_session_resume", "on_session_close",
             "on_turn_start", "on_turn_end",
-            "before_context", "after_context", "before_agent", "after_agent",
+            "before_context", "after_context", "after_context_build",
+            "before_agent", "after_tool_schema_bind", "before_model_request",
+            "after_model_response", "after_agent",
             "before_tools", "after_tools",
             "on_user_message", "on_assistant_message", "on_tool_message",
             "on_error", "on_config_reload",
@@ -265,5 +267,7 @@ class TestAllStages:
         from xbotv2.hooks.types import SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_CONTEXT in SHORT_CIRCUIT_STAGES
         assert HookStage.AFTER_TOOLS in SHORT_CIRCUIT_STAGES
+        assert HookStage.BEFORE_MODEL_REQUEST in SHORT_CIRCUIT_STAGES
+        assert HookStage.AFTER_CONTEXT_BUILD not in SHORT_CIRCUIT_STAGES
         assert HookStage.ON_SESSION_START not in SHORT_CIRCUIT_STAGES
         assert HookStage.ON_ERROR not in SHORT_CIRCUIT_STAGES

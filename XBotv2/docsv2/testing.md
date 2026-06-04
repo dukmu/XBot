@@ -7,7 +7,7 @@ tests/
   conftest.py               # Shared fixtures: temp_data_dir, temp_workspace
   core/                     # Core tests (NO plugins loaded)
     conftest.py
-    test_hooks.py           # HookManager, all 17 stages
+    test_hooks.py           # HookManager, all 21 stages
     test_state.py           # CoreStateStore, materializer, events, plugin state
     test_context.py         # ContextBuilder, fragments, cache
     test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes

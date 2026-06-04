@@ -36,8 +36,9 @@ are the primary freeze gate.
   broken plugin configuration.
 - Root pytest configuration now includes `pythonpath = ["XBotv2", "."]`, so
   XBotv2 tests run from repository root without manual `PYTHONPATH`.
-- Documentation now uses the implemented 17 hook stages, not the stale 18-stage
-  wording.
+- Documentation now uses the implemented 21 hook stages, including the
+  provider-facing context/model request hooks needed for future token
+  estimation, statistics, and budget control plugins.
 - Engine turn failures now append an `error` event, run `ON_ERROR` hooks with
   the raised exception in `HookContext.error`, emit an `error` protocol event,
   and materialize error status.

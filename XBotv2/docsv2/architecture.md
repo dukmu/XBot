@@ -25,9 +25,11 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Pure linear execution — works without any plugins
 
 ### Hook System (`xbotv2/hooks/`)
-- **17 lifecycle stages**: session (4), turn (2), loop (6), message (3),
+- **21 lifecycle stages**: session (4), turn (2), loop/request (10), message (3),
   system events (2)
 - Loop hooks short-circuit on truthy return
+- Fine-grained model request hooks expose final context messages, bound tools,
+  provider request metadata, and provider response metadata for token plugins
 - Lifecycle hooks always run all callbacks
 - `ON_SESSION_INIT` hooks can register tools
 
@@ -116,7 +118,11 @@ All such concepts live in plugin-owned state namespaces.
 | ON_TURN_END | No | Turn complete |
 | BEFORE_CONTEXT | Yes | Before context assembly (compact) |
 | AFTER_CONTEXT | Yes | After context assembly |
+| AFTER_CONTEXT_BUILD | No | Final provider message list built |
 | BEFORE_AGENT | Yes | Before LLM call (skills injection) |
+| AFTER_TOOL_SCHEMA_BIND | No | Tools selected/bound for the provider request |
+| BEFORE_MODEL_REQUEST | Yes | Final gate before provider call; token budget plugins can short-circuit |
+| AFTER_MODEL_RESPONSE | No | Raw provider response received; usage plugins can collect metadata |
 | AFTER_AGENT | Yes | After LLM call |
 | BEFORE_TOOLS | Yes | Before tool execution (sandbox guard) |
 | AFTER_TOOLS | Yes | After tool execution; default hook may cache/truncate large results before persistence/protocol emit |

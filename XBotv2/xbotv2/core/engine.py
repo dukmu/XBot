@@ -203,6 +203,15 @@ class Engine:
                 sandbox_summary=self.sandbox_policy.describe() if self.sandbox_policy else "",
                 turn_count=self._turn_count,
             )
+            acb_ctx = self._make_hook_context(
+                HookStage.AFTER_CONTEXT_BUILD,
+                context_messages=context_messages,
+            )
+            await self.hook_manager.run(
+                HookStage.AFTER_CONTEXT_BUILD,
+                acb_ctx,
+                short_circuit=False,
+            )
 
             ac_ctx = self._make_hook_context(HookStage.AFTER_CONTEXT)
             await self.hook_manager.run(HookStage.AFTER_CONTEXT, ac_ctx, short_circuit=False)
@@ -224,6 +233,45 @@ class Engine:
                 llm_with_tools = self.llm.bind_tools(tools) if tools else self.llm
             except NotImplementedError:
                 llm_with_tools = self.llm
+            model_request = {
+                "messages": context_messages,
+                "tools": tools,
+                "llm": llm_with_tools,
+            }
+            schema_ctx = self._make_hook_context(
+                HookStage.AFTER_TOOL_SCHEMA_BIND,
+                context_messages=context_messages,
+                model_request=model_request,
+            )
+            await self.hook_manager.run(
+                HookStage.AFTER_TOOL_SCHEMA_BIND,
+                schema_ctx,
+                short_circuit=False,
+            )
+
+            request_ctx = self._make_hook_context(
+                HookStage.BEFORE_MODEL_REQUEST,
+                context_messages=context_messages,
+                model_request=model_request,
+            )
+            request_result = await self.hook_manager.run(
+                HookStage.BEFORE_MODEL_REQUEST,
+                request_ctx,
+                short_circuit=True,
+            )
+            if isinstance(request_result, dict):
+                if "messages" in request_result:
+                    model_request["messages"] = request_result["messages"]
+                if "tools" in request_result:
+                    model_request["tools"] = request_result["tools"]
+                if "event" in request_result:
+                    yield request_result["event"]
+                    turn_complete = bool(request_result.get("turn_complete", True))
+                    break
+
+            context_messages = model_request["messages"]
+            tools = model_request["tools"]
+            llm_with_tools = model_request["llm"]
             response = await llm_with_tools.ainvoke(context_messages)
             self._messages.append(response)
 
@@ -239,6 +287,19 @@ class Engine:
                 HookStage.ON_ASSISTANT_MESSAGE, agent_response=response
             )
             await self.hook_manager.run(HookStage.ON_ASSISTANT_MESSAGE, am_ctx, short_circuit=False)
+
+            response_ctx = self._make_hook_context(
+                HookStage.AFTER_MODEL_RESPONSE,
+                context_messages=context_messages,
+                agent_response=response,
+                model_request=model_request,
+                model_response=response,
+            )
+            await self.hook_manager.run(
+                HookStage.AFTER_MODEL_RESPONSE,
+                response_ctx,
+                short_circuit=False,
+            )
 
             # AFTER_AGENT hook
             aa_ctx = self._make_hook_context(HookStage.AFTER_AGENT, agent_response=response)
@@ -336,7 +397,10 @@ class Engine:
         stage: HookStage,
         *,
         user_input: str | None = None,
+        context_messages: list[Any] | None = None,
         agent_response: Any = None,
+        model_request: dict[str, Any] | None = None,
+        model_response: Any = None,
         tool_results: list[Any] | None = None,
         error: Exception | None = None,
     ) -> HookContext:
@@ -355,7 +419,10 @@ class Engine:
             ),
             emit=lambda e: self.state_store.append_event("hook_event", e),
             user_input=user_input,
+            context_messages=context_messages,
             agent_response=agent_response,
+            model_request=model_request,
+            model_response=model_response,
             tool_results=tool_results,
             error=error,
         )

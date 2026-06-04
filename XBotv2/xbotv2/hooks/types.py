@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 class HookStage(enum.Enum):
     """All hook lifecycle stages in XBotv2.
 
-    Loop hooks (BEFORE_CONTEXT through AFTER_TOOLS) short-circuit on truthy return.
+    Loop hooks and pre-request guard hooks short-circuit on truthy return.
     All other hooks run all registered callbacks regardless of return value.
     """
 
@@ -30,7 +30,11 @@ class HookStage(enum.Enum):
     # -- Loop lifecycle (short-circuit enabled) ---------------------------
     BEFORE_CONTEXT = "before_context"
     AFTER_CONTEXT = "after_context"
+    AFTER_CONTEXT_BUILD = "after_context_build"
     BEFORE_AGENT = "before_agent"
+    AFTER_TOOL_SCHEMA_BIND = "after_tool_schema_bind"
+    BEFORE_MODEL_REQUEST = "before_model_request"
+    AFTER_MODEL_RESPONSE = "after_model_response"
     AFTER_AGENT = "after_agent"
     BEFORE_TOOLS = "before_tools"
     AFTER_TOOLS = "after_tools"
@@ -49,6 +53,7 @@ class HookStage(enum.Enum):
 SHORT_CIRCUIT_STAGES = frozenset({
     HookStage.BEFORE_CONTEXT,
     HookStage.AFTER_CONTEXT,
+    HookStage.BEFORE_MODEL_REQUEST,
     HookStage.BEFORE_AGENT,
     HookStage.AFTER_AGENT,
     HookStage.BEFORE_TOOLS,
@@ -98,7 +103,10 @@ class HookContext:
 
     # Stage-specific data (populated by engine before hook execution)
     user_input: str | None = None
+    context_messages: list[Any] | None = None
     agent_response: Any | None = None
+    model_request: dict[str, Any] | None = None
+    model_response: Any | None = None
     tool_results: list[Any] | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None

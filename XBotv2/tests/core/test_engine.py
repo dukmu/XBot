@@ -209,6 +209,89 @@ class TestEngineHooks:
         # The messages should contain the hijacked response
         assert "Hijacked!" in str(engine.messages)
 
+    @pytest.mark.asyncio
+    async def test_model_request_hooks_receive_context_and_response(self, state_store, temp_workspace):
+        """Fine-grained model hooks see built context, tools, request, and response."""
+        llm = MockLLM(responses=[{"content": "Hello!"}])
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+        calls = []
+
+        async def after_context_build(ctx):
+            calls.append(("context", len(ctx.context_messages)))
+
+        async def after_tool_schema_bind(ctx):
+            calls.append(("tools", [tool.name for tool in ctx.model_request["tools"]]))
+
+        async def before_model_request(ctx):
+            calls.append(("request", len(ctx.model_request["messages"])))
+
+        async def after_model_response(ctx):
+            calls.append(("response", ctx.model_response.content))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.AFTER_CONTEXT_BUILD, after_context_build)
+        hook_manager.register(HookStage.AFTER_TOOL_SCHEMA_BIND, after_tool_schema_bind)
+        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, before_model_request)
+        hook_manager.register(HookStage.AFTER_MODEL_RESPONSE, after_model_response)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("test")]
+
+        assert events[-1]["type"] == "turn_finished"
+        assert calls[0][0] == "context"
+        assert calls[1] == ("tools", ["echo"])
+        assert calls[2][0] == "request"
+        assert calls[3] == ("response", "Hello!")
+
+    @pytest.mark.asyncio
+    async def test_before_model_request_can_short_circuit_turn(self, state_store, temp_workspace):
+        """Budget-style hooks can stop before the provider request."""
+        llm = MockLLM(responses=[{"content": "Should not be called"}])
+        registry = ToolRegistry()
+
+        async def deny_request(ctx):
+            return {
+                "event": {
+                    "type": "error",
+                    "data": {"code": "token_budget_exceeded", "message": "budget exceeded"},
+                },
+                "turn_complete": True,
+            }
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, deny_request)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("test")]
+
+        assert [event["type"] for event in events] == [
+            "turn_started",
+            "error",
+            "turn_finished",
+        ]
+        assert llm.call_count == 0
+
 
 class TestEngineState:
     """Engine state tracking."""
