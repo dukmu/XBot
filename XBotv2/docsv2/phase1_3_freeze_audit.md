@@ -39,6 +39,9 @@ are the primary freeze gate.
 - Documentation now uses the implemented 21 hook stages, including the
   provider-facing context/model request hooks needed for future token
   estimation, statistics, and budget control plugins.
+- Added `docsv2/token_budget_hooks.md` to record the current token-estimation
+  gap, the fine-grained hook stages worth adding next, and the evidence needed
+  before token budget control can be frozen.
 - Engine turn failures now append an `error` event, run `ON_ERROR` hooks with
   the raised exception in `HookContext.error`, emit an `error` protocol event,
   and materialize error status.
@@ -69,6 +72,10 @@ are the primary freeze gate.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.
+- Token estimation, token usage statistics, and token budget control are not
+  implemented modules yet. The current provider-facing hooks are enough for a
+  future plugin to observe and short-circuit requests, but source-level prompt
+  accounting still needs context component metadata and pre-bind tool hooks.
 - The subprocess tests cover direct server JSONL and non-curses terminal wrapper
   roundtrips. Curses screen-level behavior is covered only by state/queue/import
   smoke tests, not by an interactive terminal golden test.

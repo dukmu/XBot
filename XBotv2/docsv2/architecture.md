@@ -30,6 +30,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Loop hooks short-circuit on truthy return
 - Fine-grained model request hooks expose final context messages, bound tools,
   provider request metadata, and provider response metadata for token plugins
+- Source-level token accounting is planned as a plugin concern; the current
+  freeze surface is documented in `docsv2/token_budget_hooks.md`
 - Lifecycle hooks always run all callbacks
 - `ON_SESSION_INIT` hooks can register tools
 

@@ -106,3 +106,14 @@ uv run pytest XBotv2/tests/core/ -v
 # Run a single test
 uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_text_response -v
 ```
+
+## Planned Token Budget Tests
+
+`docsv2/token_budget_hooks.md` defines the evidence required before token
+estimation and budget control are frozen. The important future checks are:
+
+- context component metadata preserves source, plugin owner, and render order
+- tool-schema filtering happens before provider binding
+- provider request failures trigger a provider-specific hook plus `ON_ERROR`
+- observe-only token stats persist source breakdowns without changing behavior
+- hard budget failures short-circuit before any provider call
