@@ -38,6 +38,9 @@ are the primary freeze gate.
   XBotv2 tests run from repository root without manual `PYTHONPATH`.
 - Documentation now uses the implemented 17 hook stages, not the stale 18-stage
   wording.
+- Engine turn failures now append an `error` event, run `ON_ERROR` hooks with
+  the raised exception in `HookContext.error`, emit an `error` protocol event,
+  and materialize error status.
 - `CoreStateStore.materialize()` now delegates derived state construction to
   the planned `persistence.materializer` module, and core tests cover that pure
   function directly.

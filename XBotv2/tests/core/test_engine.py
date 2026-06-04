@@ -261,3 +261,43 @@ class TestEngineState:
 
         assert "on_session_start" in calls
         assert "on_session_close" in calls
+
+    @pytest.mark.asyncio
+    async def test_close_session_materializes_closed_status(self, state_store, temp_workspace):
+        """Session close persists the closed materialized state."""
+        llm = MockLLM(responses=[])
+        registry = ToolRegistry()
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        await engine.close_session()
+
+        assert state_store.read_state()["status"] == "closed"
+
+    @pytest.mark.asyncio
+    async def test_on_error_hook_runs_when_turn_fails(self, state_store, temp_workspace):
+        """Engine emits ON_ERROR and an error event when turn execution fails."""
+        llm = MockLLM(responses=[])
+        registry = ToolRegistry()
+        calls = []
+
+        async def on_error(ctx):
+            calls.append((ctx.stage, type(ctx.error).__name__, ctx.user_input))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.ON_ERROR, on_error)
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("will fail")]
+
+        assert events[-1]["type"] == "error"
+        assert calls == [(HookStage.ON_ERROR, "RuntimeError", "will fail")]
+        assert state_store.read_state()["status"] == "error"

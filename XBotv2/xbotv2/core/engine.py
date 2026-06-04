@@ -115,21 +115,45 @@ class Engine:
     async def close_session(self) -> None:
         """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
         self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
+        ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
+        await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
         self._save_messages()
-        ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
-        await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
-
-    async def close_session(self) -> None:
-        """Execute ON_SESSION_CLOSE hooks."""
-        self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
-        ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
-        await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
 
     # ------------------------------------------------------------------
     # Turn execution
     # ------------------------------------------------------------------
 
     async def run_turn(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """Execute one user turn and emit ON_ERROR on failures."""
+        try:
+            async for event in self._run_turn_impl(user_input):
+                yield event
+        except Exception as exc:
+            logger.exception("Turn failed")
+            self.state_store.append_event(
+                "error",
+                {
+                    "turn": self._turn_count,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+            ctx = self._make_hook_context(
+                HookStage.ON_ERROR,
+                user_input=user_input,
+                error=exc,
+            )
+            await self.hook_manager.run(HookStage.ON_ERROR, ctx, short_circuit=False)
+            self._save_messages()
+            yield {
+                "type": "error",
+                "data": {
+                    "code": type(exc).__name__,
+                    "message": str(exc),
+                },
+            }
+
+    async def _run_turn_impl(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
