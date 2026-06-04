@@ -67,14 +67,19 @@ class RuntimeServer:
             if not line:
                 break
 
-            line = line.decode("utf-8").strip()
-            if not line:
-                continue
-
             try:
+                line = line.decode("utf-8").strip()
+                if not line:
+                    continue
                 frame = frame_from_json(line)
             except Exception as exc:
                 logger.error("Failed to parse frame: %s", exc)
+                response = self._make_frame("error", {
+                    "code": "invalid_frame",
+                    "message": f"Invalid protocol frame: {exc}",
+                })
+                writer.write(response.to_json_line().encode("utf-8"))
+                await writer.drain()
                 continue
 
             response = await self._dispatch(frame, writer)
@@ -167,7 +172,10 @@ class RuntimeServer:
 
         content = frame.payload.get("content", "")
         if not content.strip():
-            return None
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": "user.message payload.content must be non-empty.",
+            }, frame.request_id)
 
         encoder = self._encoder
 

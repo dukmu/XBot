@@ -307,6 +307,108 @@ class TestRuntimeServerSubprocess:
     """End-to-end JSONL stdio server roundtrip."""
 
     @pytest.mark.asyncio
+    async def test_server_returns_error_for_malformed_json_and_continues(self, tmp_path):
+        data_dir = _write_mock_data_dir(tmp_path)
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            proc.stdin.write(b"{not-json}\n")
+            await proc.stdin.drain()
+            error = await _read_frame(proc)
+            assert error.type == "error"
+            assert error.payload["code"] == "invalid_frame"
+
+            await _send_frame(
+                proc,
+                "hello",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-after-invalid",
+            )
+            hello = await _read_frame(proc)
+            assert hello.type == "hello_ok"
+            assert hello.request_id == "req-after-invalid"
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
+    async def test_server_returns_error_for_empty_user_message(self, tmp_path):
+        data_dir = _write_mock_data_dir(tmp_path)
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _send_frame(
+                proc,
+                "hello",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-hello",
+            )
+            assert (await _read_frame(proc)).type == "hello_ok"
+
+            await _send_frame(
+                proc,
+                "session.open",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-open",
+            )
+            assert (await _read_frame(proc)).type == "session_ready"
+
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-sub",
+                thread_id="t-sub",
+                request_id="req-empty",
+                payload={"content": "  "},
+            )
+            error = await _read_frame(proc)
+            assert error.type == "error"
+            assert error.request_id == "req-empty"
+            assert error.payload["code"] == "invalid_request"
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
     async def test_server_subprocess_roundtrip_with_mock_provider(self, tmp_path):
         data_dir = _write_mock_data_dir(tmp_path)
         env = {
@@ -394,13 +496,7 @@ class TestRuntimeServerSubprocess:
             assert shutdown.type == "shutdown_ok"
             assert shutdown.request_id == "req-shutdown"
         finally:
-            if proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+            await _stop_process(proc)
 
 
 class TestTerminalSessionSubprocess:
@@ -486,6 +582,16 @@ async def _read_frame(proc) -> ProtocolFrame:
         stderr = await proc.stderr.read()
         raise AssertionError(f"Server exited before frame. stderr={stderr.decode('utf-8')}")
     return frame_from_json(line.decode("utf-8"))
+
+
+async def _stop_process(proc) -> None:
+    if proc.returncode is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
 
 
 def _subprocess_pythonpath() -> str:

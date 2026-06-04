@@ -56,6 +56,9 @@ are the primary freeze gate.
 - Protocol encoder/server responses now preserve the client `request_id` in
   the frame envelope for command acknowledgements and all turn event frames,
   so TUI and external clients can correlate streamed responses.
+- Protocol server input validation now returns bounded `error` frames for
+  malformed JSON and empty `user.message` payloads instead of silently logging
+  or leaving clients waiting.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.
