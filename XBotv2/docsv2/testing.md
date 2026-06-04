@@ -13,7 +13,7 @@ tests/
     test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
     test_tool_registry.py   # ToolRegistry, filtering
     test_tool_runtime_cache.py  # Sandbox path resolution, permission events, tool-result cache hook
-    test_sandbox.py         # SandboxPolicy
+    test_sandbox.py         # SandboxPolicy, transient one-call approvals
     test_permissions.py     # PermissionSystem
     test_engine.py          # Engine ReAct loop
     test_bootstrap.py       # Bootstrap sequence

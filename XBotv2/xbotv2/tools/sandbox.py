@@ -110,6 +110,8 @@ class SandboxPolicy:
             if access == "deny":
                 return False, f"Path denied: {resolved}"
             if access == "ask":
+                if self._consume_one_call_approval(resolved, tool_name):
+                    continue
                 return (
                     False,
                     "Path approval required. A permission.response can record "
@@ -142,7 +144,7 @@ class SandboxPolicy:
 
     def approve_once(self, path: str, operation: str) -> None:
         """Grant one-call approval for *path* + *operation*."""
-        self._one_call_approvals.add((str(path), operation))
+        self._one_call_approvals.add((str(Path(path).resolve()), operation))
 
     def clear_one_call_approvals(self) -> None:
         """Clear all one-call approvals (after tool execution)."""
@@ -199,3 +201,10 @@ class SandboxPolicy:
             if rule.matches(resolved):
                 return rule.access
         return "deny"  # Default-deny for sandboxed execution
+
+    def _consume_one_call_approval(self, resolved: str, operation: str) -> bool:
+        approval = (str(Path(resolved).resolve()), operation)
+        if approval not in self._one_call_approvals:
+            return False
+        self._one_call_approvals.remove(approval)
+        return True

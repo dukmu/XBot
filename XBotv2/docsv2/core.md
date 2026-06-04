@@ -40,6 +40,10 @@ not replay the denied tool call yet. Denials emit `permission_denied`. Both
 decisions also pass through dedicated permission hooks and the generic
 `ON_CLIENT_EVENT` hook before they are streamed to clients.
 
+Sandbox one-call approvals are real transient grants: a matching
+path/tool-name approval consumes itself during sandbox `ask` evaluation and
+does not authorize a second call.
+
 The previous placeholder `ask` tool is intentionally not registered in core.
 Core now exposes two event-driven interaction tools instead:
 

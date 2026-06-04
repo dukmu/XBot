@@ -205,11 +205,35 @@ class TestPathResolution:
 class TestOneCallApprovals:
     """Transient path approvals."""
 
-    def test_approve_once(self, temp_workspace):
-        """One-call approval is tracked."""
-        policy = SandboxPolicy(workspace_root=str(temp_workspace))
-        policy.approve_once("/some/path", "read")
-        assert ("/some/path", "read") in policy._one_call_approvals
+    def test_approve_once_allows_matching_ask_path_once(self, temp_workspace):
+        """One-call approval allows one matching sandbox ask decision."""
+        ws = Path(temp_workspace)
+        gated = ws / "gated"
+        gated.mkdir()
+        target = gated / "file.txt"
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "resources": [
+                    {"path": str(gated), "access": "ask"},
+                ],
+            },
+            workspace_root=str(ws),
+        )
+
+        policy.approve_once(str(target), "filesystem_read")
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_read", {"path": str(target)}, "sandboxed"
+        )
+        assert allowed is True
+        assert reason == ""
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_read", {"path": str(target)}, "sandboxed"
+        )
+        assert allowed is False
+        assert "Path approval required" in reason
 
     def test_clear_one_call_approvals(self, temp_workspace):
         """Clear removes all approvals."""

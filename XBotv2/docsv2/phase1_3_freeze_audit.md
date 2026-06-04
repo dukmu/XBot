@@ -39,6 +39,8 @@ are the primary freeze gate.
   `permission_request` events and fail closed until approved tool-call replay
   exists; they are no longer treated as implicit allow. Response commands can
   record the decision. Denials emit `permission_denied`.
+- Sandbox one-call approvals now participate in guard evaluation and are
+  consumed after one matching path/tool call instead of being inert bookkeeping.
 - Added a default `AFTER_TOOLS` hook that caches oversized tool results under
   `state/artifacts/tool_results/` and replaces inline results with a bounded
   preview before history persistence and JSONL emission. Cache metadata is

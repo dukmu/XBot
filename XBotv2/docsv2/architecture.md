@@ -62,6 +62,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Registry introspection distinguishes visible names from all registered names
   so plugin unload tracking is not affected by restrictions
 - `SandboxPolicy` for resource access control
+  - one-call approvals are consumed by matching sandbox `ask` rules and expire
+    after one tool guard pass
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;
   ask currently fails closed after recording a correlated pending request
