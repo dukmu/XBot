@@ -421,12 +421,35 @@ def _permission_client_event(
     return {
         "type": event_type,
         "data": {
+            "request_id": f"permission:{tool_call.get('id', '')}",
+            "source": "permission_system",
             "tool_call": tool_call,
             "decision": decision,
             "reason": reason,
             "resume_supported": False,
         },
     }
+
+
+def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[str, Any]:
+    """Attach stable request metadata to tool-originated client events."""
+    if not isinstance(event, dict):
+        return event
+    normalized = dict(event)
+    data = dict(normalized.get("data") or {})
+    event_type = normalized.get("type", "client_event")
+
+    if event_type == "user_input_required":
+        if not data.get("request_id") or data.get("request_id") == "user_input":
+            data["request_id"] = f"user_input:{tool_call_id}"
+        data.setdefault("source", "ask_user")
+        data.setdefault("tool_call_id", tool_call_id)
+    elif event_type == "client_message":
+        data.setdefault("source", "send_message")
+        data.setdefault("tool_call_id", tool_call_id)
+
+    normalized["data"] = data
+    return normalized
 
 
 async def _run_tool_hook(
@@ -456,7 +479,10 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> ToolMessage:
     if isinstance(value, dict):
         additional_kwargs = {}
         if "events" in value:
-            additional_kwargs["xbotv2_events"] = value["events"]
+            additional_kwargs["xbotv2_events"] = [
+                _normalize_client_event(event, tool_call_id)
+                for event in value["events"]
+            ]
         if value.get("turn_complete") is not None:
             additional_kwargs["xbotv2_turn_complete"] = bool(value["turn_complete"])
         return ToolMessage(

@@ -44,6 +44,7 @@ def build_materialized_state(
     sent = sum(1 for e in events if e.get("type") == "mailbox_send")
     acked = sum(1 for e in events if e.get("type") == "mailbox_acknowledge")
     mailbox_pending = max(0, sent - acked)
+    pending_interactions = _pending_interactions(events)
 
     return {
         "schema_version": schema_version,
@@ -55,7 +56,41 @@ def build_materialized_state(
         "message_count": message_count,
         "status": status,
         "mailbox_pending": mailbox_pending,
+        "pending_interactions": pending_interactions,
         "plugin_states": plugin_states,
         "artifacts_root": artifacts_root,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _pending_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pending: dict[str, dict[str, Any]] = {}
+    for event in events:
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+        request_id = payload.get("request_id")
+
+        if event_type in {"user_input_required", "interrupted", "permission_request"}:
+            if not request_id:
+                request_id = f"{event_type}:{event.get('event_id', '')}"
+            pending_type = "user_input_required" if event_type == "interrupted" else event_type
+            pending[str(request_id)] = {
+                "request_id": str(request_id),
+                "type": pending_type,
+                "source": payload.get("source", ""),
+                "payload": payload,
+                "event_id": event.get("event_id"),
+                "ts": event.get("ts", ""),
+            }
+            continue
+
+        if event_type in {
+            "user_input_response",
+            "user_input_cancelled",
+            "permission_response",
+            "permission_denied",
+            "session_closed",
+        } and request_id:
+            pending.pop(str(request_id), None)
+
+    return list(pending.values())

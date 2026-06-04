@@ -666,6 +666,8 @@ class TestRuntimeServerSubprocess:
             question = next(frame for frame in frames if frame.type == "user_input_required")
             assert notice.payload["message"] == "heads up"
             assert question.payload["question"] == "Proceed?"
+            assert question.payload["request_id"] == "user_input:call_ask"
+            assert question.payload["source"] == "ask_user"
             assert question.payload["resume_supported"] is False
         finally:
             await _stop_process(proc)

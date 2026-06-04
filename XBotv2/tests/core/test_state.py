@@ -128,6 +128,7 @@ class TestMaterialization:
         assert state["message_count"] == 3
         assert state["status"] == "error"
         assert state["mailbox_pending"] == 1
+        assert state["pending_interactions"] == []
         assert state["plugin_states"] == {"plugin_a": {"enabled": True}}
 
     def test_materialize_reflects_events(self, temp_data_dir):
@@ -229,6 +230,47 @@ class TestMaterialization:
 
         store.append_event("mailbox_acknowledge", {})
         assert store.materialize()["mailbox_pending"] == 1
+
+    def test_pending_interactions_from_events(self):
+        """Interaction requests remain pending until a matching response event."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {
+                    "event_id": 1,
+                    "type": "user_input_required",
+                    "payload": {
+                        "request_id": "user_input:c1",
+                        "source": "ask_user",
+                        "question": "Proceed?",
+                    },
+                },
+                {
+                    "event_id": 2,
+                    "type": "permission_request",
+                    "payload": {
+                        "request_id": "permission:c2",
+                        "source": "permission_system",
+                    },
+                },
+                {
+                    "event_id": 3,
+                    "type": "user_input_response",
+                    "payload": {"request_id": "user_input:c1", "answer": "yes"},
+                },
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert [item["request_id"] for item in state["pending_interactions"]] == [
+            "permission:c2"
+        ]
+        assert state["pending_interactions"][0]["type"] == "permission_request"
 
 
 class TestPluginState:

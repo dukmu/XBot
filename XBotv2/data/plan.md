@@ -431,6 +431,8 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 - interaction events (`client_message`, `permission_request`,
   `permission_denied`, `user_input_required`) stream through JSONL with request
   correlation and are rendered by TUI state
+- unresolved `permission_request` and `user_input_required` events are
+  materialized as `pending_interactions` in `state.yaml`
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
 - `CursesTuiClient` — background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop

@@ -33,9 +33,10 @@ dot, underscore, and dash before any session paths are created.
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
 the `ask` decision currently emits a `permission_request` event and fails
 closed during tool execution because the JSONL/TUI interrupt-resume approval
-flow is not implemented yet. Denials emit `permission_denied`. Both decisions
-also pass through dedicated permission hooks and the generic `ON_CLIENT_EVENT`
-hook before they are streamed to clients.
+flow is not implemented yet. Request events include a stable
+`permission:<tool_call_id>` request id. Denials emit `permission_denied`. Both
+decisions also pass through dedicated permission hooks and the generic
+`ON_CLIENT_EVENT` hook before they are streamed to clients.
 
 The previous placeholder `ask` tool is intentionally not registered in core.
 Core now exposes two event-driven interaction tools instead:
@@ -44,11 +45,14 @@ Core now exposes two event-driven interaction tools instead:
   current ReAct turn continue.
 - `ask_user`: emits `user_input_required`, appends an `interrupted` event, and
   stops the current turn. Resuming from the answer is still a protocol/TUI
-  feature gap.
+  feature gap. Runtime-normalized events include a stable
+  `user_input:<tool_call_id>` request id.
 
 All client-directed interaction events pass through `ON_CLIENT_EVENT` before
 persistence and protocol emission, so plugins can audit or meter them without
 depending on tool-result internals.
+Materialized state exposes unresolved `pending_interactions` derived from the
+append-only event log.
 
 ## Built-in Filesystem Tools
 

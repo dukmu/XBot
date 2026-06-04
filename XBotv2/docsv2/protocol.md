@@ -33,12 +33,17 @@ and materializes `state.yaml` with `status: closed`.
 - `send_message` emits `client_message` and does not stop the current turn.
 - `ask_user` emits `user_input_required`, appends an `interrupted` state event,
   and stops the current turn. Resume is not implemented yet, so the payload
-  includes `resume_supported: false`.
+  includes `resume_supported: false`. The event carries a stable
+  `request_id` (`user_input:<tool_call_id>`), `source`, and `tool_call_id` so a
+  future reply protocol can correlate the answer.
 - A later `turn_started` reactivates the materialized session status after an
   interruption or error; `turn_finished` does not clear an interruption raised
   during that same turn.
 - Permission and sandbox ask decisions emit `permission_request` and fail
-  closed. Denials emit `permission_denied`.
+  closed. Request events carry `request_id` (`permission:<tool_call_id>`) and
+  `source`; denials emit `permission_denied`.
+- `state.yaml` materializes unresolved interaction requests as
+  `pending_interactions`, rebuilt from the append-only event log.
 - Before client-directed events are persisted and streamed, core runs the
   generic `ON_CLIENT_EVENT` hook so plugins can audit, meter, or mirror
   interaction traffic.

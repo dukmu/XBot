@@ -43,6 +43,8 @@ def ask_user(question: str, options: list[str] | None = None) -> dict:
             {
                 "type": "user_input_required",
                 "data": {
+                    "request_id": "user_input",
+                    "source": "ask_user",
                     "question": question,
                     "options": options or [],
                     "resume_supported": False,

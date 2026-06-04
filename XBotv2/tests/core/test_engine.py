@@ -838,7 +838,10 @@ class TestEngineHooks:
         events = [e async for e in engine.run_turn("notify")]
 
         assert [e["type"] for e in events].count("assistant_message") == 2
-        assert {"type": "client_message", "data": {"message": "heads up"}} in events
+        notice = next(e for e in events if e["type"] == "client_message")
+        assert notice["data"]["message"] == "heads up"
+        assert notice["data"]["source"] == "send_message"
+        assert notice["data"]["tool_call_id"] == "c1"
 
     @pytest.mark.asyncio
     async def test_ask_user_event_interrupts_turn(self, state_store, temp_workspace):
@@ -856,9 +859,14 @@ class TestEngineHooks:
 
         events = [e async for e in engine.run_turn("ask")]
 
-        assert any(e["type"] == "user_input_required" for e in events)
+        input_event = next(e for e in events if e["type"] == "user_input_required")
+        assert input_event["data"]["request_id"] == "user_input:c1"
+        assert input_event["data"]["source"] == "ask_user"
+        assert input_event["data"]["tool_call_id"] == "c1"
         assert llm.call_count == 1
-        assert state_store.read_state()["status"] == "interrupted"
+        state = state_store.read_state()
+        assert state["status"] == "interrupted"
+        assert state["pending_interactions"][0]["request_id"] == "user_input:c1"
 
     @pytest.mark.asyncio
     async def test_client_event_hook_observes_interaction_events(self, state_store, temp_workspace):
@@ -946,7 +954,10 @@ class TestEngineHooks:
 
         permission_event = next(e for e in events if e["type"] == "permission_request")
         assert permission_event["data"]["tool_call"]["name"] == "echo"
+        assert permission_event["data"]["request_id"] == "permission:c1"
+        assert permission_event["data"]["source"] == "permission_system"
         assert permission_event["data"]["resume_supported"] is False
+        assert state_store.read_state()["pending_interactions"][0]["request_id"] == "permission:c1"
 
     @pytest.mark.asyncio
     async def test_client_event_hook_observes_permission_request(self, state_store, temp_workspace):
