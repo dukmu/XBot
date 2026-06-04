@@ -273,7 +273,7 @@ class PluginBase(ABC):
 ### PluginLoader (`xbotv2/plugin/loader.py`)
 
 ```
-discover() → resolve_order() → load() → register_all()
+discover() → resolve_order() → load() → register_all() → unload()/unload_all()
 ```
 
 1. Scan `builtin_plugins/` and config-specified dirs for `plugin.yaml`
@@ -281,6 +281,7 @@ discover() → resolve_order() → load() → register_all()
 3. Import plugin classes, instantiate with PluginStore
 4. Call `on_load()` on each
 5. Register hooks, tools, and prompt fragments with core components
+6. On unload, call `on_unload()` and remove recorded hooks, tools, prompt fragments, and temporary import paths
 
 ### PluginStore (`xbotv2/plugin/store.py`)
 

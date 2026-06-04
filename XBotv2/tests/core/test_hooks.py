@@ -74,6 +74,19 @@ class TestHookRegistration:
         assert hook_manager.count(HookStage.BEFORE_AGENT) == 0
         assert hook_manager.count(HookStage.AFTER_AGENT) == 1
 
+    def test_unregister_hook_removes_one_registration(self, hook_manager):
+        """A specific hook registration can be removed."""
+        async def hook(ctx):
+            pass
+
+        hook_manager.register(HookStage.BEFORE_AGENT, hook)
+        hook_manager.register(HookStage.BEFORE_AGENT, hook)
+
+        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
+        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
+        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
+        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is False
+
     def test_clear_all(self, hook_manager):
         """Clear all hooks."""
         async def hook(ctx):

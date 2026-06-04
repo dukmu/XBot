@@ -55,6 +55,19 @@ class HookManager:
         else:
             self._hooks.clear()
 
+    def unregister(self, stage: HookStage | str, fn: HookFn) -> bool:
+        """Remove one registered hook function from *stage*.
+
+        Returns ``True`` if a hook was removed.
+        """
+        stage = self._normalize_stage(stage)
+        hooks = self._hooks.get(stage, [])
+        for index in range(len(hooks) - 1, -1, -1):
+            if hooks[index] is fn:
+                del hooks[index]
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------

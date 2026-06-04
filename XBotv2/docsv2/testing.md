@@ -17,7 +17,7 @@ tests/
     test_permissions.py     # PermissionSystem
     test_engine.py          # Engine ReAct loop
     test_bootstrap.py       # Bootstrap sequence
-    test_plugin_loader.py   # PluginLoader discovery, deps, manifest fragments
+    test_plugin_loader.py   # PluginLoader discovery, deps, manifest fragments, unload cleanup
     test_protocol.py        # Protocol frames, provider config, subprocess server, interaction events, and terminal wrapper roundtrips
     test_tui_client.py      # Curses TUI state, interaction rendering, queue drain, and runtime import boundary
   plugins/                  # Per-plugin tests (loads only that plugin)

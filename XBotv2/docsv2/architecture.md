@@ -42,12 +42,16 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   documented in `docsv2/token_budget_hooks.md`
 - Lifecycle hooks always run all callbacks
 - `ON_SESSION_INIT` hooks can register tools
+- Hook callbacks can be unregistered by exact stage/function identity, which is
+  used by plugin unload.
 
 ### Plugin System (`xbotv2/plugin/`)
 - Plugins declared via `plugin.yaml` manifest
 - Each plugin gets isolated `PluginStore` (opaque to core)
 - Dependency resolution via topological sort
 - Plugins register: hooks, tools, prompt fragments
+- `PluginLoader.unload()` calls `on_unload()` and removes recorded hooks,
+  tools, prompt fragments, and temporary import paths.
 
 ### Tool System (`xbotv2/tools/`)
 - `ToolRegistry` with sandbox/execution metadata
@@ -57,7 +61,7 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Permission ask/deny decisions emit protocol-visible events and hook events;
   ask currently fails closed until resume is implemented
 - Default `AFTER_TOOLS` hook caches oversized tool results under session artifacts
-- Plugin ownership tracking for unload/reload
+- Plugin ownership tracking plus explicit unregister for unload/reload
 
 ### Persistence (`xbotv2/persistence/`)
 - Append-only `events.jsonl` — source of truth

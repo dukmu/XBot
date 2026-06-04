@@ -98,6 +98,15 @@ class ToolRegistry:
             del self._entries[name]
         return removed
 
+    def unregister(self, name: str) -> bool:
+        """Remove one registered tool by name."""
+        if name not in self._entries:
+            return False
+        del self._entries[name]
+        if self._enabled_names is not None:
+            self._enabled_names.discard(name)
+        return True
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------

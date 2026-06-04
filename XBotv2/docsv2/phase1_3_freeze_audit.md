@@ -36,6 +36,13 @@ are the primary freeze gate.
 - Plugin discovery/loading now lives in `xbotv2.plugin.loader.PluginLoader`
   instead of being hidden inside bootstrap, and core tests cover direct loader
   discovery plus prompt fragment registration.
+- Plugin unloading now has a real cleanup path: `PluginLoader.unload()` calls
+  `on_unload()`, unregisters recorded hooks, tools, and prompt fragments, and
+  releases temporary import paths when no plugins remain loaded.
+- Plugin import setup now keeps external plugin roots importable while loaded
+  and drops stale `sys.modules` entries when the same plugin name is loaded
+  from a different directory, avoiding handler-resolution bugs during tests or
+  future reload flows.
 - Manifest-only plugin hook/tool handlers and prompt fragment files now fail
   loudly when a declaration cannot be resolved instead of silently skipping
   broken plugin configuration.

@@ -93,6 +93,17 @@ class TestRegistration:
         removed = tool_registry.unregister_plugin_tools("nonexistent")
         assert removed == []
 
+    def test_unregister_single_tool(self, tool_registry):
+        """A single tool can be unregistered by name."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+        tool_registry.restrict(["tool_a", "tool_b"])
+
+        assert tool_registry.unregister("tool_a") is True
+        assert tool_registry.unregister("tool_a") is False
+        assert not tool_registry.registered("tool_a")
+        assert tool_registry.names() == ["tool_b"]
+
 
 class TestFiltering:
     """Tool filtering and wildcard expansion."""

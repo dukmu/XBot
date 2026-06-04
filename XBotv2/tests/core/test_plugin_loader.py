@@ -264,3 +264,163 @@ class TestPluginLoader:
         assert [manifest.name for manifest, _ in manifests] == ["simple"]
         assert len(plugins) == 1
         assert "Loader instructions" in context_builder._fragments["system_instructions"]["simple"]
+
+    @pytest.mark.asyncio
+    async def test_loader_unloads_manifest_plugin_resources(self, tmp_path, monkeypatch):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "simple"
+        prompts_dir = plugin_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("")
+        (plugin_dir / "hooks.py").write_text(
+            """
+async def on_turn_start(ctx):
+    ctx.emit({"hook": "called"})
+"""
+        )
+        (plugin_dir / "tools.py").write_text(
+            """
+from langchain_core.tools import tool
+
+@tool
+def plugin_tool() -> str:
+    \"\"\"Plugin tool.\"\"\"
+    return "ok"
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "simple",
+                "version": "1.0.0",
+                "hooks": [
+                    {"stage": "on_turn_start", "handler": "simple.hooks:on_turn_start"},
+                ],
+                "tools": [
+                    {"handler": "simple.tools:plugin_tool"},
+                ],
+                "prompt_fragments": [
+                    {"stage": "system_instructions", "file": "prompts/instructions.md"},
+                ],
+            })
+        )
+        (prompts_dir / "instructions.md").write_text("Loader instructions\n")
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        hook_manager = HookManager()
+        tool_registry = ToolRegistry()
+        context_builder = ContextBuilder()
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=hook_manager,
+            tool_registry=tool_registry,
+            context_builder=context_builder,
+        )
+
+        await loader.load()
+        assert hook_manager.count("on_turn_start") == 1
+        assert tool_registry.registered("plugin_tool")
+        assert "simple" in context_builder._fragments["system_instructions"]
+
+        assert await loader.unload("simple") is True
+        assert await loader.unload("simple") is False
+        assert hook_manager.count("on_turn_start") == 0
+        assert not tool_registry.registered("plugin_tool")
+        assert "simple" not in context_builder._fragments["system_instructions"]
+        assert loader.loaded_plugins == []
+
+    @pytest.mark.asyncio
+    async def test_loader_calls_plugin_on_unload(self, tmp_path, monkeypatch):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "classy"
+        plugin_dir.mkdir(parents=True)
+        unload_marker = tmp_path / "unloaded.txt"
+        (plugin_dir / "__init__.py").write_text(
+            f"""
+from xbotv2.plugin.base import PluginBase
+
+class ClassyPlugin(PluginBase):
+    async def on_load(self, config):
+        self._config = config
+
+    async def on_unload(self):
+        with open({str(unload_marker)!r}, "w", encoding="utf-8") as fh:
+            fh.write("unloaded")
+"""
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "classy", "version": "1.0.0"})
+        )
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=HookManager(),
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+        )
+
+        await loader.load()
+        assert await loader.unload("classy") is True
+
+        assert unload_marker.read_text(encoding="utf-8") == "unloaded"
+
+    @pytest.mark.asyncio
+    async def test_loader_unload_all_uses_reverse_load_order(self, tmp_path, monkeypatch):
+        plugins_root = tmp_path / "plugins"
+        order_file = tmp_path / "order.txt"
+        for name in ("first", "second"):
+            plugin_dir = plugins_root / name
+            plugin_dir.mkdir(parents=True)
+            class_name = f"{name.title()}Plugin"
+            (plugin_dir / "__init__.py").write_text(
+                f"""
+from xbotv2.plugin.base import PluginBase
+
+class {class_name}(PluginBase):
+    async def on_load(self, config):
+        pass
+
+    async def on_unload(self):
+        with open({str(order_file)!r}, "a", encoding="utf-8") as fh:
+            fh.write({name!r} + "\\n")
+"""
+            )
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.safe_dump({"name": name, "version": "1.0.0"})
+            )
+        monkeypatch.syspath_prepend(str(plugins_root))
+
+        state_store = CoreStateStore.create(
+            tmp_path / "state",
+            session_id="s",
+            thread_id="t",
+            personality_id="default",
+        )
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=HookManager(),
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+        )
+
+        await loader.load()
+        unloaded = await loader.unload_all()
+
+        assert unloaded == ["second", "first"]
+        assert order_file.read_text(encoding="utf-8").splitlines() == ["second", "first"]
+        assert loader.loaded_plugins == []

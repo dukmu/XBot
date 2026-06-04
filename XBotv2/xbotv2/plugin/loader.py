@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,16 @@ from xbotv2.plugin.base import PluginBase
 from xbotv2.plugin.manifest import PluginManifest
 from xbotv2.plugin.store import PluginStore
 from xbotv2.tools.registry import ToolRegistry
+
+
+@dataclass
+class LoadedPluginRecord:
+    """Runtime resources registered by one plugin."""
+
+    plugin: Any
+    hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
+    tool_names: list[str] = field(default_factory=list)
+    fragment_stages: list[str] = field(default_factory=list)
 
 
 class PluginLoader:
@@ -39,6 +50,8 @@ class PluginLoader:
         self.context_builder = context_builder
         self.plugin_configs = plugin_configs or {}
         self.loaded_plugins: list[Any] = []
+        self._records: dict[str, LoadedPluginRecord] = {}
+        self._import_paths: list[str] = []
 
     def discover(self) -> list[tuple[PluginManifest, Path]]:
         """Scan plugin directories for plugin.yaml manifests."""
@@ -75,18 +88,84 @@ class PluginLoader:
             plugin = instantiate_plugin(manifest, plugin_store)
 
             await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
-            self._register(plugin)
+            self._records[manifest.name] = self._register(plugin)
             self.loaded_plugins.append(plugin)
         return list(self.loaded_plugins)
 
-    def _register(self, plugin: Any) -> None:
+    async def unload(self, plugin_name: str) -> bool:
+        """Unload one plugin and remove its registered resources.
+
+        Returns ``True`` when a loaded plugin was found and unloaded.
+        """
+        record = self._records.pop(plugin_name, None)
+        if record is None:
+            return False
+
+        await record.plugin.on_unload()
+        for stage, fn in reversed(record.hook_refs):
+            self.hook_manager.unregister(stage, fn)
+        for tool_name in reversed(record.tool_names):
+            self.tool_registry.unregister(tool_name)
+        self.tool_registry.unregister_plugin_tools(plugin_name)
+        for stage in record.fragment_stages:
+            self.context_builder.unregister_fragment(stage, plugin_name)
+        self.loaded_plugins = [
+            plugin
+            for plugin in self.loaded_plugins
+            if plugin.manifest.name != plugin_name
+        ]
+        if not self.loaded_plugins:
+            self._release_import_paths()
+        return True
+
+    async def unload_all(self) -> list[str]:
+        """Unload all loaded plugins in reverse load order."""
+        unloaded: list[str] = []
+        for plugin in reversed(list(self.loaded_plugins)):
+            plugin_name = plugin.manifest.name
+            if await self.unload(plugin_name):
+                unloaded.append(plugin_name)
+        return unloaded
+
+    def _register(self, plugin: Any) -> LoadedPluginRecord:
+        plugin_name = plugin.manifest.name
+        before_hooks = {
+            stage: list(self.hook_manager._hooks.get(stage, []))
+            for stage in HookStage
+        }
+        before_tools = set(self.tool_registry.names())
+        before_fragments = {
+            stage: set(self.context_builder._fragments.get(stage, {}))
+            for stage in self.context_builder.FRAGMENT_STAGES
+        }
+
         plugin.register_hooks(self.hook_manager)
         plugin.register_tools(self.tool_registry)
         for stage, text in plugin.get_prompt_fragments().items():
-            self.context_builder.register_fragment(stage, plugin.manifest.name, text)
+            self.context_builder.register_fragment(stage, plugin_name, text)
 
-    @staticmethod
-    def _ensure_importable(manifest: PluginManifest, plugin_dir: Path) -> None:
+        hook_refs: list[tuple[HookStage, Any]] = []
+        for stage in HookStage:
+            previous = before_hooks.get(stage, [])
+            current = list(self.hook_manager._hooks.get(stage, []))
+            for fn in current[len(previous):]:
+                hook_refs.append((stage, fn))
+
+        tool_names = [name for name in self.tool_registry.names() if name not in before_tools]
+        fragment_stages = [
+            stage
+            for stage in self.context_builder.FRAGMENT_STAGES
+            if plugin_name in self.context_builder._fragments.get(stage, {})
+            and plugin_name not in before_fragments.get(stage, set())
+        ]
+        return LoadedPluginRecord(
+            plugin=plugin,
+            hook_refs=hook_refs,
+            tool_names=tool_names,
+            fragment_stages=fragment_stages,
+        )
+
+    def _ensure_importable(self, manifest: PluginManifest, plugin_dir: Path) -> None:
         plugin_pkg = f"builtin_plugins.{manifest.name}"
         try:
             importlib.import_module(plugin_pkg)
@@ -94,13 +173,33 @@ class PluginLoader:
         except ImportError:
             pass
 
-        sys.path.insert(0, str(plugin_dir.parent))
+        self._drop_stale_plugin_modules(manifest.name, plugin_dir)
+        parent = str(plugin_dir.parent)
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
+            self._import_paths.append(parent)
+        importlib.invalidate_caches()
         try:
             importlib.import_module(manifest.name)
         except ImportError:
             return
-        finally:
-            sys.path.pop(0)
+
+    @staticmethod
+    def _drop_stale_plugin_modules(plugin_name: str, plugin_dir: Path) -> None:
+        module = sys.modules.get(plugin_name)
+        if module is None or _module_belongs_to_path(module, plugin_dir):
+            return
+        for name in list(sys.modules):
+            if name == plugin_name or name.startswith(f"{plugin_name}."):
+                sys.modules.pop(name, None)
+
+    def _release_import_paths(self) -> None:
+        for path in reversed(self._import_paths):
+            try:
+                sys.path.remove(path)
+            except ValueError:
+                pass
+        self._import_paths.clear()
 
 
 def resolve_dependencies(
@@ -163,6 +262,26 @@ def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> A
     return _DefaultPlugin(manifest, plugin_store)
 
 
+def _module_belongs_to_path(module: Any, plugin_dir: Path) -> bool:
+    plugin_dir = plugin_dir.resolve()
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            Path(module_file).resolve().relative_to(plugin_dir)
+            return True
+        except ValueError:
+            return False
+    module_paths = getattr(module, "__path__", None)
+    if module_paths:
+        for raw_path in module_paths:
+            try:
+                Path(raw_path).resolve().relative_to(plugin_dir)
+                return True
+            except ValueError:
+                continue
+    return False
+
+
 class _DefaultPlugin:
     """Minimal plugin that uses manifest-driven hook/tool registration."""
 
@@ -172,6 +291,9 @@ class _DefaultPlugin:
 
     async def on_load(self, _config: dict[str, Any]) -> None:
         """No-op: _DefaultPlugin needs no initialization."""
+
+    async def on_unload(self) -> None:
+        """No-op: _DefaultPlugin has no resources outside registered core items."""
 
     def register_hooks(self, manager: HookManager) -> None:
         for decl in self.manifest.hooks:
