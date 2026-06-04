@@ -779,6 +779,51 @@ class TestRuntimeServerSubprocess:
         finally:
             await _stop_process(proc)
 
+    @pytest.mark.asyncio
+    async def test_server_rejects_unknown_interaction_response(self, tmp_path):
+        data_dir = _write_mock_data_dir(tmp_path)
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-missing", thread_id="t-missing")
+            await _send_frame(
+                proc,
+                "user.input",
+                session_id="s-missing",
+                thread_id="t-missing",
+                request_id="req-missing",
+                payload={"request_id": "user_input:missing", "answer": "yes"},
+            )
+            error = await _read_frame(proc)
+            assert error.type == "error"
+            assert error.payload["code"] == "invalid_request"
+            assert "No pending user input request" in error.payload["message"]
+
+            events_path = data_dir / "sessions" / "s-missing" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            assert not any(event["type"] == "user_input_response" for event in events)
+        finally:
+            await _stop_process(proc)
+
 
 class TestTerminalSessionSubprocess:
     """Terminal client wrapper roundtrip against JSONL server subprocess."""

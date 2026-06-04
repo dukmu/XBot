@@ -245,6 +245,17 @@ class RuntimeServer:
 
         answer = frame.payload.get("answer", "")
         store = self._engine.state_store
+        pending = _find_pending_interaction(
+            store.read_state().get("pending_interactions", []),
+            request_id,
+            "user_input_required",
+        )
+        if pending is None:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": f"No pending user input request: {request_id}",
+            }, frame.request_id)
+
         store.append_event("user_input_response", {
             "request_id": request_id,
             "answer": answer,
@@ -290,6 +301,17 @@ class RuntimeServer:
             }, frame.request_id)
 
         store = self._engine.state_store
+        pending = _find_pending_interaction(
+            store.read_state().get("pending_interactions", []),
+            request_id,
+            "permission_request",
+        )
+        if pending is None:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": f"No pending permission request: {request_id}",
+            }, frame.request_id)
+
         store.append_event("permission_response", {
             "request_id": request_id,
             "decision": decision,
@@ -354,6 +376,20 @@ class RuntimeServer:
             request_id=request_id,
             payload=payload,
         )
+
+
+def _find_pending_interaction(
+    pending_interactions: list[dict[str, Any]],
+    request_id: str,
+    expected_type: str,
+) -> dict[str, Any] | None:
+    for interaction in pending_interactions:
+        if (
+            interaction.get("request_id") == request_id
+            and interaction.get("type") == expected_type
+        ):
+            return interaction
+    return None
 
 
 async def run_stdio_server(

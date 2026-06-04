@@ -64,7 +64,7 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `SandboxPolicy` for resource access control
 - `PermissionSystem` with deny→allow→ask precedence
 - Permission ask/deny decisions emit protocol-visible events and hook events;
-  ask currently fails closed until resume is implemented
+  ask currently fails closed after recording a correlated pending request
 - Default `AFTER_TOOLS` hook caches oversized tool results under session
   artifacts and records cache metadata on both events and ToolMessage artifacts
 - Plugin ownership tracking plus explicit unregister for unload/reload
@@ -77,6 +77,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Engine saves rewrite `messages.jsonl` from current history while preserving
   `msg_id`/`ts` for unchanged retained messages
 - `state.yaml` — materialized view (rebuildable from events)
+  - includes `pending_interactions` for unresolved user-input and permission
+    requests
 - Plugin states as opaque blobs in `plugin_states/`
 - Session start uses existing events or messages to distinguish resume from a
   brand-new session, so event-only sessions still run `ON_SESSION_RESUME`.
@@ -95,7 +97,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `shell.py`: `shell` tool
 - `interaction.py`: `send_message` emits non-blocking `client_message` events;
   `ask_user` emits `user_input_required`, marks the session interrupted, and
-  stops the current turn until a future resume protocol exists
+  stops the current turn. `user.input` records the answer; turn resume remains
+  future work.
 - Client-directed events from interaction tools and permission decisions pass
   through `ON_CLIENT_EVENT` before persistence and protocol streaming.
 
@@ -104,7 +107,7 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - Interaction events (`client_message`, `permission_request`,
   `permission_denied`, `user_input_required`) are streamed to clients.
 - `TerminalSession` passes through server events until `turn_finished` or
-  `error`.
+  `error`, and can submit user-input and permission responses.
 - `TuiState` renders assistant messages, tool activity, errors, client notices,
   approvals, denials, and user-input requests without importing runtime code.
 

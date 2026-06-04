@@ -151,6 +151,8 @@ All significant state changes are recorded as append-only events:
 - `error`, `interrupted` — error states
 - `client_message`, `user_input_required` — user interaction events from tools
 - `permission_request`, `permission_denied` — permission/sandbox decisions
+- `user_input_response`, `permission_response` — client responses recorded by
+  JSONL protocol commands
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
 - `tool_result_cached` — large tool output persisted to artifacts and truncated inline
