@@ -109,7 +109,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `TerminalSession` passes through server events until `turn_finished` or
   `error`, and can submit user-input and permission responses.
 - `TuiState` renders assistant messages, tool activity, errors, client notices,
-  approvals, denials, and user-input requests without importing runtime code.
+  approvals, denials, user-input requests, and interaction response
+  acknowledgements without importing runtime code.
 
 ## Plugin Architecture
 

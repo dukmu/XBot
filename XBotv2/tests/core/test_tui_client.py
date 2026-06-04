@@ -79,6 +79,30 @@ def test_tui_state_turn_finished_preserves_permission_states():
     assert "Denied> approval denied" in rendered
 
 
+def test_tui_state_renders_interaction_response_acknowledgements():
+    state = TuiState()
+
+    state.apply_frame(_frame("user_input_required", {"question": "Proceed?"}))
+    state.apply_frame(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
+
+    assert state.status == "Ready"
+    assert state.notices[-1].kind == "user_input_recorded"
+    rendered = "\n".join(state.lines(width=80, height=8))
+    assert "Answer> user_input:c1" in rendered
+
+    state.apply_frame(_frame("permission_request", {"request_id": "permission:c2"}))
+    state.apply_frame(
+        _frame(
+            "permission_response_recorded",
+            {"request_id": "permission:c2", "decision": "allow"},
+        )
+    )
+
+    assert state.status == "Ready"
+    rendered = "\n".join(state.lines(width=80, height=8))
+    assert "Approval> permission:c2: allow" in rendered
+
+
 def test_curses_client_drains_background_events_without_curses():
     client = CursesTuiClient()
     client._events.put({"type": "assistant_message", "data": {"content": "live"}})

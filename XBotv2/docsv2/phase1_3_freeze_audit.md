@@ -136,6 +136,9 @@ are the primary freeze gate.
   waiting-for-user, and error statuses across the following `turn_finished`
   frame, matching the materialized interruption/error semantics instead of
   briefly showing a misleading ready state.
+- TUI state now also renders `user_input_recorded` and
+  `permission_response_recorded` acknowledgements, returning to `Ready` after a
+  response is accepted.
 - Protocol `shutdown` now calls `Engine.close_session()` before returning
   `shutdown_ok`, so JSONL/TUI exits run `ON_SESSION_CLOSE`, append
   `session_closed`, save messages, and materialize closed state like direct CLI

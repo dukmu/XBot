@@ -62,7 +62,8 @@ and materializes `state.yaml` with `status: closed`.
 - `CursesTuiClient` consumes protocol events only; it does not import runtime,
   core, LangChain, or LangGraph modules.
 - `TuiState` renders assistant messages, tool calls/results, errors, client
-  notices, approval requests, denials, and user-input requests.
+  notices, approval requests, denials, user-input requests, and recorded
+  response acknowledgements.
 - TUI state treats approval requests, permission denials, user-input requests,
   and errors as terminal notice states for that turn. A following
   `turn_finished` frame updates the turn number but does not overwrite the

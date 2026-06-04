@@ -127,6 +127,20 @@ class TuiState:
             if isinstance(options, list) and options:
                 question = f"{question} Options: {', '.join(str(item) for item in options)}"
             self.append_notice("user_input_required", question)
+        elif event_type == "user_input_recorded":
+            self.status = "Ready"
+            self.append_notice(
+                "user_input_recorded",
+                str(data.get("request_id") or "User input recorded."),
+            )
+        elif event_type == "permission_response_recorded":
+            self.status = "Ready"
+            request_id = str(data.get("request_id") or "permission")
+            decision = str(data.get("decision") or "recorded")
+            self.append_notice(
+                "permission_response_recorded",
+                f"{request_id}: {decision}",
+            )
         elif event_type == "error":
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
@@ -369,5 +383,7 @@ def _notice_label(kind: str) -> str:
         "permission_request": "Approval",
         "permission_denied": "Denied",
         "user_input_required": "Question",
+        "user_input_recorded": "Answer",
+        "permission_response_recorded": "Approval",
     }
     return labels.get(kind, "Event")
