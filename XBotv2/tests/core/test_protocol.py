@@ -669,6 +669,113 @@ class TestRuntimeServerSubprocess:
             assert question.payload["request_id"] == "user_input:call_ask"
             assert question.payload["source"] == "ask_user"
             assert question.payload["resume_supported"] is False
+
+            state_path = data_dir / "sessions" / "s-events" / "state" / "state.yaml"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["pending_interactions"][0]["request_id"] == "user_input:call_ask"
+
+            await _send_frame(
+                proc,
+                "user.input",
+                session_id="s-events",
+                thread_id="t-events",
+                request_id="req-answer",
+                payload={"request_id": "user_input:call_ask", "answer": "yes"},
+            )
+            recorded = await _read_frame(proc)
+            assert recorded.type == "user_input_recorded"
+            assert recorded.request_id == "req-answer"
+            assert recorded.payload["request_id"] == "user_input:call_ask"
+            assert recorded.payload["resume_supported"] is False
+            assert recorded.payload["pending_interactions"] == []
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["pending_interactions"] == []
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
+    async def test_server_records_permission_response(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["send_message"],
+            mock_responses=[
+                {
+                    "content": "notice",
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "args": {"message": "needs approval"},
+                            "id": "call_perm",
+                        }
+                    ],
+                },
+                {"content": "done"},
+            ],
+            permissions=(
+                "permissions:\n"
+                "  ask:\n"
+                "    - tool: send_message\n"
+            ),
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-perm", thread_id="t-perm")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-perm",
+                thread_id="t-perm",
+                request_id="req-perm",
+                payload={"content": "trigger"},
+            )
+            frames = []
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "turn_finished":
+                    break
+
+            permission = next(frame for frame in frames if frame.type == "permission_request")
+            assert permission.payload["request_id"] == "permission:call_perm"
+            state_path = data_dir / "sessions" / "s-perm" / "state" / "state.yaml"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["pending_interactions"][0]["request_id"] == "permission:call_perm"
+
+            await _send_frame(
+                proc,
+                "permission.response",
+                session_id="s-perm",
+                thread_id="t-perm",
+                request_id="req-perm-response",
+                payload={"request_id": "permission:call_perm", "decision": "allow"},
+            )
+            recorded = await _read_frame(proc)
+            assert recorded.type == "permission_response_recorded"
+            assert recorded.request_id == "req-perm-response"
+            assert recorded.payload["decision"] == "allow"
+            assert recorded.payload["pending_interactions"] == []
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            assert state["pending_interactions"] == []
         finally:
             await _stop_process(proc)
 
@@ -701,6 +808,48 @@ class TestTerminalSessionSubprocess:
         finally:
             await session.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_terminal_session_submits_user_input(self, tmp_path, monkeypatch):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["ask_user"],
+            mock_responses=[
+                {
+                    "content": "ask",
+                    "tool_calls": [
+                        {
+                            "name": "ask_user",
+                            "args": {"question": "Proceed?"},
+                            "id": "call_ask",
+                        }
+                    ],
+                }
+            ],
+        )
+        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
+
+        from xbotv2.tui.terminal import TerminalSession
+
+        session = TerminalSession(
+            data_dir=data_dir,
+            personality_id="default",
+            provider_name="mock",
+        )
+        try:
+            await session.connect()
+            events = [event async for event in session.send_message("hello")]
+            request = next(event for event in events if event["type"] == "user_input_required")
+
+            response = await session.submit_user_input(
+                request["data"]["request_id"],
+                "yes",
+            )
+
+            assert response["type"] == "user_input_recorded"
+            assert response["data"]["pending_interactions"] == []
+        finally:
+            await session.disconnect()
+
 
 async def _open_session(proc, *, session_id: str, thread_id: str) -> None:
     await _send_frame(
@@ -721,7 +870,13 @@ async def _open_session(proc, *, session_id: str, thread_id: str) -> None:
     assert (await _read_frame(proc)).type == "session_ready"
 
 
-def _write_mock_data_dir(tmp_path, *, tools: list[str] | None = None, mock_responses: list[dict] | None = None):
+def _write_mock_data_dir(
+    tmp_path,
+    *,
+    tools: list[str] | None = None,
+    mock_responses: list[dict] | None = None,
+    permissions: str | None = None,
+):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
     (data_dir / "personalities" / "default").mkdir(parents=True)
@@ -737,14 +892,17 @@ def _write_mock_data_dir(tmp_path, *, tools: list[str] | None = None, mock_respo
         if tools
         else "tools: []\n"
     )
-    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
-        "agent_name: TestBot\n"
-        "agent_role: Test runtime\n"
-        f"{tool_yaml}"
+    permissions_yaml = permissions or (
         "permissions:\n"
         "  allow:\n"
         "    - tool: send_message\n"
         "    - tool: ask_user\n"
+    )
+    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+        "agent_name: TestBot\n"
+        "agent_role: Test runtime\n"
+        f"{tool_yaml}"
+        f"{permissions_yaml}"
         "sandbox:\n"
         "  enabled: false\n"
     )

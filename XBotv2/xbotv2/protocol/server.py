@@ -26,7 +26,8 @@ class RuntimeServer:
     """JSONL-over-stdio server that owns an XBotv2 engine.
 
     Reads commands from stdin, writes events to stdout.
-    Commands: hello, session.open, user.message, shutdown.
+    Commands: hello, session.open, user.message, user.input,
+    permission.response, shutdown.
     """
 
     def __init__(
@@ -106,6 +107,12 @@ class RuntimeServer:
 
         if cmd == "user.message":
             return await self._handle_user_message(frame, writer)
+
+        if cmd == "user.input":
+            return await self._handle_user_input(frame)
+
+        if cmd == "permission.response":
+            return await self._handle_permission_response(frame)
 
         if cmd == "shutdown":
             return await self._handle_shutdown(frame)
@@ -220,6 +227,93 @@ class RuntimeServer:
             return encoder.encode_error(str(exc), request_id=frame.request_id)
 
         return None
+
+    async def _handle_user_input(self, frame: ProtocolFrame) -> ProtocolFrame | None:
+        """Record a client answer for a pending ask_user request."""
+        if self._engine is None:
+            return self._make_frame("error", {
+                "code": "no_session",
+                "message": "No active session. Send session.open first.",
+            }, frame.request_id)
+
+        request_id = str(frame.payload.get("request_id", "")).strip()
+        if not request_id:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": "user.input payload.request_id must be non-empty.",
+            }, frame.request_id)
+
+        answer = frame.payload.get("answer", "")
+        store = self._engine.state_store
+        store.append_event("user_input_response", {
+            "request_id": request_id,
+            "answer": answer,
+        })
+        state = store.materialize()
+
+        encoder = self._encoder
+        if encoder:
+            return encoder.encode(
+                "user_input_recorded",
+                {
+                    "request_id": request_id,
+                    "resume_supported": False,
+                    "pending_interactions": state.get("pending_interactions", []),
+                },
+                request_id=frame.request_id,
+            )
+        return self._make_frame("user_input_recorded", {
+            "request_id": request_id,
+            "resume_supported": False,
+            "pending_interactions": state.get("pending_interactions", []),
+        }, frame.request_id)
+
+    async def _handle_permission_response(self, frame: ProtocolFrame) -> ProtocolFrame | None:
+        """Record a client approval/denial for a pending permission request."""
+        if self._engine is None:
+            return self._make_frame("error", {
+                "code": "no_session",
+                "message": "No active session. Send session.open first.",
+            }, frame.request_id)
+
+        request_id = str(frame.payload.get("request_id", "")).strip()
+        decision = str(frame.payload.get("decision", "")).strip().lower()
+        if not request_id:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": "permission.response payload.request_id must be non-empty.",
+            }, frame.request_id)
+        if decision not in {"allow", "deny"}:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": "permission.response payload.decision must be allow or deny.",
+            }, frame.request_id)
+
+        store = self._engine.state_store
+        store.append_event("permission_response", {
+            "request_id": request_id,
+            "decision": decision,
+        })
+        state = store.materialize()
+
+        encoder = self._encoder
+        if encoder:
+            return encoder.encode(
+                "permission_response_recorded",
+                {
+                    "request_id": request_id,
+                    "decision": decision,
+                    "resume_supported": False,
+                    "pending_interactions": state.get("pending_interactions", []),
+                },
+                request_id=frame.request_id,
+            )
+        return self._make_frame("permission_response_recorded", {
+            "request_id": request_id,
+            "decision": decision,
+            "resume_supported": False,
+            "pending_interactions": state.get("pending_interactions", []),
+        }, frame.request_id)
 
     async def _handle_shutdown(self, frame: ProtocolFrame) -> ProtocolFrame | None:
         if self._engine is not None:

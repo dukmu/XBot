@@ -34,7 +34,9 @@ Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
 the `ask` decision currently emits a `permission_request` event and fails
 closed during tool execution because the JSONL/TUI interrupt-resume approval
 flow is not implemented yet. Request events include a stable
-`permission:<tool_call_id>` request id. Denials emit `permission_denied`. Both
+`permission:<tool_call_id>` request id. `permission.response` records a
+matching `permission_response` event and clears the pending request, but does
+not replay the denied tool call yet. Denials emit `permission_denied`. Both
 decisions also pass through dedicated permission hooks and the generic
 `ON_CLIENT_EVENT` hook before they are streamed to clients.
 
@@ -46,7 +48,8 @@ Core now exposes two event-driven interaction tools instead:
 - `ask_user`: emits `user_input_required`, appends an `interrupted` event, and
   stops the current turn. Resuming from the answer is still a protocol/TUI
   feature gap. Runtime-normalized events include a stable
-  `user_input:<tool_call_id>` request id.
+  `user_input:<tool_call_id>` request id; `user.input` records the answer and
+  clears the pending request.
 
 All client-directed interaction events pass through `ON_CLIENT_EVENT` before
 persistence and protocol emission, so plugins can audit or meter them without

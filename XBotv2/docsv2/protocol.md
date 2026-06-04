@@ -14,6 +14,7 @@ Core Phase 1-3 events covered by subprocess tests:
 - `client_message`
 - `permission_request`, `permission_denied`
 - `user_input_required`
+- `user_input_recorded`, `permission_response_recorded`
 - `error`
 - `session_ready`, `hello_ok`, `shutdown_ok`
 
@@ -35,13 +36,18 @@ and materializes `state.yaml` with `status: closed`.
   and stops the current turn. Resume is not implemented yet, so the payload
   includes `resume_supported: false`. The event carries a stable
   `request_id` (`user_input:<tool_call_id>`), `source`, and `tool_call_id` so a
-  future reply protocol can correlate the answer.
+  later `user.input` command can correlate the answer.
 - A later `turn_started` reactivates the materialized session status after an
   interruption or error; `turn_finished` does not clear an interruption raised
   during that same turn.
 - Permission and sandbox ask decisions emit `permission_request` and fail
   closed. Request events carry `request_id` (`permission:<tool_call_id>`) and
   `source`; denials emit `permission_denied`.
+- `user.input` records a `user_input_response` event and returns
+  `user_input_recorded`. `permission.response` records a `permission_response`
+  event and returns `permission_response_recorded`. Both commands clear the
+  matching `pending_interactions` entry but do not resume the interrupted turn
+  yet.
 - `state.yaml` materializes unresolved interaction requests as
   `pending_interactions`, rebuilt from the append-only event log.
 - Before client-directed events are persisted and streamed, core runs the
@@ -51,7 +57,8 @@ and materializes `state.yaml` with `status: closed`.
 ## Client Coverage
 
 - `TerminalSession` streams every server frame until `turn_finished` or
-  `error`.
+  `error`, and exposes helper methods for `user.input` and
+  `permission.response`.
 - `CursesTuiClient` consumes protocol events only; it does not import runtime,
   core, LangChain, or LangGraph modules.
 - `TuiState` renders assistant messages, tool calls/results, errors, client

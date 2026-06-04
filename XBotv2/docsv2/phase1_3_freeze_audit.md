@@ -17,6 +17,9 @@ are the primary freeze gate.
   metadata (`user_input:<tool_call_id>` and `permission:<tool_call_id>` request
   ids plus source/tool-call metadata). `state.yaml` materializes unresolved
   requests as `pending_interactions` from the append-only event log.
+- JSONL protocol now accepts `user.input` and `permission.response` commands,
+  records `user_input_response` / `permission_response` events, returns bounded
+  `*_recorded` acknowledgements, and clears matching `pending_interactions`.
 - Expanded filesystem tools:
   - `filesystem_read` returns JSON content plus path, size, mtime, line count,
     returned line count, and truncation flags.
@@ -159,8 +162,8 @@ are the primary freeze gate.
 
 - Permission and sandbox `ask` decisions still do not resume a turn through
   JSONL/TUI after approval. The current runtime emits a correlated request
-  event, records it in `pending_interactions`, and fails closed; response
-  commands plus turn/tool-call resume are the remaining feature gap.
+  event, records it in `pending_interactions`, accepts a response command, and
+  fails closed; turn/tool-call resume is the remaining feature gap.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.

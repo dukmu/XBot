@@ -175,3 +175,35 @@ class TerminalSession:
 
             if frame.type in ("turn_finished", "error"):
                 break
+
+    async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
+        """Submit an answer for a pending ask_user request."""
+        if not self._client:
+            raise RuntimeError("Not connected")
+
+        await self._client.send(
+            "user.input",
+            self._session_id,
+            self._thread_id,
+            {"request_id": request_id, "answer": answer},
+        )
+        frame = await self._client.read_frame()
+        if frame is None:
+            raise RuntimeError("Server closed stdout before user input response")
+        return {"type": frame.type, "data": frame.payload}
+
+    async def respond_permission(self, request_id: str, decision: str) -> dict[str, Any]:
+        """Submit allow/deny for a pending permission request."""
+        if not self._client:
+            raise RuntimeError("Not connected")
+
+        await self._client.send(
+            "permission.response",
+            self._session_id,
+            self._thread_id,
+            {"request_id": request_id, "decision": decision},
+        )
+        frame = await self._client.read_frame()
+        if frame is None:
+            raise RuntimeError("Server closed stdout before permission response")
+        return {"type": frame.type, "data": frame.payload}
