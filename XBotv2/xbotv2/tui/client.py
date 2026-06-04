@@ -248,6 +248,7 @@ class CursesTuiClient:
         provider_name: str = "default",
         session_id: str = "default",
         thread_id: str = "agent",
+        no_plugins: bool = False,
     ) -> None:
         self.session = TerminalSession(
             data_dir=data_dir,
@@ -255,6 +256,7 @@ class CursesTuiClient:
             provider_name=provider_name,
             session_id=session_id,
             thread_id=thread_id,
+            no_plugins=no_plugins,
         )
         self.state = TuiState(session_id=session_id, thread_id=thread_id)
         self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()

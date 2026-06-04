@@ -439,6 +439,9 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
   interactions; live `ask_user` and permission responses continue the current
   ReAct turn or tool call, while client disconnect records cancellation and
   stops the turn
+- `--no-plugins` — protocol server, TUI, terminal, and once modes can disable
+  plugin discovery so Phase 1-3 core smoke tests remain independent of future
+  built-in plugin manifests
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
 - `CursesTuiClient` — background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop
@@ -530,6 +533,6 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 3. **Integration tests pass**: from repo root, `uv run pytest XBotv2/tests/integration/ -q`
 4. **Smoke test**: Run engine with personality config, send messages, verify responses
 5. **Plugin absence test**: Remove all plugins from config, verify engine still works (linear ReAct)
-6. **Protocol server test**: Launch `python -m xbotv2 --mode server` with mock provider, verify JSONL roundtrip
+6. **Protocol server test**: Launch `python -m xbotv2 --mode server --no-plugins` with mock provider, verify JSONL roundtrip
 7. **TUI test**: Launch non-curses TUI client against engine server, verify client wrapper roundtrip
 8. **Curses TUI test**: Import and smoke-test curses client boundaries without loading runtime modules

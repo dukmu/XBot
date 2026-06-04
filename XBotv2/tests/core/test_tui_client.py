@@ -114,6 +114,12 @@ def test_curses_client_drains_background_events_without_curses():
     assert client.state.messages[-1].content == "live"
 
 
+def test_curses_client_forwards_no_plugin_mode_to_terminal_session():
+    client = CursesTuiClient(no_plugins=True)
+
+    assert client.session._no_plugins is True
+
+
 def test_curses_client_records_reader_errors():
     client = CursesTuiClient()
     client._events.put(RuntimeError("reader failed"))

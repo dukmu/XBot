@@ -30,6 +30,9 @@ That path runs `ON_SESSION_CLOSE`, appends `session_closed`, saves messages,
 and materializes `state.yaml` with `status: closed` and no pending
 interactions.
 
+Server, TUI, terminal, and once modes accept `--no-plugins` for pure-core
+smoke tests. Default runtime mode still scans the built-in plugin root.
+
 ## Interaction Semantics
 
 - `send_message` emits `client_message` and does not stop the current turn.

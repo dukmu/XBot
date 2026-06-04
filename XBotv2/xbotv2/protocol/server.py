@@ -35,10 +35,12 @@ class RuntimeServer:
         data_dir: Path | str = "data",
         personality_id: str = "default",
         provider_name: str = "default",
+        no_plugins: bool = False,
     ) -> None:
         self._data_dir = Path(data_dir).resolve()
         self._personality_id = personality_id
         self._provider_name = provider_name
+        self._no_plugins = no_plugins
         self._engine = None
         self._encoder: ProtocolEncoder | None = None
         self._session_id = "default"
@@ -138,6 +140,7 @@ class RuntimeServer:
                 provider_name=self._provider_name,
                 session_id=self._session_id,
                 thread_id=self._thread_id,
+                plugin_dirs=[] if self._no_plugins else None,
             )
             await self._engine.start_session()
 
@@ -589,11 +592,13 @@ async def run_stdio_server(
     data_dir: Path | str = "data",
     personality_id: str = "default",
     provider_name: str = "default",
+    no_plugins: bool = False,
 ) -> None:
     """Entry point for the JSONL stdio server."""
     server = RuntimeServer(
         data_dir=data_dir,
         personality_id=personality_id,
         provider_name=provider_name,
+        no_plugins=no_plugins,
     )
     await server.run()

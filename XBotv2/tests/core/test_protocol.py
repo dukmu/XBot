@@ -367,6 +367,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -411,6 +412,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -469,6 +471,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -519,6 +522,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -634,6 +638,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -750,6 +755,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -843,6 +849,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -920,6 +927,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -977,6 +985,7 @@ class TestRuntimeServerSubprocess:
             "mock",
             "--mode",
             "server",
+            "--no-plugins",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -1019,6 +1028,7 @@ class TestTerminalSessionSubprocess:
             data_dir=data_dir,
             personality_id="default",
             provider_name="mock",
+            no_plugins=True,
         )
         try:
             await session.connect()
@@ -1060,6 +1070,7 @@ class TestTerminalSessionSubprocess:
             data_dir=data_dir,
             personality_id="default",
             provider_name="mock",
+            no_plugins=True,
         )
         try:
             await session.connect()

@@ -18,6 +18,8 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 Default bootstrap scans the built-in plugin root. Passing `plugin_dirs=[]`
 explicitly disables plugin discovery, which preserves a real no-plugin core
 mode even after Phase 4 built-in plugin manifests are added.
+The CLI exposes the same boundary with `--no-plugins` for server, TUI,
+terminal, and once modes.
 
 ## Core Components
 

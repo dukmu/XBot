@@ -93,10 +93,12 @@ class TerminalSession:
         provider_name: str = "default",
         session_id: str = "default",
         thread_id: str = "agent",
+        no_plugins: bool = False,
     ) -> None:
         self._data_dir = str(data_dir)
         self._personality_id = personality_id
         self._provider_name = provider_name
+        self._no_plugins = no_plugins
         self._client: ProtocolClient | None = None
         self._session_id = session_id
         self._thread_id = thread_id
@@ -117,6 +119,8 @@ class TerminalSession:
             "--provider", self._provider_name,
             "--mode", "server",
         ]
+        if self._no_plugins:
+            server_cmd.append("--no-plugins")
         self._client = ProtocolClient(server_cmd)
         await self._client.start()
 

@@ -95,6 +95,9 @@ are the primary freeze gate.
 - Bootstrap now treats `plugin_dirs=None` as the default built-in plugin scan
   and explicit `plugin_dirs=[]` as no-plugin mode, so Phase 1-3 core tests do
   not depend on Phase 4 built-in plugin directories staying manifest-free.
+- CLI/server/TUI entrypoints now expose `--no-plugins`; protocol subprocess
+  core tests use it so JSONL and terminal wrapper smoke coverage remains a
+  pure-core freeze gate after built-in plugin manifests are added.
 - Added `docsv2/token_budget_hooks.md` to record the current token-estimation
   gap, the fine-grained hook surface now available to plugins, and the evidence
   needed before token budget control can be frozen.
@@ -115,9 +118,10 @@ are the primary freeze gate.
   normalized response tool calls for context/assertion-heavy plugin tests.
 - Unknown provider names now fail closed with `ValueError` instead of silently
   falling back to OpenAI-compatible defaults.
-- `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
-  JSONL stdio subprocess and verifies `hello`, `session.open`, `user.message`,
-  and `shutdown` frame flow with stable session/thread IDs.
+- `test_protocol.py` now launches `python -m xbotv2 --mode server
+  --no-plugins` as a real JSONL stdio subprocess and verifies `hello`,
+  `session.open`, `user.message`, and `shutdown` frame flow with stable
+  session/thread IDs.
 - Protocol subprocess tests now also verify `send_message` and `ask_user`
   produce streamed `client_message` and `user_input_required` frames with the
   original `request_id`.

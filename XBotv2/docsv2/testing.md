@@ -119,6 +119,11 @@ uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_te
 
 ## Freeze Gate
 
+Core subprocess tests launch `python -m xbotv2 --mode server --no-plugins`;
+direct bootstrap tests use explicit `plugin_dirs=[]` where they need a
+pure-core engine. This keeps Phase 1-3 gates independent of future Phase 4
+built-in plugin manifests.
+
 Use the same gate before freezing Phase 1-3 or committing runtime changes:
 
 ```bash

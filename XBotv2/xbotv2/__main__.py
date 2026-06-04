@@ -36,6 +36,11 @@ def main():
         "--provider", default="default", help="Provider config to use"
     )
     parser.add_argument(
+        "--no-plugins",
+        action="store_true",
+        help="Disable plugin discovery for pure-core runs",
+    )
+    parser.add_argument(
         "--mode",
         default="terminal",
         choices=["server", "terminal", "tui", "once"],
@@ -66,6 +71,7 @@ def _run_server(args):
         data_dir=args.data_dir,
         personality_id=args.personality,
         provider_name=args.provider,
+        no_plugins=args.no_plugins,
     ))
 
 
@@ -82,6 +88,7 @@ def _run_tui(args):
         data_dir=args.data_dir,
         personality_id=args.personality,
         provider_name=args.provider,
+        no_plugins=args.no_plugins,
     )
     asyncio.run(client.run())
 
@@ -101,6 +108,7 @@ async def _terminal_loop(args):
             provider_name=args.provider,
             session_id="terminal",
             thread_id="agent",
+            plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()
     except Exception as exc:
@@ -169,6 +177,7 @@ def _run_once(args):
             provider_name=args.provider,
             session_id="once",
             thread_id="agent",
+            plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()
 
