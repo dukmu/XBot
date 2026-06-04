@@ -23,6 +23,9 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
             },
         ),
         _frame("tool_result", {"tool_call_id": "call_1", "content": "cached result", "status": "success"}),
+        _frame("client_message", {"message": "heads up"}),
+        _frame("permission_request", {"reason": "approval needed"}),
+        _frame("user_input_required", {"question": "Proceed?", "options": ["yes", "no"]}),
         _frame("turn_finished", {"turn": 1}),
     ]
 
@@ -34,11 +37,15 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
     assert state.messages[-1].content == "hello world"
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "cached result"
+    assert state.notices[-1].kind == "user_input_required"
 
     rendered = "\n".join(state.lines(width=80, height=12))
     assert "TestBot> hello world" in rendered
     assert "Tool filesystem_read [success]" in rendered
     assert "cached result" in rendered
+    assert "Notice> heads up" in rendered
+    assert "Approval> approval needed" in rendered
+    assert "Question> Proceed? Options: yes, no" in rendered
 
 
 def test_curses_client_drains_background_events_without_curses():

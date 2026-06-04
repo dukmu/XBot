@@ -413,6 +413,9 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 - `ProtocolFrame` (identical Pydantic model: protocol_version, frame_id, seq, ts, direction, type, session_id, thread_id, request_id, payload)
 - `ProtocolEncoder` — maps internal events to wire frames
 - `ProtocolClient` — reads/writes JSONL via stdin/stdout subprocess
+- interaction events (`client_message`, `permission_request`,
+  `permission_denied`, `user_input_required`) stream through JSONL with request
+  correlation and are rendered by TUI state
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
 - `CursesTuiClient` — background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop
@@ -429,7 +432,7 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 - `test_context.py` — ContextBuilder fragment injection, cache isolation
 - `test_tool_registry.py` — registration, filtering, plugin ownership
 - `test_bootstrap.py` — bootstrap with zero plugins, bootstrap with test plugins
-- `test_protocol.py` — frame serialization/deserialization, encoder, provider config, stdio server subprocess roundtrip
+- `test_protocol.py` — frame serialization/deserialization, encoder, provider config, stdio server subprocess roundtrip, interaction event streaming
 - `test_sandbox.py` — guard_tool_call, path resolution, denials
 - `test_permissions.py` — deny→allow→ask precedence
 - `test_plugin_loader.py` — discovery, dependency resolution, cycle detection

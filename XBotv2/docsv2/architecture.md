@@ -78,6 +78,15 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
   `ask_user` emits `user_input_required`, marks the session interrupted, and
   stops the current turn until a future resume protocol exists
 
+### Protocol & TUI (`xbotv2/protocol/`, `xbotv2/tui/`)
+- JSONL `ProtocolFrame` envelopes preserve session/thread/request correlation.
+- Interaction events (`client_message`, `permission_request`,
+  `permission_denied`, `user_input_required`) are streamed to clients.
+- `TerminalSession` passes through server events until `turn_finished` or
+  `error`.
+- `TuiState` renders assistant messages, tool activity, errors, client notices,
+  approvals, denials, and user-input requests without importing runtime code.
+
 ## Plugin Architecture
 
 ### Directory Layout

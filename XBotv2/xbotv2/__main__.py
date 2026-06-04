@@ -136,6 +136,14 @@ async def _terminal_loop(args):
                     tc_id = data.get("tool_call_id", "")
                     content = data.get("content", "")
                     print(f"  [{tc_id}]: {content[:200]}")
+                elif etype == "client_message":
+                    print(f"\n[message] {data.get('message', '')}")
+                elif etype == "permission_request":
+                    print(f"\n[approval required] {data.get('reason', '')}")
+                elif etype == "permission_denied":
+                    print(f"\n[permission denied] {data.get('reason', '')}")
+                elif etype == "user_input_required":
+                    print(f"\n[question] {data.get('question', '')}")
                 elif etype == "error":
                     print(f"\nError: {data.get('message', 'unknown')}")
         except Exception as exc:
@@ -176,6 +184,14 @@ def _run_once(args):
                 tc_id = data.get("tool_call_id", "")
                 content = data.get("content", "")
                 print(f"\n[{tc_id}]: {content[:300]}")
+            elif etype == "client_message":
+                print(f"\n[message] {data.get('message', '')}")
+            elif etype == "permission_request":
+                print(f"\n[approval required] {data.get('reason', '')}")
+            elif etype == "permission_denied":
+                print(f"\n[permission denied] {data.get('reason', '')}")
+            elif etype == "user_input_required":
+                print(f"\n[question] {data.get('question', '')}")
             elif etype == "error":
                 print(f"\nError: {data.get('message', 'unknown')}")
 

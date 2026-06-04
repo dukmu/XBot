@@ -42,6 +42,12 @@ class TuiTool:
 
 
 @dataclass
+class TuiNotice:
+    kind: str
+    text: str
+
+
+@dataclass
 class TuiState:
     session_id: str = "default"
     thread_id: str = "agent"
@@ -49,6 +55,7 @@ class TuiState:
     status: str = "Disconnected"
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
+    notices: list[TuiNotice] = field(default_factory=list)
     transcript: list[TuiTranscriptEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     turn: int = 0
@@ -91,6 +98,27 @@ class TuiState:
             self._ensure_tool_transcript(tool.tool_call_id)
         elif event_type == "status":
             self.status = str(data.get("text") or data.get("message") or self.status)
+        elif event_type == "client_message":
+            self.append_notice("client_message", str(data.get("message") or data))
+        elif event_type == "permission_request":
+            self.status = "Approval required"
+            self.append_notice(
+                "permission_request",
+                str(data.get("reason") or "Tool approval required."),
+            )
+        elif event_type == "permission_denied":
+            self.status = "Permission denied"
+            self.append_notice(
+                "permission_denied",
+                str(data.get("reason") or "Tool call denied."),
+            )
+        elif event_type == "user_input_required":
+            self.status = "Waiting for user"
+            question = str(data.get("question") or "User input required.")
+            options = data.get("options")
+            if isinstance(options, list) and options:
+                question = f"{question} Options: {', '.join(str(item) for item in options)}"
+            self.append_notice("user_input_required", question)
         elif event_type == "error":
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
@@ -101,6 +129,10 @@ class TuiState:
     def append_message(self, role: str, content: str) -> None:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
+
+    def append_notice(self, kind: str, text: str) -> None:
+        self.notices.append(TuiNotice(kind=kind, text=text))
+        self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
 
     def lines(self, *, width: int, height: int) -> list[str]:
         width = max(20, width)
@@ -144,6 +176,12 @@ class TuiState:
                 except (ValueError, IndexError):
                     continue
                 lines.extend(_wrap(f"Error> {error}", width))
+            elif entry.kind == "notice":
+                try:
+                    notice = self.notices[int(entry.key)]
+                except (ValueError, IndexError):
+                    continue
+                lines.extend(_wrap(f"{_notice_label(notice.kind)}> {notice.text}", width))
         return lines[-height:]
 
     def _apply_tool_calls(self, tool_calls: Any) -> None:
@@ -315,3 +353,13 @@ def _wrap(text: str, width: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+def _notice_label(kind: str) -> str:
+    labels = {
+        "client_message": "Notice",
+        "permission_request": "Approval",
+        "permission_denied": "Denied",
+        "user_input_required": "Question",
+    }
+    return labels.get(kind, "Event")

@@ -65,6 +65,9 @@ are the primary freeze gate.
 - `test_protocol.py` now launches `python -m xbotv2 --mode server` as a real
   JSONL stdio subprocess and verifies `hello`, `session.open`, `user.message`,
   and `shutdown` frame flow with stable session/thread IDs.
+- Protocol subprocess tests now also verify `send_message` and `ask_user`
+  produce streamed `client_message` and `user_input_required` frames with the
+  original `request_id`.
 - Protocol encoder/server responses now preserve the client `request_id` in
   the frame envelope for command acknowledgements and all turn event frames,
   so TUI and external clients can correlate streamed responses.
@@ -88,7 +91,9 @@ are the primary freeze gate.
 - Added `xbotv2/tui/client.py`, a protocol-driven curses TUI shell with
   replayable `TuiState`, background event queue draining, and a `--mode tui`
   CLI entrypoint. Core tests cover frame application, rendering, queue draining,
-  and the TUI/runtime dependency boundary.
+  interaction-event rendering, and the TUI/runtime dependency boundary.
+- Added `docsv2/protocol.md` to document Phase 1-3 protocol events,
+  interaction semantics, and client coverage.
 
 ## Remaining Weak Points
 
@@ -101,9 +106,10 @@ are the primary freeze gate.
 - Token estimation, token usage statistics, and token budget control are not
   implemented modules yet. The core now exposes the needed hook surface and
   source-tagged context metadata, but no plugin consumes it yet.
-- The subprocess tests cover direct server JSONL and non-curses terminal wrapper
-  roundtrips. Curses screen-level behavior is covered only by state/queue/import
-  smoke tests, not by an interactive terminal golden test.
+- The subprocess tests cover direct server JSONL, interaction event streaming,
+  and non-curses terminal wrapper roundtrips. Curses screen-level behavior is
+  covered only by state/queue/import/render smoke tests, not by an interactive
+  terminal golden test.
 
 ## Freeze Gates
 
@@ -115,6 +121,7 @@ python -m py_compile \
   XBotv2/xbotv2/core/bootstrap.py \
   XBotv2/xbotv2/core/engine.py \
   XBotv2/xbotv2/core/builtin_tools/filesystem.py \
+  XBotv2/xbotv2/core/builtin_tools/interaction.py \
   XBotv2/xbotv2/tools/runtime.py \
   XBotv2/xbotv2/tools/result_cache.py \
   XBotv2/xbotv2/plugin/manifest.py \

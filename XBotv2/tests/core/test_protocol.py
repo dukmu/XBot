@@ -498,6 +498,81 @@ class TestRuntimeServerSubprocess:
         finally:
             await _stop_process(proc)
 
+    @pytest.mark.asyncio
+    async def test_server_streams_interaction_tool_events(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["send_message", "ask_user"],
+            mock_responses=[
+                {
+                    "content": "notifying",
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "args": {"message": "heads up"},
+                            "id": "call_notice",
+                        },
+                        {
+                            "name": "ask_user",
+                            "args": {"question": "Proceed?", "options": ["yes", "no"]},
+                            "id": "call_ask",
+                        },
+                    ],
+                },
+                {"content": "should not run"},
+            ],
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-events", thread_id="t-events")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-events",
+                thread_id="t-events",
+                request_id="req-events",
+                payload={"content": "trigger"},
+            )
+            frames = []
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "turn_finished":
+                    break
+
+            frame_types = [frame.type for frame in frames]
+            assert "client_message" in frame_types
+            assert "user_input_required" in frame_types
+            assert frame_types.count("assistant_message") == 1
+            assert all(frame.request_id == "req-events" for frame in frames)
+            notice = next(frame for frame in frames if frame.type == "client_message")
+            question = next(frame for frame in frames if frame.type == "user_input_required")
+            assert notice.payload["message"] == "heads up"
+            assert question.payload["question"] == "Proceed?"
+            assert question.payload["resume_supported"] is False
+        finally:
+            await _stop_process(proc)
+
 
 class TestTerminalSessionSubprocess:
     """Terminal client wrapper roundtrip against JSONL server subprocess."""
@@ -528,28 +603,51 @@ class TestTerminalSessionSubprocess:
             await session.disconnect()
 
 
-def _write_mock_data_dir(tmp_path):
+async def _open_session(proc, *, session_id: str, thread_id: str) -> None:
+    await _send_frame(
+        proc,
+        "hello",
+        session_id=session_id,
+        thread_id=thread_id,
+        request_id="req-hello",
+    )
+    assert (await _read_frame(proc)).type == "hello_ok"
+    await _send_frame(
+        proc,
+        "session.open",
+        session_id=session_id,
+        thread_id=thread_id,
+        request_id="req-open",
+    )
+    assert (await _read_frame(proc)).type == "session_ready"
+
+
+def _write_mock_data_dir(tmp_path, *, tools: list[str] | None = None, mock_responses: list[dict] | None = None):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
     (data_dir / "personalities" / "default").mkdir(parents=True)
     (data_dir / "config" / "user.yaml").write_text("user_id: test\nuser_name: Tester\n")
+    mock_responses = mock_responses or [{"content": "hello from subprocess"}]
     (data_dir / "config" / "provider.yaml").write_text(
-        """
-mock:
-  provider: mock
-  mock_responses:
-    - content: hello from subprocess
-"""
+        "mock:\n"
+        "  provider: mock\n"
+        f"  mock_responses: {json.dumps(mock_responses)}\n"
+    )
+    tool_yaml = (
+        "tools:\n" + "".join(f"  - {tool_name}\n" for tool_name in tools)
+        if tools
+        else "tools: []\n"
     )
     (data_dir / "personalities" / "default" / "personality.yaml").write_text(
-        """
-agent_name: TestBot
-agent_role: Test runtime
-tools: []
-permissions: {}
-sandbox:
-  enabled: false
-"""
+        "agent_name: TestBot\n"
+        "agent_role: Test runtime\n"
+        f"{tool_yaml}"
+        "permissions:\n"
+        "  allow:\n"
+        "    - tool: send_message\n"
+        "    - tool: ask_user\n"
+        "sandbox:\n"
+        "  enabled: false\n"
     )
     return data_dir
 
