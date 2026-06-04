@@ -15,6 +15,9 @@ Core ──NEVER imports──→ Plugins (builtin_plugins)
 
 Core defines interfaces; plugins implement them. The bootstrap sequence
 discovers and wires plugins at runtime via `plugin.yaml` manifests.
+Default bootstrap scans the built-in plugin root. Passing `plugin_dirs=[]`
+explicitly disables plugin discovery, which preserves a real no-plugin core
+mode even after Phase 4 built-in plugin manifests are added.
 
 ## Core Components
 
@@ -103,9 +106,10 @@ discovers and wires plugins at runtime via `plugin.yaml` manifests.
 - `shell.py`: `shell` tool
 - `interaction.py`: `send_message` emits non-blocking `client_message` events;
   `ask_user` emits `user_input_required`, waits for a live `user.input` on the
-  active client connection, and returns the answer, timeout, or cancellation as
-  the tool result. Timeout lets the ReAct loop continue with a no-reply result;
-  client disconnect records cancellation and stops the current turn.
+  active client connection, and returns the answer or timeout as the tool
+  result. Timeout lets the ReAct loop continue with a no-reply result; client
+  disconnect records cancellation and stops the current turn without durable
+  resume.
 - Client-directed events from interaction tools and permission decisions pass
   through `ON_CLIENT_EVENT` before persistence and protocol streaming.
 

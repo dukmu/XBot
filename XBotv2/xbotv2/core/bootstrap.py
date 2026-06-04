@@ -13,7 +13,8 @@ Sequence:
 10. Return fully-wired Engine
 
 Architecture constraint: bootstrap NEVER hardcodes plugin references.
-Plugins are discovered from plugin directories listed in config.
+By default, plugins are discovered from the built-in plugin directory. Passing
+``plugin_dirs=[]`` explicitly disables plugin discovery for pure-core runs.
 """
 
 from __future__ import annotations
@@ -82,7 +83,8 @@ async def bootstrap(
         provider_name: Provider config name.
         session_id: Session identifier.
         thread_id: LangGraph thread ID.
-        plugin_dirs: Additional plugin directories to scan.
+        plugin_dirs: Plugin directories to scan. ``None`` scans built-ins;
+            an explicit empty list disables plugin discovery.
         plugin_configs: Per-plugin configuration dicts.
         llm_override: Use this LLM instead of loading from config (for testing).
 
@@ -144,14 +146,9 @@ async def bootstrap(
     )
     permissions = PermissionSystem(agent_config.permissions)
 
-    # 6. Discover and load plugins
-    resolved_plugin_dirs: list[Path] = []
-    if plugin_dirs:
-        resolved_plugin_dirs = [Path(d) for d in plugin_dirs]
-    # Also scan builtin_plugins relative to the xbotv2 package
-    builtin_plugins_dir = Path(__file__).parent.parent.parent / "builtin_plugins"
-    if builtin_plugins_dir.exists() and builtin_plugins_dir not in resolved_plugin_dirs:
-        resolved_plugin_dirs.append(builtin_plugins_dir)
+    # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
+    # no-plugin mode used by core freeze tests and pure-core embeddings.
+    resolved_plugin_dirs = _resolve_plugin_dirs(plugin_dirs)
 
     if resolved_plugin_dirs:
         await _load_plugins(
@@ -216,6 +213,27 @@ def _validate_identifier(field: str, value: str) -> None:
         raise ValueError(
             f"{field} must be a non-empty identifier using letters, numbers, '.', '_', or '-'"
         )
+
+
+def _resolve_plugin_dirs(
+    plugin_dirs: list[Path | str] | None,
+    *,
+    builtin_plugins_dir: Path | None = None,
+) -> list[Path]:
+    """Resolve plugin scan directories.
+
+    ``None`` means the normal runtime default: scan built-in plugins. An
+    explicit empty list means no plugin discovery at all.
+    """
+    if plugin_dirs is not None:
+        return [Path(d) for d in plugin_dirs]
+
+    builtin_dir = (
+        builtin_plugins_dir
+        if builtin_plugins_dir is not None
+        else Path(__file__).parent.parent.parent / "builtin_plugins"
+    )
+    return [builtin_dir] if builtin_dir.exists() else []
 
 
 async def _load_plugins(

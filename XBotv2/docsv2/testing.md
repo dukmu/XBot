@@ -36,6 +36,8 @@ tests/
 4. **MockLLM**: Deterministic, configurable response sequences
 5. **Each test creates its own engine**: No shared state between tests
 6. **Core tests load zero plugins**: Test the engine in its purest form
+   through explicit `plugin_dirs=[]`; this remains true even after built-in
+   plugin manifests exist.
 
 ## Fixtures
 

@@ -202,7 +202,7 @@ class HookContext:
     state: dict[str, Any]              # Current agent state (messages, etc.)
     config: AgentConfig                # Current config snapshot
     tools: ToolRegistry                # For tool registration (init hooks only)
-    plugin: PluginStore                # Per-plugin isolated K/V store (None for guard hooks)
+    plugin_store: PluginStore | None   # Per-plugin isolated K/V store when available
     session: SessionInfo               # Session metadata
     emit: Callable[[Event], None]      # Emit system events
     # Stage-specific (populated by engine):
@@ -347,12 +347,12 @@ interruption raised during that same turn.
 6. Register core base tools: filesystem, shell, and interaction tools (always available)
    - legacy placeholder `ask` is not a core tool
    - `send_message` emits non-blocking `client_message` events
-   - `ask_user` emits `user_input_required`, waits for a live `user.input` on the active protocol connection, and returns the answer, timeout, or cancellation as the tool result
+   - `ask_user` emits `user_input_required`, waits for a live `user.input` on the active protocol connection, and returns the answer or timeout as the tool result; client disconnect records cancellation and stops the turn without durable resume
    - filesystem tools return JSON metadata and support structured read/list/write operations
    - default `AFTER_TOOLS` hook caches oversized tool outputs under session artifacts before persistence/protocol emit
 7. Register personality-declared hooks from `hooks:` config entries; invalid targets fail loudly
 8. Create SandboxPolicy + PermissionSystem
-9. Discover plugins from plugin dirs
+9. Discover plugins from plugin dirs (`plugin_dirs=None` scans built-ins; explicit `plugin_dirs=[]` disables plugin discovery for pure-core runs)
 10. Resolve plugin dependency order (topological sort)
 11. Initialize plugins (on_load) with their config sections
 12. Register plugin hooks → HookManager

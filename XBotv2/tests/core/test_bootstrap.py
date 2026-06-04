@@ -5,7 +5,7 @@ import json
 import pytest
 import yaml
 
-from xbotv2.core.bootstrap import bootstrap
+from xbotv2.core.bootstrap import _resolve_plugin_dirs, bootstrap
 from xbotv2.llm.mock import MockLLM
 
 
@@ -260,6 +260,20 @@ class ConfiguredPlugin(PluginBase):
 
 class TestBootstrapNoPlugins:
     """Engine works correctly with zero plugins."""
+
+    def test_explicit_empty_plugin_dirs_disables_builtin_scan(self, tmp_path):
+        """Explicit no-plugin mode stays pure even when built-ins exist."""
+        builtin_dir = tmp_path / "builtin_plugins"
+        builtin_dir.mkdir()
+
+        assert _resolve_plugin_dirs([], builtin_plugins_dir=builtin_dir) == []
+
+    def test_default_plugin_dirs_scan_builtins(self, tmp_path):
+        """Default runtime mode still discovers the built-in plugin root."""
+        builtin_dir = tmp_path / "builtin_plugins"
+        builtin_dir.mkdir()
+
+        assert _resolve_plugin_dirs(None, builtin_plugins_dir=builtin_dir) == [builtin_dir]
 
     @pytest.mark.asyncio
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):

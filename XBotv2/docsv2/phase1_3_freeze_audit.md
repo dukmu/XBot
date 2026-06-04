@@ -92,6 +92,9 @@ are the primary freeze gate.
   stages such as `ON_TURN_START` continue to log-and-continue.
 - Bootstrap now passes externally supplied `plugin_configs` through to
   `PluginLoader`, while preserving personality plugin config overrides.
+- Bootstrap now treats `plugin_dirs=None` as the default built-in plugin scan
+  and explicit `plugin_dirs=[]` as no-plugin mode, so Phase 1-3 core tests do
+  not depend on Phase 4 built-in plugin directories staying manifest-free.
 - Added `docsv2/token_budget_hooks.md` to record the current token-estimation
   gap, the fine-grained hook surface now available to plugins, and the evidence
   needed before token budget control can be frozen.
