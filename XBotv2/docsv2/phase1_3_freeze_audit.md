@@ -8,8 +8,11 @@ are the primary freeze gate.
 
 ## Fixed Before Freeze
 
-- Removed the placeholder core `ask` tool. It is not registered until the
-  protocol and TUI support a real interrupt/resume interaction flow.
+- Removed the placeholder core `ask` tool. Core now registers event-driven
+  `send_message` and `ask_user` tools instead: `send_message` emits a
+  non-blocking `client_message`, while `ask_user` emits `user_input_required`,
+  marks the session interrupted, and stops the current turn until a future
+  resume protocol is implemented.
 - Expanded filesystem tools:
   - `filesystem_read` returns JSON content plus path, size, mtime, line count,
     returned line count, and truncation flags.
@@ -21,8 +24,10 @@ are the primary freeze gate.
 - Personality tool selectors now call `ToolRegistry.restrict()`, so the model
   and runtime see only enabled tools. Unknown selectors fail closed instead of
   silently exposing all registered tools.
-- Permission and sandbox `ask` decisions now fail closed until protocol/TUI
-  interactive approval exists; they are no longer treated as implicit allow.
+- Permission and sandbox `ask` decisions now emit protocol-visible
+  `permission_request` events and fail closed until protocol/TUI interactive
+  approval exists; they are no longer treated as implicit allow. Denials emit
+  `permission_denied`.
 - Added a default `AFTER_TOOLS` hook that caches oversized tool results under
   `state/artifacts/tool_results/` and replaces inline results with a bounded
   preview before history persistence and JSONL emission.
@@ -39,10 +44,13 @@ are the primary freeze gate.
 - Personality-declared hooks in `personality.yaml` are now resolved and
   registered during bootstrap; invalid hook targets fail loudly instead of
   being silently ignored.
-- Documentation now uses the implemented 33 hook stages, including user intake,
+- Documentation now uses the implemented 41 hook stages, including user intake,
   source-tagged context component, pre-bind tool schema, provider error,
-  per-tool-call, and persistence hooks needed for future token estimation,
+  stop/failure, pre/post compact, permission request/denied, per-tool-call,
+  tool batch, and persistence hooks needed for future token estimation,
   statistics, and budget control plugins.
+- Bootstrap now passes externally supplied `plugin_configs` through to
+  `PluginLoader`, while preserving personality plugin config overrides.
 - Added `docsv2/token_budget_hooks.md` to record the current token-estimation
   gap, the fine-grained hook surface now available to plugins, and the evidence
   needed before token budget control can be frozen.
@@ -84,9 +92,9 @@ are the primary freeze gate.
 
 ## Remaining Weak Points
 
-- Permission and sandbox `ask` decisions still do not interrupt and resume a
-  turn through JSONL/TUI. This is now a feature gap; the current runtime fails
-  closed instead.
+- Permission and sandbox `ask` decisions still do not resume a turn through
+  JSONL/TUI after approval. The current runtime emits the request event and
+  fails closed; resume is the remaining feature gap.
 - Phase 4 built-in plugins are still empty directories, so Phase 1-3 freeze
   should be judged only as a plugin-capable core, not as migrated feature
   parity.

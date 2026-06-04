@@ -26,6 +26,8 @@ class HookStage(enum.Enum):
     # -- Turn lifecycle ---------------------------------------------------
     ON_TURN_START = "on_turn_start"
     ON_TURN_END = "on_turn_end"
+    ON_STOP = "on_stop"
+    ON_STOP_FAILURE = "on_stop_failure"
 
     # -- User message intake ----------------------------------------------
     BEFORE_USER_MESSAGE_ACCEPT = "before_user_message_accept"
@@ -33,6 +35,8 @@ class HookStage(enum.Enum):
 
     # -- Loop lifecycle (short-circuit enabled) ---------------------------
     BEFORE_CONTEXT = "before_context"
+    PRE_COMPACT = "pre_compact"
+    POST_COMPACT = "post_compact"
     BEFORE_CONTEXT_BUILD = "before_context_build"
     AFTER_CONTEXT = "after_context"
     AFTER_CONTEXT_COMPONENTS_BUILD = "after_context_components_build"
@@ -54,8 +58,12 @@ class HookStage(enum.Enum):
 
     # -- Tool call lifecycle ----------------------------------------------
     ON_TOOL_CALLS_PARSED = "on_tool_calls_parsed"
+    ON_PERMISSION_REQUEST = "on_permission_request"
+    ON_PERMISSION_DENIED = "on_permission_denied"
     BEFORE_TOOL_CALL = "before_tool_call"
     AFTER_TOOL_CALL = "after_tool_call"
+    ON_TOOL_CALL_FAILURE = "on_tool_call_failure"
+    POST_TOOL_BATCH = "post_tool_batch"
     ON_TOOL_DENIED = "on_tool_denied"
 
     # -- Persistence lifecycle --------------------------------------------
@@ -70,6 +78,7 @@ class HookStage(enum.Enum):
 # Stages that permit short-circuit (first truthy return stops execution)
 SHORT_CIRCUIT_STAGES = frozenset({
     HookStage.BEFORE_CONTEXT,
+    HookStage.PRE_COMPACT,
     HookStage.BEFORE_CONTEXT_BUILD,
     HookStage.AFTER_CONTEXT,
     HookStage.BEFORE_MODEL_REQUEST,
@@ -133,5 +142,8 @@ class HookContext:
     tool_call: dict[str, Any] | None = None
     tool_results: list[Any] | None = None
     tool_result: Any | None = None
+    stop_reason: str | None = None
+    compact_reason: str | None = None
+    permission_decision: str | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None

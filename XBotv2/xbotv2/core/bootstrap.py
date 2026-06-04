@@ -41,6 +41,7 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # ------------------------------------------------------------------
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
+from xbotv2.core.builtin_tools.interaction import INTERACTION_TOOLS
 from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
@@ -50,6 +51,8 @@ CORE_BASE_TOOLS = [
     (FILESYSTEM_TOOLS[0], "sandboxed", "parallel", ("path",)),   # filesystem_read
     (FILESYSTEM_TOOLS[1], "sandboxed", "sequential", ("path",)),  # filesystem_write
     (FILESYSTEM_TOOLS[2], "sandboxed", "parallel", ("path",)),   # filesystem_list
+    (INTERACTION_TOOLS[0], "host", "sequential", ()),  # send_message
+    (INTERACTION_TOOLS[1], "host", "sequential", ()),  # ask_user
 ]
 
 
@@ -154,7 +157,7 @@ async def bootstrap(
             tool_registry,
             context_builder,
             state_store,
-            agent_config.plugins if agent_config.plugins else {},
+            _plugin_configs,
         )
 
     # 7. Create LLM client

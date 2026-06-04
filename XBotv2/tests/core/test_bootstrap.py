@@ -1,5 +1,7 @@
 """Tests for the bootstrap sequence — engine with zero plugins."""
 
+import json
+
 import pytest
 
 from xbotv2.core.bootstrap import bootstrap
@@ -37,6 +39,8 @@ class TestBootstrapBasics:
         assert "filesystem_read" in tool_names
         assert "filesystem_write" in tool_names
         assert "filesystem_list" in tool_names
+        assert "send_message" in tool_names
+        assert "ask_user" in tool_names
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
@@ -124,6 +128,45 @@ hooks:
                 thread_id="test-thread",
                 llm_override=MockLLM(responses=[]),
             )
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_passes_external_plugin_configs(
+        self, temp_data_dir, tmp_path, monkeypatch
+    ):
+        """External bootstrap plugin_configs reach plugin on_load."""
+        plugin_root = tmp_path / "plugins"
+        plugin_dir = plugin_root / "configured"
+        plugin_dir.mkdir(parents=True)
+        output_path = tmp_path / "received.json"
+        (plugin_dir / "plugin.yaml").write_text(
+            """
+name: configured
+version: 0.1.0
+"""
+        )
+        (plugin_dir / "__init__.py").write_text(
+            f"""
+import json
+from xbotv2.plugin.base import PluginBase
+
+class ConfiguredPlugin(PluginBase):
+    async def on_load(self, config=None):
+        with open({str(output_path)!r}, "w", encoding="utf-8") as fh:
+            json.dump(config or {{}}, fh, sort_keys=True)
+"""
+        )
+        monkeypatch.syspath_prepend(str(plugin_dir))
+
+        await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            plugin_dirs=[plugin_root],
+            plugin_configs={"configured": {"value": 42}},
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert json.loads(output_path.read_text(encoding="utf-8")) == {"value": 42}
 
     @pytest.mark.asyncio
     async def test_bootstrap_engine_runs_turn(self, temp_data_dir, temp_workspace):

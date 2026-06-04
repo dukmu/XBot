@@ -24,6 +24,12 @@ def large_output() -> str:
     return "x" * 200
 
 
+@langchain_tool
+def failing_tool() -> str:
+    """Raise a deterministic tool failure."""
+    raise RuntimeError("boom")
+
+
 @pytest.mark.asyncio
 async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     registry = ToolRegistry()
@@ -57,6 +63,68 @@ async def test_permission_ask_fails_closed_until_interactive_approval_exists(tem
     assert results[0].status == "error"
     assert "Interactive approval is not implemented" in results[0].content
     assert not (temp_workspace / "blocked.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_permission_and_batch_hooks_fire(temp_workspace):
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
+    hook_manager = HookManager()
+    calls = []
+
+    async def permission_request(ctx):
+        calls.append(("permission_request", ctx.tool_call["name"], ctx.permission_decision))
+
+    async def tool_denied(ctx):
+        calls.append(("denied", ctx.tool_call["name"], type(ctx.error).__name__))
+
+    async def post_batch(ctx):
+        calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
+
+    hook_manager.register(HookStage.ON_PERMISSION_REQUEST, permission_request)
+    hook_manager.register(HookStage.ON_TOOL_DENIED, tool_denied)
+    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
+
+    results = await execute_tools(
+        [{"name": "filesystem_write", "args": {"path": "blocked.txt", "content": "no"}, "id": "c1"}],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="ask"),
+        hook_manager=hook_manager,
+        hook_context_factory=_hook_context,
+    )
+
+    assert results[0].status == "error"
+    assert calls == [
+        ("permission_request", "filesystem_write", "ask"),
+        ("denied", "filesystem_write", "PermissionError"),
+        ("batch", 1, 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_hook_fires(temp_workspace):
+    registry = ToolRegistry()
+    registry.register(failing_tool, sandbox_mode="host")
+    hook_manager = HookManager()
+    calls = []
+
+    async def failure(ctx):
+        calls.append((ctx.tool_call["name"], type(ctx.error).__name__, ctx.tool_result.status))
+
+    hook_manager.register(HookStage.ON_TOOL_CALL_FAILURE, failure)
+
+    results = await execute_tools(
+        [{"name": "failing_tool", "args": {}, "id": "c1"}],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+        hook_manager=hook_manager,
+        hook_context_factory=_hook_context,
+    )
+
+    assert results[0].status == "error"
+    assert calls == [("failing_tool", "RuntimeError", "error")]
 
 
 @pytest.mark.asyncio

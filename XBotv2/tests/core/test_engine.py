@@ -26,6 +26,31 @@ def shout(message: str) -> str:
     return message.upper()
 
 
+@langchain_tool
+def send_notice(message: str) -> dict:
+    """Emit a non-blocking client event."""
+    return {
+        "content": "notice sent",
+        "events": [{"type": "client_message", "data": {"message": message}}],
+    }
+
+
+@langchain_tool
+def request_input(question: str) -> dict:
+    """Emit a user-input event and stop the current turn."""
+    return {
+        "content": "waiting for user",
+        "status": "error",
+        "turn_complete": True,
+        "events": [
+            {
+                "type": "user_input_required",
+                "data": {"question": question, "resume_supported": False},
+            }
+        ],
+    }
+
+
 def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
     """Create a minimal engine for testing."""
     return Engine(
@@ -703,6 +728,149 @@ class TestEngineHooks:
 
         assert calls[0] == ("before", 2, 0)
         assert calls[1] == ("after", 2, 2)
+
+    @pytest.mark.asyncio
+    async def test_stop_hooks_receive_reasons(self, state_store, temp_workspace):
+        """Stop hooks distinguish normal completion."""
+        llm = MockLLM(responses=[{"content": "ok"}])
+        registry = ToolRegistry()
+        calls = []
+
+        async def on_stop(ctx):
+            calls.append((ctx.stage, ctx.stop_reason))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.ON_STOP, on_stop)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert calls == [(HookStage.ON_STOP, "completed")]
+
+    @pytest.mark.asyncio
+    async def test_compact_hooks_bracket_before_context_message_replacement(
+        self, state_store, temp_workspace
+    ):
+        """Compaction hooks run around BEFORE_CONTEXT message replacement."""
+        llm = MockLLM(responses=[{"content": "ok"}])
+        registry = ToolRegistry()
+        calls = []
+
+        async def compact(ctx):
+            return {
+                "messages": [HumanMessage(content="compacted")],
+                "compact_reason": "test_compact",
+            }
+
+        async def pre_compact(ctx):
+            calls.append(("pre", ctx.compact_reason, len(ctx.state["messages"])))
+
+        async def post_compact(ctx):
+            calls.append((
+                "post",
+                ctx.compact_reason,
+                ctx.state["previous_message_count"],
+                ctx.state["current_message_count"],
+            ))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_CONTEXT, compact)
+        hook_manager.register(HookStage.PRE_COMPACT, pre_compact)
+        hook_manager.register(HookStage.POST_COMPACT, post_compact)
+
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        _ = [e async for e in engine.run_turn("test")]
+
+        assert calls == [("pre", "test_compact", 1), ("post", "test_compact", 1, 1)]
+        assert engine.messages[0].content == "compacted"
+
+    @pytest.mark.asyncio
+    async def test_tool_client_event_does_not_stop_turn(self, state_store, temp_workspace):
+        """send-message style tools emit client events and continue the loop."""
+        llm = MockLLM(responses=[
+            {
+                "content": "notify",
+                "tool_calls": [{"name": "send_notice", "args": {"message": "heads up"}, "id": "c1"}],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(send_notice, sandbox_mode="host")
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        events = [e async for e in engine.run_turn("notify")]
+
+        assert [e["type"] for e in events].count("assistant_message") == 2
+        assert {"type": "client_message", "data": {"message": "heads up"}} in events
+
+    @pytest.mark.asyncio
+    async def test_ask_user_event_interrupts_turn(self, state_store, temp_workspace):
+        """ask-user style tools emit an input request and mark the session interrupted."""
+        llm = MockLLM(responses=[
+            {
+                "content": "ask",
+                "tool_calls": [{"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}],
+            },
+            {"content": "should not run"},
+        ])
+        registry = ToolRegistry()
+        registry.register(request_input, sandbox_mode="host")
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        events = [e async for e in engine.run_turn("ask")]
+
+        assert any(e["type"] == "user_input_required" for e in events)
+        assert llm.call_count == 1
+        assert state_store.read_state()["status"] == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_permission_request_event_reaches_client(self, state_store, temp_workspace):
+        """Permission ask decisions are protocol-visible events."""
+        llm = MockLLM(responses=[
+            {
+                "content": "write",
+                "tool_calls": [{"name": "echo", "args": {"message": "hi"}, "id": "c1"}],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=HookManager(),
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="ask"),
+            config=None,
+        )
+
+        events = [e async for e in engine.run_turn("need approval")]
+
+        permission_event = next(e for e in events if e["type"] == "permission_request")
+        assert permission_event["data"]["tool_call"]["name"] == "echo"
+        assert permission_event["data"]["resume_supported"] is False
 
 
 class TestEngineState:

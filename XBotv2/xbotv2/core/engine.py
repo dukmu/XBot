@@ -138,6 +138,17 @@ class Engine:
                     "message": str(exc),
                 },
             )
+            failure_ctx = self._make_hook_context(
+                HookStage.ON_STOP_FAILURE,
+                user_input=user_input,
+                stop_reason="error",
+                error=exc,
+            )
+            await self.hook_manager.run(
+                HookStage.ON_STOP_FAILURE,
+                failure_ctx,
+                short_circuit=False,
+            )
             ctx = self._make_hook_context(
                 HookStage.ON_ERROR,
                 user_input=user_input,
@@ -234,7 +245,41 @@ class Engine:
             if short_circuit is not None:
                 # Hook short-circuited — could be compaction replacing messages
                 if isinstance(short_circuit, dict) and "messages" in short_circuit:
+                    compact_reason = str(short_circuit.get("compact_reason", "before_context"))
+                    pre_compact_ctx = self._make_hook_context(
+                        HookStage.PRE_COMPACT,
+                        compact_reason=compact_reason,
+                    )
+                    pre_compact_result = await self.hook_manager.run(
+                        HookStage.PRE_COMPACT,
+                        pre_compact_ctx,
+                        short_circuit=True,
+                    )
+                    if isinstance(pre_compact_result, dict):
+                        if "messages" in pre_compact_result:
+                            short_circuit["messages"] = pre_compact_result["messages"]
+                        if "compact_reason" in pre_compact_result:
+                            compact_reason = str(pre_compact_result["compact_reason"])
+                    elif pre_compact_result is not None:
+                        yield self._default_hook_rejection_event(HookStage.PRE_COMPACT)
+                        turn_complete = True
+                        break
+
+                    previous_message_count = len(self._messages)
                     self._messages = short_circuit["messages"]
+                    post_compact_ctx = self._make_hook_context(
+                        HookStage.POST_COMPACT,
+                        compact_reason=compact_reason,
+                    )
+                    post_compact_ctx.state.update({
+                        "previous_message_count": previous_message_count,
+                        "current_message_count": len(self._messages),
+                    })
+                    await self.hook_manager.run(
+                        HookStage.POST_COMPACT,
+                        post_compact_ctx,
+                        short_circuit=False,
+                    )
                 elif not isinstance(short_circuit, dict):
                     yield self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
                     turn_complete = True
@@ -549,6 +594,16 @@ class Engine:
 
             # Yield tool results
             for tm in tool_messages:
+                for client_event in getattr(tm, "additional_kwargs", {}).get("xbotv2_events", []):
+                    if client_event.get("type") == "user_input_required":
+                        self.state_store.append_event("interrupted", client_event.get("data", {}))
+                    else:
+                        self.state_store.append_event(
+                            client_event.get("type", "client_event"),
+                            client_event.get("data", {}),
+                        )
+                    yield client_event
+
                 yield {
                     "type": "tool_result",
                     "data": {
@@ -565,6 +620,13 @@ class Engine:
                 )
                 await self.hook_manager.run(HookStage.ON_TOOL_MESSAGE, t_ctx, short_circuit=False)
 
+            if any(
+                getattr(tm, "additional_kwargs", {}).get("xbotv2_turn_complete")
+                for tm in tool_messages
+            ):
+                turn_complete = True
+                break
+
             if tools_result is not None:
                 if isinstance(tools_result, dict):
                     if "event" in tools_result:
@@ -575,9 +637,27 @@ class Engine:
                 if turn_complete:
                     break
 
+        stop_reason = "completed" if turn_complete else "max_iterations"
+
         # 5. ON_TURN_END hook
         te_ctx = self._make_hook_context(HookStage.ON_TURN_END)
         await self.hook_manager.run(HookStage.ON_TURN_END, te_ctx, short_circuit=False)
+
+        stop_ctx = self._make_hook_context(HookStage.ON_STOP, stop_reason=stop_reason)
+        try:
+            await self.hook_manager.run(HookStage.ON_STOP, stop_ctx, short_circuit=False)
+        except Exception as exc:
+            failure_ctx = self._make_hook_context(
+                HookStage.ON_STOP_FAILURE,
+                stop_reason=stop_reason,
+                error=exc,
+            )
+            await self.hook_manager.run(
+                HookStage.ON_STOP_FAILURE,
+                failure_ctx,
+                short_circuit=False,
+            )
+            raise
 
         self.state_store.append_event("turn_finished", {"turn": self._turn_count})
 
@@ -635,6 +715,9 @@ class Engine:
         tool_call: dict[str, Any] | None = None,
         tool_results: list[Any] | None = None,
         tool_result: Any = None,
+        stop_reason: str | None = None,
+        compact_reason: str | None = None,
+        permission_decision: str | None = None,
         error: Exception | None = None,
     ) -> HookContext:
         """Build a HookContext for the current engine state."""
@@ -661,6 +744,9 @@ class Engine:
             tool_call=tool_call,
             tool_results=tool_results,
             tool_result=tool_result,
+            stop_reason=stop_reason,
+            compact_reason=compact_reason,
+            permission_decision=permission_decision,
             error=error,
         )
 

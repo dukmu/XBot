@@ -45,6 +45,7 @@ async def execute_tools(
     """
     results: list[ToolMessage] = []
     denials: dict[str, str] = {}  # tool_call_id → reason
+    denial_events: dict[str, list[dict[str, Any]]] = {}
     sequential_tools: set[str] = set()
 
     # Phase 1: Guards — check sandbox and permissions for each tool
@@ -69,6 +70,25 @@ async def execute_tools(
             )
             if not allowed:
                 denials[tc["id"]] = reason
+                permission_stage = (
+                    HookStage.ON_PERMISSION_REQUEST
+                    if "approval required" in reason.lower()
+                    else HookStage.ON_PERMISSION_DENIED
+                )
+                denial_events[tc["id"]] = [_permission_client_event(
+                    permission_stage,
+                    tc,
+                    "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
+                    reason,
+                )]
+                await _emit_permission_event(
+                    hook_manager,
+                    hook_context_factory,
+                    permission_stage,
+                    tc,
+                    "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
+                    reason,
+                )
                 await _emit_tool_denied(hook_manager, hook_context_factory, tc, reason)
                 continue
 
@@ -77,6 +97,20 @@ async def execute_tools(
             decision = permission_system.check(tool_name, tc.get("args", {}))
             if decision == "deny":
                 denials[tc["id"]] = f"Permission denied for tool: {tool_name}"
+                denial_events[tc["id"]] = [_permission_client_event(
+                    HookStage.ON_PERMISSION_DENIED,
+                    tc,
+                    decision,
+                    denials[tc["id"]],
+                )]
+                await _emit_permission_event(
+                    hook_manager,
+                    hook_context_factory,
+                    HookStage.ON_PERMISSION_DENIED,
+                    tc,
+                    decision,
+                    denials[tc["id"]],
+                )
                 await _emit_tool_denied(
                     hook_manager,
                     hook_context_factory,
@@ -88,6 +122,20 @@ async def execute_tools(
                 denials[tc["id"]] = (
                     f"Permission approval required for tool: {tool_name}. "
                     "Interactive approval is not implemented in this runtime."
+                )
+                denial_events[tc["id"]] = [_permission_client_event(
+                    HookStage.ON_PERMISSION_REQUEST,
+                    tc,
+                    decision,
+                    denials[tc["id"]],
+                )]
+                await _emit_permission_event(
+                    hook_manager,
+                    hook_context_factory,
+                    HookStage.ON_PERMISSION_REQUEST,
+                    tc,
+                    decision,
+                    denials[tc["id"]],
                 )
                 await _emit_tool_denied(
                     hook_manager,
@@ -110,6 +158,7 @@ async def execute_tools(
                 content=f"Error: {denials[tool_id]}",
                 tool_call_id=tool_id,
                 status="error",
+                additional_kwargs={"xbotv2_events": denial_events.get(tool_id, [])},
             ))
             continue
 
@@ -217,11 +266,12 @@ async def execute_tools(
             else:
                 result = f"Tool {tool_name} is not callable"
 
-            content = str(result) if not isinstance(result, str) else result
+            message_payload = _message_payload_from_result(result, tool_id)
             message = ToolMessage(
-                content=content,
+                content=message_payload["content"],
                 tool_call_id=tool_id,
-                status="success",
+                status=message_payload["status"],
+                additional_kwargs=message_payload["additional_kwargs"],
             )
             results.append(message)
             await _run_tool_hook(
@@ -244,6 +294,15 @@ async def execute_tools(
             await _run_tool_hook(
                 hook_manager,
                 hook_context_factory,
+                HookStage.ON_TOOL_CALL_FAILURE,
+                tool_call={**tc, "args": args},
+                tool_result=message,
+                error=exc,
+                short_circuit=False,
+            )
+            await _run_tool_hook(
+                hook_manager,
+                hook_context_factory,
                 HookStage.AFTER_TOOL_CALL,
                 tool_call={**tc, "args": args},
                 tool_result=message,
@@ -254,6 +313,14 @@ async def execute_tools(
     # Clear one-call sandbox approvals
     if sandbox_policy and hasattr(sandbox_policy, "clear_one_call_approvals"):
         sandbox_policy.clear_one_call_approvals()
+
+    if hook_manager is not None and hook_context_factory is not None:
+        ctx = hook_context_factory(
+            HookStage.POST_TOOL_BATCH,
+            tool_calls=tool_calls,
+            tool_results=results,
+        )
+        await hook_manager.run(HookStage.POST_TOOL_BATCH, ctx, short_circuit=False)
 
     return results
 
@@ -313,6 +380,47 @@ async def _emit_tool_denied(
     )
 
 
+async def _emit_permission_event(
+    hook_manager: Any,
+    hook_context_factory: Any,
+    stage: HookStage,
+    tool_call: dict[str, Any],
+    decision: str,
+    reason: str,
+) -> None:
+    if hook_manager is None or hook_context_factory is None:
+        return
+    ctx = hook_context_factory(
+        stage,
+        tool_call=tool_call,
+        permission_decision=decision,
+        error=PermissionError(reason),
+    )
+    await hook_manager.run(stage, ctx, short_circuit=False)
+
+
+def _permission_client_event(
+    stage: HookStage,
+    tool_call: dict[str, Any],
+    decision: str,
+    reason: str,
+) -> dict[str, Any]:
+    event_type = (
+        "permission_request"
+        if stage == HookStage.ON_PERMISSION_REQUEST
+        else "permission_denied"
+    )
+    return {
+        "type": event_type,
+        "data": {
+            "tool_call": tool_call,
+            "decision": decision,
+            "reason": reason,
+            "resume_supported": False,
+        },
+    }
+
+
 async def _run_tool_hook(
     hook_manager: Any,
     hook_context_factory: Any,
@@ -338,9 +446,24 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> ToolMessage:
     if isinstance(value, ToolMessage):
         return value
     if isinstance(value, dict):
+        additional_kwargs = {}
+        if "events" in value:
+            additional_kwargs["xbotv2_events"] = value["events"]
+        if value.get("turn_complete") is not None:
+            additional_kwargs["xbotv2_turn_complete"] = bool(value["turn_complete"])
         return ToolMessage(
             content=str(value.get("content", "")),
             tool_call_id=str(value.get("tool_call_id", tool_call_id)),
             status=value.get("status", "success"),
+            additional_kwargs=additional_kwargs,
         )
     return ToolMessage(content=str(value), tool_call_id=tool_call_id, status="success")
+
+
+def _message_payload_from_result(result: Any, tool_call_id: str) -> dict[str, Any]:
+    message = _coerce_tool_message(result, tool_call_id)
+    return {
+        "content": message.content,
+        "status": getattr(message, "status", "success"),
+        "additional_kwargs": getattr(message, "additional_kwargs", {}) or {},
+    }

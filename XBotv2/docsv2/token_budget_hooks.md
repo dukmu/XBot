@@ -21,7 +21,12 @@ XBotv2 currently has a provider-facing hook path:
 - `AFTER_MODEL_RESPONSE` observes the raw model response.
 - `ON_MODEL_REQUEST_ERROR` observes provider request failures.
 - `ON_TOOL_CALLS_PARSED`, `BEFORE_TOOL_CALL`, `AFTER_TOOL_CALL`, and
-  `ON_TOOL_DENIED` expose tool-call lifecycle metadata.
+  `ON_TOOL_CALL_FAILURE` expose tool-call lifecycle metadata.
+- `ON_PERMISSION_REQUEST`, `ON_PERMISSION_DENIED`, `ON_TOOL_DENIED`, and
+  `POST_TOOL_BATCH` expose policy and batch execution metadata.
+- `PRE_COMPACT` and `POST_COMPACT` bracket message-history replacement.
+- `ON_STOP` and `ON_STOP_FAILURE` expose final turn outcome and failure
+  reasons.
 - `BEFORE_STATE_PERSIST` and `AFTER_STATE_PERSIST` bracket message persistence
   and state materialization.
 
@@ -62,13 +67,21 @@ These stages are now available for token budget plugins:
 | `BEFORE_USER_MESSAGE_ACCEPT` | Validate or reject user input before it enters history; silent rejection becomes a bounded error. |
 | `AFTER_USER_MESSAGE_ACCEPT` | Record the accepted user-message delta. |
 | `BEFORE_CONTEXT_BUILD` | Let plugins prepare context-build parameters before assembly. |
+| `PRE_COMPACT` | Observe or rewrite a pending compaction before history replacement. |
+| `POST_COMPACT` | Record message-count deltas after history replacement. |
 | `AFTER_CONTEXT_COMPONENTS_BUILD` | Expose source-tagged context components before they become provider messages. |
 | `BEFORE_TOOL_SCHEMA_BIND` | Let plugins filter visible tools before provider binding. |
 | `ON_MODEL_REQUEST_ERROR` | Distinguish provider-call failures from generic engine errors. |
 | `ON_TOOL_CALLS_PARSED` | Observe normalized tool calls before execution. |
+| `ON_PERMISSION_REQUEST` | Observe sandbox or permission ask decisions before they fail closed. |
+| `ON_PERMISSION_DENIED` | Observe sandbox or permission denials. |
 | `BEFORE_TOOL_CALL` | Per-tool-call gate for permissions, auditing, and argument rewrites; rewritten ids and sandboxed paths are honored. |
 | `AFTER_TOOL_CALL` | Per-tool-call result observation before batch-level `AFTER_TOOLS`. |
+| `ON_TOOL_CALL_FAILURE` | Observe tool exceptions with the generated error ToolMessage. |
+| `POST_TOOL_BATCH` | Observe all tool calls and results in one batch. |
 | `ON_TOOL_DENIED` | Structured event for sandbox or permission denial. |
+| `ON_STOP` | Record successful turn stop reason. |
+| `ON_STOP_FAILURE` | Record turn or stop failure reason. |
 | `BEFORE_STATE_PERSIST` | Snapshot plugin stats before materialization. |
 | `AFTER_STATE_PERSIST` | Confirm persistence and emit bookkeeping events. |
 

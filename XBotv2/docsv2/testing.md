@@ -7,12 +7,12 @@ tests/
   conftest.py               # Shared fixtures: temp_data_dir, temp_workspace
   core/                     # Core tests (NO plugins loaded)
     conftest.py
-    test_hooks.py           # HookManager, all 33 stages
+    test_hooks.py           # HookManager, all 41 stages
     test_state.py           # CoreStateStore, materializer, events, plugin state
     test_context.py         # ContextBuilder, fragments, cache
     test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
     test_tool_registry.py   # ToolRegistry, filtering
-    test_tool_runtime_cache.py  # Sandbox path resolution, tool-result cache hook
+    test_tool_runtime_cache.py  # Sandbox path resolution, permission events, tool-result cache hook
     test_sandbox.py         # SandboxPolicy
     test_permissions.py     # PermissionSystem
     test_engine.py          # Engine ReAct loop
@@ -117,5 +117,7 @@ estimation and budget control are frozen. The important future checks are:
 - provider request failures trigger a provider-specific hook plus `ON_ERROR`
 - user intake, tool-call lifecycle, and persistence hooks receive the intended
   context fields
+- stop, compaction, permission, failure, and post-tool-batch hooks receive the
+  intended context fields
 - observe-only token stats persist source breakdowns without changing behavior
 - hard budget failures short-circuit before any provider call

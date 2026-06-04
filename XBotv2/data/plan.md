@@ -24,7 +24,7 @@ XBotv2/
       bootstrap.py             # Full bootstrap sequence
     hooks/                     # Complete hook lifecycle
       manager.py               # HookManager: register, execute, lifecycle stages
-      types.py                 # HookStage enum (33 stages), HookContext dataclass
+      types.py                 # HookStage enum (41 stages), HookContext dataclass
     plugin/                    # Plugin system
       loader.py                # PluginLoader: discover, resolve deps, load
       base.py                  # PluginBase abstract class
@@ -118,7 +118,7 @@ Plugins register fragments at named stages: `system_prefix`, `system_instruction
 
 Cache invalidation uses explicit cache objects (constructor-injected), not module-level globals — this fixes the current test leakage problem.
 
-## Hook System (33 Stages)
+## Hook System (41 Stages)
 
 ### Stage Definitions (`xbotv2/hooks/types.py`)
 
@@ -133,6 +133,8 @@ class HookStage(Enum):
     # Turn lifecycle
     ON_TURN_START = "on_turn_start"           # User message received
     ON_TURN_END = "on_turn_end"               # Turn processing complete
+    ON_STOP = "on_stop"                       # Turn stopped
+    ON_STOP_FAILURE = "on_stop_failure"       # Turn stop or execution failed
 
     # User message intake
     BEFORE_USER_MESSAGE_ACCEPT = "before_user_message_accept"
@@ -140,6 +142,8 @@ class HookStage(Enum):
 
     # Loop lifecycle (short-circuit on truthy return)
     BEFORE_CONTEXT = "before_context"         # Before context assembly
+    PRE_COMPACT = "pre_compact"               # Before message-history replacement
+    POST_COMPACT = "post_compact"             # After message-history replacement
     BEFORE_CONTEXT_BUILD = "before_context_build"  # Before ContextBuilder runs
     AFTER_CONTEXT = "after_context"           # After context assembly
     AFTER_CONTEXT_COMPONENTS_BUILD = "after_context_components_build"  # Source-tagged components built
@@ -161,8 +165,12 @@ class HookStage(Enum):
 
     # Tool call lifecycle
     ON_TOOL_CALLS_PARSED = "on_tool_calls_parsed"
+    ON_PERMISSION_REQUEST = "on_permission_request"
+    ON_PERMISSION_DENIED = "on_permission_denied"
     BEFORE_TOOL_CALL = "before_tool_call"
     AFTER_TOOL_CALL = "after_tool_call"
+    ON_TOOL_CALL_FAILURE = "on_tool_call_failure"
+    POST_TOOL_BATCH = "post_tool_batch"
     ON_TOOL_DENIED = "on_tool_denied"
 
     # Persistence lifecycle
@@ -199,6 +207,9 @@ class HookContext:
     tool_call: dict[str, Any] | None = None
     tool_results: list | None = None
     tool_result: Any | None = None
+    stop_reason: str | None = None
+    compact_reason: str | None = None
+    permission_decision: str | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None
 ```
@@ -209,9 +220,10 @@ class HookContext:
 - **All other hooks** (session, turn, message, error, config): all registered functions always run; errors are logged, not propagated
 - **ON_SESSION_INIT hooks** can register tools via `ctx.tools.register()`
 - User intake, source-tagged context components, pre-bind tool filtering,
-  provider request errors, per-tool call lifecycle hooks, and persistence
-  hooks expose the request surface needed by future token estimation, usage
-  statistics, and token budget control plugins.
+  provider request errors, compaction, permission, per-tool call and batch
+  lifecycle hooks, stop/failure hooks, and persistence hooks expose the request
+  surface needed by future token estimation, usage statistics, and token budget
+  control plugins.
 
 ## Plugin System
 
@@ -316,8 +328,10 @@ updated_at: str
 3. Create empty HookManager
 4. Create empty ToolRegistry
 5. Create ContextBuilder
-6. Register core base tools: filesystem and shell (always available)
-   - `ask` is not a core tool until the protocol/TUI interrupt-resume flow is implemented
+6. Register core base tools: filesystem, shell, and interaction tools (always available)
+   - legacy placeholder `ask` is not a core tool
+   - `send_message` emits non-blocking `client_message` events
+   - `ask_user` emits `user_input_required`, marks the session interrupted, and stops the current turn until resume exists
    - filesystem tools return JSON metadata and support structured read/list/write operations
    - default `AFTER_TOOLS` hook caches oversized tool outputs under session artifacts before persistence/protocol emit
 7. Register personality-declared hooks from `hooks:` config entries; invalid targets fail loudly

@@ -17,20 +17,26 @@ stage by returning a truthy value.
 
 The engine works without any plugins. It provides:
 - Linear ReAct loop with context → LLM → tool execution
-- Core built-in tools: filesystem (read/write/list) and shell
+- Core built-in tools: filesystem (read/write/list), shell, and interaction
+  tools
 - Sandbox and permission guards
 - Default tool-result caching for oversized outputs
 - Append-only event persistence
 - Session lifecycle (start, run turns, close)
 
 Permission rules still support the tri-state `allow`/`deny`/`ask` model, but
-`ask` currently fails closed during tool execution because the JSONL/TUI
-interrupt-resume approval flow is not implemented yet.
+`ask` currently emits a `permission_request` event and fails closed during tool
+execution because the JSONL/TUI interrupt-resume approval flow is not
+implemented yet. Denials emit `permission_denied`.
 
-The previous placeholder `ask` tool is intentionally not registered in core:
-there is no complete event/protocol interaction path for pausing a turn and
-resuming with a user answer yet. User-interaction tools should be added only
-when the C/S protocol and TUI surfaces support the full interrupt flow.
+The previous placeholder `ask` tool is intentionally not registered in core.
+Core now exposes two event-driven interaction tools instead:
+
+- `send_message`: emits a non-blocking `client_message` event and lets the
+  current ReAct turn continue.
+- `ask_user`: emits `user_input_required`, appends an `interrupted` event, and
+  stops the current turn. Resuming from the answer is still a protocol/TUI
+  feature gap.
 
 ## Built-in Filesystem Tools
 
@@ -104,6 +110,8 @@ All significant state changes are recorded as append-only events:
 - `turn_started`, `turn_finished` — turn boundaries
 - `session_closed` — session termination
 - `error`, `interrupted` — error states
+- `client_message`, `user_input_required` — user interaction events from tools
+- `permission_request`, `permission_denied` — permission/sandbox decisions
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
 - `tool_result_cached` — large tool output persisted to artifacts and truncated inline
