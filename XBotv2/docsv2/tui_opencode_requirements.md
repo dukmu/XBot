@@ -1,489 +1,320 @@
-# XBotv2 TUI OpenCode-Style Requirements and Design Report
-
-Status: draft for correction before further implementation.
-
-This report is the source of truth for the next TUI iteration. The current
-Textual implementation is not considered accepted. Passing unit tests are not
-enough because the reported failures are visible only in real terminal use.
-
-## 1. Scope
-
-The target is the XBotv2 Textual TUI only:
-
-- Runtime entry: `xbotv2 --mode tui`
-- Client implementation: `xbotv2/tui/textual_client.py`
-- Protocol transport: `xbotv2/tui/terminal.py`
-- Replayable TUI state: `xbotv2/tui/client.py`
-- Protocol contract: `xbotv2/protocol/*`
-
-Legacy `xbot/` and root-level deprecated entry points are out of scope.
-
-## 2. OpenCode-Style Product Requirements
-
-### R1. One Main Event Stream
-
-Goal:
-
-- The visible UI is one chronological event stream.
-- User messages, assistant messages, tool calls, tool results, permission
-  requests, sandbox requests, ask-user prompts, client messages, and local
-  acknowledgements all appear inline in that stream.
-- There is no right-side panel, no separate tool/event pane, and no fixed
-  option panel.
-
-Current evidence:
-
-- `textual_client.py` renders `#transcript` plus a bottom composer.
-- Tool and notice widgets are mounted into `#transcript`.
-
-Current gap:
-
-- Event ordering is still fragile because activity widgets are mounted outside
-  `state.transcript`, while messages/tools/notices are mounted from transcript
-  entries. This creates two ordering mechanisms.
-- The user's real output shows duplicated `approval queued` and blank assistant
-  sections, so the event stream is not yet a trustworthy representation of the
-  protocol stream.
-
-Design:
-
-- Use one append-only render log as the only source for visible stream rows.
-- Convert activity rows, local acknowledgements, and protocol events into the
-  same render-log model.
-- Do not mount stream widgets from multiple independent paths.
-
-Acceptance:
-
-- A captured real TUI session must show exact chronological order for:
-  `user -> turn_started/activity -> assistant/tool request -> permission choice
-  -> response recorded -> tool result -> final assistant -> turn finished`.
-- No duplicated local acknowledgement for one user action.
-
-### R2. Single Interaction Mode
-
-Goal:
-
-- There is never a separate focusable message stream and focusable input area.
-- In normal mode, the composer is the only text input.
-- In choice mode, the composer is hidden/disabled and the keyboard operates the
-  inline choice in the stream.
-
-Current evidence:
-
-- Current worktree introduces `TranscriptScroll(can_focus = False)`.
-- Current worktree hides/disables `#input` during active inline choices.
-
-Current gap:
-
-- The design is not fully proven in real terminal behavior.
-- Current tests assert internal widget flags, but do not verify real rendered
-  terminal frames across the complete protocol lifecycle.
-
-Design:
-
-- Define explicit UI modes:
-  - `COMPOSING`: bottom composer visible and focused.
-  - `QUEUED`: composer visible but send creates queued message if a turn is
-    active.
-  - `CHOOSING`: composer hidden; Up/Down moves selected inline choice; Enter
-    submits it.
-  - `WAITING_FOR_ACK`: composer hidden after choice submission until the server
-    acknowledges or the turn ends.
-- Only `COMPOSING` and `QUEUED` accept free-form text.
-
-Acceptance:
-
-- In choice mode, the rendered frame contains no visible input box.
-- Typing letters in choice mode must not alter hidden composer state.
-- Up/Down/Enter must work even when no widget is focused.
-
-### R3. Keyboard Behavior
-
-Goal:
-
-- Normal mode:
-  - Enter sends.
-  - Shift+Enter inserts a newline.
-  - Up/Down navigates input history when appropriate.
-- Choice mode:
-  - Up/Down moves selection.
-  - Enter confirms selection.
-  - Free typing is ignored.
-
-Current evidence:
-
-- `ComposerTextArea._on_key` handles Enter, Shift+Enter, and history.
-- `XBotTextualApp.on_key` handles choice mode keys in the current worktree.
-
-Current gap:
-
-- There is still residual choice handling inside `ComposerTextArea`; this is
-  conceptually wrong if the composer is hidden during choice mode.
-- Repeated Enter appears able to produce duplicate `approval queued` in real
-  output. Confirmation must be idempotent by request id.
-
-Design:
-
-- Composer owns normal mode only.
-- App-level key handler owns choice mode only.
-- Choice confirmation must atomically transition the request id into
-  `submitted` before any await point.
-
-Acceptance:
-
-- Pressing Enter multiple times for one permission request emits exactly one
-  `permission.response`.
-- The stream contains at most one local acknowledgement for one request id.
-
-### R4. Unicode and Chinese Input
-
-Goal:
-
-- Chinese typed in the terminal is preserved from Textual input through:
-  UI state, protocol `user.message`, persisted events, model prompt, and
-  rendered transcript.
-
-Current evidence:
-
-- Unit tests prove that manually loaded Unicode strings render correctly in
-  headless Textual.
-- Real terminal output shows mojibake:
-  `å½åç£çç¨äºå¤å°`
-
-Current gap:
-
-- The bug is not a Rich rendering issue alone. The user message is already
-  corrupted by the time it is displayed as `You`.
-- Existing tests bypass the real terminal input path by calling
-  `input_widget.load_text("你好")`.
-
-Design:
-
-- Add a real terminal/input-path diagnostic before applying fixes:
-  - Log raw `TextArea.text` repr at submit time.
-  - Log outgoing JSON frame payload repr.
-  - Log server-received `user.message` payload repr.
-- Verify locale and Textual driver behavior in the same shell used to run TUI.
-- Do not add blind mojibake "repair" as the primary fix; that can corrupt valid
-  non-Chinese input. Only use repair as a guarded fallback if the root cause is
-  proven to be unrecoverable terminal decoding.
-
-Acceptance:
-
-- A real TUI session where the user types `当前磁盘用了多少` must render that exact
-  string in the `You` message and send that exact string in the JSONL frame.
-
-### R5. No Message Swallowing
-
-Goal:
-
-- Every non-empty user and assistant message emitted by the protocol appears
-  visibly in the stream.
-- Empty or whitespace-only assistant messages should not render as a blank
-  titled block.
-
-Current evidence:
-
-- `TuiState.apply_event` currently appends assistant messages when `content` is
-  truthy, but whitespace-only content is truthy.
-- Real output shows blank assistant blocks:
-  - `16:46:31  XBotv2` followed by no assistant body.
-  - `16:47:01  XBotv2` followed by no visible body.
-- User reports messages are still being swallowed.
-
-Current gap:
-
-- Existing tests only check simple fake assistant events and do not replay a
-  real LM Studio tool-use sequence.
-- There is no raw protocol capture correlated with the rendered frame, so it is
-  not yet known whether the message is lost in protocol, state, widget mount, or
-  terminal rendering.
-
-Design:
-
-- Add a TUI debug capture mode that records:
-  - raw protocol event sequence,
-  - state transcript entries after each event,
-  - rendered widget keys,
-  - exported SVG/text frame after each event in test mode.
-- Treat assistant messages with `content.strip() == ""` as non-renderable, while
-  still processing tool calls.
-- Ensure Rich markup is disabled for message bodies and tool summaries.
-- Replace mixed activity/transcript mounting with the single render log from R1.
-
-Acceptance:
-
-- Given a captured real protocol event sequence, replaying it into TUI state and
-  exporting a frame must show all non-empty assistant messages exactly once.
-- Whitespace-only assistant messages must not create blank `XBotv2` blocks.
-
-### R6. Turn Serialization and Queueing
-
-Goal:
-
-- A user can type while the agent is running.
-- New messages are shown as queued, not inserted as normal user turns.
-- After the active turn ends, queued messages are sent in FIFO order.
-
-Current evidence:
-
-- `queue_user_message` queues normal messages.
-- `_drain_message_queue` appends a user message only when consumed.
-- Status bar shows `queued:N`.
-
-Current gap:
-
-- There is no clear stream row for queued messages.
-- The old visual bug `user-user-ai-ai` must be tested in real rendering, not
-  only state order.
-
-Design:
-
-- Add explicit queued rows in the event stream:
-  - `queued  HH:MM:SS  You  <content>`
-  - When consumed, update or replace the queued row with normal `You`.
-- Preserve FIFO ordering in both state and visual stream.
-
-Acceptance:
-
-- Sending two messages during one active turn renders:
-  active user message, assistant stream, queued user row, then next turn user
-  row after first turn completes.
-
-### R7. Status Bar
-
-Goal:
-
-- Status information is one compact top or bottom status bar.
-- It must not occupy a right panel.
-- It shows session/thread, agent, turn state, queue depth, elapsed time, and
+# XBotv2 TUI Requirements and Design Report, Based on OpenCode
+
+Status: evidence-backed draft. This supersedes the previous report, which was
+not acceptable because it did not first inspect OpenCode's official docs and
+repository.
+
+Last reviewed: 2026-06-05.
+
+## 1. Sources Checked
+
+Primary sources:
+
+- OpenCode TUI docs: `https://opencode.ai/docs/tui/`
+- OpenCode keybind docs: `https://opencode.ai/docs/keybinds/`
+- OpenCode permission docs: `https://opencode.ai/docs/permissions/`
+- OpenCode GitHub TUI entrypoint:
+  `https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/tui/app.tsx`
+- OpenCode raw TUI source:
+  `https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/cli/cmd/tui/app.tsx`
+
+Facts from those sources:
+
+- OpenCode provides an interactive terminal UI for working with an LLM, and
+  running `opencode` starts the TUI for the current directory.
+- OpenCode TUI supports slash commands, file references, shell-command messages,
+  model/session/theme/status dialogs, and configurable `tui.json`.
+- OpenCode keybind defaults include:
+  - `input_submit = return`
+  - `input_newline = shift+return, ctrl+return, alt+return, ctrl+j`
+  - `history_previous = up`, `history_next = down`
+  - `dialog.select.prev = up`, `dialog.select.next = down`,
+    `dialog.select.submit = return`
+  - message scrolling commands exist, including PageUp/PageDown, but the
+    current XBotv2 requirement explicitly asks for mouse wheel rather than
+    PageUp/PageDown.
+- OpenCode TUI config includes `mouse`; the docs state that disabling mouse
+  preserves native terminal mouse selection and scrolling behavior.
+- OpenCode permissions are configured as `allow`, `ask`, or `deny`.
+- When OpenCode asks for approval, the UI offers `once`, `always`, and `reject`.
+- OpenCode permissions include tool-like domains such as `read`, `edit`, `bash`,
+  `question`, `webfetch`, `websearch`, and `external_directory`.
+- OpenCode's TUI source uses OpenTUI/Solid, plugin slots, dialog providers,
+  route providers, a keymap provider, copy/selection utilities, a terminal
+  renderer, and an explicit mouse-enabled renderer configuration.
+
+Important correction:
+
+- OpenCode is not just "a single transcript with no dialogs". It has dialogs,
+  command palette, session/model/theme/status views, plugin routes, and
+  configurable keymaps.
+- The XBotv2 target is therefore not "clone every OpenCode UI behavior". The
+  target is: adopt the OpenCode-style terminal-agent interaction model while
+  preserving the explicit constraints already given for XBotv2.
+
+## 2. XBotv2-Specific User Constraints
+
+These are explicit local requirements and can intentionally differ from
+OpenCode defaults:
+
+- Work only on `XBotv2`; legacy `xbot/` is deprecated.
+- TUI must be the XBotv2 TUI, not the old curses/legacy UI.
+- OpenCode-like layout means event-stream first, not a right-side panel.
+- Do not keep a right-side tool/event area.
+- Do not use fixed button areas for permission/sandbox/ask-user choices.
+- Do not create multiple keyboard focus regions between message stream and
+  input.
+- If a live choice is required, the input box should not render or be usable.
+- Choice options are operated by Up/Down and confirmed with Enter.
+- Normal composer supports Enter send, Shift+Enter newline, and Up/Down history.
+- Mouse wheel scrolling is required. PageUp/PageDown is not a desired primary
+  interaction.
+- Chinese input must work.
+- Messages must not be swallowed.
+- Status should be a compact status bar, not a large right panel.
+- Every message should show a timestamp.
+- Every active turn should show dynamic working state, elapsed time, and token
   usage.
+- Usage from LM Studio-compatible OpenAI responses should be displayed when the
+  protocol emits usage.
 
-Current evidence:
+## 3. OpenCode Feature Mapping to XBotv2
 
-- Current status bar shows session/thread, agent, turn, queue depth, and usage.
+| Area | OpenCode evidence | XBotv2 target |
+| --- | --- | --- |
+| Terminal-first agent UI | Official TUI docs define terminal UI as the primary interactive surface. | Keep Textual TUI as the primary XBotv2 interactive surface. |
+| Configurable keybinds | Official keybind docs define submit/newline/history/dialog selection keys. | Implement required key behavior first; config can come later. |
+| Choice navigation | OpenCode dialog selection uses Up/Down/Return. | XBotv2 inline choices use Up/Down/Enter. |
+| Permission ask outcomes | OpenCode docs define `once`, `always`, `reject`. | XBotv2 should expose `allow once`, `allow session/always`, and `deny`; naming must match runtime semantics. |
+| Mouse behavior | OpenCode docs have `mouse` config; disabling mouse preserves native terminal behavior. | XBotv2 must support wheel scrolling and later decide/document native selection tradeoff. |
+| Copy/selection | OpenCode source wires selection/copy utilities into renderer. | XBotv2 currently has no equivalent; copyability must be tested honestly. |
+| Plugins | OpenCode TUI source has plugin runtime slots. | XBotv2 should keep TUI protocol-only and plugin-friendly, but not import runtime boundaries. |
+| Dialogs | OpenCode uses dialogs extensively. | XBotv2 should not add fixed choice panels now; choices stay in event stream per user requirement. |
 
-Current gap:
+## 4. Required XBotv2 UI Model
 
-- Usage is total-only in the bar; per-turn usage is in activity row.
-- Activity elapsed time currently depends on activity widgets outside the main
-  transcript log.
+### 4.1 Layout
 
-Design:
+Target:
 
-- Keep status compact.
-- Show current turn elapsed and total usage in status.
-- Show per-turn elapsed/usage in the turn activity stream row.
+- One main chronological event stream.
+- One compact status bar.
+- Bottom composer only when free-form input is accepted.
+- No right-side panel.
+- No persistent tool/event side panel.
+- No fixed option strip outside the stream.
 
-Acceptance:
+Rationale:
 
-- LM Studio usage frames must update status in the same run where usage is
-  returned by the provider.
+- OpenCode is terminal-first and has configurable TUI behavior.
+- The user's XBotv2 constraint narrows this to a main event stream and compact
+  status bar.
 
-### R8. Mouse Scrolling and Copyability
+Current XBotv2 gap:
 
-Goal:
-
-- Mouse wheel scrolls the transcript.
-- The UI should not prevent terminal text selection/copy more than Textual
-  inherently requires.
-
-Current evidence:
-
-- `VerticalScroll` provides scroll behavior.
-- `TranscriptScroll(can_focus = False)` preserves mouse scrolling in principle.
-
-Current gap:
-
-- Terminal mouse capture may prevent native selection depending on Textual
-  mouse mode and terminal emulator.
-- No manual verification result is recorded for copy behavior.
-
-Design:
-
-- Keep transcript mouse-scrollable but non-focusable.
-- Investigate Textual mouse mode settings and terminal emulator behavior.
-- If native selection cannot coexist with mouse wheel in Textual, document the
-  tradeoff and provide an alternate copy mode later.
-
-Acceptance:
-
-- Manual run verifies mouse wheel scroll.
-- Manual run records whether native terminal selection works in the target
-  terminal.
-
-### R9. Visual Style
-
-Goal:
-
-- Dense, quiet, event-stream TUI similar to OpenCode.
-- No right-side panels, no card-heavy layout, no large help regions.
-- Timestamps are visible per row.
-- Activity is dynamic but compact.
-
-Current evidence:
-
-- Current CSS uses a dark event-stream layout with timestamps in meta rows.
-
-Current gap:
-
-- The visible output still has excessive vertical gaps and blank assistant
-  sections.
-- Tool result preview is compressed into one line and may be too hard to read.
+- Current implementation still has mixed render paths: protocol transcript
+  entries are mounted via `_render_new_transcript_entries`, while activity rows
+  are mounted separately. This makes ordering fragile.
 
 Design:
 
-- Use compact row blocks:
-  - metadata line,
-  - body line(s),
-  - optional compact details.
-- Collapse empty bodies.
-- Tool details should be expandable later, but the default should show enough
-  context without overwhelming the stream.
+- Introduce one UI render log for all visible rows:
+  - user message
+  - assistant message
+  - tool call
+  - tool result
+  - permission request
+  - sandbox request
+  - ask-user request
+  - local acknowledgement
+  - turn activity
+  - usage update
+  - error/client message
+- The Textual widget tree should be a projection of this render log.
 
-Acceptance:
+### 4.2 Modes
 
-- A real frame with user, assistant, tool, permission, and final assistant must
-  fit coherently in a standard 100x32 terminal.
+Use explicit modes:
 
-## 3. Current High-Priority Defects
+- `COMPOSING`: composer visible and usable.
+- `RUNNING`: active turn in progress; composer can accept queued messages only
+  if queueing is enabled.
+- `CHOOSING`: live permission/sandbox/ask-user choice is active; composer is
+  hidden and disabled.
+- `SUBMITTED`: a choice was submitted; composer remains hidden until server
+  acknowledgement or turn end.
+- `ERROR`: composer state depends on recoverability.
 
-1. Chinese input is corrupted in real TUI input.
-   - Severity: blocker.
-   - Evidence: user-provided output shows mojibake in the `You` row.
+Mode rules:
 
-2. Assistant messages are still swallowed or rendered as blank blocks.
-   - Severity: blocker.
-   - Evidence: user report plus blank `XBotv2` rows in real output.
+- In `CHOOSING`, Up/Down changes the selected inline option and Enter confirms.
+- In `CHOOSING`, text keys must not change hidden composer state.
+- In `SUBMITTED`, repeated Enter must not send a duplicate response.
+- The transition from `CHOOSING` to `SUBMITTED` must be synchronous and keyed by
+  request id.
 
-3. Permission acknowledgement can duplicate.
-   - Severity: high.
-   - Evidence: user output contains two identical `approval queued` rows for
-     one selected permission.
+### 4.3 Keyboard Behavior
 
-4. Tests are too weak.
-   - Severity: high.
-   - Evidence: headless tests pass while real TUI fails.
-   - Missing coverage: real terminal input path, real protocol replay, duplicate
-     Enter idempotency, LM Studio tool-use transcript replay.
+Normal composer:
 
-5. Rendering model is split.
-   - Severity: high.
-   - Evidence: activity widgets are mounted independently from transcript
-     entries.
+- Enter sends the current message.
+- Shift+Enter inserts a newline.
+- Up/Down navigates input history when the input is empty or already browsing
+  history.
 
-## 4. Proposed Architecture
+Choice mode:
 
-### 4.1 Protocol Event Log
+- Up selects previous option.
+- Down selects next option.
+- Enter submits current option.
+- Any other printable input is ignored.
 
-Keep `TerminalSession` as protocol-only. Every server frame should be available
-to the TUI as raw event data before any UI transformation.
+OpenCode basis:
 
-### 4.2 UI Render Log
+- Official keybind defaults use Return to submit, Shift+Return/Ctrl+Return/etc.
+  for newline, Up/Down for history, and Up/Down/Return for dialog selection.
 
-Introduce a dedicated Textual render model:
+XBotv2 divergence:
 
-```text
-RenderEntry
-  id: stable string
-  kind: user | assistant | tool | permission | ask_user | local_ack | activity | error
-  request_id: optional protocol request id
-  turn: optional turn id
-  timestamp: local display timestamp
-  status: pending | active | submitted | resolved | failed
-  body: display text
-  choices: optional list
-  selected_index: optional int
-```
+- OpenCode also supports PageUp/PageDown message scrolling. XBotv2 should not
+  introduce PageUp/PageDown as the primary scroll affordance because the current
+  requirement asks for mouse wheel only.
 
-All visible stream rows come from this model. No widget should be mounted
-outside it.
+### 4.4 Permission, Sandbox, and Ask-User Choices
 
-### 4.3 Interaction Controller
+Target:
 
-Track one active interaction:
+- Permission/sandbox/ask-user requests render inline in the event stream.
+- The visible row contains the prompt and selectable options.
+- No Textual `Button` widgets for these options; they create focus ambiguity.
+- Choices must be display rows controlled by the TUI mode controller.
 
-```text
-ActiveInteraction
-  request_id
-  kind: permission | ask_user | sandbox
-  choices
-  selected_index
-  state: choosing | submitted
-```
+OpenCode basis:
 
-Rules:
+- OpenCode permission config uses `allow`, `ask`, `deny`.
+- OpenCode approval UI has `once`, `always`, `reject`.
+- OpenCode keybinds have generic dialog selection commands.
 
-- There can be only one active interaction.
-- Confirming sets `state=submitted` synchronously before awaiting.
-- A second Enter for the same `request_id` is ignored.
-- Server ack resolves the interaction and restores composer mode.
+XBotv2 semantics:
 
-### 4.4 Input Controller
+- Permission persistence scopes already discussed for XBotv2 are:
+  - non-persistent one-shot decision,
+  - session-level decision,
+  - always/personality-level decision.
+- UI wording must match runtime behavior. Do not label something `always` if it
+  only lasts for the current session.
 
-The composer is enabled only when the UI mode accepts text. It must not try to
-handle choice mode.
+### 4.5 Event Stream Rendering
 
-### 4.5 Renderer
+Target row types:
 
-Renderer consumes the render log and updates/mounts widgets by stable entry id.
-It must support update-in-place for:
+- `user`: timestamp, "You", body.
+- `assistant`: timestamp, agent name, body.
+- `activity`: spinner/working state, elapsed time, per-turn usage.
+- `tool_call`: tool name, compact args.
+- `tool_result`: status and compact result preview, with cached/truncated
+  indicator if applicable.
+- `permission_request`: reason and choices.
+- `ask_user`: question and choices/free-answer indication.
+- `local_ack`: selected/submitted action, exactly once per request id.
+- `usage`: reflected in status bar and activity row; usually not a standalone
+  noisy row unless useful.
+- `error/client_message`: inline notice.
 
-- activity elapsed time,
-- queued to active message transition,
-- choice selected index,
-- choice submitted/resolved state,
-- tool result completion.
+Current defect evidence from real output:
 
-## 5. Verification Plan
+- Chinese text appears as mojibake.
+- Blank assistant blocks appear.
+- `approval queued` appears twice.
+- User still reports messages are swallowed.
 
-Minimum required checks before claiming OpenCode-style TUI is fixed:
+Design requirements:
 
-1. Unit: state ignores whitespace-only assistant content but preserves tool
-   calls.
-2. Unit: one permission request plus repeated Enter emits one response and one
-   local ack.
-3. Unit: choice mode hides/disables composer and ignores free typing.
-4. Unit: render log preserves event order under user/tool/permission/final
-   assistant sequence.
-5. Replay: feed captured LM Studio protocol events into Textual headless app and
-   export SVG; assert all non-empty messages are visible.
-6. Manual: run real server and TUI, type Chinese text directly, verify no
-   mojibake in UI and JSONL payload.
-7. Manual: run tool permission flow, select `Always allow`, verify no duplicate
-   ack and no blank assistant blocks.
-8. Manual: verify mouse wheel scrolls transcript.
+- Empty or whitespace-only assistant messages must not render as blank agent
+  rows.
+- Non-empty user/assistant messages must render exactly once.
+- Tool calls in blank assistant messages must still render.
+- Local acknowledgement rows must be keyed by request id to prevent duplicates.
+- Message bodies must render as plain text, not Rich markup.
 
-## 6. Non-Goals for the Immediate Fix
+## 5. Verification Requirements
 
-- Do not redesign server/session/thread semantics.
-- Do not touch legacy `xbot/`.
-- Do not add right panels or fixed option areas.
-- Do not add broad keyboard shortcuts beyond required input/history/choice
-  behavior.
-- Do not solve terminal-native copy if it conflicts with Textual mouse support
-  until mouse/copy behavior is explicitly tested.
+Do not claim TUI completion from unit tests alone. Required evidence:
 
-## 7. Implementation Order
+1. Source-aligned spec:
+   - This document cites OpenCode docs/repo and separates OpenCode behavior from
+     XBotv2-specific decisions.
 
-1. Add debug/replay instrumentation for real protocol and rendered stream.
-2. Fix render log architecture so all rows share one ordered source.
-3. Fix choice controller idempotency and remove choice handling from composer.
-4. Filter whitespace-only assistant blocks.
-5. Diagnose Chinese input at the real Textual input boundary.
-6. Replace weak headless tests with protocol replay and SVG/text-frame checks.
-7. Run manual TUI verification and record results.
+2. State tests:
+   - Whitespace-only assistant content is ignored.
+   - Tool calls from such assistant events are preserved.
+   - Permission/ask-user pending state is preserved until acknowledgement.
 
-## 8. Current Worktree Note
+3. Interaction tests:
+   - Choice mode hides and disables composer.
+   - Printable keys in choice mode do not mutate composer text.
+   - Repeated Enter for the same request id emits one response and one local
+     acknowledgement.
 
-At the time this report was written, the worktree already contained uncommitted
-changes in:
+4. Replay tests:
+   - Feed a recorded or synthetic LM Studio-style sequence:
+     `user -> assistant tool_call with blank content -> permission_request ->
+     permission_response_recorded -> tool_result -> final assistant`.
+   - Export a Textual frame.
+   - Assert every non-empty user and assistant message is visible.
+   - Assert no blank agent block exists.
+   - Assert no duplicate local acknowledgement exists.
 
-- `XBotv2/xbotv2/tui/textual_client.py`
-- `XBotv2/tests/core/test_tui_client.py`
+5. Manual terminal tests:
+   - Type Chinese directly in the real TUI, not via `load_text`.
+   - Verify exact Chinese text in visible `You` row.
+   - Verify exact Chinese text in outgoing JSONL payload or captured protocol
+     event.
+   - Use mouse wheel to scroll.
+   - Check whether native text selection works with current Textual mouse mode;
+     if not, document the tradeoff and expose a config later.
+
+## 6. Current XBotv2 State Against Requirements
+
+| Requirement | Current status |
+| --- | --- |
+| Source-backed OpenCode analysis | Now documented here. |
+| Single event stream | Partial; render paths are still split. |
+| No right panel | Appears aligned in Textual code, but needs rendered-frame proof. |
+| No multiple focus regions | Partial; transcript can be non-focusable, but real TUI behavior must be tested. |
+| Choices inline, not buttons | Partial in current worktree; not yet accepted because duplicate ack occurred. |
+| Input hidden during choice | Partial in current worktree; needs real rendered-frame proof. |
+| Chinese input | Failing in real TUI. |
+| No swallowed messages | Failing or unproven; user reports failure. |
+| No blank assistant blocks | Failing in real output; fix needed. |
+| Usage display | Partial; status bar shows usage if usage frame arrives. |
+| Mouse wheel scroll | Unverified manually. |
+| Copy/select behavior | Unverified; OpenCode has explicit mouse config and selection code, XBotv2 does not. |
+
+## 7. Implementation Plan After This Report
+
+1. Revert or rework any previous TUI code that conflicts with this document.
+2. Add protocol replay/debug capture before further visual claims.
+3. Collapse visible rendering into one ordered render log.
+4. Implement explicit UI mode controller.
+5. Implement request-id-keyed interaction controller.
+6. Filter blank assistant rows while preserving tool calls.
+7. Add replay/SVG tests for the LM Studio tool-permission-final-answer path.
+8. Diagnose Chinese input using real terminal capture.
+9. Run manual TUI verification and record the results in this document or a
+   follow-up verification log.
+
+## 8. Commit Hygiene
+
+Only TUI-related files should be committed for this work:
+
+- `XBotv2/docsv2/tui_opencode_requirements.md`
+- `XBotv2/xbotv2/tui/*`
+- focused TUI/protocol tests
+
+Do not include unrelated changes in:
+
+- root `main.py`
 - `XBotv2/data/personalities/default/personality.yaml`
-- `main.py`
 
-The TUI code changes are not accepted as complete. The personality and root
-`main.py` changes are unrelated to this report and should not be included in
-TUI stabilization commits unless explicitly reviewed.
+unless they are explicitly reviewed and required for the TUI task.
