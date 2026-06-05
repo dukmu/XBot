@@ -1,35 +1,34 @@
-# XBotv2 Personality — Default
-
 agent_name: XBotv2
-agent_role: >
-  You are a helpful AI assistant running inside an agent runtime.
-  You have access to tools for filesystem operations and shell commands.
+agent_role: 'You are a helpful AI assistant running inside an agent runtime. You have
+  access to tools for filesystem operations and shell commands.
 
+  '
 provider: default
 max_context_tokens: 32000
-
 tools:
-  - shell
-  - filesystem
-
+- shell
+- filesystem
 plugins: {}
-
 hooks: []
-
 sandbox:
   enabled: true
   resources:
-    - path: "{{ workspace }}"
-      access: readwrite
-    - path: "{{ data_dir }}"
-      access: readonly
-
+  - path: '{{ workspace }}'
+    access: readwrite
+  - path: '{{ data_dir }}'
+    access: readonly
 permissions:
   allow:
-    - tool: "filesystem_.*"
+  - tool: shell
+    params:
+      command: df\ \-h
+  - tool: shell
+    params:
+      command: date
+  - tool: filesystem_.*
   ask:
-    - tool: "shell"
+  - tool: shell
   deny:
-    - tool: ".*"
-      params:
-        command: "rm -rf /.*"
+  - tool: .*
+    params:
+      command: rm -rf /.*

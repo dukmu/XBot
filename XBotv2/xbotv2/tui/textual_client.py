@@ -29,6 +29,7 @@ from xbotv2.tui.client import (
 )
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
+from xbotv2.tui.trace import trace_event
 
 
 class TextualTuiClient:
@@ -244,6 +245,7 @@ class XBotTextualApp(App[None]):
         if self._choice_mode_active():
             return
         text = composer.text.strip()
+        trace_event("tui.submit", {"text": text, "repr": repr(text)})
         composer.load_text("")
         self._history_index = None
         self._resize_composer()

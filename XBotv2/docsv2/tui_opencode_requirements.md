@@ -268,11 +268,25 @@ Do not claim TUI completion from unit tests alone. Required evidence:
 5. Manual terminal tests:
    - Type Chinese directly in the real TUI, not via `load_text`.
    - Verify exact Chinese text in visible `You` row.
-   - Verify exact Chinese text in outgoing JSONL payload or captured protocol
-     event.
+   - Verify exact Chinese text in `XBOTV2_TUI_TRACE` records for `tui.submit`
+     and `protocol.send`.
    - Use mouse wheel to scroll.
    - Check whether native text selection works with current Textual mouse mode;
      if not, document the tradeoff and expose a config later.
+
+6. Diagnostic trace:
+   - Set `XBOTV2_TUI_TRACE=/tmp/xbotv2-tui-trace.jsonl` before launching the
+     TUI.
+   - The trace must record `tui.submit`, `protocol.send`, and `protocol.recv`
+     events as UTF-8 JSONL.
+   - For Chinese input debugging, compare:
+     - `tui.submit.payload.text`
+     - `protocol.send.payload.frame.payload.content` for `user.message`
+     - `protocol.recv.payload.frame.payload.content` for server responses.
+   - If `tui.submit` is already mojibake, the problem is in terminal/Textual
+     input decoding. If `tui.submit` is correct but `protocol.send` is not, the
+     problem is in client serialization. If both are correct but display is
+     wrong, the problem is rendering.
 
 ## 6. Current XBotv2 State Against Requirements
 
@@ -284,7 +298,7 @@ Do not claim TUI completion from unit tests alone. Required evidence:
 | No multiple focus regions | Partial; transcript can be non-focusable, but real TUI behavior must be tested. |
 | Choices inline, not buttons | Partial in current worktree; not yet accepted because duplicate ack occurred. |
 | Input hidden during choice | Partial in current worktree; needs real rendered-frame proof. |
-| Chinese input | Failing in real TUI. |
+| Chinese input | Failing in real TUI; UTF-8 trace hooks now exist to locate the broken layer. |
 | No swallowed messages | Failing or unproven; user reports failure. |
 | No blank assistant blocks | Failing in real output; fix needed. |
 | Usage display | Partial; status bar shows usage if usage frame arrives. |
@@ -300,7 +314,7 @@ Do not claim TUI completion from unit tests alone. Required evidence:
 5. Implement request-id-keyed interaction controller.
 6. Filter blank assistant rows while preserving tool calls.
 7. Add replay/SVG tests for the LM Studio tool-permission-final-answer path.
-8. Diagnose Chinese input using real terminal capture.
+8. Diagnose Chinese input using `XBOTV2_TUI_TRACE` real terminal capture.
 9. Run manual TUI verification and record the results in this document or a
    follow-up verification log.
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, TextIO
 
 from xbotv2.protocol.frames import ProtocolFrame, frame_from_json
+from xbotv2.tui.trace import trace_event
 
 
 class ProtocolClient:
@@ -77,6 +78,7 @@ class ProtocolClient:
         if self._process and self._process.stdin:
             self._process.stdin.write(frame.to_json_line().encode("utf-8"))
             await self._process.stdin.drain()
+        trace_event("protocol.send", {"frame": frame.model_dump(mode="json")})
         return frame
 
     async def read_frame(self) -> ProtocolFrame | None:
@@ -89,7 +91,9 @@ class ProtocolClient:
             return None
         if not line:
             return None
-        return frame_from_json(line.decode("utf-8").strip())
+        frame = frame_from_json(line.decode("utf-8").strip())
+        trace_event("protocol.recv", {"frame": frame.model_dump(mode="json")})
+        return frame
 
     async def _drain_process_pipes(self, process: asyncio.subprocess.Process) -> None:
         for pipe in (process.stdout, process.stderr):

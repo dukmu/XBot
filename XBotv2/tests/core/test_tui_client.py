@@ -4,6 +4,7 @@ import ast
 import argparse
 import asyncio
 import html
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -210,6 +211,79 @@ def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
     assert second is not None
     assert first.plain == "You\n你好 [不要解析] 中文"
     assert second.plain == "助手\n收到：中文正常显示"
+
+
+def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
+    from xbotv2.tui.trace import trace_event
+
+    trace_path = tmp_path / "tui-trace.jsonl"
+    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
+
+    trace_event("tui.submit", {"text": "当前磁盘用了多少", "repr": repr("当前磁盘用了多少")})
+
+    record = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert record["stage"] == "tui.submit"
+    assert record["payload"]["text"] == "当前磁盘用了多少"
+
+
+@pytest.mark.asyncio
+async def test_protocol_trace_records_unicode_frames(tmp_path, monkeypatch):
+    from xbotv2.tui.terminal import ProtocolClient
+
+    class FakeStdin:
+        def __init__(self):
+            self.written = b""
+
+        def write(self, data):
+            self.written += data
+
+        async def drain(self):
+            return None
+
+    class FakeStdout:
+        def __init__(self, frame):
+            self._line = frame.to_json_line().encode("utf-8")
+
+        async def readline(self):
+            line = self._line
+            self._line = b""
+            return line
+
+    class FakeProcess:
+        def __init__(self, frame):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout(frame)
+
+    trace_path = tmp_path / "protocol-trace.jsonl"
+    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
+    frame = ProtocolFrame(
+        seq=1,
+        direction="server_to_client",
+        type="assistant_message",
+        session_id="s",
+        thread_id="t",
+        request_id="",
+        payload={"content": "收到：当前磁盘用了多少"},
+    )
+    client = ProtocolClient([])
+    client._process = FakeProcess(frame)
+
+    await client.send(
+        "user.message",
+        "s",
+        "t",
+        {"content": "当前磁盘用了多少"},
+    )
+    received = await client.read_frame()
+
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert received is not None
+    assert [record["stage"] for record in records] == ["protocol.send", "protocol.recv"]
+    assert records[0]["payload"]["frame"]["payload"]["content"] == "当前磁盘用了多少"
+    assert records[1]["payload"]["frame"]["payload"]["content"] == "收到：当前磁盘用了多少"
 
 
 def test_curses_client_drains_background_events_without_curses():
