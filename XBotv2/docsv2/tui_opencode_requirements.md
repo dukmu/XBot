@@ -1016,20 +1016,45 @@ UI 文案必须与运行时实际行为严格对应：
 | OpenCode 一致性 | 不一致 | 一致（OpenCode 内部即 HTTP + SSE） |
 | 复杂度 | 极低 | 中（要管 server 进程/端口/认证） |
 
-OpenCode 自身的 `thread.ts` / `worker.ts` 就是这个模式：worker 跑 server（Hono HTTP），TUI 通过 `createWorkerFetch`（进程内 fetch）或真实 HTTP 调用，事件流通过 `createEventSource`（SSE）。OpenCode 内部无论 transport 都是 HTTP 语义；我们采用同一思路但用 Python 生态的 `aiohttp`。
+OpenCode 自身的 `thread.ts` / `worker.ts` 就是这个模式：worker 跑 server（Hono HTTP），TUI 通过 `createWorkerFetch`（进程内 fetch）或真实 HTTP 调用，事件流通过 `createEventSource`（SSE）。OpenCode 内部无论 transport 都是 HTTP 语义；我们采用同一思路但用 Python 生态的 `FastAPI` + `httpx`（见 §10.5.2 选型）。
+
+#### 10.5.1.1 为什么不是 stdio——更深一层的理由
+
+> 物理上 `stdin` / `stdout` 是两个独立 fd，理论可双向独立读写；stdio 本身**不强制**串行。但**当前 stdio JSONL 协议在设计上把一切塞进同一条线性事件流**，造成三个难以解决的问题：
+
+1. **业务事件和控制请求共用同一条 stdout**
+   - engine 事件（`turn_started` / `assistant_message` / ...）与 live interaction 帧（`permission_request` / `user_input_required`）由 server 端两个**并发**任务（engine event loop + live interaction sink）通过 `asyncio.Lock` 互斥写到同一 stdout。
+   - 这导致：在一次 turn 进行中，**无法**再发一个"中断"或"切换模型"等控制命令——现有协议根本没有这种帧类型，stdio 也无法在不断流的情况下插入。
+2. **多个 in-flight 请求无法并发**
+   - 假设同一 session 允许多 turn 并行（OpenCode 实际不做，但 server 端做得到），stdio pipe 只能按到达顺序处理，无法把两个 turn 的事件流区分开。
+   - HTTP + 多个 SSE 连接天然支持这种并发：每个 turn 一个独立请求 → 一个独立 SSE 响应。
+3. **多 client attach 不可行**
+   - stdio pipe 是 1-to-1 的；server 端只能服务一个 stdin/stdout。多个 client 想看同一 server 状态时，stdio 根本不支持。
+   - HTTP 让 server 端按 n-to-1 共享状态，每个 client 独立开 SSE。
+
+**这正是 OpenCode 选 HTTP + SSE 的根本原因**（不是性能）：
+
+- `thread.ts` 的 `createWorkerFetch`（in-process 包装）即便在 worker 与 TUI 同进程时也走 HTTP 语义；
+- 事件流用独立的 `createEventSource`（SSE），与控制请求**不在同一条流**；
+- 取消 turn 走 `session.interrupt` 端点（keybind `escape`），是独立 POST，与当前 turn 的 SSE 流完全解耦。
+
+**因此 v1 决策：stdio 完全移除**，不再做"stdio 向后兼容"。所有现有 stdio 测试需改写为 HTTP 集成测试。
 
 #### 10.5.2 选型
 
 | 角色 | 选 | 理由 |
 | --- | --- | --- |
-| Server | `aiohttp` | 单依赖，async-native，SSE 通过 `StreamResponse` 原生支持 |
-| Client | `aiohttp` | 同上，避免引入第二套 HTTP 库 |
+| Server | **FastAPI** | 依赖中已有 pydantic；FastAPI 自动 OpenAPI 文档；uvicorn 异步；社区大、SSE 文档丰富 |
+| Client | **httpx** | async-native；与 FastAPI 同生态（`httpx` 是 FastAPI TestClient 底层）；HTTP/1.1+HTTP/2 都支持 |
+| SSE 解析 | 手写（约 80 行） | SSE 协议足够简单；避免引入额外依赖 |
 | 协议帧 | 现有 `ProtocolFrame` JSON | 内部 `payload` 不变，仅包一层 HTTP/SSE 头 |
-| 鉴权 | 可选 Bearer Token（`--server-token` / `XBOTV2_SERVER_TOKEN`） | 远端场景需要；本机 loopback 默认关 |
+| 鉴权 | **v1 不实现**；仅 `--bind 127.0.0.1`（loopback）；`--bind 0.0.0.0` 在 v1 **被拒绝**（v2 再加 Bearer Token） | 简化首版，依赖 OS 进程隔离保证安全 |
 
-> 约束：stdio JSONL **保留**，但不再是默认。`--transport stdio|http` 显式选择；缺省 = `stdio`（向后兼容 v0），v2 起 = `http`。
->
-> TUI 启动时若未指定 `--server`，行为保持不变（spawn stdio 子进程），避免破坏现有脚本与测试。
+> 约束变更（v1 决定）：
+> - **stdio 完全移除**。`--transport` 选项不再有；`xbotv2 --mode server` 永远是 HTTP；不存在 "stdio 兼容模式"。
+> - **TUI 默认 HTTP**。`python main.py --mode tui` 通过本地 4096 与 server 通信；server 由 TUI 自动 spawn（除非 `--server URL` 指定远端）。
+> - **不实现鉴权**。`--bind` 只能是 `127.0.0.1`；传 `0.0.0.0` 直接报错退出。
+> - `ProtocolClient` / `RuntimeServer` 的 stdio 路径**不删除源码**（保留在 git 历史），但当前 v1 不再 import/调用。后续若做 IDE 嵌入式等场景再复活。
 
 #### 10.5.3 HTTP API 规约
 
@@ -1127,23 +1152,24 @@ class Transport(Protocol):
 
 `--mode server --transport stdio`（现有行为，不变）：保留为测试和回放后端。
 
-#### 10.5.7 端口与鉴权
+#### 10.5.7 端口与绑址（v1：loopback only，无鉴权）
 
 - 默认端口：`4096`（与 OpenCode 一致）。
-- 默认绑定：`127.0.0.1`（loopback only；不暴露给 LAN）。
-- 远端访问需显式 `--bind 0.0.0.0` **并** `--server-token <secret>`。
-- 客户端 `Authorization: Bearer <token>` 头；缺失或错误 → `401`。
-- `attach` 子命令支持 `--username` / `--password`（与 OpenCode `OPENCODE_SERVER_USERNAME/PASSWORD` 风格一致），自动 `Basic` auth。
+- 默认绑址：`127.0.0.1`（loopback only；不暴露给 LAN）。
+- **v1 不支持 `--bind 0.0.0.0`**：传 `0.0.0.0` 直接 `ValueError("remote bind not supported in v1")` 退出。v2 再加 Bearer Token。
+- 依赖 OS 进程隔离保证安全：本机任意进程可连 `127.0.0.1:4096`，但这与现有 stdio 行为（任何本机用户都能看到 process 命令行）一致。
+- 端口冲突：若 `4096` 被占用，server 启动失败抛错；TUI 不自动选端口（避免 magic）。
 
-#### 10.5.8 TUI 端行为
+#### 10.5.8 TUI 端行为（v1：HTTP only）
 
 `python main.py --mode tui` 默认行为：
 
-1. 若传 `--server http://127.0.0.1:4096`，直接连接。
-2. 若传 `--auto-server`，则 spawn 一个 HTTP server 子进程（独立运行），等 `GET /health` 通后连接。
-3. 否则保持 v0 行为：spawn stdio 子进程，**不破坏现有脚本**。
+1. 若传 `--server http://127.0.0.1:4096`，直接连接（适用于"server 已起"的场景，比如 `attach`）。
+2. 否则 TUI 自动 spawn 一个 HTTP server 子进程（`xbotv2 --mode server`），等 `GET /health` 通后连接；TUI 退出时**不**自动 kill server（除非显式 `--shutdown-server-on-exit`）。
+3. `--server URL` + `--shutdown-server-on-exit` 用于"用完即关"场景。
+4. **不存在 stdio 路径**：TUI 永远是 HTTP 客户端。
 
-`xbotv2.tui.TerminalSession` 接受 `transport: Transport` 参数；现有调用点（`__main__.py`）传 `StdioTransport` 或 `HttpTransport`。
+`xbotv2.tui.TerminalSession` 接受 `transport: Transport` 参数；v1 只实现 `HttpTransport`，但 `Transport` Protocol 保留以备未来扩展。
 
 #### 10.5.9 性能对比与目标
 
@@ -1285,39 +1311,45 @@ class Transport(Protocol):
 2. 键位 JSON 配置（`tui.json` 风格，与 OpenCode 同形）。
 3. 回放与脚本化（`--replay fixtures/xxx.jsonl`）用于无 LLM 演示与回归。
 
-### Phase E — HTTP/SSE 传输（**v1 新增**）
+### Phase E — HTTP/SSE 传输（**v1 决定：FastAPI + httpx，stdio 完全移除**）
 
-> 详见 §10.5。本阶段使 stdio 子进程不再是性能瓶颈，并铺好 attach、远端、benchmark 的路。
+> 详见 §10.5。**本阶段完成后所有 stdio 路径从 import 树消失**；现有 32 个 stdio 测试需要全部改写为 HTTP 集成测试（用 `httpx.AsyncClient` + `httpx.ASGITransport` 跑 FastAPI app）。
 
-1. **抽象 Transport 接口**（`xbotv2/tui/transport.py`）
-   - 定义 `Transport` Protocol（见 §10.5.5）。
-   - `TerminalSession` 改为持有 `Transport`，而非直接持有 `ProtocolClient`。
-2. **Stdio 实现**（`xbotv2/tui/transport_stdio.py`）
-   - 把现有 `ProtocolClient` 重命名为 `StdioTransport` 并实现 `Transport` 协议。
-   - 现有 `--transport stdio` 行为零变化；现有测试零变化。
+1. **加依赖**（`pyproject.toml`）：`fastapi` / `uvicorn[standard]` / `httpx`。
+2. **HTTP 服务端**（`xbotv2/protocol/http_server.py`）
+   - FastAPI app，绑定 `127.0.0.1:4096`。
+   - endpoints 严格按 §10.5.3；错误码按 §10.5.3 错误约定。
+   - 把现有 `RuntimeServer._handle_user_message` 的 turn 调度逻辑抽到 `TurnDispatcher`，让 HTTP 端共享。
 3. **HTTP 客户端**（`xbotv2/tui/transport_http.py`）
-   - 用 `aiohttp.ClientSession` 实现 `Transport`。
-   - SSE 解析：手工按行解析 `event:` / `data:` / `id:`（≤ 100 行代码），避免引入额外库。
-   - 支持 `Last-Event-ID` 重连。
-4. **HTTP 服务端**（`xbotv2/protocol/http_server.py`）
-   - 用 `aiohttp` 暴露 §10.5.3 的 endpoints。
-   - 现有 `RuntimeServer` 的 turn 调度逻辑抽到一个共享 `TurnDispatcher`，让 stdio 与 http 共用。
-5. **CLI 升级**（`xbotv2/__main__.py`）
-   - `--mode server --transport {stdio,http}`（默认 `stdio` 向后兼容）。
-   - `--mode server --bind 127.0.0.1 --port 4096 --server-token …`。
-   - `--mode tui --server http://127.0.0.1:4096 [--server-token …]`。
-   - `attach <url>` 子命令（参考 OpenCode `opencode attach`）。
-6. **测试**
-   - 用 `aiohttp` 的 `pytest-aiohttp` 跑本地 server+client 集成测试（端到端 SSE）。
-   - 对比 stdio 与 http 在同 fixture 下的端到端延迟（写一个 micro-benchmark 落到 `tests/bench/`）。
-7. **回放 fixture 走 HTTP 通道**：在 CI 跑通 `record jsonl → transport http → render SVG`。
+   - 用 `httpx.AsyncClient` + `client.stream("POST", ...)` 收 SSE。
+   - 手写 SSE 解析（按行处理 `event:` / `data:` / `id:`，约 80 行）。
+   - `Last-Event-ID` 重连支持。
+4. **Transport 抽象 + 删除 stdio 路径**
+   - `xbotv2/tui/transport.py` 定义 `Transport` Protocol（接口见 §10.5.5）。
+   - 实现 `HttpTransport`（`xbotv2/tui/transport_http.py`）。
+   - **删除**（不 import/不 export）`xbotv2/tui/terminal.py`（原 `ProtocolClient` / `TerminalSession`）中的 stdio 实现；保留类型与方法的最小版本作为 transport 实现的基类。
+   - `CursesTuiClient` 也改为使用 `HttpTransport`。
+5. **CLI 改造**（`xbotv2/__main__.py`）
+   - `--mode server`：HTTP server，绑 `127.0.0.1:4096`；`--port` 可覆盖；`--bind` 仅接受 `127.0.0.1`，传 `0.0.0.0` 报错。
+   - `--mode tui`：默认 auto-spawn server + 连接；`--server URL` 直连；`--shutdown-server-on-exit` 控制关闭行为。
+   - `attach <url>` 子命令（仿 OpenCode `opencode attach`）。
+6. **测试改写**
+   - 所有现有 stdio 集成测试改用 `httpx.AsyncClient` + `ASGITransport` 直接打 FastAPI app。
+   - 加 `tests/integration/test_http_transport.py`：端到端 SSE 流、permission 中断、attach/detach、并发 turn（v1 验证 server 协程隔离）。
+   - 加中文 trace 对齐测试（HTTP 通道下 `tui.submit` / `protocol.send` / `protocol.recv` 三处字节级一致）。
+7. **回放与 bench**
+   - 把 §13.3 的 replay fixture 改为走 HTTP 通道。
+   - micro-bench 落到 `docsv2/verification/transport-bench-vYYYYMMDD.md`（v1 与 stdio 历史数据对比，证明 §10.5.9 的目标达成）。
 
-> 完成定义见 §16，Phase E 的 DoD 新增：
-> - [ ] HTTP 服务端能起能停，`GET /health` 返回 200。
-> - [ ] TUI 通过 `HttpTransport` 完成一个端到端 turn（user → assistant + tool call → permission → tool result → assistant）。
-> - [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 同）。
-> - [ ] Stdio 通道回归测试无破坏（32/32 保持通过）。
-> - [ ] bench 结果写到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
+> 完成定义见 §16：
+> - [ ] `pyproject.toml` 含 `fastapi` / `uvicorn` / `httpx`。
+> - [ ] `xbotv2 --mode server` 启动后 `GET /health` 返回 200。
+> - [ ] TUI 通过 `HttpTransport` 完成一个含 tool call + permission 的 turn。
+> - [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 历史数据字节级一致）。
+> - [ ] 全部 stdio 测试改写为 HTTP 测试并通过（目标 32 → 35+）。
+> - [ ] `--bind 0.0.0.0` 启动失败并提示 "remote bind not supported in v1"。
+> - [ ] `xbotv2 attach <url>` 子命令工作。
+> - [ ] bench 结果记录到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
 
 ### 不在 v1
 
@@ -1371,16 +1403,18 @@ UI / 状态机（Phase A、C）：
 
 传输层（Phase E，**v1 必过**）：
 
-- [ ] `xbotv2/tui/transport.py` 定义 `Transport` 协议；`TerminalSession` 持有 `Transport`。
-- [ ] `StdioTransport`（原 `ProtocolClient` 重命名）实现 `Transport`；现有 32/32 测试无破坏。
-- [ ] `HttpTransport` 用 `aiohttp` 实现；SSE 解析、Last-Event-ID 重连、JSON 帧序列化、UTF-8 字符串。
-- [ ] `xbotv2/protocol/http_server.py` 暴露 §10.3 的 endpoints；`GET /health` 返回 200。
-- [ ] `aiohttp` 加入 `pyproject.toml` 的 `dependencies`。
+- [ ] `pyproject.toml` 加入 `fastapi` / `uvicorn[standard]` / `httpx`。
+- [ ] `xbotv2 --mode server` 启动后 `GET /health` 返回 200。
+- [ ] `xbotv2/tui/transport.py` 定义 `Transport` Protocol（接口见 §10.5.5）。
+- [ ] `xbotv2/tui/transport_http.py` 实现 `HttpTransport`（`httpx.AsyncClient`）；手写 SSE 解析；`Last-Event-ID` 重连；UTF-8 全程。
+- [ ] `xbotv2/protocol/http_server.py` 暴露 §10.5.3 的 endpoints；`GET /health` 返回 200；错误码按 §10.5.3 错误约定。
 - [ ] 端到端：TUI → HTTP server → engine → SSE → TUI 完成一个含 tool call + permission 的 turn。
-- [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 同样的字节级断言）。
-- [ ] Micro-benchmark 对比 stdio vs http，记录到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
-- [ ] `xbotv2 attach <url>` 子命令工作（参考 OpenCode `opencode attach`）。
-- [ ] 端口/Token/Bearer 鉴权按 §10.5.7 实现；缺省 `127.0.0.1:4096`，远端需 `--bind 0.0.0.0` 且 `--server-token`。
+- [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 历史数据字节级一致）。
+- [ ] 全部 stdio 测试改写为 HTTP 测试并通过（目标 32 → 35+）。
+- [ ] `--bind 0.0.0.0` 启动失败并提示 "remote bind not supported in v1"。
+- [ ] `xbotv2 attach <url>` 子命令工作。
+- [ ] bench 结果记录到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
+- [ ] 旧 `ProtocolClient`（stdio）从 import 树消失（源码可在 git 历史恢复，CI grep 不到 `xbotv2.tui.terminal` 的 stdio 引用）。
 
 ---
 
@@ -1391,6 +1425,12 @@ UI / 状态机（Phase A、C）：
 - v2.1（2026-06-05）：
   - **Phase A 部分落地**（commit 583f6eb）：`mode.py`（显式 `Mode` 枚举）、`command.py`（4 个 v1 slash 命令 + 别名 + unknown 分类）、status bar 切到 `markup=False` + `Text` 渲染器、内联权限选择 `Allow` → `Allow once` 对齐 §10.3。
   - **新增 Phase E：HTTP/SSE 传输**（§10.5）：stdio 子进程仍保留（向后兼容测试），v1 默认推荐 HTTP；选 `aiohttp` 作为 server+client 单依赖；新增 §10.5.3 endpoint 表、§10.5.4 SSE 帧格式、§10.5.5 `Transport` Protocol、§10.5.7 鉴权与端口约定；§14 实施计划补全 Phase E 七步；§16 DoD 拆分为"UI/状态机"和"传输层"两组。
+- v2.2（2026-06-05）：根据用户反馈**推翻 v2.1 的 stdio 保留决定**：
+  - 选型改 **FastAPI + httpx**（`pyproject.toml` 加 `fastapi` / `uvicorn[standard]` / `httpx`）。
+  - **stdio 完全移除**：不是"先兼容再升级"，而是从 v1 起 TUI 就是 HTTP-only；现有 stdio 测试需全部改写为 HTTP 集成测试。
+  - **v1 不做鉴权**：`--bind` 只能是 `127.0.0.1`，传 `0.0.0.0` 报错退出。
+  - **新增 §10.5.1.1**：把"为什么 HTTP 而不是 stdio"的根因（业务事件与控制请求共享 stdout → 串行化；多 in-flight 请求无法并发；多 client attach 不可行；OpenCode 同因）写进文档，作为后续回归的判断依据。
+  - §10.5.7/§10.5.8/§14 Phase E/§16 全部按以上三点重写。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---
