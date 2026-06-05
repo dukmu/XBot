@@ -12,12 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
 from xbotv2.tui.client import TuiNotice, TuiState, TuiTool, _parse_permission_decision
 from xbotv2.tui.terminal import TerminalSession
-from xbotv2.tui.textual_state import route_submitted_text
+from xbotv2.tui.textual_state import (
+    queue_user_message,
+    render_transcript_entry,
+    route_submitted_text,
+)
 
 
 class TextualTuiClient:
@@ -51,6 +55,7 @@ class XBotTextualApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+        background: $surface;
     }
 
     #main {
@@ -58,24 +63,26 @@ class XBotTextualApp(App[None]):
     }
 
     #transcript {
-        width: 2fr;
+        width: 3fr;
         height: 1fr;
-        border: solid $primary;
+        border: tall $primary;
+        padding: 0 1;
     }
 
     #side {
         width: 1fr;
         min-width: 32;
+        max-width: 46;
         height: 1fr;
     }
 
     #status_panel, #tools_panel, #notices_panel {
-        border: solid $surface;
+        border: tall $surface-lighten-1;
         padding: 0 1;
     }
 
     #status_panel {
-        height: 7;
+        height: 8;
     }
 
     #tools_panel {
@@ -89,7 +96,7 @@ class XBotTextualApp(App[None]):
     #input {
         dock: bottom;
         height: 3;
-        border: solid $accent;
+        border: tall $accent;
     }
     """
 
@@ -97,6 +104,10 @@ class XBotTextualApp(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
+        ("pageup", "transcript_page_up", "Page up"),
+        ("pagedown", "transcript_page_down", "Page down"),
+        ("home", "transcript_home", "Top"),
+        ("end", "transcript_end", "Bottom"),
     ]
 
     def __init__(
@@ -121,12 +132,21 @@ class XBotTextualApp(App[None]):
         self.state = TuiState(session_id=session_id, thread_id=thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[str] = asyncio.Queue()
+        self._outbound_messages: asyncio.Queue[str] = asyncio.Queue()
         self._connected = False
+        self._turn_worker_running = False
+        self._rendered_transcript_entries = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main"):
-            yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
+            yield RichLog(
+                id="transcript",
+                wrap=True,
+                markup=False,
+                highlight=False,
+                auto_scroll=True,
+            )
             with Vertical(id="side"):
                 yield Static(id="status_panel")
                 yield Static(id="tools_panel")
@@ -137,7 +157,7 @@ class XBotTextualApp(App[None]):
     async def on_mount(self) -> None:
         self.query_one("#input", Input).focus()
         self._refresh_all()
-        self.run_worker(self._connect(), exclusive=True, name="connect")
+        self.run_worker(self._connect, exclusive=True, name="connect")
 
     async def on_unmount(self) -> None:
         if self._connected:
@@ -182,13 +202,40 @@ class XBotTextualApp(App[None]):
             self._refresh_all()
             return
 
-        self.state.append_message("user", text)
+        queue_user_message(self.state, self._outbound_messages, text)
         self._refresh_all()
-        self.run_worker(self._collect_response(text), exclusive=False, name="turn")
+        if not self._turn_worker_running:
+            self._turn_worker_running = True
+            self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
 
     def action_clear_input(self) -> None:
         """Clear the input box without changing protocol interaction state."""
         self.query_one("#input", Input).value = ""
+
+    def action_transcript_page_up(self) -> None:
+        self.query_one("#transcript", RichLog).action_page_up()
+
+    def action_transcript_page_down(self) -> None:
+        self.query_one("#transcript", RichLog).action_page_down()
+
+    def action_transcript_home(self) -> None:
+        self.query_one("#transcript", RichLog).action_scroll_home()
+
+    def action_transcript_end(self) -> None:
+        self.query_one("#transcript", RichLog).action_scroll_end()
+
+    async def _drain_message_queue(self) -> None:
+        try:
+            while not self._outbound_messages.empty():
+                text = await self._outbound_messages.get()
+                self.state.append_message("user", text)
+                self._refresh_all()
+                await self._collect_response(text)
+        finally:
+            self._turn_worker_running = False
+            if not self._outbound_messages.empty():
+                self._turn_worker_running = True
+                self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
 
     async def _collect_response(self, text: str) -> None:
         try:
@@ -231,51 +278,26 @@ class XBotTextualApp(App[None]):
 
     def _refresh_status(self) -> None:
         panel = self.query_one("#status_panel", Static)
+        queue_depth = self._outbound_messages.qsize()
+        queue_line = f"Queued:  {queue_depth}" if queue_depth else "Queued:  -"
         panel.update(
             "\n".join([
-                f"[b]XBotv2[/b]  {self.state.status}",
+                f"[b]XBotv2[/b]  {_status_badge(self.state.status)}",
                 f"Session: {self.state.session_id}",
                 f"Thread:  {self.state.thread_id}",
                 f"Agent:   {self.state.agent_name}",
                 f"Turn:    {self.state.turn}",
+                queue_line,
             ])
         )
 
     def _refresh_transcript(self) -> None:
         log = self.query_one("#transcript", RichLog)
-        log.clear()
-        for entry in self.state.transcript:
-            if entry.kind == "message":
-                try:
-                    message = self.state.messages[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                label = "You" if message.role == "user" else self.state.agent_name
-                style = "cyan" if message.role == "user" else "green"
-                log.write(f"[{style}][b]{label}[/b][/{style}]\n{message.content}\n")
-            elif entry.kind == "tool":
-                tool = self.state.tools.get(entry.key)
-                if tool is None:
-                    continue
-                log.write(
-                    f"[yellow][b]Tool[/b][/yellow] {tool.name} "
-                    f"[{tool.status}]\n{tool.args_preview}\n{tool.summary}\n"
-                )
-            elif entry.kind == "notice":
-                try:
-                    notice = self.state.notices[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                log.write(f"[magenta][b]{notice.kind}[/b][/magenta] {notice.text}\n")
-            elif entry.kind == "error":
-                try:
-                    error = self.state.errors[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                log.write(f"[red][b]Error[/b][/red] {error}\n")
-
-        for error in self.state.errors:
-            log.write(f"[red][b]Error[/b][/red] {error}\n")
+        for entry in self.state.transcript[self._rendered_transcript_entries:]:
+            rendered = render_transcript_entry(self.state, entry)
+            if rendered:
+                log.write(rendered)
+        self._rendered_transcript_entries = len(self.state.transcript)
 
     def _refresh_tools(self) -> None:
         panel = self.query_one("#tools_panel", Static)
@@ -298,9 +320,9 @@ class XBotTextualApp(App[None]):
         panel.update("\n".join(lines))
 
     def _refresh_input_mode(self) -> None:
-        if self.state.pending_user_input_request_id:
+        if self.state.pending_user_input_active:
             self._set_input_placeholder("Answer the pending question")
-        elif self.state.pending_permission_request_id:
+        elif self.state.pending_permission_active:
             self._set_input_placeholder("Approve? type yes/allow or no/deny")
         else:
             self._set_input_placeholder("Message XBotv2")
@@ -318,3 +340,18 @@ def _tool_lines(tool: TuiTool) -> list[str]:
     if tool.summary:
         lines.append(f"  result: {tool.summary}")
     return lines
+
+
+def _status_badge(status: str) -> str:
+    styles = {
+        "Ready": "green",
+        "Running": "yellow",
+        "Connecting": "yellow",
+        "Waiting for user": "cyan",
+        "Approval required": "magenta",
+        "Permission denied": "red",
+        "Error": "red",
+        "Shutdown": "dim",
+    }
+    style = styles.get(status, "white")
+    return f"[{style}]{status}[/{style}]"

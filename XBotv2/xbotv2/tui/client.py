@@ -19,14 +19,6 @@ from typing import Any
 from xbotv2.protocol.frames import ProtocolFrame
 from xbotv2.tui.terminal import TerminalSession
 
-_TERMINAL_NOTICE_STATUSES = {
-    "Approval required",
-    "Permission denied",
-    "Waiting for user",
-    "Error",
-}
-
-
 @dataclass
 class TuiMessage:
     role: str
@@ -66,8 +58,11 @@ class TuiState:
     transcript: list[TuiTranscriptEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     turn: int = 0
+    turn_active: bool = False
     pending_user_input_request_id: str | None = None
     pending_permission_request_id: str | None = None
+    pending_user_input_active: bool = False
+    pending_permission_active: bool = False
     _tool_transcript_keys: set[str] = field(default_factory=set)
 
     def apply_frame(self, frame: ProtocolFrame) -> None:
@@ -86,11 +81,12 @@ class TuiState:
             self.status = "Ready"
         elif event_type == "turn_started":
             self.turn = int(data.get("turn") or self.turn or 0)
-            self.status = "Running"
+            self.turn_active = True
+            self._refresh_status(reset_terminal=True)
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
-            if self.status not in _TERMINAL_NOTICE_STATUSES:
-                self.status = "Ready"
+            self.turn_active = False
+            self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
             if content:
@@ -111,36 +107,42 @@ class TuiState:
         elif event_type == "client_message":
             self.append_notice("client_message", str(data.get("message") or data))
         elif event_type == "permission_request":
-            self.status = "Approval required"
             self.pending_permission_request_id = str(data.get("request_id") or "") or None
+            self.pending_permission_active = True
+            self._refresh_status()
             self.append_notice(
                 "permission_request",
                 str(data.get("reason") or "Tool approval required."),
             )
         elif event_type == "permission_denied":
             self.status = "Permission denied"
+            self.pending_permission_active = False
+            self.pending_permission_request_id = None
             self.append_notice(
                 "permission_denied",
                 str(data.get("reason") or "Tool call denied."),
             )
         elif event_type == "user_input_required":
-            self.status = "Waiting for user"
             self.pending_user_input_request_id = str(data.get("request_id") or "") or None
+            self.pending_user_input_active = True
+            self._refresh_status()
             question = str(data.get("question") or "User input required.")
             options = data.get("options")
             if isinstance(options, list) and options:
                 question = f"{question} Options: {', '.join(str(item) for item in options)}"
             self.append_notice("user_input_required", question)
         elif event_type == "user_input_recorded":
-            self.status = "Ready"
             self.pending_user_input_request_id = None
+            self.pending_user_input_active = False
+            self._refresh_status()
             self.append_notice(
                 "user_input_recorded",
                 str(data.get("status") or data.get("request_id") or "User input recorded."),
             )
         elif event_type == "permission_response_recorded":
-            self.status = "Ready"
             self.pending_permission_request_id = None
+            self.pending_permission_active = False
+            self._refresh_status()
             request_id = str(data.get("request_id") or "permission")
             decision = str(data.get("decision") or "recorded")
             self.append_notice(
@@ -161,6 +163,20 @@ class TuiState:
     def append_notice(self, kind: str, text: str) -> None:
         self.notices.append(TuiNotice(kind=kind, text=text))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
+
+    def _refresh_status(self, *, reset_terminal: bool = False) -> None:
+        if self.status in {"Error", "Shutdown"}:
+            return
+        if self.status == "Permission denied" and not reset_terminal:
+            return
+        if self.pending_permission_active:
+            self.status = "Approval required"
+        elif self.pending_user_input_active:
+            self.status = "Waiting for user"
+        elif self.turn_active:
+            self.status = "Running"
+        else:
+            self.status = "Ready"
 
     def lines(self, *, width: int, height: int) -> list[str]:
         width = max(20, width)
@@ -322,11 +338,10 @@ class CursesTuiClient:
     def _send_text(self, text: str) -> None:
         if self._loop is None:
             raise RuntimeError("CursesTuiClient is not running")
-        pending_request_id = self.state.pending_user_input_request_id
-        if pending_request_id:
+        if self.state.pending_user_input_active:
             self._answers.put(text)
             return
-        if self.state.pending_permission_request_id:
+        if self.state.pending_permission_active:
             self._permission_decisions.put(_parse_permission_decision(text))
             return
         self.state.append_message("user", text)

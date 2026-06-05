@@ -10,7 +10,11 @@ import pytest
 import xbotv2.__main__ as xbot_main
 from xbotv2.protocol.frames import ProtocolFrame
 from xbotv2.tui.client import CursesTuiClient, TuiState
-from xbotv2.tui.textual_state import route_submitted_text
+from xbotv2.tui.textual_state import (
+    queue_user_message,
+    render_transcript_entry,
+    route_submitted_text,
+)
 
 
 def test_tui_state_applies_protocol_frames_and_renders_lines():
@@ -109,6 +113,69 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     assert "Approval> permission:c2: allow" in rendered
 
 
+def test_tui_state_ack_keeps_running_until_turn_finished():
+    state = TuiState()
+
+    state.apply_frame(_frame("turn_started", {"turn": 1}))
+    state.apply_frame(_frame("user_input_required", {"request_id": "user_input:c1"}))
+    state.apply_frame(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
+
+    assert state.status == "Running"
+    assert state.pending_user_input_request_id is None
+
+    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+
+    assert state.status == "Ready"
+
+
+def test_tui_state_permission_denied_resets_on_next_turn():
+    state = TuiState()
+
+    state.apply_frame(_frame("turn_started", {"turn": 1}))
+    state.apply_frame(_frame("permission_denied", {"reason": "no"}))
+    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+
+    assert state.status == "Permission denied"
+
+    state.apply_frame(_frame("turn_started", {"turn": 2}))
+
+    assert state.status == "Running"
+
+
+@pytest.mark.asyncio
+async def test_textual_queues_user_messages_without_reordering_transcript():
+    state = TuiState()
+    messages: asyncio.Queue[str] = asyncio.Queue()
+
+    queue_user_message(state, messages, "first")
+    queue_user_message(state, messages, "second")
+
+    assert state.messages == []
+    state.append_message("user", await messages.get())
+    state.append_message("assistant", "reply")
+    state.append_message("user", await messages.get())
+
+    assert [(message.role, message.content) for message in state.messages] == [
+        ("user", "first"),
+        ("assistant", "reply"),
+        ("user", "second"),
+    ]
+
+
+def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
+    state = TuiState(agent_name="助手")
+    state.append_message("user", "你好 [不要解析] 中文")
+    state.append_message("assistant", "收到：中文正常显示")
+
+    first = render_transcript_entry(state, state.transcript[0])
+    second = render_transcript_entry(state, state.transcript[1])
+
+    assert first is not None
+    assert second is not None
+    assert first.plain == "You\n你好 [不要解析] 中文\n"
+    assert second.plain == "助手\n收到：中文正常显示\n"
+
+
 def test_curses_client_drains_background_events_without_curses():
     client = CursesTuiClient()
     client._events.put({"type": "assistant_message", "data": {"content": "live"}})
@@ -190,6 +257,46 @@ async def test_textual_routes_submitted_text_to_live_permission_queue():
     assert await permission_decisions.get() == "allow"
     assert answers.empty()
     assert state.messages == []
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_preserves_message_order_and_chinese():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        await app.on_input_submitted(input_widget.Submitted(input_widget, "你好"))
+        await pilot.pause()
+
+    assert [(message.role, message.content) for message in app.state.messages] == [
+        ("user", "你好"),
+        ("assistant", "回复：你好"),
+    ]
+    assert app.state.status == "Ready"
 
 
 def test_curses_client_records_reader_errors():
