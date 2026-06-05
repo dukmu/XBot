@@ -226,6 +226,7 @@ async def bootstrap(
         permission_system=permissions,
         workspace=workspace,
         config=agent_config,
+        data_dir=str(config_dir),
     )
 
     return engine

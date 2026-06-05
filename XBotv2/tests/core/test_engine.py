@@ -1154,3 +1154,85 @@ class TestEngineState:
         assert events[-1]["type"] == "error"
         assert calls == [(HookStage.ON_ERROR, "RuntimeError", "will fail")]
         assert state_store.read_state()["status"] == "error"
+
+
+# ----------------------------------------------------------------------
+# _backtrack_orphan_tool_calls — v1.2
+# ----------------------------------------------------------------------
+
+
+def test_backtrack_orphan_tool_calls_removes_unmatched_aimessage():
+    """When cancel arrives between AIMessage(tool_calls) append and
+    tool_messages extend, the last AIMessage is an orphan and must
+    be removed so the LLM provider does not reject the conversation.
+
+    Simulates: Engine._messages = [HumanMessage, AIMessage(tool_calls), AIMessage(content)]
+    The last message has no tool_calls → should NOT be removed.
+    But if the last message IS the orphan: remove it.
+    """
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from xbotv2.core.engine import Engine
+
+    engine = Engine.__new__(Engine)
+    engine._messages = [
+        HumanMessage(content="use the shell tool"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "shell", "args": {"command": "ls"}, "id": "call_1", "type": "tool_call"},
+            ],
+        ),
+    ]
+    engine._turn_count = 1
+
+    # The last message IS an AIMessage with unmatched tool_calls → pop
+    og_len = len(engine._messages)
+    engine._backtrack_orphan_tool_calls()
+    assert len(engine._messages) == og_len - 1, (
+        f"expected orphan removal; got {len(engine._messages)} messages"
+    )
+    assert isinstance(engine._messages[-1], HumanMessage)
+
+
+def test_backtrack_orphan_tool_calls_leaves_matched_aimessage():
+    """When tool_messages HAVE been appended, the AIMessage is not
+    orphaned — do NOT touch it."""
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from xbotv2.core.engine import Engine
+
+    engine = Engine.__new__(Engine)
+    engine._messages = [
+        HumanMessage(content="use the shell tool"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "shell", "args": {"command": "ls"}, "id": "call_1", "type": "tool_call"},
+            ],
+        ),
+        ToolMessage(content="file list", tool_call_id="call_1"),
+    ]
+    engine._turn_count = 1
+
+    og_len = len(engine._messages)
+    engine._backtrack_orphan_tool_calls()
+    assert len(engine._messages) == og_len, (
+        "matched AIMessage should not have been removed"
+    )
+
+
+def test_backtrack_orphan_tool_calls_no_op_when_last_is_not_aimessage():
+    """If the last message is NOT an AIMessage or has no tool_calls,
+    do nothing."""
+
+    from langchain_core.messages import AIMessage, HumanMessage
+    from xbotv2.core.engine import Engine
+
+    engine = Engine.__new__(Engine)
+    engine._messages = [HumanMessage(content="hi")]
+    engine._turn_count = 1
+
+    og_len = len(engine._messages)
+    engine._backtrack_orphan_tool_calls()
+    assert len(engine._messages) == og_len

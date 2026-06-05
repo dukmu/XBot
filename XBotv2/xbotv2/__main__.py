@@ -86,7 +86,27 @@ def main():
     parser.add_argument(
         "prompt", nargs="?", default=None, help="Single-shot prompt (for --mode once) or attach URL"
     )
+    parser.add_argument(
+        "--log-level",
+        default=os.environ.get("XBOTV2_LOG_LEVEL", "INFO"),
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO, or $XBOTV2_LOG_LEVEL)",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Explicit log file path. Overrides --data-dir/logs/xbotv2.log "
+        "and $XBOTV2_LOG_FILE.",
+    )
     args = parser.parse_args()
+
+    from xbotv2.core.logging_config import setup_logging
+
+    setup_logging(
+        data_dir=args.data_dir,
+        level=args.log_level,
+        log_file=args.log_file,
+    )
 
     if args.prompt and args.prompt.startswith("http"):
         # `python main.py attach http://...` style: first arg looks like a URL

@@ -59,6 +59,7 @@ class Engine:
         config: Any,  # AgentConfig
         workspace: SessionWorkspace | None = None,
         max_iterations: int = 50,
+        data_dir: str | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -70,6 +71,10 @@ class Engine:
         self.config = config
         self.workspace = workspace
         self.max_iterations = max_iterations
+        # ``data_dir`` is used by ``dump_conversation_state`` to land
+        # diagnostic dumps next to the log file. Best-effort — the
+        # engine can also derive it from ``self.state_store.root``.
+        self.data_dir: str | None = data_dir
 
         # Runtime state (per-session, in-memory)
         self._messages: list[BaseMessage] = []
@@ -189,6 +194,15 @@ class Engine:
                     "reason": "client_interrupt",
                 },
             )
+            # **Critical**: if the cancel arrived between the LLM
+            # yielding an AIMessage with ``tool_calls`` (line ~607)
+            # and the tool_messages being appended (line ~733), the
+            # in-memory ``_messages`` list has an orphan AIMessage
+            # that the LLM provider will reject on the next turn
+            # ("An assistant message with 'tool_calls' must be
+            # followed by tool messages"). Backtrack: drop the last
+            # message if it carries unmatched tool_calls.
+            self._backtrack_orphan_tool_calls()
             await self._save_messages()
             yield {
                 "type": "turn_cancelled",
@@ -211,6 +225,31 @@ class Engine:
             await self._save_messages()
         except Exception as exc:
             logger.exception("Turn failed")
+            # When the LLM provider rejects the conversation
+            # (e.g. the LangChain 400 "An assistant message with
+            # 'tool_calls' must be followed by tool messages" we
+            # hit during v1.2 testing), the in-memory state
+            # usually looks *almost* right: ``_messages`` has
+            # the assistant message with tool_calls AND the
+            # matching ToolMessage, but the provider still
+            # complains. The dump is what makes the diff
+            # obvious. Best-effort: any failure inside the dump
+            # helper is itself logged and swallowed.
+            try:
+                from xbotv2.core.logging_config import dump_conversation_state
+
+                session_root = getattr(self.state_store, "root", None)
+                dump_conversation_state(
+                    logger,
+                    session_root=str(session_root) if session_root is not None else None,
+                    data_dir=self.data_dir,
+                    session_id=str(getattr(self.state_store, "session_id", "?")),
+                    turn=self._turn_count,
+                    messages=self._messages,
+                    error=exc,
+                )
+            except Exception:  # noqa: BLE001 — never break the error path
+                logger.exception("engine: dump_conversation_state failed")
             self.state_store.append_event(
                 "error",
                 {
@@ -642,6 +681,12 @@ class Engine:
 
             # Normalize tool calls
             normalized_calls = self._normalize_tool_calls(tool_calls)
+            logger.info(
+                "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
+                self._turn_count,
+                len(normalized_calls),
+                [tc.get("name") for tc in normalized_calls],
+            )
             parsed_ctx = self._make_hook_context(
                 HookStage.ON_TOOL_CALLS_PARSED,
                 tool_calls=normalized_calls,
@@ -687,7 +732,20 @@ class Engine:
             if isinstance(tools_result, dict) and "tool_results" in tools_result:
                 tool_messages = tools_result["tool_results"]
 
+            logger.info(
+                "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
+                self._turn_count,
+                len(tool_messages),
+                [getattr(tm, "tool_call_id", None) for tm in tool_messages],
+                [getattr(tm, "status", None) for tm in tool_messages],
+            )
             self._messages.extend(tool_messages)
+            # Persist immediately after tool messages are committed so
+            # that even if the turn is cancelled later in this
+            # iteration (during tool_result yield or the next LLM
+            # call), the disk is consistent: every AIMessage with
+            # tool_calls has its matching ToolMessages on disk.
+            await self._save_messages()
 
             # Yield tool results
             for tm in tool_messages:
@@ -768,6 +826,48 @@ class Engine:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _backtrack_orphan_tool_calls(self) -> None:
+        """Remove the last message if it is an ``AIMessage`` with
+        ``tool_calls`` that have no matching ``ToolMessage`` following.
+
+        Called from the ``CancelledError`` and
+        ``InteractionDisconnected`` handlers because the LLM
+        provider rejects any conversation where an assistant message
+        with ``tool_calls`` is not immediately followed by tool
+        messages for **every** call id.  The cancel can arrive
+        between the AIMessage append (line ~607) and the
+        ``tool_messages.extend`` (line ~742), leaving the in-memory
+        list inconsistent.  Removing the orphan lets the next turn
+        proceed cleanly.
+        """
+
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        if not self._messages:
+            return
+        last = self._messages[-1]
+        tool_calls = getattr(last, "tool_calls", None)
+        if not isinstance(last, AIMessage) or not tool_calls:
+            return
+        # Walk forward from the AIMessage's position — are there
+        # enough ToolMessages for every call id?
+        pos = len(self._messages) - 1
+        ids_seen: set[str] = set()
+        for candidate in self._messages[pos + 1:]:
+            if isinstance(candidate, ToolMessage):
+                ids_seen.add(getattr(candidate, "tool_call_id", ""))
+        expected = {tc.get("id") for tc in tool_calls if tc.get("id")}
+        if expected - ids_seen:
+            logger.warning(
+                "engine.turn backtracking orphan AIMessage with "
+                "tool_calls=%s (turn=%d); only found tool messages "
+                "for ids=%s",
+                [tc.get("name") for tc in tool_calls],
+                self._turn_count,
+                sorted(ids_seen) if ids_seen else "none",
+            )
+            self._messages.pop()
 
     async def _save_messages(self) -> None:
         """Persist messages and materialize state after each turn.
