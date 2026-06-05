@@ -80,7 +80,8 @@ def test_tui_state_turn_finished_preserves_waiting_for_user():
     assert state.status == "Waiting for user"
     assert state.notices[-1].kind == "user_input_required"
     rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Question> Proceed? Options: yes, no" in rendered
+    assert "Question> Proceed?" in rendered
+    assert "Options:" not in rendered
 
 
 def test_tui_state_turn_finished_preserves_permission_states():
@@ -305,7 +306,8 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
         input_widget = app.query_one("#input")
-        await app.on_input_submitted(input_widget.Submitted(input_widget, "你好"))
+        input_widget.load_text("你好")
+        await app.submit_composer()
         await pilot.pause()
 
     assert [(message.role, message.content) for message in app.state.messages] == [
@@ -356,10 +358,148 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
         input_widget = app.query_one("#input")
-        await app.on_input_submitted(input_widget.Submitted(input_widget, "hello"))
+        input_widget.load_text("hello")
+        await app.submit_composer()
         await pilot.pause()
         status = app.query_one("#status_bar").content
         assert "usage req:1 in:12 out:8 total:20" in str(status)
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_renders_inline_permission_options():
+    from textual.widgets import Button
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del text, input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {
+                "type": "permission_request",
+                "data": {
+                    "request_id": "permission:c1",
+                    "source": "permission_system",
+                    "reason": "Permission approval required for tool: shell.",
+                },
+            }
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("run")
+        await app.submit_composer()
+        await pilot.pause()
+
+        buttons = list(app.query(Button))
+        labels = [str(button.label) for button in buttons]
+        assert "Allow" in labels
+        assert "Deny" in labels
+        allow = next(button for button in buttons if str(button.label) == "Allow")
+        await app.on_button_pressed(allow.Pressed(allow))
+
+    assert await app._permission_decisions.get() == {
+        "decision": "allow",
+        "scope": "once",
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_renders_inline_ask_user_options():
+    from textual.widgets import Button
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del text, input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {
+                "type": "user_input_required",
+                "data": {
+                    "request_id": "user_input:c1",
+                    "question": "继续执行？",
+                    "options": ["继续", "停止"],
+                },
+            }
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("ask")
+        await app.submit_composer()
+        await pilot.pause()
+
+        buttons = list(app.query(Button))
+        labels = [str(button.label) for button in buttons]
+        assert "继续" in labels
+        assert "停止" in labels
+        proceed = next(button for button in buttons if str(button.label) == "继续")
+        await app.on_button_pressed(proceed.Pressed(proceed))
+
+    assert await app._answers.get() == "继续"
+
+
+@pytest.mark.asyncio
+async def test_textual_composer_history_and_multiline_resize():
+    from textual.events import Key
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        app._remember_input("first")
+        app._remember_input("second")
+        await input_widget._on_key(Key("up", None))
+        assert input_widget.text == "second"
+        await input_widget._on_key(Key("up", None))
+        assert input_widget.text == "first"
+        await input_widget._on_key(Key("down", None))
+        assert input_widget.text == "second"
+        await input_widget._on_key(Key("down", None))
+        assert input_widget.text == ""
+        await input_widget._on_key(Key("shift+enter", None))
+        assert input_widget.text == "\n"
+        assert int(input_widget.styles.height.value) >= 3
 
 
 def test_curses_client_records_reader_errors():

@@ -12,6 +12,7 @@ import json
 import queue
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from textwrap import shorten
 from typing import Any
@@ -23,6 +24,7 @@ from xbotv2.tui.terminal import TerminalSession
 class TuiMessage:
     role: str
     content: str
+    ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
 
 
 @dataclass
@@ -44,6 +46,8 @@ class TuiTool:
 class TuiNotice:
     kind: str
     text: str
+    ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,6 +62,12 @@ class TuiState:
         "total_tokens": 0,
         "requests": 0,
     })
+    turn_usage: dict[str, int] = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+    })
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
     notices: list[TuiNotice] = field(default_factory=list)
@@ -67,6 +77,8 @@ class TuiState:
     turn_active: bool = False
     pending_user_input_request_id: str | None = None
     pending_permission_request_id: str | None = None
+    pending_user_input_payload: dict[str, Any] | None = None
+    pending_permission_payload: dict[str, Any] | None = None
     pending_user_input_active: bool = False
     pending_permission_active: bool = False
     _tool_transcript_keys: set[str] = field(default_factory=set)
@@ -88,6 +100,12 @@ class TuiState:
         elif event_type == "turn_started":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
+            self.turn_usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "requests": 0,
+            }
             self._refresh_status(reset_terminal=True)
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
@@ -116,46 +134,52 @@ class TuiState:
             self.append_notice("client_message", str(data.get("message") or data))
         elif event_type == "permission_request":
             self.pending_permission_request_id = str(data.get("request_id") or "") or None
+            self.pending_permission_payload = data
             self.pending_permission_active = True
             self._refresh_status()
             self.append_notice(
                 "permission_request",
                 str(data.get("reason") or "Tool approval required."),
+                payload=data,
             )
         elif event_type == "permission_denied":
             self.status = "Permission denied"
             self.pending_permission_active = False
             self.pending_permission_request_id = None
+            self.pending_permission_payload = None
             self.append_notice(
                 "permission_denied",
                 str(data.get("reason") or "Tool call denied."),
+                payload=data,
             )
         elif event_type == "user_input_required":
             self.pending_user_input_request_id = str(data.get("request_id") or "") or None
+            self.pending_user_input_payload = data
             self.pending_user_input_active = True
             self._refresh_status()
             question = str(data.get("question") or "User input required.")
-            options = data.get("options")
-            if isinstance(options, list) and options:
-                question = f"{question} Options: {', '.join(str(item) for item in options)}"
-            self.append_notice("user_input_required", question)
+            self.append_notice("user_input_required", question, payload=data)
         elif event_type == "user_input_recorded":
             self.pending_user_input_request_id = None
             self.pending_user_input_active = False
+            self.pending_user_input_payload = None
             self._refresh_status()
             self.append_notice(
                 "user_input_recorded",
                 str(data.get("status") or data.get("request_id") or "User input recorded."),
+                payload=data,
             )
         elif event_type == "permission_response_recorded":
             self.pending_permission_request_id = None
             self.pending_permission_active = False
+            self.pending_permission_payload = None
             self._refresh_status()
             request_id = str(data.get("request_id") or "permission")
             decision = str(data.get("decision") or "recorded")
             self.append_notice(
                 "permission_response_recorded",
                 f"{request_id}: {decision}",
+                payload=data,
             )
         elif event_type == "error":
             self.status = "Error"
@@ -168,8 +192,14 @@ class TuiState:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
-    def append_notice(self, kind: str, text: str) -> None:
-        self.notices.append(TuiNotice(kind=kind, text=text))
+    def append_notice(
+        self,
+        kind: str,
+        text: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
 
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:
@@ -250,11 +280,14 @@ class TuiState:
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
         usage = data.get("total") if isinstance(data.get("total"), dict) else data
+        delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
         if not isinstance(usage, dict):
             return
         for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
             if key in usage:
                 self.usage[key] = int(usage.get(key) or 0)
+            if isinstance(delta, dict) and key in delta:
+                self.turn_usage[key] += int(delta.get(key) or 0)
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:
