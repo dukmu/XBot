@@ -20,9 +20,13 @@ Coverage:
   implemented" notice, never sent to the server.
 - Re-submitting the same composer text: de-duplicated; no double
   local acknowledgement.
+- QueueMessage: typing during a running turn queues and drains in
+  FIFO order.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -373,6 +377,115 @@ def test_parse_slash_command_round_trip() -> None:
     assert spec is not None
     assert spec.name == "clear"
     assert spec.raw == "/clear"
+
+
+# ----------------------------------------------------------------------
+# QueueMessage: type while a turn is running, get picked up in order
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
+    """User can submit messages while a turn is in progress.
+
+    Per design doc §8.2: the composer is visible during
+    ``RUNNING`` mode and submissions are queued; the worker drains
+    them in FIFO order once the current turn finishes.
+    """
+
+    class SlowSession:
+        """Yields ``turn_started`` and blocks until released."""
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.release = asyncio.Event()
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send_message(
+            self, text, *, input_provider=None, permission_provider=None
+        ):
+            self.sent.append(text)
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            # Block the turn until the test releases it.
+            await self.release.wait()
+            yield {"type": "assistant_message", "data": {"content": f"reply to {text}"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def submit_user_input(self, request_id, answer):
+            return {}
+
+        async def respond_permission(self, request_id, decision, *, scope="once"):
+            return {}
+
+    session = SlowSession()
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = session
+
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+
+        # First message: starts the turn; the worker will block.
+        composer.load_text("first")
+        await app.submit_composer()
+        await pilot.pause()
+
+        # The turn is now in progress. Composer is still visible
+        # and accepts new submissions; they go to the queue.
+        composer.load_text("second")
+        await app.submit_composer()
+        await pilot.pause()
+        composer.load_text("third")
+        await app.submit_composer()
+        await pilot.pause()
+
+        # Hint should mention queueing.
+        from textual.widgets import Static as TStatic
+        hint_widget = app.query_one("#composer_hint", TStatic)
+        hint_text = (
+            hint_widget.visual.plain
+            if hint_widget.visual is not None and hasattr(hint_widget.visual, "plain")
+            else ""
+        )
+        assert "Queueing" in hint_text or "queue" in hint_text.lower(), (
+            f"hint did not mention queueing; got {hint_text!r}"
+        )
+
+        # Status bar should report queued:2.
+        status = app.query_one("#status_bar", TStatic)
+        status_text = (
+            status.visual.plain
+            if status.visual is not None and hasattr(status.visual, "plain")
+            else ""
+        )
+        assert "queued:2" in status_text, f"status: {status_text!r}"
+
+        # The worker is blocked; only "first" has been sent to the
+        # server. "second" and "third" are sitting in the queue.
+        assert session.sent == ["first"]
+        assert app._outbound_messages.qsize() == 2
+
+        # Release the worker; it should drain the queue in order.
+        session.release.set()
+        # Give the worker a few ticks to finish.
+        for _ in range(20):
+            await pilot.pause()
+            if len(session.sent) == 3 and app._outbound_messages.empty():
+                break
+
+    assert session.sent == ["first", "second", "third"]
 
 
 # ----------------------------------------------------------------------

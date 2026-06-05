@@ -598,6 +598,19 @@ class XBotTextualApp(App[None]):
         elif self.state.pending_permission_active:
             hint.update("Approval required")
             self._set_input_placeholder("Type allow/deny")
+        elif self.state.turn_active:
+            # Turn is in progress; the composer remains visible and
+            # messages get queued (see submit_composer). Surface the
+            # queue depth so the user knows their input will be picked
+            # up after the current turn ends.
+            depth = self._outbound_messages.qsize()
+            if depth > 0:
+                hint.update(
+                    f"Queueing: {depth} pending — type more or wait"
+                )
+            else:
+                hint.update("Turn running — type to queue a follow-up")
+            self._set_input_placeholder("Message XBotv2 (queue)")
         else:
             hint.update("")
             self._set_input_placeholder("Message XBotv2")
