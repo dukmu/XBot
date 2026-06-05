@@ -165,6 +165,14 @@ class XBotTextualApp(App[None]):
         color: #7aa2f7;
     }
 
+    .error .meta {
+        color: #f7768e;
+    }
+
+    .error .body {
+        color: #f7768e;
+    }
+
     .choices {
         height: auto;
         padding: 0 0 0 2;
@@ -338,10 +346,51 @@ class XBotTextualApp(App[None]):
             self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
 
     def action_clear_input(self) -> None:
-        """Clear the input box without changing protocol interaction state."""
+        """ESC handler: interrupt the running turn or clear the composer.
+
+        Per OpenCode convention (design doc §2.3.1: ``session_interrupt
+        = escape``): while a turn is in progress, ESC cancels it.
+        Otherwise (composer is free), ESC clears the composer text
+        like the old behaviour.
+        """
+
+        if self.state.turn_active or self._turn_worker_running:
+            self.action_interrupt_turn()
+            return
         self.query_one("#input", ComposerTextArea).load_text("")
         self._history_index = None
         self._resize_composer()
+
+    def action_interrupt_turn(self) -> None:
+        """Cancel the running turn via the HTTP /interrupt endpoint.
+
+        Textual's action system does not auto-await coroutine
+        actions. We schedule the actual HTTP round-trip on a
+        worker. The worker is ``exclusive=False`` so the in-flight
+        ``_drain_message_queue`` keeps running. We bind to a unique
+        worker name so re-pressing ESC does not stack workers.
+        """
+
+        # Build a fresh coroutine each call so ESC spam doesn't
+        # reuse a finished one.
+        async def _do() -> None:
+            try:
+                await self.session.transport.interrupt(
+                    session_id=self.session.session_id
+                )
+            except Exception:  # noqa: BLE001 — worker must not raise
+                return
+            if not self.is_mounted:
+                return
+            self.state.status = "Interrupting…"
+            self._refresh_status()
+
+        self.run_worker(
+            _do(),
+            exclusive=False,
+            name="tui_interrupt",
+            description="ESC: cancel running turn",
+        )
 
     def action_open_palette(self) -> None:
         """Open the command palette modal (Ctrl+P)."""
@@ -463,13 +512,22 @@ class XBotTextualApp(App[None]):
     async def _drain_message_queue(self) -> None:
         try:
             while not self._outbound_messages.empty():
+                if not self.is_mounted:
+                    return
                 text = await self._outbound_messages.get()
                 self.state.append_message("user", text)
-                await self._render_new_transcript_entries()
-                await self._collect_response(text)
+                try:
+                    await self._render_new_transcript_entries()
+                    await self._collect_response(text)
+                except Exception as exc:  # noqa: BLE001
+                    # App may be tearing down (headless test exit);
+                    # swallow so the worker can exit cleanly.
+                    if not self.is_mounted:
+                        return
+                    self._record_error(exc)
         finally:
             self._turn_worker_running = False
-            if not self._outbound_messages.empty():
+            if self.is_mounted and not self._outbound_messages.empty():
                 self._turn_worker_running = True
                 self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
 
@@ -496,6 +554,11 @@ class XBotTextualApp(App[None]):
         return await self._permission_decisions.get()
 
     def _record_error(self, exc: BaseException) -> None:
+        # If the app is being torn down, DOM lookups can fail. Don't
+        # clobber a meaningful status (e.g. "Interrupted") with "Error"
+        # just because the last UI refresh raced the teardown.
+        if not self.is_mounted:
+            return
         self.state.status = "Error"
         self.state.errors.append(str(exc))
         self._refresh_all()
@@ -514,7 +577,12 @@ class XBotTextualApp(App[None]):
         self._refresh_input_mode()
 
     def _refresh_status(self) -> None:
-        panel = self.query_one("#status_bar", Static)
+        if not self.is_mounted:
+            return
+        try:
+            panel = self.query_one("#status_bar", Static)
+        except Exception:  # noqa: BLE001 — defensive; widget may be unmounting
+            return
         queue_depth = self._outbound_messages.qsize()
         usage = self.state.usage
         panel.update(
@@ -536,6 +604,11 @@ class XBotTextualApp(App[None]):
         elif event_type == "turn_finished":
             self._interaction_response_pending = False
             self._finalize_activity()
+        elif event_type == "turn_cancelled":
+            self._interaction_response_pending = False
+            self._finalize_activity()
+            self.state.status = "Interrupted"
+            self._refresh_status()
         elif event_type == "usage":
             self._update_activity()
         elif event_type == "tool_result":
@@ -572,8 +645,13 @@ class XBotTextualApp(App[None]):
             )
 
     def _refresh_input_mode(self) -> None:
-        composer = self.query_one("#input", ComposerTextArea)
-        hint = self.query_one("#composer_hint", Static)
+        if not self.is_mounted:
+            return
+        try:
+            composer = self.query_one("#input", ComposerTextArea)
+            hint = self.query_one("#composer_hint", Static)
+        except Exception:  # noqa: BLE001 — defensive; widgets unmounting
+            return
         if self._choice_mode_active():
             composer.load_text("")
             composer.disabled = True

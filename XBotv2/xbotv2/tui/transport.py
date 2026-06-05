@@ -75,5 +75,14 @@ class Transport(Protocol):
     async def shutdown(self, *, session_id: str) -> dict[str, Any]:
         """Close a session."""
 
+    async def interrupt(self, *, session_id: str) -> dict[str, Any]:
+        """Cancel the running turn in ``session_id`` if any.
+
+        Returns a status dict (``{"status": "interrupting", ...}``).
+        The in-flight ``send_message`` async iterator will close on
+        the next event boundary; the client should consume the
+        remaining events and treat the stream end as a turn_finished.
+        """
+
     async def close(self) -> None:
         """Release any resources held by the transport."""

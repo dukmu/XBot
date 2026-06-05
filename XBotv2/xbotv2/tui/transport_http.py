@@ -141,6 +141,18 @@ class HttpTransport:
         response.raise_for_status()
         return response.json()
 
+    async def interrupt(self, *, session_id: str) -> dict[str, Any]:
+        response = await self._client.post(
+            f"/sessions/{session_id}/interrupt"
+        )
+        response.raise_for_status()
+        payload = response.json()
+        trace_event(
+            "tui.http",
+            {"stage": "interrupt", "status": response.status_code, "payload": payload},
+        )
+        return payload
+
     async def close(self) -> None:
         if self._closed:
             return

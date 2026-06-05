@@ -127,6 +127,11 @@ class TuiState:
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
             self._refresh_status()
+        elif event_type == "turn_cancelled":
+            self.turn = int(data.get("turn") or self.turn or 0)
+            self.turn_active = False
+            self.status = "Interrupted"
+            self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
             if content.strip():

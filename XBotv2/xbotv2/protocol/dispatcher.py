@@ -72,6 +72,23 @@ class SessionContext:
     engine: Any
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_bus: TurnEventBus | None = None
+    # The asyncio.Task running the current turn's engine iterator. Set
+    # when a turn starts; cleared when it finishes. The HTTP server's
+    # ``/interrupt`` endpoint cancels this task to abort the turn.
+    turn_task: asyncio.Task | None = None
+    # When set, the in-flight SSE stream will be closed at the next
+    # event boundary. The dispatcher flips this on interrupt and the
+    # generator exits cleanly.
+    interrupt_requested: bool = False
+
+    def request_interrupt(self) -> bool:
+        """Cancel the running turn task. Returns True if there was one."""
+
+        if self.turn_task is None or self.turn_task.done():
+            return False
+        self.interrupt_requested = True
+        self.turn_task.cancel()
+        return True
 
     async def close(self) -> None:
         try:
@@ -270,6 +287,16 @@ async def _drain_engine_into_bus(
     try:
         async for event in ctx.engine.run_turn(content):
             await bus.events.put(_event_to_payload(event))
+    except asyncio.CancelledError:
+        # TUI pressed ESC. The engine emits a structured
+        # ``turn_cancelled`` event before re-raising; we forward
+        # that single event and close the bus cleanly.
+        logger.info("Turn cancelled for session %s", ctx.session_id)
+        await bus.events.put({
+            "type": "turn_cancelled",
+            "data": {"turn": ctx.engine._turn_count, "reason": "client_interrupt"},
+        })
+        raise
     except Exception as exc:  # noqa: BLE001 — surface as one error event
         logger.exception("Engine run_turn failed")
         await bus.events.put({
@@ -300,7 +327,9 @@ async def run_turn_stream(
     async with ctx.turn_lock:
         bus = TurnEventBus()
         ctx.last_bus = bus
+        ctx.interrupt_requested = False
         pump_task = asyncio.create_task(_drain_engine_into_bus(ctx, bus, content))
+        ctx.turn_task = pump_task
         try:
             async with live_interaction_sink(ctx, bus):
                 while True:
@@ -310,4 +339,20 @@ async def run_turn_stream(
                     yield event
         finally:
             ctx.last_bus = None
-            await pump_task
+            ctx.turn_task = None
+            # Drain the pump so it can't outlive the consumer.
+            # Swallow ``CancelledError`` here: the pump's except
+            # branch already pushed a ``turn_cancelled`` event to
+            # the bus (which the consumer read), so the consumer
+            # has all the information it needs. Re-raising would
+            # tear the ASGI response body mid-flight ("ASGI
+            # callable returned without completing response") and
+            # force the TUI to handle a half-closed stream.
+            try:
+                await pump_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "pump_task ended with error for session %s", ctx.session_id
+                )

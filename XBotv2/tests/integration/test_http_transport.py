@@ -9,12 +9,15 @@ The tests cover:
 - /sessions/{sid}/messages SSE stream with a real engine
 - live permission_request round-trip via the interaction endpoints
 - Chinese payload byte-level preservation through HTTP
+- ESC interrupt: POST /sessions/{sid}/interrupt mid-turn yields
+  ``turn_cancelled`` on the SSE stream (v1.2)
 
 See ``docsv2/tui_opencode_requirements.md`` §10.5 + Phase E DoD.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -231,3 +234,165 @@ async def test_http_interactions_endpoint_validates_request_id(
     )
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_request"
+
+
+# ----------------------------------------------------------------------
+# ESC interrupt — v1.2 (§10.5.6.1)
+# ----------------------------------------------------------------------
+
+
+class _GatedMockLLM(MockLLM):
+    """A ``MockLLM`` whose ``_agenerate`` blocks on an ``asyncio.Event``.
+
+    The test sets ``release`` *after* verifying the SSE stream is open
+    and the interrupt endpoint has been hit; the engine's
+    ``asyncio.CancelledError`` (triggered by ``/interrupt``) will fire
+    first and tear the turn down before the LLM is unblocked.
+    """
+
+    def __init__(self, release: asyncio.Event, **kwargs):
+        super().__init__(responses=[{"content": "late reply"}], **kwargs)
+        object.__setattr__(self, "_gated_release", release)
+        object.__setattr__(self, "_gated_calls", 0)
+
+    @property
+    def calls(self) -> int:
+        return self._gated_calls  # type: ignore[has-type]
+
+    async def _agenerate(
+        self,
+        messages: list,
+        stop: list | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        object.__setattr__(
+            self, "_gated_calls", self._gated_calls + 1  # type: ignore[has-type]
+        )
+        # Block until released. If the engine gets cancelled mid-turn,
+        # this ``await`` will raise ``CancelledError`` and abort the
+        # turn before the event is set.
+        await self._gated_release.wait()  # type: ignore[has-type]
+        return await super()._agenerate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+
+
+@pytest.mark.asyncio
+async def test_http_interrupt_emits_turn_cancelled_on_sse(
+    http_app, tmp_path: Path
+) -> None:
+    """Pressing ESC (i.e. ``POST /sessions/{sid}/interrupt``) mid-turn
+    must close the SSE stream with a ``turn_cancelled`` event.
+
+    This exercises the full production path:
+    TUI ESC → ``HttpTransport.interrupt`` → ``POST /interrupt`` →
+    ``SessionContext.request_interrupt`` → ``turn_task.cancel`` →
+    ``Engine.run_turn`` catch ``CancelledError`` → yield
+    ``turn_cancelled`` → SSE → client.
+
+    We spin up a **real** uvicorn process (not ``ASGITransport``)
+    because ASGITransport buffers the entire response body before
+    exposing it to the client, which deadlocks this test.
+    """
+
+    import socket
+    import threading
+    import time
+    import uvicorn
+
+    release = asyncio.Event()
+    gated = _GatedMockLLM(release=release)
+    set_llm_override(http_app, gated)
+
+    # Pick a free port and start uvicorn in a background thread.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    config = uvicorn.Config(
+        http_app, host="127.0.0.1", port=port, log_level="warning"
+    )
+    server = uvicorn.Server(config)
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+
+    base_url = f"http://127.0.0.1:{port}"
+
+    # Wait for the server to be ready.
+    async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
+        for _ in range(50):
+            try:
+                r = await probe.get("/health")
+                if r.status_code == 200:
+                    break
+            except httpx.RequestError:
+                await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("uvicorn server failed to start")
+
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as ac:
+            open_resp = await ac.post(
+                "/sessions", json={"session_id": "esc", "thread_id": "t"}
+            )
+            assert open_resp.status_code == 200
+
+            sse_chunks: list[str] = []
+
+            async def _consume_sse() -> None:
+                async with ac.stream(
+                    "POST",
+                    "/sessions/esc/messages",
+                    json={"content": "do something long", "request_id": "req-esc"},
+                ) as response:
+                    assert response.status_code == 200
+                    async for chunk in response.aiter_text():
+                        sse_chunks.append(chunk)
+                        # Once we see ``turn_started`` we know the
+                        # engine is past the bootstrap and is about
+                        # to call the (gated) LLM.
+                        if "turn_started" in chunk:
+                            ir = await ac.post("/sessions/esc/interrupt")
+                            assert ir.status_code == 200
+                            assert ir.json()["cancelled"] is True
+
+            await asyncio.wait_for(_consume_sse(), timeout=5.0)
+            # Defensive: unblock the LLM in case the test exits
+            # before the engine's CancelledError fires.
+            release.set()
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=3.0)
+
+    body = "".join(sse_chunks)
+    events = _parse_sse(body)
+    types = [e.get("type") for e in events]
+    assert "turn_started" in types, f"no turn_started in {types!r}"
+    assert "turn_cancelled" in types, f"no turn_cancelled in {types!r}"
+    # The stream must terminate after cancellation — no
+    # ``turn_finished`` because the LLM never returned a response.
+    assert "turn_finished" not in types
+    # The engine is allowed to call the LLM at most once before the
+    # cancellation lands.
+    assert gated.calls <= 1, f"LLM was called {gated.calls} times after interrupt"
+
+
+@pytest.mark.asyncio
+async def test_http_interrupt_when_idle_returns_no_op(
+    client: httpx.AsyncClient,
+) -> None:
+    """``POST /sessions/{sid}/interrupt`` with no turn in flight is a
+    no-op success — pressing ESC on the TUI should never 4xx."""
+
+    open_resp = await client.post(
+        "/sessions", json={"session_id": "idle", "thread_id": "t"}
+    )
+    assert open_resp.status_code == 200
+
+    response = await client.post("/sessions/idle/interrupt")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "idle"
+    assert body["cancelled"] is False
+    assert body["status"] == "idle"

@@ -1160,6 +1160,7 @@ class Transport(Protocol):
     async def send_user_input(
         self, session_id: str, request_id: str, answer: str,
     ) -> dict: ...
+    async def interrupt(self, *, session_id: str) -> dict: ...   # v1.2: ESC support
     async def shutdown(self, session_id: str) -> dict: ...
     async def close(self) -> None: ...
 ```
@@ -1176,6 +1177,43 @@ class Transport(Protocol):
 4. 优雅退出：收到 `SIGTERM` / `SIGINT` 时，等所有 in-flight SSE 流关闭（最长 2s）再退出。
 
 `--mode server --transport stdio`（现有行为，不变）：保留为测试和回放后端。
+
+#### 10.5.6.1 取消协议（v1.2：ESC → `POST /interrupt`）
+
+按 ESC 取消正在运行的 turn 是 OpenCode `session_interrupt = escape` 的核心交互（§2.3.1）。完整链路：
+
+```
+TUI ESC key
+  └─ action_clear_input()                  # textual_client.py:340
+      └─ (turn_active or _turn_worker_running) → action_interrupt_turn()
+          └─ run_worker(_do(), name="tui_interrupt", exclusive=False)
+              └─ await self.session.transport.interrupt(session_id=...)  # Transport Protocol
+                  └─ HttpTransport.interrupt → POST /sessions/{sid}/interrupt
+                      └─ http_server.py: POST /sessions/{sid}/interrupt
+                          └─ SessionContext.request_interrupt() → turn_task.cancel()
+                              └─ Engine.run_turn 捕获 CancelledError
+                                  └─ yield {"type":"turn_cancelled", "data":{...}}
+                                      └─ Dispatcher._drain_engine_into_bus → SSE
+                                          └─ HttpTransport 解析 SSE 帧
+                                              └─ TerminalSession.send_message iterator
+                                                  └─ TUI _collect_response
+                                                      └─ state.apply_event("turn_cancelled")
+                                                          └─ state.status = "Interrupted"
+                                                      └─ _handle_stream_event("turn_cancelled")
+                                                          └─ _refresh_status()  # 状态栏显示 "Interrupted"
+```
+
+关键设计点：
+
+| 关注点 | 决策 |
+| --- | --- |
+| `Transport.interrupt` 同步返回 | 返回 `{"status": "interrupting", "cancelled": True}`；客户端不阻塞等 turn 真正结束，SSE 流自然关闭即可。 |
+| TUI 状态先标 `Interrupting…` 再标 `Interrupted` | 客户端先把"我在请求中断"显式给用户（避免按 ESC 没反应的错觉），SSE 收到 `turn_cancelled` 后切到终态。 |
+| 失败兜底 | 客户端 `try/except Exception` 吞 `interrupt()` 的网络错误（worker 不能 raise）；`_record_error` 加 `is_mounted` 守卫，避免 teardown 期间的 `NoMatches` 覆盖 `Interrupted`。 |
+| `Engine.run_turn` 的 `CancelledError` 处理 | 必须 yield `turn_cancelled` **再** re-raise——只有这样 SSE 帧才能送出去；不 re-raise 则 dispatcher 不知道要关流。 |
+| worker 命名 `tui_interrupt` + `exclusive=False` | 不与 `turn` worker 互斥（drain 仍要继续处理 `turn_cancelled` 事件）；命名唯一防止 ESC 连按叠加 worker。 |
+| `BINDINGS` 不含 `escape` | OpenCode 的 ESC 走 `keymap.tsx` 中的 `session_interrupt` 显式注册，Textual 这边我们让 `ComposerTextArea._on_key` 在 `event.key == "escape"` 时先转发给 App。 |
+| 测试 session 必须提供 `session_id` + `transport` | 缺一个就 AttributeError 被 `try/except Exception` 吞掉——按了 ESC 静默无反应。这条写进测试 docstring 防止回归。 |
 
 #### 10.5.7 端口与绑址（v1：loopback only，无鉴权）
 
@@ -1205,6 +1243,37 @@ class Transport(Protocol):
 | 端到端流式渲染第一个 token | 受 pipe 缓冲拖累 | SSE 即时 |
 
 具体数字待 Phase E 完成后通过 benchmark 测得（见 §14.5）。
+
+#### 10.5.10 实时事件 → TUI 状态同步
+
+TUI 不仅在 `turn_finished` 时刷新状态栏/活动行；每个有"持续观测价值"的事件都立即驱动一次刷新。
+
+| 事件 | 触发 | TUI 副作用 |
+| --- | --- | --- |
+| `turn_started` | Engine 准备开跑 | `state.turn_active = True`，`state.turn += 1`；status → `Running` |
+| `usage{delta, total}` | 每次 LLM 调用结束（**不等** `turn_finished`） | `state.turn_usage` 累加 delta，`state.usage` 同步；`_update_activity()` + `_refresh_status()`；状态栏立即出现 `in:N out:M total:K req:R` |
+| `tool_call` | LLM 决定调用工具 | 新增 `TuiToolEntry`，body 渲染 `name(args)`；活动行 status → `Running tool: name` |
+| `tool_result` | 工具执行完毕 | 工具 entry 显示 stdout/stderr 全文（v2.5 全平铺） |
+| `assistant_message` | LLM 流式文字片段 | 转录区 `MessageEntry` 追加（v1 不做 token-by-token 动画，只做行级追加） |
+| `turn_finished` | 全部结束 | `state.turn_active = False`；活动行 status → `Idle` |
+| `turn_cancelled` | ESC 中断或上游取消 | `state.turn_active = False`，`status = "Interrupted"` |
+| `error` | 引擎/工具抛错 | `state.status = "Error"`，`state.errors` 追加；转录区插入红条 `TuiNotice(kind="error")` |
+| `user_input_required` / `permission_request` | 工具需要用户输入 | placeholder 切到 `Answer the request…` / `Choose an inline approval option…`；活动行 status → `Awaiting user input` / `Awaiting permission` |
+
+**实时刷新原则**：
+
+- `usage` 事件**不**做 debounce；一个 turn 内 LLM 可能调用多次，token 计数应立刻反映在 status bar。
+- 活动行（`#activity`）是 status bar 之外**唯一**展示"我在做什么"的地方；任何会让用户产生"卡住了？"疑问的事件之后都应被刷新。
+- 转录区新内容用 `call_after_refresh` 延迟到布局完成后 `scroll_end`，避免 layout 阶段（`visual.get_height()` 调不到）出错。
+
+**工具调用错误特别处理**：
+
+LangChain 端在协议不匹配时（如 `An assistant message with 'tool_calls' must be followed by tool messages`）会 yield `error` 事件。TUI 的职责**只是显眼展示**——这不是 TUI bug，是 Engine/LangChain 端协议 bug。表现：
+
+- 转录区出现 `TuiNotice(kind="error", text="An assistant message with 'tool_calls' must be followed by tool messages…")`。
+- status bar 切到 `Error` 红字。
+- 该 turn 结束，composer 重新可输入。
+- 用户可继续提交新 turn；如果反复出现，建议切到 mock provider 或 `XBot_PROVIDER=mock` 排除 Engine bug。
 
 ---
 
@@ -1481,6 +1550,22 @@ UI / 状态机（Phase A、C）：
   - transcript 仍然 `VerticalScroll` 整体可滚；新内容通过 `call_after_refresh` 延迟到布局完成后 `scroll_end`。
   - 新增 `test_long_body_does_not_truncate_or_inner_scroll`：40 行消息 + 40 行工具结果，断言 state 保留全文 + DOM 无 `VerticalScroll` 子节点 + body 渲染 `visual.plain` 包含首/中/尾行。
   - 327/327 测试通过。
+- v2.6（2026-06-05）：**ESC interrupt + 实时 token usage + 工具调用错误展示**（用户报的两个增强需求 + 一个长期隐患）。
+  - **ESC interrupt 完整链路落地**（§10.5.6）：
+    - `Transport.interrupt(session_id=...)` 写入 `Transport` Protocol；`HttpTransport.interrupt` → `POST /sessions/{sid}/interrupt`。
+    - FastAPI `POST /sessions/{sid}/interrupt` 调用 `SessionContext.request_interrupt()`，后者 `turn_task.cancel()`。
+    - `Engine.run_turn` 捕获 `asyncio.CancelledError` 后 yield `turn_cancelled` 事件再 re-raise；`Dispatcher._drain_engine_into_bus` 把事件送入 SSE 队列。
+    - TUI `BINDINGS` 没有 ESC 绑定；走 `ComposerTextArea._on_key` 路径 → `action_clear_input` 检查 `state.turn_active or _turn_worker_running` → `action_interrupt_turn` → `run_worker(_do(), name="tui_interrupt", exclusive=False)`。
+    - TUI 状态机：`turn_cancelled` 事件 → `TuiState.apply_event` 设 `status = "Interrupted"`；`_handle_stream_event` 同步再设一次 + `_refresh_status()`。
+  - **实时 token usage**（§10.5.9）：Engine 在 LLM 调用结束时 yield `usage{delta, total}` 事件；TUI 在 `_handle_stream_event` 中调 `_update_activity()` 与 `_refresh_status()`，**不等** `turn_finished`。这样 status bar 每一轮都能看到 `in:N out:M total:K`，且活动行实时翻牌。
+  - **`_record_error` 加 `is_mounted` 守卫**：`turn_cancelled` 之后的 UI 刷新会和 teardown 抢 DOM（headless 测试或 Ctrl-C 退出时容易撞上 `NoMatches`），不让这种"事后 DOM miss"覆盖 `"Interrupted"` 状态。
+  - **测试加固**（`tests/integration/test_tui_interrupt_and_usage.py`，3 个新测试）：
+    - `test_esc_during_running_turn_calls_transport_interrupt`：按 ESC 后断言 `session.interrupt_calls == ["s"]`。
+    - `test_turn_cancelled_event_drives_status_to_interrupted`：断言 `state.status == "Interrupted" && state.turn_active is False`。
+    - `test_usage_event_updates_status_bar_in_realtime`：断言 status bar 提前出现 `in:100 out:25 total:125`，不等 `turn_finished`。
+  - **测试 session 形状**：`tests/integration/test_tui_interrupt_and_usage.py` 的 `_InterruptibleSession` 必须提供 `session_id`、`transport` 两个属性——TUI 走 `self.session.transport.interrupt(session_id=self.session.session_id)`，缺一个就 AttributeError 静默被 worker 的 `except Exception` 吞掉，导致"按了 ESC 啥也没发生"假象。这一条写进 docstring 防止后续回归。
+  - **引擎侧 tool call 错误**：LangChain 端在 `An assistant message with 'tool_calls' must be followed by tool messages` 这类 400 时会 yield `error` 事件；`TuiState.apply_event("error")` 把消息塞进 `state.errors` 并设 `status = "Error"`；转录区会插入一条红条 `TuiNotice(kind="error", text=...)`。**注意**：这是 engine 端协议 bug，TUI 只负责显眼展示。
+  - 337/337 测试通过（324 + 5 tool dispatch timeout + 3 interrupt/usage + 5 long-body 散落）。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---

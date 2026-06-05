@@ -14,6 +14,7 @@ Architecture constraint: Engine NEVER imports from builtin_plugins.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -175,6 +176,28 @@ class Engine:
         try:
             async for event in self._run_turn_impl(user_input):
                 yield event
+        except asyncio.CancelledError:
+            # The TUI pressed ESC (or the HTTP client disconnected
+            # mid-turn). Emit a structured turn_cancelled so the
+            # transcript shows what happened, then re-raise so the
+            # caller's task cancellation propagates.
+            logger.info("Turn %s interrupted by client", self._turn_count)
+            self.state_store.append_event(
+                "turn_cancelled",
+                {
+                    "turn": self._turn_count,
+                    "reason": "client_interrupt",
+                },
+            )
+            await self._save_messages()
+            yield {
+                "type": "turn_cancelled",
+                "data": {
+                    "turn": self._turn_count,
+                    "reason": "client_interrupt",
+                },
+            }
+            raise
         except InteractionDisconnected as exc:
             logger.info("Turn stopped because the client disconnected during an interaction")
             self.state_store.append_event(

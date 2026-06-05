@@ -168,36 +168,57 @@ def _register_routes(app: FastAPI) -> None:
 
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
-            try:
-                async for event in run_turn_stream(ctx, content=content):
-                    seq += 1
-                    yield _format_sse(event=event, seq=seq)
-            except SessionBusy as exc:
-                yield _format_sse(
-                    event={
-                        "type": "error",
-                        "data": {
-                            "code": "engine_busy",
-                            "message": str(exc),
-                        },
-                    },
-                    seq=seq + 1,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("SSE stream errored for %s", session_id)
-                yield _format_sse(
-                    event={
-                        "type": "error",
-                        "data": {"code": "stream_failed", "message": str(exc)},
-                    },
-                    seq=seq + 1,
-                )
-            finally:
-                # Always emit an explicit end marker so clients can close cleanly.
-                yield _format_sse(
+            end_emitted = False
+
+            def emit_end() -> bytes:
+                nonlocal end_emitted
+                if end_emitted:
+                    return b""
+                end_emitted = True
+                return _format_sse(
                     event={"type": "end", "data": {"status": "ok"}},
                     seq=seq + 1,
                 )
+
+            try:
+                try:
+                    async for event in run_turn_stream(ctx, content=content):
+                        seq += 1
+                        yield _format_sse(event=event, seq=seq)
+                except SessionBusy as exc:
+                    seq += 1
+                    yield _format_sse(
+                        event={
+                            "type": "error",
+                            "data": {
+                                "code": "engine_busy",
+                                "message": str(exc),
+                            },
+                        },
+                        seq=seq,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("SSE stream errored for %s", session_id)
+                    seq += 1
+                    yield _format_sse(
+                        event={
+                            "type": "error",
+                            "data": {"code": "stream_failed", "message": str(exc)},
+                        },
+                        seq=seq,
+                    )
+            except asyncio.CancelledError:
+                # TUI pressed ESC, or the HTTP client disconnected
+                # mid-turn. The dispatcher has already pushed the
+                # ``turn_cancelled`` event to the bus (or the pump's
+                # except branch will), so the TUI has enough
+                # information. Let the end marker flush so the
+                # client can close cleanly.
+                logger.info("SSE stream cancelled for session %s", session_id)
+            finally:
+                final = emit_end()
+                if final:
+                    yield final
 
         return StreamingResponse(
             sse_stream(),
@@ -234,6 +255,29 @@ def _register_routes(app: FastAPI) -> None:
     async def shutdown_session(session_id: str) -> dict[str, Any]:
         await manager.close_session(session_id)
         return {"status": "closed", "session_id": session_id}
+
+    @app.post("/sessions/{session_id}/interrupt")
+    async def interrupt_session(session_id: str) -> dict[str, Any]:
+        try:
+            ctx = await manager.get(session_id)
+        except SessionNotFound as exc:
+            raise HttpServerError(
+                "session_not_found", str(exc), status=404
+            ) from exc
+        cancelled = ctx.request_interrupt()
+        if not cancelled:
+            # No running turn to cancel — treat as no-op success so
+            # the TUI can press ESC any time without a 4xx.
+            return {
+                "session_id": session_id,
+                "status": "idle",
+                "cancelled": False,
+            }
+        return {
+            "session_id": session_id,
+            "status": "interrupting",
+            "cancelled": True,
+        }
 
     @app.exception_handler(HttpServerError)
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:

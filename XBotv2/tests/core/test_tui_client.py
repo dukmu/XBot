@@ -939,3 +939,190 @@ def _frame(frame_type: str, payload: dict) -> ProtocolFrame:
         request_id="req",
         payload=payload,
     )
+
+
+# ----------------------------------------------------------------------
+# Error visibility — v1.2 (§10.5.10)
+# ----------------------------------------------------------------------
+
+
+def test_tui_state_records_engine_error_event():
+    """Engine-level ``error`` events (e.g. LangChain 400 on
+    ``tool_calls → tool_messages`` mismatches) must be captured on
+    ``TuiState.errors`` AND surface as a transcript entry so the
+    transcript shows the failure even if the user has scrolled away
+    from the status bar.
+    """
+
+    state = TuiState()
+    state.apply_event(
+        {
+            "type": "error",
+            "data": {
+                "code": "engine_error",
+                "message": (
+                    "An assistant message with 'tool_calls' must be "
+                    "followed by tool messages"
+                ),
+            },
+        }
+    )
+
+    assert state.status == "Error"
+    assert state.errors == [
+        "An assistant message with 'tool_calls' must be "
+        "followed by tool messages"
+    ]
+    error_entries = [e for e in state.transcript if e.kind == "error"]
+    assert len(error_entries) == 1
+    # The error entry must point at the recorded error so the
+    # transcript can resolve and render it.
+    assert error_entries[0].key == "0"
+
+
+def test_tui_state_renders_error_with_visible_label_in_lines():
+    """When the transcript is rendered into plain lines (e.g. for
+    snapshot tests, log capture, or the curses fallback), the error
+    must be visible with a leading ``Error>`` marker — *not* buried
+    as a normal message.
+    """
+
+    state = TuiState()
+    state.apply_event(
+        {
+            "type": "turn_started",
+            "data": {"turn": 1},
+        }
+    )
+    state.apply_event(
+        {
+            "type": "error",
+            "data": {
+                "code": "engine_error",
+                "message": "Bad tool message order",
+            },
+        }
+    )
+
+    rendered = state.lines(width=120, height=30)
+    flat = "\n".join(rendered)
+    # The error must be visible in the transcript body, not just the
+    # status row at the top.
+    body_rows = "\n".join(rendered[3:-2])
+    assert "Error>" in body_rows
+    assert "Bad tool message order" in body_rows
+
+
+@pytest.mark.asyncio
+async def test_tui_renders_error_entry_with_error_css_class():
+    """Headless TUI: when an engine ``error`` event lands, the
+    transcript mounts an entry with classes ``"entry error"`` so the
+    ``.error`` CSS rule (red meta + body) actually applies. This is
+    the visible signal users get when a tool-call error happens
+    (LangChain 400, sandbox rejection, etc.).
+
+    Uses the **real** error text reported in v1.2 testing:
+
+        Error code: 400 - {'error': {'message': "An assistant
+        message with 'tool_calls' must be followed by tool messages
+        ..."}}
+    """
+
+    REAL_ERROR = (
+        "Error code: 400 - {'error': {'message': \"An assistant "
+        "message with 'tool_calls' must be followed by tool messages "
+        "responding to each 'tool_call_id'. (insufficient tool "
+        "messages following tool_calls message)\", 'type': "
+        "'invalid_request_error', 'param': None, 'code': "
+        "'invalid_request_error'}}"
+    )
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class _ErrorSession:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text, *, input_provider=None, permission_provider=None):
+            self.sent.append(text)
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {
+                "type": "error",
+                "data": {
+                    "code": "engine_error",
+                    "message": REAL_ERROR,
+                },
+            }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def submit_user_input(self, r, a):
+            return {}
+
+        async def respond_permission(self, r, d, *, scope="once"):
+            return {}
+
+    session = _ErrorSession()
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = session
+
+    async with app.run_test(headless=True, size=(160, 50)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("use the shell tool three times")
+        await app.submit_composer()
+        # Wait for the error event to land and the transcript to render.
+        for _ in range(30):
+            await pilot.pause()
+            if app.state.status == "Error":
+                # Render pass needs an extra tick so the widget is
+                # mounted with its final classes.
+                await pilot.pause()
+                break
+
+        assert app.state.status == "Error"
+        assert any(REAL_ERROR in e for e in app.state.errors)
+
+        # The transcript must contain at least one DOM node with the
+        # ``error`` class so the CSS rule can highlight it.
+        error_widgets = list(app.query(".error"))
+        assert error_widgets, "no widget with .error class in the transcript"
+        # The error text lives in a child ``.body`` Static; the
+        # wrapping ``.error`` Vertical has no renderable of its own.
+        # Walk descendants to find the actual text.
+        found = False
+        for widget in error_widgets:
+            for descendant in [widget, *widget.walk_children()]:
+                visual = getattr(descendant, "visual", None)
+                if visual is None:
+                    continue
+                plain = getattr(visual, "plain", "")
+                if "tool_calls" in plain and "tool messages" in plain:
+                    found = True
+                    break
+            if found:
+                break
+        assert found, (
+            f"error text not found under any .error widget: {error_widgets!r}"
+        )
+
+        # The status bar should also show "Error" so the user can
+        # see something is wrong even if the transcript is scrolled.
+        from textual.widgets import Static as TStatic
+        status = app.query_one("#status_bar", TStatic)
+        status_text = status.visual.plain if status.visual else ""
+        assert "Error" in status_text, (
+            f"status bar missing Error: {status_text!r}"
+        )
