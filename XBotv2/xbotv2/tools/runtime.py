@@ -88,6 +88,7 @@ async def execute_tools(
                     tc,
                     "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
                     reason,
+                    source="sandbox",
                 )]
                 await _emit_permission_event(
                     hook_manager,
@@ -104,6 +105,11 @@ async def execute_tools(
                         tc,
                     )
                     if response.get("decision") == "allow":
+                        denials.pop(tc["id"], None)
+                        denial_events.pop(tc["id"], None)
+                        _approve_sandbox_once(sandbox_policy, tc)
+                        if entry.execution_mode == "sequential":
+                            sequential_tools.add(tool_name)
                         continue
                     denials[tc["id"]] = _permission_denial_reason(response, reason)
                     await _emit_tool_denied(
@@ -471,6 +477,8 @@ def _permission_client_event(
     tool_call: dict[str, Any],
     decision: str,
     reason: str,
+    *,
+    source: str = "permission_system",
 ) -> dict[str, Any]:
     event_type = (
         "permission_request"
@@ -481,7 +489,7 @@ def _permission_client_event(
         "type": event_type,
         "data": {
             "request_id": f"permission:{tool_call.get('id', '')}",
-            "source": "permission_system",
+            "source": source,
             "tool_call": tool_call,
             "decision": decision,
             "reason": reason,
@@ -621,6 +629,20 @@ def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
     if status == "unsupported":
         return fallback
     return fallback
+
+
+def _approve_sandbox_once(sandbox_policy: Any, tool_call: dict[str, Any]) -> None:
+    if sandbox_policy is None or not hasattr(sandbox_policy, "approve_once"):
+        return
+    args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
+    path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
+    for key in path_keys:
+        value = args.get(key)
+        if isinstance(value, str):
+            sandbox_policy.approve_once(
+                sandbox_policy.resolve_tool_path(value),
+                str(tool_call.get("name") or ""),
+            )
 
 
 async def _run_tool_hook(

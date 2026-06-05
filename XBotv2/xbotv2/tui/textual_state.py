@@ -14,7 +14,7 @@ SubmitRoute = str
 def route_submitted_text(
     state: TuiState,
     answers: asyncio.Queue[str],
-    permission_decisions: asyncio.Queue[str],
+    permission_decisions: asyncio.Queue[dict[str, str]],
     text: str,
 ) -> SubmitRoute:
     """Route submitted text to a pending live interaction when present."""

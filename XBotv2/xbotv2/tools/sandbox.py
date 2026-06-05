@@ -46,7 +46,7 @@ class SandboxPolicy:
         *,
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
-        enabled: bool = False,
+        enabled: bool = True,
     ) -> None:
         self.enabled = enabled
         self.data_root = Path(data_root)
@@ -56,6 +56,7 @@ class SandboxPolicy:
 
         if config:
             self._load_config(config)
+        self._append_builtin_rules()
 
     # ------------------------------------------------------------------
     # Config loading
@@ -64,17 +65,22 @@ class SandboxPolicy:
     def _load_config(self, config: dict[str, Any]) -> None:
         self.enabled = config.get("enabled", self.enabled)
         for rule_data in config.get("resources", []):
-            path = rule_data.get("path", "")
+            path = self._expand_path(str(rule_data.get("path", "")))
             access = rule_data.get("access", "readonly")
             self._rules.append(SandboxResourceRule(path=path, access=access))
 
-        # Built-in rules
+    def _append_builtin_rules(self) -> None:
+        """Append invariant workspace/data rules after configured rules."""
         self._rules.append(SandboxResourceRule(
             path=str(self.workspace_root), access="readwrite",
         ))
         self._rules.append(SandboxResourceRule(
             path=str(self.data_root), access="readonly",
         ))
+
+    def add_resource_rule(self, path: str, access: PathAccess) -> None:
+        """Add a live resource rule with highest matching priority."""
+        self._rules.insert(0, SandboxResourceRule(path=str(Path(path).resolve()), access=access))
 
     # ------------------------------------------------------------------
     # Tool guard
@@ -208,3 +214,10 @@ class SandboxPolicy:
             return False
         self._one_call_approvals.remove(approval)
         return True
+
+    def _expand_path(self, path: str) -> str:
+        return (
+            path
+            .replace("{{ workspace }}", str(self.workspace_root))
+            .replace("{{ data_dir }}", str(self.data_root))
+        )

@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import importlib
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
 from xbotv2.config.loader import load_agent_config, load_provider_config, load_user_context
+from xbotv2.config.policy import (
+    load_session_policy,
+    merge_permission_config,
+    merge_sandbox_config,
+)
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
@@ -70,7 +76,7 @@ async def bootstrap(
     config_dir: Path | str = "data",
     personality_id: str = "default",
     provider_name: str = "default",
-    session_id: str = "default",
+    session_id: str | None = None,
     thread_id: str = "agent",
     plugin_dirs: list[Path | str] | None = None,
     plugin_configs: dict[str, dict[str, Any]] | None = None,
@@ -95,6 +101,7 @@ async def bootstrap(
     config_dir = Path(config_dir)
     _validate_identifier("personality_id", personality_id)
     _validate_identifier("provider_name", provider_name)
+    session_id = session_id or uuid.uuid4().hex
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
     _plugin_configs = plugin_configs or {}
@@ -103,6 +110,16 @@ async def bootstrap(
     agent_config = load_agent_config(config_dir, personality_id)
     provider_config = load_provider_config(config_dir, provider_name)
     load_user_context(config_dir)  # Validates config exists
+
+    session_policy = load_session_policy(config_dir, session_id)
+    agent_config.permissions = merge_permission_config(
+        agent_config.permissions,
+        session_policy.get("permissions"),
+    )
+    agent_config.sandbox = merge_sandbox_config(
+        agent_config.sandbox,
+        session_policy.get("sandbox"),
+    )
 
     # Merge plugin configs from personality
     if agent_config.plugins:

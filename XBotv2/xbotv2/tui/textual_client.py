@@ -31,7 +31,7 @@ class TextualTuiClient:
         data_dir: Path | str = "data",
         personality_id: str = "default",
         provider_name: str = "default",
-        session_id: str = "default",
+        session_id: str | None = None,
         thread_id: str = "agent",
         no_plugins: bool = False,
     ) -> None:
@@ -102,7 +102,7 @@ class XBotTextualApp(App[None]):
         data_dir: Path | str,
         personality_id: str,
         provider_name: str,
-        session_id: str,
+        session_id: str | None,
         thread_id: str,
         no_plugins: bool,
     ) -> None:
@@ -115,9 +115,9 @@ class XBotTextualApp(App[None]):
             thread_id=thread_id,
             no_plugins=no_plugins,
         )
-        self.state = TuiState(session_id=session_id, thread_id=thread_id)
+        self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
-        self._permission_decisions: asyncio.Queue[str] = asyncio.Queue()
+        self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
         self._outbound_messages: asyncio.Queue[str] = asyncio.Queue()
         self._connected = False
         self._turn_worker_running = False
@@ -175,8 +175,11 @@ class XBotTextualApp(App[None]):
             self._refresh_all()
             return
         if route == "permission":
-            decision = _parse_permission_decision(text)
-            self._append_local_notice("Approval queued", decision)
+            parsed = _parse_permission_decision(text)
+            self._append_local_notice(
+                "Approval queued",
+                f"{parsed['decision']} ({parsed['scope']})",
+            )
             self._refresh_all()
             return
         if not self._connected:
@@ -224,9 +227,9 @@ class XBotTextualApp(App[None]):
         self._set_input_placeholder("Answer question")
         return await self._answers.get()
 
-    async def _answer_live_permission(self, payload: dict[str, Any]) -> str:
+    async def _answer_live_permission(self, payload: dict[str, Any]) -> dict[str, str]:
         del payload
-        self._set_input_placeholder("Type yes/allow or no/deny")
+        self._set_input_placeholder("Approve? allow, deny, session allow, always allow")
         return await self._permission_decisions.get()
 
     def _record_error(self, exc: BaseException) -> None:
@@ -276,7 +279,7 @@ class XBotTextualApp(App[None]):
         if self.state.pending_user_input_active:
             self._set_input_placeholder("Answer the pending question")
         elif self.state.pending_permission_active:
-            self._set_input_placeholder("Approve? type yes/allow or no/deny")
+            self._set_input_placeholder("Approve? allow, deny, session allow, always allow")
         else:
             self._set_input_placeholder("Message XBotv2")
 

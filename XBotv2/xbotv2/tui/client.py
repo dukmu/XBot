@@ -278,7 +278,7 @@ class CursesTuiClient:
         data_dir: Path | str = "data",
         personality_id: str = "default",
         provider_name: str = "default",
-        session_id: str = "default",
+        session_id: str | None = None,
         thread_id: str = "agent",
         no_plugins: bool = False,
     ) -> None:
@@ -290,12 +290,12 @@ class CursesTuiClient:
             thread_id=thread_id,
             no_plugins=no_plugins,
         )
-        self.state = TuiState(session_id=session_id, thread_id=thread_id)
+        self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: set[Future] = set()
         self._answers: queue.Queue[str] = queue.Queue()
-        self._permission_decisions: queue.Queue[str] = queue.Queue()
+        self._permission_decisions: queue.Queue[dict[str, str]] = queue.Queue()
         self._closed = False
 
     async def run(self) -> None:
@@ -449,8 +449,14 @@ def _notice_label(kind: str) -> str:
     return labels.get(kind, "Event")
 
 
-def _parse_permission_decision(text: str) -> str:
+def _parse_permission_decision(text: str) -> dict[str, str]:
     normalized = text.strip().lower()
-    if normalized in {"allow", "approve", "approved", "yes", "y"}:
-        return "allow"
-    return "deny"
+    parts = normalized.split()
+    scope = "once"
+    if parts and parts[0] in {"always", "session", "once"}:
+        scope = parts.pop(0)
+    elif parts and parts[-1] in {"always", "session", "once"}:
+        scope = parts.pop()
+    decision_text = " ".join(parts) if parts else normalized
+    decision = "allow" if decision_text in {"allow", "approve", "approved", "yes", "y"} else "deny"
+    return {"decision": decision, "scope": scope}

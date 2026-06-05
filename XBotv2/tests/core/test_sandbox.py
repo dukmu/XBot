@@ -36,6 +36,11 @@ class TestSandboxResourceRule:
 class TestSandboxPolicyBasics:
     """Policy creation and description."""
 
+    def test_default_enabled(self, temp_workspace):
+        """Sandbox is enabled by default."""
+        policy = SandboxPolicy(workspace_root=str(temp_workspace))
+        assert policy.enabled is True
+
     def test_default_disabled(self, temp_workspace):
         """Sandbox is disabled by default."""
         policy = SandboxPolicy(

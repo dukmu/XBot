@@ -266,6 +266,50 @@ class ConfiguredPlugin(PluginBase):
         assert state["thread_id"] == "test-thread"
         assert state["schema_version"] == 2
 
+    @pytest.mark.asyncio
+    async def test_bootstrap_default_session_id_is_uuid(self, temp_data_dir):
+        """Omitting session_id creates a fresh UUID session instead of default."""
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            thread_id="test-thread",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        state = engine.state_store.read_state()
+        assert state["session_id"] != "default"
+        assert len(state["session_id"]) == 32
+        assert (temp_data_dir / "sessions" / state["session_id"] / "state").exists()
+
+    @pytest.mark.asyncio
+    async def test_personality_json_policy_files_are_ignored(self, temp_data_dir):
+        """Personality policy has a single YAML source of truth."""
+        personality_dir = temp_data_dir / "personalities" / "default"
+        (personality_dir / "personality.yaml").write_text(
+            "permissions:\n"
+            "  allow:\n"
+            "    - tool: filesystem_read\n"
+            "sandbox:\n"
+            "  enabled: true\n"
+        )
+        (personality_dir / "permissions.json").write_text(
+            '{"deny": [{"tool": "filesystem_read"}]}'
+        )
+        (personality_dir / "sandbox.json").write_text(
+            '{"enabled": false}'
+        )
+
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.permission_system.check("filesystem_read", {}) == "allow"
+        assert engine.sandbox_policy.enabled is True
+
 
 class TestBootstrapNoPlugins:
     """Engine works correctly in explicit no-plugin mode."""

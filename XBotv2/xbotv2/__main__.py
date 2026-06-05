@@ -18,6 +18,7 @@ Options:
 import argparse
 import asyncio
 import sys
+import uuid
 from pathlib import Path
 
 
@@ -34,6 +35,16 @@ def main():
     )
     parser.add_argument(
         "--provider", default="default", help="Provider config to use"
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="Session ID to resume/connect. Defaults to a new UUID session.",
+    )
+    parser.add_argument(
+        "--thread",
+        default="agent",
+        help="Thread ID within the session (default: agent)",
     )
     parser.add_argument(
         "--no-plugins",
@@ -90,6 +101,8 @@ def _run_tui(args):
         data_dir=args.data_dir,
         personality_id=args.personality,
         provider_name=args.provider,
+        session_id=getattr(args, "session", None),
+        thread_id=getattr(args, "thread", "agent"),
         no_plugins=args.no_plugins,
     )
     asyncio.run(client.run())
@@ -103,6 +116,8 @@ def _run_curses(args):
         data_dir=args.data_dir,
         personality_id=args.personality,
         provider_name=args.provider,
+        session_id=getattr(args, "session", None),
+        thread_id=getattr(args, "thread", "agent"),
         no_plugins=args.no_plugins,
     )
     asyncio.run(client.run())
@@ -121,8 +136,8 @@ async def _terminal_loop(args):
             config_dir=str(data_dir),
             personality_id=args.personality,
             provider_name=args.provider,
-            session_id="terminal",
-            thread_id="agent",
+            session_id=getattr(args, "session", None) or uuid.uuid4().hex,
+            thread_id=getattr(args, "thread", "agent"),
             plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()
@@ -190,8 +205,8 @@ def _run_once(args):
             config_dir=str(data_dir),
             personality_id=args.personality,
             provider_name=args.provider,
-            session_id="once",
-            thread_id="agent",
+            session_id=getattr(args, "session", None) or uuid.uuid4().hex,
+            thread_id=getattr(args, "thread", "agent"),
             plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()

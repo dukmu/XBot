@@ -1,7 +1,0 @@
-{
-  "enabled": false,
-  "resources": [
-    {"path": "{{ workspace }}", "access": "readwrite"},
-    {"path": "{{ data_dir }}", "access": "readonly"}
-  ]
-}

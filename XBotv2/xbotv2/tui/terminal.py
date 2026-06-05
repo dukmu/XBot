@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TextIO
 
@@ -116,7 +117,7 @@ class TerminalSession:
         data_dir: Path | str = "data",
         personality_id: str = "default",
         provider_name: str = "default",
-        session_id: str = "default",
+        session_id: str | None = None,
         thread_id: str = "agent",
         no_plugins: bool = False,
     ) -> None:
@@ -125,8 +126,16 @@ class TerminalSession:
         self._provider_name = provider_name
         self._no_plugins = no_plugins
         self._client: ProtocolClient | None = None
-        self._session_id = session_id
+        self._session_id = session_id or uuid.uuid4().hex
         self._thread_id = thread_id
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
 
     async def __aenter__(self) -> "TerminalSession":
         await self.connect()
@@ -192,7 +201,7 @@ class TerminalSession:
         self,
         content: str,
         input_provider: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
-        permission_provider: Callable[[dict[str, Any]], Awaitable[str] | str] | None = None,
+        permission_provider: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
     ):
         """Send a user message and optionally answer live interaction requests."""
         if not self._client:
@@ -229,16 +238,23 @@ class TerminalSession:
                     },
                 )
             elif frame.type == "permission_request" and permission_provider is not None:
-                decision = permission_provider(frame.payload)
-                if hasattr(decision, "__await__"):
-                    decision = await decision
+                parsed = permission_provider(frame.payload)
+                if hasattr(parsed, "__await__"):
+                    parsed = await parsed
+                if isinstance(parsed, dict):
+                    decision = str(parsed.get("decision") or "deny")
+                    scope = str(parsed.get("scope") or "once")
+                else:
+                    decision = str(parsed)
+                    scope = "once"
                 await self._client.send(
                     "permission.response",
                     self._session_id,
                     self._thread_id,
                     {
                         "request_id": frame.payload.get("request_id", ""),
-                        "decision": str(decision),
+                        "decision": decision,
+                        "scope": scope,
                     },
                 )
 
@@ -261,7 +277,13 @@ class TerminalSession:
             raise RuntimeError("Server closed stdout before user input response")
         return {"type": frame.type, "data": frame.payload}
 
-    async def respond_permission(self, request_id: str, decision: str) -> dict[str, Any]:
+    async def respond_permission(
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        scope: str = "once",
+    ) -> dict[str, Any]:
         """Submit allow/deny for a pending permission request."""
         if not self._client:
             raise RuntimeError("Not connected")
@@ -270,7 +292,7 @@ class TerminalSession:
             "permission.response",
             self._session_id,
             self._thread_id,
-            {"request_id": request_id, "decision": decision},
+            {"request_id": request_id, "decision": decision, "scope": scope},
         )
         frame = await self._client.read_frame()
         if frame is None:

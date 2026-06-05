@@ -104,17 +104,6 @@ def load_agent_config(config_dir: Path, personality_id: str = "default") -> Agen
     if memory_path.exists():
         data.setdefault("memory", memory_path.read_text())
 
-    # Load permissions/sandbox from separate files
-    permissions_path = personality_dir / "permissions.json"
-    if permissions_path.exists():
-        import json
-        data.setdefault("permissions", json.loads(permissions_path.read_text()))
-
-    sandbox_path = personality_dir / "sandbox.json"
-    if sandbox_path.exists():
-        import json
-        data.setdefault("sandbox", json.loads(sandbox_path.read_text()))
-
     return AgentConfig(**data)
 
 

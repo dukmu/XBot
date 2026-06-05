@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from xbotv2.config.policy import persist_permission_decision
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.frames import (
     ProtocolEncoder,
@@ -341,6 +342,12 @@ class RuntimeServer:
                 "code": "invalid_request",
                 "message": "permission.response payload.decision must be allow or deny.",
             }, frame.request_id)
+        scope = str(frame.payload.get("scope") or "once").strip().lower()
+        if scope not in {"once", "session", "always"}:
+            return self._make_frame("error", {
+                "code": "invalid_request",
+                "message": "permission.response payload.scope must be once, session, or always.",
+            }, frame.request_id)
 
         store = self._engine.state_store
         pending = _find_pending_interaction(
@@ -357,9 +364,19 @@ class RuntimeServer:
         store.append_event("permission_response", {
             "request_id": request_id,
             "decision": decision,
+            "scope": scope,
             **_pending_response_context(pending),
         })
         state = store.materialize()
+        persist_permission_decision(
+            config_dir=self._data_dir,
+            personality_id=self._personality_id,
+            session_id=self._session_id,
+            client_event={"type": "permission_request", "data": pending.get("payload", {})},
+            decision=decision,
+            scope=scope,
+            engine=self._engine,
+        )
 
         encoder = self._encoder
         if encoder:
@@ -368,6 +385,7 @@ class RuntimeServer:
                 {
                     "request_id": request_id,
                     "decision": decision,
+                    "scope": scope,
                     "resume_supported": False,
                     "pending_interactions": state.get("pending_interactions", []),
                 },
@@ -376,6 +394,7 @@ class RuntimeServer:
         return self._make_frame("permission_response_recorded", {
             "request_id": request_id,
             "decision": decision,
+            "scope": scope,
             "resume_supported": False,
             "pending_interactions": state.get("pending_interactions", []),
         }, frame.request_id)
@@ -548,10 +567,21 @@ class RuntimeServer:
                 self._live_interaction_depth -= 1
             if event_type == "permission_request":
                 state = self._engine.record_permission_result(client_event, response)
+                if response.get("status") == "answered":
+                    persist_permission_decision(
+                        config_dir=self._data_dir,
+                        personality_id=self._personality_id,
+                        session_id=self._session_id,
+                        client_event=client_event,
+                        decision=str(response.get("decision") or ""),
+                        scope=str(response.get("scope") or "once"),
+                        engine=self._engine,
+                    )
                 ack_type = "permission_response_recorded"
                 ack_payload = {
                     "request_id": request_id,
                     "decision": response.get("decision", ""),
+                    "scope": response.get("scope", "once"),
                     "status": response["status"],
                     "resume_supported": False,
                     "pending_interactions": state.get("pending_interactions", []),
@@ -658,6 +688,7 @@ class RuntimeServer:
                 "status": "answered",
                 "answer": frame.payload.get("answer", ""),
                 "decision": frame.payload.get("decision", ""),
+                "scope": frame.payload.get("scope", "once"),
             }
 
     async def _wait_for_client_frame(

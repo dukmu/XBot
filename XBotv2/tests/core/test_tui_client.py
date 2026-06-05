@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import xbotv2.__main__ as xbot_main
 from xbotv2.protocol.frames import ProtocolFrame
-from xbotv2.tui.client import CursesTuiClient, TuiState
+from xbotv2.tui.client import CursesTuiClient, TuiState, _parse_permission_decision
 from xbotv2.tui.textual_state import (
     queue_user_message,
     render_transcript_entry,
@@ -270,7 +270,7 @@ async def test_textual_routes_submitted_text_to_live_permission_queue():
     route = route_submitted_text(state, answers, permission_decisions, "y")
 
     assert route == "permission"
-    assert await permission_decisions.get() == "allow"
+    assert await permission_decisions.get() == {"decision": "allow", "scope": "once"}
     assert answers.empty()
     assert state.messages == []
 
@@ -397,9 +397,20 @@ def test_curses_client_routes_text_to_live_permission_queue():
 
     client._send_text("yes")
 
-    assert client._permission_decisions.get_nowait() == "allow"
+    assert client._permission_decisions.get_nowait() == {"decision": "allow", "scope": "once"}
     assert client.state.messages == []
     assert client._pending == set()
+
+
+def test_permission_decision_parser_supports_scopes():
+    assert _parse_permission_decision("session allow") == {
+        "decision": "allow",
+        "scope": "session",
+    }
+    assert _parse_permission_decision("deny always") == {
+        "decision": "deny",
+        "scope": "always",
+    }
 
 
 @pytest.mark.asyncio

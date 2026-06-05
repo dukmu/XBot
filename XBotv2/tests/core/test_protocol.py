@@ -951,6 +951,270 @@ class TestRuntimeServerSubprocess:
             await _stop_process(proc)
 
     @pytest.mark.asyncio
+    async def test_server_live_sandbox_allow_continues_tool_call(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["filesystem_read"],
+            mock_responses=[
+                {
+                    "content": "read gated",
+                    "tool_calls": [
+                        {
+                            "name": "filesystem_read",
+                            "args": {"path": "gated/file.txt"},
+                            "id": "call_sandbox",
+                        }
+                    ],
+                },
+                {"content": "done"},
+            ],
+            permissions=(
+                "permissions:\n"
+                "  allow:\n"
+                "    - tool: filesystem_read\n"
+            ),
+            sandbox=(
+                "sandbox:\n"
+                "  enabled: true\n"
+                "  resources:\n"
+                "    - path: \"{{ workspace }}/gated\"\n"
+                "      access: ask\n"
+            ),
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            "--no-plugins",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-sandbox", thread_id="t-sandbox")
+            target = data_dir / "sessions" / "s-sandbox" / "workspace" / "gated" / "file.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("secret content\n", encoding="utf-8")
+
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-sandbox",
+                thread_id="t-sandbox",
+                request_id="req-sandbox",
+                payload={"content": "trigger"},
+            )
+            frames = []
+            approved = False
+            while True:
+                frame = await _read_frame(proc)
+                frames.append(frame)
+                if frame.type == "permission_request" and not approved:
+                    assert frame.payload["source"] == "sandbox"
+                    await _send_frame(
+                        proc,
+                        "permission.response",
+                        session_id="s-sandbox",
+                        thread_id="t-sandbox",
+                        request_id="req-sandbox-response",
+                        payload={
+                            "request_id": frame.payload["request_id"],
+                            "decision": "allow",
+                        },
+                    )
+                    approved = True
+                if frame.type == "turn_finished":
+                    break
+
+            result = next(frame for frame in frames if frame.type == "tool_result")
+            assert result.payload["status"] == "success"
+            assert "secret content" in result.payload["content"]
+            recorded = next(frame for frame in frames if frame.type == "permission_response_recorded")
+            assert recorded.payload["decision"] == "allow"
+            assert recorded.payload["scope"] == "once"
+            events_path = data_dir / "sessions" / "s-sandbox" / "state" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            response_event = next(event for event in events if event["type"] == "permission_response")
+            assert response_event["payload"]["request_source"] == "sandbox"
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
+    async def test_server_permission_response_session_scope_persists_policy(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["send_message"],
+            mock_responses=[
+                {
+                    "content": "notice",
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "args": {"message": "remember this"},
+                            "id": "call_perm",
+                        }
+                    ],
+                },
+                {"content": "done"},
+            ],
+            permissions=(
+                "permissions:\n"
+                "  ask:\n"
+                "    - tool: send_message\n"
+            ),
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            "--no-plugins",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-policy", thread_id="t-policy")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-policy",
+                thread_id="t-policy",
+                request_id="req-policy",
+                payload={"content": "trigger"},
+            )
+            while True:
+                frame = await _read_frame(proc)
+                if frame.type == "permission_request":
+                    await _send_frame(
+                        proc,
+                        "permission.response",
+                        session_id="s-policy",
+                        thread_id="t-policy",
+                        request_id="req-policy-response",
+                        payload={
+                            "request_id": frame.payload["request_id"],
+                            "decision": "allow",
+                            "scope": "session",
+                        },
+                    )
+                if frame.type == "turn_finished":
+                    break
+
+            policy_path = data_dir / "sessions" / "s-policy" / "policy.yaml"
+            policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+            assert policy["permissions"]["allow"][0]["tool"] == "send_message"
+            assert policy["permissions"]["allow"][0]["params"]["message"] == "remember\\ this"
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
+    async def test_server_permission_response_always_scope_persists_personality(self, tmp_path):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            tools=["send_message"],
+            mock_responses=[
+                {
+                    "content": "notice",
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "args": {"message": "always remember"},
+                            "id": "call_perm",
+                        }
+                    ],
+                },
+                {"content": "done"},
+            ],
+            permissions=(
+                "permissions:\n"
+                "  ask:\n"
+                "    - tool: send_message\n"
+            ),
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": _subprocess_pythonpath(),
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "xbotv2",
+            "--data-dir",
+            str(data_dir),
+            "--provider",
+            "mock",
+            "--mode",
+            "server",
+            "--no-plugins",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            await _open_session(proc, session_id="s-always", thread_id="t-always")
+            await _send_frame(
+                proc,
+                "user.message",
+                session_id="s-always",
+                thread_id="t-always",
+                request_id="req-always",
+                payload={"content": "trigger"},
+            )
+            while True:
+                frame = await _read_frame(proc)
+                if frame.type == "permission_request":
+                    await _send_frame(
+                        proc,
+                        "permission.response",
+                        session_id="s-always",
+                        thread_id="t-always",
+                        request_id="req-always-response",
+                        payload={
+                            "request_id": frame.payload["request_id"],
+                            "decision": "allow",
+                            "scope": "always",
+                        },
+                    )
+                if frame.type == "turn_finished":
+                    break
+
+            personality_path = data_dir / "personalities" / "default" / "personality.yaml"
+            personality = yaml.safe_load(personality_path.read_text(encoding="utf-8"))
+            assert personality["permissions"]["allow"][0]["tool"] == "send_message"
+            assert personality["permissions"]["allow"][0]["params"]["message"] == "always\\ remember"
+        finally:
+            await _stop_process(proc)
+
+    @pytest.mark.asyncio
     async def test_server_stops_live_ask_when_client_disconnects(self, tmp_path):
         data_dir = _write_mock_data_dir(
             tmp_path,
@@ -1302,6 +1566,7 @@ def _write_mock_data_dir(
     tools: list[str] | None = None,
     mock_responses: list[dict] | None = None,
     permissions: str | None = None,
+    sandbox: str | None = None,
 ):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
@@ -1324,13 +1589,16 @@ def _write_mock_data_dir(
         "    - tool: send_message\n"
         "    - tool: ask_user\n"
     )
+    sandbox_yaml = sandbox or (
+        "sandbox:\n"
+        "  enabled: false\n"
+    )
     (data_dir / "personalities" / "default" / "personality.yaml").write_text(
         "agent_name: TestBot\n"
         "agent_role: Test runtime\n"
         f"{tool_yaml}"
         f"{permissions_yaml}"
-        "sandbox:\n"
-        "  enabled: false\n"
+        f"{sandbox_yaml}"
     )
     return data_dir
 

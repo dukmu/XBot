@@ -923,6 +923,7 @@ class Engine:
             self.state_store.append_event("permission_response", {
                 **payload,
                 "decision": result.get("decision", ""),
+                "scope": result.get("scope", "once"),
             })
             return
         self.state_store.append_event("permission_cancelled", {

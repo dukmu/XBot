@@ -17,7 +17,7 @@ plugins: {}
 hooks: []
 
 sandbox:
-  enabled: false
+  enabled: true
   resources:
     - path: "{{ workspace }}"
       access: readwrite
