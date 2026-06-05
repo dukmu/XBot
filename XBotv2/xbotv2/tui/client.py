@@ -113,7 +113,7 @@ class TuiState:
             self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
-            if content:
+            if content.strip():
                 self.append_message("assistant", content)
             self._apply_tool_calls(data.get("tool_calls"))
         elif event_type == "tool_calls_started":

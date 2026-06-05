@@ -3,6 +3,7 @@
 import ast
 import argparse
 import asyncio
+import html
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -66,6 +67,24 @@ def test_tui_state_applies_usage_totals():
         "total_tokens": 20,
         "requests": 2,
     }
+
+
+def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
+    state = TuiState()
+
+    state.apply_event({
+        "type": "assistant_message",
+        "data": {
+            "content": "\n  \t",
+            "tool_calls": [{"id": "call_1", "name": "shell", "args": {"command": "df -h"}}],
+        },
+    })
+
+    assert state.messages == []
+    assert state.tools["call_1"].name == "shell"
+    assert len(state.transcript) == 1
+    assert state.transcript[0].kind == "tool"
+    assert state.transcript[0].key == "call_1"
 
 
 def test_tui_state_turn_finished_preserves_waiting_for_user():
@@ -318,6 +337,36 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_headless_keeps_transcript_non_focusable():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        transcript = app.query_one("#transcript")
+        input_widget = app.query_one("#input")
+
+        assert transcript.can_focus is False
+        assert app.focused is input_widget
+
+
+@pytest.mark.asyncio
 async def test_textual_app_headless_shows_usage_in_status_bar():
     from xbotv2.tui.textual_client import XBotTextualApp
 
@@ -371,6 +420,8 @@ async def test_textual_app_headless_renders_inline_permission_options():
     from xbotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        permission_decision = None
+
         async def connect(self):
             return None
 
@@ -378,16 +429,30 @@ async def test_textual_app_headless_renders_inline_permission_options():
             return None
 
         async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider, permission_provider
+            del text, input_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
+            payload = {
+                "request_id": "permission:c1",
+                "source": "permission_system",
+                "reason": "Permission approval required for tool: shell.",
+            }
             yield {
                 "type": "permission_request",
+                "data": payload,
+            }
+            parsed = permission_provider(payload)
+            if hasattr(parsed, "__await__"):
+                parsed = await parsed
+            self.permission_decision = parsed
+            yield {
+                "type": "permission_response_recorded",
                 "data": {
                     "request_id": "permission:c1",
-                    "source": "permission_system",
-                    "reason": "Permission approval required for tool: shell.",
+                    "decision": parsed["decision"],
+                    "scope": parsed["scope"],
                 },
             }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
         data_dir="data",
@@ -397,7 +462,8 @@ async def test_textual_app_headless_renders_inline_permission_options():
         thread_id="t",
         no_plugins=True,
     )
-    app.session = FakeSession()
+    session = FakeSession()
+    app.session = session
 
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
@@ -406,22 +472,29 @@ async def test_textual_app_headless_renders_inline_permission_options():
         await app.submit_composer()
         await pilot.pause()
 
-        buttons = list(app.query(Button))
-        labels = [str(button.label) for button in buttons]
-        assert "Allow" in labels
-        assert "Deny" in labels
-        allow = next(button for button in buttons if str(button.label) == "Allow")
-        await app.on_button_pressed(allow.Pressed(allow))
+        assert list(app.query(Button)) == []
+        assert app._active_choice_key == "0"
+        assert "Allow" in str(app._choice_widgets["0"].content)
+        assert input_widget.disabled is True
+        assert input_widget.display is False
+        assert app.focused is None
+        await pilot.press("down")
+        assert app._active_choice_index == 1
+        await pilot.press("up")
+        assert app._active_choice_index == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert input_widget.disabled is False
+        assert input_widget.display is True
 
-    assert await app._permission_decisions.get() == {
+    assert session.permission_decision == {
         "decision": "allow",
         "scope": "once",
     }
 
 
 @pytest.mark.asyncio
-async def test_textual_app_headless_renders_inline_ask_user_options():
-    from textual.widgets import Button
+async def test_textual_app_confirming_permission_twice_submits_once():
     from xbotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
@@ -431,18 +504,6 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider, permission_provider
-            yield {"type": "turn_started", "data": {"turn": 1}}
-            yield {
-                "type": "user_input_required",
-                "data": {
-                    "request_id": "user_input:c1",
-                    "question": "继续执行？",
-                    "options": ["继续", "停止"],
-                },
-            }
-
     app = XBotTextualApp(
         data_dir="data",
         personality_id="default",
@@ -455,19 +516,196 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
 
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
+        app.state.apply_event({
+            "type": "permission_request",
+            "data": {
+                "request_id": "permission:dup",
+                "reason": "Permission approval required for tool: shell.",
+            },
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        assert await app.confirm_active_choice() is True
+        assert await app.confirm_active_choice() is False
+
+    assert await app._permission_decisions.get() == {
+        "decision": "allow",
+        "scope": "once",
+    }
+    assert app._permission_decisions.empty()
+    assert [
+        notice.kind for notice in app.state.notices
+        if notice.kind == "Approval queued"
+    ] == ["Approval queued"]
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_renders_inline_ask_user_options():
+    from textual.widgets import Button
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        answer = None
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del text, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            payload = {
+                "request_id": "user_input:c1",
+                "question": "继续执行？",
+                "options": ["继续", "停止"],
+            }
+            yield {
+                "type": "user_input_required",
+                "data": payload,
+            }
+            answer = input_provider(payload)
+            if hasattr(answer, "__await__"):
+                answer = await answer
+            self.answer = answer
+            yield {
+                "type": "user_input_recorded",
+                "data": {"request_id": "user_input:c1", "status": "recorded"},
+            }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
         input_widget = app.query_one("#input")
         input_widget.load_text("ask")
         await app.submit_composer()
         await pilot.pause()
 
-        buttons = list(app.query(Button))
-        labels = [str(button.label) for button in buttons]
-        assert "继续" in labels
-        assert "停止" in labels
-        proceed = next(button for button in buttons if str(button.label) == "继续")
-        await app.on_button_pressed(proceed.Pressed(proceed))
+        assert list(app.query(Button)) == []
+        assert app._active_choice_key == "0"
+        assert "继续" in str(app._choice_widgets["0"].content)
+        assert input_widget.disabled is True
+        assert input_widget.display is False
+        assert app.focused is None
+        await pilot.press("down")
+        assert app._active_choice_index == 1
+        await pilot.press("up")
+        assert app._active_choice_index == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert input_widget.disabled is False
+        assert input_widget.display is True
 
-    assert await app._answers.get() == "继续"
+    assert session.answer == "继续"
+
+
+@pytest.mark.asyncio
+async def test_textual_app_replays_tool_permission_sequence_without_swallowing_messages():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        permission_decision = None
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del input_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {
+                "type": "assistant_message",
+                "data": {
+                    "content": "\n\n",
+                    "tool_calls": [{
+                        "id": "call_shell",
+                        "name": "shell",
+                        "args": {"command": "df -h"},
+                    }],
+                },
+            }
+            payload = {
+                "request_id": "permission:shell",
+                "source": "permission_system",
+                "reason": "Permission approval required for tool: shell.",
+            }
+            yield {"type": "permission_request", "data": payload}
+            parsed = permission_provider(payload)
+            if hasattr(parsed, "__await__"):
+                parsed = await parsed
+            self.permission_decision = parsed
+            yield {
+                "type": "permission_response_recorded",
+                "data": {
+                    "request_id": "permission:shell",
+                    "decision": parsed["decision"],
+                    "scope": parsed["scope"],
+                },
+            }
+            yield {
+                "type": "tool_result",
+                "data": {
+                    "tool_call_id": "call_shell",
+                    "name": "shell",
+                    "status": "success",
+                    "content": "Filesystem Size Used Avail Use% Mounted on /dev/sda 242G 226G 16G 94% /",
+                },
+            }
+            yield {
+                "type": "assistant_message",
+                "data": {"content": f"当前磁盘使用情况：已执行 df -h。问题是：{text}"},
+            }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(110, 36)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("当前磁盘用了多少")
+        await app.submit_composer()
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.press("enter")
+        for _ in range(3):
+            await pilot.pause()
+        rendered = html.unescape(app.export_screenshot(title="xbotv2-tui-replay")).replace("\xa0", " ")
+
+    assert session.permission_decision == {"decision": "allow", "scope": "always"}
+    assert [(message.role, message.content.strip()) for message in app.state.messages] == [
+        ("user", "当前磁盘用了多少"),
+        ("assistant", "当前磁盘使用情况：已执行 df -h。问题是：当前磁盘用了多少"),
+    ]
+    assert rendered.count("当前磁盘用了多少") >= 2
+    assert "当前磁盘使用情况" in rendered
+    assert "Filesystem" in rendered
+    assert rendered.count("approval queued") == 1
 
 
 @pytest.mark.asyncio

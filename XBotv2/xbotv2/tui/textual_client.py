@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.events import Key
-from textual.widgets import Button, Header, Static, TextArea
+from textual.widgets import Header, Static, TextArea
 
 from xbotv2.tui.client import (
     TuiMessage,
@@ -115,16 +117,14 @@ class XBotTextualApp(App[None]):
         color: #7aa2f7;
     }
 
-    .actions {
+    .choices {
         height: auto;
         padding: 0 0 0 2;
+        color: #d6dae2;
     }
 
-    Button.inline {
-        min-width: 8;
-        height: 1;
-        margin: 0 1 0 0;
-        padding: 0 1;
+    .choices.resolved {
+        color: #8b95a7;
     }
 
     #composer {
@@ -185,8 +185,18 @@ class XBotTextualApp(App[None]):
         self._connected = False
         self._turn_worker_running = False
         self._rendered_transcript_entries = 0
+        self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
         self._tool_widgets: dict[str, Vertical] = {}
+        self._choice_widgets: dict[str, Static] = {}
+        self._choice_payloads: dict[str, list[InlineChoice]] = {}
+        self._resolved_choice_keys: set[str] = set()
+        self._active_choice_key: str | None = None
+        self._active_choice_index = 0
+        self._choice_results: dict[str, str] = {}
+        self._choice_request_ids: dict[str, str] = {}
+        self._submitted_interaction_ids: set[str] = set()
+        self._interaction_response_pending = False
         self._turn_started_at: dict[int, float] = {}
         self._input_history: list[str] = []
         self._history_index: int | None = None
@@ -196,7 +206,7 @@ class XBotTextualApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(id="status_bar", markup=True)
-        yield VerticalScroll(id="transcript")
+        yield TranscriptScroll(id="transcript")
         with Vertical(id="composer"):
             yield Static(id="composer_hint")
             yield ComposerTextArea(
@@ -231,6 +241,8 @@ class XBotTextualApp(App[None]):
 
     async def submit_composer(self) -> None:
         composer = self.query_one("#input", ComposerTextArea)
+        if self._choice_mode_active():
+            return
         text = composer.text.strip()
         composer.load_text("")
         self._history_index = None
@@ -248,10 +260,14 @@ class XBotTextualApp(App[None]):
         )
         if route == "user_input":
             self._remember_input(text)
+            self._interaction_response_pending = True
+            self._resolve_active_choice(f"typed: {text}")
             await self._append_local_notice("Answer queued", text)
             return
         if route == "permission":
             parsed = _parse_permission_decision(text)
+            self._interaction_response_pending = True
+            self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
             await self._append_local_notice(
                 "Approval queued",
                 f"{parsed['decision']} ({parsed['scope']})",
@@ -352,48 +368,143 @@ class XBotTextualApp(App[None]):
         if event_type == "turn_started":
             await self._append_activity()
         elif event_type == "turn_finished":
+            self._interaction_response_pending = False
             self._finalize_activity()
         elif event_type == "usage":
             self._update_activity()
         elif event_type == "tool_result":
             await self._refresh_tool_widget(str((event.get("data") or {}).get("tool_call_id") or ""))
+        elif event_type in {
+            "user_input_recorded",
+            "permission_response_recorded",
+            "permission_denied",
+            "error",
+        }:
+            self._interaction_response_pending = False
         await self._render_new_transcript_entries()
         self._refresh_all()
 
     async def _render_new_transcript_entries(self) -> None:
-        stream = self.query_one("#transcript", VerticalScroll)
-        for entry in self.state.transcript[self._rendered_transcript_entries:]:
-            widget = self._widget_for_entry(entry)
-            if widget is not None:
-                await stream.mount(widget)
-        self._rendered_transcript_entries = len(self.state.transcript)
-        stream.scroll_end(animate=False)
+        async with self._render_lock:
+            stream = self.query_one("#transcript", VerticalScroll)
+            start = self._rendered_transcript_entries
+            entries = self.state.transcript[start:]
+            self._rendered_transcript_entries = len(self.state.transcript)
+            for entry in entries:
+                widget = self._widget_for_entry(entry)
+                if widget is not None:
+                    await stream.mount(widget)
+            stream.scroll_end(animate=False)
 
     def _refresh_input_mode(self) -> None:
+        composer = self.query_one("#input", ComposerTextArea)
+        hint = self.query_one("#composer_hint", Static)
+        if self._choice_mode_active():
+            composer.load_text("")
+            composer.disabled = True
+            composer.display = False
+            hint.update("Use Up/Down to choose, Enter to confirm")
+            if self.focused is composer:
+                self.set_focus(None)
+            return
+        if self._interaction_response_pending:
+            composer.load_text("")
+            composer.disabled = True
+            composer.display = False
+            hint.update("Waiting for response")
+            if self.focused is composer:
+                self.set_focus(None)
+            return
+        composer.disabled = False
+        composer.display = True
         if self.state.pending_user_input_active:
-            self._set_input_placeholder("Answer the request, or choose an inline option")
+            hint.update("Answer required")
+            self._set_input_placeholder("Type an answer")
         elif self.state.pending_permission_active:
-            self._set_input_placeholder("Choose an inline approval option, or type a decision")
+            hint.update("Approval required")
+            self._set_input_placeholder("Type allow/deny")
         else:
+            hint.update("")
             self._set_input_placeholder("Message XBotv2")
+        if self.focused is None:
+            composer.focus()
 
     def _set_input_placeholder(self, text: str) -> None:
         if not self.is_mounted:
             return
         self.query_one("#input", ComposerTextArea).placeholder = text
 
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        name = event.button.name or ""
-        if name.startswith("permission:"):
-            _, decision, scope = name.split(":", 2)
-            self._permission_decisions.put_nowait({"decision": decision, "scope": scope})
-            self._disable_inline_buttons(event.button)
-            await self._append_local_notice("Approval queued", f"{decision} ({scope})")
-        elif name.startswith("answer:"):
-            _, option = name.split(":", 1)
-            self._answers.put_nowait(option)
-            self._disable_inline_buttons(event.button)
-            await self._append_local_notice("Answer queued", option)
+    def select_previous_choice(self) -> bool:
+        choices = self._active_choices()
+        if not choices:
+            return False
+        self._active_choice_index = (self._active_choice_index - 1) % len(choices)
+        self._refresh_active_choice_widget()
+        return True
+
+    def select_next_choice(self) -> bool:
+        choices = self._active_choices()
+        if not choices:
+            return False
+        self._active_choice_index = (self._active_choice_index + 1) % len(choices)
+        self._refresh_active_choice_widget()
+        return True
+
+    async def confirm_active_choice(self) -> bool:
+        choices = self._active_choices()
+        key = self._active_choice_key
+        if not choices or key is None:
+            return False
+        request_id = self._choice_request_ids.get(key, key)
+        if request_id in self._submitted_interaction_ids:
+            return False
+        self._submitted_interaction_ids.add(request_id)
+        choice = choices[self._active_choice_index]
+        self._interaction_response_pending = True
+        self._resolve_active_choice(choice.label)
+        if choice.kind == "permission":
+            self._permission_decisions.put_nowait(dict(choice.payload))
+            await self._append_local_notice(
+                "Approval queued",
+                f"{choice.payload['decision']} ({choice.payload['scope']})",
+            )
+        else:
+            self._answers.put_nowait(str(choice.payload["answer"]))
+            await self._append_local_notice("Answer queued", choice.label)
+        self._refresh_input_mode()
+        return True
+
+    def _resolve_active_choice(self, label: str) -> None:
+        key = self._active_choice_key
+        if key is None:
+            return
+        self._resolved_choice_keys.add(key)
+        self._choice_results[key] = label
+        self._active_choice_key = None
+        self._refresh_choice_widget(key)
+        self._refresh_input_mode()
+
+    def _choice_mode_active(self) -> bool:
+        return bool(self._active_choices())
+
+    async def on_key(self, event: Key) -> None:
+        if not self._choice_mode_active():
+            return
+        if event.key == "up":
+            event.stop()
+            event.prevent_default()
+            self.select_previous_choice()
+            return
+        if event.key == "down":
+            event.stop()
+            event.prevent_default()
+            self.select_next_choice()
+            return
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            await self.confirm_active_choice()
+            return
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "input":
@@ -514,7 +625,7 @@ class XBotTextualApp(App[None]):
                 notice = self.state.notices[int(key)]
             except (ValueError, IndexError):
                 return None
-            return _notice_widget(notice)
+            return self._notice_widget(notice, key)
         if kind == "error":
             try:
                 error = self.state.errors[int(key)]
@@ -522,15 +633,6 @@ class XBotTextualApp(App[None]):
                 return None
             return _entry_widget("error", "Error", error)
         return None
-
-    @staticmethod
-    def _disable_inline_buttons(button: Button) -> None:
-        parent = button.parent
-        if parent is None:
-            button.disabled = True
-            return
-        for item in parent.query(Button):
-            item.disabled = True
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
@@ -547,6 +649,94 @@ class XBotTextualApp(App[None]):
             body.update(detail)
         elif detail:
             await widget.mount(Static(detail, classes="body"))
+
+    def _notice_widget(self, notice: TuiNotice, key: str) -> Vertical:
+        if notice.kind == "permission_request":
+            choices = [
+                InlineChoice("Allow", "permission", {"decision": "allow", "scope": "once"}),
+                InlineChoice("Deny", "permission", {"decision": "deny", "scope": "once"}),
+                InlineChoice("Allow session", "permission", {"decision": "allow", "scope": "session"}),
+                InlineChoice("Always allow", "permission", {"decision": "allow", "scope": "always"}),
+            ]
+            return self._request_widget(notice, key=key, title=f"{notice.ts}  approval request", choices=choices)
+        if notice.kind == "user_input_required":
+            options = notice.payload.get("options")
+            choices = (
+                [InlineChoice(str(option), "answer", {"answer": str(option)}) for option in options]
+                if isinstance(options, list)
+                else []
+            )
+            return self._request_widget(notice, key=key, title=f"{notice.ts}  question", choices=choices)
+        return _entry_widget("notice", f"{notice.ts}  {_notice_title(notice.kind)}", notice.text)
+
+    def _request_widget(
+        self,
+        notice: TuiNotice,
+        *,
+        key: str,
+        title: str,
+        choices: list["InlineChoice"],
+    ) -> Vertical:
+        children: list[Static] = [Static(title, classes="meta")]
+        if notice.text:
+            children.append(Static(notice.text, classes="body", markup=False))
+        if choices:
+            self._choice_payloads[key] = choices
+            self._choice_request_ids[key] = str(notice.payload.get("request_id") or key)
+            if self._active_choice_key is None and key not in self._resolved_choice_keys:
+                self._active_choice_key = key
+                self._active_choice_index = 0
+            choice_widget = Static(
+                self._choice_renderable(key),
+                classes=self._choice_classes(key),
+                markup=False,
+            )
+            self._choice_widgets[key] = choice_widget
+            children.append(choice_widget)
+            self.call_after_refresh(self._refresh_input_mode)
+        return Vertical(*children, classes="entry notice")
+
+    def _active_choices(self) -> list["InlineChoice"]:
+        key = self._active_choice_key
+        if key is None:
+            return []
+        if key in self._resolved_choice_keys:
+            return []
+        return self._choice_payloads.get(key, [])
+
+    def _refresh_active_choice_widget(self) -> None:
+        key = self._active_choice_key
+        if key is not None:
+            self._refresh_choice_widget(key)
+
+    def _refresh_choice_widget(self, key: str) -> None:
+        widget = self._choice_widgets.get(key)
+        if widget is None:
+            return
+        widget.set_classes(self._choice_classes(key))
+        widget.update(self._choice_renderable(key))
+
+    def _choice_classes(self, key: str) -> str:
+        classes = "choices"
+        if key in self._resolved_choice_keys:
+            classes += " resolved"
+        return classes
+
+    def _choice_renderable(self, key: str) -> Text:
+        choices = self._choice_payloads.get(key, [])
+        result = self._choice_results.get(key)
+        text = Text()
+        if result is not None:
+            text.append(f"selected: {result}", style="dim")
+            return text
+        for index, choice in enumerate(choices):
+            if index:
+                text.append("   ")
+            if key == self._active_choice_key and index == self._active_choice_index:
+                text.append(f"> {choice.label}", style="reverse bold")
+            else:
+                text.append(f"  {choice.label}", style="dim")
+        return text
 
 
 def _status_badge(status: str) -> str:
@@ -570,6 +760,10 @@ class ComposerTextArea(TextArea):
     async def _on_key(self, event: Key) -> None:
         app = self.app
         if isinstance(app, XBotTextualApp):
+            if app._choice_mode_active():
+                event.stop()
+                event.prevent_default()
+                return
             if event.key == "enter":
                 event.stop()
                 event.prevent_default()
@@ -593,6 +787,19 @@ class ComposerTextArea(TextArea):
         await super()._on_key(event)
 
 
+class TranscriptScroll(VerticalScroll):
+    """Mouse-scrollable transcript that never participates in keyboard focus."""
+
+    can_focus = False
+
+
+@dataclass(frozen=True)
+class InlineChoice:
+    label: str
+    kind: str
+    payload: dict[str, str]
+
+
 def _message_widget(state: TuiState, message: TuiMessage) -> Vertical:
     label = "You" if message.role == "user" else state.agent_name
     return _entry_widget(message.role, f"{message.ts}  {label}", message.content)
@@ -612,53 +819,10 @@ def _tool_detail(tool: TuiTool) -> str:
     )
 
 
-def _notice_widget(notice: TuiNotice) -> Vertical:
-    if notice.kind == "permission_request":
-        return _request_widget(
-            notice,
-            title=f"{notice.ts}  approval request",
-            actions=[
-                ("Allow", "permission:allow:once"),
-                ("Deny", "permission:deny:once"),
-                ("Allow session", "permission:allow:session"),
-                ("Always allow", "permission:allow:always"),
-            ],
-        )
-    if notice.kind == "user_input_required":
-        options = notice.payload.get("options")
-        actions = (
-            [(str(option), f"answer:{option}") for option in options]
-            if isinstance(options, list)
-            else []
-        )
-        return _request_widget(notice, title=f"{notice.ts}  question", actions=actions)
-    return _entry_widget("notice", f"{notice.ts}  {_notice_title(notice.kind)}", notice.text)
-
-
-def _request_widget(
-    notice: TuiNotice,
-    *,
-    title: str,
-    actions: list[tuple[str, str]],
-) -> Vertical:
-    children = [Static(title, classes="meta")]
-    if notice.text:
-        children.append(Static(notice.text, classes="body"))
-    if actions:
-        children.append(Horizontal(
-            *[
-                Button(label, name=name, classes="inline", compact=True)
-                for label, name in actions
-            ],
-            classes="actions",
-        ))
-    return Vertical(*children, classes="entry notice")
-
-
 def _entry_widget(kind: str, title: str, body: str) -> Vertical:
     children = [Static(title, classes="meta")]
     if body:
-        children.append(Static(body, classes="body"))
+        children.append(Static(body, classes="body", markup=False))
     return Vertical(*children, classes=f"entry {kind}")
 
 
