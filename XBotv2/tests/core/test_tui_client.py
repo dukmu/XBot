@@ -407,7 +407,7 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+        async def send_message(self, text, input_provider=None, permission_provider=None):
             del input_provider, permission_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
@@ -478,7 +478,7 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+        async def send_message(self, text, input_provider=None, permission_provider=None):
             del text, input_provider, permission_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
@@ -529,7 +529,7 @@ async def test_textual_app_headless_renders_inline_permission_options():
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+        async def send_message(self, text, input_provider=None, permission_provider=None):
             del text, input_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
@@ -655,7 +655,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+        async def send_message(self, text, input_provider=None, permission_provider=None):
             del text, permission_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
@@ -726,7 +726,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
         async def disconnect(self):
             return None
 
-        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+        async def send_message(self, text, input_provider=None, permission_provider=None):
             del input_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {

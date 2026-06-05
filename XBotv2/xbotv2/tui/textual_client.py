@@ -33,6 +33,7 @@ from xbotv2.tui.command import (
     known_command_labels,
     parse_slash_command,
 )
+from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
@@ -219,6 +220,7 @@ class XBotTextualApp(App[None]):
         yield Header(show_clock=True)
         yield Static(id="status_bar", markup=False)
         yield TranscriptScroll(id="transcript")
+        yield CompletionPopup(id="completion_popup")
         with Vertical(id="composer"):
             yield Static(id="composer_hint")
             yield ComposerTextArea(
@@ -370,10 +372,28 @@ class XBotTextualApp(App[None]):
     async def _cmd_help(self) -> None:
         """Append a help block listing the registered slash commands."""
 
-        await self._append_local_notice(
-            "Help",
-            "Slash commands: " + "  ".join(known_command_labels()),
-        )
+        body = "Slash commands (v1):\n" + "\n".join(known_command_labels())
+        await self._append_local_notice("Help", body)
+
+    def _get_completion_popup(self):
+        try:
+            return self.query_one("#completion_popup", CompletionPopup)
+        except Exception:
+            return None
+
+    def _accept_completion(self, spec) -> None:
+        """Fill the composer with the highlighted slash command."""
+
+        composer = self.query_one("#input", ComposerTextArea)
+        composer.load_text(spec.raw)
+        self._refresh_completion_popup(spec.raw)
+        # Move caret to the end so the user can extend the command.
+        composer.cursor_location = (0, len(spec.raw))
+
+    def _dismiss_completion_popup(self) -> None:
+        popup = self._get_completion_popup()
+        if popup is not None:
+            popup.update_for("")
 
     async def _cmd_status(self) -> None:
         """Append a snapshot of the current TUI state to the stream."""
@@ -408,7 +428,7 @@ class XBotTextualApp(App[None]):
 
     async def _collect_response(self, text: str) -> None:
         try:
-            async for event in self.session.send_message_with_input(
+            async for event in self.session.send_message(
                 text,
                 input_provider=self._answer_live_input,
                 permission_provider=self._answer_live_permission,
@@ -608,6 +628,14 @@ class XBotTextualApp(App[None]):
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "input":
             self._resize_composer(event.text_area)
+            self._refresh_completion_popup(event.text_area.text)
+
+    def _refresh_completion_popup(self, text: str) -> None:
+        try:
+            popup = self.query_one("#completion_popup", CompletionPopup)
+        except Exception:
+            return
+        popup.update_for(text)
 
     def _resize_composer(self, composer: ComposerTextArea | TextArea | None = None) -> None:
         if not self.is_mounted:
@@ -901,7 +929,13 @@ def _status_renderable(
 
 
 class ComposerTextArea(TextArea):
-    """Multiline composer with Enter-submit and Shift+Enter-newline behavior."""
+    """Multiline composer with Enter-submit and Shift+Enter-newline behavior.
+
+    Slash-completion integration: while the composer text starts with
+    ``/`` and the popup is visible, ``Tab`` accepts the highlighted
+    candidate, ``Up``/``Down`` move within the candidate list, and
+    ``Escape`` dismisses the popup without touching the composer.
+    """
 
     async def _on_key(self, event: Key) -> None:
         app = self.app
@@ -910,6 +944,8 @@ class ComposerTextArea(TextArea):
                 event.stop()
                 event.prevent_default()
                 return
+            popup = app._get_completion_popup()
+            popup_visible = popup is not None and popup.visible
             if event.key == "enter":
                 event.stop()
                 event.prevent_default()
@@ -919,6 +955,28 @@ class ComposerTextArea(TextArea):
                 event.stop()
                 event.prevent_default()
                 self.insert("\n")
+                return
+            if event.key == "tab" and popup_visible and popup is not None:
+                spec = popup.current_match()
+                if spec is not None:
+                    event.stop()
+                    event.prevent_default()
+                    app._accept_completion(spec)
+                    return
+            if event.key == "up" and popup_visible and popup is not None:
+                event.stop()
+                event.prevent_default()
+                popup.move_selection(-1)
+                return
+            if event.key == "down" and popup_visible and popup is not None:
+                event.stop()
+                event.prevent_default()
+                popup.move_selection(1)
+                return
+            if event.key == "escape" and popup_visible and popup is not None:
+                event.stop()
+                event.prevent_default()
+                app._dismiss_completion_popup()
                 return
             if event.key == "up" and (not self.text.strip() or app._history_index is not None):
                 event.stop()
