@@ -642,3 +642,107 @@ async def test_help_body_renders_each_command_on_its_own_row(
             assert f"\n{command}" in body or body.startswith(command), (
                 f"command {command} not on its own line: {body!r}"
             )
+
+
+# ----------------------------------------------------------------------
+# No inner scroll: each entry is fully expanded
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_long_body_does_not_truncate_or_inner_scroll(
+    scripted_session,
+) -> None:
+    """Long bodies must render in full; only the transcript scrolls.
+
+    Per user direction (2026-06-05): each entry — message or tool
+    result — must be fully displayed without an inner scroll widget.
+    The whole ``#transcript`` may scroll, but never any single
+    entry on its own.
+    """
+
+    # A multi-line body with far more lines than the visible viewport
+    # so any truncation / max-height cap would show up as missing
+    # content in the rendered widget.
+    long_lines = "\n".join(f"line {i:03d}: lorem ipsum" for i in range(40))
+    tool_lines = "\n".join(f"row {i:03d}" for i in range(40))
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        # Drive an assistant message and a tool result directly.
+        app.state.apply_event({
+            "type": "assistant_message",
+            "data": {"content": long_lines, "tool_calls": None},
+        })
+        app.state.apply_event({
+            "type": "tool_result",
+            "data": {
+                "tool_call_id": "call_long",
+                "name": "shell",
+                "status": "success",
+                "content": tool_lines,
+            },
+        })
+        await pilot.pause()
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        # 1. The state preserves the full body (no truncation server-side).
+        msgs = [m for m in app.state.messages if m.role == "assistant"]
+        assert msgs and msgs[-1].content == long_lines
+        tools = list(app.state.tools.values())
+        assert tools
+        # ``tool.summary`` may keep newlines after the
+        # ``_preview`` fix; the per-line shortening still applies.
+        assert "line" not in tools[-1].summary  # tool result, not assistant
+        assert "row 000" in tools[-1].summary
+
+        # 2. Each entry is laid out as title + full body; we walk
+        #    the DOM and assert there is no inner scrollbar widget
+        #    nested under any entry.
+        from textual.containers import VerticalScroll
+
+        def _walk(widget):
+            yield widget
+            for child in getattr(widget, "children", []):
+                yield from _walk(child)
+
+        transcript = app.query_one("#transcript")
+        for w in _walk(transcript):
+            assert not isinstance(w, VerticalScroll) or w is transcript, (
+                f"inner VerticalScroll inside transcript: {w!r}"
+            )
+
+        # 3. The body widget's renderable preserves every line.
+        #    Find the Static for the assistant body and assert that
+        #    its plain text contains both the first and the last
+        #    line of the long content — if any line is missing, the
+        #    body was truncated at mount time.
+        from textual.widgets import Static as TStatic
+
+        def _collect_bodies(widget):
+            if isinstance(widget, TStatic) and "body" in (widget.classes or []):
+                yield widget
+            for child in getattr(widget, "children", []):
+                yield from _collect_bodies(child)
+
+        body_texts = []
+        for w in transcript.children:
+            body_texts.extend(_collect_bodies(w))
+        joined = "\n".join(
+            b.visual.plain if b.visual is not None and hasattr(b.visual, "plain") else ""
+            for b in body_texts
+        )
+        for line in (long_lines.splitlines()[0],
+                     long_lines.splitlines()[10],
+                     long_lines.splitlines()[-1]):
+            assert line in joined, f"missing line {line!r} in body DOM"

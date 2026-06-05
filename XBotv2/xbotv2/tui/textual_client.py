@@ -97,6 +97,34 @@ class XBotTextualApp(App[None]):
         height: 1fr;
         padding: 1 2 0 2;
         background: #0f1115;
+        color: #d6dae2;
+        scrollbar-color: #7aa2f7;
+        scrollbar-color-hover: #9ece6a;
+        scrollbar-background: #171a21;
+    }
+
+    .entry {
+        width: 1fr;
+        height: auto;
+        margin: 0 0 1 0;
+    }
+
+    .meta {
+        height: 1;
+        color: #8b95a7;
+    }
+
+    .body {
+        width: 1fr;
+        height: auto;
+        color: #d6dae2;
+        padding: 0 0 0 2;
+    }
+
+    #transcript {
+        height: 1fr;
+        padding: 1 2 0 2;
+        background: #0f1115;
         scrollbar-color: #7aa2f7;
         scrollbar-color-hover: #9ece6a;
         scrollbar-background: #171a21;
@@ -532,7 +560,16 @@ class XBotTextualApp(App[None]):
                 widget = self._widget_for_entry(entry)
                 if widget is not None:
                     await stream.mount(widget)
-            stream.scroll_end(animate=False)
+            # Defer the scroll to after the layout pass: ``mount()``
+            # is awaited but the height of multi-line bodies is not
+            # known until Textual measures the new children. Without
+            # ``call_after_refresh`` the very first entry after a fresh
+            # session_open would render with scroll_y=0 (not at the
+            # bottom). The transcript itself can scroll — only
+            # individual entries stay fully expanded.
+            self.call_after_refresh(
+                lambda: stream.scroll_end(animate=False)
+            )
 
     def _refresh_input_mode(self) -> None:
         composer = self.query_one("#input", ComposerTextArea)
@@ -1033,13 +1070,22 @@ def _tool_widget(tool: TuiTool) -> Vertical:
 
 
 def _tool_detail(tool: TuiTool) -> str:
-    return "\n".join(
-        part for part in (
-            f"args: {tool.args_preview}" if tool.args_preview else "",
-            f"result: {tool.summary}" if tool.summary else "",
-        )
-        if part
-    )
+    """Render the full tool result body — no truncation.
+
+    Per user direction (2026-06-05): each entry (message or tool
+    result) must be fully displayed without inner scroll. The whole
+    transcript scrolls, but never any single entry on its own. Long
+    tool results are intentionally wide-open here; the user can
+    always scroll the transcript if a result pushes the next event
+    off-screen.
+    """
+
+    parts: list[str] = []
+    if tool.args_preview:
+        parts.append(f"args: {tool.args_preview}")
+    if tool.summary:
+        parts.append(f"result: {tool.summary}")
+    return "\n".join(parts)
 
 
 def _entry_widget(kind: str, title: str, body: str) -> Vertical:

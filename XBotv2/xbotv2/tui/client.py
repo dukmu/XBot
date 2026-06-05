@@ -436,6 +436,15 @@ class CursesTuiClient:
 
 
 def _preview(value: Any, *, width: int = 120) -> str:
+    """Render a short, single-line-friendly preview of ``value``.
+
+    Newlines are preserved (so multi-line tool results stay
+    multi-line in the TUI body) and each line is independently
+    shortened to ``width`` characters. This is what the design doc
+    §5.3 calls for: the body of a tool entry shows ``args`` and
+    ``result`` as plain text, fully expanded.
+    """
+
     if isinstance(value, str):
         text = value
     else:
@@ -443,7 +452,9 @@ def _preview(value: Any, *, width: int = 120) -> str:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
         except TypeError:
             text = str(value)
-    return shorten(text.replace("\n", " "), width=width, placeholder="...")
+    return "\n".join(
+        shorten(line, width=width, placeholder="...") for line in text.splitlines() or [""]
+    )
 
 
 def _wrap(text: str, width: int) -> list[str]:
