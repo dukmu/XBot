@@ -404,7 +404,7 @@ tui/
 | 维度 | OpenCode 现状 | XBotv2 v1 选择 | 理由 |
 | --- | --- | --- | --- |
 | 渲染栈 | OpenTUI + Solid.js | Textual + Rich | 既有实现 |
-| 通信 | Worker 线程 + Rpc（内部）/ 外部 HTTP | 进程外 JSONL `ProtocolFrame` | 既有协议 |
+| 通信 | Worker 线程 + Rpc（内部）/ 外部 HTTP | **默认 HTTP + SSE**（`aiohttp`）；stdio 保留为测试/回放后端（见 §10.5） | 性能 + 远端可寻址 + 与 OpenCode 同形 |
 | 布局 | 流 + 顶/底栏 + 多 dialog | 流 + 紧凑状态栏 + 内联选择 | 用户硬约束 |
 | 主题 | 31KB 主题系统，多主题切换 | 单主题，变量化预留 | 减面 |
 | 键位可配 | `tui.json` 完整覆盖 | v1 内置；v2 引入 JSON | 渐进 |
@@ -448,6 +448,9 @@ tui/
 18. **三态权限 ask 结果** — `once` / `session` / `always`，与运行时 `SandboxPolicy` 一致；**不**采用 OpenCode 的 `reject`（拒绝由"主动 deny"承担，不算"ask 的结果"之一）。
 19. **不引入 OpenCode 的多 dialog 体系** — 用 slash 命令 + 内联选择 + 紧凑状态栏覆盖大多数场景；侧栏、命令面板、主题切换 v1 不实现。
 20. **不引入 OpenCode 的 plugin / slot 体系** — TUI 仅消费协议；扩展通过协议事件达成。
+21. **传输层可选 stdio 或 HTTP/SSE**（详见 §10.5） — TUI 与 server 之间的 wire 协议：**v1 默认 HTTP + SSE**（`aiohttp` 单依赖），`stdio` JSONL 保留为测试/回放/向后兼容后端；CLI 显式 `--transport {stdio,http}` 切换。
+22. **TUI 与 server 解耦** — HTTP 模式下 TUI 与 server 是独立进程；server 长驻，TUI 可 attach/detach；TUI 退出不杀 server。
+23. **远端访问需显式开启** — HTTP server 默认绑定 `127.0.0.1:4096`；`--bind 0.0.0.0` 暴露 LAN 时**必须**配合 `--server-token` Bearer 鉴权。
 
 ---
 
@@ -997,6 +1000,161 @@ UI 文案必须与运行时实际行为严格对应：
 
 所有 JSONL 写入使用 `ensure_ascii=False`；写入失败静默吞掉但**不**影响主路径。
 
+### 10.5 传输层（stdio → HTTP/SSE）
+
+> 决策日期：2026-06-05。stdio JSONL 仍然保留作为测试与回放后端，但 v1 **默认传输**改为 HTTP + SSE，与 OpenCode 架构一致。
+
+#### 10.5.1 为什么升级
+
+| 维度 | stdio JSONL（现状） | HTTP + SSE（v1） |
+| --- | --- | --- |
+| 每帧成本 | `Process.stdin.write` + `drain` + `readline`（每次 syscall） | 单 TCP 连接 / turn；事件以 SSE 流式 push |
+| 服务端可寻址 | 只能 spawn 子进程 | `http://127.0.0.1:4096`；可 SSH 隧道跨主机 |
+| TUI 生命周期 | 与 server 强绑定（父死子亡） | TUI 可 attach/detach，server 长驻 |
+| 调试 | `strace` / `tee` 进程 stdio | `curl` / `wscat` / 浏览器 devtools |
+| 协议成熟度 | 自定义 | RFC 9110 + WHATWG SSE（成熟标准） |
+| OpenCode 一致性 | 不一致 | 一致（OpenCode 内部即 HTTP + SSE） |
+| 复杂度 | 极低 | 中（要管 server 进程/端口/认证） |
+
+OpenCode 自身的 `thread.ts` / `worker.ts` 就是这个模式：worker 跑 server（Hono HTTP），TUI 通过 `createWorkerFetch`（进程内 fetch）或真实 HTTP 调用，事件流通过 `createEventSource`（SSE）。OpenCode 内部无论 transport 都是 HTTP 语义；我们采用同一思路但用 Python 生态的 `aiohttp`。
+
+#### 10.5.2 选型
+
+| 角色 | 选 | 理由 |
+| --- | --- | --- |
+| Server | `aiohttp` | 单依赖，async-native，SSE 通过 `StreamResponse` 原生支持 |
+| Client | `aiohttp` | 同上，避免引入第二套 HTTP 库 |
+| 协议帧 | 现有 `ProtocolFrame` JSON | 内部 `payload` 不变，仅包一层 HTTP/SSE 头 |
+| 鉴权 | 可选 Bearer Token（`--server-token` / `XBOTV2_SERVER_TOKEN`） | 远端场景需要；本机 loopback 默认关 |
+
+> 约束：stdio JSONL **保留**，但不再是默认。`--transport stdio|http` 显式选择；缺省 = `stdio`（向后兼容 v0），v2 起 = `http`。
+>
+> TUI 启动时若未指定 `--server`，行为保持不变（spawn stdio 子进程），避免破坏现有脚本与测试。
+
+#### 10.5.3 HTTP API 规约
+
+所有 endpoint 接受/返回 `application/json`，**除** SSE 通道为 `text/event-stream`。请求/响应体里的 `payload` 沿用现有 `ProtocolFrame.payload` 字段名（key 名稳定）。
+
+| Method + Path | 用途 | 请求体 | 成功响应 |
+| --- | --- | --- | --- |
+| `GET /health` | 健康检查 | — | `200 {"status":"ok","version":"xbotv2.v1","uptime_s":42}` |
+| `POST /hello` | 握手 | `{"client_name": "tui", "session_id"?, "thread_id"?, "personality_id"?}` | `200 {"server_name":"xbotv2","protocol_version":"xbotv2.v1","session_id","thread_id"}` |
+| `POST /sessions` | 打开/恢复 session | `{"session_id","thread_id"}` | `200 {"agent_name","status":"ready"}` 或 `200 {"status":"recovered"}` |
+| `POST /sessions/{sid}/messages` | 发送 user 消息，返回 SSE 流 | `{"content","request_id","client_ts"}` | `200 text/event-stream` (见 10.5.4) |
+| `POST /sessions/{sid}/interactions/permission-response` | 权限回执 | `{"request_id","decision","scope"}` | `200 {"request_id","recorded":true,"pending_interactions":[...]}` |
+| `POST /sessions/{sid}/interactions/user-input` | 提问回执 | `{"request_id","answer"}` | `200 {"request_id","recorded":true,"pending_interactions":[...]}` |
+| `POST /sessions/{sid}/shutdown` | 关 session | — | `200 {"status":"closed"}` |
+
+错误约定：
+
+- `400 invalid_request` — 参数不合法
+- `404 session_not_found` / `409 session_conflict`
+- `410 interaction_no_longer_pending` — request_id 已不在 pending 集合
+- `503 engine_busy` — session 正在处理别的 turn
+- `5xx` — 服务端异常；body 必有 `{"code","message"}`
+
+#### 10.5.4 SSE 事件流格式
+
+`POST /sessions/{sid}/messages` 的响应是 `text/event-stream`，每条事件形如：
+
+```
+event: turn_started
+id: <monotonic seq>
+data: {"type":"turn_started","payload":{"turn":1}}
+
+event: assistant_message
+id: 2
+data: {"type":"assistant_message","payload":{"content":"…","tool_calls":[…]}}
+
+event: usage
+id: 3
+data: {"type":"usage","payload":{"delta":{…},"total":{…}}}
+
+event: turn_finished
+id: 4
+data: {"type":"turn_finished","payload":{"turn":1}}
+
+```
+
+SSE 字段规约：
+
+- `event`：与 `data.type` 同名（`turn_started` / `assistant_message` / `tool_calls_started` / `tool_result` / `usage` / `permission_request` / `permission_denied` / `user_input_required` / `client_message` / `error` / `turn_finished` 等）。
+- `id`：单调递增的整型 seq；客户端断线重连时可携带 `Last-Event-ID` 头来从断点续传（best-effort，至少优于完全重头）。
+- `data`：JSON 字符串；客户端按 `data` 一行解析（按 SSE 规范，`data:` 后多个连续的 `data:` 行合并为一个事件，content 以 `\n` 拼接——我们保证 server 端每个事件只用一行 `data:`，避免歧义）。
+- 流结束：服务端写入 `event: end` `data: {"status":"ok"}` 后关闭；或流中某条事件的 HTTP 等价物 `event: error` 携带 code/message。
+
+#### 10.5.5 客户端协议抽象
+
+`xbotv2/tui/transport.py`（新模块）定义 `Transport` 协议类，concrete 实现分两个：
+
+```
+tui/
+├── transport.py              # Transport Protocol
+├── transport_stdio.py        # StdioTransport (现有 ProtocolClient 改名)
+├── transport_http.py         # HttpTransport (新)
+└── transport_factory.py      # 根据配置/CLI 创建 transport
+```
+
+接口（asyncio 视角）：
+
+```python
+class Transport(Protocol):
+    async def hello(self, payload: dict) -> dict: ...
+    async def open_session(self, session_id: str, thread_id: str) -> dict: ...
+    def send_message(
+        self, session_id: str, content: str, request_id: str,
+    ) -> AsyncIterator[dict]: ...   # yields one event per SSE frame
+    async def send_permission_response(
+        self, session_id: str, request_id: str, decision: str, scope: str,
+    ) -> dict: ...
+    async def send_user_input(
+        self, session_id: str, request_id: str, answer: str,
+    ) -> dict: ...
+    async def shutdown(self, session_id: str) -> dict: ...
+    async def close(self) -> None: ...
+```
+
+`TerminalSession`（`tui/terminal.py`）持有 transport；`send_message_with_input()` 把 transport 的事件流喂给现有 `input_provider` / `permission_provider` 回调，**完全不用改 `textual_client.py`**。
+
+#### 10.5.6 服务端进程模型
+
+`--mode server --transport http` 行为：
+
+1. 启动 `aiohttp` app，绑定 `--bind 127.0.0.1 --port 4096`（默认）。
+2. 进程内持有一个 `RuntimeServer` 形态的 `HttpRuntimeServer`（与现有 `RuntimeServer` 并列，共享核心调度逻辑，但**没有**子进程概念）。
+3. 提供 `attach <url>` 子命令，模仿 OpenCode `opencode attach`：纯客户端，连接远端 server。
+4. 优雅退出：收到 `SIGTERM` / `SIGINT` 时，等所有 in-flight SSE 流关闭（最长 2s）再退出。
+
+`--mode server --transport stdio`（现有行为，不变）：保留为测试和回放后端。
+
+#### 10.5.7 端口与鉴权
+
+- 默认端口：`4096`（与 OpenCode 一致）。
+- 默认绑定：`127.0.0.1`（loopback only；不暴露给 LAN）。
+- 远端访问需显式 `--bind 0.0.0.0` **并** `--server-token <secret>`。
+- 客户端 `Authorization: Bearer <token>` 头；缺失或错误 → `401`。
+- `attach` 子命令支持 `--username` / `--password`（与 OpenCode `OPENCODE_SERVER_USERNAME/PASSWORD` 风格一致），自动 `Basic` auth。
+
+#### 10.5.8 TUI 端行为
+
+`python main.py --mode tui` 默认行为：
+
+1. 若传 `--server http://127.0.0.1:4096`，直接连接。
+2. 若传 `--auto-server`，则 spawn 一个 HTTP server 子进程（独立运行），等 `GET /health` 通后连接。
+3. 否则保持 v0 行为：spawn stdio 子进程，**不破坏现有脚本**。
+
+`xbotv2.tui.TerminalSession` 接受 `transport: Transport` 参数；现有调用点（`__main__.py`）传 `StdioTransport` 或 `HttpTransport`。
+
+#### 10.5.9 性能对比与目标
+
+| 操作 | stdio 现状（实测/估算） | HTTP 目标 |
+| --- | --- | --- |
+| 一次 turn 含 5 个 tool call | ~50–80 ms 开销（10 次 pipe 往返 + 序列化） | < 20 ms（单 TCP + SSE push） |
+| 中文长消息（4 KB） 提交 → 第一帧 | ~25 ms | < 10 ms |
+| 端到端流式渲染第一个 token | 受 pipe 缓冲拖累 | SSE 即时 |
+
+具体数字待 Phase E 完成后通过 benchmark 测得（见 §14.5）。
+
 ---
 
 ## 11. 国际化（i18n）
@@ -1094,15 +1252,17 @@ UI 文案必须与运行时实际行为严格对应：
 
 ## 14. 实施计划
 
-> 路径以"先窄后宽"组织：先把单流 + 紧凑状态栏 + 内联选择 + 必要 trace 做对，再做命令、键位可配、主题。
+> 路径以"先窄后宽"组织：先把单流 + 紧凑状态栏 + 内联选择 + 必要 trace 做对，再做命令、键位可配、主题；**传输层升级（Phase E）是 v1 的硬性前置**——只有 transport 抽象出来后，§7.1 的文件拆分、§13 的回放测试、§10.4 的 trace 完整性才能有干净测试点。
 
-### Phase A — 收敛
+### Phase A — 收敛（**部分已完成**）
+
+> 进度（2026-06-05）：已落地 `mode.py` / `command.py` / status bar markup 修复 / `Allow once` 标签；其余项继续推进。
 
 1. 统一 Render log 数据结构 `RenderItem(kind, key, ts, payload)`，覆盖 7.3-7.6 所有类型。
-2. 引入 `ModeController` 显式持有 `Mode`；删除散落的 `if self._choice_mode_active()` 反复判断。
+2. 引入 `ModeController` 显式持有 `Mode`；删除散落的 `if self._choice_mode_active()` 反复判断。**【已部分完成：`_current_mode()` 已存在；未替换所有散落判断】**
 3. `confirm_active_choice` 与 `submit_composer` 单一入口；`_submitted_interaction_ids` 唯一去重集合。
 4. 移除"双 mount"路径（活动行/工具行不应与 transcript 各自 mount；统一进 render log）。
-5. 所有 `Static(body, ..., markup=True)` 改为 `markup=False`，避免用户输入被当标记。
+5. 所有 `Static(body, ..., markup=True)` 改为 `markup=False`，避免用户输入被当标记。**【已完成：status bar 与所有 body Static 均为 markup=False】**
 6. 拆分 `textual_client.py` 为 §7.1 列出的多文件。
 
 ### Phase B — 可诊断
@@ -1114,7 +1274,7 @@ UI 文案必须与运行时实际行为严格对应：
 
 ### Phase C — 可用
 
-1. 斜杠命令：v1 四个。
+1. 斜杠命令：v1 四个。**【已完成：`/exit` `/clear` `/help` `/status` 全部实现】**
 2. 键位表集中到 `command.py`；为 v2 的 JSON 化预留接口。
 3. 滚轮"末尾跟随"行为 + "↓ N new" 提示。
 4. 主题变量化（不暴露切换）。
@@ -1125,9 +1285,45 @@ UI 文案必须与运行时实际行为严格对应：
 2. 键位 JSON 配置（`tui.json` 风格，与 OpenCode 同形）。
 3. 回放与脚本化（`--replay fixtures/xxx.jsonl`）用于无 LLM 演示与回归。
 
+### Phase E — HTTP/SSE 传输（**v1 新增**）
+
+> 详见 §10.5。本阶段使 stdio 子进程不再是性能瓶颈，并铺好 attach、远端、benchmark 的路。
+
+1. **抽象 Transport 接口**（`xbotv2/tui/transport.py`）
+   - 定义 `Transport` Protocol（见 §10.5.5）。
+   - `TerminalSession` 改为持有 `Transport`，而非直接持有 `ProtocolClient`。
+2. **Stdio 实现**（`xbotv2/tui/transport_stdio.py`）
+   - 把现有 `ProtocolClient` 重命名为 `StdioTransport` 并实现 `Transport` 协议。
+   - 现有 `--transport stdio` 行为零变化；现有测试零变化。
+3. **HTTP 客户端**（`xbotv2/tui/transport_http.py`）
+   - 用 `aiohttp.ClientSession` 实现 `Transport`。
+   - SSE 解析：手工按行解析 `event:` / `data:` / `id:`（≤ 100 行代码），避免引入额外库。
+   - 支持 `Last-Event-ID` 重连。
+4. **HTTP 服务端**（`xbotv2/protocol/http_server.py`）
+   - 用 `aiohttp` 暴露 §10.5.3 的 endpoints。
+   - 现有 `RuntimeServer` 的 turn 调度逻辑抽到一个共享 `TurnDispatcher`，让 stdio 与 http 共用。
+5. **CLI 升级**（`xbotv2/__main__.py`）
+   - `--mode server --transport {stdio,http}`（默认 `stdio` 向后兼容）。
+   - `--mode server --bind 127.0.0.1 --port 4096 --server-token …`。
+   - `--mode tui --server http://127.0.0.1:4096 [--server-token …]`。
+   - `attach <url>` 子命令（参考 OpenCode `opencode attach`）。
+6. **测试**
+   - 用 `aiohttp` 的 `pytest-aiohttp` 跑本地 server+client 集成测试（端到端 SSE）。
+   - 对比 stdio 与 http 在同 fixture 下的端到端延迟（写一个 micro-benchmark 落到 `tests/bench/`）。
+7. **回放 fixture 走 HTTP 通道**：在 CI 跑通 `record jsonl → transport http → render SVG`。
+
+> 完成定义见 §16，Phase E 的 DoD 新增：
+> - [ ] HTTP 服务端能起能停，`GET /health` 返回 200。
+> - [ ] TUI 通过 `HttpTransport` 完成一个端到端 turn（user → assistant + tool call → permission → tool result → assistant）。
+> - [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 同）。
+> - [ ] Stdio 通道回归测试无破坏（32/32 保持通过）。
+> - [ ] bench 结果写到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
+
 ### 不在 v1
 
 - 右侧面板、命令面板、主题切换 UI、插件视图、多 session 并列、leader key、attention 通知/音、选中即复制、diff 内联、滚动加速、which-key 弹层。
+- mTLS、双向认证、服务端 metrics/Prometheus 端点（v2 候选）。
+- 多 server 集群 / 负载均衡（v3+ 候选）。
 
 ---
 
@@ -1151,6 +1347,8 @@ UI 文案必须与运行时实际行为严格对应：
 
 满足下列全部项即视为 v1 完成：
 
+UI / 状态机（Phase A、C）：
+
 - [ ] 流是单一时间线；无右侧面板。
 - [ ] `CHOOSING` 时 composer 隐藏且不接收键。
 - [ ] 同一 `request_id` 回执只发一次。
@@ -1171,12 +1369,28 @@ UI 文案必须与运行时实际行为严格对应：
 - [ ] `/exit` `/clear` `/help` `/status` 四个 slash 命令工作。
 - [ ] 不引入 leader key、命令面板、plugin slot、theme switcher。
 
+传输层（Phase E，**v1 必过**）：
+
+- [ ] `xbotv2/tui/transport.py` 定义 `Transport` 协议；`TerminalSession` 持有 `Transport`。
+- [ ] `StdioTransport`（原 `ProtocolClient` 重命名）实现 `Transport`；现有 32/32 测试无破坏。
+- [ ] `HttpTransport` 用 `aiohttp` 实现；SSE 解析、Last-Event-ID 重连、JSON 帧序列化、UTF-8 字符串。
+- [ ] `xbotv2/protocol/http_server.py` 暴露 §10.3 的 endpoints；`GET /health` 返回 200。
+- [ ] `aiohttp` 加入 `pyproject.toml` 的 `dependencies`。
+- [ ] 端到端：TUI → HTTP server → engine → SSE → TUI 完成一个含 tool call + permission 的 turn。
+- [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 同样的字节级断言）。
+- [ ] Micro-benchmark 对比 stdio vs http，记录到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
+- [ ] `xbotv2 attach <url>` 子命令工作（参考 OpenCode `opencode attach`）。
+- [ ] 端口/Token/Bearer 鉴权按 §10.5.7 实现；缺省 `127.0.0.1:4096`，远端需 `--bind 0.0.0.0` 且 `--server-token`。
+
 ---
 
 ## 17. 变更记录
 
 - v1（2026-06-05）：从"以审计/批评为主"重写为"以设计/规约为主"的可执行规范。
 - v2（2026-06-05）：补充对 OpenCode 仓库的逐项调研——目录结构、`app.tsx` 1113 行结构、`keymap.tsx` 实现、`thread.ts` 启动流、`win32.ts` 平台处理、`event.ts` 类型、官方 docs 完整键位/命令/权限表；据此修正权限 ask 枚举（once/session/always 而非 once/always/reject），明确不引入 leader key、不引入选中即复制、不引入 plugin/slot。
+- v2.1（2026-06-05）：
+  - **Phase A 部分落地**（commit 583f6eb）：`mode.py`（显式 `Mode` 枚举）、`command.py`（4 个 v1 slash 命令 + 别名 + unknown 分类）、status bar 切到 `markup=False` + `Text` 渲染器、内联权限选择 `Allow` → `Allow once` 对齐 §10.3。
+  - **新增 Phase E：HTTP/SSE 传输**（§10.5）：stdio 子进程仍保留（向后兼容测试），v1 默认推荐 HTTP；选 `aiohttp` 作为 server+client 单依赖；新增 §10.5.3 endpoint 表、§10.5.4 SSE 帧格式、§10.5.5 `Transport` Protocol、§10.5.7 鉴权与端口约定；§14 实施计划补全 Phase E 七步；§16 DoD 拆分为"UI/状态机"和"传输层"两组。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---
