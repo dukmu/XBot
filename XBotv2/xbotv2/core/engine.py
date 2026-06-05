@@ -32,6 +32,11 @@ from xbotv2.hooks.types import HookContext, HookStage
 
 logger = logging.getLogger("xbotv2.engine")
 
+# Maximum time a single LLM provider call may take before the engine
+# cancels the turn.  On timeout the engine yields an ``error`` event
+# and saves state — the user can retry or switch providers.
+_LLM_DISPATCH_TIMEOUT = 120.0  # seconds
+
 
 class Engine:
     """Core ReAct loop engine.
@@ -222,6 +227,11 @@ class Engine:
                     "message": str(exc),
                 },
             )
+            # Same orphan-tool_calls risk as the CancelledError path
+            # (code review v1.2 §2.3): the disconnect may arrive
+            # between AIMessage(tool_calls) append and tool_messages
+            # extend, leaving an inconsistent history on disk.
+            self._backtrack_orphan_tool_calls()
             await self._save_messages()
         except Exception as exc:
             logger.exception("Turn failed")
@@ -599,7 +609,19 @@ class Engine:
             tools = model_request["tools"]
             llm_with_tools = model_request["llm"]
             try:
-                response = await llm_with_tools.ainvoke(context_messages)
+                response = await asyncio.wait_for(
+                    llm_with_tools.ainvoke(context_messages),
+                    timeout=_LLM_DISPATCH_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "engine.turn LLM timed out after %ss (turn=%d)",
+                    _LLM_DISPATCH_TIMEOUT,
+                    self._turn_count,
+                )
+                raise asyncio.TimeoutError(
+                    f"LLM call timed out after {_LLM_DISPATCH_TIMEOUT}s"
+                ) from None
             except Exception as exc:
                 err_ctx = self._make_hook_context(
                     HookStage.ON_MODEL_REQUEST_ERROR,
@@ -820,6 +842,12 @@ class Engine:
 
         # Persist all messages to disk after each turn
         await self._save_messages()
+
+        # Guard: verify the last message is not an orphan AIMessage with
+        # tool_calls that would cause the next turn's LLM to 400.  Serves
+        # as a silent sanity check for the 19 early-exit points (code
+        # review v1.2 §2.13).  In the normal path this is always a no-op.
+        self._backtrack_orphan_tool_calls()
 
         yield {"type": "turn_finished", "data": {"turn": self._turn_count}}
 

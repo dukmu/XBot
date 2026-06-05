@@ -23,14 +23,3 @@ class Mode(str, Enum):
     CHOOSING = "choosing"
     SUBMITTED = "submitted"
     ERROR = "error"
-
-
-# Visual badge text for the status bar. Keep in sync with §7.1 of the design
-# document.
-MODE_BADGE: dict[Mode, str] = {
-    Mode.COMPOSING: "Ready",
-    Mode.RUNNING: "Running",
-    Mode.CHOOSING: "Choice",
-    Mode.SUBMITTED: "Waiting",
-    Mode.ERROR: "Error",
-}

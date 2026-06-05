@@ -121,30 +121,6 @@ class XBotTextualApp(App[None]):
         padding: 0 0 0 2;
     }
 
-    #transcript {
-        height: 1fr;
-        padding: 1 2 0 2;
-        background: #0f1115;
-        scrollbar-color: #7aa2f7;
-        scrollbar-color-hover: #9ece6a;
-        scrollbar-background: #171a21;
-    }
-
-    .entry {
-        width: 1fr;
-        margin: 0 0 1 0;
-    }
-
-    .meta {
-        height: 1;
-        color: #8b95a7;
-    }
-
-    .body {
-        color: #d6dae2;
-        padding: 0 0 0 2;
-    }
-
     .user .meta {
         color: #7dcfff;
     }
@@ -480,7 +456,9 @@ class XBotTextualApp(App[None]):
     def _accept_completion(self, spec) -> None:
         """Fill the composer with the highlighted slash command."""
 
-        composer = self.query_one("#input", ComposerTextArea)
+        composer = self._safe_query_one("#input", ComposerTextArea)
+        if composer is None:
+            return
         composer.load_text(spec.raw)
         self._refresh_completion_popup(spec.raw)
         # Move caret to the end so the user can extend the command.
@@ -552,6 +530,21 @@ class XBotTextualApp(App[None]):
         del payload
         self._set_input_placeholder("Choose an inline approval option, or type a decision")
         return await self._permission_decisions.get()
+
+    def _safe_query_one(self, selector: str, expect_type: type | None = None) -> Any:
+        """``query_one`` that returns ``None`` instead of raising when the
+        widget is unmounting or not found.  All DOM lookups in
+        tear-down-safe code should go through this method.
+        """
+
+        if not self.is_mounted:
+            return None
+        try:
+            if expect_type is not None:
+                return self.query_one(selector, expect_type)
+            return self.query_one(selector)
+        except Exception:  # noqa: BLE001 — NoMatches typically
+            return None
 
     def _record_error(self, exc: BaseException) -> None:
         # If the app is being torn down, DOM lookups can fail. Don't
@@ -832,7 +825,9 @@ class XBotTextualApp(App[None]):
         self._turn_started_at[turn] = time.monotonic()
         activity = Static(self._activity_text(final=False), classes="entry activity")
         self._activity_widgets[turn] = activity
-        stream = self.query_one("#transcript", VerticalScroll)
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is None:
+            return
         await stream.mount(activity)
         stream.scroll_end(animate=False)
 
@@ -1040,16 +1035,6 @@ class XBotTextualApp(App[None]):
                 text.append(f"  {choice.label}", style="dim")
         return text
 
-
-def _status_badge(status: str) -> str:
-    """Plain-text status label.
-
-    The previous version returned a Rich markup string, but the status bar
-    is rendered with ``markup=False`` so user-supplied segments can never
-    leak as markup. Colors now come from the ``_status_renderable`` helper
-    which uses ``rich.text.Text`` directly.
-    """
-    return status
 
 
 _STATUS_BADGE_STYLE: dict[str, str] = {

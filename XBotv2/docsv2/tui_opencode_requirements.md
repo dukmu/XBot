@@ -1566,6 +1566,20 @@ UI / 状态机（Phase A、C）：
   - **测试 session 形状**：`tests/integration/test_tui_interrupt_and_usage.py` 的 `_InterruptibleSession` 必须提供 `session_id`、`transport` 两个属性——TUI 走 `self.session.transport.interrupt(session_id=self.session.session_id)`，缺一个就 AttributeError 静默被 worker 的 `except Exception` 吞掉，导致"按了 ESC 啥也没发生"假象。这一条写进 docstring 防止后续回归。
   - **引擎侧 tool call 错误**：LangChain 端在 `An assistant message with 'tool_calls' must be followed by tool messages` 这类 400 时会 yield `error` 事件；`TuiState.apply_event("error")` 把消息塞进 `state.errors` 并设 `status = "Error"`；转录区会插入一条红条 `TuiNotice(kind="error", text=...)`。**注意**：这是 engine 端协议 bug，TUI 只负责显眼展示。
   - 337/337 测试通过（324 + 5 tool dispatch timeout + 3 interrupt/usage + 5 long-body 散落）。
+- v2.7（2026-06-05）：**代码 review 后修复**（见 `docsv2/code_review_v1.2.md`）。
+  - **P0 修复**：
+    - `engine.py:601`：LLM `ainvoke` 加 `asyncio.wait_for(..., timeout=120s)`；超时 yield error 事件。
+    - `engine.py:230`：`InteractionDisconnected` handler 补 `_backtrack_orphan_tool_calls()`，与 `CancelledError` 路径一致。
+    - `dispatcher.py:84-91`：`request_interrupt()` 用局部变量 `task` 快照消除 TOCTOU 竞态。
+    - `dispatcher.py:290-307`：删除 `_drain_engine_into_bus` 中重复的 `turn_cancelled` 合成（Engine 已产出），去重。
+  - **P1 修复**：
+    - `textual_client.py:96-146`：删除重复 CSS 块（`#transcript`/`.entry`/`.meta`/`.body` 各定义了两次）。
+    - `textual_client.py:532`：新增 `_safe_query_one()` helper（`is_mounted` + `try/except NoMatches`），`_accept_completion` 和 `_append_activity` 改用此方法。
+  - **P2 修复**：
+    - 删除死代码：`_status_badge()`（textual_client.py）和 `MODE_BADGE`（mode.py）。
+    - `hooks/types.py`：删除本地 `SessionInfo` 重复定义，统一 import `xbotv2.core.state.SessionInfo`。
+    - `engine.py:841`：`turn_finished` 处追加 `_backtrack_orphan_tool_calls()` 作为一致性守卫（19 个早期退出点不再有遗漏风险）。
+  - 345/345 测试通过。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---

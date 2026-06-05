@@ -6,6 +6,8 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
+from xbotv2.core.state import SessionInfo
+
 if TYPE_CHECKING:
     from xbotv2.plugin.store import PluginStore
 
@@ -108,19 +110,6 @@ STRICT_FAILURE_STAGES = frozenset({
 
 
 HookFn = Callable[["HookContext"], "Any | None"]
-
-
-@dataclass
-class SessionInfo:
-    """Core session metadata — minimal, no DAG/plan/skills fields."""
-
-    session_id: str
-    thread_id: str
-    personality_id: str
-    turn_count: int = 0
-    event_count: int = 0
-    status: str = "active"  # active | error | interrupted | closed
-    mailbox_pending: int = 0
 
 
 @dataclass

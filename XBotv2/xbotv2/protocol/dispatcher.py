@@ -82,12 +82,20 @@ class SessionContext:
     interrupt_requested: bool = False
 
     def request_interrupt(self) -> bool:
-        """Cancel the running turn task. Returns True if there was one."""
+        """Cancel the running turn task. Returns True if there was one.
 
-        if self.turn_task is None or self.turn_task.done():
+        Snaps the task reference locally to avoid a TOCTOU race with
+        ``run_turn_stream``'s finally block (which sets
+        ``self.turn_task = None``).  Calling ``cancel()`` on a done
+        task is always safe in Python 3.9+, so the worst case is a
+        no-op — we never crash with ``AttributeError``.
+        """
+
+        task = self.turn_task
+        if task is None or task.done():
             return False
         self.interrupt_requested = True
-        self.turn_task.cancel()
+        task.cancel()
         return True
 
     async def close(self) -> None:
@@ -288,14 +296,12 @@ async def _drain_engine_into_bus(
         async for event in ctx.engine.run_turn(content):
             await bus.events.put(_event_to_payload(event))
     except asyncio.CancelledError:
-        # TUI pressed ESC. The engine emits a structured
-        # ``turn_cancelled`` event before re-raising; we forward
-        # that single event and close the bus cleanly.
+        # TUI pressed ESC. The engine's ``run_turn`` already yielded a
+        # structured ``turn_cancelled`` event (which the pump forwarded
+        # to the bus) before re-raising.  We only need to log and
+        # re-raise so the finally block pushes the ``None`` sentinel
+        # and the caller in ``run_turn_stream`` can swallow it cleanly.
         logger.info("Turn cancelled for session %s", ctx.session_id)
-        await bus.events.put({
-            "type": "turn_cancelled",
-            "data": {"turn": ctx.engine._turn_count, "reason": "client_interrupt"},
-        })
         raise
     except Exception as exc:  # noqa: BLE001 — surface as one error event
         logger.exception("Engine run_turn failed")
