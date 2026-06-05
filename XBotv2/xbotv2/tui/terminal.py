@@ -137,8 +137,9 @@ class TerminalSession:
 
     async def connect(self) -> None:
         """Start the server and perform handshake."""
+        server_entrypoint = Path(__file__).resolve().parents[2] / "main.py"
         server_cmd = [
-            sys.executable, "-m", "xbotv2",
+            sys.executable, str(server_entrypoint),
             "--data-dir", self._data_dir,
             "--personality", self._personality_id,
             "--provider", self._provider_name,

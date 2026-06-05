@@ -32,6 +32,7 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
         ),
         _frame("tool_result", {"tool_call_id": "call_1", "content": "cached result", "status": "success"}),
         _frame("client_message", {"message": "heads up"}),
+        _frame("usage", {"total": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}}),
         _frame("turn_finished", {"turn": 1}),
     ]
 
@@ -44,12 +45,27 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "cached result"
     assert state.notices[-1].kind == "client_message"
+    assert state.usage["total_tokens"] == 15
 
     rendered = "\n".join(state.lines(width=80, height=12))
     assert "TestBot> hello world" in rendered
     assert "Tool filesystem_read [success]" in rendered
     assert "cached result" in rendered
     assert "Notice> heads up" in rendered
+    assert "Tokens 15" in rendered
+
+
+def test_tui_state_applies_usage_totals():
+    state = TuiState()
+
+    state.apply_frame(_frame("usage", {"total": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}}))
+
+    assert state.usage == {
+        "input_tokens": 12,
+        "output_tokens": 8,
+        "total_tokens": 20,
+        "requests": 2,
+    }
 
 
 def test_tui_state_turn_finished_preserves_waiting_for_user():
@@ -297,6 +313,53 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
         ("assistant", "回复：你好"),
     ]
     assert app.state.status == "Ready"
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_shows_usage_in_status_bar():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message_with_input(self, text, input_provider=None, permission_provider=None):
+            del text, input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {"type": "assistant_message", "data": {"content": "reply"}}
+            yield {
+                "type": "usage",
+                "data": {
+                    "total": {
+                        "input_tokens": 12,
+                        "output_tokens": 8,
+                        "total_tokens": 20,
+                        "requests": 1,
+                    }
+                },
+            }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        await app.on_input_submitted(input_widget.Submitted(input_widget, "hello"))
+        await pilot.pause()
+        status = app.query_one("#status_bar").content
+        assert "usage req:1 in:12 out:8 total:20" in str(status)
 
 
 def test_curses_client_records_reader_errors():

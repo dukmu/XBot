@@ -52,6 +52,12 @@ class TuiState:
     thread_id: str = "agent"
     agent_name: str = "XBotv2"
     status: str = "Disconnected"
+    usage: dict[str, int] = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+    })
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
     notices: list[TuiNotice] = field(default_factory=list)
@@ -102,6 +108,8 @@ class TuiState:
             tool.status = str(data.get("status") or "completed")
             tool.summary = _preview(data.get("content") or data.get("summary") or "")
             self._ensure_tool_transcript(tool.tool_call_id)
+        elif event_type == "usage":
+            self._apply_usage(data)
         elif event_type == "status":
             self.status = str(data.get("text") or data.get("message") or self.status)
         elif event_type == "client_message":
@@ -183,7 +191,7 @@ class TuiState:
         height = max(5, height)
         lines = [
             f"XBotv2  {self.session_id}/{self.thread_id}  {self.status}"[:width],
-            f"Agent {self.agent_name}  Turn {self.turn}"[:width],
+            f"Agent {self.agent_name}  Turn {self.turn}  Tokens {self.usage['total_tokens']}"[:width],
             "=" * min(width, 200),
         ]
 
@@ -239,6 +247,14 @@ class TuiState:
             tool.args_preview = _preview(raw_tool.get("args") or raw_tool.get("arguments") or "")
             tool.status = "pending"
             self._ensure_tool_transcript(tool_call_id)
+
+    def _apply_usage(self, data: dict[str, Any]) -> None:
+        usage = data.get("total") if isinstance(data.get("total"), dict) else data
+        if not isinstance(usage, dict):
+            return
+        for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
+            if key in usage:
+                self.usage[key] = int(usage.get(key) or 0)
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:

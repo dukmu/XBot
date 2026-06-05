@@ -245,6 +245,11 @@ class RuntimeServer:
                         event_data.get("status", "success"),
                         request_id=frame.request_id,
                     )
+                elif event_type == "usage":
+                    f = encoder.encode_usage(
+                        event_data,
+                        request_id=frame.request_id,
+                    )
                 else:
                     f = encoder.encode(event_type, event_data, request_id=frame.request_id)
 

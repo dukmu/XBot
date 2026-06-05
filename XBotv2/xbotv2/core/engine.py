@@ -559,6 +559,12 @@ class Engine:
                 "type": "assistant_message",
                 "data": {"content": content, "tool_calls": getattr(response, "tool_calls", None)},
             }
+            usage = self._extract_usage(response)
+            if usage:
+                yield {
+                    "type": "usage",
+                    "data": usage,
+                }
 
             # ON_ASSISTANT_MESSAGE hook
             am_ctx = self._make_hook_context(
@@ -1010,6 +1016,46 @@ class Engine:
                     "id": getattr(tc, "id", f"call_{i}"),
                 })
         return result
+
+    @staticmethod
+    def _extract_usage(response: Any) -> dict[str, int] | None:
+        """Extract provider token usage from LangChain response metadata."""
+        for candidate in (
+            getattr(response, "usage_metadata", None),
+            getattr(response, "response_metadata", None),
+            getattr(response, "additional_kwargs", None),
+        ):
+            usage = Engine._normalize_usage(candidate)
+            if usage:
+                return usage
+        return None
+
+    @staticmethod
+    def _normalize_usage(value: Any) -> dict[str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        for nested_key in ("token_usage", "usage"):
+            nested = value.get(nested_key)
+            if isinstance(nested, dict):
+                usage = Engine._normalize_usage(nested)
+                if usage:
+                    return usage
+
+        input_tokens = value.get("input_tokens", value.get("prompt_tokens"))
+        output_tokens = value.get("output_tokens", value.get("completion_tokens"))
+        total_tokens = value.get("total_tokens")
+        if input_tokens is None and output_tokens is None and total_tokens is None:
+            return None
+
+        input_count = int(input_tokens or 0)
+        output_count = int(output_tokens or 0)
+        total_count = int(total_tokens or input_count + output_count)
+        return {
+            "input_tokens": input_count,
+            "output_tokens": output_count,
+            "total_tokens": total_count,
+            "requests": int(value.get("requests") or 1),
+        }
 
     # ------------------------------------------------------------------
     # Properties

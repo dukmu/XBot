@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
-from xbotv2.tui.client import TuiNotice, TuiState, TuiTool, _parse_permission_decision
+from xbotv2.tui.client import TuiNotice, TuiState, _parse_permission_decision
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import (
     queue_user_message,
@@ -55,48 +54,39 @@ class XBotTextualApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
-        background: $surface;
+        background: #101418;
+        color: #d8dee9;
     }
 
-    #main {
-        height: 1fr;
+    #status_bar {
+        height: 1;
+        padding: 0 1;
+        background: #151b22;
+        color: #d8dee9;
     }
 
     #transcript {
-        width: 3fr;
         height: 1fr;
-        border: tall $primary;
-        padding: 0 1;
-    }
-
-    #side {
-        width: 1fr;
-        min-width: 32;
-        max-width: 46;
-        height: 1fr;
-    }
-
-    #status_panel, #tools_panel, #notices_panel {
-        border: tall $surface-lighten-1;
-        padding: 0 1;
-    }
-
-    #status_panel {
-        height: 8;
-    }
-
-    #tools_panel {
-        height: 1fr;
-    }
-
-    #notices_panel {
-        height: 12;
+        border: tall #5e81ac;
+        padding: 1 2;
+        background: #121820;
+        color: #e5e9f0;
+        scrollbar-color: #88c0d0;
+        scrollbar-color-hover: #8fbcbb;
+        scrollbar-background: #1b222b;
     }
 
     #input {
         dock: bottom;
         height: 3;
-        border: tall $accent;
+        border: tall #88c0d0;
+        background: #111820;
+        color: #eceff4;
+        padding: 0 1;
+    }
+
+    #input:focus {
+        border: tall #a3be8c;
     }
     """
 
@@ -104,10 +94,6 @@ class XBotTextualApp(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
-        ("pageup", "transcript_page_up", "Page up"),
-        ("pagedown", "transcript_page_down", "Page down"),
-        ("home", "transcript_home", "Top"),
-        ("end", "transcript_end", "Bottom"),
     ]
 
     def __init__(
@@ -139,18 +125,14 @@ class XBotTextualApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Horizontal(id="main"):
-            yield RichLog(
-                id="transcript",
-                wrap=True,
-                markup=False,
-                highlight=False,
-                auto_scroll=True,
-            )
-            with Vertical(id="side"):
-                yield Static(id="status_panel")
-                yield Static(id="tools_panel")
-                yield Static(id="notices_panel")
+        yield Static(id="status_bar", markup=True)
+        yield RichLog(
+            id="transcript",
+            wrap=True,
+            markup=False,
+            highlight=False,
+            auto_scroll=True,
+        )
         yield Input(placeholder="Message XBotv2", id="input")
         yield Footer()
 
@@ -212,18 +194,6 @@ class XBotTextualApp(App[None]):
         """Clear the input box without changing protocol interaction state."""
         self.query_one("#input", Input).value = ""
 
-    def action_transcript_page_up(self) -> None:
-        self.query_one("#transcript", RichLog).action_page_up()
-
-    def action_transcript_page_down(self) -> None:
-        self.query_one("#transcript", RichLog).action_page_down()
-
-    def action_transcript_home(self) -> None:
-        self.query_one("#transcript", RichLog).action_scroll_home()
-
-    def action_transcript_end(self) -> None:
-        self.query_one("#transcript", RichLog).action_scroll_end()
-
     async def _drain_message_queue(self) -> None:
         try:
             while not self._outbound_messages.empty():
@@ -272,22 +242,25 @@ class XBotTextualApp(App[None]):
             return
         self._refresh_status()
         self._refresh_transcript()
-        self._refresh_tools()
-        self._refresh_notices()
         self._refresh_input_mode()
 
     def _refresh_status(self) -> None:
-        panel = self.query_one("#status_panel", Static)
+        panel = self.query_one("#status_bar", Static)
         queue_depth = self._outbound_messages.qsize()
-        queue_line = f"Queued:  {queue_depth}" if queue_depth else "Queued:  -"
+        usage = self.state.usage
         panel.update(
-            "\n".join([
-                f"[b]XBotv2[/b]  {_status_badge(self.state.status)}",
-                f"Session: {self.state.session_id}",
-                f"Thread:  {self.state.thread_id}",
-                f"Agent:   {self.state.agent_name}",
-                f"Turn:    {self.state.turn}",
-                queue_line,
+            "  ".join([
+                f"[b]XBotv2[/b] {_status_badge(self.state.status)}",
+                f"{self.state.session_id}/{self.state.thread_id}",
+                f"agent:{self.state.agent_name}",
+                f"turn:{self.state.turn}",
+                f"queued:{queue_depth}",
+                (
+                    f"usage req:{usage['requests']} "
+                    f"in:{usage['input_tokens']} "
+                    f"out:{usage['output_tokens']} "
+                    f"total:{usage['total_tokens']}"
+                ),
             ])
         )
 
@@ -298,26 +271,6 @@ class XBotTextualApp(App[None]):
             if rendered:
                 log.write(rendered)
         self._rendered_transcript_entries = len(self.state.transcript)
-
-    def _refresh_tools(self) -> None:
-        panel = self.query_one("#tools_panel", Static)
-        lines = ["[b]Tools[/b]"]
-        tools = list(self.state.tools.values())[-12:]
-        if not tools:
-            lines.append("No tool calls yet.")
-        for tool in tools:
-            lines.extend(_tool_lines(tool))
-        panel.update("\n".join(lines))
-
-    def _refresh_notices(self) -> None:
-        panel = self.query_one("#notices_panel", Static)
-        lines = ["[b]Events[/b]"]
-        notices = self.state.notices[-8:]
-        if not notices:
-            lines.append("No notices.")
-        for notice in notices:
-            lines.append(f"{notice.kind}: {notice.text}")
-        panel.update("\n".join(lines))
 
     def _refresh_input_mode(self) -> None:
         if self.state.pending_user_input_active:
@@ -331,15 +284,6 @@ class XBotTextualApp(App[None]):
         if not self.is_mounted:
             return
         self.query_one("#input", Input).placeholder = text
-
-
-def _tool_lines(tool: TuiTool) -> list[str]:
-    lines = [f"- {tool.name} [{tool.status}]"]
-    if tool.args_preview:
-        lines.append(f"  args: {tool.args_preview}")
-    if tool.summary:
-        lines.append(f"  result: {tool.summary}")
-    return lines
 
 
 def _status_badge(status: str) -> str:

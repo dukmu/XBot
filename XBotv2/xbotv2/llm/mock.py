@@ -142,6 +142,11 @@ class MockLLM(BaseChatModel):
     def _to_aimessage(self, response: dict[str, Any]) -> AIMessage:
         content = response.get("content", "")
         tool_calls = response.get("tool_calls")
+        metadata: dict[str, Any] = {}
+        if isinstance(response.get("usage_metadata"), dict):
+            metadata["usage_metadata"] = response["usage_metadata"]
+        if isinstance(response.get("response_metadata"), dict):
+            metadata["response_metadata"] = response["response_metadata"]
 
         if tool_calls:
             normalized = []
@@ -155,9 +160,10 @@ class MockLLM(BaseChatModel):
             msg = AIMessage(
                 content=content,
                 tool_calls=normalized,
+                **metadata,
             )
         else:
-            msg = AIMessage(content=content)
+            msg = AIMessage(content=content, **metadata)
 
         return msg
 

@@ -64,6 +64,12 @@ class ProtocolEncoder:
         self._thread_id = thread_id
         self._direction = direction
         self._seq = 0
+        self._usage_total = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "requests": 0,
+        }
 
     def encode(
         self,
@@ -114,6 +120,23 @@ class ProtocolEncoder:
             "status": status,
         }, request_id=request_id)
 
+    def encode_usage(
+        self,
+        usage: dict[str, Any],
+        request_id: str = "",
+    ) -> ProtocolFrame:
+        delta = _normalize_usage(usage)
+        for key in self._usage_total:
+            self._usage_total[key] += delta.get(key, 0)
+        return self.encode(
+            "usage",
+            {
+                "delta": delta,
+                "total": dict(self._usage_total),
+            },
+            request_id=request_id,
+        )
+
     def encode_error(
         self, message: str, code: str = "runtime_error", request_id: str = ""
     ) -> ProtocolFrame:
@@ -134,3 +157,22 @@ class ProtocolEncoder:
 
     def encode_shutdown_ok(self, request_id: str = "") -> ProtocolFrame:
         return self.encode("shutdown_ok", {}, request_id=request_id)
+
+
+def _normalize_usage(value: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "requests": 0,
+        }
+    input_tokens = int(value.get("input_tokens") or value.get("prompt_tokens") or 0)
+    output_tokens = int(value.get("output_tokens") or value.get("completion_tokens") or 0)
+    total_tokens = int(value.get("total_tokens") or input_tokens + output_tokens)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "requests": int(value.get("requests") or 1),
+    }

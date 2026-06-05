@@ -108,6 +108,39 @@ class TestEngineBasics:
         assert assistant_events[0]["data"]["content"] == "Hello! How can I help?"
 
     @pytest.mark.asyncio
+    async def test_provider_usage_metadata_is_emitted(self, state_store, temp_workspace):
+        """Engine emits provider token usage as a first-class event."""
+        llm = MockLLM(responses=[
+            {
+                "content": "Hello!",
+                "response_metadata": {
+                    "token_usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 7,
+                        "total_tokens": 18,
+                    }
+                },
+            }
+        ])
+        registry = ToolRegistry()
+
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        events = [e async for e in engine.run_turn("hi")]
+
+        usage_events = [e for e in events if e["type"] == "usage"]
+        assert usage_events == [
+            {
+                "type": "usage",
+                "data": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "total_tokens": 18,
+                    "requests": 1,
+                },
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_tool_call_and_response(self, state_store, temp_workspace):
         """Engine executes tool calls and continues the loop."""
         llm = MockLLM(responses=[

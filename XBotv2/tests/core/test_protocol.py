@@ -140,6 +140,33 @@ class TestProtocolEncoder:
         assert frame.request_id == "req-123"
         assert "request_id" not in frame.payload
 
+    def test_encode_usage_accumulates_totals(self):
+        """Provider usage is encoded as a first-class protocol frame."""
+        encoder = ProtocolEncoder(session_id="s1", thread_id="t1")
+
+        first = encoder.encode_usage(
+            {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            request_id="req-1",
+        )
+        second = encoder.encode_usage(
+            {"input_tokens": 3, "output_tokens": 2},
+            request_id="req-2",
+        )
+
+        assert first.type == "usage"
+        assert first.payload["delta"] == {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "requests": 1,
+        }
+        assert second.payload["total"] == {
+            "input_tokens": 13,
+            "output_tokens": 6,
+            "total_tokens": 19,
+            "requests": 2,
+        }
+
 
 class TestProviderConfig:
     """LLM client factory tests."""
@@ -1150,6 +1177,54 @@ class TestTerminalSessionSubprocess:
                 "turn_finished",
             ]
             assert events[1]["data"]["content"] == "hello from subprocess"
+        finally:
+            await session.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_terminal_session_streams_provider_usage(self, tmp_path, monkeypatch):
+        data_dir = _write_mock_data_dir(
+            tmp_path,
+            mock_responses=[
+                {
+                    "content": "hello with usage",
+                    "response_metadata": {
+                        "token_usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 6,
+                            "total_tokens": 16,
+                        }
+                    },
+                }
+            ],
+        )
+        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
+
+        from xbotv2.tui.terminal import TerminalSession
+
+        session = TerminalSession(
+            data_dir=data_dir,
+            personality_id="default",
+            provider_name="mock",
+            no_plugins=True,
+        )
+        try:
+            await session.connect()
+            events = [event async for event in session.send_message("hello")]
+
+            assert [event["type"] for event in events] == [
+                "turn_started",
+                "assistant_message",
+                "usage",
+                "turn_finished",
+            ]
+            usage = events[2]["data"]
+            assert usage["delta"] == {
+                "input_tokens": 10,
+                "output_tokens": 6,
+                "total_tokens": 16,
+                "requests": 1,
+            }
+            assert usage["total"]["total_tokens"] == 16
         finally:
             await session.disconnect()
 
