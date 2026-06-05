@@ -1687,7 +1687,7 @@ def test_tui_state_replays_protocol_frames_for_messages_tools_and_interrupts():
 
     assert state.agent_name == "default"
     assert state.messages[-1].content == "hello world"
-    assert state._open_stream == {}
+    assert state._stream_message_keys == {}
     assert state.tools["call_1"].status == "completed"
     assert state.tools["call_1"].result_ref == "cache://tool-result/abc"
     assert state.tools["call_1"].summary == "cached shell result"
@@ -1723,6 +1723,142 @@ def test_tui_client_drains_background_frames_without_blocking():
     client._drain_frames()
 
     assert client.state.messages[-1].content == "live"
+
+
+def test_tui_wraps_cjk_text_by_display_width():
+    """CJK transcript text wraps by display width, not UTF-8 bytes."""
+    from xbot.tui import _fit_width, _wrap
+
+    assert _wrap("中文输入", width=4) == ["中文", "输入"]
+    assert _fit_width("状态 中文 OK", width=9) == "状态 中文"
+
+
+def test_tui_client_queues_user_messages_until_current_turn_finishes():
+    """The TUI keeps transcript order as user/assistant/user under fast input."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.terminal import TerminalOptions
+    from xbot.tui import CursesTuiClient
+
+    client = CursesTuiClient(TerminalOptions())
+    sent: list[tuple[str, str]] = []
+
+    def fake_send(frame_type, *, request_id, payload):
+        sent.append((request_id, str(payload.get("content") or frame_type)))
+
+    client.client.send = fake_send
+
+    client._send_text("first")
+    client._send_text("second")
+
+    assert [(message.role, message.content) for message in client.state.messages] == [
+        ("user", "first"),
+    ]
+    assert "queued:1" in "\n".join(client.state.lines(width=80, height=12, queued=client._outbound_messages.qsize()))
+    assert sent == [("req_000001", "first")]
+
+    client._frames.put(
+        ProtocolFrame(
+            seq=1,
+            direction="server_to_client",
+            type="message.completed",
+            session_id="default",
+            thread_id="default",
+            request_id="req_000001",
+            payload={"message_id": "m", "role": "assistant", "content": "reply"},
+        )
+    )
+    client._frames.put(
+        ProtocolFrame(
+            seq=2,
+            direction="server_to_client",
+            type="run.finished",
+            session_id="default",
+            thread_id="default",
+            request_id="req_000001",
+            payload={"status": "completed"},
+        )
+    )
+
+    client._drain_frames()
+
+    assert [(message.role, message.content) for message in client.state.messages] == [
+        ("user", "first"),
+        ("assistant", "reply"),
+        ("user", "second"),
+    ]
+    assert sent == [
+        ("req_000001", "first"),
+        ("req_000002", "second"),
+    ]
+
+
+def test_tui_streaming_agent_message_keeps_transcript_order_before_completion():
+    """Streaming agent text occupies its transcript slot before completion."""
+    from xbot.protocol import ProtocolFrame
+    from xbot.terminal import TerminalOptions
+    from xbot.tui import CursesTuiClient
+
+    client = CursesTuiClient(TerminalOptions())
+    sent: list[str] = []
+
+    def fake_send(frame_type, *, request_id, payload):
+        del frame_type, request_id
+        sent.append(str(payload.get("content") or ""))
+
+    client.client.send = fake_send
+
+    client._send_text("first")
+    client._frames.put(
+        ProtocolFrame(
+            seq=1,
+            direction="server_to_client",
+            type="message.delta",
+            session_id="default",
+            thread_id="default",
+            request_id="req_000001",
+            payload={"message_id": "m", "role": "assistant", "content_delta": "stream"},
+        )
+    )
+    client._drain_frames()
+    client._send_text("second")
+
+    assert [(message.role, message.content) for message in client.state.messages] == [
+        ("user", "first"),
+        ("assistant", "stream"),
+    ]
+    assert list(client._outbound_messages.queue) == ["second"]
+    assert sent == ["first"]
+
+    client._frames.put(
+        ProtocolFrame(
+            seq=2,
+            direction="server_to_client",
+            type="message.completed",
+            session_id="default",
+            thread_id="default",
+            request_id="req_000001",
+            payload={"message_id": "m", "role": "assistant", "content": "stream done"},
+        )
+    )
+    client._frames.put(
+        ProtocolFrame(
+            seq=3,
+            direction="server_to_client",
+            type="run.finished",
+            session_id="default",
+            thread_id="default",
+            request_id="req_000001",
+            payload={"status": "completed"},
+        )
+    )
+    client._drain_frames()
+
+    assert [(message.role, message.content) for message in client.state.messages] == [
+        ("user", "first"),
+        ("assistant", "stream done"),
+        ("user", "second"),
+    ]
+    assert sent == ["first", "second"]
 
 
 @pytest.mark.asyncio
