@@ -134,9 +134,16 @@ class TuiState:
             self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
+            tool_calls = data.get("tool_calls")
             if content.strip():
                 self.append_message("assistant", content)
-            self._apply_tool_calls(data.get("tool_calls"))
+            elif tool_calls:
+                # Model responded with tool calls but no visible text.
+                # Show a synthetic thinking entry so the user can see
+                # what the model is about to call before the tool
+                # results arrive.
+                self.append_message("assistant", "Thinking…")
+            self._apply_tool_calls(tool_calls)
         elif event_type == "tool_calls_started":
             self._apply_tool_calls(data.get("tool_calls"))
         elif event_type == "tool_result":
@@ -316,10 +323,18 @@ class TuiState:
         if not isinstance(usage, dict):
             return
         for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
+            val = int(usage.get(key) or 0)
             if key in usage:
-                self.usage[key] = int(usage.get(key) or 0)
-            if isinstance(delta, dict) and key in delta:
-                self.turn_usage[key] += int(delta.get(key) or 0)
+                self.usage[key] = val
+            # When no ``delta`` sub-key exists, treat the flat data
+            # itself as the delta — the engine sends one ``usage``
+            # event per LLM call, and each event carries the current
+            # provider-side consumption, which IS the turn-level delta.
+            if isinstance(delta, dict):
+                if key in delta:
+                    self.turn_usage[key] += int(delta.get(key) or 0)
+            elif key in usage:
+                self.turn_usage[key] += val
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:

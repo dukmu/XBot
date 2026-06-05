@@ -81,11 +81,15 @@ def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
         },
     })
 
-    assert state.messages == []
+    # v1.3: whitespace-only assistant messages with tool_calls now
+    # insert a "Thinking…" placeholder so the transcript is not
+    # blank while the tools run (code review §Problem 3).
+    assert len(state.messages) == 1
+    assert state.messages[0].content == "Thinking…"
     assert state.tools["call_1"].name == "shell"
-    assert len(state.transcript) == 1
-    assert state.transcript[0].kind == "tool"
-    assert state.transcript[0].key == "call_1"
+    assert len(state.transcript) == 2  # message entry + tool entry
+    assert state.transcript[0].kind == "message"
+    assert state.transcript[1].kind == "tool"
 
 
 def test_tui_state_turn_finished_preserves_waiting_for_user():
@@ -801,6 +805,10 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
     assert session.permission_decision == {"decision": "allow", "scope": "always"}
     assert [(message.role, message.content.strip()) for message in app.state.messages] == [
         ("user", "当前磁盘用了多少"),
+        # The first assistant_message carries tool_calls with
+        # whitespace-only content → the TUI inserts a Thinking…
+        # placeholder (v1.3: code review fix §Problem 3).
+        ("assistant", "Thinking…"),
         ("assistant", "当前磁盘使用情况：已执行 df -h。问题是：当前磁盘用了多少"),
     ]
     assert rendered.count("当前磁盘用了多少") >= 2
@@ -1126,3 +1134,145 @@ async def test_tui_renders_error_entry_with_error_css_class():
         assert "Error" in status_text, (
             f"status bar missing Error: {status_text!r}"
         )
+
+
+# ----------------------------------------------------------------------
+# Permission_request must reach the TUI before the provider blocks
+# ----------------------------------------------------------------------
+
+
+def test_apply_event_permission_request_sets_status_to_approval_required():
+    """``permission_request`` flips ``pending_permission_active`` and
+    calls ``_refresh_status`` which should produce ``Approval
+    required`` — the TUI's status bar relies on this.
+    """
+
+    state = TuiState()
+    state.apply_event(
+        {
+            "type": "permission_request",
+            "data": {
+                "request_id": "perm:call_1",
+                "reason": "Tool 'shell' needs approval",
+                "tool_call": {"name": "shell", "args": {"command": "ls"}},
+            },
+        }
+    )
+
+    assert state.pending_permission_active is True
+    assert state.status == "Approval required"
+    notice_entries = [e for e in state.transcript if e.kind == "notice"]
+    assert len(notice_entries) == 1
+    assert state.notices[0].kind == "permission_request"
+
+
+# ----------------------------------------------------------------------
+# Usage events — flat data must update turn_usage (not just cumulative)
+# ----------------------------------------------------------------------
+
+
+def test_apply_usage_updates_turn_usage_from_flat_data():
+    """When the engine sends ``{"input_tokens": 12, "output_tokens": 3,
+    "total_tokens": 15}`` without a ``delta`` sub-key, ``turn_usage``
+    must still accumulate — the activity row reads from it.
+    """
+
+    state = TuiState()
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+
+    # Simulate one LLM call returning 15 tokens
+    state.apply_event(
+        {
+            "type": "usage",
+            "data": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1},
+        }
+    )
+
+    assert state.turn_usage["input_tokens"] == 10
+    assert state.turn_usage["output_tokens"] == 5
+    assert state.turn_usage["total_tokens"] == 15
+    assert state.turn_usage["requests"] == 1
+
+    # Simulate a second LLM call in the same turn
+    state.apply_event(
+        {
+            "type": "usage",
+            "data": {"input_tokens": 20, "output_tokens": 8, "total_tokens": 28, "requests": 1},
+        }
+    )
+
+    assert state.turn_usage["input_tokens"] == 30   # 10 + 20
+    assert state.turn_usage["output_tokens"] == 13   # 5 + 8
+    assert state.turn_usage["total_tokens"] == 43    # 15 + 28
+    assert state.turn_usage["requests"] == 2
+
+
+def test_apply_usage_with_delta_still_works():
+    """The ``delta`` / ``total`` sub-key format (used by the older
+    integration tests) must keep working.
+    """
+
+    state = TuiState()
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+
+    state.apply_event(
+        {
+            "type": "usage",
+            "data": {
+                "delta": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
+                "total": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
+            },
+        }
+    )
+
+    assert state.usage["input_tokens"] == 100
+    assert state.turn_usage["input_tokens"] == 100
+
+
+# ----------------------------------------------------------------------
+# Thinking: assistant_message with tool_calls but NO content
+# ----------------------------------------------------------------------
+
+
+def test_assistant_message_with_tool_calls_but_no_content_shows_thinking():
+    """When the LLM returns tool_calls without visible text, the TUI
+    should still insert a synthetic ``Thinking…`` entry so the
+    transcript doesn't look empty while tools run.
+    """
+
+    state = TuiState()
+    state.apply_event(
+        {
+            "type": "assistant_message",
+            "data": {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "name": "shell", "args": {"command": "ls"}}
+                ],
+            },
+        }
+    )
+
+    thinking_msgs = [m for m in state.messages if m.content == "Thinking…"]
+    assert len(thinking_msgs) == 1
+    # The tool call should still be recorded
+    assert "call_1" in state.tools
+    assert state.tools["call_1"].status == "pending"
+
+
+def test_assistant_message_with_content_does_not_insert_thinking():
+    """When the LLM includes text content (the thinking IS visible),
+    do NOT insert a redundant ``Thinking…`` entry.
+    """
+
+    state = TuiState()
+    state.apply_event(
+        {
+            "type": "assistant_message",
+            "data": {"content": "Let me check the workspace first."},
+        }
+    )
+
+    messages = [m.content for m in state.messages]
+    assert "Let me check the workspace first." in messages
+    assert "Thinking…" not in messages

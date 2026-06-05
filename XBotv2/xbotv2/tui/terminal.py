@@ -152,6 +152,15 @@ class TerminalSession:
         )
         async for event in stream:
             event_type = str(event.get("type") or "")
+
+            # **Order matters**: yield the event to the TUI FIRST so
+            # ``apply_event`` + ``_handle_stream_event`` can update
+            # the status bar and transcript BEFORE we block on the
+            # user's response.  Otherwise the UI stays frozen on
+            # "Running" while the tools sit in "pending" forever.
+            if event_type in ("permission_request", "user_input_required"):
+                yield event
+
             if event_type == "permission_request" and permission_provider is not None:
                 payload = event.get("data") or {}
                 response = _await_maybe(permission_provider(payload))
@@ -175,7 +184,8 @@ class TerminalSession:
                     request_id=str(payload.get("request_id") or ""),
                     answer=answer,
                 )
-            yield event
+            else:
+                yield event
 
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
         return await self._transport.send_user_input(

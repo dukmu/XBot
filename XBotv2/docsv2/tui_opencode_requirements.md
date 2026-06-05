@@ -1580,6 +1580,11 @@ UI / 状态机（Phase A、C）：
     - `hooks/types.py`：删除本地 `SessionInfo` 重复定义，统一 import `xbotv2.core.state.SessionInfo`。
     - `engine.py:841`：`turn_finished` 处追加 `_backtrack_orphan_tool_calls()` 作为一致性守卫（19 个早期退出点不再有遗漏风险）。
   - 345/345 测试通过。
+- v2.8（2026-06-05）：**交互体验三连修**（用户报告：权限 UI 不弹、usage 不刷新、thinking 不渲染）。
+  - **权限 UI 不弹（根因）**：`terminal.py:_send_message_impl` 在收到 `permission_request` 时先调 `permission_provider` 再 `yield event`——provider 阻塞，TUI 永远看不到 `apply_event("permission_request")`，status bar 一直 "Running"，inline 选择永远不会出现。**修复**：对 `permission_request` 和 `user_input_required` **先 yield 再 block**。
+  - **usage 不刷新（根因）**：Engine 发送 `{"type":"usage","data":{"input_tokens":N,...}}`（flat format），但 `TuiState._apply_usage` 只认 `data.delta` + `data.total` 子键格式。`data.delta` 为 None 导致 `turn_usage` 永不加和，activity row 始终显示 0。**修复**：`_apply_usage` 在没有 `delta` 子键时用 flat data 本身作为 delta 累加。
+  - **thinking 不渲染（根因）**：`apply_event("assistant_message")` 在 `content.strip()` 为空时不写入 transcript。当 LLM 返回纯 tool_calls（无 content 文本）时，transcript 无任何提示，用户看到工具 pending 但不知道为什么。**修复**：若有 tool_calls 但 content 为空，插入 `"Thinking…"` 占位。
+  - 测试 +5（permission 状态、usage 累加 ×2、thinking 占位 ×2），350/350 通过。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---
