@@ -27,6 +27,13 @@ from xbotv2.tui.client import (
     TuiTranscriptEntry,
     _parse_permission_decision,
 )
+from xbotv2.tui.command import (
+    CommandSpec,
+    is_slash_command,
+    known_command_labels,
+    parse_slash_command,
+)
+from xbotv2.tui.mode import Mode
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
 from xbotv2.tui.trace import trace_event
@@ -206,7 +213,7 @@ class XBotTextualApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static(id="status_bar", markup=True)
+        yield Static(id="status_bar", markup=False)
         yield TranscriptScroll(id="transcript")
         with Vertical(id="composer"):
             yield Static(id="composer_hint")
@@ -251,8 +258,8 @@ class XBotTextualApp(App[None]):
         self._resize_composer()
         if not text:
             return
-        if text in {"/exit", "/quit"}:
-            self.exit()
+        if is_slash_command(text):
+            await self._handle_slash_command(parse_slash_command(text))
             return
         route = route_submitted_text(
             self.state,
@@ -291,6 +298,96 @@ class XBotTextualApp(App[None]):
         self.query_one("#input", ComposerTextArea).load_text("")
         self._history_index = None
         self._resize_composer()
+
+    def _current_mode(self) -> Mode:
+        """Derive the high-level Mode from existing TUI state predicates.
+
+        Single source for mode classification; the rest of the app consults
+        this method instead of re-running the same boolean ladder.
+        """
+
+        if self._choice_mode_active():
+            return Mode.CHOOSING
+        if self._interaction_response_pending:
+            return Mode.SUBMITTED
+        if self.state.status == "Error":
+            return Mode.ERROR
+        if self.state.turn_active:
+            return Mode.RUNNING
+        return Mode.COMPOSING
+
+    async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
+        """Execute a parsed slash command.
+
+        Slash commands are local TUI operations and never reach the server
+        (per design doc §9.2).
+        """
+
+        if spec is None:
+            return
+        trace_event("tui.slash", {"name": spec.name, "raw": spec.raw})
+        if spec.name == "exit":
+            self.exit()
+            return
+        if spec.name == "clear":
+            await self._cmd_clear()
+            return
+        if spec.name == "help":
+            await self._cmd_help()
+            return
+        if spec.name == "status":
+            await self._cmd_status()
+            return
+        if spec.name == "unknown":
+            await self._append_local_notice("Unknown command", spec.display_label)
+
+    async def _cmd_clear(self) -> None:
+        """Reset the visible render log; session/thread/usage are untouched."""
+
+        self.state.transcript.clear()
+        self.state.messages.clear()
+        self.state.tools.clear()
+        self.state.notices.clear()
+        self.state.errors.clear()
+        self._rendered_transcript_entries = 0
+        self._activity_widgets.clear()
+        self._tool_widgets.clear()
+        self._choice_widgets.clear()
+        self._choice_payloads.clear()
+        self._choice_results.clear()
+        self._choice_request_ids.clear()
+        self._resolved_choice_keys.clear()
+        self._active_choice_key = None
+        self._active_choice_index = 0
+        self._submitted_interaction_ids.clear()
+        await self._render_new_transcript_entries()
+        self._refresh_all()
+
+    async def _cmd_help(self) -> None:
+        """Append a help block listing the registered slash commands."""
+
+        await self._append_local_notice(
+            "Help",
+            "Slash commands: " + "  ".join(known_command_labels()),
+        )
+
+    async def _cmd_status(self) -> None:
+        """Append a snapshot of the current TUI state to the stream."""
+
+        usage = self.state.usage
+        await self._append_local_notice(
+            "Status",
+            (
+                f"mode={self._current_mode().value} "
+                f"status={self.state.status} "
+                f"turn={self.state.turn} "
+                f"queued={self._outbound_messages.qsize()} "
+                f"req={usage['requests']} "
+                f"in={usage['input_tokens']} "
+                f"out={usage['output_tokens']} "
+                f"total={usage['total_tokens']}"
+            ),
+        )
 
     async def _drain_message_queue(self) -> None:
         try:
@@ -350,19 +447,15 @@ class XBotTextualApp(App[None]):
         queue_depth = self._outbound_messages.qsize()
         usage = self.state.usage
         panel.update(
-            "  ".join([
-                f"[b]XBotv2[/b] {_status_badge(self.state.status)}",
-                f"{self.state.session_id}/{self.state.thread_id}",
-                f"agent:{self.state.agent_name}",
-                self._activity_status(),
-                f"queued:{queue_depth}",
-                (
-                    f"usage req:{usage['requests']} "
-                    f"in:{usage['input_tokens']} "
-                    f"out:{usage['output_tokens']} "
-                    f"total:{usage['total_tokens']}"
-                ),
-            ])
+            _status_renderable(
+                status=self.state.status,
+                session_id=self.state.session_id,
+                thread_id=self.state.thread_id,
+                agent_name=self.state.agent_name,
+                activity=self._activity_status(),
+                queue_depth=queue_depth,
+                usage=usage,
+            )
         )
 
     async def _handle_stream_event(self, event: dict[str, Any]) -> None:
@@ -655,7 +748,7 @@ class XBotTextualApp(App[None]):
     def _notice_widget(self, notice: TuiNotice, key: str) -> Vertical:
         if notice.kind == "permission_request":
             choices = [
-                InlineChoice("Allow", "permission", {"decision": "allow", "scope": "once"}),
+                InlineChoice("Allow once", "permission", {"decision": "allow", "scope": "once"}),
                 InlineChoice("Deny", "permission", {"decision": "deny", "scope": "once"}),
                 InlineChoice("Allow session", "permission", {"decision": "allow", "scope": "session"}),
                 InlineChoice("Always allow", "permission", {"decision": "allow", "scope": "always"}),
@@ -742,18 +835,65 @@ class XBotTextualApp(App[None]):
 
 
 def _status_badge(status: str) -> str:
-    styles = {
-        "Ready": "green",
-        "Running": "yellow",
-        "Connecting": "yellow",
-        "Waiting for user": "cyan",
-        "Approval required": "magenta",
-        "Permission denied": "red",
-        "Error": "red",
-        "Shutdown": "dim",
-    }
-    style = styles.get(status, "white")
-    return f"[{style}]{status}[/{style}]"
+    """Plain-text status label.
+
+    The previous version returned a Rich markup string, but the status bar
+    is rendered with ``markup=False`` so user-supplied segments can never
+    leak as markup. Colors now come from the ``_status_renderable`` helper
+    which uses ``rich.text.Text`` directly.
+    """
+    return status
+
+
+_STATUS_BADGE_STYLE: dict[str, str] = {
+    "Ready": "green",
+    "Running": "yellow",
+    "Connecting": "yellow",
+    "Waiting for user": "cyan",
+    "Approval required": "magenta",
+    "Permission denied": "red",
+    "Error": "red",
+    "Shutdown": "dim",
+}
+
+
+def _status_renderable(
+    *,
+    status: str,
+    session_id: str,
+    thread_id: str,
+    agent_name: str,
+    activity: str,
+    queue_depth: int,
+    usage: dict[str, int],
+) -> Text:
+    """Build the status bar as a styled ``Text`` segment list.
+
+    Returning ``Text`` lets us keep visual emphasis (bold name, colored
+    status) without the markup parsing that ``markup=False`` disables.
+    """
+
+    style = _STATUS_BADGE_STYLE.get(status, "white")
+    text = Text()
+    text.append("XBotv2", style="bold")
+    text.append("  ")
+    text.append(status, style=style)
+    text.append("  ")
+    text.append(f"{session_id}/{thread_id}")
+    text.append("  ")
+    text.append(f"agent:{agent_name}")
+    text.append("  ")
+    text.append(activity)
+    text.append("  ")
+    text.append(f"queued:{queue_depth}")
+    text.append("  ")
+    text.append(
+        f"usage req:{usage['requests']} "
+        f"in:{usage['input_tokens']} "
+        f"out:{usage['output_tokens']} "
+        f"total:{usage['total_tokens']}"
+    )
+    return text
 
 
 class ComposerTextArea(TextArea):
