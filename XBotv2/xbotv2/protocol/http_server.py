@@ -48,6 +48,7 @@ def create_app(
     data_dir: str = "data",
     no_plugins: bool = False,
     server_name: str = "xbotv2",
+    llm_override: Any | None = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -57,6 +58,10 @@ def create_app(
 
     started_at = time.monotonic()
     manager = SessionManager()
+    # Stash the LLM override on app.state so the open_session route can use it.
+    # This is a test seam: production passes llm_override=None and the server
+    # loads the configured provider. Tests pass a MockLLM to skip network.
+    _llm_override_ref: dict[str, Any] = {"value": llm_override}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -73,6 +78,16 @@ def create_app(
     app.state.data_dir = data_dir
     app.state.no_plugins = no_plugins
     app.state.started_at = started_at
+    app.state.llm_override = _llm_override_ref
+
+    _register_routes(app)
+    return app
+
+
+def set_llm_override(app: FastAPI, llm: Any | None) -> None:
+    """Inject a test LLM at runtime. No-op in production."""
+
+    app.state.llm_override["value"] = llm
 
     _register_routes(app)
     return app
@@ -114,6 +129,7 @@ def _register_routes(app: FastAPI) -> None:
                 provider_name=app.state.provider_name,
                 data_dir=app.state.data_dir,
                 no_plugins=app.state.no_plugins,
+                llm_override=app.state.llm_override.get("value"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Session open failed for %s", session_id)

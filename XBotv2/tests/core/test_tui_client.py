@@ -227,63 +227,88 @@ def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_protocol_trace_records_unicode_frames(tmp_path, monkeypatch):
-    from xbotv2.tui.terminal import ProtocolClient
+async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatch):
+    """HttpTransport must preserve UTF-8 payload in tui.http trace events.
 
-    class FakeStdin:
-        def __init__(self):
-            self.written = b""
+    Replaces the legacy ``test_protocol_trace_records_unicode_frames``
+    stdio test now that stdio is removed (docsv2 v2.2).
+    """
 
-        def write(self, data):
-            self.written += data
+    from xbotv2.tui.transport_http import HttpTransport
 
-        async def drain(self):
+    trace_path = tmp_path / "http-trace.jsonl"
+    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
+
+    class FakeStream:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
             return None
 
-    class FakeStdout:
-        def __init__(self, frame):
-            self._line = frame.to_json_line().encode("utf-8")
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
 
-        async def readline(self):
-            line = self._line
-            self._line = b""
-            return line
+    class FakeClient:
+        def __init__(self, lines):
+            self._stream = FakeStream(lines)
 
-    class FakeProcess:
-        def __init__(self, frame):
-            self.stdin = FakeStdin()
-            self.stdout = FakeStdout(frame)
+        async def post(self, path, json=None):
+            class Resp:
+                def raise_for_status(self_inner):
+                    return None
 
-    trace_path = tmp_path / "protocol-trace.jsonl"
-    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
-    frame = ProtocolFrame(
-        seq=1,
-        direction="server_to_client",
-        type="assistant_message",
-        session_id="s",
-        thread_id="t",
-        request_id="",
-        payload={"content": "收到：当前磁盘用了多少"},
-    )
-    client = ProtocolClient([])
-    client._process = FakeProcess(frame)
+                def json(self_inner):
+                    return {"server_name": "xbotv2", "protocol_version": "xbotv2.v1"}
 
-    await client.send(
-        "user.message",
-        "s",
-        "t",
-        {"content": "当前磁盘用了多少"},
-    )
-    received = await client.read_frame()
+            return Resp()
+
+        def stream(self, method, path, json=None):
+            return self._stream
+
+        async def aclose(self):
+            return None
+
+    client = HttpTransport("http://127.0.0.1:4096")
+    client._client = FakeClient([
+        "event: assistant_message",
+        "id: 1",
+        "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",
+        "",
+        "event: end",
+        "id: 2",
+        "data: {\"type\":\"end\",\"data\":{\"status\":\"ok\"}}",
+        "",
+    ])
+
+    events: list[dict[str, Any]] = []
+    async for event in client.send_message(
+        session_id="s", content="当前磁盘用了多少", request_id="r",
+    ):
+        events.append(event)
+    await client.close()
 
     records = [
         json.loads(line)
         for line in trace_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert received is not None
-    assert [record["stage"] for record in records] == ["protocol.send", "protocol.recv"]
-    assert records[0]["payload"]["frame"]["payload"]["content"] == "当前磁盘用了多少"
-    assert records[1]["payload"]["frame"]["payload"]["content"] == "收到：当前磁盘用了多少"
+    request_records = [
+        r for r in records
+        if r["stage"] == "tui.http" and r["payload"].get("stage") == "messages.request"
+    ]
+    assert request_records, f"missing messages.request trace, got: {records}"
+    assert request_records[0]["payload"]["body"]["content"] == "当前磁盘用了多少"
+
+    assistant_event = events[0]
+    assert assistant_event["type"] == "assistant_message"
+    assert assistant_event["data"]["content"] == "收到：当前磁盘用了多少"
 
 
 def test_curses_client_drains_background_events_without_curses():

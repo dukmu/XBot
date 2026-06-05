@@ -1415,130 +1415,13 @@ class TestRuntimeServerSubprocess:
             await _stop_process(proc)
 
 
-class TestTerminalSessionSubprocess:
-    """Terminal client wrapper roundtrip against JSONL server subprocess."""
-
-    @pytest.mark.asyncio
-    async def test_terminal_session_roundtrip_with_mock_provider(self, tmp_path, monkeypatch):
-        data_dir = _write_mock_data_dir(tmp_path)
-        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
-
-        from xbotv2.tui.terminal import TerminalSession
-
-        session = TerminalSession(
-            data_dir=data_dir,
-            personality_id="default",
-            provider_name="mock",
-            no_plugins=True,
-        )
-        try:
-            await session.connect()
-            events = [event async for event in session.send_message("hello")]
-
-            assert [event["type"] for event in events] == [
-                "turn_started",
-                "assistant_message",
-                "turn_finished",
-            ]
-            assert events[1]["data"]["content"] == "hello from subprocess"
-        finally:
-            await session.disconnect()
-
-    @pytest.mark.asyncio
-    async def test_terminal_session_streams_provider_usage(self, tmp_path, monkeypatch):
-        data_dir = _write_mock_data_dir(
-            tmp_path,
-            mock_responses=[
-                {
-                    "content": "hello with usage",
-                    "response_metadata": {
-                        "token_usage": {
-                            "prompt_tokens": 10,
-                            "completion_tokens": 6,
-                            "total_tokens": 16,
-                        }
-                    },
-                }
-            ],
-        )
-        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
-
-        from xbotv2.tui.terminal import TerminalSession
-
-        session = TerminalSession(
-            data_dir=data_dir,
-            personality_id="default",
-            provider_name="mock",
-            no_plugins=True,
-        )
-        try:
-            await session.connect()
-            events = [event async for event in session.send_message("hello")]
-
-            assert [event["type"] for event in events] == [
-                "turn_started",
-                "assistant_message",
-                "usage",
-                "turn_finished",
-            ]
-            usage = events[2]["data"]
-            assert usage["delta"] == {
-                "input_tokens": 10,
-                "output_tokens": 6,
-                "total_tokens": 16,
-                "requests": 1,
-            }
-            assert usage["total"]["total_tokens"] == 16
-        finally:
-            await session.disconnect()
-
-    @pytest.mark.asyncio
-    async def test_terminal_session_submits_user_input(self, tmp_path, monkeypatch):
-        data_dir = _write_mock_data_dir(
-            tmp_path,
-            tools=["ask_user"],
-            mock_responses=[
-                {
-                    "content": "ask",
-                    "tool_calls": [
-                        {
-                            "name": "ask_user",
-                            "args": {"question": "Proceed?"},
-                            "id": "call_ask",
-                        }
-                    ],
-                },
-                {"content": "finished"},
-            ],
-        )
-        monkeypatch.setenv("PYTHONPATH", _subprocess_pythonpath())
-
-        from xbotv2.tui.terminal import TerminalSession
-
-        session = TerminalSession(
-            data_dir=data_dir,
-            personality_id="default",
-            provider_name="mock",
-            no_plugins=True,
-        )
-        try:
-            await session.connect()
-            events = [
-                event
-                async for event in session.send_message_with_input(
-                    "hello",
-                    input_provider=lambda payload: "yes",
-                )
-            ]
-
-            assert [event["type"] for event in events].count("assistant_message") == 2
-            recorded = next(event for event in events if event["type"] == "user_input_recorded")
-            assert recorded["data"]["status"] == "answered"
-            assert recorded["data"]["pending_interactions"] == []
-            tool_result = next(event for event in events if event["type"] == "tool_result")
-            assert "User answered: yes" in tool_result["data"]["content"]
-        finally:
-            await session.disconnect()
+# TestTerminalSessionSubprocess (stdio subprocess roundtrips) was removed in
+# the v2.2 doc revision (HTTP-only). The same coverage now lives in
+# tests/integration/test_http_transport.py. The remaining
+# TestRuntimeServerSubprocess tests still drive the stdio server via
+# subprocess to exercise the engine's behavior end-to-end, since the
+# stdio transport (xbotv2/protocol/server.py) is kept in the source tree
+# as a legacy alternative for engine integration testing.
 
 
 async def _open_session(proc, *, session_id: str, thread_id: str) -> None:

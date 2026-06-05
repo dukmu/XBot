@@ -314,6 +314,7 @@ class CursesTuiClient:
         session_id: str | None = None,
         thread_id: str = "agent",
         no_plugins: bool = False,
+        server_url: str = "http://127.0.0.1:4096",
     ) -> None:
         self.session = TerminalSession(
             data_dir=data_dir,
@@ -322,6 +323,7 @@ class CursesTuiClient:
             session_id=session_id,
             thread_id=thread_id,
             no_plugins=no_plugins,
+            base_url=server_url,
         )
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
@@ -400,7 +402,7 @@ class CursesTuiClient:
 
     async def _collect_response(self, text: str) -> None:
         try:
-            async for event in self.session.send_message_with_input(
+            async for event in self.session.send_message(
                 text,
                 input_provider=self._answer_live_input,
                 permission_provider=self._answer_live_permission,

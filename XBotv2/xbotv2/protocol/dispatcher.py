@@ -107,6 +107,7 @@ class SessionManager:
         provider_name: str,
         data_dir: str,
         no_plugins: bool,
+        llm_override: Any | None = None,
     ) -> SessionContext:
         async with self._lock:
             existing = self._sessions.get(session_id)
@@ -119,6 +120,7 @@ class SessionManager:
                 session_id=session_id,
                 thread_id=thread_id,
                 plugin_dirs=[] if no_plugins else None,
+                llm_override=llm_override,
             )
             await engine.start_session()
             ctx = SessionContext(

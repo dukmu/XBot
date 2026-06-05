@@ -13,12 +13,17 @@ hooks: []
 sandbox:
   enabled: true
   resources:
+  - path: /
+    access: readonly
   - path: '{{ workspace }}'
     access: readwrite
   - path: '{{ data_dir }}'
     access: readonly
 permissions:
   allow:
+  - tool: shell
+    params:
+      command: ls\ \-l\ /home/shefrin/repo/XBot/docs
   - tool: shell
     params:
       command: df\ \-h
