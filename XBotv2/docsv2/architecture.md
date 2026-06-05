@@ -29,6 +29,18 @@ terminal, and once modes.
 - No DAG, plan, task-mode, skills, or compaction concepts
 - Pure linear execution — works without any plugins
 
+### Session, Thread, and Workspace
+- `session_id` is the durable runtime namespace. It owns persisted events,
+  messages, plugin states, artifacts, pending interactions, and the agent
+  workspace under `sessions/<session_id>/`.
+- `thread_id` is currently correlation metadata carried through protocol
+  frames, hooks, and materialized state. It is not a separate persistence or
+  workspace boundary.
+- `SessionWorkspace` initializes the agent-internal workspace at
+  `sessions/<session_id>/workspace` before session start/resume hooks run.
+  Initialization is idempotent, preserves existing files, and records
+  `workspace_initialized` or `workspace_recovered` events.
+
 ### Hook System (`xbotv2/hooks/`)
 - **42 lifecycle stages**: session, turn/stop, user intake, loop/request,
   compaction, message, permission/tool call, tool batch, persistence, and
@@ -90,6 +102,7 @@ terminal, and once modes.
 - `state.yaml` — materialized view (rebuildable from events)
   - includes `pending_interactions` for unresolved user-input and permission
     requests
+  - includes the latest workspace root, lifecycle, status, and metadata path
 - Plugin states as opaque blobs in `plugin_states/`
 - Session start uses existing events or messages to distinguish resume from a
   brand-new session, so event-only sessions still run `ON_SESSION_RESUME`.

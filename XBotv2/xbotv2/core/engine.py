@@ -26,6 +26,7 @@ from xbotv2.core.interactions import (
     InteractionWaiter,
 )
 from xbotv2.core.state import SessionInfo
+from xbotv2.core.workspace import SessionWorkspace
 from xbotv2.hooks.types import HookContext, HookStage
 
 logger = logging.getLogger("xbotv2.engine")
@@ -55,6 +56,7 @@ class Engine:
         sandbox_policy: Any,  # SandboxPolicy
         permission_system: Any,  # PermissionSystem
         config: Any,  # AgentConfig
+        workspace: SessionWorkspace | None = None,
         max_iterations: int = 50,
     ) -> None:
         self.llm = llm
@@ -65,6 +67,7 @@ class Engine:
         self.sandbox_policy = sandbox_policy
         self.permission_system = permission_system
         self.config = config
+        self.workspace = workspace
         self.max_iterations = max_iterations
 
         # Runtime state (per-session, in-memory)
@@ -91,7 +94,10 @@ class Engine:
             personality_id=self.state_store.personality_id,
         )
 
-        if self.state_store.has_existing_session():
+        existing_session = self.state_store.has_existing_session()
+        self._ensure_workspace("resume" if existing_session else "start")
+
+        if existing_session:
             self._messages = self.state_store.read_messages()
             self._turn_count = self.state_store.read_state().get("turn_count", 0)
             self._session.turn_count = self._turn_count
@@ -115,6 +121,8 @@ class Engine:
             personality_id=self.state_store.personality_id,
             turn_count=self._turn_count,
         )
+
+        self._ensure_workspace("explicit_resume")
 
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
@@ -745,6 +753,14 @@ class Engine:
         self.state_store.materialize()
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
+
+    def _ensure_workspace(self, lifecycle: str) -> None:
+        """Ensure the session workspace exists before lifecycle hooks run."""
+        if self.workspace is None:
+            return
+        status = self.workspace.ensure(lifecycle)  # type: ignore[arg-type]
+        self.state_store.append_event(status.event_type(), status.to_event_payload())
+        self.state_store.materialize()
 
     async def _handle_user_input_request(
         self,

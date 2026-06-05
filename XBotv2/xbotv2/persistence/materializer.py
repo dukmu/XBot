@@ -45,6 +45,7 @@ def build_materialized_state(
     acked = sum(1 for e in events if e.get("type") == "mailbox_acknowledge")
     mailbox_pending = max(0, sent - acked)
     pending_interactions = _pending_interactions(events)
+    workspace = _workspace_state(events)
 
     return {
         "schema_version": schema_version,
@@ -57,6 +58,7 @@ def build_materialized_state(
         "status": status,
         "mailbox_pending": mailbox_pending,
         "pending_interactions": pending_interactions,
+        "workspace": workspace,
         "plugin_states": plugin_states,
         "artifacts_root": artifacts_root,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -98,3 +100,20 @@ def _pending_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             pending.pop(str(request_id), None)
 
     return list(pending.values())
+
+
+def _workspace_state(events: list[dict[str, Any]]) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
+    for event in events:
+        if event.get("type") not in {"workspace_initialized", "workspace_recovered"}:
+            continue
+        payload = event.get("payload") or {}
+        latest = {
+            "root": payload.get("workspace_root", ""),
+            "metadata_path": payload.get("metadata_path", ""),
+            "lifecycle": payload.get("lifecycle", ""),
+            "status": payload.get("status", ""),
+            "event_id": event.get("event_id"),
+            "updated_at": event.get("ts", ""),
+        }
+    return latest

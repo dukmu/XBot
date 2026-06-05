@@ -129,6 +129,7 @@ class TestMaterialization:
         assert state["status"] == "error"
         assert state["mailbox_pending"] == 1
         assert state["pending_interactions"] == []
+        assert state["workspace"] == {}
         assert state["plugin_states"] == {"plugin_a": {"enabled": True}}
 
     def test_materialize_reflects_events(self, temp_data_dir):
@@ -335,6 +336,51 @@ class TestMaterialization:
 
         assert state["status"] == "closed"
         assert state["pending_interactions"] == []
+
+    def test_workspace_state_uses_latest_workspace_event(self):
+        """Materialized state exposes the latest workspace lifecycle event."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            personality_id="default",
+            events=[
+                {
+                    "event_id": 1,
+                    "ts": "2026-01-01T00:00:00+00:00",
+                    "type": "workspace_initialized",
+                    "payload": {
+                        "workspace_root": "/tmp/old",
+                        "metadata_path": "/tmp/old/.xbot/workspace.yaml",
+                        "lifecycle": "start",
+                        "status": "created",
+                    },
+                },
+                {
+                    "event_id": 2,
+                    "ts": "2026-01-01T00:01:00+00:00",
+                    "type": "workspace_recovered",
+                    "payload": {
+                        "workspace_root": "/tmp/new",
+                        "metadata_path": "/tmp/new/.xbot/workspace.yaml",
+                        "lifecycle": "resume",
+                        "status": "recovered",
+                    },
+                },
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["workspace"] == {
+            "root": "/tmp/new",
+            "metadata_path": "/tmp/new/.xbot/workspace.yaml",
+            "lifecycle": "resume",
+            "status": "recovered",
+            "event_id": 2,
+            "updated_at": "2026-01-01T00:01:00+00:00",
+        }
 
 
 class TestPluginState:

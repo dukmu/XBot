@@ -194,6 +194,12 @@ remain outside the Phase 1-3 freeze gate.
   `thread_id` before constructing config or session paths. Protocol
   `session.open` fails closed for path-like identifiers, preventing traversal
   outside the configured `sessions/` root.
+- Added an explicit `SessionWorkspace` lifecycle manager. `session_id` remains
+  the durable state/workspace namespace and `thread_id` remains correlation
+  metadata. The manager initializes `sessions/<session_id>/workspace` before
+  start/resume hooks, preserves existing files, recreates missing resume
+  workspaces, records `workspace_initialized` / `workspace_recovered` events,
+  and materializes workspace metadata in `state.yaml`.
 - `test_protocol.py` also launches the non-curses `TerminalSession` wrapper
   against that server subprocess and verifies the client wrapper message
   roundtrip with a deterministic mock provider.

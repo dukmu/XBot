@@ -81,6 +81,34 @@ Sandboxed tool execution resolves path-like arguments to the configured
 workspace before invoking the tool, so relative paths are not interpreted
 against the process working directory.
 
+## Session Workspace
+
+The core keeps the current one-level persistence model: `session_id` is the
+durable namespace, while `thread_id` is correlation metadata. A session's state
+lives under `sessions/<session_id>/state`; its agent-internal workspace lives
+under `sessions/<session_id>/workspace`.
+
+Bootstrap wires a `SessionWorkspace` into the engine. `Engine.start_session()`
+first decides whether the store is a new session or a resume from existing
+events/messages, then initializes the workspace before running
+`ON_SESSION_START` or `ON_SESSION_RESUME`. This order prevents the
+`workspace_initialized` event from turning a brand-new session into a resume.
+
+Workspace initialization is idempotent:
+
+```
+workspace/
+  .xbot/workspace.yaml
+  files/
+  tmp/
+```
+
+Existing files are preserved. If a resumed session has lost its workspace or
+metadata file, the manager recreates the layout and records
+`workspace_recovered`; otherwise it records `workspace_initialized`.
+`state.yaml` materializes the latest workspace root, metadata path, lifecycle,
+and status for clients and plugins.
+
 ## With Plugins
 
 Plugins extend the engine by:
@@ -162,6 +190,7 @@ All significant state changes are recorded as append-only events:
 - `mailbox_send`, `mailbox_acknowledge` — inter-agent messages
 - `hook_event` — hook-emitted events
 - `tool_result_cached` — large tool output persisted to artifacts and truncated inline
+- `workspace_initialized`, `workspace_recovered` — session workspace lifecycle
 
 `state.yaml` status is rebuilt from ordered events. A new `turn_started`
 reactivates prior `error` or `interrupted` sessions, while `turn_finished`

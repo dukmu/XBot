@@ -32,6 +32,7 @@ from xbotv2.hooks.types import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.plugin.loader import _DefaultPlugin, resolve_dependencies as _resolve_dependencies
+from xbotv2.core.workspace import SessionWorkspace
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -139,10 +140,18 @@ async def bootstrap(
         )
 
     # 5. Create SandboxPolicy + PermissionSystem
+    session_root = config_dir / "sessions" / session_id
+    workspace_root = session_root / "workspace"
     sandbox = SandboxPolicy(
         agent_config.sandbox,
         data_root=config_dir,
-        workspace_root=config_dir / "sessions" / session_id / "workspace",
+        workspace_root=workspace_root,
+    )
+    workspace = SessionWorkspace(
+        workspace_root,
+        session_id=session_id,
+        thread_id=thread_id,
+        base_root=session_root,
     )
     permissions = PermissionSystem(agent_config.permissions)
 
@@ -198,6 +207,7 @@ async def bootstrap(
         context_builder=context_builder,
         sandbox_policy=sandbox,
         permission_system=permissions,
+        workspace=workspace,
         config=agent_config,
     )
 
