@@ -53,7 +53,7 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
         color = "cyan" if message.role == "user" else "green"
         text = Text()
         text.append(f"{label}\n", style=f"bold {color}")
-        text.append(f"{message.content}\n")
+        text.append(message.content)
         return text
     if kind == "tool":
         tool = state.tools.get(key)
@@ -66,7 +66,7 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
         if tool.args_preview:
             text.append(f"args: {tool.args_preview}\n", style="dim")
         if tool.summary:
-            text.append(f"result: {tool.summary}\n")
+            text.append(f"result: {tool.summary}")
         return text
     if kind == "notice":
         try:
@@ -75,7 +75,7 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
             return None
         text = Text()
         text.append(f"{notice.kind}\n", style="bold magenta")
-        text.append(f"{notice.text}\n")
+        text.append(notice.text)
         return text
     if kind == "error":
         try:
@@ -84,6 +84,6 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
             return None
         text = Text()
         text.append("Error\n", style="bold red")
-        text.append(f"{error}\n", style="red")
+        text.append(error, style="red")
         return text
     return None

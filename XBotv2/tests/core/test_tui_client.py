@@ -188,8 +188,8 @@ def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
 
     assert first is not None
     assert second is not None
-    assert first.plain == "You\n你好 [不要解析] 中文\n"
-    assert second.plain == "助手\n收到：中文正常显示\n"
+    assert first.plain == "You\n你好 [不要解析] 中文"
+    assert second.plain == "助手\n收到：中文正常显示"
 
 
 def test_curses_client_drains_background_events_without_curses():

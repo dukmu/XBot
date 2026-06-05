@@ -492,10 +492,34 @@ def _permission_client_event(
             "source": source,
             "tool_call": tool_call,
             "decision": decision,
-            "reason": reason,
+            "reason": _client_visible_permission_reason(
+                tool_call,
+                reason,
+                source=source,
+            ),
             "resume_supported": False,
         },
     }
+
+
+def _client_visible_permission_reason(
+    tool_call: dict[str, Any],
+    reason: str,
+    *,
+    source: str,
+) -> str:
+    """Return permission text suitable for live clients."""
+    tool_name = str(tool_call.get("name") or "tool")
+    if source == "sandbox" and reason.startswith("Path approval required"):
+        path = reason.rsplit(": ", 1)[-1] if ": " in reason else ""
+        if path and path != reason:
+            return f"Path approval required for {tool_name}: {path}"
+        return f"Path approval required for {tool_name}."
+    if "No live permission handler is available" in reason:
+        return f"Permission approval required for tool: {tool_name}."
+    if "fails closed" in reason:
+        return reason.replace(" This call fails closed.", "").replace(" fails closed.", ".")
+    return reason
 
 
 def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[str, Any]:

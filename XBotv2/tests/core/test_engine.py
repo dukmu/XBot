@@ -995,6 +995,7 @@ class TestEngineHooks:
         assert permission_event["data"]["tool_call"]["name"] == "echo"
         assert permission_event["data"]["request_id"] == "permission:c1"
         assert permission_event["data"]["source"] == "permission_system"
+        assert "No live permission handler" not in permission_event["data"]["reason"]
         assert permission_event["data"]["resume_supported"] is False
         assert state_store.read_state()["pending_interactions"][0]["request_id"] == "permission:c1"
 
