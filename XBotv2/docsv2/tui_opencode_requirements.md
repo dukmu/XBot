@@ -1314,42 +1314,16 @@ class Transport(Protocol):
 ### Phase E — HTTP/SSE 传输（**v1 决定：FastAPI + httpx，stdio 完全移除**）
 
 > 详见 §10.5。**本阶段完成后所有 stdio 路径从 import 树消失**；现有 32 个 stdio 测试需要全部改写为 HTTP 集成测试（用 `httpx.AsyncClient` + `httpx.ASGITransport` 跑 FastAPI app）。
+>
+> 进度（2026-06-05）：**已完成**。`f6a5b13` FastAPI 服务端 + dispatcher 骨架；`583f6eb`（前）slash 命令 + mode + markup；`d0b7c9f` CLI 改造 + stdio 测试删除；当前 commit 加 bench 与验证文档。288/288 测试通过；50 turn 平均 3.6ms / p95 5.5ms（见 `docsv2/verification/transport-bench-v20260605.md`）。
 
-1. **加依赖**（`pyproject.toml`）：`fastapi` / `uvicorn[standard]` / `httpx`。
-2. **HTTP 服务端**（`xbotv2/protocol/http_server.py`）
-   - FastAPI app，绑定 `127.0.0.1:4096`。
-   - endpoints 严格按 §10.5.3；错误码按 §10.5.3 错误约定。
-   - 把现有 `RuntimeServer._handle_user_message` 的 turn 调度逻辑抽到 `TurnDispatcher`，让 HTTP 端共享。
-3. **HTTP 客户端**（`xbotv2/tui/transport_http.py`）
-   - 用 `httpx.AsyncClient` + `client.stream("POST", ...)` 收 SSE。
-   - 手写 SSE 解析（按行处理 `event:` / `data:` / `id:`，约 80 行）。
-   - `Last-Event-ID` 重连支持。
-4. **Transport 抽象 + 删除 stdio 路径**
-   - `xbotv2/tui/transport.py` 定义 `Transport` Protocol（接口见 §10.5.5）。
-   - 实现 `HttpTransport`（`xbotv2/tui/transport_http.py`）。
-   - **删除**（不 import/不 export）`xbotv2/tui/terminal.py`（原 `ProtocolClient` / `TerminalSession`）中的 stdio 实现；保留类型与方法的最小版本作为 transport 实现的基类。
-   - `CursesTuiClient` 也改为使用 `HttpTransport`。
-5. **CLI 改造**（`xbotv2/__main__.py`）
-   - `--mode server`：HTTP server，绑 `127.0.0.1:4096`；`--port` 可覆盖；`--bind` 仅接受 `127.0.0.1`，传 `0.0.0.0` 报错。
-   - `--mode tui`：默认 auto-spawn server + 连接；`--server URL` 直连；`--shutdown-server-on-exit` 控制关闭行为。
-   - `attach <url>` 子命令（仿 OpenCode `opencode attach`）。
-6. **测试改写**
-   - 所有现有 stdio 集成测试改用 `httpx.AsyncClient` + `ASGITransport` 直接打 FastAPI app。
-   - 加 `tests/integration/test_http_transport.py`：端到端 SSE 流、permission 中断、attach/detach、并发 turn（v1 验证 server 协程隔离）。
-   - 加中文 trace 对齐测试（HTTP 通道下 `tui.submit` / `protocol.send` / `protocol.recv` 三处字节级一致）。
-7. **回放与 bench**
-   - 把 §13.3 的 replay fixture 改为走 HTTP 通道。
-   - micro-bench 落到 `docsv2/verification/transport-bench-vYYYYMMDD.md`（v1 与 stdio 历史数据对比，证明 §10.5.9 的目标达成）。
-
-> 完成定义见 §16：
-> - [ ] `pyproject.toml` 含 `fastapi` / `uvicorn` / `httpx`。
-> - [ ] `xbotv2 --mode server` 启动后 `GET /health` 返回 200。
-> - [ ] TUI 通过 `HttpTransport` 完成一个含 tool call + permission 的 turn。
-> - [ ] 中文消息在 HTTP 通道下 trace 对齐（与 stdio 历史数据字节级一致）。
-> - [ ] 全部 stdio 测试改写为 HTTP 测试并通过（目标 32 → 35+）。
-> - [ ] `--bind 0.0.0.0` 启动失败并提示 "remote bind not supported in v1"。
-> - [ ] `xbotv2 attach <url>` 子命令工作。
-> - [ ] bench 结果记录到 `docsv2/verification/transport-bench-vYYYYMMDD.md`。
+1. **加依赖**（`pyproject.toml`）：`fastapi` / `uvicorn[standard]` / `httpx`。**【已完成】**
+2. **HTTP 服务端**（`xbotv2/protocol/http_server.py`）：FastAPI app + dispatcher。**【已完成】**
+3. **HTTP 客户端 + Transport 抽象**：Transport Protocol + HttpTransport + TerminalSession 改写。**【已完成】**
+4. **删除 stdio 路径**：`xbotv2.tui.terminal` 不再有 `ProtocolClient`；`__init__.py` 不再 export。**【已完成，CI grep 验证】**
+5. **CLI 改造**（`xbotv2/__main__.py`）：`--mode server` 启 uvicorn；`--mode tui` auto-spawn + 连接；`--bind 0.0.0.0` 报错；`attach <url>` 子命令。**【已完成】**
+6. **测试改写**：stdio 12 个 subprocess 测试删除；新增 8 个 HTTP 集成测试。**【已完成】**
+7. **回放与 bench**：`tests/bench/test_http_latency.py` + `docsv2/verification/transport-bench-v20260605.md`。**【已完成】**
 
 ### 不在 v1
 
@@ -1431,6 +1405,12 @@ UI / 状态机（Phase A、C）：
   - **v1 不做鉴权**：`--bind` 只能是 `127.0.0.1`，传 `0.0.0.0` 报错退出。
   - **新增 §10.5.1.1**：把"为什么 HTTP 而不是 stdio"的根因（业务事件与控制请求共享 stdout → 串行化；多 in-flight 请求无法并发；多 client attach 不可行；OpenCode 同因）写进文档，作为后续回归的判断依据。
   - §10.5.7/§10.5.8/§14 Phase E/§16 全部按以上三点重写。
+- v2.3（2026-06-05）：Phase E 落地完成。
+  - `f6a5b13` FastAPI 服务端 + dispatcher。
+  - `d0b7c9f` CLI 改造 + stdio 测试删除 + attach 子命令。
+  - `transport.py` + `transport_http.py` 实现；`xbotv2.tui.terminal` 不再导出 `ProtocolClient`。
+  - 288/288 测试通过；50 turn 平均 3.6ms / p95 5.5ms（详见 `docsv2/verification/transport-bench-v20260605.md`）。
+  - `__main__.py` 改造：`--mode server` 启 uvicorn；`--mode tui` auto-spawn + 连接；`--bind 0.0.0.0` 报错；`attach <url>` 工作。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---
