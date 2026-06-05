@@ -40,7 +40,7 @@ from xbotv2.tui.trace import trace_event
 
 
 class TextualTuiClient:
-    """Run the Textual UI over the JSONL protocol client/server boundary."""
+    """Run the Textual UI over the HTTP/SSE transport (Phase E)."""
 
     def __init__(
         self,
@@ -50,6 +50,7 @@ class TextualTuiClient:
         session_id: str | None = None,
         thread_id: str = "agent",
         no_plugins: bool = False,
+        base_url: str = "http://127.0.0.1:4096",
     ) -> None:
         self.app = XBotTextualApp(
             data_dir=data_dir,
@@ -58,6 +59,7 @@ class TextualTuiClient:
             session_id=session_id,
             thread_id=thread_id,
             no_plugins=no_plugins,
+            base_url=base_url,
         )
 
     async def run(self) -> None:
@@ -176,6 +178,7 @@ class XBotTextualApp(App[None]):
         session_id: str | None,
         thread_id: str,
         no_plugins: bool,
+        base_url: str = "http://127.0.0.1:4096",
     ) -> None:
         super().__init__()
         self.session = TerminalSession(
@@ -185,6 +188,7 @@ class XBotTextualApp(App[None]):
             session_id=session_id,
             thread_id=thread_id,
             no_plugins=no_plugins,
+            base_url=base_url,
         )
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()

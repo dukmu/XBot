@@ -2,23 +2,33 @@
 
 Usage:
     python main.py                              # Interactive terminal mode
-    python main.py --mode tui                   # Textual protocol TUI
-    python main.py --mode server                # JSONL stdio server
+    python main.py --mode tui                   # Textual TUI (auto-spawns HTTP server)
+    python main.py --mode server                # HTTP/SSE server (default 127.0.0.1:4096)
+    python main.py attach <url>                 # Connect TUI to an existing HTTP server
     python main.py --mode once "prompt"         # Single-shot query
-    python main.py --provider deepseek          # Use DeepSeek provider
 
 Options:
     --data-dir PATH     Data directory (default: data)
     --personality ID    Personality to use (default: default)
     --provider NAME     Provider config to use (default: default)
-    --mode MODE         Run mode: server, terminal, tui, curses, once
+    --mode MODE         Run mode: server, terminal, tui, curses, once, attach
+    --bind HOST         Server bind address (must be 127.0.0.1 in v1)
+    --port PORT         Server port (default: 4096)
+    --server URL        Use a specific HTTP server URL (TUI mode only)
+    --no-plugins        Disable plugin discovery for pure-core runs
     --help              Show this help
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
+import os
+import signal
+import subprocess
 import sys
 import uuid
+import webbrowser
 from pathlib import Path
 
 
@@ -58,9 +68,29 @@ def main():
         help="Run mode (default: terminal)",
     )
     parser.add_argument(
-        "prompt", nargs="?", default=None, help="Single-shot prompt (for --mode once)"
+        "--bind",
+        default="127.0.0.1",
+        help="Server bind address (must be 127.0.0.1 in v1; see doc §10.5.7)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=4096,
+        help="Server port (default: 4096, matches OpenCode)",
+    )
+    parser.add_argument(
+        "--server",
+        default=None,
+        help="TUI mode only: connect to a specific HTTP server URL instead of auto-spawning",
+    )
+    parser.add_argument(
+        "prompt", nargs="?", default=None, help="Single-shot prompt (for --mode once) or attach URL"
     )
     args = parser.parse_args()
+
+    if args.prompt and args.prompt.startswith("http"):
+        # `python main.py attach http://...` style: first arg looks like a URL
+        return _run_attach(args, args.prompt)
 
     if args.mode == "server":
         _run_server(args)
@@ -76,25 +106,59 @@ def main():
         parser.print_help()
 
 
-def _run_server(args):
-    """Run the JSONL stdio server (for C/S mode with TUI clients)."""
-    from xbotv2.protocol.server import run_stdio_server
+def _run_server(args) -> None:
+    """Run the HTTP/SSE server with uvicorn (v1: loopback only)."""
 
-    asyncio.run(run_stdio_server(
-        data_dir=args.data_dir,
+    if args.bind != "127.0.0.1":
+        print(
+            f"Error: --bind {args.bind} is not supported in v1; "
+            "use 127.0.0.1 only (see docsv2 §10.5.7).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        import uvicorn
+    except ImportError as exc:  # noqa: BLE001
+        print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    from xbotv2.protocol.http_server import create_app
+
+    app = create_app(
         personality_id=args.personality,
         provider_name=args.provider,
+        data_dir=args.data_dir,
         no_plugins=args.no_plugins,
-    ))
+    )
+    uvicorn.run(
+        app,
+        host=args.bind,
+        port=args.port,
+        log_level="warning",
+    )
 
 
-def _run_terminal(args):
-    """Run interactive terminal mode using direct engine."""
-    asyncio.run(_terminal_loop(args))
+def _run_tui(args) -> None:
+    """Run the Textual TUI; auto-spawn an HTTP server unless --server is given."""
 
+    server_url = args.server
+    spawned_server: subprocess.Popen | None = None
 
-def _run_tui(args):
-    """Run Textual TUI over the JSONL protocol client/server boundary."""
+    if server_url is None:
+        # Auto-spawn a server subprocess and wait for /health.
+        server_url = f"http://127.0.0.1:{args.port}"
+        spawned_server = _spawn_server(args)
+        if not _wait_for_health(server_url, timeout=15.0):
+            print(
+                f"Error: spawned server at {server_url} did not become healthy",
+                file=sys.stderr,
+            )
+            if spawned_server is not None:
+                spawned_server.terminate()
+                spawned_server.wait()
+            sys.exit(2)
+
     from xbotv2.tui.textual_client import TextualTuiClient
 
     client = TextualTuiClient(
@@ -104,12 +168,97 @@ def _run_tui(args):
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         no_plugins=args.no_plugins,
+        base_url=server_url,
+    )
+    try:
+        asyncio.run(client.run())
+    finally:
+        if spawned_server is not None:
+            spawned_server.terminate()
+            try:
+                spawned_server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                spawned_server.kill()
+
+
+def _run_attach(args, url: str) -> None:
+    """Connect the TUI to a running HTTP server at ``url``."""
+
+    from xbotv2.tui.textual_client import TextualTuiClient
+
+    client = TextualTuiClient(
+        data_dir=args.data_dir,
+        personality_id=args.personality,
+        provider_name=args.provider,
+        session_id=getattr(args, "session", None),
+        thread_id=getattr(args, "thread", "agent"),
+        no_plugins=args.no_plugins,
+        base_url=url,
     )
     asyncio.run(client.run())
 
 
+def _spawn_server(args) -> subprocess.Popen:
+    """Launch an HTTP server as a subprocess and return the Popen handle."""
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _spawn_pythonpath()
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--data-dir", args.data_dir,
+        "--personality", args.personality,
+        "--provider", args.provider,
+        "--mode", "server",
+        "--bind", args.bind,
+        "--port", str(args.port),
+    ]
+    if args.no_plugins:
+        cmd.append("--no-plugins")
+    return subprocess.Popen(
+        cmd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=None,
+    )
+
+
+def _wait_for_health(url: str, *, timeout: float) -> bool:
+    """Poll GET /health until 200 or timeout."""
+
+    import httpx
+
+    deadline = asyncio.get_event_loop().time() + timeout if asyncio.get_event_loop().is_running() else None
+    # Simple synchronous polling loop to keep the boot path linear.
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            response = httpx.get(f"{url}/health", timeout=1.0)
+            if response.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return False
+
+
+def _spawn_pythonpath() -> str:
+    paths = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parent.parent)]
+    existing = os.environ.get("PYTHONPATH")
+    if existing:
+        paths.append(existing)
+    return os.pathsep.join(paths)
+
+
+def _run_terminal(args):
+    """Run interactive terminal mode using direct engine."""
+    asyncio.run(_terminal_loop(args))
+
+
 def _run_curses(args):
-    """Run the legacy curses TUI over the JSONL protocol boundary."""
+    """Run the legacy curses TUI over the HTTP server boundary."""
     from xbotv2.tui.client import CursesTuiClient
 
     client = CursesTuiClient(
@@ -119,6 +268,7 @@ def _run_curses(args):
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         no_plugins=args.no_plugins,
+        server_url=f"http://{args.bind}:{args.port}",
     )
     asyncio.run(client.run())
 

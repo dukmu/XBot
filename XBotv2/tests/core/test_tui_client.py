@@ -347,6 +347,8 @@ def test_mode_curses_uses_legacy_curses_client():
         personality="default",
         provider="default",
         no_plugins=True,
+        bind="127.0.0.1",
+        port=4096,
     )
 
     with patch("xbotv2.tui.client.CursesTuiClient") as client_cls:
