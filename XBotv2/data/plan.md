@@ -38,8 +38,9 @@ XBotv2/
     protocol/                  # JSONL protocol (ported from XBot)
       server.py                # Stdio JSONL server
       frames.py                # ProtocolFrame, ProtocolEncoder
-    tui/                       # TUI clients (ported from XBot)
-      client.py                # Curses TUI client
+    tui/                       # Protocol-only TUI clients
+      textual_client.py        # Default Textual full-screen TUI client
+      client.py                # Legacy curses TUI fallback
       terminal.py              # Non-curses terminal client
     persistence/               # State persistence
       store.py                 # CoreStateStore (append-only JSONL)
@@ -443,7 +444,8 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
   plugin discovery so Phase 1-3 core smoke tests remain independent of future
   built-in plugin manifests
 - `provider: mock` — deterministic provider used for server subprocess smoke tests
-- `CursesTuiClient` — background reader thread + curses event loop
+- `TextualTuiClient` — default full-screen TUI over the JSONL protocol
+- `CursesTuiClient` — legacy background reader thread + curses event loop
 - `TerminalClientSession` — async readline loop
 
 **Boundary preserved**: TUI clients never import LangChain, LangGraph, or runtime modules.
@@ -508,10 +510,11 @@ The JSONL protocol is the best-isolated part of current XBot. XBotv2 copies the 
 ### Phase 3: Protocol & TUI
 
 - Implement `xbotv2/protocol/` — port from XBot (ProvenFrame, ProtocolEncoder)
-- Implement `xbotv2/tui/` — port from XBot (CursesTuiClient, TerminalClientSession)
+- Implement `xbotv2/tui/` — protocol clients
+  (TextualTuiClient, CursesTuiClient, TerminalClientSession)
 - Implement `xbotv2/protocol/server.py` — JSONL stdio server
 - Write protocol/server tests → **protocol tests pass**
-- Curses TUI/client state and boundary coverage → **TUI tests pass**
+- Textual/curses TUI client state and boundary coverage → **TUI tests pass**
 
 ### Phase 4: Plugin Migration (one at a time)
 

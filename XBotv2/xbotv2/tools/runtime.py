@@ -301,8 +301,9 @@ async def execute_tools(
                     # Simple serialization for sequential tools
                     pass
 
-            # Execute
-            if hasattr(tool, "ainvoke"):
+            # Execute. LangChain StructuredTool.ainvoke can hang for sync
+            # tools in some dependency combinations; use invoke for sync tools.
+            if getattr(tool, "coroutine", None) is not None and hasattr(tool, "ainvoke"):
                 result = await tool.ainvoke(args)
             elif hasattr(tool, "invoke"):
                 result = tool.invoke(args)
@@ -390,7 +391,6 @@ async def execute_tools(
         await hook_manager.run(HookStage.POST_TOOL_BATCH, ctx, short_circuit=False)
 
     return results
-
 
 def has_tool_calls(messages: list[BaseMessage]) -> bool:
     """Check if the last AI message has pending tool calls."""

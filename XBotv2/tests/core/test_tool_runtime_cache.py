@@ -31,6 +31,30 @@ def failing_tool() -> str:
 
 
 @pytest.mark.asyncio
+async def test_sync_langchain_tool_uses_invoke_not_ainvoke(monkeypatch):
+    @langchain_tool
+    def sync_tool(message: str) -> str:
+        """Return a deterministic value."""
+        return f"ok:{message}"
+
+    async def broken_ainvoke(*args, **kwargs):
+        raise AssertionError("sync tools should not use ainvoke")
+
+    monkeypatch.setattr(type(sync_tool), "ainvoke", broken_ainvoke)
+    registry = ToolRegistry()
+    registry.register(sync_tool, sandbox_mode="host")
+
+    results = await execute_tools(
+        [{"name": "sync_tool", "args": {"message": "hello"}, "id": "c1"}],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "success"
+    assert results[0].content == "ok:hello"
+
+
+@pytest.mark.asyncio
 async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     registry = ToolRegistry()
     registry.register(filesystem_write, sandbox_mode="sandboxed")

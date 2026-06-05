@@ -74,8 +74,12 @@ smoke tests. Default runtime mode still scans the built-in plugin root.
   `error`; `send_message_with_input()` can answer live `ask_user` requests
   through an input provider. Helper methods remain for standalone
   `user.input` and `permission.response` commands.
-- `CursesTuiClient` consumes protocol events only; it does not import runtime,
-  core, LangChain, or LangGraph modules.
+- `TextualTuiClient` is the default `--mode tui` frontend. It consumes protocol
+  events only through `TerminalSession`, uses the same `user.input` and
+  `permission.response` command surface for live interactions, and does not
+  import runtime, core, LangChain, or LangGraph modules.
+- `CursesTuiClient` remains available as the legacy `--mode curses` fallback
+  and follows the same protocol-only boundary.
 - `TuiState` renders assistant messages, tool calls/results, errors, client
   notices, approval requests, denials, user-input requests, and recorded
   response acknowledgements.

@@ -351,6 +351,54 @@ class TestRuntimeServerSubprocess:
     """End-to-end JSONL stdio server roundtrip."""
 
     @pytest.mark.asyncio
+    async def test_server_turn_wait_observes_disconnect_event(self, tmp_path):
+        """Connection EOF cancels a running turn even outside live input waits."""
+        server = RuntimeServer(data_dir=tmp_path, provider_name="mock", no_plugins=True)
+        server._client_frames = asyncio.Queue()
+        server._disconnect_event = asyncio.Event()
+
+        async def blocked_turn():
+            await asyncio.sleep(60)
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        server._disconnect_event.set()
+
+        event = await server._next_turn_event_or_disconnect(blocked_turn())
+
+        assert event is None
+        assert server._stop_requested is True
+
+    @pytest.mark.asyncio
+    async def test_server_live_interaction_wait_returns_disconnected_on_eof(self, tmp_path):
+        """Live ask/permission waits consume the queued EOF sentinel as disconnect."""
+        server = RuntimeServer(data_dir=tmp_path, provider_name="mock", no_plugins=True)
+        server._client_frames = asyncio.Queue()
+        server._disconnect_event = asyncio.Event()
+        await server._client_frames.put((None, None))
+        server._disconnect_event.set()
+
+        class DummyWriter:
+            def write(self, data):
+                raise AssertionError("disconnect should not emit an ack")
+
+            async def drain(self):
+                raise AssertionError("disconnect should not drain")
+
+        result = await server._wait_for_live_interaction(
+            writer=DummyWriter(),
+            request_id="user_input:c1",
+            client_event={"type": "user_input_required", "data": {}},
+            timeout_seconds=None,
+        )
+
+        assert result == {
+            "request_id": "user_input:c1",
+            "status": "disconnected",
+            "reason": "client_disconnected",
+        }
+        assert server._stop_requested is True
+
+    @pytest.mark.asyncio
     async def test_runtime_server_no_plugins_passes_empty_plugin_dirs(
         self, tmp_path, monkeypatch
     ):
@@ -931,10 +979,11 @@ class TestRuntimeServerSubprocess:
                 frame = await _read_frame(proc)
                 frames.append(frame)
                 if frame.type == "user_input_required":
-                    proc.stdin.close()
+                    await _disconnect_process_client(proc)
                     break
 
-            await asyncio.wait_for(proc.wait(), timeout=5)
+            await _wait_process_exit_or_stop(proc, timeout=10)
+            await _drain_process_pipes(proc)
             assert [frame.type for frame in frames].count("assistant_message") == 1
             state_path = data_dir / "sessions" / "s-disconnect" / "state" / "state.yaml"
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
@@ -1009,10 +1058,11 @@ class TestRuntimeServerSubprocess:
                 frame = await _read_frame(proc)
                 frames.append(frame)
                 if frame.type == "permission_request":
-                    proc.stdin.close()
+                    await _disconnect_process_client(proc)
                     break
 
-            await asyncio.wait_for(proc.wait(), timeout=5)
+            await _wait_process_exit_or_stop(proc, timeout=10)
+            await _drain_process_pipes(proc)
             assert [frame.type for frame in frames].count("assistant_message") == 1
             assert not any(frame.type == "client_message" for frame in frames)
             state_path = data_dir / "sessions" / "s-perm-drop" / "state" / "state.yaml"
@@ -1248,6 +1298,36 @@ async def _stop_process(proc) -> None:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+    await _drain_process_pipes(proc)
+
+
+async def _wait_process_exit_or_stop(proc, *, timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while proc.returncode is None and loop.time() < deadline:
+        await asyncio.sleep(0.05)
+    if proc.returncode is None:
+        await _stop_process(proc)
+        raise asyncio.TimeoutError
+
+
+async def _disconnect_process_client(proc) -> None:
+    if proc.stdin is not None and not proc.stdin.is_closing():
+        proc.stdin.close()
+        await proc.stdin.wait_closed()
+    stdout_transport = getattr(proc.stdout, "_transport", None)
+    if stdout_transport is not None:
+        stdout_transport.close()
+
+
+async def _drain_process_pipes(proc) -> None:
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            await asyncio.wait_for(pipe.read(), timeout=1)
+        except (asyncio.TimeoutError, ValueError):
+            continue
 
 
 def _subprocess_pythonpath() -> str:

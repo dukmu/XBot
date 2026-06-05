@@ -207,6 +207,11 @@ remain outside the Phase 1-3 freeze gate.
   replayable `TuiState`, background event queue draining, and a `--mode tui`
   CLI entrypoint. Core tests cover frame application, rendering, queue draining,
   interaction-event rendering, and the TUI/runtime dependency boundary.
+- Upgraded the default `--mode tui` frontend to a Textual full-screen protocol
+  client. It connects through `TerminalSession` to the JSONL server, keeps the
+  same C/S boundary, routes live `ask_user` and permission responses through
+  the standard protocol, and leaves the old curses client available as
+  `--mode curses`.
 - Added `docsv2/protocol.md` to document Phase 1-3 protocol events,
   interaction semantics, and client coverage.
 

@@ -135,6 +135,11 @@ terminal, and once modes.
 - `TerminalSession` passes through server events until `turn_finished` or
   `error`, can answer live `ask_user` requests through an input provider, and
   can submit permission responses.
+- `TextualTuiClient` is the default full-screen `--mode tui` frontend. It is a
+  standard protocol client that launches/connects to the JSONL server through
+  `TerminalSession`; it does not import runtime or engine modules.
+- `CursesTuiClient` remains available as `--mode curses` for fallback and
+  boundary regression coverage.
 - `TuiState` renders assistant messages, tool activity, errors, client notices,
   approvals, denials, user-input requests, and interaction response
   acknowledgements without importing runtime code.

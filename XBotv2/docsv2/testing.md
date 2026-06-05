@@ -19,7 +19,7 @@ tests/
     test_bootstrap.py       # Bootstrap sequence
     test_plugin_loader.py   # PluginLoader discovery, deps, manifest fragments, atomic failure rollback, unload cleanup
     test_protocol.py        # Protocol frames, provider config, subprocess server, interaction events/responses, and terminal wrapper roundtrips
-    test_tui_client.py      # Curses TUI state, interaction rendering, queue drain, and runtime import boundary
+    test_tui_client.py      # TUI state, Textual/curses interaction routing, queue drain, and runtime import boundary
   plugins/                  # Per-plugin tests (loads only that plugin)
     planning/
     compact/
@@ -105,7 +105,7 @@ uv run pytest XBotv2/tests/core/test_plugin_loader.py XBotv2/tests/core/test_sta
 # JSONL protocol, stdio server subprocess, and terminal wrapper roundtrips
 uv run pytest XBotv2/tests/core/test_protocol.py -q
 
-# Curses TUI state and import boundary coverage
+# Textual and curses TUI state/import-boundary coverage
 uv run pytest XBotv2/tests/core/test_tui_client.py -q
 
 # Protocol interaction events and terminal wrapper roundtrips

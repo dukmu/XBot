@@ -6,6 +6,7 @@ Communicates with the server over JSONL via stdin/stdout subprocess.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -34,8 +35,23 @@ class ProtocolClient:
     async def stop(self) -> None:
         """Terminate the server."""
         if self._process:
-            self._process.stdin.close()
-            await self._process.wait()
+            process = self._process
+            if process.stdin and not process.stdin.is_closing():
+                process.stdin.close()
+                try:
+                    await process.stdin.wait_closed()
+                except (BrokenPipeError, ConnectionError, RuntimeError):
+                    pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            await self._drain_process_pipes(process)
             self._process = None
 
     async def send(
@@ -73,6 +89,15 @@ class ProtocolClient:
         if not line:
             return None
         return frame_from_json(line.decode("utf-8").strip())
+
+    async def _drain_process_pipes(self, process: asyncio.subprocess.Process) -> None:
+        for pipe in (process.stdout, process.stderr):
+            if pipe is None:
+                continue
+            try:
+                await asyncio.wait_for(pipe.read(), timeout=1)
+            except (asyncio.TimeoutError, ValueError):
+                continue
 
 
 class TerminalSession:
@@ -153,6 +178,8 @@ class TerminalSession:
         """Shut down the server."""
         if self._client:
             await self._client.send("shutdown", self._session_id, self._thread_id)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._client.read_frame(), timeout=2)
             await self._client.stop()
 
     async def send_message(self, content: str):

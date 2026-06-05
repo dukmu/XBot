@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,10 @@ class RuntimeServer:
         self._encoder: ProtocolEncoder | None = None
         self._session_id = "default"
         self._thread_id = "agent"
+        self._stop_requested = False
+        self._client_frames: asyncio.Queue[tuple[ProtocolFrame | None, ProtocolFrame | None]] | None = None
+        self._disconnect_event: asyncio.Event | None = None
+        self._live_interaction_depth = 0
 
     # ------------------------------------------------------------------
     # Main loop
@@ -54,30 +59,47 @@ class RuntimeServer:
         """Read stdin, dispatch commands, write stdout."""
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
-        await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+        reader_transport, _ = await asyncio.get_event_loop().connect_read_pipe(
+            lambda: protocol,
+            sys.stdin,
+        )
 
         writer_transport, writer_protocol = await asyncio.get_event_loop().connect_write_pipe(
             asyncio.streams.FlowControlMixin, sys.stdout
         )
         writer = asyncio.StreamWriter(writer_transport, writer_protocol, reader, asyncio.get_event_loop())
+        self._client_frames = asyncio.Queue()
+        self._disconnect_event = asyncio.Event()
+        reader_task = asyncio.create_task(self._read_client_frames(reader))
 
-        while True:
-            frame, response = await self._read_client_frame(reader)
-            if frame is None:
+        try:
+            while True:
+                frame, response = await self._next_client_frame()
+                if frame is None:
+                    if response:
+                        writer.write(response.to_json_line().encode("utf-8"))
+                        await writer.drain()
+                        continue
+                    break
+
+                response = await self._dispatch(frame, writer)
+
                 if response:
                     writer.write(response.to_json_line().encode("utf-8"))
                     await writer.drain()
-                    continue
-                break
 
-            response = await self._dispatch(frame, reader, writer)
-
-            if response:
-                writer.write(response.to_json_line().encode("utf-8"))
-                await writer.drain()
-
-            if frame.type == "shutdown":
-                break
+                if frame.type == "shutdown" or self._stop_requested:
+                    break
+        finally:
+            reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader_task
+            reader_transport.close()
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1)
+            except (asyncio.TimeoutError, BrokenPipeError, ConnectionError, RuntimeError):
+                pass
 
     # ------------------------------------------------------------------
     # Command dispatch
@@ -86,7 +108,6 @@ class RuntimeServer:
     async def _dispatch(
         self,
         frame: ProtocolFrame,
-        reader: Any,
         writer: Any,
     ) -> ProtocolFrame | None:
         cmd = frame.type
@@ -98,7 +119,7 @@ class RuntimeServer:
             return await self._handle_session_open(frame, writer)
 
         if cmd == "user.message":
-            return await self._handle_user_message(frame, reader, writer)
+            return await self._handle_user_message(frame, writer)
 
         if cmd == "user.input":
             return await self._handle_user_input(frame)
@@ -161,7 +182,7 @@ class RuntimeServer:
         return None
 
     async def _handle_user_message(
-        self, frame: ProtocolFrame, reader: Any, writer: Any
+        self, frame: ProtocolFrame, writer: Any
     ) -> ProtocolFrame | None:
         """Process a user message through the engine."""
         if self._engine is None:
@@ -180,14 +201,22 @@ class RuntimeServer:
         encoder = self._encoder
         previous_sink = self._engine.set_client_event_sink(
             self._make_live_user_input_sink(
-                reader=reader,
                 writer=writer,
                 turn_request_id=frame.request_id,
             )
         )
 
+        event_stream = self._engine.run_turn(content)
         try:
-            async for event in self._engine.run_turn(content):
+            while True:
+                try:
+                    event = await self._next_turn_event_or_disconnect(event_stream)
+                except StopAsyncIteration:
+                    break
+                if event is None:
+                    self._record_disconnected_turn_cancelled()
+                    break
+
                 event_type = event.get("type", "")
                 event_data = event.get("data", {})
 
@@ -222,10 +251,15 @@ class RuntimeServer:
                 writer.write(f.to_json_line().encode("utf-8"))
                 await writer.drain()
 
+        except asyncio.CancelledError:
+            self._record_disconnected_turn_cancelled()
+            raise
         except Exception as exc:
             logger.exception("Turn failed")
             return encoder.encode_error(str(exc), request_id=frame.request_id)
         finally:
+            with suppress(Exception):
+                await event_stream.aclose()
             self._engine.set_client_event_sink(previous_sink)
 
         return None
@@ -395,14 +429,82 @@ class RuntimeServer:
                 "message": f"Invalid protocol frame: {exc}",
             })
 
+    async def _read_client_frames(self, reader: Any) -> None:
+        """Continuously parse client frames and publish disconnect as state."""
+        assert self._client_frames is not None
+        assert self._disconnect_event is not None
+        try:
+            while True:
+                frame, response = await self._read_client_frame(reader)
+                await self._client_frames.put((frame, response))
+                if frame is None and response is None:
+                    self._disconnect_event.set()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Client reader stopped unexpectedly")
+            await self._client_frames.put((None, None))
+            self._disconnect_event.set()
+
+    async def _next_client_frame(self) -> tuple[ProtocolFrame | None, ProtocolFrame | None]:
+        """Return the next parsed client frame or EOF sentinel."""
+        assert self._client_frames is not None
+        return await self._client_frames.get()
+
     async def _write_frame(self, writer: Any, frame: ProtocolFrame) -> None:
         writer.write(frame.to_json_line().encode("utf-8"))
         await writer.drain()
 
+    async def _next_turn_event_or_disconnect(self, event_stream: Any) -> dict[str, Any] | None:
+        """Read one engine event, but stop the turn if the client disconnects."""
+        assert self._disconnect_event is not None
+        event_task = asyncio.create_task(event_stream.__anext__())
+        disconnect_task = asyncio.create_task(self._disconnect_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {event_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if disconnect_task in done:
+                if self._live_interaction_depth > 0:
+                    return event_task.result() if event_task.done() else await event_task
+                self._stop_requested = True
+                if event_task.done():
+                    with suppress(StopAsyncIteration, Exception):
+                        event_task.result()
+                else:
+                    event_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await event_task
+                return None
+            return event_task.result()
+        finally:
+            for task in (event_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+
+    def _record_disconnected_turn_cancelled(self) -> None:
+        """Best-effort state transition when the whole protocol connection dies."""
+        self._stop_requested = True
+        if self._engine is None:
+            return
+        store = getattr(self._engine, "state_store", None)
+        if store is None:
+            return
+        events = store.read_events()
+        if events and events[-1].get("type") == "turn_cancelled":
+            return
+        store.append_event("turn_cancelled", {
+            "reason": "client_disconnected",
+        })
+        store.materialize()
+
     def _make_live_user_input_sink(
         self,
         *,
-        reader: Any,
         writer: Any,
         turn_request_id: str,
     ) -> Any:
@@ -429,13 +531,16 @@ class RuntimeServer:
                     "reason": "client_disconnected",
                 }
 
-            response = await self._wait_for_live_interaction(
-                reader=reader,
-                writer=writer,
-                request_id=request_id,
-                client_event=client_event,
-                timeout_seconds=timeout_seconds,
-            )
+            self._live_interaction_depth += 1
+            try:
+                response = await self._wait_for_live_interaction(
+                    writer=writer,
+                    request_id=request_id,
+                    client_event=client_event,
+                    timeout_seconds=timeout_seconds,
+                )
+            finally:
+                self._live_interaction_depth -= 1
             if event_type == "permission_request":
                 state = self._engine.record_permission_result(client_event, response)
                 ack_type = "permission_response_recorded"
@@ -468,7 +573,6 @@ class RuntimeServer:
     async def _wait_for_live_interaction(
         self,
         *,
-        reader: Any,
         writer: Any,
         request_id: str,
         client_event: dict[str, Any],
@@ -482,9 +586,8 @@ class RuntimeServer:
         )
         while True:
             try:
-                frame, error = await asyncio.wait_for(
-                    self._read_client_frame(reader),
-                    timeout=None if timeout_seconds is None else float(timeout_seconds),
+                frame, error = await self._wait_for_client_frame(
+                    timeout_seconds=timeout_seconds
                 )
             except asyncio.TimeoutError:
                 return {
@@ -496,6 +599,7 @@ class RuntimeServer:
                 if error is not None:
                     await self._write_frame(writer, error)
                     continue
+                self._stop_requested = True
                 return {
                     "request_id": request_id,
                     "status": "disconnected",
@@ -503,6 +607,7 @@ class RuntimeServer:
                 }
 
             if frame.type == "shutdown":
+                self._stop_requested = True
                 return {
                     "request_id": request_id,
                     "status": "disconnected",
@@ -549,6 +654,35 @@ class RuntimeServer:
                 "answer": frame.payload.get("answer", ""),
                 "decision": frame.payload.get("decision", ""),
             }
+
+    async def _wait_for_client_frame(
+        self,
+        *,
+        timeout_seconds: float | None,
+    ) -> tuple[ProtocolFrame | None, ProtocolFrame | None]:
+        assert self._client_frames is not None
+        assert self._disconnect_event is not None
+
+        get_task = asyncio.create_task(self._client_frames.get())
+        disconnect_task = asyncio.create_task(self._disconnect_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {get_task, disconnect_task},
+                timeout=None if timeout_seconds is None else float(timeout_seconds),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                raise asyncio.TimeoutError
+            if get_task in done:
+                return get_task.result()
+            self._stop_requested = True
+            return None, None
+        finally:
+            for task in (get_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
     def _make_frame(
         self, event_type: str, payload: dict[str, Any], request_id: str = ""

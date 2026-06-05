@@ -1,12 +1,16 @@
 """Tests for protocol-driven TUI client state."""
 
 import ast
+import argparse
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import xbotv2.__main__ as xbot_main
 from xbotv2.protocol.frames import ProtocolFrame
 from xbotv2.tui.client import CursesTuiClient, TuiState
+from xbotv2.tui.textual_state import route_submitted_text
 
 
 def test_tui_state_applies_protocol_frames_and_renders_lines():
@@ -120,6 +124,74 @@ def test_curses_client_forwards_no_plugin_mode_to_terminal_session():
     assert client.session._no_plugins is True
 
 
+def test_mode_tui_imports_textual_client_lazily():
+    tree = ast.parse(Path("XBotv2/xbotv2/__main__.py").read_text(encoding="utf-8"))
+    run_tui = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_tui"
+    )
+    imports = [
+        node.module
+        for node in ast.walk(run_tui)
+        if isinstance(node, ast.ImportFrom)
+    ]
+
+    assert "xbotv2.tui.textual_client" in imports
+
+
+def test_mode_curses_uses_legacy_curses_client():
+    args = argparse.Namespace(
+        data_dir="data",
+        personality="default",
+        provider="default",
+        no_plugins=True,
+    )
+
+    with patch("xbotv2.tui.client.CursesTuiClient") as client_cls:
+        client = client_cls.return_value
+        client.run = AsyncMock()
+        xbot_main._run_curses(args)
+
+    client_cls.assert_called_once()
+    client.run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_textual_routes_submitted_text_to_live_user_input_queue():
+    state = TuiState()
+    answers: asyncio.Queue[str] = asyncio.Queue()
+    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
+    state.apply_event({
+        "type": "user_input_required",
+        "data": {"request_id": "user_input:c1", "question": "Proceed?"},
+    })
+
+    route = route_submitted_text(state, answers, permission_decisions, "yes")
+
+    assert route == "user_input"
+    assert await answers.get() == "yes"
+    assert permission_decisions.empty()
+    assert state.messages == []
+
+
+@pytest.mark.asyncio
+async def test_textual_routes_submitted_text_to_live_permission_queue():
+    state = TuiState()
+    answers: asyncio.Queue[str] = asyncio.Queue()
+    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
+    state.apply_event({
+        "type": "permission_request",
+        "data": {"request_id": "permission:c1", "reason": "approve?"},
+    })
+
+    route = route_submitted_text(state, answers, permission_decisions, "y")
+
+    assert route == "permission"
+    assert await permission_decisions.get() == "allow"
+    assert answers.empty()
+    assert state.messages == []
+
+
 def test_curses_client_records_reader_errors():
     client = CursesTuiClient()
     client._events.put(RuntimeError("reader failed"))
@@ -166,7 +238,11 @@ async def test_curses_client_marks_ready_after_session_connect():
     client.session.connect = AsyncMock()
     client.session.disconnect = AsyncMock()
 
-    with patch("xbotv2.tui.client.curses.wrapper") as wrapper:
+    async def fake_to_thread(func, *args, **kwargs):
+        func(*args, **kwargs)
+
+    with patch("xbotv2.tui.client.curses.wrapper") as wrapper, \
+            patch("xbotv2.tui.client.asyncio.to_thread", fake_to_thread):
         await client.run()
 
     wrapper.assert_called_once()
@@ -179,6 +255,8 @@ def test_tui_modules_do_not_import_runtime_boundaries():
     for path in [
         Path("XBotv2/xbotv2/tui/client.py"),
         Path("XBotv2/xbotv2/tui/terminal.py"),
+        Path("XBotv2/xbotv2/tui/textual_state.py"),
+        Path("XBotv2/xbotv2/tui/textual_client.py"),
     ]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = []
