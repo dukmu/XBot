@@ -308,13 +308,33 @@ async def execute_tools(
                     pass
 
             # Execute. LangChain StructuredTool.ainvoke can hang for sync
-            # tools in some dependency combinations; use invoke for sync tools.
+            # tools in some dependency combinations; use invoke for sync
+            # tools.
+            #
+            # IMPORTANT: ``tool.invoke(args)`` is a *synchronous* call
+            # — running it directly in this async function would
+            # block the entire asyncio event loop for the duration
+            # of the tool (e.g. the shell tool's subprocess.run has
+            # its own 30s timeout, so a slow command would freeze
+            # the SSE stream, the HTTP server, and any other
+            # in-flight requests for 30s). Per the user's 2026-06-05
+            # "tool chain" review: run sync tools in a worker thread
+            # and add a hard wall-clock timeout on top.
             if getattr(tool, "coroutine", None) is not None and hasattr(tool, "ainvoke"):
-                result = await tool.ainvoke(args)
+                result = await _invoke_with_timeout(
+                    tool.ainvoke, args,
+                    tool_name=tool_name,
+                )
             elif hasattr(tool, "invoke"):
-                result = tool.invoke(args)
+                result = await _invoke_with_timeout(
+                    _sync_invoke, (tool, args),
+                    tool_name=tool_name,
+                )
             elif callable(tool):
-                result = tool(**args) if args else tool()
+                result = await _invoke_with_timeout(
+                    _sync_callable, (tool, args),
+                    tool_name=tool_name,
+                )
             else:
                 result = f"Tool {tool_name} is not callable"
 
@@ -718,3 +738,66 @@ def _message_payload_from_result(result: Any, tool_call_id: str) -> dict[str, An
         "status": getattr(message, "status", "success"),
         "additional_kwargs": getattr(message, "additional_kwargs", {}) or {},
     }
+
+
+# ----------------------------------------------------------------------
+# Sync-tool execution helpers (added 2026-06-05 per user tool-chain review)
+# ----------------------------------------------------------------------
+
+# Hard wall-clock cap on a single tool invocation. The shell tool
+# already enforces a 30s ``subprocess.run(timeout=30)``, but that
+# timeout is for the *command*; the wrapping dispatch loop has no
+# timeout. A tool that never returns (e.g. an LLM-augmented tool that
+# accidentally awaits the event loop, or a sandbox guard that
+# deadlocks) would freeze the asyncio loop indefinitely. 60s is
+# generous for any reasonable tool and matches the shell's internal
+# timeout.
+_TOOL_DISPATCH_TIMEOUT_SECONDS = 60.0
+
+
+async def _invoke_with_timeout(coro_factory, args, *, tool_name: str) -> Any:
+    """Run a (possibly sync) tool call in a worker thread with a timeout.
+
+    ``coro_factory`` is either a coroutine function (for async tools
+    via ``ainvoke``) or a plain callable returning a coroutine /
+    future (for sync tools dispatched via ``asyncio.to_thread``).
+    The wrapper enforces :data:`_TOOL_DISPATCH_TIMEOUT_SECONDS` and
+    converts timeouts into a clear error message instead of hanging
+    the engine.
+    """
+
+    async def _runner() -> Any:
+        if asyncio.iscoroutinefunction(coro_factory):
+            return await coro_factory(*args)
+        # Wrap sync work in a thread so it does not block the
+        # event loop. ``asyncio.to_thread`` is the canonical way
+        # since 3.9.
+        return await asyncio.to_thread(coro_factory, *args)
+
+    try:
+        return await asyncio.wait_for(
+            _runner(),
+            timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "tool %s exceeded dispatch timeout %.1fs",
+            tool_name,
+            _TOOL_DISPATCH_TIMEOUT_SECONDS,
+        )
+        return (
+            f"Error: tool {tool_name!r} exceeded the "
+            f"{_TOOL_DISPATCH_TIMEOUT_SECONDS:.0f}s dispatch timeout"
+        )
+
+
+def _sync_invoke(tool: Any, args: dict[str, Any]) -> Any:
+    """Bridge for ``LangChain StructuredTool.invoke``."""
+
+    return tool.invoke(args)
+
+
+def _sync_callable(tool: Any, args: dict[str, Any]) -> Any:
+    """Bridge for a plain Python callable tool."""
+
+    return tool(**args) if args else tool()

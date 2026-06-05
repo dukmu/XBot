@@ -363,6 +363,102 @@ async def test_repeated_composer_submit_does_not_duplicate_submit(
 
 
 # ----------------------------------------------------------------------
+# Per-tool latency: title shows the elapsed seconds
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_widget_title_includes_elapsed_seconds(
+    scripted_session,
+) -> None:
+    """User can read the tool's wall-clock latency from its title.
+
+    "tool  shell  success  0.42s" answers the user's recurring
+    question of "why is the tool still pending" by surfacing both
+    the live elapsed (while pending) and the frozen final elapsed
+    (after tool_result).
+    """
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        # Drive assistant_message with tool_calls (creates pending
+        # tool entry with started_at set).
+        app.state.apply_event({
+            "type": "assistant_message",
+            "data": {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "shell", "args": {"command": "ls"}},
+                ],
+            },
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        # Walk the DOM and find the meta row of the tool entry.
+        from textual.widgets import Static as TStatic
+        metas: list[str] = []
+        for w in app.query_one("#transcript").walk_children():
+            if isinstance(w, TStatic) and "meta" in (w.classes or []):
+                t = (
+                    w.visual.plain
+                    if w.visual is not None and hasattr(w.visual, "plain")
+                    else ""
+                )
+                if t.startswith("tool"):
+                    metas.append(t)
+        assert len(metas) == 1, f"expected one tool meta; got {metas!r}"
+        # Pending entry shows the live "Ns…" suffix.
+        assert "s…" in metas[0], f"missing live elapsed: {metas[0]!r}"
+
+        # Now simulate tool_result — the title should switch to a
+        # frozen "<n>.<nn>s" suffix (no ellipsis).
+        import asyncio
+        await asyncio.sleep(0.05)  # ensure some monotonic delta
+        app.state.apply_event({
+            "type": "tool_result",
+            "data": {
+                "tool_call_id": "c1",
+                "name": "shell",
+                "status": "success",
+                "content": "ok",
+            },
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        # Force a tool widget refresh path by invoking the private
+        # hook the app uses after tool_result (see _handle_stream_event).
+        await app._refresh_tool_widget("c1")
+        await pilot.pause()
+
+        metas = []
+        for w in app.query_one("#transcript").walk_children():
+            if isinstance(w, TStatic) and "meta" in (w.classes or []):
+                t = (
+                    w.visual.plain
+                    if w.visual is not None and hasattr(w.visual, "plain")
+                    else ""
+                )
+                if t.startswith("tool"):
+                    metas.append(t)
+        assert len(metas) == 1
+        # After tool_result, the title has a frozen "Ns" with no
+        # ellipsis.
+        assert "s" in metas[0]
+        assert "s…" not in metas[0], f"expected frozen elapsed, got: {metas[0]!r}"
+
+
+# ----------------------------------------------------------------------
 # Sanity: search/parse contract for slash commands
 # ----------------------------------------------------------------------
 

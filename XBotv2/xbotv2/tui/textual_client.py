@@ -763,7 +763,27 @@ class XBotTextualApp(App[None]):
             return
         self._spinner_index += 1
         self._update_activity()
+        # Tick the still-pending tool widgets so their "Ns…"
+        # elapsed counter updates every 0.5s without waiting for
+        # the next event. Helps the user answer "why is this tool
+        # still pending" without watching the activity spinner.
+        self._update_pending_tool_elapsed()
         self._refresh_status()
+
+    def _update_pending_tool_elapsed(self) -> None:
+        import time as _time
+        for tool_call_id, widget in list(self._tool_widgets.items()):
+            tool = self.state.tools.get(tool_call_id)
+            if tool is None or tool.finished_at > 0:
+                continue
+            elapsed = tool.elapsed(_time.monotonic())
+            try:
+                meta = widget.query_one(".meta", Static)
+            except Exception:
+                continue
+            meta.update(
+                f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
+            )
 
     def _update_activity(self) -> None:
         if not self.state.turn_active:
@@ -833,18 +853,26 @@ class XBotTextualApp(App[None]):
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
             return
+        import time as _time
         tool = self.state.tools.get(tool_call_id)
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
             return
+        # Rebuild the title so the elapsed time is included (and
+        # frozen on tool_result).
+        elapsed = tool.elapsed(_time.monotonic())
+        if tool.finished_at > 0:
+            title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
+        else:
+            title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
         meta = widget.query_one(".meta", Static)
-        meta.update(f"tool  {tool.name}  {tool.status}")
+        meta.update(title)
         detail = _tool_detail(tool)
         body = widget.query(".body").first()
         if body is not None:
             body.update(detail)
         elif detail:
-            await widget.mount(Static(detail, classes="body"))
+            await widget.mount(_render_text(detail), classes="body")
 
     def _notice_widget(self, notice: TuiNotice, key: str) -> Vertical:
         if notice.kind == "permission_request":
@@ -1079,7 +1107,17 @@ def _message_widget(state: TuiState, message: TuiMessage) -> Vertical:
 
 
 def _tool_widget(tool: TuiTool) -> Vertical:
-    return _entry_widget("tool", f"tool  {tool.name}  {tool.status}", _tool_detail(tool))
+    import time as _time
+    elapsed = tool.elapsed(_time.monotonic())
+    if tool.finished_at > 0:
+        title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
+    else:
+        # Tool is still pending; show the live elapsed so the user
+        # can see "how long has this been running" at a glance. Per
+        # user question on 2026-06-05: the answer to "why is the
+        # tool pending?" starts with "for N seconds so far".
+        title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
+    return _entry_widget("tool", title, _tool_detail(tool))
 
 
 def _tool_detail(tool: TuiTool) -> str:

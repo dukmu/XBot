@@ -40,6 +40,22 @@ class TuiTool:
     args_preview: str = ""
     status: str = "pending"
     summary: str = ""
+    # Wall-clock seconds between ``tool_calls_started`` and
+    # ``tool_result``. Set when the result arrives. While pending,
+    # the value is the live elapsed (see ``elapsed()``).
+    started_at: float = 0.0
+    finished_at: float = 0.0
+
+    def elapsed(self, now: float | None = None) -> float:
+        """Return seconds since the tool started.
+
+        Returns 0.0 if the tool never started (defensive default).
+        """
+
+        if self.started_at <= 0:
+            return 0.0
+        end = self.finished_at if self.finished_at > 0 else (now or self.started_at)
+        return max(0.0, end - self.started_at)
 
 
 @dataclass
@@ -125,6 +141,11 @@ class TuiState:
             )
             tool.status = str(data.get("status") or "completed")
             tool.summary = _preview(data.get("content") or data.get("summary") or "")
+            # Mark the wall-clock end of this tool call so the
+            # transcript can show "shell success  0.4s" (per user
+            # request: per-tool latency in the entry title).
+            import time as _time
+            tool.finished_at = _time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
         elif event_type == "usage":
             self._apply_usage(data)
@@ -269,6 +290,7 @@ class TuiState:
     def _apply_tool_calls(self, tool_calls: Any) -> None:
         if not isinstance(tool_calls, list):
             return
+        import time as _time
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
@@ -276,6 +298,11 @@ class TuiState:
             tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
             tool.args_preview = _preview(raw_tool.get("args") or raw_tool.get("arguments") or "")
             tool.status = "pending"
+            # Stamp the start of this tool call only on the FIRST
+            # tool_calls_started event for this id — re-firing the
+            # same call (e.g. on resume) should not reset the clock.
+            if tool.started_at <= 0:
+                tool.started_at = _time.monotonic()
             self._ensure_tool_transcript(tool_call_id)
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
