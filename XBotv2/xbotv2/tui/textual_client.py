@@ -1043,10 +1043,35 @@ def _tool_detail(tool: TuiTool) -> str:
 
 
 def _entry_widget(kind: str, title: str, body: str) -> Vertical:
-    children = [Static(title, classes="meta")]
+    children = [Static(_render_text(title), classes="meta")]
     if body:
-        children.append(Static(body, classes="body", markup=False))
+        children.append(Static(_render_text(body), classes="body"))
     return Vertical(*children, classes=f"entry {kind}")
+
+
+def _render_text(content: str) -> Text:
+    """Render a multi-line string as a styled ``rich.text.Text``.
+
+    Wraps the body in an explicit ``Text`` instead of relying on
+    ``Static(markup=False)`` for two reasons:
+
+    1. ``markup=False`` still passes the string through Rich's
+       console printer, which on some terminals / widget layout
+       combinations renders the body invisibly (the bytes are in the
+       screen buffer — copyable via ``Ctrl-V`` — but no glyphs are
+       drawn).
+    2. Em-dash and other multi-byte UTF-8 characters survive
+       end-to-end because we are handing ``Text`` a Python str, not
+       a bytes buffer that some intermediate step might decode with
+       the wrong codec.
+
+    A ``Text`` instance is also explicitly bound to the
+    ``fg.default`` color, so the body is visible regardless of any
+    inherited ``color:`` rule on the parent.
+    """
+
+    text = Text(content, style="default", no_wrap=False, justify="left")
+    return text
 
 
 def _notice_title(kind: str) -> str:

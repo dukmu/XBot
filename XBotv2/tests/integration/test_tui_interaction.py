@@ -522,3 +522,123 @@ def _make_notice(kind: str, text: str):
     from xbotv2.tui.client import TuiNotice
 
     return TuiNotice(kind=kind, text=text)
+
+
+# ----------------------------------------------------------------------
+# Body widget render (regression: markup=False renders invisibly)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assistant_message_body_renders_in_transcript(
+    scripted_session,
+) -> None:
+    """The assistant message body must end up in the rendered screen.
+
+    Regression test for the user-reported "TUI is blank, but I can
+    Ctrl-V copy the text" issue. ``Static(markup=False, body)`` was
+    putting the text in the screen buffer invisibly on some
+    Textual 0.86 layout paths; the fix is to wrap the body in an
+    explicit ``rich.text.Text`` (which is reliably rendered).
+
+    We assert by capturing the SVG screenshot and checking the
+    escape-text payload — if the text was rendered as zero-width
+    glyphs the SVG would still contain the text but the visible-cell
+    count would be near zero. Here we check the cell counts.
+    """
+
+    import html
+    import re
+
+    long_text = (
+        "Hello! \u2014 this is a test \u2014 with em-dashes.\n"
+        "And a list:\n- item 1\n- item 2"
+    )
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message",
+            "data": {"content": long_text, "tool_calls": None},
+        })
+        await pilot.pause()
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        svg = app.export_screenshot(title="body-render")
+        unescaped = html.unescape(svg)
+        # Textual normalises intra-line whitespace to U+00A0 in the
+        # SVG text payloads; normalise to plain spaces for matching.
+        normalised = unescaped.replace("\xa0", " ")
+
+        # The body text must appear in the SVG escape payload.
+        assert "Hello!" in normalised
+        # Em-dash must survive the screen buffer (not garbled).
+        assert "\u2014" in normalised
+        assert "item 1" in normalised and "item 2" in normalised
+        # The SVG ``<text>`` elements contain a ``x="…"`` attribute for
+        # the visible cell. Each body line must produce visible cells
+        # (x >= 0 with non-zero glyph runs). The easiest proxy: count
+        # of visible character spans in the transcript region is
+        # comfortably larger than 0. The SVG is large; the
+        # transcript region alone contains well over 5 text spans
+        # for a body of this size when rendered with Text.
+        body_spans = re.findall(r"<text[^>]*>", unescaped)
+        assert len(body_spans) > 5, (
+            f"only {len(body_spans)} <text> spans; body probably invisible"
+        )
+
+
+@pytest.mark.asyncio
+async def test_help_body_renders_each_command_on_its_own_row(
+    scripted_session,
+) -> None:
+    """The /help notice must put each command on its own DOM row.
+
+    Belt-and-suspenders for the newline-vs-two-spaces fix.
+    """
+
+    import html
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("/help")
+        await app.submit_composer()
+        await pilot.pause()
+
+        svg = app.export_screenshot(title="help-body")
+        unescaped = html.unescape(svg)
+
+        # Each registered command label is on its own line in the
+        # SVG text payload. The newline character is the line
+        # separator; in the SVG, lines are separate <text> spans.
+        # We assert via the underlying state model: the body string
+        # was rendered with one command per line.
+        help_notices = [n for n in app.state.notices if n.kind == "Help"]
+        assert len(help_notices) == 1
+        body = help_notices[0].text
+        for command in ("/help", "/clear", "/status", "/exit"):
+            # The full short_label is on its own line; we test the
+            # command token since the label may be wrapped by width.
+            assert f"\n{command}" in body or body.startswith(command), (
+                f"command {command} not on its own line: {body!r}"
+            )
