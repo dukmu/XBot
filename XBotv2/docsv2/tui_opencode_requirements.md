@@ -477,19 +477,21 @@ tui/
 │ #status_bar  1 行                                                       │  ← 状态栏
 ├────────────────────────────────────────────────────────────────────────┤
 │                                                                        │
-│  #transcript   1fr                                                      │  ← 事件流
+│  #transcript   1fr                                                      │  ← 事件流（整体可滚）
 │  ······                                                                │
 │                                                                        │
 ├────────────────────────────────────────────────────────────────────────┤
+│ #completion_popup  0/N 行  (slash 补全；仅 / 前缀时显示)                │  ← 补全
 │ #composer_hint  0/1 行  （live choice / pending / 普通）                │  ← 提示
 │ #input         3..N 行（仅 COMPOSING 时显示）                          │  ← 输入框
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-要点：
+要点（用户 2026-06-05 明确确认）：
 
 - **状态栏** 始终显示，**单行**。不与"右侧大面板"共存。
-- **事件流** 占满中段。鼠标滚轮上下滚动；本身永远不参与键盘焦点。
+- **事件流** 占满中段。**整体可滚**（`VerticalScroll`），但**单个 entry 不许带内嵌滚动条**——每个消息 / 工具结果完全平铺。
+- **completion_popup** 仅在 composer 文本以 `/` 开头时显示；高度按候选数自适应。
 - **composer 提示行** 高度为 0 或 1，承载当前模式提示文字。
 - **composer 输入框** 仅在 `COMPOSING` 模式可见。`CHOOSING` / `SUBMITTED` 模式隐藏。
 - 不存在 "右侧工具/事件" 子区域；不存在 "任务列表" 边栏；不存在 "工具按钮条"。
@@ -1325,7 +1327,7 @@ class Transport(Protocol):
 
 1. 斜杠命令：v1 四个。**【已完成：`/exit` `/clear` `/help` `/status` 全部实现】**
 2. 键位表集中到 `command.py`；为 v2 的 JSON 化预留接口。**【v1.1 已完成 `search_commands` / `complete_command` 集中】**
-3. 滚轮"末尾跟随"行为 + "↓ N new" 提示。
+3. 滚轮"末尾跟随"行为 + "↓ N new" 提示。**【v1.2 决定：用户偏好"全平铺、无内嵌滚动"，整体 transcript 滚到末尾，**不**实现 ↓ N new 浮动提示。】**
 4. 主题变量化（不暴露切换）。
 
 ### Phase F — 命令搜索与补全（v1.1，**已完成**）
@@ -1471,6 +1473,14 @@ UI / 状态机（Phase A、C）：
   - `_current_mode` 改名 `_current_tui_mode`，与 `App.current_mode`（Textual mode 系统的字符串属性）解耦。
   - 真实交互测试 15 个：completion popup 显隐、Tab 接受、Esc 关闭、中文 IME 端到端、`/help` 独立分行、未知命令提示、`/clear` 保留 session、`/status` 输出 mode 字段、`Ctrl+P` 打开 CommandPalette。
   - 324/324 测试通过。
+- v2.5（2026-06-05）：**用户要求"全平铺无内嵌滚动"**。
+  - 修复 body widget 渲染：`_entry_widget` 改为显式构造 `rich.text.Text` 并传给 `Static`（避免 `markup=False` 在 Textual 0.86 某些布局路径下让 body 不可见但 Ctrl-V 仍可复制的 bug）。
+  - 修复 `_preview`：不再把 `\n` 替换为空格，工具结果保持多行（如 `df -h` 输出）。
+  - 修复 CSS：`.entry` / `.body` 显式 `height: auto; width: 1fr`，单条 entry 自然撑到全文高度，不带内嵌滚动条。
+  - **回退**工具结果 8 行截断 + "↓ N new" 浮动提示（用户明确反对内嵌控件）。
+  - transcript 仍然 `VerticalScroll` 整体可滚；新内容通过 `call_after_refresh` 延迟到布局完成后 `scroll_end`。
+  - 新增 `test_long_body_does_not_truncate_or_inner_scroll`：40 行消息 + 40 行工具结果，断言 state 保留全文 + DOM 无 `VerticalScroll` 子节点 + body 渲染 `visual.plain` 包含首/中/尾行。
+  - 327/327 测试通过。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---
