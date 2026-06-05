@@ -33,6 +33,7 @@ from xbotv2.tui.command import (
     known_command_labels,
     parse_slash_command,
 )
+from xbotv2.tui.command_palette import CommandPalette
 from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
 from xbotv2.tui.terminal import TerminalSession
@@ -69,6 +70,14 @@ class TextualTuiClient:
 
 class XBotTextualApp(App[None]):
     """OpenCode-style full-screen TUI backed by XBotv2 protocol frames."""
+
+    # Disable Textual's built-in command palette (default ctrl+p) so
+    # our custom ``CommandPalette`` (slash-command only) owns the
+    # binding. Per design doc §2.3.1: OpenCode's ``command_list`` is
+    # also ctrl+p, but it is implemented in Solid and we are in
+    # Python/Textual, so we use the latter's extensibility rather than
+    # the former's runtime palette of every command.
+    ENABLE_COMMAND_PALETTE = False
 
     CSS = """
     Screen {
@@ -168,6 +177,7 @@ class XBotTextualApp(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
+        ("ctrl+p", "open_palette", "Command palette"),
     ]
 
     def __init__(
@@ -305,11 +315,20 @@ class XBotTextualApp(App[None]):
         self._history_index = None
         self._resize_composer()
 
-    def _current_mode(self) -> Mode:
+    def action_open_palette(self) -> None:
+        """Open the command palette modal (Ctrl+P)."""
+
+        self.push_screen(CommandPalette())
+
+    def _current_tui_mode(self) -> Mode:
         """Derive the high-level Mode from existing TUI state predicates.
 
         Single source for mode classification; the rest of the app consults
         this method instead of re-running the same boolean ladder.
+
+        Renamed from ``_current_mode`` to avoid clashing with Textual's
+        built-in ``App.current_mode`` (a string property used by its
+        mode system, unrelated to ours).
         """
 
         if self._choice_mode_active():
@@ -402,7 +421,7 @@ class XBotTextualApp(App[None]):
         await self._append_local_notice(
             "Status",
             (
-                f"mode={self._current_mode().value} "
+                f"mode={self._current_tui_mode().value} "
                 f"status={self.state.status} "
                 f"turn={self.state.turn} "
                 f"queued={self._outbound_messages.qsize()} "

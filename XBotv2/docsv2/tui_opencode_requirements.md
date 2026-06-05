@@ -891,10 +891,33 @@ HH:MM:SS  approval request / question    ← .meta
 | --- | --- | --- |
 | `/exit` / `/quit` | 退出 TUI | v1 |
 | `/clear` | 清空事件流（保留 session/thread） | v1 |
-| `/help` | 在流底部追加帮助文本 | v1 |
+| `/help` | 在流底部追加帮助文本（每条命令独立一行） | v1 |
 | `/status` | 在流底部追加当前状态（运行态/会话/用量/最近 5 条消息） | v1 |
 
 v1 之外的命令当前可显示 "not implemented in this build"，但**必须**被解析为命令而非作为普通消息发送。
+
+### 9.2.1 命令搜索与补全（v1.1）
+
+v1.1 在 v1 之上加两层命令发现：
+
+| 入口 | 触发 | 行为 |
+| --- | --- | --- |
+| 内联补全 | composer 文本以 `/` 开头 | `CompletionPopup` 显示在 composer 上方；高亮当前匹配；`Tab` 接受，`Up`/`Down` 移动，`Esc` 关闭 |
+| 命令面板 | `Ctrl+P`（v1.1 取代 Textual 默认行为） | 模态 `CommandPalette` 全屏；输入即搜索（模糊匹配 `short_label` 的子串）；`Up`/`Down` 移动；`Enter` 执行；`Esc` 关闭 |
+
+实现要点：
+
+- `xbotv2/tui/command.py:search_commands(query)` 是两层入口的唯一算法：
+  - 文本以 `/` 开头时按 `spec.name` 的大小写不敏感前缀匹配（`rank 0`），降级到 `short_label` 的子串匹配（`rank 2`）。
+  - 否则按模糊匹配：所有空白分词都必须在 `short_label` 中以子串出现。
+  - `_SEARCH_ORDER = ("help", "clear", "status", "exit")` 保证默认顺序稳定。
+- `complete_command(prefix)` 取 `search_commands` 的第一个匹配，用于 `Tab` 接受。
+- `CompletionPopup` 故意**不**用 `rich.text.Text`（Textual 的 layout 阶段会调 `visual.get_height()`，Text 没有这个方法）；改用 `Container` + 每行一个 `Static`，状态用 CSS class `active` 标记。
+- `CommandPalette` 复用了同一 `search_commands`；其选择也走 `app._handle_slash_command(spec)`，确保与"在 composer 中键入 `/help` + Enter"是**同一条代码路径**（包括 trace `tui.slash` 事件）。
+- Textual 自带 `Ctrl+P` 的命令面板与 OpenCode 撞名；`XBotTextualApp.ENABLE_COMMAND_PALETTE = False` 显式关掉默认行为，让我们自己的 `CommandPalette` 接管。
+- 关键不变量：composer 永远是唯一键盘焦点区；`CompletionPopup` 与 `CommandPalette` 自己处理键位、不抢焦点。
+
+设计依据：OpenCode 的 `command_list = ctrl+p` 已经在 §2.3.1 调研列出；v1.1 与之对齐但**只暴露**我们自己的 4 个 slash 命令，避免 OpenCode 那种"全命令面板"对 v1 单 TUI 来说过重。
 
 ### 9.3 鼠标与可访问性
 
@@ -1301,9 +1324,36 @@ class Transport(Protocol):
 ### Phase C — 可用
 
 1. 斜杠命令：v1 四个。**【已完成：`/exit` `/clear` `/help` `/status` 全部实现】**
-2. 键位表集中到 `command.py`；为 v2 的 JSON 化预留接口。
+2. 键位表集中到 `command.py`；为 v2 的 JSON 化预留接口。**【v1.1 已完成 `search_commands` / `complete_command` 集中】**
 3. 滚轮"末尾跟随"行为 + "↓ N new" 提示。
 4. 主题变量化（不暴露切换）。
+
+### Phase F — 命令搜索与补全（v1.1，**已完成**）
+
+> 详见 §9.2.1。本阶段落地 4 个未完成项：内联补全、命令面板、bug 修复、真实交互测试。
+
+1. **command.py 扩展**（`xbotv2/tui/command.py`）
+   - `CommandSpec.short_label`：紧凑短描述，供 popup / palette 渲染。
+   - `_SEARCH_ORDER`：保证 4 个命令的展示顺序稳定（help/clear/status/exit）。
+   - `search_commands(query)`：slash 前缀 + 模糊匹配；返回 `list[CommandSpec]`。
+   - `complete_command(prefix)`：Tab 接受的最佳匹配。
+2. **CompletionPopup**（`xbotv2/tui/completion_popup.py`）
+   - `Container(Vertical)` + 每行 `Static`；高亮态用 `active` CSS class。
+   - **不**用 `rich.text.Text`（Textual layout 调 `visual.get_height()` 失败）。
+3. **CommandPalette**（`xbotv2/tui/command_palette.py`）
+   - `ModalScreen`，`Input` + 候选列表。
+   - `Ctrl+P` 触发；`Up`/`Down` 移动；`Enter` 走 `app._handle_slash_command`。
+   - 关闭 Textual 默认 `Ctrl+P` 命令面板（`ENABLE_COMMAND_PALETTE = False`）。
+4. **composer 端接线**（`xbotv2/tui/textual_client.py`）
+   - composer `Tab` / `Up` / `Down` / `Esc` 在 popup 可见时被拦截。
+   - `_cmd_help` 每条命令独立一行（之前是 `"  "` 拼接，挤一行）。
+   - `_current_mode` 改名 `_current_tui_mode`（避免与 Textual `App.current_mode` 冲突）。
+
+### 完成定义（v1.1，§9.2.1）：
+- [x] `search_commands` / `complete_command` 单元测试覆盖 slash + 模糊两种模式。
+- [x] 真实交互测试通过 Textual `Pilot` 验证 popup/palette/中文/clear/status。
+- [x] 错名 bug 修复（`_current_mode` → `_current_tui_mode`）。
+- [x] Textual 内建 `Ctrl+P` 命令面板被关闭，v1.1 自己的 `CommandPalette` 接管。
 
 ### Phase D — 扩展
 
@@ -1411,6 +1461,16 @@ UI / 状态机（Phase A、C）：
   - `transport.py` + `transport_http.py` 实现；`xbotv2.tui.terminal` 不再导出 `ProtocolClient`。
   - 288/288 测试通过；50 turn 平均 3.6ms / p95 5.5ms（详见 `docsv2/verification/transport-bench-v20260605.md`）。
   - `__main__.py` 改造：`--mode server` 启 uvicorn；`--mode tui` auto-spawn + 连接；`--bind 0.0.0.0` 报错；`attach <url>` 工作。
+- v2.4（2026-06-05）：Phase F 命令搜索与补全（v1.1，**用户报告**）。
+  - 修复 `_collect_response` 还在调用 `send_message_with_input`（Transport 重命名后留下的 bug），导致每条用户消息都报 `AttributeError`，状态栏显示 "Error" —— 用户实际报的 bug。
+  - 修复 `CompletionPopup` 在 `compose()` 中被使用但未 import（用户报的二次 NameError）。
+  - 修复 `_cmd_help` 用 `"  "` 拼接，挤一行；改为 `\n` 分行。
+  - 新增 `xbotv2/tui/command.py:search_commands` / `complete_command`（slash 前缀 + 模糊两种模式）。
+  - 新增 `CompletionPopup`（Tab/Up/Down/Esc，**用 `Container`+`Static` 不用 `Text`**，因为 Textual layout 阶段会调 `visual.get_height()` 而 `Text` 没有这个方法）。
+  - 新增 `CommandPalette`（`Ctrl+P` 触发，模糊搜索；显式 `ENABLE_COMMAND_PALETTE = False` 关掉 Textual 自带的面板，**避免和 OpenCode 风格撞名**）。
+  - `_current_mode` 改名 `_current_tui_mode`，与 `App.current_mode`（Textual mode 系统的字符串属性）解耦。
+  - 真实交互测试 15 个：completion popup 显隐、Tab 接受、Esc 关闭、中文 IME 端到端、`/help` 独立分行、未知命令提示、`/clear` 保留 session、`/status` 输出 mode 字段、`Ctrl+P` 打开 CommandPalette。
+  - 324/324 测试通过。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---

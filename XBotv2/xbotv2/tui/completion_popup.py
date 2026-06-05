@@ -7,25 +7,30 @@ suggestion with ``Tab`` and dismiss the popup with ``Escape``.
 
 The popup is intentionally minimal:
 
-- A single ``Static`` widget (not a modal) that renders a ``rich.text.Text``
-  block. One row is highlighted with reverse-bold; the rest are dim.
+- A ``Container`` (Vertical) holding one ``Static`` per candidate row.
+  This avoids ``rich.text.Text`` and its ``get_height`` quirks in
+  Textual's layout pipeline — each row is a plain ``Static`` with
+  a class for the highlighted state.
 - The popup never receives keyboard focus; the composer keeps focus
   and ``Tab`` is intercepted at the ``ComposerTextArea`` level. This
   preserves the doc §3 invariant: "整个 TUI 同一时刻只有一个键盘焦点区".
-- When the composer text does not start with ``/``, the popup renders
-  blank but stays mounted (avoids re-mount cost on every keystroke).
+- When the composer text does not start with ``/``, the popup hides
+  via the ``active`` CSS class (display: none).
 """
 
 from __future__ import annotations
 
-from rich.text import Text
+from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
 from xbotv2.tui.command import CommandSpec, search_commands
 
 
-class CompletionPopup(Static):
+_MAX_ROWS = 6
+
+
+class CompletionPopup(Vertical):
     """A non-focusable completion popup for slash commands."""
 
     DEFAULT_CSS = """
@@ -41,13 +46,24 @@ class CompletionPopup(Static):
     CompletionPopup.active {
         display: block;
     }
+    CompletionPopup Static {
+        height: 1;
+        width: 100%;
+    }
+    CompletionPopup Static.active {
+        background: #2d3440;
+        color: #d6dae2;
+        text-style: bold;
+    }
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__("", markup=False, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._matches: list[CommandSpec] = []
         self._selected: int = 0
         self._visible: bool = False
+        # Per-row Static widgets, kept in sync with self._matches.
+        self._row_widgets: list[Static] = []
 
     @property
     def matches(self) -> list[CommandSpec]:
@@ -70,16 +86,16 @@ class CompletionPopup(Static):
             self._selected = 0
             self._visible = False
             self.set_class(False, "active")
-            self.update("")
+            self._rebuild_rows()
             return
 
-        matches = search_commands(stripped)
+        matches = search_commands(stripped)[:_MAX_ROWS]
         if not matches:
             self._matches = []
             self._selected = 0
             self._visible = False
             self.set_class(False, "active")
-            self.update("")
+            self._rebuild_rows()
             return
 
         # Clamp the selection to the new match set.
@@ -88,22 +104,25 @@ class CompletionPopup(Static):
             self._selected = len(matches) - 1
         self._visible = True
         self.set_class(True, "active")
-        self.update(self._render())
+        self._rebuild_rows()
 
-    def _render(self) -> Text:
+    def _rebuild_rows(self) -> None:
+        """Re-mount the row widgets to match self._matches."""
+
+        # Drop existing rows.
+        for widget in list(self._row_widgets):
+            widget.remove()
+        self._row_widgets = []
+
         if not self._matches:
-            return Text()
-        text = Text()
-        text.append("▸ ", style="bold #7aa2f7")
+            return
+
         for index, spec in enumerate(self._matches):
-            if index:
-                text.append("   ")
             label = spec.short_label or spec.display_label
-            if index == self._selected:
-                text.append(f" {label} ", style="reverse bold")
-            else:
-                text.append(label, style="dim")
-        return text
+            classes = "active" if index == self._selected else ""
+            row = Static(f"  {label}", classes=classes)
+            self._row_widgets.append(row)
+            self.mount(row)
 
     def move_selection(self, delta: int) -> None:
         """Move the selection by ``delta`` steps, wrapping around."""
@@ -111,7 +130,7 @@ class CompletionPopup(Static):
         if not self._matches:
             return
         self._selected = (self._selected + delta) % len(self._matches)
-        self.update(self._render())
+        self._rebuild_rows()
 
     def current_match(self) -> CommandSpec | None:
         if not self._matches:
