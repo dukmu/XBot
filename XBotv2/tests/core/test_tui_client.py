@@ -1224,9 +1224,12 @@ def test_tui_modules_do_not_import_runtime_boundaries():
 
     for path in [
         Path("XBotv2/xbotv2/tui/client.py"),
+        Path("XBotv2/xbotv2/tui/session_config.py"),
         Path("XBotv2/xbotv2/tui/terminal.py"),
         Path("XBotv2/xbotv2/tui/textual_state.py"),
+        Path("XBotv2/xbotv2/tui/textual_theme.py"),
         Path("XBotv2/xbotv2/tui/textual_client.py"),
+        Path("XBotv2/xbotv2/tui/textual_widgets.py"),
     ]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = []

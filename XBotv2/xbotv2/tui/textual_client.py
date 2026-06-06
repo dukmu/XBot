@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +20,8 @@ from textual.events import Key
 from textual.widgets import Header, Static, TextArea
 
 from xbotv2.tui.client import (
-    TuiMessage,
     TuiNotice,
     TuiState,
-    TuiTool,
     TuiTranscriptEntry,
     _parse_permission_decision,
     _repair_mojibake,
@@ -38,9 +35,23 @@ from xbotv2.tui.command import (
 from xbotv2.tui.command_palette import CommandPalette
 from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
-from xbotv2.tui.terminal import TerminalSession
+from xbotv2.tui.session_config import TuiSessionConfig
+from xbotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
 from xbotv2.tui.trace import trace_event
+from xbotv2.tui.textual_widgets import (
+    ComposerTextArea,
+    InlineChoice,
+    TranscriptScroll,
+    entry_widget,
+    message_widget,
+    notice_title,
+    render_text,
+    spinner,
+    status_renderable,
+    tool_detail,
+    tool_widget,
+)
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -59,7 +70,7 @@ class TextualTuiClient:
         no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
     ) -> None:
-        self.app = XBotTextualApp(
+        config = TuiSessionConfig(
             data_dir=data_dir,
             personality_id=personality_id,
             provider_name=provider_name,
@@ -68,6 +79,7 @@ class TextualTuiClient:
             no_plugins=no_plugins,
             base_url=base_url,
         )
+        self.app = XBotTextualApp(config=config)
 
     async def run(self) -> None:
         await self.app.run_async()
@@ -84,111 +96,7 @@ class XBotTextualApp(App[None]):
     # the former's runtime palette of every command.
     ENABLE_COMMAND_PALETTE = False
 
-    CSS = """
-    Screen {
-        layout: vertical;
-        background: #0f1115;
-        color: #d6dae2;
-    }
-
-    #status_bar {
-        height: 1;
-        padding: 0 1;
-        background: #171a21;
-        color: #d6dae2;
-    }
-
-    #transcript {
-        height: 1fr;
-        padding: 1 2 0 2;
-        background: #0f1115;
-        color: #d6dae2;
-        scrollbar-color: #7aa2f7;
-        scrollbar-color-hover: #9ece6a;
-        scrollbar-background: #171a21;
-    }
-
-    .entry {
-        width: 1fr;
-        height: auto;
-        margin: 0 0 1 0;
-    }
-
-    .meta {
-        height: 1;
-        color: #8b95a7;
-    }
-
-    .body {
-        width: 1fr;
-        height: auto;
-        color: #d6dae2;
-        padding: 0 0 0 2;
-    }
-
-    .user .meta {
-        color: #7dcfff;
-    }
-
-    .assistant .meta {
-        color: #9ece6a;
-    }
-
-    .notice .meta {
-        color: #bb9af7;
-    }
-
-    .tool .meta {
-        color: #e0af68;
-    }
-
-    .activity .meta {
-        color: #7aa2f7;
-    }
-
-    .error .meta {
-        color: #f7768e;
-    }
-
-    .error .body {
-        color: #f7768e;
-    }
-
-    .choices {
-        height: auto;
-        padding: 0 0 0 2;
-        color: #d6dae2;
-    }
-
-    .choices.resolved {
-        color: #8b95a7;
-    }
-
-    #composer {
-        dock: bottom;
-        height: auto;
-        padding: 0 1 1 1;
-        background: #0f1115;
-    }
-
-    #composer_hint {
-        height: 1;
-        color: #8b95a7;
-        padding: 0 1;
-    }
-
-    #input {
-        height: 3;
-        border: tall #2d3440;
-        background: #171a21;
-        color: #e5e7eb;
-        padding: 0 1;
-    }
-
-    #input:focus {
-        border: tall #7aa2f7;
-    }
-    """
+    CSS = TEXTUAL_TUI_CSS
 
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
@@ -200,24 +108,27 @@ class XBotTextualApp(App[None]):
     def __init__(
         self,
         *,
-        data_dir: Path | str,
-        personality_id: str,
-        provider_name: str,
-        session_id: str | None,
-        thread_id: str,
-        no_plugins: bool,
+        config: TuiSessionConfig | None = None,
+        data_dir: Path | str = "data",
+        personality_id: str = "default",
+        provider_name: str = "default",
+        session_id: str | None = None,
+        thread_id: str = "agent",
+        no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
     ) -> None:
         super().__init__()
-        self.session = TerminalSession(
-            data_dir=data_dir,
-            personality_id=personality_id,
-            provider_name=provider_name,
-            session_id=session_id,
-            thread_id=thread_id,
-            no_plugins=no_plugins,
-            base_url=base_url,
-        )
+        if config is None:
+            config = TuiSessionConfig(
+                data_dir=data_dir,
+                personality_id=personality_id,
+                provider_name=provider_name,
+                session_id=session_id,
+                thread_id=thread_id,
+                no_plugins=no_plugins,
+                base_url=base_url,
+            )
+        self.session = config.create_terminal_session()
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
@@ -606,7 +517,7 @@ class XBotTextualApp(App[None]):
         queue_depth = self._outbound_messages.qsize()
         usage = self.state.usage
         panel.update(
-            _status_renderable(
+            status_renderable(
                 status=self.state.status,
                 session_id=self.state.session_id,
                 thread_id=self.state.thread_id,
@@ -920,7 +831,7 @@ class XBotTextualApp(App[None]):
     def _activity_text(self, *, final: bool) -> str:
         elapsed = self._turn_elapsed()
         usage = self.state.turn_usage
-        marker = "done" if final else _spinner(self._spinner_index)
+        marker = "done" if final else spinner(self._spinner_index)
         verb = "completed" if final else "working"
         return (
             f"{marker} turn {self.state.turn} {verb} "
@@ -931,7 +842,7 @@ class XBotTextualApp(App[None]):
 
     def _activity_status(self) -> str:
         if self.state.turn_active:
-            return f"turn:{self.state.turn} {_spinner(self._spinner_index)} {self._turn_elapsed():.1f}s"
+            return f"turn:{self.state.turn} {spinner(self._spinner_index)} {self._turn_elapsed():.1f}s"
         return f"turn:{self.state.turn}"
 
     def _turn_elapsed(self) -> float:
@@ -948,14 +859,14 @@ class XBotTextualApp(App[None]):
                 message = self.state.messages[int(key)]
             except (ValueError, IndexError):
                 return None
-            widget = _message_widget(self.state, message)
+            widget = message_widget(self.state, message)
             self._message_widgets[int(key)] = widget
             return widget
         if kind == "tool":
             tool = self.state.tools.get(key)
             if tool is None:
                 return None
-            widget = _tool_widget(tool)
+            widget = tool_widget(tool)
             self._tool_widgets[tool.tool_call_id] = widget
             return widget
         if kind == "notice":
@@ -969,7 +880,7 @@ class XBotTextualApp(App[None]):
                 error = self.state.errors[int(key)]
             except (ValueError, IndexError):
                 return None
-            return _entry_widget("error", "Error", error)
+            return entry_widget("error", "Error", error)
         return None
 
     async def _refresh_changed_tool_widgets(self) -> None:
@@ -995,9 +906,9 @@ class XBotTextualApp(App[None]):
             return
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(_render_text(message.content))
+            body.update(render_text(message.content))
         elif message.content:
-            await widget.mount(Static(_render_text(message.content), classes="body"))
+            await widget.mount(Static(render_text(message.content), classes="body"))
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
@@ -1018,12 +929,12 @@ class XBotTextualApp(App[None]):
         if meta is None:
             return
         meta.update(title)
-        detail = _tool_detail(tool)
+        detail = tool_detail(tool)
         body = self._query_child_first(widget, ".body")
         if body is not None:
             body.update(detail)
         elif detail:
-            await widget.mount(Static(_render_text(detail), classes="body"))
+            await widget.mount(Static(render_text(detail), classes="body"))
 
     def _query_child_first(self, widget: Any, selector: str) -> Any | None:
         try:
@@ -1048,7 +959,7 @@ class XBotTextualApp(App[None]):
                 else []
             )
             return self._request_widget(notice, key=key, title=f"{notice.ts}  question", choices=choices)
-        return _entry_widget("notice", f"{notice.ts}  {_notice_title(notice.kind)}", notice.text)
+        return entry_widget("notice", f"{notice.ts}  {notice_title(notice.kind)}", notice.text)
 
     def _request_widget(
         self,
@@ -1118,217 +1029,3 @@ class XBotTextualApp(App[None]):
             else:
                 text.append(f"  {choice.label}", style="dim")
         return text
-
-
-
-_STATUS_BADGE_STYLE: dict[str, str] = {
-    "Ready": "green",
-    "Running": "yellow",
-    "Connecting": "yellow",
-    "Waiting for user": "cyan",
-    "Approval required": "magenta",
-    "Permission denied": "red",
-    "Error": "red",
-    "Shutdown": "dim",
-}
-
-
-def _status_renderable(
-    *,
-    status: str,
-    session_id: str,
-    thread_id: str,
-    agent_name: str,
-    activity: str,
-    queue_depth: int,
-    usage: dict[str, int],
-) -> Text:
-    """Build the status bar as a styled ``Text`` segment list.
-
-    Returning ``Text`` lets us keep visual emphasis (bold name, colored
-    status) without the markup parsing that ``markup=False`` disables.
-    """
-
-    style = _STATUS_BADGE_STYLE.get(status, "white")
-    text = Text()
-    text.append("XBotv2", style="bold")
-    text.append("  ")
-    text.append(status, style=style)
-    text.append("  ")
-    text.append(f"{session_id}/{thread_id}")
-    text.append("  ")
-    text.append(f"agent:{agent_name}")
-    text.append("  ")
-    text.append(activity)
-    text.append("  ")
-    text.append(f"queued:{queue_depth}")
-    text.append("  ")
-    text.append(
-        f"usage req:{usage['requests']} "
-        f"in:{usage['input_tokens']} "
-        f"out:{usage['output_tokens']} "
-        f"total:{usage['total_tokens']}"
-    )
-    return text
-
-
-class ComposerTextArea(TextArea):
-    """Multiline composer with Enter-submit and Shift+Enter-newline behavior.
-
-    Slash-completion integration: while the composer text starts with
-    ``/`` and the popup is visible, ``Tab`` accepts the highlighted
-    candidate, ``Up``/``Down`` move within the candidate list, and
-    ``Escape`` dismisses the popup without touching the composer.
-    """
-
-    async def _on_key(self, event: Key) -> None:
-        app = self.app
-        if isinstance(app, XBotTextualApp):
-            if app._choice_mode_active():
-                event.stop()
-                event.prevent_default()
-                return
-            popup = app._get_completion_popup()
-            popup_visible = popup is not None and popup.visible
-            if event.key == "enter":
-                event.stop()
-                event.prevent_default()
-                await app.submit_composer()
-                return
-            if event.key == "shift+enter":
-                event.stop()
-                event.prevent_default()
-                self.insert("\n")
-                return
-            if event.key == "tab" and popup_visible and popup is not None:
-                spec = popup.current_match()
-                if spec is not None:
-                    event.stop()
-                    event.prevent_default()
-                    app._accept_completion(spec)
-                    return
-            if event.key == "up" and popup_visible and popup is not None:
-                event.stop()
-                event.prevent_default()
-                popup.move_selection(-1)
-                return
-            if event.key == "down" and popup_visible and popup is not None:
-                event.stop()
-                event.prevent_default()
-                popup.move_selection(1)
-                return
-            if event.key == "escape" and popup_visible and popup is not None:
-                event.stop()
-                event.prevent_default()
-                app._dismiss_completion_popup()
-                return
-            if event.key == "up" and (not self.text.strip() or app._history_index is not None):
-                event.stop()
-                event.prevent_default()
-                app.history_previous()
-                return
-            if event.key == "down" and app._history_index is not None:
-                event.stop()
-                event.prevent_default()
-                app.history_next()
-                return
-        await super()._on_key(event)
-
-
-class TranscriptScroll(VerticalScroll):
-    """Mouse-scrollable transcript that never participates in keyboard focus."""
-
-    can_focus = False
-
-
-@dataclass(frozen=True)
-class InlineChoice:
-    label: str
-    kind: str
-    payload: dict[str, str]
-
-
-def _message_widget(state: TuiState, message: TuiMessage) -> Vertical:
-    label = "You" if message.role == "user" else state.agent_name
-    return _entry_widget(message.role, f"{message.ts}  {label}", message.content)
-
-
-def _tool_widget(tool: TuiTool) -> Vertical:
-    import time as _time
-    elapsed = tool.elapsed(_time.monotonic())
-    if tool.finished_at > 0:
-        title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
-    else:
-        # Tool is still pending; show the live elapsed so the user
-        # can see "how long has this been running" at a glance. Per
-        # user question on 2026-06-05: the answer to "why is the
-        # tool pending?" starts with "for N seconds so far".
-        title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
-    return _entry_widget("tool", title, _tool_detail(tool))
-
-
-def _tool_detail(tool: TuiTool) -> str:
-    """Render the full tool result body — no truncation.
-
-    Per user direction (2026-06-05): each entry (message or tool
-    result) must be fully displayed without inner scroll. The whole
-    transcript scrolls, but never any single entry on its own. Long
-    tool results are intentionally wide-open here; the user can
-    always scroll the transcript if a result pushes the next event
-    off-screen.
-    """
-
-    parts: list[str] = []
-    if tool.args_preview:
-        parts.append(f"args: {tool.args_preview}")
-    if tool.summary:
-        parts.append(f"result: {tool.summary}")
-    return "\n".join(parts)
-
-
-def _entry_widget(kind: str, title: str, body: str) -> Vertical:
-    children = [Static(_render_text(title), classes="meta")]
-    if body:
-        children.append(Static(_render_text(body), classes="body"))
-    return Vertical(*children, classes=f"entry {kind}")
-
-
-def _render_text(content: str) -> Text:
-    """Render a multi-line string as a styled ``rich.text.Text``.
-
-    Wraps the body in an explicit ``Text`` instead of relying on
-    ``Static(markup=False)`` for two reasons:
-
-    1. ``markup=False`` still passes the string through Rich's
-       console printer, which on some terminals / widget layout
-       combinations renders the body invisibly (the bytes are in the
-       screen buffer — copyable via ``Ctrl-V`` — but no glyphs are
-       drawn).
-    2. Em-dash and other multi-byte UTF-8 characters survive
-       end-to-end because we are handing ``Text`` a Python str, not
-       a bytes buffer that some intermediate step might decode with
-       the wrong codec.
-
-    A ``Text`` instance is also explicitly bound to the
-    ``fg.default`` color, so the body is visible regardless of any
-    inherited ``color:`` rule on the parent.
-    """
-
-    text = Text(content, style="default", no_wrap=False, justify="left")
-    return text
-
-
-def _notice_title(kind: str) -> str:
-    return {
-        "client_message": "message",
-        "permission_denied": "denied",
-        "user_input_recorded": "answer",
-        "permission_response_recorded": "approval",
-        "Approval queued": "approval queued",
-        "Answer queued": "answer queued",
-        "Not connected": "not connected",
-    }.get(kind, kind)
-
-
-def _spinner(index: int) -> str:
-    return "|/-\\"[index % 4]
