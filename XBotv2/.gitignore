@@ -1,3 +1,4 @@
 # Ignore runtime session data but keep config files
-data/sessions/
-data/workspace/
+data/
+!data/config/
+!data/config/*.yaml
