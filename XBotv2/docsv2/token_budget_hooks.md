@@ -118,7 +118,7 @@ Responsibilities:
 
 Responsibilities:
 
-- Collect static overhead for system prompt, personality instructions, runtime
+- Collect static overhead for the system prompt, workspace `AGENTS.md`, runtime
   rules, sandbox summary, and plugin prompt fragments.
 - Collect dynamic overhead for history, current state, tool schemas, tool
   results, and model responses.

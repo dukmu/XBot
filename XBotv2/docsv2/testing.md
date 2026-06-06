@@ -2,157 +2,124 @@
 
 ## Structure
 
-```
+```text
 tests/
-  conftest.py               # Shared fixtures: temp_data_dir, temp_workspace
-  core/                     # Core tests (no built-in/Phase4 plugins loaded)
-    conftest.py
-    test_hooks.py           # HookManager, all 42 stages
-    test_state.py           # CoreStateStore, materializer, events, plugin state
-    test_context.py         # ContextBuilder, fragments, cache
-    test_builtin_filesystem.py  # Built-in filesystem tool metadata/write modes
-    test_tool_registry.py   # ToolRegistry, filtering
-    test_tool_runtime_cache.py  # Sandbox path resolution, permission events, tool-result cache hook
-    test_sandbox.py         # SandboxPolicy, transient one-call approvals
-    test_permissions.py     # PermissionSystem
-    test_engine.py          # Engine ReAct loop
-    test_bootstrap.py       # Bootstrap sequence
-    test_plugin_loader.py   # PluginLoader discovery, deps, manifest fragments, atomic failure rollback, unload cleanup
-    test_protocol.py        # Protocol frames, provider config, subprocess server, interaction events/responses, and terminal wrapper roundtrips
-    test_tui_client.py      # TUI state, Textual/curses interaction routing, queue drain, and runtime import boundary
-  plugins/                  # Per-plugin tests (loads only that plugin)
-    planning/
-    compact/
-    skills/
-    ...
-  integration/              # Full integration with all plugins
+  conftest.py
+  core/
+    test_bootstrap.py
+    test_builtin_filesystem.py
+    test_command.py
+    test_context.py
+    test_engine.py
+    test_hooks.py
+    test_permissions.py
+    test_persistence.py
+    test_plugin_loader.py
+    test_protocol.py
+    test_sandbox.py
+    test_state.py
+    test_tool_dispatch_timeout.py
+    test_tool_registry.py
+    test_tool_runtime_cache.py
+    test_tui_client.py
+  integration/
+    test_http_transport.py
+    test_tui_interaction.py
+    test_tui_interrupt_and_usage.py
+  bench/
+    test_http_latency.py
 ```
 
 ## Principles
 
-1. **No module-level state**: All caches are constructor-injected objects
-2. **No ContextVar leakage**: Fixtures ensure cleanup after each test
-3. **`temp_data_dir` only**: Never write to real `data/sessions/`
-4. **MockLLM**: Deterministic, configurable response sequences
-5. **Each test creates its own engine**: No shared state between tests
-6. **Core tests do not load built-in/Phase4 plugins**: Pure-core cases use
-   explicit `plugin_dirs=[]`; plugin mechanism tests may load temporary test
-   plugins from `tmp_path`. This remains true after built-in plugin manifests
-   exist.
+- Tests use temporary data/workspace directories unless explicitly validating the
+  checked-in Stage 2 data layout.
+- Core tests pass `plugin_dirs=[]` for pure-core cases.
+- `MockLLM` provides deterministic provider responses and records provider input
+  messages.
+- Runtime session output is ignored; config files are trackable.
+- TUI tests exercise transport/session boundaries and keep runtime imports out of
+  `xbotv2.tui` modules.
 
 ## Fixtures
 
-| Fixture | Scope | Provides |
-|---------|-------|----------|
-| `temp_data_dir` | function | Temp data directory with config/sessions/personalities |
-| `temp_workspace` | function | Temp workspace directory |
-| `hook_manager` | function | Empty HookManager |
-| `tool_registry` | function | Empty ToolRegistry |
-| `permission_system` | function | PermissionSystem (default: ask) |
-| `sandbox_policy` | function | SandboxPolicy (disabled) |
-| `context_builder` | function | Fresh ContextBuilder |
-| `mock_llm` | function | MockLLM with no responses |
-| `state_store` | function | CoreStateStore in temp directory |
-| `session_info` | function | Minimal SessionInfo |
-| `hook_context` | function | Basic HookContext for loop hooks |
+| Fixture | Provides |
+| --- | --- |
+| `temp_data_dir` | Temporary Stage 2 data root with `config/` and `sessions/` |
+| `temp_workspace` | Temporary external workspace root |
+| `hook_manager` | Empty HookManager |
+| `tool_registry` | Empty ToolRegistry |
+| `permission_system` | PermissionSystem with default ask |
+| `sandbox_policy` | SandboxPolicy for temp workspace |
+| `context_builder` | Fresh ContextBuilder |
+| `mock_llm` | MockLLM with no responses |
+| `state_store` | CoreStateStore with workspace/provider metadata |
+| `session_info` | SessionInfo with session/thread/workspace/provider |
+
+## Coverage Targets
+
+Stage 2 tests cover:
+
+- default generated session ids
+- explicit resume missing session returns 404
+- one HTTP server hosting multiple workspace roots
+- `AGENTS.md` inclusion in provider-facing context
+- shell cwd set to workspace root
+- sandbox defaults for workspace/external read/write
+- symlink escape denial
+- HTTP command discovery and execution
+- provider listing from `providers.yaml`
+- provider/permission/sandbox session override materialization
+- permission response scope forwarding for session/global approvals
+- policy command validation and live-policy reset behavior
+- command audit events not entering message history
+- TUI dynamic command completion and server command dispatch
+- live permission and user-input interaction flow
+- ESC interrupt and realtime usage rendering
+
+## Running Tests
+
+Run from repository root.
+
+```bash
+# Full XBotv2 test tree
+.venv/bin/python -m pytest XBotv2/tests
+
+# Core only
+.venv/bin/python -m pytest XBotv2/tests/core
+
+# HTTP protocol integration
+.venv/bin/python -m pytest XBotv2/tests/integration/test_http_transport.py
+
+# TUI integration
+.venv/bin/python -m pytest XBotv2/tests/integration/test_tui_interaction.py \
+  XBotv2/tests/integration/test_tui_interrupt_and_usage.py
+
+# Diff and whitespace check before commit
+git diff --check
+```
+
+Current Stage 2 verification baseline:
+
+```text
+370 passed, 2 warnings
+```
+
+The warnings are third-party `websockets` deprecations emitted through uvicorn.
 
 ## MockLLM
 
 ```python
-from langchain_core.messages import HumanMessage
 from xbotv2.llm.mock import MockLLM
 
-# Simple text responses
 llm = MockLLM(responses=[
-    {"content": "Hello!"},
+    {"content": "checking", "tool_calls": [
+        {"name": "shell", "args": {"command": "pwd"}, "id": "call_pwd"},
+    ]},
+    {"content": "done"},
 ])
-
-# With tool calls
-llm = MockLLM(responses=[
-    {
-        "content": "I'll check that.",
-        "tool_calls": [
-            {"name": "shell", "args": {"command": "ls"}, "id": "call_1"},
-        ],
-    },
-    {"content": "Done. Found 3 files."},
-])
-
-# Verify tool calls
-assert llm.verify_tool_call_made("shell", min_count=1)
-
-# Verify request context passed to the provider
-llm.invoke([HumanMessage(content="check context")])
-assert [m.content for m in llm.get_call_messages(0)] == ["check context"]
 ```
 
-## Running Tests
-
-Run commands from the repository root. The root `pyproject.toml` sets
-`pythonpath = ["XBotv2", "."]`, so XBotv2 tests import the package without a
-manual `PYTHONPATH`.
-
-```bash
-# All core tests
-uv run pytest XBotv2/tests/core/ -q
-
-# Specific test file
-uv run pytest XBotv2/tests/core/test_hooks.py -q
-
-# Plugin loader discovery and materialized state coverage
-uv run pytest XBotv2/tests/core/test_plugin_loader.py XBotv2/tests/core/test_state.py -q
-
-# JSONL protocol, stdio server subprocess, and terminal wrapper roundtrips
-uv run pytest XBotv2/tests/core/test_protocol.py -q
-
-# Textual and curses TUI state/import-boundary coverage
-uv run pytest XBotv2/tests/core/test_tui_client.py -q
-
-# Protocol interaction events and terminal wrapper roundtrips
-uv run pytest XBotv2/tests/core/test_protocol.py -q
-
-# With verbose output
-uv run pytest XBotv2/tests/core/ -v
-
-# Run a single test
-uv run pytest XBotv2/tests/core/test_engine.py::TestEngineBasics::test_simple_text_response -v
-```
-
-## Freeze Gate
-
-Core subprocess tests launch `python -m xbotv2 --mode server --no-plugins`;
-direct bootstrap tests declare `plugin_dirs` explicitly. Pure-core cases use
-`plugin_dirs=[]`; plugin-system cases use only temporary test plugin dirs.
-This keeps Phase 1-3 gates independent of future Phase 4 built-in plugin
-manifests.
-
-Use the same gate before freezing Phase 1-3 or committing runtime changes:
-
-```bash
-uv run python XBotv2/scripts/phase1_3_freeze_gate.py
-```
-
-The script expands to:
-
-```bash
-uv run pytest XBotv2/tests/core/ -q
-python -m compileall -q XBotv2/xbotv2
-git diff --check
-```
-
-## Planned Token Budget Tests
-
-`docsv2/token_budget_hooks.md` defines the evidence required before token
-estimation and budget control are frozen. The important future checks are:
-
-- context component metadata preserves source, plugin owner, and render order
-- tool-schema filtering happens before provider binding
-- provider request failures trigger a provider-specific hook plus `ON_ERROR`
-- user intake, tool-call lifecycle, client-event, and persistence hooks receive
-  the intended context fields
-- message persistence round-trips provider/tool metadata while filtering
-  internal `xbotv2_` side-channel kwargs from restored history
-- stop, compaction, permission, failure, and post-tool-batch hooks receive the
-  intended context fields
-- observe-only token stats persist source breakdowns without changing behavior
-- hard budget failures short-circuit before any provider call
+Use `llm.get_call_messages(index)` to inspect provider-facing context. This is
+how tests verify that workspace `AGENTS.md` enters the system prompt and command
+results stay out of message history.

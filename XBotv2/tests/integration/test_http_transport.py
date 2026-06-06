@@ -259,6 +259,119 @@ async def test_http_policy_commands_materialize_session_overrides(
 
 
 @pytest.mark.asyncio
+async def test_http_permission_response_preserves_scope() -> None:
+    from xbotv2.protocol.http_server import _resolve_interaction
+
+    request_id = "permission:scope"
+    captured: dict[str, str] = {}
+
+    class _WaiterSpy:
+        def answer(self, request_id: str, *, decision: str = "", scope: str = "once"):
+            captured.update({"request_id": request_id, "decision": decision, "scope": scope})
+            from xbotv2.core.interactions import InteractionResult
+
+            return InteractionResult(
+                request_id=request_id,
+                status="answered",
+                decision=decision,
+                scope=scope,
+            )
+
+        def pending_request_ids(self):
+            return []
+
+    class _Engine:
+        _permission_waiter = _WaiterSpy()
+        _user_input_waiter = _WaiterSpy()
+
+    class _Context:
+        engine = _Engine()
+
+    class _Manager:
+        async def get(self, session_id: str):
+            assert session_id == "permission-scope"
+            return _Context()
+
+    response = await _resolve_interaction(
+        manager=_Manager(),
+        session_id="permission-scope",
+        payload={"request_id": request_id, "decision": "allow", "scope": "session"},
+        kind="permission",
+    )
+
+    assert response["recorded"] is True
+    assert captured == {
+        "request_id": request_id,
+        "decision": "allow",
+        "scope": "session",
+    }
+
+
+@pytest.mark.asyncio
+async def test_http_policy_command_reset_rebuilds_live_policy(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    open_response = await client.post(
+        "/sessions", json={"session_id": "policy-reset", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+    ctx = await http_app.state.manager.get("policy-reset")
+
+    permission_set = await client.post(
+        "/sessions/policy-reset/commands",
+        json={"command": "permission", "args": ["set", "shell", "deny"]},
+    )
+    assert permission_set.status_code == 200
+    assert ctx.engine.permission_system.check("shell", {}) == "deny"
+
+    permission_reset = await client.post(
+        "/sessions/policy-reset/commands",
+        json={"command": "permission", "args": ["reset", "shell"]},
+    )
+    assert permission_reset.status_code == 200
+    assert ctx.engine.permission_system.check("shell", {}) == "ask"
+
+    sandbox_set = await client.post(
+        "/sessions/policy-reset/commands",
+        json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
+    )
+    assert sandbox_set.status_code == 200
+    assert ctx.engine.sandbox_policy.external_read == "deny"
+
+    sandbox_reset = await client.post(
+        "/sessions/policy-reset/commands",
+        json={"command": "sandbox", "args": ["reset", "external_read"]},
+    )
+    assert sandbox_reset.status_code == 200
+    assert ctx.engine.sandbox_policy.external_read == "ask"
+
+
+@pytest.mark.asyncio
+async def test_http_policy_commands_reject_invalid_values(
+    client: httpx.AsyncClient,
+) -> None:
+    open_response = await client.post(
+        "/sessions", json={"session_id": "policy-invalid", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+
+    permission_response = await client.post(
+        "/sessions/policy-invalid/commands",
+        json={"command": "permission", "args": ["set", "shell", "sometimes"]},
+    )
+    sandbox_response = await client.post(
+        "/sessions/policy-invalid/commands",
+        json={"command": "sandbox", "args": ["set", "external_read", "sometimes"]},
+    )
+
+    assert permission_response.status_code == 200
+    assert permission_response.json()["data"]["status"] == "error"
+    assert sandbox_response.status_code == 200
+    assert sandbox_response.json()["data"]["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)

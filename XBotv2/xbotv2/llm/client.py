@@ -85,7 +85,7 @@ def create_llm(provider_config: Any) -> BaseChatModel:
         if not api_key:
             raise ValueError(
                 f"Provider {provider!r} for model {model!r} requires api_key. "
-                "Set the configured environment variable or provider.yaml api_key."
+                "Set the configured environment variable or providers.yaml api_key."
             )
 
         logger.info(
@@ -115,7 +115,7 @@ def create_llm(provider_config: Any) -> BaseChatModel:
         if not api_key:
             raise ValueError(
                 f"Provider {provider!r} for model {model!r} requires api_key. "
-                "Set the configured environment variable or provider.yaml api_key."
+                "Set the configured environment variable or providers.yaml api_key."
             )
 
         logger.info(

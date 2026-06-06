@@ -365,9 +365,16 @@ async def _resolve_interaction(
                 "permission.response payload.decision must be allow or deny",
                 status=400,
             )
+        scope = str(payload.get("scope") or "once").strip().lower()
+        if scope not in {"once", "session", "always"}:
+            raise HttpServerError(
+                "invalid_request",
+                "permission.response payload.scope must be once, session, or always",
+                status=400,
+            )
         try:
             ctx.engine._permission_waiter.answer(  # noqa: SLF001
-                request_id, decision=decision
+                request_id, decision=decision, scope=scope
             )
         except Exception as exc:  # noqa: BLE001
             raise HttpServerError(

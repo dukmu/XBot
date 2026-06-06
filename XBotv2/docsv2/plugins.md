@@ -6,10 +6,9 @@ XBotv2 plugins are independent Python packages that extend the core engine
 through hooks, tools, and prompt fragments. Plugins are discovered,
 loaded, and wired at bootstrap time.
 
-Personality files can also register direct hooks with a `hooks:` list using
-`stage` and `target: module:function`. These hooks are resolved during
-bootstrap and fail loudly if the target cannot be imported. Plugin manifests
-remain the preferred mechanism for reusable extension packages.
+Workspace instructions are provided through `AGENTS.md`. Runtime extension
+still belongs to plugin manifests; workspace docs do not register hooks or
+tools directly.
 
 ## Plugin Manifest
 
@@ -45,14 +44,14 @@ prompt_fragments:
 4. **Initialization**: `on_load(config)` called
 5. **Registration**: Hooks → HookManager, Tools → ToolRegistry,
    Fragments → ContextBuilder
-6. **Tool selection**: personality `tools:` selectors restrict the complete
-   core+plugin registry
+6. **Tool selection**: registered tools remain visible unless filtered by
+   provider binding hooks or policy
 7. **Runtime**: Plugin hooks execute during engine lifecycle
 8. **Unload**: `on_unload()` called, hooks/tools/fragments removed
 
-Because tool selection happens after plugin registration, personality files can
-enable plugin-provided tools by name or prefix. Unknown selectors still fail
-closed during bootstrap.
+Because plugin registration happens during bootstrap, tool availability is
+deterministic before the first model request. Provider-binding hooks may narrow
+the visible schema set for a request, but they do not remove registered tools.
 
 If plugin registration fails after `on_load()` succeeds, the loader rolls back
 the plugin's newly registered hooks, tools, and prompt fragments before

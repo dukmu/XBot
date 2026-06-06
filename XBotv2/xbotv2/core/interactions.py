@@ -27,6 +27,7 @@ class InteractionResult:
     status: str
     answer: Any = None
     decision: str = ""
+    scope: str = "once"
     reason: str = ""
 
 
@@ -63,6 +64,7 @@ class InteractionWaiter:
         *,
         answer: Any = None,
         decision: str = "",
+        scope: str = "once",
     ) -> InteractionResult:
         """Resolve one pending request with a client answer."""
         future = self._pending.get(request_id)
@@ -73,6 +75,7 @@ class InteractionWaiter:
             status="answered",
             answer=answer,
             decision=decision,
+            scope=scope,
         )
         if not future.done():
             future.set_result(result)

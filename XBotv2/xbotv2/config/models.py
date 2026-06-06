@@ -17,7 +17,7 @@ class UserContext(BaseModel):
 
 
 class ProviderConfig(BaseModel):
-    """LLM provider configuration from provider.yaml."""
+    """LLM provider configuration from providers.yaml."""
 
     provider: str = Field(default="openai")
     model: str = Field(default="gpt-4")

@@ -25,7 +25,7 @@ Status: bench captured 2026-06-05 against Phase E milestone 3
 ```text
 $ xbotv2 --mode server --bind 127.0.0.1 --port 4100 \
     --data-dir /tmp/xbotv2-smoke/data \
-    --personality mock --provider mock --no-plugins &
+    --workspace /tmp/xbotv2-smoke/workspace --provider mock --no-plugins &
 [server starts on 127.0.0.1:4100]
 
 $ curl -s http://127.0.0.1:4100/health
@@ -33,8 +33,8 @@ $ curl -s http://127.0.0.1:4100/health
 
 $ curl -s -X POST http://127.0.0.1:4100/sessions \
     -H "Content-Type: application/json" \
-    -d '{"session_id":"smoke","thread_id":"t"}'
-{"session_id":"smoke","thread_id":"t","status":"ready","agent_name":"SmokeBot"}
+    -d '{"session_id":"smoke","thread_id":"t","mode":"new","workspace_root":"/tmp/xbotv2-smoke/workspace"}'
+{"session_id":"smoke","thread_id":"t","status":"ready","workspace_root":"/tmp/xbotv2-smoke/workspace","provider":"mock"}
 
 $ curl -sN -X POST http://127.0.0.1:4100/sessions/smoke/messages \
     -H "Content-Type: application/json" \
@@ -86,12 +86,8 @@ The doc §10.5.9 target was "< 20ms". We are well under it.
 ## Test breakdown
 
 ```text
-$ uv run pytest XBotv2/tests/ --no-header -q
-XBotv2/tests/core/test_tui_client.py ................................   [ 32 cases]
-XBotv2/tests/integration/test_http_transport.py ........                [  8 cases]
-XBotv2/tests/bench/test_http_latency.py .                              [  1 case]
-+ (core/plugin/persistence/etc.)
-============================= 288 passed in 4.39s ==============================
+$ .venv/bin/python -m pytest XBotv2/tests
+============================= 370 passed, 2 warnings ==============================
 ```
 
 ## Stdio removal verification

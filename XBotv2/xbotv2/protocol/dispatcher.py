@@ -280,7 +280,7 @@ async def live_interaction_sink(
                 "request_id": req_id,
                 "status": result.status,
                 "decision": result.decision,
-                "scope": "once",
+                "scope": result.scope,
                 "answer": result.answer,
                 "pending_interactions": state.get("pending_interactions", []),
             }
