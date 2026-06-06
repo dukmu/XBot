@@ -60,6 +60,12 @@ async def execute_tools(
     for tc in tool_calls:
         tool_name = tc["name"]
         entry = registry.get(tool_name) if registry else None
+        logger.info(
+            "tool.guard start id=%s name=%s args_keys=%s",
+            tc.get("id"),
+            tool_name,
+            sorted((tc.get("args") or {}).keys()),
+        )
 
         if entry is None:
             denials[tc["id"]] = f"Tool not registered: {tool_name}"
@@ -149,6 +155,11 @@ async def execute_tools(
                 )
                 continue
             if decision == "ask":
+                logger.info(
+                    "tool.permission ask id=%s name=%s",
+                    tc.get("id"),
+                    tool_name,
+                )
                 denials[tc["id"]] = (
                     f"Permission approval required for tool: {tool_name}. "
                     "No live permission handler is available, so this call "
@@ -213,6 +224,8 @@ async def execute_tools(
         entry = registry.get(tool_name)
         if entry is None:
             continue
+
+        logger.info("tool.execute start id=%s name=%s", tool_id, tool_name)
 
         tool = entry.tool
         args = dict(tc.get("args", {}))
@@ -365,6 +378,13 @@ async def execute_tools(
             )
             observed_tool_calls.append({**tc, "args": args})
             results.append(message)
+            logger.info(
+                "tool.execute finished id=%s name=%s status=%s content_len=%d",
+                tool_id,
+                tool_name,
+                message.status,
+                len(str(message.content)),
+            )
             await _run_tool_hook(
                 hook_manager,
                 hook_context_factory,

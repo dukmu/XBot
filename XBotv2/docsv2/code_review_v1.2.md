@@ -245,6 +245,30 @@ Sink 直接读 `ctx.engine._permission_waiter` / `ctx.engine._user_input_waiter`
 
 ---
 
+## 2.21 复测发现（2026-06-06 run.log）
+
+### P0 — Textual `tool_call_delta` 刷新可中断真实 SSE turn
+
+`run.log` 记录的真实栈：`tool_call_delta` → `_refresh_changed_tool_widgets()` → `_refresh_tool_widget()` → `widget.query(".body").first()` → `textual.css.query.NoMatches`。这不是 server-only HTTP 能发现的问题；纯 HTTP 测试能正常产出 SSE，但真实 Textual client 在 DOM 未完全具备 `.body` 时崩溃，随后客户端断开，server 取消 turn。
+
+**结论**: TUI 必须把“widget 尚未挂载/尚无 body”视为正常 streaming 中间态。DOM miss 不得成为协议错误。
+
+**已修复**: `_refresh_streaming_assistant_widget()` / `_refresh_tool_widget()` 使用 tolerate-miss child query；有 detail 时 mount `Static(..., classes="body")`。新增 headless Textual 回归：`test_textual_app_headless_handles_tool_call_delta_before_body_mount`。
+
+### P1 — `TerminalSession` live interaction 无 provider 时重复 yield
+
+`TerminalSession._send_message_impl()` 原逻辑会先 yield `permission_request` / `user_input_required`，但当没有 provider callback 时落入 `else` 再 yield 一次。Textual 正常传 provider，所以这条不会每次触发；但协议客户端抽象本身不稳定，会让 curses/测试/自定义 client 收到重复状态转换。
+
+**已修复**: live interaction 事件先 yield；provider 存在则回答；最后 `continue`，保证无 provider 时也只 yield 一次。新增 `test_terminal_session_yields_live_interaction_once_without_provider`。
+
+### P1 — REST 错误对 TUI 不可读
+
+`POST /sessions` bootstrap 失败时 server 已返回 `{"code":"session_open_failed","message":"..."}`，但 `HttpTransport` 直接 `response.raise_for_status()`，Textual 只能显示 `500 Internal Server Error`，用户看不到 provider/API key 等实际原因。
+
+**已修复**: `HttpTransport` 对非 2xx 统一解析 `{"code","message"}` 并抛 `RuntimeError("code: message")`。新增 `test_http_open_session_failure_returns_stable_json_error`，确保 server 错误形状稳定。
+
+---
+
 ## 3. 精简路线图 (优先级排序)
 
 ### Phase 1 — 修 Bug（不改变架构，只修代码）

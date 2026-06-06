@@ -98,6 +98,10 @@ class TuiState:
     pending_user_input_active: bool = False
     pending_permission_active: bool = False
     _tool_transcript_keys: set[str] = field(default_factory=set)
+    _streaming_assistant_index: int | None = None
+    _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
+    _changed_tool_ids: set[str] = field(default_factory=set)
+    _tool_id_renames: dict[str, str] = field(default_factory=dict)
 
     def apply_frame(self, frame: ProtocolFrame) -> None:
         self.session_id = frame.session_id or self.session_id
@@ -105,6 +109,8 @@ class TuiState:
         self.apply_event({"type": frame.type, "data": frame.payload})
 
     def apply_event(self, event: dict[str, Any]) -> None:
+        self._changed_tool_ids.clear()
+        self._tool_id_renames.clear()
         event_type = str(event.get("type") or "")
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
 
@@ -122,6 +128,8 @@ class TuiState:
                 "total_tokens": 0,
                 "requests": 0,
             }
+            self._streaming_assistant_index = None
+            self._streaming_tool_ids.clear()
             self._refresh_status(reset_terminal=True)
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
@@ -136,14 +144,28 @@ class TuiState:
             content = str(data.get("content") or "")
             tool_calls = data.get("tool_calls")
             if content.strip():
-                self.append_message("assistant", content)
+                if self._streaming_assistant_index is not None:
+                    try:
+                        self.messages[self._streaming_assistant_index].content = content
+                    except IndexError:
+                        self.append_message("assistant", content)
+                    self._streaming_assistant_index = None
+                else:
+                    self.append_message("assistant", content)
             elif tool_calls:
                 # Model responded with tool calls but no visible text.
                 # Show a synthetic thinking entry so the user can see
                 # what the model is about to call before the tool
                 # results arrive.
-                self.append_message("assistant", "Thinking…")
+                if self._streaming_assistant_index is None:
+                    self.append_message("assistant", "Thinking…")
             self._apply_tool_calls(tool_calls)
+        elif event_type == "assistant_message_delta":
+            content = str(data.get("content") or "")
+            reasoning = str(data.get("reasoning") or "")
+            self.append_assistant_delta(reasoning + content)
+        elif event_type == "tool_call_delta":
+            self._apply_tool_call_delta(data.get("tool_calls"))
         elif event_type == "tool_calls_started":
             self._apply_tool_calls(data.get("tool_calls"))
         elif event_type == "tool_result":
@@ -159,6 +181,7 @@ class TuiState:
             import time as _time
             tool.finished_at = _time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
+            self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "usage":
             self._apply_usage(data)
         elif event_type == "status":
@@ -222,8 +245,21 @@ class TuiState:
             self.status = "Shutdown"
 
     def append_message(self, role: str, content: str) -> None:
+        content = _repair_mojibake(content)
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
+
+    def append_assistant_delta(self, content: str) -> None:
+        if not content:
+            return
+        if self._streaming_assistant_index is None:
+            self.append_message("assistant", "")
+            self._streaming_assistant_index = len(self.messages) - 1
+        try:
+            self.messages[self._streaming_assistant_index].content += content
+        except IndexError:
+            self.append_message("assistant", content)
+            self._streaming_assistant_index = len(self.messages) - 1
 
     def append_notice(
         self,
@@ -306,7 +342,17 @@ class TuiState:
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
-            tool_call_id = str(raw_tool.get("id") or raw_tool.get("tool_call_id") or f"tool_{index}")
+            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
+            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
+            if raw_id:
+                tool_call_id = str(raw_id)
+                previous_id = self._streaming_tool_ids.get(stream_index)
+                if previous_id and previous_id != tool_call_id:
+                    self._rename_tool(previous_id, tool_call_id)
+                self._streaming_tool_ids[stream_index] = tool_call_id
+            else:
+                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
+                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
             tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
             tool.args_preview = _preview(raw_tool.get("args") or raw_tool.get("arguments") or "")
             tool.status = "pending"
@@ -316,6 +362,43 @@ class TuiState:
             if tool.started_at <= 0:
                 tool.started_at = _time.monotonic()
             self._ensure_tool_transcript(tool_call_id)
+            self._changed_tool_ids.add(tool_call_id)
+
+    def _apply_tool_call_delta(self, tool_calls: Any) -> None:
+        if not isinstance(tool_calls, list):
+            return
+        import time as _time
+        for index, raw_tool in enumerate(tool_calls):
+            if not isinstance(raw_tool, dict):
+                continue
+            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
+            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
+            if raw_id:
+                tool_call_id = str(raw_id)
+                previous_id = str(
+                    raw_tool.get("replaces_tool_call_id")
+                    or self._streaming_tool_ids.get(stream_index)
+                    or ""
+                )
+                if previous_id and previous_id != tool_call_id:
+                    self._rename_tool(previous_id, tool_call_id)
+                self._streaming_tool_ids[stream_index] = tool_call_id
+            else:
+                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
+                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
+            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            args = raw_tool.get("args_delta")
+            if args is None:
+                args = raw_tool.get("args") or raw_tool.get("arguments") or ""
+            if isinstance(args, str):
+                tool.args_preview = _preview(f"{tool.args_preview}{args}")
+            elif args:
+                tool.args_preview = _preview(args)
+            tool.status = "pending"
+            if tool.started_at <= 0:
+                tool.started_at = _time.monotonic()
+            self._ensure_tool_transcript(tool_call_id)
+            self._changed_tool_ids.add(tool_call_id)
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
         usage = data.get("total") if isinstance(data.get("total"), dict) else data
@@ -348,6 +431,28 @@ class TuiState:
             return
         self._tool_transcript_keys.add(tool_call_id)
         self.transcript.append(TuiTranscriptEntry(kind="tool", key=tool_call_id))
+
+    def _rename_tool(self, old_id: str, new_id: str) -> None:
+        if old_id == new_id or old_id not in self.tools:
+            return
+        old_tool = self.tools.pop(old_id)
+        existing = self.tools.get(new_id)
+        if existing is None:
+            old_tool.tool_call_id = new_id
+            self.tools[new_id] = old_tool
+        else:
+            if not existing.args_preview:
+                existing.args_preview = old_tool.args_preview
+            if existing.started_at <= 0:
+                existing.started_at = old_tool.started_at
+        for entry in self.transcript:
+            if entry.kind == "tool" and entry.key == old_id:
+                entry.key = new_id
+        if old_id in self._tool_transcript_keys:
+            self._tool_transcript_keys.remove(old_id)
+            self._tool_transcript_keys.add(new_id)
+        self._tool_id_renames[old_id] = new_id
+        self._changed_tool_ids.update({old_id, new_id})
 
 
 class CursesTuiClient:
@@ -502,6 +607,22 @@ def _preview(value: Any, *, width: int = 120) -> str:
     return "\n".join(
         shorten(line, width=width, placeholder="...") for line in text.splitlines() or [""]
     )
+
+
+def _repair_mojibake(text: str) -> str:
+    """Repair common UTF-8 bytes decoded as Latin-1/CP1252 mojibake."""
+
+    if not text or not any(marker in text for marker in ("Ã", "Â", "å", "æ", "ç", "è", "é")):
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return text
+    return repaired if _cjk_score(repaired) > _cjk_score(text) else text
+
+
+def _cjk_score(text: str) -> int:
+    return sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
 
 
 def _wrap(text: str, width: int) -> list[str]:

@@ -19,7 +19,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from xbotv2.core.interactions import (
     InteractionDisconnected,
@@ -609,10 +609,17 @@ class Engine:
             tools = model_request["tools"]
             llm_with_tools = model_request["llm"]
             try:
-                response = await asyncio.wait_for(
-                    llm_with_tools.ainvoke(context_messages),
-                    timeout=_LLM_DISPATCH_TIMEOUT,
-                )
+                response = None
+                async for model_event in self._stream_model_response(
+                    llm_with_tools,
+                    context_messages,
+                ):
+                    if model_event.get("type") == "_model_response":
+                        response = model_event["data"]["response"]
+                    else:
+                        yield model_event
+                if response is None:
+                    raise RuntimeError("LLM stream completed without a response")
             except asyncio.TimeoutError:
                 logger.error(
                     "engine.turn LLM timed out after %ss (turn=%d)",
@@ -723,6 +730,10 @@ class Engine:
                 "type": "tool_calls_started",
                 "data": {"tool_calls": normalized_calls},
             }
+            tool_names_by_id = {
+                str(tc.get("id") or ""): str(tc.get("name") or "tool")
+                for tc in normalized_calls
+            }
 
             # Execute tools
             from xbotv2.tools.runtime import execute_tools
@@ -787,6 +798,7 @@ class Engine:
                     "type": "tool_result",
                     "data": {
                         "tool_call_id": tm.tool_call_id,
+                        "name": tool_names_by_id.get(str(tm.tool_call_id), "tool"),
                         "content": tm.content,
                         "status": getattr(tm, "status", "success"),
                     },
@@ -850,6 +862,62 @@ class Engine:
         self._backtrack_orphan_tool_calls()
 
         yield {"type": "turn_finished", "data": {"turn": self._turn_count}}
+
+    async def _stream_model_response(
+        self,
+        llm: Any,
+        context_messages: list[Any],
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream provider chunks and reconstruct the final AIMessage.
+
+        LangChain's public ``astream`` yields ``AIMessageChunk`` objects.
+        The final reconstructed message is passed back through an internal
+        sentinel so the existing hook/tool/history flow stays unchanged.
+        """
+
+        aggregate: AIMessageChunk | AIMessage | None = None
+        tool_stream_ids: dict[int, str] = {}
+        async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
+            async for chunk in llm.astream(context_messages):
+                if isinstance(chunk, AIMessageChunk):
+                    aggregate = chunk if aggregate is None else aggregate + chunk  # type: ignore[operator]
+                    content = chunk.content if isinstance(chunk.content, str) else ""
+                    reasoning = self._extract_reasoning_delta(chunk)
+                    if content or reasoning:
+                        yield {
+                            "type": "assistant_message_delta",
+                            "data": {"content": content, "reasoning": reasoning},
+                        }
+                    tool_chunks = getattr(chunk, "tool_call_chunks", None)
+                    if tool_chunks:
+                        yield {
+                            "type": "tool_call_delta",
+                            "data": {
+                                "tool_calls": self._normalize_tool_call_chunks(
+                                    tool_chunks,
+                                    stream_ids=tool_stream_ids,
+                                )
+                            },
+                        }
+                    continue
+                if isinstance(chunk, AIMessage):
+                    aggregate = chunk
+                    content = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                    if content:
+                        yield {"type": "assistant_message_delta", "data": {"content": content}}
+                    tool_calls = getattr(chunk, "tool_calls", None)
+                    if tool_calls:
+                        yield {
+                            "type": "tool_call_delta",
+                            "data": {"tool_calls": self._normalize_tool_calls(tool_calls)},
+                        }
+                    continue
+                aggregate = chunk  # type: ignore[assignment]
+
+        if aggregate is None:
+            raise RuntimeError("LLM stream produced no chunks")
+        response = self._chunk_to_message(aggregate) if isinstance(aggregate, AIMessageChunk) else aggregate
+        yield {"type": "_model_response", "data": {"response": response}}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1160,14 +1228,87 @@ class Engine:
                     "name": tc.get("name", ""),
                     "args": tc.get("args", {}),
                     "id": tc.get("id", f"call_{i}"),
+                    "index": int(tc.get("index") if tc.get("index") is not None else i),
                 })
             else:
                 result.append({
                     "name": getattr(tc, "name", ""),
                     "args": getattr(tc, "args", {}),
                     "id": getattr(tc, "id", f"call_{i}"),
+                    "index": int(getattr(tc, "index", i) if getattr(tc, "index", None) is not None else i),
                 })
         return result
+
+    @staticmethod
+    def _normalize_tool_call_chunks(
+        tool_chunks: list[Any],
+        *,
+        stream_ids: dict[int, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Normalize streaming tool-call chunks for live UI previews.
+
+        Strict event shape for each item:
+        ``tool_call_id`` is always present, ``args_delta`` is the latest
+        partial provider chunk, and ``replaces_tool_call_id`` is present
+        exactly when a provider upgrades a provisional index id to a real id.
+        ``id``/``args`` remain as aliases for older clients.
+        """
+
+        result = []
+        for i, tc in enumerate(tool_chunks):
+            if isinstance(tc, dict):
+                index = int(tc.get("index") if tc.get("index") is not None else i)
+                name = tc.get("name") or "tool"
+                args_delta = tc.get("args") or tc.get("arguments") or ""
+                raw_id = tc.get("id") or tc.get("tool_call_id")
+            else:
+                raw_index = getattr(tc, "index", None)
+                index = int(raw_index if raw_index is not None else i)
+                name = getattr(tc, "name", None) or "tool"
+                args_delta = getattr(tc, "args", None) or getattr(tc, "arguments", None) or ""
+                raw_id = getattr(tc, "id", None) or getattr(tc, "tool_call_id", None)
+            previous_id = stream_ids.get(index) if stream_ids is not None else None
+            tool_call_id = str(raw_id or previous_id or f"tool_{index}")
+            if stream_ids is not None:
+                stream_ids[index] = tool_call_id
+            item = {
+                "tool_call_id": tool_call_id,
+                "id": tool_call_id,
+                "name": str(name),
+                "args_delta": args_delta,
+                "args": args_delta,
+                "index": index,
+            }
+            if previous_id and previous_id != tool_call_id:
+                item["replaces_tool_call_id"] = previous_id
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _chunk_to_message(chunk: AIMessageChunk) -> AIMessage:
+        content = chunk.content if isinstance(chunk.content, str) else chunk.content
+        kwargs: dict[str, Any] = {
+            "content": content,
+            "additional_kwargs": dict(getattr(chunk, "additional_kwargs", {}) or {}),
+            "response_metadata": dict(getattr(chunk, "response_metadata", {}) or {}),
+        }
+        usage_metadata = getattr(chunk, "usage_metadata", None)
+        if usage_metadata is not None:
+            kwargs["usage_metadata"] = usage_metadata
+        tool_calls = getattr(chunk, "tool_calls", None)
+        if tool_calls:
+            kwargs["tool_calls"] = tool_calls
+        return AIMessage(**kwargs)
+
+    @staticmethod
+    def _extract_reasoning_delta(chunk: AIMessageChunk) -> str:
+        additional = getattr(chunk, "additional_kwargs", None)
+        if isinstance(additional, dict):
+            for key in ("reasoning_content", "reasoning"):
+                value = additional.get(key)
+                if isinstance(value, str):
+                    return value
+        return ""
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, int] | None:

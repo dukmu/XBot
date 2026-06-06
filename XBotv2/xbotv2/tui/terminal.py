@@ -158,34 +158,37 @@ class TerminalSession:
             # the status bar and transcript BEFORE we block on the
             # user's response.  Otherwise the UI stays frozen on
             # "Running" while the tools sit in "pending" forever.
-            if event_type in ("permission_request", "user_input_required"):
+            if event_type == "permission_request":
                 yield event
+                if permission_provider is not None:
+                    payload = event.get("data") or {}
+                    response = _await_maybe(permission_provider(payload))
+                    if hasattr(response, "__await__"):
+                        response = await response  # type: ignore[unreachable]
+                    decision = str(response.get("decision") or "deny")
+                    scope = str(response.get("scope") or "once")
+                    await self._transport.send_permission_response(
+                        session_id=self._session_id,
+                        request_id=str(payload.get("request_id") or ""),
+                        decision=decision,
+                        scope=scope,
+                    )
+                continue
+            if event_type == "user_input_required":
+                yield event
+                if input_provider is not None:
+                    payload = event.get("data") or {}
+                    answer = _await_maybe(input_provider(payload))
+                    if hasattr(answer, "__await__"):
+                        answer = await answer  # type: ignore[unreachable]
+                    await self._transport.send_user_input(
+                        session_id=self._session_id,
+                        request_id=str(payload.get("request_id") or ""),
+                        answer=answer,
+                    )
+                continue
 
-            if event_type == "permission_request" and permission_provider is not None:
-                payload = event.get("data") or {}
-                response = _await_maybe(permission_provider(payload))
-                if hasattr(response, "__await__"):
-                    response = await response  # type: ignore[unreachable]
-                decision = str(response.get("decision") or "deny")
-                scope = str(response.get("scope") or "once")
-                await self._transport.send_permission_response(
-                    session_id=self._session_id,
-                    request_id=str(payload.get("request_id") or ""),
-                    decision=decision,
-                    scope=scope,
-                )
-            elif event_type == "user_input_required" and input_provider is not None:
-                payload = event.get("data") or {}
-                answer = _await_maybe(input_provider(payload))
-                if hasattr(answer, "__await__"):
-                    answer = await answer  # type: ignore[unreachable]
-                await self._transport.send_user_input(
-                    session_id=self._session_id,
-                    request_id=str(payload.get("request_id") or ""),
-                    answer=answer,
-                )
-            else:
-                yield event
+            yield event
 
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
         return await self._transport.send_user_input(

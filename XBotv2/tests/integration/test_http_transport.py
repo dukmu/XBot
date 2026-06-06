@@ -31,6 +31,8 @@ from httpx import ASGITransport
 from xbotv2.llm.mock import MockLLM
 from xbotv2.protocol.frames import PROTOCOL_VERSION
 from xbotv2.protocol.http_server import create_app, set_llm_override
+from xbotv2.tui.terminal import TerminalSession
+from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -133,6 +135,43 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
     assert body["status"] == "ready"
     assert body["agent_name"]
     assert body["session_id"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "personalities" / "default").mkdir(parents=True)
+    (data_dir / "config" / "provider.yaml").write_text(
+        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n",
+        encoding="utf-8",
+    )
+    (data_dir / "config" / "user.yaml").write_text(
+        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
+        encoding="utf-8",
+    )
+    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
+        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+        "sandbox:\n  enabled: false\n  resources: []\n",
+        encoding="utf-8",
+    )
+    app = create_app(
+        personality_id="default",
+        provider_name="default",
+        data_dir=str(data_dir),
+        no_plugins=True,
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        response = await ac.post("/sessions", json={"session_id": "bad", "thread_id": "t"})
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["code"] == "session_open_failed"
+    assert "requires api_key" in body["message"]
 
 
 @pytest.mark.asyncio
@@ -396,3 +435,114 @@ async def test_http_interrupt_when_idle_returns_no_op(
     assert body["session_id"] == "idle"
     assert body["cancelled"] is False
     assert body["status"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
+    tmp_path: Path,
+) -> None:
+    """Real socket SSE must stay open while a permission request waits.
+
+    This reproduces the user's pending ``filesystem_list`` case: the tool
+    reaches ``permission_request`` and waits for the TUI.  The transport uses
+    a tiny 0.1s default timeout; the permission provider waits longer than
+    that. If SSE uses the regular read timeout, this test fails before the
+    provider can answer and no ``tool_result`` is emitted.
+    """
+
+    import socket
+    import threading
+    import uvicorn
+
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    workspace = data_dir / "sessions" / "default" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "hello.txt").write_text("hello", encoding="utf-8")
+    (data_dir / "personalities" / "default").mkdir(parents=True)
+    (data_dir / "config" / "provider.yaml").write_text(
+        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
+        encoding="utf-8",
+    )
+    (data_dir / "config" / "user.yaml").write_text(
+        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
+        encoding="utf-8",
+    )
+    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
+        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+        "sandbox:\n  enabled: true\n  resources: []\n",
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        personality_id="default",
+        provider_name="default",
+        data_dir=str(data_dir),
+        no_plugins=True,
+    )
+    set_llm_override(app, MockLLM(responses=[
+        {
+            "content": "listing",
+            "tool_calls": [
+                {"name": "filesystem_list", "args": {"path": "."}, "id": "call_list"},
+            ],
+        },
+        {"content": "done"},
+    ]))
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    )
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}",
+            timeout=5.0,
+        ) as probe:
+            for _ in range(50):
+                try:
+                    response = await probe.get("/health")
+                    if response.status_code == 200:
+                        break
+                except httpx.RequestError:
+                    await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError("uvicorn server failed to start")
+
+        transport = HttpTransport(f"http://127.0.0.1:{port}", timeout=0.1)
+        session = TerminalSession(
+            session_id="default",
+            thread_id="agent",
+            transport=transport,
+        )
+        await session.connect()
+
+        async def approve(_: dict[str, Any]) -> dict[str, str]:
+            await asyncio.sleep(0.2)
+            return {"decision": "allow", "scope": "once"}
+
+        events = [
+            event
+            async for event in session.send_message(
+                "list workspace",
+                permission_provider=approve,
+            )
+        ]
+        await session.disconnect()
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=3.0)
+
+    assert "permission_request" in [event.get("type") for event in events]
+    assert any(
+        event.get("type") == "tool_result"
+        and event.get("data", {}).get("tool_call_id") == "call_list"
+        and event.get("data", {}).get("status") == "success"
+        for event in events
+    )

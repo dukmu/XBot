@@ -6,6 +6,7 @@ from langchain_core.tools import tool as langchain_tool
 
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder, ContextComponent
+from xbotv2.core.builtin_tools.shell import shell
 from xbotv2.hooks.manager import HookManager
 from xbotv2.hooks.types import HookStage
 from xbotv2.llm.mock import MockLLM
@@ -136,6 +137,109 @@ class TestEngineBasics:
                     "output_tokens": 7,
                     "total_tokens": 18,
                     "requests": 1,
+                },
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_streaming_text_deltas_precede_final_assistant_message(self, state_store, temp_workspace):
+        """Engine surfaces LangChain AIMessageChunk content as live deltas."""
+        llm = MockLLM(responses=[{
+            "content": "Hello world",
+            "chunks": ["Hello ", "world"],
+        }])
+        registry = ToolRegistry()
+
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        events = [e async for e in engine.run_turn("hi")]
+
+        delta_events = [e for e in events if e["type"] == "assistant_message_delta"]
+        assert [e["data"]["content"] for e in delta_events] == ["Hello ", "world"]
+        assistant_events = [e for e in events if e["type"] == "assistant_message"]
+        assert assistant_events[-1]["data"]["content"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_streaming_tool_call_chunks_precede_tool_execution(self, state_store, temp_workspace):
+        """Engine surfaces partial tool-call chunks before tool_calls_started."""
+        llm = MockLLM(responses=[
+            {
+                "content": "",
+                "tool_calls": [{"name": "echo", "args": {"message": "hello"}, "id": "call_1"}],
+                "chunks": [
+                    {
+                        "tool_call_chunks": [
+                            {"name": "echo", "args": '{"message"', "id": "call_1", "index": 0},
+                        ],
+                    },
+                    {
+                        "tool_call_chunks": [
+                            {"args": ': "hello"}', "index": 0},
+                        ],
+                    },
+                ],
+            },
+            {"content": "Done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo, sandbox_mode="host")
+
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        events = [e async for e in engine.run_turn("echo hello")]
+
+        types = [e["type"] for e in events]
+        assert types.index("tool_call_delta") < types.index("tool_calls_started")
+        delta_events = [e for e in events if e["type"] == "tool_call_delta"]
+        assert delta_events[0]["data"]["tool_calls"][0] == {
+            "tool_call_id": "call_1",
+            "id": "call_1",
+            "name": "echo",
+            "args_delta": '{"message"',
+            "args": '{"message"',
+            "index": 0,
+        }
+        assert delta_events[1]["data"]["tool_calls"][0] == {
+            "tool_call_id": "call_1",
+            "id": "call_1",
+            "name": "tool",
+            "args_delta": ': "hello"}',
+            "args": ': "hello"}',
+            "index": 0,
+        }
+        assert "tool_result" in types
+
+    @pytest.mark.asyncio
+    async def test_streaming_shell_tool_call_executes_and_finishes(self, state_store, temp_workspace):
+        """Streaming tool-call chunks must not break the shell execution chain."""
+        llm = MockLLM(responses=[
+            {
+                "content": "",
+                "tool_calls": [{"name": "shell", "args": {"command": "printf xbot-shell"}, "id": "call_shell"}],
+                "chunks": [
+                    {"tool_call_chunks": [{"name": "shell", "args": '{"command"', "index": 0}]},
+                    {"tool_call_chunks": [{"args": ': "printf xbot-shell"}', "id": "call_shell", "index": 0}]},
+                ],
+            },
+            {"content": "Done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(shell, sandbox_mode="host")
+
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        events = [e async for e in engine.run_turn("run shell")]
+
+        tool_results = [e for e in events if e["type"] == "tool_result"]
+        tool_delta_events = [e for e in events if e["type"] == "tool_call_delta"]
+        assert tool_delta_events[0]["data"]["tool_calls"][0]["tool_call_id"] == "tool_0"
+        assert tool_delta_events[1]["data"]["tool_calls"][0]["tool_call_id"] == "call_shell"
+        assert tool_delta_events[1]["data"]["tool_calls"][0]["replaces_tool_call_id"] == "tool_0"
+        assert tool_results == [
+            {
+                "type": "tool_result",
+                "data": {
+                    "tool_call_id": "call_shell",
+                    "name": "shell",
+                    "content": "xbot-shell",
+                    "status": "success",
                 },
             }
         ]

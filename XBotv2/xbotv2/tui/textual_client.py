@@ -8,6 +8,7 @@ runtime engine, bootstrap, LangChain, or LangGraph.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from xbotv2.tui.client import (
     TuiTool,
     TuiTranscriptEntry,
     _parse_permission_decision,
+    _repair_mojibake,
 )
 from xbotv2.tui.command import (
     CommandSpec,
@@ -39,6 +41,9 @@ from xbotv2.tui.mode import Mode
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
 from xbotv2.tui.trace import trace_event
+
+
+logger = logging.getLogger("xbotv2.tui")
 
 
 class TextualTuiClient:
@@ -223,6 +228,7 @@ class XBotTextualApp(App[None]):
         self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
         self._tool_widgets: dict[str, Vertical] = {}
+        self._message_widgets: dict[int, Vertical] = {}
         self._choice_widgets: dict[str, Static] = {}
         self._choice_payloads: dict[str, list[InlineChoice]] = {}
         self._resolved_choice_keys: set[str] = set()
@@ -279,7 +285,7 @@ class XBotTextualApp(App[None]):
         composer = self.query_one("#input", ComposerTextArea)
         if self._choice_mode_active():
             return
-        text = composer.text.strip()
+        text = _repair_mojibake(composer.text.strip())
         trace_event("tui.submit", {"text": text, "repr": repr(text)})
         composer.load_text("")
         self._history_index = None
@@ -351,15 +357,19 @@ class XBotTextualApp(App[None]):
         # reuse a finished one.
         async def _do() -> None:
             try:
-                await self.session.transport.interrupt(
+                result = await self.session.transport.interrupt(
                     session_id=self.session.session_id
                 )
             except Exception:  # noqa: BLE001 — worker must not raise
                 return
             if not self.is_mounted:
                 return
-            self.state.status = "Interrupting…"
-            self._refresh_status()
+            if result.get("cancelled"):
+                self.state.status = "Interrupting..."
+                self._refresh_status()
+            elif self.state.turn_active:
+                self.state.status = "Running"
+                self._refresh_status()
 
         self.run_worker(
             _do(),
@@ -430,6 +440,7 @@ class XBotTextualApp(App[None]):
         self._rendered_transcript_entries = 0
         self._activity_widgets.clear()
         self._tool_widgets.clear()
+        self._message_widgets.clear()
         self._choice_widgets.clear()
         self._choice_payloads.clear()
         self._choice_results.clear()
@@ -511,14 +522,17 @@ class XBotTextualApp(App[None]):
 
     async def _collect_response(self, text: str) -> None:
         try:
+            logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
             async for event in self.session.send_message(
                 text,
                 input_provider=self._answer_live_input,
                 permission_provider=self._answer_live_permission,
             ):
+                logger.debug("tui.collect_response event type=%s", event.get("type"))
                 self.state.apply_event(event)
                 await self._handle_stream_event(event)
         except Exception as exc:
+            logger.exception("tui.collect_response failed")
             self._record_error(exc)
 
     async def _answer_live_input(self, payload: dict[str, Any]) -> str:
@@ -547,6 +561,11 @@ class XBotTextualApp(App[None]):
             return None
 
     def _record_error(self, exc: BaseException) -> None:
+        logger.error(
+            "tui error recorded: %s",
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         # If the app is being torn down, DOM lookups can fail. Don't
         # clobber a meaningful status (e.g. "Interrupted") with "Error"
         # just because the last UI refresh raced the teardown.
@@ -554,6 +573,14 @@ class XBotTextualApp(App[None]):
             return
         self.state.status = "Error"
         self.state.errors.append(str(exc))
+        self.state.transcript.append(
+            TuiTranscriptEntry(kind="error", key=str(len(self.state.errors) - 1))
+        )
+        self.run_worker(
+            self._render_new_transcript_entries,
+            exclusive=False,
+            name="render_error",
+        )
         self._refresh_all()
 
     async def _append_local_notice(self, kind: str, text: str) -> None:
@@ -604,8 +631,16 @@ class XBotTextualApp(App[None]):
             self._refresh_status()
         elif event_type == "usage":
             self._update_activity()
+        elif event_type == "assistant_message_delta":
+            await self._refresh_streaming_assistant_widget()
+        elif event_type == "assistant_message":
+            await self._refresh_streaming_assistant_widget()
+        elif event_type == "tool_call_delta":
+            await self._refresh_changed_tool_widgets()
+        elif event_type == "tool_calls_started":
+            await self._refresh_changed_tool_widgets()
         elif event_type == "tool_result":
-            await self._refresh_tool_widget(str((event.get("data") or {}).get("tool_call_id") or ""))
+            await self._refresh_changed_tool_widgets()
         elif event_type in {
             "user_input_recorded",
             "permission_response_recorded",
@@ -901,7 +936,9 @@ class XBotTextualApp(App[None]):
                 message = self.state.messages[int(key)]
             except (ValueError, IndexError):
                 return None
-            return _message_widget(self.state, message)
+            widget = _message_widget(self.state, message)
+            self._message_widgets[int(key)] = widget
+            return widget
         if kind == "tool":
             tool = self.state.tools.get(key)
             if tool is None:
@@ -923,6 +960,33 @@ class XBotTextualApp(App[None]):
             return _entry_widget("error", "Error", error)
         return None
 
+    async def _refresh_changed_tool_widgets(self) -> None:
+        for old_id, new_id in self.state._tool_id_renames.items():
+            widget = self._tool_widgets.pop(old_id, None)
+            if widget is not None:
+                self._tool_widgets[new_id] = widget
+        for tool_call_id in list(self.state._changed_tool_ids):
+            await self._refresh_tool_widget(tool_call_id)
+
+    async def _refresh_streaming_assistant_widget(self) -> None:
+        index = self.state._streaming_assistant_index
+        if index is None and self.state.messages:
+            index = len(self.state.messages) - 1
+        if index is None:
+            return
+        try:
+            message = self.state.messages[index]
+        except IndexError:
+            return
+        widget = self._message_widgets.get(index)
+        if widget is None:
+            return
+        body = self._query_child_first(widget, ".body")
+        if body is not None:
+            body.update(_render_text(message.content))
+        elif message.content:
+            await widget.mount(Static(_render_text(message.content), classes="body"))
+
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
             return
@@ -938,14 +1002,22 @@ class XBotTextualApp(App[None]):
             title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
         else:
             title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
-        meta = widget.query_one(".meta", Static)
+        meta = self._query_child_first(widget, ".meta")
+        if meta is None:
+            return
         meta.update(title)
         detail = _tool_detail(tool)
-        body = widget.query(".body").first()
+        body = self._query_child_first(widget, ".body")
         if body is not None:
             body.update(detail)
         elif detail:
-            await widget.mount(_render_text(detail), classes="body")
+            await widget.mount(Static(_render_text(detail), classes="body"))
+
+    def _query_child_first(self, widget: Any, selector: str) -> Any | None:
+        try:
+            return widget.query(selector).first()
+        except Exception:  # noqa: BLE001 — child may not exist until later chunks
+            return None
 
     def _notice_widget(self, notice: TuiNotice, key: str) -> Vertical:
         if notice.kind == "permission_request":

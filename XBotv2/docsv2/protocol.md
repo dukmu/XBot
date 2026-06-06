@@ -74,10 +74,18 @@ smoke tests. Default runtime mode still scans the built-in plugin root.
   `error`; `send_message_with_input()` can answer live `ask_user` requests
   through an input provider. Helper methods remain for standalone
   `user.input` and `permission.response` commands.
+- Live interaction events are yielded exactly once. The client sees
+  `permission_request` / `user_input_required` before any provider callback is
+  awaited; if no provider is installed, the event is still yielded once and the
+  session does not auto-answer.
 - `TextualTuiClient` is the default `--mode tui` frontend. It consumes protocol
   events only through `TerminalSession`, uses the same `user.input` and
   `permission.response` command surface for live interactions, and does not
   import runtime, core, LangChain, or LangGraph modules.
+- Textual rendering treats missing child widgets during streaming as a normal
+  intermediate state. A pending `tool_call_delta` may create a tool entry with
+  only metadata; later detail/body updates must not crash or disconnect the SSE
+  stream.
 - `CursesTuiClient` remains available as the legacy `--mode curses` fallback
   and follows the same protocol-only boundary.
 - `TuiState` renders assistant messages, tool calls/results, errors, client
@@ -87,3 +95,11 @@ smoke tests. Default runtime mode still scans the built-in plugin root.
   and errors as terminal notice states for that turn. During a live
   `ask_user`, the next typed line is sent as the answer instead of starting a
   new user turn.
+
+## HTTP Error Shape
+
+All REST endpoints return stable JSON errors with `{"code": str,
+"message": str}`. The TUI HTTP transport parses that body before raising so
+the visible error is `code: message` rather than a generic HTTP status line.
+Server bootstrap failures, including provider/API-key misconfiguration, use
+`session_open_failed` with the original diagnostic message.

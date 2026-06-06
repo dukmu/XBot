@@ -28,6 +28,7 @@ class HttpTransport:
         timeout: float = 30.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -54,7 +55,7 @@ class HttpTransport:
                 "personality_id": personality_id,
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         payload = response.json()
         trace_event(
             "tui.http",
@@ -72,7 +73,7 @@ class HttpTransport:
             "/sessions",
             json={"session_id": session_id, "thread_id": thread_id},
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         payload = response.json()
         trace_event(
             "tui.http",
@@ -105,7 +106,7 @@ class HttpTransport:
             f"/sessions/{session_id}/interactions/permission-response",
             json={"request_id": request_id, "decision": decision, "scope": scope},
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         payload = response.json()
         trace_event(
             "tui.http",
@@ -128,7 +129,7 @@ class HttpTransport:
             f"/sessions/{session_id}/interactions/user-input",
             json={"request_id": request_id, "answer": answer},
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         payload = response.json()
         trace_event(
             "tui.http",
@@ -138,14 +139,14 @@ class HttpTransport:
 
     async def shutdown(self, *, session_id: str) -> dict[str, Any]:
         response = await self._client.post(f"/sessions/{session_id}/shutdown")
-        response.raise_for_status()
+        _raise_for_status(response)
         return response.json()
 
     async def interrupt(self, *, session_id: str) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/interrupt"
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         payload = response.json()
         trace_event(
             "tui.http",
@@ -181,8 +182,9 @@ class HttpTransport:
             "POST",
             path,
             json=json_body,
+            timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
-            response.raise_for_status()
+            _raise_for_status(response)
             event_name: str | None = None
             data_lines: list[str] = []
             event_id: int | None = None
@@ -244,3 +246,21 @@ class HttpTransport:
                     yield json.loads(payload_text)
                 except json.JSONDecodeError:
                     pass
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    """Raise a readable protocol error for non-2xx HTTP responses."""
+
+    is_success = getattr(response, "is_success", None)
+    if is_success is None:
+        response.raise_for_status()
+        return
+    if is_success:
+        return
+    try:
+        payload = response.json()
+    except ValueError:
+        response.raise_for_status()
+    code = str(payload.get("code") or response.status_code)
+    message = str(payload.get("message") or response.text or response.reason_phrase)
+    raise RuntimeError(f"{code}: {message}")

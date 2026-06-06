@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatResult, ChatGeneration
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatResult, ChatGeneration, ChatGenerationChunk
 
 
 class MockLLM(BaseChatModel):
@@ -83,7 +83,20 @@ class MockLLM(BaseChatModel):
             response=msg,
             raw_response=response,
         )
-        for chunk in [msg]:
+        for chunk in self._response_chunks(response, msg):
+            yield chunk
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        result = await self._agenerate(messages, stop, run_manager, **kwargs)
+        msg = result.generations[0].message
+        raw_response = self._mock_call_history[-1].get("raw_response", {})
+        for chunk in self._response_chunks(raw_response, msg):
             yield chunk
 
     # ------------------------------------------------------------------
@@ -166,6 +179,52 @@ class MockLLM(BaseChatModel):
             msg = AIMessage(content=content, **metadata)
 
         return msg
+
+    def _response_chunks(
+        self,
+        response: dict[str, Any],
+        msg: AIMessage,
+    ) -> list[ChatGenerationChunk]:
+        chunks = response.get("chunks")
+        if isinstance(chunks, list) and chunks:
+            return [
+                ChatGenerationChunk(message=self._to_message_chunk(raw))
+                for raw in chunks
+            ]
+        chunk_kwargs: dict[str, Any] = {
+            "content": msg.content,
+            "additional_kwargs": dict(getattr(msg, "additional_kwargs", {}) or {}),
+            "response_metadata": dict(getattr(msg, "response_metadata", {}) or {}),
+        }
+        usage_metadata = getattr(msg, "usage_metadata", None)
+        if usage_metadata is not None:
+            chunk_kwargs["usage_metadata"] = usage_metadata
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            chunk_kwargs["tool_calls"] = tool_calls
+        return [ChatGenerationChunk(message=AIMessageChunk(**chunk_kwargs))]
+
+    def _to_message_chunk(self, raw: Any) -> AIMessageChunk:
+        if isinstance(raw, str):
+            return AIMessageChunk(content=raw)
+        if not isinstance(raw, dict):
+            return AIMessageChunk(content=str(raw))
+        kwargs: dict[str, Any] = {"content": raw.get("content", "")}
+        additional_kwargs = dict(raw.get("additional_kwargs") or {})
+        reasoning = raw.get("reasoning") or raw.get("reasoning_content")
+        if reasoning:
+            additional_kwargs["reasoning_content"] = str(reasoning)
+        if additional_kwargs:
+            kwargs["additional_kwargs"] = additional_kwargs
+        if isinstance(raw.get("response_metadata"), dict):
+            kwargs["response_metadata"] = raw["response_metadata"]
+        if isinstance(raw.get("usage_metadata"), dict):
+            kwargs["usage_metadata"] = raw["usage_metadata"]
+        if isinstance(raw.get("tool_call_chunks"), list):
+            kwargs["tool_call_chunks"] = raw["tool_call_chunks"]
+        if isinstance(raw.get("tool_calls"), list):
+            kwargs["tool_calls"] = raw["tool_calls"]
+        return AIMessageChunk(**kwargs)
 
     def _record_call(
         self,

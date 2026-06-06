@@ -5,13 +5,15 @@ import argparse
 import asyncio
 import html
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import xbotv2.__main__ as xbot_main
 from xbotv2.protocol.frames import ProtocolFrame
-from xbotv2.tui.client import CursesTuiClient, TuiState, _parse_permission_decision
+from xbotv2.tui.client import CursesTuiClient, TuiState, _parse_permission_decision, _repair_mojibake
+from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import (
     queue_user_message,
     render_transcript_entry,
@@ -88,8 +90,96 @@ def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
     assert state.messages[0].content == "Thinking…"
     assert state.tools["call_1"].name == "shell"
     assert len(state.transcript) == 2  # message entry + tool entry
-    assert state.transcript[0].kind == "message"
-    assert state.transcript[1].kind == "tool"
+
+
+def test_tui_state_appends_assistant_deltas_to_one_message():
+    state = TuiState()
+
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+    state.apply_event({"type": "assistant_message_delta", "data": {"content": "Hel"}})
+    state.apply_event({"type": "assistant_message_delta", "data": {"content": "lo"}})
+    state.apply_event({"type": "assistant_message", "data": {"content": "Hello"}})
+
+    assert [(m.role, m.content) for m in state.messages] == [("assistant", "Hello")]
+    assert [entry.kind for entry in state.transcript] == ["message"]
+
+
+def test_repair_mojibake_restores_chinese_text():
+    mojibake = "完成一个纯Python".encode("utf-8").decode("latin-1")
+
+    assert _repair_mojibake(mojibake) == "完成一个纯Python"
+
+
+def test_tui_state_repairs_mojibake_messages():
+    state = TuiState()
+
+    state.append_message("user", "完成一个纯Python".encode("utf-8").decode("latin-1"))
+
+    assert state.messages[0].content == "完成一个纯Python"
+
+
+def test_tui_state_updates_streaming_tool_call_args_by_index():
+    state = TuiState()
+
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+    state.apply_event({
+        "type": "tool_call_delta",
+        "data": {
+            "tool_calls": [
+                {
+                    "tool_call_id": "call_1",
+                    "name": "shell",
+                    "args_delta": '{"command"',
+                    "index": 0,
+                }
+            ],
+        },
+    })
+    state.apply_event({
+        "type": "tool_call_delta",
+        "data": {"tool_calls": [{"tool_call_id": "call_1", "args_delta": ': "df -h"}', "index": 0}]},
+    })
+
+    assert state.tools["call_1"].name == "shell"
+    assert state.tools["call_1"].args_preview == '{"command": "df -h"}'
+    assert [entry.kind for entry in state.transcript] == ["tool"]
+
+
+def test_tui_state_renames_provisional_streaming_tool_id():
+    state = TuiState()
+
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+    state.apply_event({
+        "type": "tool_call_delta",
+        "data": {
+            "tool_calls": [
+                {"tool_call_id": "tool_0", "name": "shell", "args_delta": '{"command"', "index": 0},
+            ]
+        },
+    })
+    assert "tool_0" in state.tools
+    state.apply_event({
+        "type": "tool_calls_started",
+        "data": {
+            "tool_calls": [
+                {"id": "call_shell", "name": "shell", "args": {"command": "df -h"}, "index": 0},
+            ],
+        },
+    })
+    state.apply_event({
+        "type": "tool_result",
+        "data": {
+            "tool_call_id": "call_shell",
+            "name": "shell",
+            "status": "success",
+            "content": "ok",
+        },
+    })
+
+    assert "tool_0" not in state.tools
+    assert state.tools["call_shell"].status == "success"
+    assert state.tools["call_shell"].summary == "ok"
+    assert [(entry.kind, entry.key) for entry in state.transcript] == [("tool", "call_shell")]
 
 
 def test_tui_state_turn_finished_preserves_waiting_for_user():
@@ -274,7 +364,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
 
             return Resp()
 
-        def stream(self, method, path, json=None):
+        def stream(self, method, path, json=None, timeout=None):
             return self._stream
 
         async def aclose(self):
@@ -343,6 +433,35 @@ def test_mode_tui_imports_textual_client_lazily():
     ]
 
     assert "xbotv2.tui.textual_client" in imports
+
+
+def test_spawn_server_propagates_log_args(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    args = argparse.Namespace(
+        data_dir="XBotv2/data",
+        personality="default",
+        provider="deepseek",
+        mode="tui",
+        bind="127.0.0.1",
+        port=4096,
+        no_plugins=False,
+        log_level="DEBUG",
+        log_file="./run.log",
+    )
+
+    xbot_main._spawn_server(args)
+
+    assert "--log-level" in captured["cmd"]
+    assert "DEBUG" in captured["cmd"]
+    assert "--log-file" in captured["cmd"]
+    assert "./run.log" in captured["cmd"]
 
 
 def test_mode_curses_uses_legacy_curses_client():
@@ -517,6 +636,84 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         await pilot.pause()
         status = app.query_one("#status_bar").content
         assert "usage req:1 in:12 out:8 total:20" in str(status)
+
+
+@pytest.mark.asyncio
+async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
+    """Regression for run.log: tool_call_delta must not crash when a
+    pending tool widget exists but has no .body child yet.
+    """
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text, input_provider=None, permission_provider=None):
+            del text, input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {
+                "type": "tool_call_delta",
+                "data": {
+                    "tool_calls": [
+                        {
+                            "tool_call_id": "call_shell",
+                            "index": 0,
+                            "name": "shell",
+                            "args_delta": "",
+                        }
+                    ]
+                },
+            }
+            yield {
+                "type": "tool_call_delta",
+                "data": {
+                    "tool_calls": [
+                        {
+                            "tool_call_id": "call_shell",
+                            "index": 0,
+                            "name": "shell",
+                            "args_delta": '{"command": "df -h"}',
+                        }
+                    ]
+                },
+            }
+            yield {
+                "type": "tool_result",
+                "data": {
+                    "tool_call_id": "call_shell",
+                    "name": "shell",
+                    "status": "success",
+                    "content": "ok",
+                },
+            }
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("run df")
+        await app.submit_composer()
+        for _ in range(5):
+            await pilot.pause()
+
+    assert app.state.errors == []
+    assert app.state.tools["call_shell"].status == "success"
+    assert app.state.tools["call_shell"].summary == "ok"
 
 
 @pytest.mark.asyncio
@@ -898,6 +1095,58 @@ def test_permission_decision_parser_supports_scopes():
         "decision": "deny",
         "scope": "always",
     }
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_yields_live_interaction_once_without_provider():
+    class FakeTransport:
+        async def hello(self, *, session_id, thread_id, personality_id="default"):
+            return {"session_id": session_id, "thread_id": thread_id}
+
+        async def open_session(self, *, session_id, thread_id):
+            return {"session_id": session_id, "thread_id": thread_id, "status": "ready"}
+
+        def send_message(self, *, session_id, content, request_id):
+            async def _events():
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {
+                    "type": "permission_request",
+                    "data": {"request_id": "permission:c1", "reason": "approve?"},
+                }
+                yield {
+                    "type": "user_input_required",
+                    "data": {"request_id": "user_input:c2", "question": "continue?"},
+                }
+                yield {"type": "turn_finished", "data": {"turn": 1}}
+
+            return _events()
+
+        async def send_permission_response(self, **kwargs):
+            raise AssertionError("should not auto-answer without provider")
+
+        async def send_user_input(self, **kwargs):
+            raise AssertionError("should not auto-answer without provider")
+
+        async def shutdown(self, *, session_id):
+            return {"status": "closed"}
+
+        async def interrupt(self, *, session_id):
+            return {"status": "idle", "cancelled": False}
+
+        async def close(self):
+            return None
+
+    session = TerminalSession(transport=FakeTransport(), session_id="s", thread_id="t")
+    await session.connect()
+
+    events = [event async for event in session.send_message("run")]
+
+    assert [event["type"] for event in events] == [
+        "turn_started",
+        "permission_request",
+        "user_input_required",
+        "turn_finished",
+    ]
 
 
 @pytest.mark.asyncio

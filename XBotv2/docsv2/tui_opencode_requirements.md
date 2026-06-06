@@ -3,7 +3,7 @@
 Status: 设计稿 v2。引入对 OpenCode 实际仓库与官方文档的逐项调研，所有设计选择都给出依据。
 后续若有改动，先改本文，再动代码；代码 PR 引用章节号。
 
-Last reviewed: 2026-06-05
+Last reviewed: 2026-06-06
 
 ---
 
@@ -955,8 +955,10 @@ v1.1 在 v1 之上加两层命令发现：
 | 协议事件 | Render log 项 | 备注 |
 | --- | --- | --- |
 | `turn_started` | `activity` 起始 | mount 活动行 |
-| `assistant_message`（非空） | `message.assistant` | 内容为空时**不**新增 message 行 |
-| `assistant_message`（空） | （过滤） | 关联 tool_calls 仍以 `tool` 行呈现 |
+| `assistant_message_delta` | `message.assistant` 增量更新 | streaming 期间创建/更新同一条 assistant 行；不新增多条 chunk 行 |
+| `tool_call_delta` | `tool` pending 增量更新 | streaming 期间按 `tool_call_id`/`index` 更新同一条工具行与 partial args |
+| `assistant_message`（非空） | `message.assistant` | 若已有 streaming assistant 行，则用最终文本 commit/替换；否则新增 |
+| `assistant_message`（空） | `message.assistant` fallback | 关联 tool_calls 但无 streaming 文本时显示 `Thinking…` 占位 |
 | `tool_calls_started` | `tool` (pending) | 按 `tool_call_id` 去重 |
 | `tool_result` | `tool` 状态更新 | 原地 `update()` |
 | `usage` | `activity` + status bar | turn 用量累加；总用量覆盖 |
@@ -972,6 +974,38 @@ v1.1 在 v1 之上加两层命令发现：
 | `hello_ok` | （不渲染） | 仅更新 status |
 | `session_ready` | （不渲染） | 仅更新 status / agent_name |
 | `shutdown_ok` | （不渲染） | 更新 status |
+
+### 10.1.1 Streaming Tool Protocol（严格字段与顺序）
+
+固定事件顺序：
+
+1. `turn_started`
+2. 零个或多个 `assistant_message_delta`
+3. 零个或多个 `tool_call_delta`
+4. 一个 final `assistant_message`
+5. 若 final message 有 tool calls：一个 `tool_calls_started`
+6. 对每个工具：一个 `tool_result`
+7. 若需要继续 ReAct loop，回到第 2 步；否则 `turn_finished`
+
+`tool_call_delta.data.tool_calls[]` 必须使用严格字段：
+
+| 字段 | 必填 | 含义 |
+| --- | --- | --- |
+| `tool_call_id` | 是 | 当前 UI 应使用的工具行 id。无 provider id 时 engine 使用 `tool_{index}`。 |
+| `index` | 是 | provider stream 中的 tool call index，用于把后续 chunk 合并到同一工具。 |
+| `name` | 是 | 当前 chunk 的工具名；未知时为 `tool`。 |
+| `args_delta` | 是 | 本 chunk 的参数文本增量；TUI 追加显示，不当作完整 JSON 强解析。 |
+| `replaces_tool_call_id` | 否 | 当 provider 后续给出真实 id 时，标明要把旧 provisional id 合并到新 id。 |
+
+兼容字段：`id == tool_call_id`，`args == args_delta`。新代码不得依赖这些兼容字段。
+
+`tool_calls_started.data.tool_calls[]` 必须包含：`id`、`index`、`name`、`args`。这是工具执行开始的 canonical call list。
+
+`tool_result.data` 必须包含：`tool_call_id`、`name`、`content`、`status`。TUI 只把该 id 对应工具行标记完成；不得创建新的无名工具行，除非协议缺失 id。
+
+TUI 不变量：同一个 logical tool call 在 transcript 中最多一条 `tool` entry。若收到 `replaces_tool_call_id`，必须重命名/合并旧 entry，而不是新增 entry。
+
+Textual 渲染不变量：`tool_call_delta` 可能先创建只有 `.meta`、没有 `.body` 的 pending tool widget。后续刷新必须容忍 `.body` 暂不存在，并在有 detail 时 mount `Static(..., classes="body")`；任何 DOM miss 不得中断 SSE stream 或把 turn 误取消。
 
 ### 10.2 用户→协议
 
@@ -1103,6 +1137,8 @@ OpenCode 自身的 `thread.ts` / `worker.ts` 就是这个模式：worker 跑 ser
 - `503 engine_busy` — session 正在处理别的 turn
 - `5xx` — 服务端异常；body 必有 `{"code","message"}`
 
+稳定性要求：REST 错误不得返回 FastAPI 默认 `{"detail": ...}` 形状；所有 TUI 可见失败都必须是 `{"code": str, "message": str}`。例如 provider 缺少 API key 时，`POST /sessions` 返回 `500 {"code":"session_open_failed","message":"Provider ... requires api_key"}`，TUI/HttpTransport 必须把 code 和 message 原样展示给用户。
+
 #### 10.5.4 SSE 事件流格式
 
 `POST /sessions/{sid}/messages` 的响应是 `text/event-stream`，每条事件形如：
@@ -1110,19 +1146,19 @@ OpenCode 自身的 `thread.ts` / `worker.ts` 就是这个模式：worker 跑 ser
 ```
 event: turn_started
 id: <monotonic seq>
-data: {"type":"turn_started","payload":{"turn":1}}
+data: {"type":"turn_started","data":{"turn":1}}
 
 event: assistant_message
 id: 2
-data: {"type":"assistant_message","payload":{"content":"…","tool_calls":[…]}}
+data: {"type":"assistant_message","data":{"content":"…","tool_calls":[…]}}
 
 event: usage
 id: 3
-data: {"type":"usage","payload":{"delta":{…},"total":{…}}}
+data: {"type":"usage","data":{"delta":{…},"total":{…}}}
 
 event: turn_finished
 id: 4
-data: {"type":"turn_finished","payload":{"turn":1}}
+data: {"type":"turn_finished","data":{"turn":1}}
 
 ```
 
@@ -1132,6 +1168,7 @@ SSE 字段规约：
 - `id`：单调递增的整型 seq；客户端断线重连时可携带 `Last-Event-ID` 头来从断点续传（best-effort，至少优于完全重头）。
 - `data`：JSON 字符串；客户端按 `data` 一行解析（按 SSE 规范，`data:` 后多个连续的 `data:` 行合并为一个事件，content 以 `\n` 拼接——我们保证 server 端每个事件只用一行 `data:`，避免歧义）。
 - 流结束：服务端写入 `event: end` `data: {"status":"ok"}` 后关闭；或流中某条事件的 HTTP 等价物 `event: error` 携带 code/message。
+- `data` JSON 里的事件 payload 字段名固定为 `data`，不得再使用旧文档里的 `payload`。TUI 状态机只消费 `event["type"]` 和 `event["data"]`。
 
 #### 10.5.5 客户端协议抽象
 
@@ -1140,9 +1177,7 @@ SSE 字段规约：
 ```
 tui/
 ├── transport.py              # Transport Protocol
-├── transport_stdio.py        # StdioTransport (现有 ProtocolClient 改名)
-├── transport_http.py         # HttpTransport (新)
-└── transport_factory.py      # 根据配置/CLI 创建 transport
+└── transport_http.py         # HttpTransport
 ```
 
 接口（asyncio 视角）：
@@ -1165,18 +1200,18 @@ class Transport(Protocol):
     async def close(self) -> None: ...
 ```
 
-`TerminalSession`（`tui/terminal.py`）持有 transport；`send_message_with_input()` 把 transport 的事件流喂给现有 `input_provider` / `permission_provider` 回调，**完全不用改 `textual_client.py`**。
+`TerminalSession`（`tui/terminal.py`）持有 transport；`send_message()` 把 transport 的事件流喂给现有 `input_provider` / `permission_provider` 回调。Live interaction 事件必须先 yield 给 TUI，再等待 provider 回答；如果没有 provider，也只能 yield 一次，不得重复产生 `permission_request` / `user_input_required`。
 
 #### 10.5.6 服务端进程模型
 
 `--mode server --transport http` 行为：
 
-1. 启动 `aiohttp` app，绑定 `--bind 127.0.0.1 --port 4096`（默认）。
-2. 进程内持有一个 `RuntimeServer` 形态的 `HttpRuntimeServer`（与现有 `RuntimeServer` 并列，共享核心调度逻辑，但**没有**子进程概念）。
+1. 启动 FastAPI/uvicorn app，绑定 `--bind 127.0.0.1 --port 4096`（默认）。
+2. 进程内持有 `SessionManager` + `SessionContext`，共享核心 Engine 调度逻辑，但 HTTP 控制请求与 SSE stream 解耦。
 3. 提供 `attach <url>` 子命令，模仿 OpenCode `opencode attach`：纯客户端，连接远端 server。
 4. 优雅退出：收到 `SIGTERM` / `SIGINT` 时，等所有 in-flight SSE 流关闭（最长 2s）再退出。
 
-`--mode server --transport stdio`（现有行为，不变）：保留为测试和回放后端。
+不存在 `--transport stdio` 路径；当前 v1 server 只有 HTTP/SSE。
 
 #### 10.5.6.1 取消协议（v1.2：ESC → `POST /interrupt`）
 
@@ -1585,6 +1620,48 @@ UI / 状态机（Phase A、C）：
   - **usage 不刷新（根因）**：Engine 发送 `{"type":"usage","data":{"input_tokens":N,...}}`（flat format），但 `TuiState._apply_usage` 只认 `data.delta` + `data.total` 子键格式。`data.delta` 为 None 导致 `turn_usage` 永不加和，activity row 始终显示 0。**修复**：`_apply_usage` 在没有 `delta` 子键时用 flat data 本身作为 delta 累加。
   - **thinking 不渲染（根因）**：`apply_event("assistant_message")` 在 `content.strip()` 为空时不写入 transcript。当 LLM 返回纯 tool_calls（无 content 文本）时，transcript 无任何提示，用户看到工具 pending 但不知道为什么。**修复**：若有 tool_calls 但 content 为空，插入 `"Thinking…"` 占位。
   - 测试 +5（permission 状态、usage 累加 ×2、thinking 占位 ×2），350/350 通过。
+- v2.9（2026-06-06）：**真实 LangChain streaming thinking/tool-call 渲染**（用户澄清：不是 `Thinking…` placeholder，而是 OpenCode 风格实时过程）。
+  - Engine 从 `ainvoke()` 改为消费 LangChain public `astream()`：public API yield `AIMessageChunk`；自定义 mock `_astream/_stream` 必须 yield `ChatGenerationChunk(message=AIMessageChunk(...))`，否则 LangChain `BaseChatModel.astream()` 会访问 `.message` 报错。
+  - 新增 `assistant_message_delta`：provider 每个 content/reasoning chunk 立即穿过 HTTP/SSE 到 TUI；`TuiState` 维护一个 `_streaming_assistant_index`，Textual 用 `_message_widgets` 原地更新 `.body`，不会每个 chunk 新增一条 assistant message。
+  - 新增 `tool_call_delta`：provider 的 `tool_call_chunks` 在工具真正执行前实时显示；后续 chunk 常只有 `index` 和 partial `args`，TUI 用 `_streaming_tool_ids[index] -> tool_call_id` 合并到同一条工具行。
+  - Final `assistant_message` 仍保留，作为历史持久化/旧客户端兼容/最终 commit 事件；已有 streaming 行时只替换内容，不重复新增 transcript entry。
+  - `Thinking…` 降级为 fallback：仅在最终 assistant message 纯 tool_calls 且之前没有可见 streaming assistant 文本时使用。
+  - 测试 +4（engine text delta、engine tool_call_chunk、TUI 单 message 增量、TUI tool args by index），354/354 通过。
+- v2.10（2026-06-06）：**streaming tool-call pending 修复 + TUI 性能优化**（用户报告：工具调用一直 pending，TUI 卡顿，尤其 shell）。
+  - **server/engine 修复**：`tool_result` payload 增加 `name`，使客户端无需猜测工具名；新增 streamed shell 回归，覆盖 `tool_call_chunks -> tool_calls_started -> execute_tools(shell) -> tool_result(success)` 全链路。
+  - **pending 根因**：LangChain 早期 `tool_call_chunks` 可能只有 `index`/partial `args`，没有真实 `id`。TUI 会先创建 provisional `tool_0`；最终 `tool_calls_started/tool_result` 使用真实 `call_*`，导致真实工具完成但旧 `tool_0` 留在 transcript 中永久 pending。
+  - **TUI 修复**：无 id chunk 创建 provisional 工具时记录 `_streaming_tool_ids[index]`；真实 id 到来时 `_rename_tool(old_id,new_id)` 合并 `TuiTool`、transcript key、去重 set，避免残留 pending 行。
+  - **性能优化**：`tool_call_delta` 不再每次刷新所有 `_tool_widgets`；改由 `TuiState._changed_tool_ids` 和 `_tool_id_renames` 精准刷新本次变更的工具 widget，避免 shell/长参数 streaming 时整屏频繁 update。
+  - 测试 +2（streamed shell 真执行、provisional tool id rename），356/356 通过。
+- v2.11（2026-06-06）：**streaming/tool protocol 收敛为简单严格字段**。
+  - `tool_call_delta` 每项现在固定包含 `tool_call_id`、`index`、`name`、`args_delta`；旧字段 `id`/`args` 只作为兼容 alias。
+  - provider 后续给出真实 id 时，engine 明确发送 `replaces_tool_call_id`，TUI 不再靠隐式推断 provisional id 替换关系。
+  - `tool_calls_started` canonical call list 补 `index`，`tool_result` 已要求 `tool_call_id/name/content/status`，事件顺序写入 §10.1.1。
+  - 测试升级为严格字段断言（delta payload 完整性、provisional→real replacement、shell result），全量测试保持通过。
+- v2.12（2026-06-06）：**真实 HTTP/SSE permission wait + interrupt 验证修复**（用户反馈：不能只靠单测；`filesystem_list` pending 且 ESC 不生效）。
+  - 真实复现：启动 uvicorn socket server，MockLLM 发 `filesystem_list(path=".")`，sandbox/permission 触发 `permission_request` 后等待 TUI。旧 `HttpTransport` 使用普通 30s read timeout，permission 等待超过 timeout 后 SSE 断开，TUI 只看到 pending tool 和 `Error`。
+  - 修复：`HttpTransport._sse_iter()` 对 SSE message stream 使用 `httpx.Timeout(timeout, read=None)`；普通 hello/open/interaction/interrupt 仍保留默认 timeout。SSE 可以长期等待 permission/user input，不因 idle read timeout 断开。
+  - ESC 修复：TUI interrupt worker 只在 `/interrupt` 返回 `cancelled: true` 时显示 `Interrupting...`；idle/no-op 不再把 UI 卡成 Interrupting。
+  - 错误展示：Textual `_record_error()` 现在也写入 `state.errors + transcript error entry`，真实异常（如 ReadTimeout）必须在 transcript 可见，而不是只把 status 置为 `Error`。
+  - UTF-8 修复：新增保守 mojibake repair，修复常见 UTF-8 bytes 被 Latin-1/CP1252 解码后的中文显示（如 `å®...` → `完成...`）。
+  - 真实验证：手工跑过真实 TerminalSession + HTTP/SSE + permission allow，确认 `permission_request -> permission_response_recorded -> tool_result(success)`；手工跑过 permission wait 中 `/interrupt`，确认 `cancelled:true -> turn_cancelled`。
+  - 固化测试：新增真实 socket 集成测试 `test_real_http_filesystem_permission_wait_does_not_read_timeout`，使用 `HttpTransport(timeout=0.1)` 且 provider 延迟 0.2s，确保 SSE read timeout 已禁用。
+- v2.13（2026-06-06）：**日志真正可用 + tool-call 阶段诊断增强**（用户反馈：`--log-file ./run.log` 为空，TUI tool-call 阶段仍报错但无证据）。
+  - `--mode tui` 自动拉起 server 子进程时，现在显式透传 `--log-level` 和 `--log-file`，父 TUI 与子 server 写同一个 log。
+  - `RotatingFileHandler(delay=True)` 改为 `delay=False`，setup 阶段立即打开文件；权限/路径错误不会延迟到第一次 log emit 才以 logging 内部错误形式出现。
+  - TUI `_collect_response` / `_record_error` 现在写入 `xbotv2.tui` logger，真实异常栈会进入 `run.log`。
+  - Tool runtime 增加 guard/permission/execute start/finish 日志，tool-call 阶段卡住时可定位是 permission wait、sandbox guard、invoke timeout 还是 tool result 构建。
+  - Provider 初始化失败改为明确 ValueError：缺失 api_key 时显示 `Provider ... requires api_key`，避免被 LangChain/OpenAI 泛化为难读的 500。
+  - 真实验证：用 `uv run python XBotv2/main.py --mode tui ... --log-file ./run-tui-test.log --log-level DEBUG` 验证父/子进程均写入 log，并暴露本环境的 `DEEPSEEK_API_KEY` 缺失。
+  - 测试：新增 `test_spawn_server_propagates_log_args`，全量 360/360 通过。
+- v2.14（2026-06-06）：**run.log 真实错误修复 + 协议稳定性加固**。
+  - 根因 1：Textual 收到 `tool_call_delta` 后刷新 tool widget，widget 可能只有 `.meta`、尚无 `.body`；旧代码 `widget.query(".body").first()` 在无匹配时抛 `NoMatches`，中断 `_collect_response`，导致 SSE 断开、server 取消 turn。
+  - 修复 1：`_refresh_streaming_assistant_widget()` / `_refresh_tool_widget()` 改用 tolerate-miss 的 child query；有 detail 时 mount `Static(..., classes="body")`，不再因未挂载 body 失败。
+  - 根因 2：`TerminalSession` 在无 live provider callback 时会把 `permission_request` / `user_input_required` yield 两次，违反“一事件一状态转换”的协议客户端要求。
+  - 修复 2：live interaction 事件先 yield，provider 存在则回答，随后 `continue`；无 provider 时也只 yield 一次。
+  - 根因 3：server open_session 失败虽然有 JSON body，但 `HttpTransport` 直接 `raise_for_status()`，TUI 只显示裸 HTTP 500，不显示 `session_open_failed` 具体原因。
+  - 修复 3：`HttpTransport` 对所有 REST/SSE HTTP status 统一解析 `{"code","message"}` 并抛可读 `RuntimeError("code: message")`；文档明确 REST 错误形状稳定。
+  - 固化测试：新增 Textual headless `tool_call_delta` 回归、TerminalSession live event 去重、HTTP open_session stable JSON error。
 - 后续：每条设计变更都更新本文件相应章节，并提交到 `docsv2/tui_opencode_requirements.md`。
 
 ---

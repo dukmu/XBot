@@ -139,7 +139,7 @@ def setup_logging(
             maxBytes=_MAX_BYTES,
             backupCount=_BACKUP_COUNT,
             encoding="utf-8",
-            delay=True,
+            delay=False,
         )
         file_handler.setFormatter(fmt)
         file_handler.setLevel(level.upper())

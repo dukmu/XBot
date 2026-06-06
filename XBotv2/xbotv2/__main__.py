@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -129,6 +130,15 @@ def main():
 def _run_server(args) -> None:
     """Run the HTTP/SSE server with uvicorn (v1: loopback only)."""
 
+    logging.getLogger("xbotv2").info(
+        "starting server mode data_dir=%s personality=%s provider=%s bind=%s port=%s",
+        args.data_dir,
+        args.personality,
+        args.provider,
+        args.bind,
+        args.port,
+    )
+
     if args.bind != "127.0.0.1":
         print(
             f"Error: --bind {args.bind} is not supported in v1; "
@@ -161,6 +171,16 @@ def _run_server(args) -> None:
 
 def _run_tui(args) -> None:
     """Run the Textual TUI; auto-spawn an HTTP server unless --server is given."""
+
+    logging.getLogger("xbotv2").info(
+        "starting tui mode data_dir=%s personality=%s provider=%s server=%s log_file=%s log_level=%s",
+        args.data_dir,
+        args.personality,
+        args.provider,
+        args.server,
+        args.log_file,
+        args.log_level,
+    )
 
     server_url = args.server
     spawned_server: subprocess.Popen | None = None
@@ -232,9 +252,13 @@ def _spawn_server(args) -> subprocess.Popen:
         "--mode", "server",
         "--bind", args.bind,
         "--port", str(args.port),
+        "--log-level", args.log_level,
     ]
+    if args.log_file:
+        cmd.extend(["--log-file", args.log_file])
     if args.no_plugins:
         cmd.append("--no-plugins")
+    logging.getLogger("xbotv2").info("spawning server subprocess cmd=%s", cmd)
     return subprocess.Popen(
         cmd,
         env=env,

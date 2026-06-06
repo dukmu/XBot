@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+
+
+logger = logging.getLogger("xbotv2.llm")
 
 
 def _expand_env(value: str) -> str:
@@ -78,6 +82,20 @@ def create_llm(provider_config: Any) -> BaseChatModel:
     if provider in ("openai", "deepseek", "lmstudio-openai"):
         from langchain_openai import ChatOpenAI
 
+        if not api_key:
+            raise ValueError(
+                f"Provider {provider!r} for model {model!r} requires api_key. "
+                "Set the configured environment variable or provider.yaml api_key."
+            )
+
+        logger.info(
+            "creating openai-compatible llm provider=%s model=%s base_url=%s api_key_set=%s",
+            provider,
+            model,
+            base_url,
+            bool(api_key),
+        )
+
         kwargs: dict[str, Any] = dict(
             model=model,
             temperature=temperature,
@@ -93,6 +111,20 @@ def create_llm(provider_config: Any) -> BaseChatModel:
     # Anthropic-compatible providers (Anthropic, LM Studio w/ Anthropic protocol)
     if provider in ("anthropic", "lmstudio"):
         from langchain_anthropic import ChatAnthropic
+
+        if not api_key:
+            raise ValueError(
+                f"Provider {provider!r} for model {model!r} requires api_key. "
+                "Set the configured environment variable or provider.yaml api_key."
+            )
+
+        logger.info(
+            "creating anthropic-compatible llm provider=%s model=%s base_url=%s api_key_set=%s",
+            provider,
+            model,
+            base_url,
+            bool(api_key),
+        )
 
         kwargs = dict(
             model=model,
