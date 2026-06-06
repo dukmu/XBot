@@ -717,6 +717,59 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text, input_provider=None, permission_provider=None):
+            del text, input_provider, permission_provider
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {"type": "assistant_message_delta", "data": {"content": "a"}}
+            yield {"type": "assistant_message_delta", "data": {"content": "b"}}
+            yield {"type": "assistant_message_delta", "data": {"content": "c"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        data_dir="data",
+        personality_id="default",
+        provider_name="mock",
+        session_id="s",
+        thread_id="t",
+        no_plugins=True,
+    )
+    app.session = FakeSession()
+    scheduled_refreshes = 0
+    original_call_after_refresh = app.call_after_refresh
+
+    def count_call_after_refresh(*args, **kwargs):
+        nonlocal scheduled_refreshes
+        scheduled_refreshes += 1
+        return original_call_after_refresh(*args, **kwargs)
+
+    app.call_after_refresh = count_call_after_refresh
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("stream")
+        await app.submit_composer()
+        for _ in range(5):
+            await pilot.pause()
+
+    assert app.state.messages[-1].content == "abc"
+    # One scroll for the submitted user message, one for the first
+    # assistant streaming entry. Later deltas update that same entry
+    # in place and must not schedule empty scrolls.
+    assert scheduled_refreshes == 2
+
+
+@pytest.mark.asyncio
 async def test_textual_app_headless_renders_inline_permission_options():
     from textual.widgets import Button
     from xbotv2.tui.textual_client import XBotTextualApp

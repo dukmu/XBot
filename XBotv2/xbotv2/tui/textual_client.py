@@ -619,16 +619,20 @@ class XBotTextualApp(App[None]):
 
     async def _handle_stream_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
+        refresh_input = False
         if event_type == "turn_started":
             await self._append_activity()
+            refresh_input = True
         elif event_type == "turn_finished":
             self._interaction_response_pending = False
             self._finalize_activity()
+            refresh_input = True
         elif event_type == "turn_cancelled":
             self._interaction_response_pending = False
             self._finalize_activity()
             self.state.status = "Interrupted"
             self._refresh_status()
+            refresh_input = True
         elif event_type == "usage":
             self._update_activity()
         elif event_type == "assistant_message_delta":
@@ -648,14 +652,21 @@ class XBotTextualApp(App[None]):
             "error",
         }:
             self._interaction_response_pending = False
+            refresh_input = True
+        elif event_type in {"permission_request", "user_input_required"}:
+            refresh_input = True
         await self._render_new_transcript_entries()
-        self._refresh_all()
+        self._refresh_status()
+        if refresh_input:
+            self._refresh_input_mode()
 
-    async def _render_new_transcript_entries(self) -> None:
+    async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:
             stream = self.query_one("#transcript", VerticalScroll)
             start = self._rendered_transcript_entries
             entries = self.state.transcript[start:]
+            if not entries:
+                return False
             self._rendered_transcript_entries = len(self.state.transcript)
             for entry in entries:
                 widget = self._widget_for_entry(entry)
@@ -671,6 +682,7 @@ class XBotTextualApp(App[None]):
             self.call_after_refresh(
                 lambda: stream.scroll_end(animate=False)
             )
+            return True
 
     def _refresh_input_mode(self) -> None:
         if not self.is_mounted:
