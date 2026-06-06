@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-CommandName = Literal["exit", "clear", "help", "status", "unknown"]
+CommandName = str
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,6 @@ _ALIASES: dict[str, str] = {
     "/q": "exit",
     "/clear": "clear",
     "/help": "help",
-    "/status": "status",
 }
 
 
@@ -94,20 +93,31 @@ _COMMANDS: dict[str, CommandSpec] = {
         display_label="/help — list available slash commands",
         short_label="/help — list slash commands",
     ),
-    "status": CommandSpec(
-        name="status",
-        args="",
-        raw="/status",
-        display_label="/status — append a current-state summary to the stream",
-        short_label="/status — append current state",
-    ),
 }
 
 
 # Stable search order: keep the help/clear pair first so the most
 # frequently used commands surface at the top of the completion popup
 # and the palette.
-_SEARCH_ORDER: tuple[str, ...] = ("help", "clear", "status", "exit")
+_SEARCH_ORDER: list[str] = ["help", "clear", "exit"]
+
+
+def register_server_commands(commands: list[dict]) -> None:
+    for item in commands:
+        name = str(item.get("name") or "").strip().removeprefix("/")
+        slash = str(item.get("slash") or f"/{name}")
+        if not name:
+            continue
+        _ALIASES[slash.lower()] = name
+        _COMMANDS[name] = CommandSpec(
+            name=name,
+            args="",
+            raw=slash,
+            display_label=f"{slash} — {item.get('description') or 'server command'}",
+            short_label=f"{slash} — {item.get('description') or 'server command'}",
+        )
+        if name not in _SEARCH_ORDER:
+            _SEARCH_ORDER.insert(max(0, len(_SEARCH_ORDER) - 1), name)
 
 
 def parse_slash_command(text: str) -> CommandSpec | None:
@@ -121,16 +131,23 @@ def parse_slash_command(text: str) -> CommandSpec | None:
     stripped = text.strip()
     if not stripped.startswith("/"):
         return None
-    head, _, _tail = stripped.partition(" ")
+    head, _, tail = stripped.partition(" ")
     canonical = _ALIASES.get(head.lower())
     if canonical is None:
         return CommandSpec(
             name="unknown",
-            args=stripped[len(head):],
+            args=tail.strip(),
             raw=stripped,
             display_label=f"{stripped} — not implemented in this build",
         )
-    return _COMMANDS[canonical]
+    base = _COMMANDS[canonical]
+    return CommandSpec(
+        name=base.name,
+        args=tail.strip(),
+        raw=stripped,
+        display_label=base.display_label,
+        short_label=base.short_label,
+    )
 
 
 def known_command_labels() -> tuple[str, ...]:

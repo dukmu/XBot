@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from xbotv2.persistence.materializer import build_materialized_state
 from xbotv2.persistence.store import CoreStateStore
@@ -17,7 +16,7 @@ class TestCoreStateStoreCreation:
         """Creating a store creates all required directories."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         assert store.events_path.exists()
         assert store.plugin_states_dir.exists()
@@ -27,7 +26,7 @@ class TestCoreStateStoreCreation:
         """Initial state.yaml is created."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         state = store.read_state()
         assert state["schema_version"] == 2
@@ -39,8 +38,8 @@ class TestCoreStateStoreCreation:
     def test_create_is_idempotent(self, temp_data_dir):
         """Creating twice doesn't error."""
         root = temp_data_dir / "sessions" / "test" / "state"
-        CoreStateStore.create(root, session_id="s1", thread_id="t1", personality_id="default")
-        CoreStateStore.create(root, session_id="s1", thread_id="t1", personality_id="default")
+        CoreStateStore.create(root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default")
+        CoreStateStore.create(root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default")
 
 
 class TestEventAppending:
@@ -50,7 +49,7 @@ class TestEventAppending:
         """Appending an event writes to events.jsonl."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         event = store.append_event("turn_started", {"turn": 1})
         assert event["type"] == "turn_started"
@@ -61,7 +60,7 @@ class TestEventAppending:
         """Events get sequential IDs."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         e1 = store.append_event("turn_started", {"turn": 1})
         e2 = store.append_event("turn_finished", {"turn": 1})
@@ -72,7 +71,7 @@ class TestEventAppending:
         """Events can be read back."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.append_event("turn_started", {"turn": 1})
         store.append_event("turn_finished", {"turn": 1})
@@ -85,7 +84,7 @@ class TestEventAppending:
         """The events file is valid JSONL — one JSON object per line."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.append_event("test", {"key": "value"})
         store.append_event("test2", {"key2": "value2"})
@@ -110,7 +109,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {"type": "turn_started"},
                 {"type": "mailbox_send"},
@@ -136,7 +135,7 @@ class TestMaterialization:
         """Materialized state reflects appended events."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.append_event("turn_started", {"turn": 1})
         store.append_event("turn_finished", {"turn": 1})
@@ -150,7 +149,7 @@ class TestMaterialization:
         """Deleting state.yaml and re-materializing gives same result."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.append_event("turn_started", {"turn": 1})
         s1 = store.materialize()
@@ -166,7 +165,7 @@ class TestMaterialization:
         """Status is derived from the last relevant event."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         assert store.materialize()["status"] == "active"
 
@@ -182,7 +181,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {"type": "turn_started"},
                 {"type": "error"},
@@ -204,7 +203,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {"type": "turn_started"},
                 {"type": "interrupted"},
@@ -223,7 +222,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {"type": "turn_started"},
                 {
@@ -257,7 +256,7 @@ class TestMaterialization:
         """Mailbox pending = sent - acknowledged."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         assert store.materialize()["mailbox_pending"] == 0
 
@@ -274,7 +273,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {
                     "event_id": 1,
@@ -315,7 +314,7 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {
                     "event_id": 1,
@@ -343,28 +342,26 @@ class TestMaterialization:
             schema_version=2,
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
             events=[
                 {
                     "event_id": 1,
                     "ts": "2026-01-01T00:00:00+00:00",
-                    "type": "workspace_initialized",
+                    "type": "workspace_attached",
                     "payload": {
                         "workspace_root": "/tmp/old",
-                        "metadata_path": "/tmp/old/.xbot/workspace.yaml",
                         "lifecycle": "start",
-                        "status": "created",
+                        "status": "attached",
                     },
                 },
                 {
                     "event_id": 2,
                     "ts": "2026-01-01T00:01:00+00:00",
-                    "type": "workspace_recovered",
+                    "type": "workspace_attached",
                     "payload": {
                         "workspace_root": "/tmp/new",
-                        "metadata_path": "/tmp/new/.xbot/workspace.yaml",
                         "lifecycle": "resume",
-                        "status": "recovered",
+                        "status": "attached",
                     },
                 },
             ],
@@ -375,12 +372,35 @@ class TestMaterialization:
 
         assert state["workspace"] == {
             "root": "/tmp/new",
-            "metadata_path": "/tmp/new/.xbot/workspace.yaml",
             "lifecycle": "resume",
-            "status": "recovered",
+            "status": "attached",
             "event_id": 2,
             "updated_at": "2026-01-01T00:01:00+00:00",
         }
+
+    def test_materializer_tracks_provider_and_session_overrides(self):
+        """Provider, permission, and sandbox command events materialize session state."""
+        state = build_materialized_state(
+            schema_version=2,
+            session_id="s1",
+            thread_id="t1",
+            workspace_root="/workspace",
+            provider="default",
+            events=[
+                {"type": "provider_switched", "payload": {"provider": "deepseek"}},
+                {"type": "permission_override_set", "payload": {"key": "shell", "value": "allow"}},
+                {"type": "sandbox_override_set", "payload": {"key": "external_read", "value": "ask"}},
+                {"type": "permission_override_set", "payload": {"key": "filesystem_read", "value": "deny"}},
+                {"type": "permission_overrides_reset", "payload": {"key": "shell"}},
+            ],
+            message_count=0,
+            plugin_states={},
+            artifacts_root="/tmp/artifacts",
+        )
+
+        assert state["provider"] == "deepseek"
+        assert state["permission_overrides"] == {"filesystem_read": "deny"}
+        assert state["sandbox_overrides"] == {"external_read": "ask"}
 
 
 class TestPluginState:
@@ -390,7 +410,7 @@ class TestPluginState:
         """Unwritten plugin state returns {}."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         assert store.get_plugin_state("nonexistent") == {}
 
@@ -398,7 +418,7 @@ class TestPluginState:
         """Plugin state round-trips correctly."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.set_plugin_state("test_plugin", {"key": "value", "count": 42})
         assert store.get_plugin_state("test_plugin") == {"key": "value", "count": 42}
@@ -407,7 +427,7 @@ class TestPluginState:
         """Plugin state can be deleted."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.set_plugin_state("test_plugin", {"key": "value"})
         store.delete_plugin_state("test_plugin")
@@ -417,7 +437,7 @@ class TestPluginState:
         """Materialized state includes all plugin states."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.set_plugin_state("plugin_a", {"a": 1})
         store.set_plugin_state("plugin_b", {"b": 2})
@@ -429,7 +449,7 @@ class TestPluginState:
         """Plugin states don't leak between plugins."""
         root = temp_data_dir / "sessions" / "test" / "state"
         store = CoreStateStore.create(
-            root, session_id="s1", thread_id="t1", personality_id="default"
+            root, session_id="s1", thread_id="t1", workspace_root="/workspace", provider="default"
         )
         store.set_plugin_state("plugin_a", {"data": "a"})
         store.set_plugin_state("plugin_b", {"data": "b"})

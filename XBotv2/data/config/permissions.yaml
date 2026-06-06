@@ -1,0 +1,17 @@
+allow:
+  - tool: shell
+    params:
+      command: ls\ \-l\ /home/shefrin/repo/XBot/docs
+  - tool: shell
+    params:
+      command: df\ \-h
+  - tool: shell
+    params:
+      command: date
+  - tool: filesystem_.*
+ask:
+  - tool: shell
+deny:
+  - tool: .*
+    params:
+      command: rm -rf /.*

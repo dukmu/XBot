@@ -303,6 +303,6 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
 def _hook_context(stage, **kwargs):
     return HookContext(
         stage=stage,
-        session=SessionInfo(session_id="s", thread_id="t", personality_id="p"),
+        session=SessionInfo(session_id="s", thread_id="t", workspace_root="/workspace", provider="p"),
         **kwargs,
     )

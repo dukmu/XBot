@@ -59,7 +59,8 @@ def state_store(temp_data_dir):
         temp_data_dir / "sessions" / "default" / "state",
         session_id="test-session",
         thread_id="test-thread",
-        personality_id="default",
+        workspace_root=str(temp_data_dir),
+        provider="default",
     )
     return store
 
@@ -70,7 +71,8 @@ def session_info():
     return SessionInfo(
         session_id="test-session",
         thread_id="test-thread",
-        personality_id="default",
+        workspace_root="/workspace",
+        provider="default",
     )
 
 

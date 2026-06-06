@@ -31,6 +31,7 @@ from xbotv2.tui.command import (
     is_slash_command,
     known_command_labels,
     parse_slash_command,
+    register_server_commands,
 )
 from xbotv2.tui.command_palette import CommandPalette
 from xbotv2.tui.completion_popup import CompletionPopup
@@ -63,19 +64,21 @@ class TextualTuiClient:
     def __init__(
         self,
         data_dir: Path | str = "data",
-        personality_id: str = "default",
         provider_name: str = "default",
         session_id: str | None = None,
         thread_id: str = "agent",
+        workspace_root: Path | str | None = None,
+        session_mode: str | None = None,
         no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
     ) -> None:
         config = TuiSessionConfig(
             data_dir=data_dir,
-            personality_id=personality_id,
             provider_name=provider_name,
             session_id=session_id,
             thread_id=thread_id,
+            workspace_root=workspace_root,
+            session_mode=session_mode,
             no_plugins=no_plugins,
             base_url=base_url,
         )
@@ -110,10 +113,11 @@ class XBotTextualApp(App[None]):
         *,
         config: TuiSessionConfig | None = None,
         data_dir: Path | str = "data",
-        personality_id: str = "default",
         provider_name: str = "default",
         session_id: str | None = None,
         thread_id: str = "agent",
+        workspace_root: Path | str | None = None,
+        session_mode: str | None = None,
         no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
     ) -> None:
@@ -121,10 +125,11 @@ class XBotTextualApp(App[None]):
         if config is None:
             config = TuiSessionConfig(
                 data_dir=data_dir,
-                personality_id=personality_id,
                 provider_name=provider_name,
                 session_id=session_id,
                 thread_id=thread_id,
+                workspace_root=workspace_root,
+                session_mode=session_mode,
                 no_plugins=no_plugins,
                 base_url=base_url,
             )
@@ -186,6 +191,13 @@ class XBotTextualApp(App[None]):
             self.state.status = "Connecting"
             self._refresh_all()
             await self.session.connect()
+            try:
+                payload = await self.session.list_commands()
+                commands = payload.get("commands") if isinstance(payload, dict) else []
+                if isinstance(commands, list):
+                    register_server_commands(commands)
+            except Exception:
+                logger.exception("failed to load server commands")
             self._connected = True
             self.state.status = "Ready"
             self._refresh_all()
@@ -335,10 +347,26 @@ class XBotTextualApp(App[None]):
             await self._cmd_help()
             return
         if spec.name == "status":
-            await self._cmd_status()
+            await self._run_server_command(spec)
             return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
+            return
+        await self._run_server_command(spec)
+
+    async def _run_server_command(self, spec: CommandSpec) -> None:
+        if not self._connected:
+            await self._append_local_notice("Not connected", "Server is not ready yet.")
+            return
+        parts = [part for part in spec.args.split() if part]
+        try:
+            result = await self.session.run_command(spec.name, parts, spec.raw)
+        except Exception as exc:  # noqa: BLE001
+            self._record_error(exc)
+            return
+        data = result.get("data") if isinstance(result, dict) else {}
+        message = str(data.get("message") or result)
+        await self._append_local_notice(f"/{spec.name}", message)
 
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""

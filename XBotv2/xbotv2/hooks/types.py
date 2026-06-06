@@ -122,11 +122,11 @@ class HookContext:
 
     stage: HookStage
     state: dict[str, Any] = field(default_factory=dict)
-    config: Any | None = None  # AgentConfig (avoid circular import)
+    config: Any | None = None  # SystemConfig (avoid circular import)
     tools: Any | None = None  # ToolRegistry
     plugin_store: "PluginStore | None" = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo(
-        session_id="", thread_id="", personality_id="",
+        session_id="", thread_id="", workspace_root="", provider="default",
     ))
     emit: Callable[[Any], None] = field(default=lambda _: None)
 

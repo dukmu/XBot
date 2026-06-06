@@ -60,6 +60,19 @@ class _ScriptedSession:
     async def disconnect(self) -> None:
         return None
 
+    async def list_commands(self):
+        return {
+            "commands": [
+                {"name": "status", "slash": "/status", "description": "show status"}
+            ]
+        }
+
+    async def run_command(self, command, args, raw):
+        del args, raw
+        if command == "status":
+            return {"data": {"message": "turn=0 mode=composing"}}
+        return {"data": {"message": f"ran {command}"}}
+
     async def send_message(
         self, text, *, input_provider=None, permission_provider=None
     ):
@@ -99,7 +112,6 @@ def scripted_session() -> _ScriptedSession:
 async def test_completion_popup_appears_on_slash(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -126,7 +138,6 @@ async def test_completion_popup_appears_on_slash(scripted_session) -> None:
 async def test_completion_popup_filters_by_prefix(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -154,7 +165,6 @@ async def test_completion_popup_hides_when_text_stops_with_slash_prefix(
 ) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -179,7 +189,6 @@ async def test_completion_popup_tab_accepts_highlighted(
 ) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -209,7 +218,6 @@ async def test_completion_popup_tab_accepts_highlighted(
 async def test_completion_popup_escape_dismisses(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -243,7 +251,6 @@ async def test_completion_popup_escape_dismisses(scripted_session) -> None:
 async def test_composer_preserves_chinese_ime_text(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -273,7 +280,6 @@ async def test_help_prints_each_command_on_its_own_line(
 ) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -306,7 +312,6 @@ async def test_unknown_slash_command_surfaces_notice_not_message(
 ) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -340,7 +345,6 @@ async def test_repeated_composer_submit_does_not_duplicate_submit(
 ) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -381,7 +385,6 @@ async def test_tool_widget_title_includes_elapsed_seconds(
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -521,7 +524,6 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
     session = SlowSession()
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -593,7 +595,6 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
 async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="my-session",
         thread_id="my-thread",
@@ -623,7 +624,6 @@ async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
 async def test_slash_status_appends_state_notice(scripted_session) -> None:
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -637,7 +637,7 @@ async def test_slash_status_appends_state_notice(scripted_session) -> None:
         await app.submit_composer()
         await pilot.pause()
 
-    status_notices = [n for n in app.state.notices if n.kind == "Status"]
+    status_notices = [n for n in app.state.notices if n.kind == "/status"]
     assert len(status_notices) == 1
     body = status_notices[0].text
     assert "turn=0" in body
@@ -658,7 +658,6 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -689,7 +688,6 @@ async def test_palette_fuzzy_filters_to_exit(scripted_session) -> None:
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -766,7 +764,6 @@ async def test_assistant_message_body_renders_in_transcript(
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -820,7 +817,6 @@ async def test_help_body_renders_each_command_on_its_own_row(
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -878,7 +874,6 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",

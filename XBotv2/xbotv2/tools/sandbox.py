@@ -53,6 +53,10 @@ class SandboxPolicy:
         self.workspace_root = Path(workspace_root)
         self._rules: list[SandboxResourceRule] = []
         self._one_call_approvals: set[tuple[str, str]] = set()  # (path, operation)
+        self.external_read: PathAccess = "ask"
+        self.external_write: PathAccess = "deny"
+        self.workspace_read: PathAccess = "readwrite"
+        self.workspace_write: PathAccess = "readwrite"
 
         if config:
             self._load_config(config)
@@ -64,6 +68,10 @@ class SandboxPolicy:
 
     def _load_config(self, config: dict[str, Any]) -> None:
         self.enabled = config.get("enabled", self.enabled)
+        self.external_read = _normalize_access(config.get("external_read"), "ask")
+        self.external_write = _normalize_access(config.get("external_write"), "deny")
+        self.workspace_read = _normalize_access(config.get("workspace_read"), "readwrite")
+        self.workspace_write = _normalize_access(config.get("workspace_write"), "readwrite")
         for rule_data in config.get("resources", []):
             path = self._expand_path(str(rule_data.get("path", "")))
             access = rule_data.get("access", "readonly")
@@ -107,14 +115,16 @@ class SandboxPolicy:
 
         # Enabled sandbox: check each path against rules
         for path_entry in self._extract_paths(args):
+            if self._check_workspace_symlink_escape(path_entry):
+                return False, f"Symlink escape detected: {path_entry}"
             resolved = self.resolve_tool_path(path_entry)
 
-            if self._check_symlink_escape(resolved):
-                return False, f"Symlink escape detected: {resolved}"
-
-            access = self._evaluate_path_access(resolved)
+            operation = self._operation_for_tool(tool_name)
+            access = self._evaluate_path_access(resolved, operation)
             if access == "deny":
                 return False, f"Path denied: {resolved}"
+            if access == "readonly" and operation == "write":
+                return False, f"Path is read-only: {resolved}"
             if access == "ask":
                 if self._consume_one_call_approval(resolved, tool_name):
                     continue
@@ -198,7 +208,18 @@ class SandboxPolicy:
         except (ValueError, OSError):
             return True
 
-    def _evaluate_path_access(self, resolved: str) -> PathAccess:
+    def _check_workspace_symlink_escape(self, path_entry: str) -> bool:
+        candidate = Path(path_entry)
+        if candidate.is_absolute():
+            return False
+        candidate = self.workspace_root / candidate
+        try:
+            candidate.relative_to(self.workspace_root.resolve())
+        except ValueError:
+            return False
+        return candidate.exists() and self._check_symlink_escape(str(candidate))
+
+    def _evaluate_path_access(self, resolved: str, operation: str) -> PathAccess:
         """Evaluate access for *resolved* against all rules.
 
         Deny rules take precedence, then ask, then readonly, then readwrite.
@@ -206,7 +227,13 @@ class SandboxPolicy:
         for rule in self._rules:
             if rule.matches(resolved):
                 return rule.access
-        return "deny"  # Default-deny for sandboxed execution
+        if self._is_under_workspace(resolved):
+            return self.workspace_write if operation == "write" else self.workspace_read
+        return self.external_write if operation == "write" else self.external_read
+
+    @staticmethod
+    def _operation_for_tool(tool_name: str) -> str:
+        return "write" if tool_name in {"filesystem_write"} else "read"
 
     def _consume_one_call_approval(self, resolved: str, operation: str) -> bool:
         approval = (str(Path(resolved).resolve()), operation)
@@ -221,3 +248,12 @@ class SandboxPolicy:
             .replace("{{ workspace }}", str(self.workspace_root))
             .replace("{{ data_dir }}", str(self.data_root))
         )
+
+
+def _normalize_access(value: Any, default: PathAccess) -> PathAccess:
+    text = str(value or default).lower().strip()
+    if text == "allow":
+        return "readwrite"
+    if text in {"readwrite", "readonly", "deny", "ask"}:
+        return text  # type: ignore[return-value]
+    return default

@@ -1,7 +1,7 @@
 """Bootstrap the complete XBotv2 runtime from configuration.
 
 Sequence:
-1. Load configuration (personality.yaml, provider.yaml, user.yaml)
+1. Load configuration (system.yaml, providers.yaml, user.yaml, AGENTS.md)
 2. Create CoreStateStore
 3. Create empty HookManager, ToolRegistry, ContextBuilder
 4. Register core base tools
@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import importlib
 import re
-import uuid
+import secrets
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from xbotv2.config.loader import load_agent_config, load_provider_config, load_user_context
+from xbotv2.config.loader import load_provider_config, load_system_config, load_user_context
 from xbotv2.config.policy import (
     load_session_policy,
     merge_permission_config,
@@ -38,7 +39,6 @@ from xbotv2.hooks.types import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.plugin.loader import _DefaultPlugin, resolve_dependencies as _resolve_dependencies
-from xbotv2.core.workspace import SessionWorkspace
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -74,10 +74,10 @@ CORE_BASE_TOOLS = [
 async def bootstrap(
     *,
     config_dir: Path | str = "data",
-    personality_id: str = "default",
     provider_name: str = "default",
     session_id: str | None = None,
     thread_id: str = "agent",
+    workspace_root: Path | str | None = None,
     plugin_dirs: list[Path | str] | None = None,
     plugin_configs: dict[str, dict[str, Any]] | None = None,
     llm_override: Any | None = None,
@@ -85,11 +85,11 @@ async def bootstrap(
     """Bootstrap the complete XBotv2 runtime.
 
     Args:
-        config_dir: Root data directory with config/, personalities/, sessions/.
-        personality_id: Personality to load.
+        config_dir: Root data directory with config/ and sessions/.
         provider_name: Provider config name.
         session_id: Session identifier.
         thread_id: LangGraph thread ID.
+        workspace_root: External workspace root. Defaults to current directory.
         plugin_dirs: Plugin directories to scan. ``None`` scans built-ins;
             an explicit empty list disables plugin discovery.
         plugin_configs: Per-plugin configuration dicts.
@@ -99,15 +99,16 @@ async def bootstrap(
         A fully-wired Engine ready to run turns.
     """
     config_dir = Path(config_dir)
-    _validate_identifier("personality_id", personality_id)
     _validate_identifier("provider_name", provider_name)
-    session_id = session_id or uuid.uuid4().hex
+    session_id = session_id or _new_session_id()
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
+    workspace_root = Path(workspace_root or Path.cwd()).resolve()
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    agent_config = load_agent_config(config_dir, personality_id)
+    agent_config = load_system_config(config_dir, workspace_root)
+    provider_name = provider_name or agent_config.provider
     provider_config = load_provider_config(config_dir, provider_name)
     load_user_context(config_dir)  # Validates config exists
 
@@ -121,7 +122,7 @@ async def bootstrap(
         session_policy.get("sandbox"),
     )
 
-    # Merge plugin configs from personality
+    # Merge plugin configs from system config
     if agent_config.plugins:
         _plugin_configs = {**_plugin_configs, **agent_config.plugins}
 
@@ -133,7 +134,8 @@ async def bootstrap(
         state_root,
         session_id=session_id,
         thread_id=thread_id,
-        personality_id=personality_id,
+        workspace_root=str(workspace_root),
+        provider=provider_name,
     )
 
     # 3. Create empty core components
@@ -157,18 +159,10 @@ async def bootstrap(
         )
 
     # 5. Create SandboxPolicy + PermissionSystem
-    session_root = config_dir / "sessions" / session_id
-    workspace_root = session_root / "workspace"
     sandbox = SandboxPolicy(
         agent_config.sandbox,
         data_root=config_dir,
         workspace_root=workspace_root,
-    )
-    workspace = SessionWorkspace(
-        workspace_root,
-        session_id=session_id,
-        thread_id=thread_id,
-        base_root=session_root,
     )
     permissions = PermissionSystem(agent_config.permissions)
 
@@ -186,7 +180,7 @@ async def bootstrap(
             _plugin_configs,
         )
 
-    # Apply tool filter from personality config after plugins are loaded so
+    # Apply tool filter from system config after plugins are loaded so
     # selectors can reference either core or plugin-provided tools.
     if agent_config.tools:
         tool_registry.restrict(agent_config.tools)
@@ -209,7 +203,8 @@ async def bootstrap(
         session=SessionInfo(
             session_id=session_id,
             thread_id=thread_id,
-            personality_id=personality_id,
+            workspace_root=str(workspace_root),
+            provider=provider_name,
         ),
         emit=lambda e: state_store.append_event("hook_event", e),
     )
@@ -224,7 +219,7 @@ async def bootstrap(
         context_builder=context_builder,
         sandbox_policy=sandbox,
         permission_system=permissions,
-        workspace=workspace,
+        workspace_root=str(workspace_root),
         config=agent_config,
         data_dir=str(config_dir),
     )
@@ -241,6 +236,10 @@ def _validate_identifier(field: str, value: str) -> None:
         raise ValueError(
             f"{field} must be a non-empty identifier using letters, numbers, '.', '_', or '-'"
         )
+
+
+def _new_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
 
 def _resolve_plugin_dirs(
@@ -285,13 +284,13 @@ async def _load_plugins(
 
 
 def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> None:
-    """Register hooks declared directly in the personality config."""
+    """Register hooks declared directly in the system config."""
     for decl in getattr(agent_config, "hooks", []) or []:
         hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl.target))
 
 
 def _resolve_hook_target(target: str) -> Any:
-    """Resolve ``module:function`` hook targets from personality config."""
+    """Resolve ``module:function`` hook targets from system config."""
     if ":" not in target:
         raise ValueError(f"Invalid hook target {target!r}; expected 'module:function'")
     module_path, attr_name = target.split(":", 1)

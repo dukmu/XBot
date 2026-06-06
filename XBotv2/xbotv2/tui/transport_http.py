@@ -44,7 +44,6 @@ class HttpTransport:
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str = "default",
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/hello",
@@ -52,7 +51,6 @@ class HttpTransport:
                 "client_name": "xbotv2-tui",
                 "session_id": session_id,
                 "thread_id": thread_id,
-                "personality_id": personality_id,
             },
         )
         _raise_for_status(response)
@@ -68,10 +66,17 @@ class HttpTransport:
         *,
         session_id: str,
         thread_id: str,
+        workspace_root: str,
+        mode: str = "new",
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/sessions",
-            json={"session_id": session_id, "thread_id": thread_id},
+            json={
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "workspace_root": workspace_root,
+                "mode": mode,
+            },
         )
         _raise_for_status(response)
         payload = response.json()
@@ -80,6 +85,26 @@ class HttpTransport:
             {"stage": "open_session", "status": response.status_code, "payload": payload},
         )
         return payload
+
+    async def list_commands(self) -> dict[str, Any]:
+        response = await self._client.get("/commands")
+        _raise_for_status(response)
+        return response.json()
+
+    async def run_command(
+        self,
+        *,
+        session_id: str,
+        command: str,
+        args: list[str],
+        raw: str,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            f"/sessions/{session_id}/commands",
+            json={"command": command, "args": args, "raw": raw},
+        )
+        _raise_for_status(response)
+        return response.json()
 
     def send_message(
         self,

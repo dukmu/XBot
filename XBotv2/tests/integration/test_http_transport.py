@@ -64,12 +64,9 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "sessions" / "default" / "workspace").mkdir(parents=True)
-    (data_dir / "sessions" / "default" / "state").mkdir(parents=True)
-    (data_dir / "personalities" / "default").mkdir(parents=True)
 
-    # Minimal provider.yaml so bootstrap can pick a default
-    (data_dir / "config" / "provider.yaml").write_text(
+    # Minimal providers.yaml so bootstrap can pick a default
+    (data_dir / "config" / "providers.yaml").write_text(
         "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
         encoding="utf-8",
     )
@@ -77,8 +74,7 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    # Minimal personality.yaml so bootstrap can load it
-    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+    (data_dir / "config" / "system.yaml").write_text(
         "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
         "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
@@ -86,7 +82,6 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
 
     app = create_app(
-        personality_id="default",
         provider_name="default",
         data_dir=str(data_dir),
         no_plugins=True,
@@ -138,11 +133,136 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_http_open_session_without_id_creates_generated_session(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post("/sessions", json={"thread_id": "t1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["session_id"]
+    assert "-" in body["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_http_resume_missing_session_returns_404(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/sessions",
+        json={"session_id": "missing", "thread_id": "t1", "mode": "resume"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "session_not_found"
+
+
+@pytest.mark.asyncio
+async def test_http_server_hosts_sessions_from_multiple_workspaces(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+) -> None:
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    response_a = await client.post(
+        "/sessions",
+        json={"session_id": "ws-a", "thread_id": "t", "workspace_root": str(workspace_a)},
+    )
+    response_b = await client.post(
+        "/sessions",
+        json={"session_id": "ws-b", "thread_id": "t", "workspace_root": str(workspace_b)},
+    )
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    assert response_a.json()["workspace_root"] == str(workspace_a.resolve())
+    assert response_b.json()["workspace_root"] == str(workspace_b.resolve())
+
+
+@pytest.mark.asyncio
+async def test_http_commands_are_discoverable_and_session_scoped(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    commands_response = await client.get("/commands")
+    assert commands_response.status_code == 200
+    names = {item["name"] for item in commands_response.json()["commands"]}
+    assert {"status", "provider", "permission", "sandbox"}.issubset(names)
+
+    open_response = await client.post(
+        "/sessions", json={"session_id": "cmds", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+
+    result_response = await client.post(
+        "/sessions/cmds/commands",
+        json={"command": "status", "args": []},
+    )
+    assert result_response.status_code == 200
+    body = result_response.json()
+    assert body["type"] == "command_result"
+    assert body["data"]["data"]["session_id"] == "cmds"
+    state_root = Path(http_app.state.data_dir) / "sessions" / "cmds" / "state"
+    messages_path = state_root / "messages.jsonl"
+    events_path = state_root / "events.jsonl"
+    messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
+    events = events_path.read_text(encoding="utf-8")
+    assert "server_command_result" in events
+    assert "command_result" not in messages
+
+
+@pytest.mark.asyncio
+async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient) -> None:
+    open_response = await client.post(
+        "/sessions", json={"session_id": "providers", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+
+    list_response = await client.post(
+        "/sessions/providers/commands",
+        json={"command": "provider", "args": ["list"]},
+    )
+    assert list_response.status_code == 200
+    data = list_response.json()["data"]
+    assert data["status"] == "ok"
+    assert data["data"]["providers"] == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_http_policy_commands_materialize_session_overrides(
+    client: httpx.AsyncClient,
+) -> None:
+    open_response = await client.post(
+        "/sessions", json={"session_id": "policy", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+
+    permission_response = await client.post(
+        "/sessions/policy/commands",
+        json={"command": "permission", "args": ["set", "shell", "allow"]},
+    )
+    sandbox_response = await client.post(
+        "/sessions/policy/commands",
+        json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
+    )
+    status_response = await client.post(
+        "/sessions/policy/commands",
+        json={"command": "permission", "args": ["status"]},
+    )
+
+    assert permission_response.status_code == 200
+    assert sandbox_response.status_code == 200
+    assert status_response.status_code == 200
+    assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
+
+
+@pytest.mark.asyncio
 async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "personalities" / "default").mkdir(parents=True)
-    (data_dir / "config" / "provider.yaml").write_text(
+    (data_dir / "config" / "providers.yaml").write_text(
         "default:\n  provider: openai\n  model: test\n  base_url: http://test\n",
         encoding="utf-8",
     )
@@ -150,14 +270,13 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+    (data_dir / "config" / "system.yaml").write_text(
         "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
         "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
     app = create_app(
-        personality_id="default",
         provider_name="default",
         data_dir=str(data_dir),
         no_plugins=True,
@@ -456,11 +575,10 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
 
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    workspace = data_dir / "sessions" / "default" / "workspace"
+    workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
     (workspace / "hello.txt").write_text("hello", encoding="utf-8")
-    (data_dir / "personalities" / "default").mkdir(parents=True)
-    (data_dir / "config" / "provider.yaml").write_text(
+    (data_dir / "config" / "providers.yaml").write_text(
         "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
         encoding="utf-8",
     )
@@ -468,7 +586,7 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+    (data_dir / "config" / "system.yaml").write_text(
         "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
         "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: true\n  resources: []\n",
@@ -476,9 +594,9 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
     )
 
     app = create_app(
-        personality_id="default",
         provider_name="default",
         data_dir=str(data_dir),
+        workspace_root=str(workspace),
         no_plugins=True,
     )
     set_llm_override(app, MockLLM(responses=[

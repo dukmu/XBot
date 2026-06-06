@@ -26,7 +26,6 @@ class Transport(Protocol):
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str = "default",
     ) -> dict[str, Any]:
         """Handshake with the server. Returns the server's greeting."""
 
@@ -35,8 +34,23 @@ class Transport(Protocol):
         *,
         session_id: str,
         thread_id: str,
+        workspace_root: str,
+        mode: str = "new",
     ) -> dict[str, Any]:
         """Open or resume a session. Returns the agent_name and status."""
+
+    async def list_commands(self) -> dict[str, Any]:
+        """Return server command metadata for completion/help."""
+
+    async def run_command(
+        self,
+        *,
+        session_id: str,
+        command: str,
+        args: list[str],
+        raw: str,
+    ) -> dict[str, Any]:
+        """Execute a server-side slash command."""
 
     def send_message(
         self,

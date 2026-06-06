@@ -19,7 +19,8 @@ class SessionInfo:
 
     session_id: str
     thread_id: str
-    personality_id: str
+    workspace_root: str = ""
+    provider: str = "default"
     turn_count: int = 0
     event_count: int = 0
     status: str = "active"  # active | error | interrupted | closed

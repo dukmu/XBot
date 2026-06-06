@@ -266,7 +266,12 @@ class TestHookContext:
         ctx = HookContext(
             stage=HookStage.ON_USER_MESSAGE,
             user_input="hello",
-            session=SessionInfo(session_id="s", thread_id="t", personality_id="p"),
+            session=SessionInfo(
+                session_id="s",
+                thread_id="t",
+                workspace_root="/workspace",
+                provider="p",
+            ),
         )
 
         received = []

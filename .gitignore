@@ -3,6 +3,10 @@
 *.pyc
 __pycache__/
 data/
+!XBotv2/data/
+!XBotv2/data/config/
+!XBotv2/data/config/*.yaml
+!XBotv2/data/plan_stage2.md
 data_test/
 
 # Dependencies

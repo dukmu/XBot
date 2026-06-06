@@ -1,0 +1,6 @@
+enabled: true
+external_read: ask
+external_write: deny
+workspace_read: allow
+workspace_write: allow
+resources: []

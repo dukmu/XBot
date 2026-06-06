@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from xbotv2.core.bootstrap import bootstrap
@@ -65,9 +67,9 @@ class SessionContext:
 
     session_id: str
     thread_id: str
-    personality_id: str
     provider_name: str
     data_dir: str
+    workspace_root: str
     no_plugins: bool
     engine: Any
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -126,24 +128,42 @@ class SessionManager:
     async def open_session(
         self,
         *,
-        session_id: str,
+        session_id: str | None,
         thread_id: str,
-        personality_id: str,
         provider_name: str,
         data_dir: str,
+        workspace_root: str,
+        mode: str = "new",
         no_plugins: bool,
         llm_override: Any | None = None,
     ) -> SessionContext:
         async with self._lock:
+            mode = (mode or "new").lower().strip()
+            if mode not in {"new", "resume"}:
+                raise ValueError("session mode must be new or resume")
+            if mode == "resume" and not session_id:
+                raise ValueError("resume mode requires session_id")
+            if mode == "new":
+                session_id = session_id or _new_session_id()
+                if session_id in self._sessions:
+                    raise ValueError(f"session already exists: {session_id}")
+            assert session_id is not None
             existing = self._sessions.get(session_id)
             if existing is not None:
-                return existing
+                if mode == "resume":
+                    return existing
+                raise ValueError(f"session already exists: {session_id}")
+            state_root = Path(data_dir) / "sessions" / session_id / "state"
+            if mode == "resume" and not state_root.exists():
+                raise SessionNotFound(session_id)
+            if mode == "new" and state_root.exists():
+                raise ValueError(f"session state already exists: {session_id}")
             engine = await bootstrap(
                 config_dir=data_dir,
-                personality_id=personality_id,
                 provider_name=provider_name,
                 session_id=session_id,
                 thread_id=thread_id,
+                workspace_root=workspace_root,
                 plugin_dirs=[] if no_plugins else None,
                 llm_override=llm_override,
             )
@@ -151,9 +171,9 @@ class SessionManager:
             ctx = SessionContext(
                 session_id=session_id,
                 thread_id=thread_id,
-                personality_id=personality_id,
                 provider_name=provider_name,
                 data_dir=data_dir,
+                workspace_root=workspace_root,
                 no_plugins=no_plugins,
                 engine=engine,
             )
@@ -172,6 +192,12 @@ class SessionManager:
             self._sessions.clear()
         for ctx in contexts:
             await ctx.close()
+
+
+def _new_session_id() -> str:
+    from datetime import datetime
+
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
 
 
 def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:

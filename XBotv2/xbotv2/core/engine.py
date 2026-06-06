@@ -27,7 +27,6 @@ from xbotv2.core.interactions import (
     InteractionWaiter,
 )
 from xbotv2.core.state import SessionInfo
-from xbotv2.core.workspace import SessionWorkspace
 from xbotv2.hooks.types import HookContext, HookStage
 
 logger = logging.getLogger("xbotv2.engine")
@@ -61,8 +60,8 @@ class Engine:
         context_builder: Any,  # ContextBuilder
         sandbox_policy: Any,  # SandboxPolicy
         permission_system: Any,  # PermissionSystem
-        config: Any,  # AgentConfig
-        workspace: SessionWorkspace | None = None,
+        config: Any,  # SystemConfig
+        workspace_root: str | None = None,
         max_iterations: int = 50,
         data_dir: str | None = None,
     ) -> None:
@@ -74,7 +73,7 @@ class Engine:
         self.sandbox_policy = sandbox_policy
         self.permission_system = permission_system
         self.config = config
-        self.workspace = workspace
+        self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
         # ``data_dir`` is used by ``dump_conversation_state`` to land
         # diagnostic dumps next to the log file. Best-effort — the
@@ -102,11 +101,12 @@ class Engine:
         self._session = SessionInfo(
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
-            personality_id=self.state_store.personality_id,
+            workspace_root=self.workspace_root,
+            provider=str(getattr(self.config, "provider", "default")),
         )
 
         existing_session = self.state_store.has_existing_session()
-        self._ensure_workspace("resume" if existing_session else "start")
+        self._record_workspace("resume" if existing_session else "start")
 
         if existing_session:
             self._messages = self.state_store.read_messages()
@@ -129,11 +129,12 @@ class Engine:
         self._session = SessionInfo(
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
-            personality_id=self.state_store.personality_id,
+            workspace_root=self.workspace_root,
+            provider=str(getattr(self.config, "provider", "default")),
             turn_count=self._turn_count,
         )
 
-        self._ensure_workspace("explicit_resume")
+        self._record_workspace("explicit_resume")
 
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
@@ -421,7 +422,11 @@ class Engine:
                 "agent_role": getattr(self.config, "agent_role", ""),
                 "user_name": "User",
                 "user_id": "default-user",
-                "instructions": getattr(self.config, "instructions", ""),
+                "instructions": getattr(
+                    self.config,
+                    "effective_instructions",
+                    getattr(self.config, "instructions", ""),
+                ),
                 "memory": getattr(self.config, "memory", ""),
                 "sandbox_summary": self.sandbox_policy.describe() if self.sandbox_policy else "",
                 "turn_count": self._turn_count,
@@ -754,6 +759,7 @@ class Engine:
                     if self._client_event_sink is not None
                     else None
                 ),
+                workspace_root=self.workspace_root,
             )
 
             # AFTER_TOOLS hooks may redact/cache large outputs before they
@@ -979,12 +985,16 @@ class Engine:
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
 
-    def _ensure_workspace(self, lifecycle: str) -> None:
-        """Ensure the session workspace exists before lifecycle hooks run."""
-        if self.workspace is None:
-            return
-        status = self.workspace.ensure(lifecycle)  # type: ignore[arg-type]
-        self.state_store.append_event(status.event_type(), status.to_event_payload())
+    def _record_workspace(self, lifecycle: str) -> None:
+        """Record the external workspace root without creating directories."""
+        self.state_store.append_event(
+            "workspace_attached",
+            {
+                "workspace_root": self.workspace_root,
+                "lifecycle": lifecycle,
+                "status": "ready",
+            },
+        )
         self.state_store.materialize()
 
     async def _handle_user_input_request(
@@ -1139,6 +1149,22 @@ class Engine:
             "request_payload": data,
         }
         if status == "answered":
+            if str(result.get("scope") or "once") in {"session", "always"}:
+                try:
+                    from pathlib import Path
+
+                    from xbotv2.config.policy import persist_permission_decision
+
+                    persist_permission_decision(
+                        config_dir=Path(self.data_dir) if self.data_dir else Path("data"),
+                        session_id=self.state_store.session_id,
+                        client_event=client_event,
+                        decision=str(result.get("decision") or ""),
+                        scope=str(result.get("scope") or "once"),
+                        engine=self,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("permission persistence failed")
             self.state_store.append_event("permission_response", {
                 **payload,
                 "decision": result.get("decision", ""),
@@ -1197,7 +1223,8 @@ class Engine:
             session=self._session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,
-                personality_id=self.state_store.personality_id,
+                workspace_root=self.workspace_root,
+                provider=str(getattr(self.config, "provider", "default")),
                 turn_count=self._turn_count,
             ),
             emit=lambda e: self.state_store.append_event("hook_event", e),

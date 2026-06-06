@@ -80,6 +80,35 @@ class TestSandboxPolicyBasics:
         )
         assert policy.enabled is True
 
+    def test_stage2_default_access_matrix(self, temp_workspace):
+        """Default sandbox allows workspace, asks external reads, denies external writes."""
+        ws = Path(temp_workspace)
+        policy = SandboxPolicy(workspace_root=str(ws))
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_read", {"path": "inside.txt"}, "sandboxed"
+        )
+        assert allowed is True
+        assert reason == ""
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_write", {"path": "inside.txt"}, "sandboxed"
+        )
+        assert allowed is True
+        assert reason == ""
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_read", {"path": "/etc/hosts"}, "sandboxed"
+        )
+        assert allowed is False
+        assert "Path approval required" in reason
+
+        allowed, reason = policy.guard_tool_call(
+            "filesystem_write", {"path": "/etc/hosts"}, "sandboxed"
+        )
+        assert allowed is False
+        assert "Path denied" in reason
+
 
 class TestToolGuard:
     """Tool call guard decisions."""
@@ -96,8 +125,8 @@ class TestToolGuard:
         assert allowed is True
         assert reason == ""
 
-    def test_sandboxed_tool_denied_outside_workspace(self, temp_workspace):
-        """When sandbox enabled, workspace-relative paths outside workspace denied."""
+    def test_sandboxed_tool_asks_for_external_read(self, temp_workspace):
+        """When sandbox enabled, external reads require approval by default."""
         ws = Path(temp_workspace)
         policy = SandboxPolicy(
             enabled=True,
@@ -109,7 +138,7 @@ class TestToolGuard:
             "filesystem_read", {"path": outside}, "sandboxed"
         )
         assert allowed is False
-        assert "denied" in reason.lower() or "escape" in reason.lower()
+        assert "Path approval required" in reason
 
     def test_disabled_sandbox_allows_workspace(self, temp_workspace):
         """When disabled, workspace paths are allowed."""

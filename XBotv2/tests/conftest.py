@@ -20,9 +20,7 @@ def temp_data_dir():
     temp_dir = tempfile.mkdtemp(prefix="xbotv2_test_")
     data_dir = Path(temp_dir) / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "sessions" / "default" / "workspace").mkdir(parents=True)
     (data_dir / "sessions" / "default" / "state").mkdir(parents=True)
-    (data_dir / "personalities" / "default").mkdir(parents=True)
     yield data_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 

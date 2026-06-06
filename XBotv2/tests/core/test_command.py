@@ -13,8 +13,18 @@ from xbotv2.tui.command import (
     complete_command,
     known_command_labels,
     parse_slash_command,
+    register_server_commands,
     search_commands,
 )
+
+
+@pytest.fixture(autouse=True)
+def restore_command_registry(monkeypatch):
+    from xbotv2.tui import command
+
+    monkeypatch.setattr(command, "_ALIASES", dict(command._ALIASES))
+    monkeypatch.setattr(command, "_COMMANDS", dict(command._COMMANDS))
+    monkeypatch.setattr(command, "_SEARCH_ORDER", list(command._SEARCH_ORDER))
 
 
 # ----------------------------------------------------------------------
@@ -24,20 +34,20 @@ from xbotv2.tui.command import (
 
 def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
     results = search_commands("")
-    assert [spec.name for spec in results] == ["help", "clear", "status", "exit"]
+    assert [spec.name for spec in results] == ["help", "clear", "exit"]
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(search_commands("   ")) == 4
+    assert len(search_commands("   ")) == 3
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
     results = search_commands("/c")
     names = [spec.name for spec in results]
-    # "clear" starts with "c" (rank 0); "help" and "status" contain "c"
-    # in their short labels ("commands", "current") and rank after.
+    # "clear" starts with "c" (rank 0); "help" contains "c" in its short
+    # label ("commands") and ranks after.
     assert names[0] == "clear"
-    assert "help" in names and "status" in names
+    assert "help" in names
     # "exit" short_label has no "c" so it is not in the result.
     assert "exit" not in names
 
@@ -53,6 +63,10 @@ def test_search_commands_slash_prefix_ex_matches_exit_only() -> None:
 
 
 def test_search_commands_slash_prefix_st_returns_status() -> None:
+    register_server_commands([
+        {"name": "status", "slash": "/status", "description": "show current status"}
+    ])
+
     results = search_commands("/st")
     # "status" starts with "st" (rank 0); "help" contains "st"
     # via "list" and "slash" (rank 2, substring fallback).
@@ -81,7 +95,16 @@ def test_search_commands_falls_back_to_substring() -> None:
 def test_search_commands_deduplicates_results() -> None:
     results = search_commands("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 4
+    assert len(names) == len(set(names)) == 3
+
+
+def test_register_server_commands_adds_dynamic_completion() -> None:
+    register_server_commands([
+        {"name": "status", "slash": "/status", "description": "show current status"}
+    ])
+
+    assert [spec.name for spec in search_commands("/st")][0] == "status"
+    assert parse_slash_command("/status").name == "status"
 
 
 # ----------------------------------------------------------------------
@@ -148,5 +171,5 @@ def test_parse_slash_command_still_works() -> None:
 
 def test_known_command_labels_preserves_stable_order() -> None:
     labels = known_command_labels()
-    assert len(labels) == 4
+    assert len(labels) == 3
     assert labels[0].startswith("/help")

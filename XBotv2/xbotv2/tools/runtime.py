@@ -229,6 +229,8 @@ async def execute_tools(
 
         tool = entry.tool
         args = dict(tc.get("args", {}))
+        if tool_name == "shell" and workspace_root:
+            args.setdefault("cwd", workspace_root)
         if sandbox_policy and entry.sandbox_mode == "sandboxed":
             args = _resolve_tool_paths(args, sandbox_policy)
 
@@ -262,10 +264,14 @@ async def execute_tools(
                     continue
                 tool = entry.tool
                 args = dict(tc.get("args", {}))
+                if tool_name == "shell" and workspace_root:
+                    args.setdefault("cwd", workspace_root)
                 if sandbox_policy and entry.sandbox_mode == "sandboxed":
                     args = _resolve_tool_paths(args, sandbox_policy)
             if "args" in before_result:
                 args = dict(before_result["args"])
+                if tool_name == "shell" and workspace_root:
+                    args.setdefault("cwd", workspace_root)
                 if sandbox_policy and entry.sandbox_mode == "sandboxed":
                     args = _resolve_tool_paths(args, sandbox_policy)
             if "tool_result" in before_result:

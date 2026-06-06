@@ -100,7 +100,6 @@ async def test_esc_during_running_turn_calls_transport_interrupt() -> None:
     session.transport = session
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -151,7 +150,6 @@ async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     session.transport = session
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
@@ -234,7 +232,6 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
     session = UsageSession()
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",

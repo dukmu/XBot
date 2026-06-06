@@ -446,8 +446,8 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     args = argparse.Namespace(
         data_dir="XBotv2/data",
-        personality="default",
         provider="deepseek",
+        workspace=None,
         mode="tui",
         bind="127.0.0.1",
         port=4096,
@@ -467,8 +467,8 @@ def test_spawn_server_propagates_log_args(monkeypatch):
 def test_mode_curses_uses_legacy_curses_client():
     args = argparse.Namespace(
         data_dir="data",
-        personality="default",
         provider="default",
+        workspace=None,
         no_plugins=True,
         bind="127.0.0.1",
         port=4096,
@@ -538,10 +538,10 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -573,10 +573,10 @@ async def test_textual_app_headless_keeps_transcript_non_focusable():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -620,10 +620,10 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -695,10 +695,10 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -737,10 +737,10 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -811,10 +811,10 @@ async def test_textual_app_headless_renders_inline_permission_options():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     session = FakeSession()
@@ -861,10 +861,10 @@ async def test_textual_app_confirming_permission_twice_submits_once():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = FakeSession()
@@ -933,10 +933,10 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     session = FakeSession()
@@ -1029,10 +1029,10 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     session = FakeSession()
@@ -1074,10 +1074,10 @@ async def test_textual_composer_history_and_multiline_resize():
 
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
 
@@ -1153,10 +1153,11 @@ def test_permission_decision_parser_supports_scopes():
 @pytest.mark.asyncio
 async def test_terminal_session_yields_live_interaction_once_without_provider():
     class FakeTransport:
-        async def hello(self, *, session_id, thread_id, personality_id="default"):
+        async def hello(self, *, session_id, thread_id):
             return {"session_id": session_id, "thread_id": thread_id}
 
-        async def open_session(self, *, session_id, thread_id):
+        async def open_session(self, *, session_id, thread_id, workspace_root=None, mode=None):
+            del workspace_root, mode
             return {"session_id": session_id, "thread_id": thread_id, "status": "ready"}
 
         def send_message(self, *, session_id, content, request_id):
@@ -1383,10 +1384,10 @@ async def test_tui_renders_error_entry_with_error_css_class():
     session = _ErrorSession()
     app = XBotTextualApp(
         data_dir="data",
-        personality_id="default",
         provider_name="mock",
         session_id="s",
         thread_id="t",
+        workspace_root=".",
         no_plugins=True,
     )
     app.session = session

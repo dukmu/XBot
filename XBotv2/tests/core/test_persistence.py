@@ -133,7 +133,8 @@ class TestMessagePersistence:
             tmp_path / "state",
             session_id="s1",
             thread_id="t1",
-            personality_id="default",
+            workspace_root="/workspace",
+            provider="default",
         )
 
     def test_append_and_read_single_message(self, store):
@@ -235,12 +236,24 @@ class TestMessagePersistence:
         root = tmp_path / "state"
 
         # First store — write messages
-        store1 = CoreStateStore.create(root, session_id="s1", thread_id="t1", personality_id="p")
+        store1 = CoreStateStore.create(
+            root,
+            session_id="s1",
+            thread_id="t1",
+            workspace_root="/workspace",
+            provider="p",
+        )
         store1.append_message(HumanMessage(content="persistent"))
         store1.append_message(AIMessage(content="survives restart"))
 
         # Second store — read them back
-        store2 = CoreStateStore(root=root, session_id="s1", thread_id="t1", personality_id="p")
+        store2 = CoreStateStore(
+            root=root,
+            session_id="s1",
+            thread_id="t1",
+            workspace_root="/workspace",
+            provider="p",
+        )
         assert store2.message_count() == 2
         restored = store2.read_messages()
         assert len(restored) == 2
@@ -279,7 +292,7 @@ class TestEnginePersistence:
         """After run_turn, messages are on disk."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "Hello!"}])
         registry = ToolRegistry()
@@ -301,7 +314,7 @@ class TestEnginePersistence:
         """A new engine on the same store restores previous messages."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
         registry = ToolRegistry()
@@ -326,7 +339,7 @@ class TestEnginePersistence:
         """Repeated turn saves do not churn ids for unchanged history messages."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
         registry = ToolRegistry()
@@ -351,7 +364,7 @@ class TestEnginePersistence:
         """Explicit resume_session loads messages and turn count."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "Before resume"}])
         registry = ToolRegistry()
@@ -374,7 +387,7 @@ class TestEnginePersistence:
         """Messages with tool calls round-trip through persistence."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[
             {
@@ -406,7 +419,7 @@ class TestEnginePersistence:
         """After messages are truncated (simulating compaction), save reflects it."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "R1"}, {"content": "R2"}, {"content": "R3"}])
         registry = ToolRegistry()
@@ -430,7 +443,7 @@ class TestEnginePersistence:
         """A brand-new session starts with zero messages."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="fresh", thread_id="t1", personality_id="p",
+            session_id="fresh", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         assert store.message_count() == 0
         assert store.has_existing_session() is False
@@ -446,7 +459,7 @@ class TestEnginePersistence:
         """Materialized state.yaml includes message_count."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
-            session_id="s1", thread_id="t1", personality_id="p",
+            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
         store.append_message(HumanMessage(content="m1"))
         store.append_message(AIMessage(content="m2"))

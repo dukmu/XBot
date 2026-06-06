@@ -10,6 +10,8 @@ per the design document §10.5.2.
 
 from __future__ import annotations
 
+import secrets
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -23,6 +25,10 @@ from xbotv2.tui.transport_http import HttpTransport
 # below let ``send_message`` accept both.
 InputProvider = Callable[[dict[str, Any]], Awaitable[Any] | Any]
 PermissionProvider = Callable[[dict[str, Any]], Awaitable[dict[str, str]] | dict[str, str]]
+
+
+def _new_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
 
 def _await_maybe(value: Awaitable[Any] | Any) -> Any:
@@ -49,21 +55,23 @@ class TerminalSession:
         self,
         *,
         data_dir: Path | str = "data",
-        personality_id: str = "default",
         provider_name: str = "default",
         session_id: str | None = None,
         thread_id: str = "agent",
+        workspace_root: Path | str | None = None,
+        session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
         no_plugins: bool = False,
         transport: Transport | None = None,
         token: str | None = None,
     ) -> None:
         self._data_dir = str(data_dir)
-        self._personality_id = personality_id
         self._provider_name = provider_name
         self._no_plugins = no_plugins
-        self._session_id = session_id or "default"
+        self._session_id = session_id or _new_session_id()
+        self._session_mode = session_mode or "new"
         self._thread_id = thread_id
+        self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
         self._transport: Transport = transport or HttpTransport(base_url, token=token)
         self._connected = False
 
@@ -87,16 +95,29 @@ class TerminalSession:
         hello = await self._transport.hello(
             session_id=self._session_id,
             thread_id=self._thread_id,
-            personality_id=self._personality_id,
         )
         server_session = str(hello.get("session_id") or self._session_id)
         server_thread = str(hello.get("thread_id") or self._thread_id)
         self._session_id = server_session
         self._thread_id = server_thread
         await self._transport.open_session(
-            session_id=self._session_id, thread_id=self._thread_id
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            workspace_root=self._workspace_root,
+            mode=self._session_mode,
         )
         self._connected = True
+
+    async def list_commands(self) -> dict[str, Any]:
+        return await self._transport.list_commands()
+
+    async def run_command(self, command: str, args: list[str], raw: str) -> dict[str, Any]:
+        return await self._transport.run_command(
+            session_id=self._session_id,
+            command=command,
+            args=args,
+            raw=raw,
+        )
 
     async def disconnect(self) -> None:
         """Best-effort session shutdown + transport close."""

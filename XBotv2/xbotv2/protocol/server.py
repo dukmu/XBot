@@ -35,13 +35,13 @@ class RuntimeServer:
     def __init__(
         self,
         data_dir: Path | str = "data",
-        personality_id: str = "default",
         provider_name: str = "default",
+        workspace_root: Path | str | None = None,
         no_plugins: bool = False,
     ) -> None:
         self._data_dir = Path(data_dir).resolve()
-        self._personality_id = personality_id
         self._provider_name = provider_name
+        self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
         self._no_plugins = no_plugins
         self._engine = None
         self._encoder: ProtocolEncoder | None = None
@@ -143,7 +143,8 @@ class RuntimeServer:
     def _handle_hello(self, frame: ProtocolFrame) -> ProtocolFrame:
         self._session_id = frame.session_id or frame.payload.get("session_id", "default")
         self._thread_id = frame.thread_id or frame.payload.get("thread_id", "agent")
-        self._personality_id = frame.payload.get("personality_id", self._personality_id)
+        if frame.payload.get("workspace_root"):
+            self._workspace_root = Path(frame.payload["workspace_root"]).resolve()
 
         self._encoder = ProtocolEncoder(
             session_id=self._session_id,
@@ -158,10 +159,10 @@ class RuntimeServer:
         try:
             self._engine = await bootstrap(
                 config_dir=str(self._data_dir),
-                personality_id=self._personality_id,
                 provider_name=self._provider_name,
                 session_id=self._session_id,
                 thread_id=self._thread_id,
+                workspace_root=self._workspace_root,
                 plugin_dirs=[] if self._no_plugins else None,
             )
             await self._engine.start_session()
@@ -370,7 +371,6 @@ class RuntimeServer:
         state = store.materialize()
         persist_permission_decision(
             config_dir=self._data_dir,
-            personality_id=self._personality_id,
             session_id=self._session_id,
             client_event={"type": "permission_request", "data": pending.get("payload", {})},
             decision=decision,
@@ -570,7 +570,6 @@ class RuntimeServer:
                 if response.get("status") == "answered":
                     persist_permission_decision(
                         config_dir=self._data_dir,
-                        personality_id=self._personality_id,
                         session_id=self._session_id,
                         client_event=client_event,
                         decision=str(response.get("decision") or ""),
@@ -760,15 +759,15 @@ def _pending_response_context(pending: dict[str, Any]) -> dict[str, Any]:
 
 async def run_stdio_server(
     data_dir: Path | str = "data",
-    personality_id: str = "default",
     provider_name: str = "default",
+    workspace_root: Path | str | None = None,
     no_plugins: bool = False,
 ) -> None:
     """Entry point for the JSONL stdio server."""
     server = RuntimeServer(
         data_dir=data_dir,
-        personality_id=personality_id,
         provider_name=provider_name,
+        workspace_root=workspace_root,
         no_plugins=no_plugins,
     )
     await server.run()

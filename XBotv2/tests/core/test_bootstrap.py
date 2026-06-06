@@ -19,7 +19,6 @@ class TestBootstrapBasics:
             config_dir=str(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
-            personality_id="default",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[{"content": "Hello!"}]),
         )
@@ -34,7 +33,6 @@ class TestBootstrapBasics:
                 config_dir=str(temp_data_dir),
                 session_id="../escape",
                 thread_id="test-thread",
-                personality_id="default",
                 plugin_dirs=[],
                 llm_override=MockLLM(responses=[]),
             )
@@ -63,9 +61,9 @@ class TestBootstrapBasics:
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
-        """Personality tool selectors restrict tools passed to the model."""
-        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
-        personality.write_text("tools:\n  - filesystem_read\n")
+        """System tool selectors restrict tools passed to the model."""
+        system = temp_data_dir / "config" / "system.yaml"
+        system.write_text("tools:\n  - filesystem_read\n", encoding="utf-8")
 
         engine = await bootstrap(
             config_dir=str(temp_data_dir),
@@ -81,8 +79,8 @@ class TestBootstrapBasics:
     @pytest.mark.asyncio
     async def test_bootstrap_unknown_tool_filter_raises(self, temp_data_dir):
         """Unknown tool selectors fail closed instead of exposing all tools."""
-        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
-        personality.write_text("tools:\n  - no_such_tool\n")
+        system = temp_data_dir / "config" / "system.yaml"
+        system.write_text("tools:\n  - no_such_tool\n", encoding="utf-8")
 
         with pytest.raises(ValueError, match="Unknown tool selector"):
             await bootstrap(
@@ -97,7 +95,7 @@ class TestBootstrapBasics:
     async def test_bootstrap_tool_filter_can_select_plugin_tools(
         self, temp_data_dir, tmp_path, monkeypatch
     ):
-        """Personality tool selectors are applied after plugin tools load."""
+        """System tool selectors are applied after plugin tools load."""
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "simple"
         plugin_dir.mkdir(parents=True)
@@ -121,8 +119,8 @@ def plugin_tool() -> str:
         )
         monkeypatch.syspath_prepend(str(plugins_root))
 
-        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
-        personality.write_text("tools:\n  - plugin_tool\n")
+        system = temp_data_dir / "config" / "system.yaml"
+        system.write_text("tools:\n  - plugin_tool\n", encoding="utf-8")
 
         engine = await bootstrap(
             config_dir=str(temp_data_dir),
@@ -137,10 +135,10 @@ def plugin_tool() -> str:
         assert engine.tool_registry.get("filesystem_read") is None
 
     @pytest.mark.asyncio
-    async def test_bootstrap_registers_personality_hooks(
+    async def test_bootstrap_registers_system_hooks(
         self, temp_data_dir, tmp_path, monkeypatch
     ):
-        """Personality-declared hooks are resolved and registered."""
+        """System-declared hooks are resolved and registered."""
         hook_dir = tmp_path / "hook_modules"
         hook_dir.mkdir()
         (hook_dir / "test_personality_hooks.py").write_text(
@@ -151,13 +149,14 @@ async def before_user_message(ctx):
         )
         monkeypatch.syspath_prepend(str(hook_dir))
 
-        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
-        personality.write_text(
+        system = temp_data_dir / "config" / "system.yaml"
+        system.write_text(
             """
 hooks:
   - stage: before_user_message_accept
     target: test_personality_hooks:before_user_message
-"""
+""",
+            encoding="utf-8",
         )
 
         engine = await bootstrap(
@@ -174,15 +173,16 @@ hooks:
         assert engine.messages[0].content == "hello from hook"
 
     @pytest.mark.asyncio
-    async def test_bootstrap_invalid_personality_hook_raises(self, temp_data_dir):
-        """Broken personality hook declarations fail loudly."""
-        personality = temp_data_dir / "personalities" / "default" / "personality.yaml"
-        personality.write_text(
+    async def test_bootstrap_invalid_system_hook_raises(self, temp_data_dir):
+        """Broken system hook declarations fail loudly."""
+        system = temp_data_dir / "config" / "system.yaml"
+        system.write_text(
             """
 hooks:
   - stage: on_turn_start
     target: missing_module:nope
-"""
+""",
+            encoding="utf-8",
         )
 
         with pytest.raises(ModuleNotFoundError):
@@ -267,8 +267,60 @@ class ConfiguredPlugin(PluginBase):
         assert state["schema_version"] == 2
 
     @pytest.mark.asyncio
-    async def test_bootstrap_default_session_id_is_uuid(self, temp_data_dir):
-        """Omitting session_id creates a fresh UUID session instead of default."""
+    async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
+        """Workspace AGENTS.md is merged into provider-facing context."""
+        (temp_workspace / "AGENTS.md").write_text(
+            "Workspace instruction: prefer concise answers.",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[{"content": "ok"}])
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=llm,
+        )
+
+        _ = [e async for e in engine.run_turn("hello")]
+
+        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
+        assert "Workspace instruction: prefer concise answers." in prompt
+
+    @pytest.mark.asyncio
+    async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
+        """Shell tool defaults cwd to the attached workspace root."""
+        (temp_data_dir / "config" / "permissions.yaml").write_text(
+            "allow:\n  - tool: shell\n",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[
+            {
+                "content": "checking cwd",
+                "tool_calls": [
+                    {"name": "shell", "args": {"command": "pwd"}, "id": "call_pwd"},
+                ],
+            },
+            {"content": "done"},
+        ])
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=llm,
+        )
+
+        events = [e async for e in engine.run_turn("where are you?")]
+
+        tool_result = next(e for e in events if e["type"] == "tool_result")
+        assert str(temp_workspace) in tool_result["data"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_default_session_id_is_generated(self, temp_data_dir):
+        """Omitting session_id creates a fresh generated session instead of default."""
         engine = await bootstrap(
             config_dir=str(temp_data_dir),
             thread_id="test-thread",
@@ -278,24 +330,24 @@ class ConfiguredPlugin(PluginBase):
 
         state = engine.state_store.read_state()
         assert state["session_id"] != "default"
-        assert len(state["session_id"]) == 32
+        assert "-" in state["session_id"]
         assert (temp_data_dir / "sessions" / state["session_id"] / "state").exists()
 
     @pytest.mark.asyncio
-    async def test_personality_json_policy_files_are_ignored(self, temp_data_dir):
-        """Personality policy has a single YAML source of truth."""
-        personality_dir = temp_data_dir / "personalities" / "default"
-        (personality_dir / "personality.yaml").write_text(
-            "permissions:\n"
-            "  allow:\n"
-            "    - tool: filesystem_read\n"
-            "sandbox:\n"
-            "  enabled: true\n"
+    async def test_system_json_policy_files_are_ignored(self, temp_data_dir):
+        """System policy has YAML sources of truth."""
+        (temp_data_dir / "config" / "permissions.yaml").write_text(
+            "allow:\n  - tool: filesystem_read\n",
+            encoding="utf-8",
         )
-        (personality_dir / "permissions.json").write_text(
+        (temp_data_dir / "config" / "sandbox.yaml").write_text(
+            "enabled: true\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "config" / "permissions.json").write_text(
             '{"deny": [{"tool": "filesystem_read"}]}'
         )
-        (personality_dir / "sandbox.json").write_text(
+        (temp_data_dir / "config" / "sandbox.json").write_text(
             '{"enabled": false}'
         )
 

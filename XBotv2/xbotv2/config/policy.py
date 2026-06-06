@@ -33,7 +33,7 @@ def merge_sandbox_config(
     base: dict[str, Any] | None,
     overlay: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Merge sandbox config with session resources before personality resources."""
+    """Merge sandbox config with session resources before global resources."""
     base = dict(base or {})
     overlay = dict(overlay or {})
     resources = list(overlay.get("resources", [])) + list(base.get("resources", []))
@@ -46,7 +46,6 @@ def merge_sandbox_config(
 def persist_permission_decision(
     *,
     config_dir: Path,
-    personality_id: str,
     session_id: str,
     client_event: dict[str, Any],
     decision: str,
@@ -58,7 +57,7 @@ def persist_permission_decision(
     ``scope`` is one of:
     - ``once``: do not persist
     - ``session``: write sessions/<session>/policy.yaml
-    - ``always``: write personalities/<id>/personality.yaml
+    - ``always``: write config/permissions.yaml
     """
     decision = decision.lower().strip()
     scope = (scope or "once").lower().strip()
@@ -74,7 +73,6 @@ def persist_permission_decision(
     if source == "sandbox":
         _persist_sandbox_rule(
             config_dir=config_dir,
-            personality_id=personality_id,
             session_id=session_id,
             tool_call=tool_call,
             decision=decision,
@@ -86,7 +84,7 @@ def persist_permission_decision(
     rule = _permission_rule_for_tool_call(tool_call)
     if not rule:
         return
-    path = _policy_target_path(config_dir, personality_id, session_id, scope)
+    path = _policy_target_path(config_dir, session_id, scope)
     doc = _read_yaml(path)
     permissions = doc.setdefault("permissions", {})
     _remove_rule(permissions, rule)
@@ -101,17 +99,17 @@ def persist_permission_decision(
 def _persist_sandbox_rule(
     *,
     config_dir: Path,
-    personality_id: str,
     session_id: str,
     tool_call: dict[str, Any],
     decision: str,
     scope: PermissionScope,
     engine: Any | None,
 ) -> None:
-    paths = _tool_call_paths(tool_call, config_dir / "sessions" / session_id / "workspace")
+    workspace_root = getattr(engine, "workspace_root", config_dir)
+    paths = _tool_call_paths(tool_call, Path(workspace_root))
     if not paths:
         return
-    path = _policy_target_path(config_dir, personality_id, session_id, scope)
+    path = _policy_target_path(config_dir, session_id, scope)
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
@@ -128,12 +126,11 @@ def _persist_sandbox_rule(
 
 def _policy_target_path(
     config_dir: Path,
-    personality_id: str,
     session_id: str,
     scope: PermissionScope,
 ) -> Path:
     if scope == "always":
-        return config_dir / "personalities" / personality_id / "personality.yaml"
+        return config_dir / "config" / "permissions.yaml"
     return _session_policy_path(config_dir, session_id)
 
 

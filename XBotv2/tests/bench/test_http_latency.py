@@ -42,10 +42,7 @@ from xbotv2.protocol.http_server import create_app, set_llm_override
 async def http_app(tmp_path: Path):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "sessions" / "default" / "workspace").mkdir(parents=True)
-    (data_dir / "sessions" / "default" / "state").mkdir(parents=True)
-    (data_dir / "personalities" / "default").mkdir(parents=True)
-    (data_dir / "config" / "provider.yaml").write_text(
+    (data_dir / "config" / "providers.yaml").write_text(
         "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
         encoding="utf-8",
     )
@@ -53,14 +50,13 @@ async def http_app(tmp_path: Path):
         "user_id: bench\nuser_name: Bench\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "personalities" / "default" / "personality.yaml").write_text(
+    (data_dir / "config" / "system.yaml").write_text(
         "agent_name: BenchBot\nagent_role: bench\nprovider: default\n"
         "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
     app = create_app(
-        personality_id="default",
         provider_name="default",
         data_dir=str(data_dir),
         no_plugins=True,

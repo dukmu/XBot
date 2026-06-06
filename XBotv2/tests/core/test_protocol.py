@@ -294,10 +294,10 @@ class TestProviderConfigLoader:
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
-        # config_dir is the data root; provider.yaml lives at config_dir/config/
+        # config_dir is the data root; providers.yaml lives at config_dir/config/
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
-        (config_subdir / "provider.yaml").write_text("""
+        (config_subdir / "providers.yaml").write_text("""
 default:
   provider: deepseek
   model: deepseek-chat
@@ -331,7 +331,7 @@ openai:
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
-        (config_subdir / "provider.yaml").write_text("""
+        (config_subdir / "providers.yaml").write_text("""
 test:
   provider: openai
   model: gpt-4
@@ -347,7 +347,7 @@ test:
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
-        (config_subdir / "provider.yaml").write_text("""
+        (config_subdir / "providers.yaml").write_text("""
 test:
   provider: openai
   model: gpt-4
@@ -357,13 +357,13 @@ test:
         c = load_provider_config(tmp_path, "test")
         assert c.api_key == ""
 
-    def test_fallback_to_default_key(self, tmp_path):
-        """Unknown provider_name falls back to 'default' section."""
+    def test_unknown_provider_returns_builtin_default(self, tmp_path):
+        """Unknown provider_name does not fall back to another configured provider."""
         from xbotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
-        (config_subdir / "provider.yaml").write_text("""
+        (config_subdir / "providers.yaml").write_text("""
 default:
   provider: openai
   model: fallback-model
@@ -371,4 +371,4 @@ default:
 
         c = load_provider_config(tmp_path, "nonexistent_provider")
         assert c.provider == "openai"
-        assert c.model == "fallback-model"
+        assert c.model == "gpt-4"

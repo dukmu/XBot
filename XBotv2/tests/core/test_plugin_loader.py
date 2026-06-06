@@ -173,7 +173,7 @@ class TestPromptFragmentFiles:
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         manifest = PluginManifest(
             name="classy",
@@ -248,7 +248,7 @@ class TestPluginLoader:
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         context_builder = ContextBuilder()
         loader = PluginLoader(
@@ -309,7 +309,7 @@ def plugin_tool() -> str:
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         hook_manager = HookManager()
         tool_registry = ToolRegistry()
@@ -354,7 +354,7 @@ class BrokenPlugin(PluginBase):
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         loader = PluginLoader(
             plugin_dirs=[plugins_root],
@@ -419,7 +419,7 @@ class BrokenPlugin(PluginBase):
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         hook_manager = HookManager()
         loader = PluginLoader(
@@ -484,7 +484,7 @@ def plugin_tool() -> str:
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         hook_manager = HookManager()
         tool_registry = ToolRegistry()
@@ -539,7 +539,7 @@ def plugin_tool() -> str:
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         tool_registry = ToolRegistry()
         core_tool = type("CoreTool", (), {"name": "core_tool"})()
@@ -590,7 +590,7 @@ class ClassyPlugin(PluginBase):
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         loader = PluginLoader(
             plugin_dirs=[plugins_root],
@@ -635,7 +635,7 @@ class {class_name}(PluginBase):
             tmp_path / "state",
             session_id="s",
             thread_id="t",
-            personality_id="default",
+            workspace_root="/workspace", provider="default",
         )
         loader = PluginLoader(
             plugin_dirs=[plugins_root],

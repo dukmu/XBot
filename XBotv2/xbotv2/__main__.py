@@ -9,8 +9,8 @@ Usage:
 
 Options:
     --data-dir PATH     Data directory (default: data)
-    --personality ID    Personality to use (default: default)
     --provider NAME     Provider config to use (default: default)
+    --workspace PATH    Workspace root (default: current directory)
     --mode MODE         Run mode: server, terminal, tui, curses, once, attach
     --bind HOST         Server bind address (must be 127.0.0.1 in v1)
     --port PORT         Server port (default: 4096)
@@ -28,7 +28,6 @@ import os
 import signal
 import subprocess
 import sys
-import uuid
 import webbrowser
 from pathlib import Path
 
@@ -42,15 +41,17 @@ def main():
         "--data-dir", default="data", help="Data directory (default: data)"
     )
     parser.add_argument(
-        "--personality", default="default", help="Personality to use"
-    )
-    parser.add_argument(
         "--provider", default="default", help="Provider config to use"
     )
     parser.add_argument(
         "--session",
         default=None,
         help="Session ID to resume/connect. Defaults to a new UUID session.",
+    )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace root (default: current directory)",
     )
     parser.add_argument(
         "--thread",
@@ -131,9 +132,9 @@ def _run_server(args) -> None:
     """Run the HTTP/SSE server with uvicorn (v1: loopback only)."""
 
     logging.getLogger("xbotv2").info(
-        "starting server mode data_dir=%s personality=%s provider=%s bind=%s port=%s",
+        "starting server mode data_dir=%s workspace=%s provider=%s bind=%s port=%s",
         args.data_dir,
-        args.personality,
+        _workspace_root(args),
         args.provider,
         args.bind,
         args.port,
@@ -156,9 +157,9 @@ def _run_server(args) -> None:
     from xbotv2.protocol.http_server import create_app
 
     app = create_app(
-        personality_id=args.personality,
         provider_name=args.provider,
         data_dir=args.data_dir,
+        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
     )
     uvicorn.run(
@@ -173,9 +174,9 @@ def _run_tui(args) -> None:
     """Run the Textual TUI; auto-spawn an HTTP server unless --server is given."""
 
     logging.getLogger("xbotv2").info(
-        "starting tui mode data_dir=%s personality=%s provider=%s server=%s log_file=%s log_level=%s",
+        "starting tui mode data_dir=%s workspace=%s provider=%s server=%s log_file=%s log_level=%s",
         args.data_dir,
-        args.personality,
+        _workspace_root(args),
         args.provider,
         args.server,
         args.log_file,
@@ -203,10 +204,10 @@ def _run_tui(args) -> None:
 
     client = TextualTuiClient(
         data_dir=args.data_dir,
-        personality_id=args.personality,
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
+        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         base_url=server_url,
     )
@@ -228,10 +229,10 @@ def _run_attach(args, url: str) -> None:
 
     client = TextualTuiClient(
         data_dir=args.data_dir,
-        personality_id=args.personality,
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
+        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         base_url=url,
     )
@@ -247,8 +248,8 @@ def _spawn_server(args) -> subprocess.Popen:
         sys.executable,
         str(Path(__file__).resolve()),
         "--data-dir", args.data_dir,
-        "--personality", args.personality,
         "--provider", args.provider,
+        "--workspace", str(_workspace_root(args)),
         "--mode", "server",
         "--bind", args.bind,
         "--port", str(args.port),
@@ -296,6 +297,10 @@ def _spawn_pythonpath() -> str:
     return os.pathsep.join(paths)
 
 
+def _workspace_root(args) -> Path:
+    return Path(getattr(args, "workspace", None) or Path.cwd()).resolve()
+
+
 def _run_terminal(args):
     """Run interactive terminal mode using direct engine."""
     asyncio.run(_terminal_loop(args))
@@ -307,10 +312,10 @@ def _run_curses(args):
 
     client = CursesTuiClient(
         data_dir=args.data_dir,
-        personality_id=args.personality,
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
+        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         server_url=f"http://{args.bind}:{args.port}",
     )
@@ -323,15 +328,15 @@ async def _terminal_loop(args):
 
     data_dir = Path(args.data_dir).resolve()
 
-    print(f"XBotv2 ({args.personality}) [{args.provider}] — type /quit to exit\n")
+    print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
 
     try:
         engine = await bootstrap(
             config_dir=str(data_dir),
-            personality_id=args.personality,
             provider_name=args.provider,
-            session_id=getattr(args, "session", None) or uuid.uuid4().hex,
+            session_id=getattr(args, "session", None),
             thread_id=getattr(args, "thread", "agent"),
+            workspace_root=str(_workspace_root(args)),
             plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()
@@ -397,10 +402,10 @@ def _run_once(args):
     async def single_shot():
         engine = await bootstrap(
             config_dir=str(data_dir),
-            personality_id=args.personality,
             provider_name=args.provider,
-            session_id=getattr(args, "session", None) or uuid.uuid4().hex,
+            session_id=getattr(args, "session", None),
             thread_id=getattr(args, "thread", "agent"),
+            workspace_root=str(_workspace_root(args)),
             plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()

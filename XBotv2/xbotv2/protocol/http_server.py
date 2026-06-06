@@ -14,10 +14,12 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from xbotv2.protocol.commands import execute_command, list_commands
 
 from xbotv2.protocol.dispatcher import (
     SessionBusy,
@@ -43,9 +45,9 @@ class HttpServerError(Exception):
 
 def create_app(
     *,
-    personality_id: str = "default",
     provider_name: str = "default",
     data_dir: str = "data",
+    workspace_root: str | None = None,
     no_plugins: bool = False,
     server_name: str = "xbotv2",
     llm_override: Any | None = None,
@@ -73,9 +75,9 @@ def create_app(
     app = FastAPI(title="XBotv2 TUI HTTP Server", lifespan=lifespan)
     app.state.manager = manager
     app.state.server_name = server_name
-    app.state.personality_id = personality_id
     app.state.provider_name = provider_name
     app.state.data_dir = data_dir
+    app.state.workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
     app.state.no_plugins = no_plugins
     app.state.started_at = started_at
     app.state.llm_override = _llm_override_ref
@@ -104,11 +106,12 @@ def _register_routes(app: FastAPI) -> None:
             "protocol_version": PROTOCOL_VERSION,
             "uptime_s": int(time.monotonic() - app.state.started_at),
             "sessions": manager.size,
+            "workspace_root": app.state.workspace_root,
         }
 
     @app.post("/hello")
     async def hello(payload: dict[str, Any]) -> dict[str, Any]:
-        session_id = str(payload.get("session_id") or "").strip() or "default"
+        session_id = str(payload.get("session_id") or "").strip()
         thread_id = str(payload.get("thread_id") or "agent").strip() or "agent"
         return {
             "server_name": app.state.server_name,
@@ -119,20 +122,27 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/sessions")
     async def open_session(payload: dict[str, Any]) -> dict[str, Any]:
-        session_id = str(payload.get("session_id") or "default").strip() or "default"
+        raw_session_id = str(payload.get("session_id") or "").strip() or None
         thread_id = str(payload.get("thread_id") or "agent").strip() or "agent"
+        workspace_root = str(
+            Path(payload.get("workspace_root") or app.state.workspace_root).resolve()
+        )
+        mode = str(payload.get("mode") or "new")
         try:
             ctx = await manager.open_session(
-                session_id=session_id,
+                session_id=raw_session_id,
                 thread_id=thread_id,
-                personality_id=app.state.personality_id,
                 provider_name=app.state.provider_name,
                 data_dir=app.state.data_dir,
+                workspace_root=workspace_root,
+                mode=mode,
                 no_plugins=app.state.no_plugins,
                 llm_override=app.state.llm_override.get("value"),
             )
+        except SessionNotFound as exc:
+            raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Session open failed for %s", session_id)
+            logger.exception("Session open failed for %s", raw_session_id or "<new>")
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
@@ -141,7 +151,46 @@ def _register_routes(app: FastAPI) -> None:
             "thread_id": ctx.thread_id,
             "status": "ready",
             "agent_name": getattr(ctx.engine.config, "agent_name", "XBotv2"),
+            "workspace_root": ctx.workspace_root,
+            "provider": ctx.provider_name,
         }
+
+    @app.get("/commands")
+    async def commands() -> dict[str, Any]:
+        return {"commands": list_commands()}
+
+    @app.get("/sessions/{session_id}/commands")
+    async def session_commands(session_id: str) -> dict[str, Any]:
+        await manager.get(session_id)
+        return {"commands": list_commands()}
+
+    @app.post("/sessions/{session_id}/commands")
+    async def run_command(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            ctx = await manager.get(session_id)
+        except SessionNotFound as exc:
+            raise HttpServerError("session_not_found", str(exc), status=404) from exc
+        raw = str(payload.get("raw") or "")
+        command = str(payload.get("command") or "").strip().removeprefix("/")
+        args = payload.get("args")
+        if not isinstance(args, list):
+            parts = raw.split()
+            if not command and parts:
+                command = parts[0].removeprefix("/")
+            args = parts[1:] if parts else []
+        if not command:
+            raise HttpServerError("invalid_request", "command must be non-empty", status=400)
+        result = execute_command(ctx, command, [str(arg) for arg in args])
+        ctx.engine.state_store.append_event(
+            "server_command_result",
+            {
+                "command": command,
+                "args": [str(arg) for arg in args],
+                "result": result.get("data", {}),
+            },
+        )
+        ctx.engine.state_store.materialize()
+        return result
 
     @app.post("/sessions/{session_id}/messages")
     async def post_message(session_id: str, request: Request) -> Response:

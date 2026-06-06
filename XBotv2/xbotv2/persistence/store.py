@@ -160,12 +160,14 @@ class CoreStateStore:
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str,
+        workspace_root: str,
+        provider: str,
     ) -> None:
         self.root = Path(root)
         self.session_id = session_id
         self.thread_id = thread_id
-        self.personality_id = personality_id
+        self.workspace_root = workspace_root
+        self.provider = provider
 
         self.events_path = self.root / "events.jsonl"
         self.messages_path = self.root / "messages.jsonl"
@@ -184,7 +186,8 @@ class CoreStateStore:
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str,
+        workspace_root: str,
+        provider: str,
     ) -> "CoreStateStore":
         """Create a new state store with the required directory layout."""
         root = Path(root)
@@ -196,7 +199,8 @@ class CoreStateStore:
             root=root,
             session_id=session_id,
             thread_id=thread_id,
-            personality_id=personality_id,
+            workspace_root=workspace_root,
+            provider=provider,
         )
         store._ensure_logs()
         store.materialize()
@@ -338,7 +342,8 @@ class CoreStateStore:
             schema_version=self.SCHEMA_VERSION,
             session_id=self.session_id,
             thread_id=self.thread_id,
-            personality_id=self.personality_id,
+            workspace_root=self.workspace_root,
+            provider=self.provider,
             events=events,
             message_count=self.message_count(),
             plugin_states=self._read_all_plugin_states(),

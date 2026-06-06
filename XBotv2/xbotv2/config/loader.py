@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from xbotv2.config.models import AgentConfig, ProviderConfig, UserContext
+from xbotv2.config.models import ProviderConfig, SystemConfig, UserContext
 
 DEFAULT_SYSTEM_TEMPLATE = """\
 You are {agent_name}, {agent_role}.
@@ -68,43 +68,62 @@ def load_user_context(config_dir: Path) -> UserContext:
 
 
 def load_provider_config(config_dir: Path, provider_name: str = "default") -> ProviderConfig:
-    """Load provider config from <config_dir>/config/provider.yaml.
+    """Load provider config from <config_dir>/config/providers.yaml.
 
-    The provider.yaml file can contain multiple provider sections keyed
-    by name (e.g. 'deepseek', 'lmstudio', 'openai'). The *provider_name*
-    selects which section to use; falls back to the 'default' key.
+    The providers.yaml file can either use the Stage 2 shape
+    ``{default: name, providers: {name: config}}`` or directly map provider
+    names to config sections. No personality fallback is supported.
 
     Environment variables like ${DEEPSEEK_API_KEY} are expanded at load time.
     """
-    all_data = load_yaml(config_dir / "config" / "provider.yaml")
+    all_data = load_yaml(config_dir / "config" / "providers.yaml")
     if not all_data:
         return ProviderConfig()
 
-    # Select the named provider section, falling back to 'default'
-    section = all_data.get(provider_name) or all_data.get("default", {})
+    providers = all_data.get("providers") if isinstance(all_data.get("providers"), dict) else all_data
+    selected_name = provider_name
+    if selected_name == "default" and isinstance(all_data.get("default"), str):
+        selected_name = str(all_data["default"])
+    section = providers.get(selected_name) if isinstance(providers, dict) else None
     if not section:
         return ProviderConfig()
 
-    # Expand env vars
     section = _expand_env_in_dict(section)
+    api_key_env = section.pop("api_key_env", None)
+    if api_key_env and not section.get("api_key"):
+        section["api_key"] = os.environ.get(str(api_key_env), "")
     return ProviderConfig(**section)
 
 
-def load_agent_config(config_dir: Path, personality_id: str = "default") -> AgentConfig:
-    """Load personality config from data/personalities/<id>/personality.yaml."""
-    personality_dir = config_dir / "personalities" / personality_id
-    data = load_yaml(personality_dir / "personality.yaml")
+def load_provider_names(config_dir: Path) -> tuple[str, list[str]]:
+    """Return the configured default provider name and provider names."""
+    all_data = load_yaml(config_dir / "config" / "providers.yaml")
+    if not all_data:
+        return "default", []
+    providers = all_data.get("providers") if isinstance(all_data.get("providers"), dict) else all_data
+    names = sorted(str(name) for name in providers if isinstance(providers, dict))
+    default = str(all_data.get("default") or "default")
+    return default, names
 
-    # Load text files
-    instructions_path = personality_dir / "instructions.md"
-    if instructions_path.exists():
-        data.setdefault("instructions", instructions_path.read_text())
 
-    memory_path = personality_dir / "memory.md"
-    if memory_path.exists():
-        data.setdefault("memory", memory_path.read_text())
-
-    return AgentConfig(**data)
+def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemConfig:
+    """Load runtime config from config/system.yaml and workspace AGENTS.md."""
+    data = load_yaml(config_dir / "config" / "system.yaml")
+    permissions = load_yaml(config_dir / "config" / "permissions.yaml")
+    sandbox = load_yaml(config_dir / "config" / "sandbox.yaml")
+    if permissions:
+        data["permissions"] = permissions
+    if sandbox:
+        data["sandbox"] = sandbox
+    workspace = Path(workspace_root)
+    agents_path = workspace / "AGENTS.md"
+    if agents_path.exists():
+        agents_text = agents_path.read_text(encoding="utf-8")
+        existing = str(data.get("instructions") or "")
+        data["instructions"] = "\n\n".join(
+            part for part in (existing, agents_text) if part.strip()
+        )
+    return SystemConfig(**data)
 
 
 def load_user_context_simple(config_dir: Path) -> dict[str, Any]:

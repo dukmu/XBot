@@ -10,7 +10,8 @@ def build_materialized_state(
     schema_version: int,
     session_id: str,
     thread_id: str,
-    personality_id: str,
+    workspace_root: str,
+    provider: str,
     events: list[dict[str, Any]],
     message_count: int,
     plugin_states: dict[str, Any],
@@ -46,18 +47,25 @@ def build_materialized_state(
     mailbox_pending = max(0, sent - acked)
     pending_interactions = _pending_interactions(events)
     workspace = _workspace_state(events)
+    provider_override = _provider_override(events)
+    permission_overrides = _overrides_state(events, "permission")
+    sandbox_overrides = _overrides_state(events, "sandbox")
+    effective_provider = provider_override or provider
 
     return {
         "schema_version": schema_version,
         "session_id": session_id,
         "thread_id": thread_id,
-        "personality_id": personality_id,
+        "workspace_root": workspace_root,
+        "provider": effective_provider,
         "turn_count": turn_count,
         "event_count": event_count,
         "message_count": message_count,
         "status": status,
         "mailbox_pending": mailbox_pending,
         "pending_interactions": pending_interactions,
+        "permission_overrides": permission_overrides,
+        "sandbox_overrides": sandbox_overrides,
         "workspace": workspace,
         "plugin_states": plugin_states,
         "artifacts_root": artifacts_root,
@@ -105,15 +113,46 @@ def _pending_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _workspace_state(events: list[dict[str, Any]]) -> dict[str, Any]:
     latest: dict[str, Any] = {}
     for event in events:
-        if event.get("type") not in {"workspace_initialized", "workspace_recovered"}:
+        if event.get("type") not in {"workspace_attached"}:
             continue
         payload = event.get("payload") or {}
         latest = {
             "root": payload.get("workspace_root", ""),
-            "metadata_path": payload.get("metadata_path", ""),
             "lifecycle": payload.get("lifecycle", ""),
             "status": payload.get("status", ""),
             "event_id": event.get("event_id"),
             "updated_at": event.get("ts", ""),
         }
     return latest
+
+
+def _provider_override(events: list[dict[str, Any]]) -> str:
+    provider = ""
+    for event in events:
+        if event.get("type") != "provider_switched":
+            continue
+        payload = event.get("payload") or {}
+        provider = str(payload.get("provider") or "")
+    return provider
+
+
+def _overrides_state(events: list[dict[str, Any]], name: str) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    set_type = f"{name}_override_set"
+    reset_type = f"{name}_overrides_reset"
+    for event in events:
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+        if event_type == set_type:
+            key = str(payload.get("key") or "")
+            value = str(payload.get("value") or "")
+            if key:
+                overrides[key] = value
+            continue
+        if event_type == reset_type:
+            key = str(payload.get("key") or "")
+            if key:
+                overrides.pop(key, None)
+            else:
+                overrides.clear()
+    return overrides
