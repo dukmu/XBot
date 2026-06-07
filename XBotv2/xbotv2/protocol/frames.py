@@ -2,7 +2,7 @@
 
 Protocol boundary: only this module may translate runtime events to
 UI-facing wire payloads. TUI clients consume ProtocolFrame objects
-and must not import LangChain, LangGraph, or runtime internals.
+and must not import provider SDKs, tool execution, or runtime internals.
 """
 
 from __future__ import annotations

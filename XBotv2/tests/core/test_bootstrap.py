@@ -253,7 +253,7 @@ class ConfiguredPlugin(PluginBase):
 
     @pytest.mark.asyncio
     async def test_bootstrap_creates_state(self, temp_data_dir):
-        """Bootstrap creates the state store with events."""
+        """Bootstrap creates the state store with messages file."""
         engine = await bootstrap(
             config_dir=str(temp_data_dir),
             session_id="test-session",
@@ -261,10 +261,8 @@ class ConfiguredPlugin(PluginBase):
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        state = engine.state_store.read_state()
-        assert state["session_id"] == "test-session"
-        assert state["thread_id"] == "test-thread"
-        assert state["schema_version"] == 2
+        assert engine.state_store.session_id == "test-session"
+        assert engine.state_store.messages_path.exists()
 
     @pytest.mark.asyncio
     async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):

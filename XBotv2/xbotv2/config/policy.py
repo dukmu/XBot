@@ -57,11 +57,10 @@ def persist_permission_decision(
     ``scope`` is one of:
     - ``once``: do not persist
     - ``session``: write sessions/<session>/policy.yaml
-    - ``always``: write config/permissions.yaml
     """
     decision = decision.lower().strip()
     scope = (scope or "once").lower().strip()
-    if decision not in {"allow", "deny"} or scope not in {"session", "always"}:
+    if decision not in {"allow", "deny"} or scope != "session":
         return
 
     data = client_event.get("data") or {}
@@ -120,7 +119,7 @@ def _persist_sandbox_rule(
         if rule not in resources:
             resources.insert(0, rule)
         if engine is not None and getattr(engine, "sandbox_policy", None) is not None:
-            engine.sandbox_policy.add_resource_rule(resolved, access)
+            engine.sandbox_policy.add_rule(resolved, access)
     _write_yaml(path, doc)
 
 
@@ -129,8 +128,6 @@ def _policy_target_path(
     session_id: str,
     scope: PermissionScope,
 ) -> Path:
-    if scope == "always":
-        return config_dir / "config" / "permissions.yaml"
     return _session_policy_path(config_dir, session_id)
 
 

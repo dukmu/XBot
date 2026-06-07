@@ -56,14 +56,14 @@ No runtime path reads `data/personalities/*`. No runtime creates
 - Can stream live interaction events for user input and permission/sandbox
   decisions.
 
-### Session Manager (`xbotv2/protocol/dispatcher.py`)
+### HTTP Session Runtime (`xbotv2/protocol/http_server.py`)
 
 - One HTTP server can host many sessions with different `workspace_root` values.
 - `mode="new"` is the default and creates a generated session id when omitted.
 - `mode="resume"` requires an existing session id and returns not found if the
   session state is missing.
-- Each session has its own engine, provider, workspace root, turn lock, and event
-  bus.
+- Each session has its own engine, provider, workspace root, turn lock, and live
+  command overlays.
 
 ### Configuration (`xbotv2/config/`)
 
@@ -132,16 +132,11 @@ workspace_write: allow
 
 ### Persistence (`xbotv2/persistence/`)
 
-- `events.jsonl` is the append-only source of truth.
+- `events.jsonl` is the append-only event log while Stage 3 migration is in progress.
 - `messages.jsonl` stores provider-facing LangChain messages for resume.
-- `state.yaml` is a rebuildable materialized view with:
-  - session/thread/workspace/provider metadata
-  - turn/event/message counts
-  - status and pending interactions
-  - latest workspace attachment
-  - session-scoped permission and sandbox overrides
-  - plugin states and artifacts root
-- Server command results are persisted as events and are not appended to LLM
+- No separate `state.yaml` file is written; remaining compatibility paths derive
+  a snapshot directly from logs and plugin state.
+- Server command results are returned to clients only and are not appended to LLM
   message history.
 
 ### Protocol And TUI
@@ -154,9 +149,9 @@ workspace_write: allow
 - Textual and curses clients interact through the transport/session boundary and
   do not import runtime engine modules.
 
-## State Model
+## Derived State Snapshot
 
-Core state is intentionally minimal:
+The temporary compatibility snapshot is intentionally minimal:
 
 ```yaml
 schema_version: 2

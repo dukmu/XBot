@@ -6,10 +6,9 @@ import asyncio
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-
 from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.hooks.types import HookStage
+from xbotv2.llm.messages import Message
 
 logger = logging.getLogger("xbotv2.tools.runtime")
 
@@ -25,14 +24,14 @@ async def execute_tools(
     client_interaction_handler: Any = None,
     permission_interaction_handler: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
-) -> list[ToolMessage]:
+) -> list[Message]:
     """Execute tool calls through the guard pipeline.
 
     Pipeline:
-    1. Extract tool calls from the last AIMessage.
+    1. Extract tool calls from the last assistant message.
     2. Run before_tools hooks (sandbox/permission checks).
     3. Execute approved tools.
-    4. Return ToolMessages.
+    4. Return tool messages.
 
     Args:
         tool_calls: List of {"name": str, "args": dict, "id": str} dicts.
@@ -48,15 +47,15 @@ async def execute_tools(
         workspace_root: Workspace root for path resolution.
 
     Returns:
-        List of ToolMessage instances (one per tool call).
+        List of tool messages (one per tool call).
     """
-    results: list[ToolMessage] = []
+    results: list[Message] = []
     observed_tool_calls: list[dict[str, Any]] = []
     denials: dict[str, str] = {}  # tool_call_id → reason
     denial_events: dict[str, list[dict[str, Any]]] = {}
     sequential_tools: set[str] = set()
 
-    # Phase 1: Guards — check sandbox and permissions for each tool
+    # Phase 1: Permission guards
     for tc in tool_calls:
         tool_name = tc["name"]
         entry = registry.get(tool_name) if registry else None
@@ -69,64 +68,8 @@ async def execute_tools(
 
         if entry is None:
             denials[tc["id"]] = f"Tool not registered: {tool_name}"
-            await _emit_tool_denied(
-                hook_manager,
-                hook_context_factory,
-                tc,
-                denials[tc["id"]],
-            )
+            await _emit_tool_denied(hook_manager, hook_context_factory, tc, denials[tc["id"]])
             continue
-
-        # Sandbox guard
-        if sandbox_policy and entry.sandbox_mode == "sandboxed":
-            allowed, reason = sandbox_policy.guard_tool_call(
-                tool_name, tc.get("args", {}), entry.sandbox_mode
-            )
-            if not allowed:
-                denials[tc["id"]] = reason
-                permission_stage = (
-                    HookStage.ON_PERMISSION_REQUEST
-                    if "approval required" in reason.lower()
-                    else HookStage.ON_PERMISSION_DENIED
-                )
-                denial_events[tc["id"]] = [_permission_client_event(
-                    permission_stage,
-                    tc,
-                    "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
-                    reason,
-                    source="sandbox",
-                )]
-                await _emit_permission_event(
-                    hook_manager,
-                    hook_context_factory,
-                    permission_stage,
-                    tc,
-                    "ask" if permission_stage == HookStage.ON_PERMISSION_REQUEST else "deny",
-                    reason,
-                )
-                if permission_stage == HookStage.ON_PERMISSION_REQUEST:
-                    response = await _resolve_live_permission(
-                        denial_events[tc["id"]][0],
-                        permission_interaction_handler,
-                        tc,
-                    )
-                    if response.get("decision") == "allow":
-                        denials.pop(tc["id"], None)
-                        denial_events.pop(tc["id"], None)
-                        _approve_sandbox_once(sandbox_policy, tc)
-                        if entry.execution_mode == "sequential":
-                            sequential_tools.add(tool_name)
-                        continue
-                    denials[tc["id"]] = _permission_denial_reason(response, reason)
-                    await _emit_tool_denied(
-                        hook_manager,
-                        hook_context_factory,
-                        tc,
-                        denials[tc["id"]],
-                    )
-                    continue
-                await _emit_tool_denied(hook_manager, hook_context_factory, tc, reason)
-                continue
 
         # Permission guard
         if permission_system:
@@ -212,7 +155,8 @@ async def execute_tools(
 
         if tool_id in denials:
             observed_tool_calls.append(tc)
-            results.append(ToolMessage(
+            results.append(Message(
+                role="tool",
                 content=f"Error: {denials[tool_id]}",
                 tool_call_id=tool_id,
                 status="error",
@@ -231,8 +175,6 @@ async def execute_tools(
         args = dict(tc.get("args", {}))
         if tool_name == "shell" and workspace_root:
             args.setdefault("cwd", workspace_root)
-        if sandbox_policy and entry.sandbox_mode == "sandboxed":
-            args = _resolve_tool_paths(args, sandbox_policy)
 
         before_result = await _run_tool_hook(
             hook_manager,
@@ -248,7 +190,8 @@ async def execute_tools(
                 tool_name = tc["name"]
                 entry = registry.get(tool_name)
                 if entry is None:
-                    message = ToolMessage(
+                    message = Message(
+                        role="tool",
                         content=f"Error: Tool not registered: {tool_name}",
                         tool_call_id=tool_id,
                         status="error",
@@ -266,14 +209,10 @@ async def execute_tools(
                 args = dict(tc.get("args", {}))
                 if tool_name == "shell" and workspace_root:
                     args.setdefault("cwd", workspace_root)
-                if sandbox_policy and entry.sandbox_mode == "sandboxed":
-                    args = _resolve_tool_paths(args, sandbox_policy)
             if "args" in before_result:
                 args = dict(before_result["args"])
                 if tool_name == "shell" and workspace_root:
                     args.setdefault("cwd", workspace_root)
-                if sandbox_policy and entry.sandbox_mode == "sandboxed":
-                    args = _resolve_tool_paths(args, sandbox_policy)
             if "tool_result" in before_result:
                 message = _coerce_tool_message(before_result["tool_result"], tool_id)
                 observed_tool_calls.append({**tc, "args": args})
@@ -288,7 +227,8 @@ async def execute_tools(
                 )
                 continue
             if "deny_reason" in before_result:
-                message = ToolMessage(
+                message = Message(
+                    role="tool",
                     content=f"Error: {before_result['deny_reason']}",
                     tool_call_id=tool_id,
                     status="error",
@@ -303,7 +243,8 @@ async def execute_tools(
                 )
                 continue
         elif before_result is not None:
-            message = ToolMessage(
+            message = Message(
+                role="tool",
                 content=f"Error: Tool call blocked by hook: {tool_name}",
                 tool_call_id=tool_id,
                 status="error",
@@ -319,41 +260,20 @@ async def execute_tools(
             continue
 
         try:
-            # Acquire resource locks for sequential tools
-            if tool_name in sequential_tools:
-                lock_keys = entry.lock_fields
-                if lock_keys:
-                    # Simple serialization for sequential tools
-                    pass
-
-            # Execute. LangChain StructuredTool.ainvoke can hang for sync
-            # tools in some dependency combinations; use invoke for sync
-            # tools.
-            #
-            # IMPORTANT: ``tool.invoke(args)`` is a *synchronous* call
-            # — running it directly in this async function would
-            # block the entire asyncio event loop for the duration
-            # of the tool (e.g. the shell tool's subprocess.run has
-            # its own 30s timeout, so a slow command would freeze
-            # the SSE stream, the HTTP server, and any other
-            # in-flight requests for 30s). Per the user's 2026-06-05
-            # "tool chain" review: run sync tools in a worker thread
-            # and add a hard wall-clock timeout on top.
-            if getattr(tool, "coroutine", None) is not None and hasattr(tool, "ainvoke"):
-                result = await _invoke_with_timeout(
-                    tool.ainvoke, args,
-                    tool_name=tool_name,
+            if sandbox_policy and sandbox_policy.enabled:
+                result = await asyncio.wait_for(
+                    tool.ainvoke(args, sandbox=sandbox_policy),
+                    timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
+                )
+            elif hasattr(tool, "ainvoke"):
+                result = await asyncio.wait_for(
+                    tool.ainvoke(args),
+                    timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
                 )
             elif hasattr(tool, "invoke"):
-                result = await _invoke_with_timeout(
-                    _sync_invoke, (tool, args),
-                    tool_name=tool_name,
-                )
+                result = await asyncio.to_thread(tool.invoke, args)
             elif callable(tool):
-                result = await _invoke_with_timeout(
-                    _sync_callable, (tool, args),
-                    tool_name=tool_name,
-                )
+                result = await asyncio.to_thread(tool, **args) if args else await asyncio.to_thread(tool)
             else:
                 result = f"Tool {tool_name} is not callable"
 
@@ -375,13 +295,7 @@ async def execute_tools(
                 )
                 continue
 
-            message_payload = _message_payload_from_result(result, tool_id)
-            message = ToolMessage(
-                content=message_payload["content"],
-                tool_call_id=tool_id,
-                status=message_payload["status"],
-                additional_kwargs=message_payload["additional_kwargs"],
-            )
+            message = _coerce_tool_message(result, tool_id)
             observed_tool_calls.append({**tc, "args": args})
             results.append(message)
             logger.info(
@@ -404,7 +318,7 @@ async def execute_tools(
             raise
         except Exception as exc:
             logger.exception("Tool %s failed", tool_name)
-            message = ToolMessage(
+            message = Message(
                 content=f"Error executing {tool_name}: {exc}",
                 tool_call_id=tool_id,
                 status="error",
@@ -430,10 +344,6 @@ async def execute_tools(
                 short_circuit=False,
             )
 
-    # Clear one-call sandbox approvals
-    if sandbox_policy and hasattr(sandbox_policy, "clear_one_call_approvals"):
-        sandbox_policy.clear_one_call_approvals()
-
     if hook_manager is not None and hook_context_factory is not None:
         ctx = hook_context_factory(
             HookStage.POST_TOOL_BATCH,
@@ -443,44 +353,6 @@ async def execute_tools(
         await hook_manager.run(HookStage.POST_TOOL_BATCH, ctx, short_circuit=False)
 
     return results
-
-def has_tool_calls(messages: list[BaseMessage]) -> bool:
-    """Check if the last AI message has pending tool calls."""
-    if not messages:
-        return False
-    last = messages[-1]
-    if isinstance(last, AIMessage):
-        return bool(getattr(last, "tool_calls", None))
-    return False
-
-
-def extract_tool_calls(messages: list[BaseMessage]) -> list[dict[str, Any]]:
-    """Extract pending tool calls from the last AI message."""
-    if not messages:
-        return []
-    last = messages[-1]
-    if isinstance(last, AIMessage):
-        calls = getattr(last, "tool_calls", []) or []
-        return [
-            {
-                "name": c.get("name") if isinstance(c, dict) else getattr(c, "name", ""),
-                "args": c.get("args", {}) if isinstance(c, dict) else getattr(c, "args", {}),
-                "id": c.get("id") if isinstance(c, dict) else getattr(c, "id", f"call_{i}"),
-            }
-            for i, c in enumerate(calls)
-        ]
-    return []
-
-
-def _resolve_tool_paths(args: dict[str, Any], sandbox_policy: Any) -> dict[str, Any]:
-    """Rewrite path-like tool args to the sandbox-resolved absolute path."""
-    resolved = dict(args)
-    path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
-    for key in path_keys:
-        value = resolved.get(key)
-        if isinstance(value, str):
-            resolved[key] = sandbox_policy.resolve_tool_path(value)
-    return resolved
 
 
 async def _emit_tool_denied(
@@ -598,7 +470,7 @@ async def _tool_message_from_user_input_wait(
     result: dict[str, Any],
     tool_call_id: str,
     client_interaction_handler: Any,
-) -> ToolMessage:
+) -> Message:
     events = [
         _normalize_client_event(event, tool_call_id)
         for event in result.get("events", [])
@@ -612,14 +484,16 @@ async def _tool_message_from_user_input_wait(
         None,
     )
     if event is None:
-        return ToolMessage(
+        return Message(
+            role="tool",
             content="Error: ask_user did not produce a user_input_required event.",
             tool_call_id=tool_call_id,
             status="error",
         )
     if client_interaction_handler is None:
         request_id = str((event.get("data") or {}).get("request_id") or "")
-        return ToolMessage(
+        return Message(
+            role="tool",
             content=(
                 "No user reply was received because this runtime does not "
                 "support live user input."
@@ -656,7 +530,8 @@ async def _tool_message_from_user_input_wait(
         content = f"No user reply was received because the request was cancelled: {reason}"
     else:
         content = "No user reply was received."
-    return ToolMessage(
+    return Message(
+        role="tool",
         content=content,
         tool_call_id=tool_call_id,
         status="success",
@@ -701,27 +576,13 @@ def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
-def _approve_sandbox_once(sandbox_policy: Any, tool_call: dict[str, Any]) -> None:
-    if sandbox_policy is None or not hasattr(sandbox_policy, "approve_once"):
-        return
-    args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
-    path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
-    for key in path_keys:
-        value = args.get(key)
-        if isinstance(value, str):
-            sandbox_policy.approve_once(
-                sandbox_policy.resolve_tool_path(value),
-                str(tool_call.get("name") or ""),
-            )
-
-
 async def _run_tool_hook(
     hook_manager: Any,
     hook_context_factory: Any,
     stage: HookStage,
     *,
     tool_call: dict[str, Any],
-    tool_result: ToolMessage | None = None,
+    tool_result: Message | None = None,
     error: Exception | None = None,
     short_circuit: bool,
 ) -> Any:
@@ -736,8 +597,8 @@ async def _run_tool_hook(
     return await hook_manager.run(stage, ctx, short_circuit=short_circuit)
 
 
-def _coerce_tool_message(value: Any, tool_call_id: str) -> ToolMessage:
-    if isinstance(value, ToolMessage):
+def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
+    if hasattr(value, "role") and value.role == "tool":
         return value
     if isinstance(value, dict):
         additional_kwargs = {}
@@ -748,22 +609,14 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> ToolMessage:
             ]
         if value.get("turn_complete") is not None:
             additional_kwargs["xbotv2_turn_complete"] = bool(value["turn_complete"])
-        return ToolMessage(
+        return Message(
+            role="tool",
             content=str(value.get("content", "")),
             tool_call_id=str(value.get("tool_call_id", tool_call_id)),
             status=value.get("status", "success"),
             additional_kwargs=additional_kwargs,
         )
-    return ToolMessage(content=str(value), tool_call_id=tool_call_id, status="success")
-
-
-def _message_payload_from_result(result: Any, tool_call_id: str) -> dict[str, Any]:
-    message = _coerce_tool_message(result, tool_call_id)
-    return {
-        "content": message.content,
-        "status": getattr(message, "status", "success"),
-        "additional_kwargs": getattr(message, "additional_kwargs", {}) or {},
-    }
+    return Message(role="tool", content=str(value), tool_call_id=tool_call_id, status="success")
 
 
 # ----------------------------------------------------------------------
@@ -782,48 +635,13 @@ _TOOL_DISPATCH_TIMEOUT_SECONDS = 60.0
 
 
 async def _invoke_with_timeout(coro_factory, args, *, tool_name: str) -> Any:
-    """Run a (possibly sync) tool call in a worker thread with a timeout.
-
-    ``coro_factory`` is either a coroutine function (for async tools
-    via ``ainvoke``) or a plain callable returning a coroutine /
-    future (for sync tools dispatched via ``asyncio.to_thread``).
-    The wrapper enforces :data:`_TOOL_DISPATCH_TIMEOUT_SECONDS` and
-    converts timeouts into a clear error message instead of hanging
-    the engine.
-    """
-
-    async def _runner() -> Any:
-        if asyncio.iscoroutinefunction(coro_factory):
-            return await coro_factory(*args)
-        # Wrap sync work in a thread so it does not block the
-        # event loop. ``asyncio.to_thread`` is the canonical way
-        # since 3.9.
-        return await asyncio.to_thread(coro_factory, *args)
-
     try:
+        if asyncio.iscoroutinefunction(coro_factory):
+            return await asyncio.wait_for(coro_factory(*args), timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS)
         return await asyncio.wait_for(
-            _runner(),
+            asyncio.to_thread(coro_factory, *args),
             timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        logger.warning(
-            "tool %s exceeded dispatch timeout %.1fs",
-            tool_name,
-            _TOOL_DISPATCH_TIMEOUT_SECONDS,
-        )
-        return (
-            f"Error: tool {tool_name!r} exceeded the "
-            f"{_TOOL_DISPATCH_TIMEOUT_SECONDS:.0f}s dispatch timeout"
-        )
-
-
-def _sync_invoke(tool: Any, args: dict[str, Any]) -> Any:
-    """Bridge for ``LangChain StructuredTool.invoke``."""
-
-    return tool.invoke(args)
-
-
-def _sync_callable(tool: Any, args: dict[str, Any]) -> Any:
-    """Bridge for a plain Python callable tool."""
-
-    return tool(**args) if args else tool()
+        logger.warning("tool %s exceeded dispatch timeout %.1fs", tool_name, _TOOL_DISPATCH_TIMEOUT_SECONDS)
+        return f"Error: tool {tool_name!r} exceeded the {_TOOL_DISPATCH_TIMEOUT_SECONDS:.0f}s dispatch timeout"

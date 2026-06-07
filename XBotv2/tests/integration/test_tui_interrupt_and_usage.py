@@ -2,7 +2,7 @@
 
 User asks (2026-06-05):
 - 'when I press ESC, the agent should interrupt' — wired end-to-end
-  here through Transport → HTTP /interrupt → dispatcher cancel →
+  here through Transport → HTTP /interrupt → session task cancel →
   engine turn_cancelled.
 - 'token usage should update realtime' — ``usage`` events should
   reflect in the activity row + status bar without waiting for
@@ -27,7 +27,7 @@ from xbotv2.tui.transport import Transport
 class _InterruptibleSession:
     """A scripted session that records transport.interrupt() calls
     and actually cancels the in-flight turn (mirrors the real
-    Engine + Dispatcher flow on the server side).
+    Engine + HTTP session flow on the server side).
     """
 
     def __init__(self) -> None:
@@ -79,7 +79,7 @@ class _InterruptibleSession:
     async def interrupt(self, *, session_id: str):
         self.interrupt_calls.append(session_id)
         if self.turn_task is not None and not self.turn_task.done():
-            # Mirror the real dispatcher: cancel the in-flight turn
+            # Mirror the real HTTP session runtime: cancel the in-flight turn
             # task. The send_message generator's ``release.wait()`` will
             # raise CancelledError, the except branch yields
             # turn_cancelled, then re-raises to close the SSE stream.
@@ -141,7 +141,7 @@ async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     class CancellableSession(_InterruptibleSession):
         async def interrupt(self, *, session_id: str):
             # Simulate the protocol: the engine emits turn_cancelled,
-            # the dispatcher pipes it through the SSE stream, the
+            # the HTTP session runtime pipes it through the SSE stream, the
             # TUI's state.apply_event fires.
             await super().interrupt(session_id=session_id)
             return {"status": "interrupting", "cancelled": True}

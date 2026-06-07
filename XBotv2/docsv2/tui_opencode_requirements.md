@@ -68,11 +68,11 @@ Slash dispatch rules:
 - unknown slash commands render a local notice
 - normal text is sent as a user message
 
-Server command results render as transcript notices. They append audit events on
-the server but do not enter LLM message history.
+Server command results render as transcript notices but do not enter LLM message
+history.
 
 Policy commands validate keys and values. `set` and `reset` both update the
-materialized overrides and the live in-memory session policy.
+session overrides and the live in-memory session policy.
 
 ## Composer
 
@@ -169,7 +169,7 @@ updates during a blocked turn.
 ## Transport Boundary
 
 TUI modules must not import runtime-bound modules such as engine, bootstrap,
-LangChain, or LangGraph. The protocol boundary is:
+provider SDKs, or tool execution. The protocol boundary is:
 
 ```text
 Textual app -> TerminalSession -> Transport -> HTTP server -> Engine

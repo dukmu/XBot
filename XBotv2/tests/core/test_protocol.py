@@ -1,13 +1,8 @@
 """Tests for the JSONL protocol layer."""
 
-import asyncio
 import json
-import os
-import sys
 
 import pytest
-import yaml
-from xbotv2.protocol.server import RuntimeServer
 from xbotv2.protocol.frames import (
     ProtocolFrame,
     ProtocolEncoder,

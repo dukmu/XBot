@@ -13,24 +13,144 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
-
-from xbotv2.protocol.dispatcher import (
-    SessionBusy,
-    SessionContext,
-    SessionManager,
-    SessionNotFound,
-    run_turn_stream,
-)
-from xbotv2.protocol.frames import PROTOCOL_VERSION, ProtocolFrame
+from xbotv2.protocol.frames import PROTOCOL_VERSION
 
 logger = logging.getLogger("xbotv2.http_server")
+
+
+class SessionNotFound(KeyError):
+    """The caller asked for a session that has not been opened."""
+
+
+class SessionBusy(RuntimeError):
+    """The session is already processing a turn; the new request is rejected."""
+
+
+@dataclass
+class SessionContext:
+    """One active HTTP session runtime."""
+
+    session_id: str
+    thread_id: str
+    provider_name: str
+    data_dir: str
+    workspace_root: str
+    no_plugins: bool
+    engine: Any
+    permission_overrides: dict[str, str] = field(default_factory=dict)
+    sandbox_overrides: dict[str, str] = field(default_factory=dict)
+    turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    turn_task: asyncio.Task | None = None
+
+    def request_interrupt(self) -> bool:
+        task = self.turn_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
+    async def close(self) -> None:
+        try:
+            await self.engine.close_session()
+        except Exception:
+            logger.exception("Engine close_session failed for %s", self.session_id)
+
+
+class SessionManager:
+    """Owns active HTTP sessions keyed by session id."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, SessionContext] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def size(self) -> int:
+        return len(self._sessions)
+
+    async def get(self, session_id: str) -> SessionContext:
+        async with self._lock:
+            ctx = self._sessions.get(session_id)
+        if ctx is None:
+            raise SessionNotFound(session_id)
+        return ctx
+
+    async def open_session(
+        self,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        provider_name: str,
+        data_dir: str,
+        workspace_root: str,
+        mode: str = "new",
+        no_plugins: bool,
+        llm_override: Any | None = None,
+    ) -> SessionContext:
+        async with self._lock:
+            mode = (mode or "new").lower().strip()
+            if mode not in {"new", "resume"}:
+                raise ValueError("session mode must be new or resume")
+            if mode == "resume" and not session_id:
+                raise ValueError("resume mode requires session_id")
+            if mode == "new":
+                session_id = session_id or _new_session_id()
+                if session_id in self._sessions:
+                    raise ValueError(f"session already exists: {session_id}")
+            assert session_id is not None
+            existing = self._sessions.get(session_id)
+            if existing is not None:
+                if mode == "resume":
+                    return existing
+                raise ValueError(f"session already exists: {session_id}")
+            state_root = Path(data_dir) / "sessions" / session_id / "state"
+            if mode == "resume" and not state_root.exists():
+                raise SessionNotFound(session_id)
+            if mode == "new" and state_root.exists():
+                raise ValueError(f"session state already exists: {session_id}")
+            engine = await bootstrap(
+                config_dir=data_dir,
+                provider_name=provider_name,
+                session_id=session_id,
+                thread_id=thread_id,
+                workspace_root=workspace_root,
+                plugin_dirs=[] if no_plugins else None,
+                llm_override=llm_override,
+            )
+            await engine.start_session()
+            ctx = SessionContext(
+                session_id=session_id,
+                thread_id=thread_id,
+                provider_name=provider_name,
+                data_dir=data_dir,
+                workspace_root=workspace_root,
+                no_plugins=no_plugins,
+                engine=engine,
+            )
+            self._sessions[session_id] = ctx
+            return ctx
+
+    async def close_session(self, session_id: str) -> None:
+        async with self._lock:
+            ctx = self._sessions.pop(session_id, None)
+        if ctx is not None:
+            await ctx.close()
+
+    async def close_all(self) -> None:
+        async with self._lock:
+            contexts = list(self._sessions.values())
+            self._sessions.clear()
+        for ctx in contexts:
+            await ctx.close()
 
 
 class HttpServerError(Exception):
@@ -87,12 +207,7 @@ def create_app(
 
 
 def set_llm_override(app: FastAPI, llm: Any | None) -> None:
-    """Inject a test LLM at runtime. No-op in production."""
-
     app.state.llm_override["value"] = llm
-
-    _register_routes(app)
-    return app
 
 
 def _register_routes(app: FastAPI) -> None:
@@ -180,17 +295,7 @@ def _register_routes(app: FastAPI) -> None:
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
-        result = execute_command(ctx, command, [str(arg) for arg in args])
-        ctx.engine.state_store.append_event(
-            "server_command_result",
-            {
-                "command": command,
-                "args": [str(arg) for arg in args],
-                "result": result.get("data", {}),
-            },
-        )
-        ctx.engine.state_store.materialize()
-        return result
+        return execute_command(ctx, command, [str(arg) for arg in args])
 
     @app.post("/sessions/{session_id}/messages")
     async def post_message(session_id: str, request: Request) -> Response:
@@ -257,12 +362,8 @@ def _register_routes(app: FastAPI) -> None:
                         seq=seq,
                     )
             except asyncio.CancelledError:
-                # TUI pressed ESC, or the HTTP client disconnected
-                # mid-turn. The dispatcher has already pushed the
-                # ``turn_cancelled`` event to the bus (or the pump's
-                # except branch will), so the TUI has enough
-                # information. Let the end marker flush so the
-                # client can close cleanly.
+                # TUI pressed ESC, or the HTTP client disconnected mid-turn.
+                # Let the end marker flush so the client can close cleanly.
                 logger.info("SSE stream cancelled for session %s", session_id)
             finally:
                 final = emit_end()
@@ -336,6 +437,146 @@ def _register_routes(app: FastAPI) -> None:
         )
 
 
+def _new_session_id() -> str:
+    from datetime import datetime
+
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+
+
+def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {"type": event.get("type", ""), "data": event.get("data", {})}
+
+
+@asynccontextmanager
+async def _live_interaction_sink(
+    ctx: SessionContext,
+    events: asyncio.Queue[dict[str, Any] | None],
+    disconnected: asyncio.Event,
+) -> AsyncIterator[None]:
+    disconnect_task = asyncio.create_task(disconnected.wait())
+
+    async def sink(
+        client_event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
+        del tool_call_id
+        event_type = str(client_event.get("type") or "")
+        event_data = client_event.get("data") or {}
+        req_id = str(event_data.get("request_id") or "")
+        await events.put(_event_to_payload(client_event))
+        waiter = (
+            ctx.engine.permission_waiter  # noqa: SLF001
+            if event_type == "permission_request"
+            else ctx.engine.user_input_waiter  # noqa: SLF001
+        )
+        wait_task = asyncio.create_task(waiter.wait(req_id, timeout_seconds))
+        try:
+            done, _pending = await asyncio.wait(
+                {wait_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            wait_task.cancel()
+            raise
+        if wait_task not in done:
+            wait_task.cancel()
+            try:
+                await wait_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            return {
+                "request_id": req_id,
+                "status": "disconnected",
+                "reason": "client_disconnected",
+            }
+        try:
+            result = wait_task.result()
+        except Exception as exc:  # noqa: BLE001
+            return {"request_id": req_id, "status": "error", "reason": str(exc)}
+        await events.put({
+            "type": (
+                "permission_response_recorded"
+                if event_type == "permission_request"
+                else "user_input_recorded"
+            ),
+            "data": {
+                "request_id": req_id,
+                "status": result.status,
+                "decision": result.decision,
+                "scope": result.scope,
+                "answer": result.answer,
+                "pending_interactions": [],
+            },
+        })
+        return result.__dict__
+
+    previous = ctx.engine.set_client_event_sink(sink)
+    try:
+        yield
+    finally:
+        ctx.engine.set_client_event_sink(previous)
+        if not disconnect_task.done():
+            disconnect_task.cancel()
+            try:
+                await disconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+async def _pump_turn(
+    ctx: SessionContext,
+    events: asyncio.Queue[dict[str, Any] | None],
+    content: str,
+) -> None:
+    try:
+        async for event in ctx.engine.run_turn(content):
+            await events.put(_event_to_payload(event))
+    except asyncio.CancelledError:
+        logger.info("Turn cancelled for session %s", ctx.session_id)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Engine run_turn failed")
+        await events.put({
+            "type": "error",
+            "data": {"code": "turn_failed", "message": str(exc)},
+        })
+    finally:
+        await events.put(None)
+
+
+async def run_turn_stream(
+    ctx: SessionContext,
+    *,
+    content: str,
+) -> AsyncIterator[dict[str, Any]]:
+    if ctx.turn_lock.locked():
+        raise SessionBusy(ctx.session_id)
+
+    async with ctx.turn_lock:
+        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        disconnected = asyncio.Event()
+        pump_task = asyncio.create_task(_pump_turn(ctx, events, content))
+        ctx.turn_task = pump_task
+        try:
+            async with _live_interaction_sink(ctx, events, disconnected):
+                while True:
+                    event = await events.get()
+                    if event is None:
+                        break
+                    yield event
+        finally:
+            ctx.turn_task = None
+            disconnected.set()
+            try:
+                await pump_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                logger.exception("pump_task ended with error for session %s", ctx.session_id)
+
+
 async def _resolve_interaction(
     *,
     manager: SessionManager,
@@ -366,14 +607,14 @@ async def _resolve_interaction(
                 status=400,
             )
         scope = str(payload.get("scope") or "once").strip().lower()
-        if scope not in {"once", "session", "always"}:
+        if scope not in {"once", "session"}:
             raise HttpServerError(
                 "invalid_request",
-                "permission.response payload.scope must be once, session, or always",
+                "permission.response payload.scope must be once or session",
                 status=400,
             )
         try:
-            ctx.engine._permission_waiter.answer(  # noqa: SLF001
+            ctx.engine.permission_waiter.answer(  # noqa: SLF001
                 request_id, decision=decision, scope=scope
             )
         except Exception as exc:  # noqa: BLE001
@@ -390,7 +631,7 @@ async def _resolve_interaction(
 
     answer = payload.get("answer", "")
     try:
-        ctx.engine._user_input_waiter.answer(  # noqa: SLF001
+        ctx.engine.user_input_waiter.answer(  # noqa: SLF001
             request_id, answer=answer
         )
     except Exception as exc:  # noqa: BLE001
@@ -410,9 +651,9 @@ def _pending_snapshot(ctx: SessionContext) -> list[str]:
     """Return the list of currently pending interaction request ids."""
 
     return list(
-        ctx.engine._user_input_waiter.pending_request_ids()  # noqa: SLF001
+        ctx.engine.user_input_waiter.pending_request_ids()  # noqa: SLF001
     ) + list(
-        ctx.engine._permission_waiter.pending_request_ids()  # noqa: SLF001
+        ctx.engine.permission_waiter.pending_request_ids()  # noqa: SLF001
     )
 
 

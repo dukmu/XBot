@@ -1,262 +1,139 @@
-"""Mock LLM for deterministic testing.
-
-Provides a BaseChatModel-compatible mock that returns pre-configured
-response sequences. No real provider calls are made.
-"""
+"""XBot-owned deterministic provider for tests."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncIterator
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
-from langchain_core.outputs import ChatResult, ChatGeneration, ChatGenerationChunk
+from xbotv2.llm.messages import XBotModelChunk, XBotModelResponse
 
 
-class MockLLM(BaseChatModel):
-    """Deterministic mock LLM for testing.
-
-    Configure with a list of response dicts. Each dict is either:
-    - {"content": str} — plain text response
-    - {"content": str, "tool_calls": [...]} — response with tool calls
-
-    Responses are consumed in order. Raises RuntimeError when exhausted.
-    All mutable state is stored via ``object.__setattr__`` to avoid
-    Pydantic field validation on BaseChatModel.
-    """
+class MockLLM:
+    """Deterministic provider with the same public test helpers as the old mock."""
 
     def __init__(self, responses: list[dict[str, Any]] | None = None, **kwargs):
-        super().__init__(**kwargs)
-        # Bypass Pydantic's __setattr__ validation
-        object.__setattr__(self, "_mock_responses", responses or [])
-        object.__setattr__(self, "_mock_idx", 0)
-        object.__setattr__(self, "_mock_call_history", [])
+        self.responses = responses or []
+        self.call_count = 0
+        self.bound_tools: list[Any] = []
+        self.call_history: list[dict[str, Any]] = []
+        self._mock_call_history = self.call_history
 
-    # ------------------------------------------------------------------
-    # Core API
-    # ------------------------------------------------------------------
+    def bind_tools(self, tools, **kwargs):
+        self.bound_tools = list(tools)
+        return self
 
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        response = self._next_response()
-        msg = self._to_aimessage(response)
-        self._record_call(
-            messages=messages,
-            stop=stop,
-            kwargs=kwargs,
-            response=msg,
-            raw_response=response,
+    def invoke(self, messages: list[Any], **kwargs: Any) -> XBotModelResponse:
+        response = self.next_response()
+        result = self.to_response(response)
+        self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
+        return result
+
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> XBotModelResponse:
+        return self.invoke(messages, **kwargs)
+
+    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[XBotModelChunk]:
+        response = self.next_response()
+        result = self.to_response(response)
+        self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
+        chunks = response.get("chunks")
+        if isinstance(chunks, list) and chunks:
+            for chunk in chunks:
+                yield self.to_chunk(chunk)
+            yield result
+            return
+        yield XBotModelChunk(
+            content=result.content,
+            tool_calls=result.tool_calls,
+            response_metadata=result.response_metadata,
+            usage_metadata=result.usage_metadata,
+            additional_kwargs=result.additional_kwargs,
         )
-        return ChatResult(generations=[ChatGeneration(message=msg)])
 
-    async def _agenerate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        return self._generate(messages, stop, run_manager, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Streaming
-    # ------------------------------------------------------------------
-
-    def _stream(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> Any:
-        response = self._next_response()
-        msg = self._to_aimessage(response)
-        self._record_call(
-            messages=messages,
-            stop=stop,
-            kwargs=kwargs,
-            response=msg,
-            raw_response=response,
-        )
-        for chunk in self._response_chunks(response, msg):
-            yield chunk
-
-    async def _astream(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> Any:
-        result = await self._agenerate(messages, stop, run_manager, **kwargs)
-        msg = result.generations[0].message
-        raw_response = self._mock_call_history[-1].get("raw_response", {})
-        for chunk in self._response_chunks(raw_response, msg):
-            yield chunk
-
-    # ------------------------------------------------------------------
-    # Test helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def responses(self) -> list[dict[str, Any]]:
-        """The configured response list."""
-        return self._mock_responses
-
-    @property
-    def call_count(self) -> int:
-        """Number of times the LLM has been called."""
-        return len(self._mock_call_history)
-
-    def get_call_messages(self, index: int) -> list[BaseMessage]:
-        """Return the messages sent for call *index*."""
-        return self._mock_call_history[index].get("messages", [])
+    def get_call_messages(self, index: int) -> list[Any]:
+        return self.call_history[index].get("messages", [])
 
     def verify_tool_call_made(self, tool_name: str, min_count: int = 1) -> bool:
-        """Check that *tool_name* was called at least *min_count* times."""
         count = sum(
             1
-            for call in self._mock_call_history
-            for tc in call.get("tool_calls", [])
-            if tc.get("name") == tool_name
+            for call in self.call_history
+            for tool_call in call.get("tool_calls", [])
+            if tool_call.get("name") == tool_name
         )
         return count >= min_count
 
     def reset(self) -> None:
-        """Reset the response index and call history."""
-        object.__setattr__(self, "_mock_idx", 0)
-        object.__setattr__(self, "_mock_call_history", [])
+        self.call_count = 0
+        self.call_history = []
+        self._mock_call_history = self.call_history
 
     def set_responses(self, responses: list[dict[str, Any]]) -> None:
-        """Replace the response list (for test reuse)."""
-        object.__setattr__(self, "_mock_responses", responses)
+        self.responses = responses
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _next_response(self) -> dict[str, Any]:
-        idx = self._mock_idx
-        responses = self._mock_responses
-        if idx >= len(responses):
+    def next_response(self) -> dict[str, Any]:
+        if self.call_count >= len(self.responses):
             raise RuntimeError(
-                f"MockLLM exhausted after {len(responses)} responses "
-                f"(requested response #{idx + 1})"
+                f"MockLLM exhausted after {len(self.responses)} responses "
+                f"(requested response #{self.call_count + 1})"
             )
-        object.__setattr__(self, "_mock_idx", idx + 1)
-        return responses[idx]
+        response = self.responses[self.call_count]
+        self.call_count += 1
+        return response
 
-    def _to_aimessage(self, response: dict[str, Any]) -> AIMessage:
-        content = response.get("content", "")
-        tool_calls = response.get("tool_calls")
-        metadata: dict[str, Any] = {}
-        if isinstance(response.get("usage_metadata"), dict):
-            metadata["usage_metadata"] = response["usage_metadata"]
-        if isinstance(response.get("response_metadata"), dict):
-            metadata["response_metadata"] = response["response_metadata"]
+    def to_response(self, response: dict[str, Any]) -> XBotModelResponse:
+        return XBotModelResponse(
+            content=str(response.get("content", "")),
+            tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
+            response_metadata=dict(response.get("response_metadata") or {}),
+            usage_metadata=dict(response.get("usage_metadata") or {}),
+            additional_kwargs=additional_kwargs(response),
+        )
 
-        if tool_calls:
-            normalized = []
-            for tc in tool_calls:
-                normalized.append({
-                    "name": tc["name"],
-                    "args": tc.get("args", {}),
-                    "id": tc.get("id", f"call_{len(normalized)}"),
-                    "type": "tool_call",
-                })
-            msg = AIMessage(
-                content=content,
-                tool_calls=normalized,
-                **metadata,
-            )
-        else:
-            msg = AIMessage(content=content, **metadata)
-
-        return msg
-
-    def _response_chunks(
-        self,
-        response: dict[str, Any],
-        msg: AIMessage,
-    ) -> list[ChatGenerationChunk]:
-        chunks = response.get("chunks")
-        if isinstance(chunks, list) and chunks:
-            return [
-                ChatGenerationChunk(message=self._to_message_chunk(raw))
-                for raw in chunks
-            ]
-        chunk_kwargs: dict[str, Any] = {
-            "content": msg.content,
-            "additional_kwargs": dict(getattr(msg, "additional_kwargs", {}) or {}),
-            "response_metadata": dict(getattr(msg, "response_metadata", {}) or {}),
-        }
-        usage_metadata = getattr(msg, "usage_metadata", None)
-        if usage_metadata is not None:
-            chunk_kwargs["usage_metadata"] = usage_metadata
-        tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls:
-            chunk_kwargs["tool_calls"] = tool_calls
-        return [ChatGenerationChunk(message=AIMessageChunk(**chunk_kwargs))]
-
-    def _to_message_chunk(self, raw: Any) -> AIMessageChunk:
+    def to_chunk(self, raw: Any) -> XBotModelChunk:
         if isinstance(raw, str):
-            return AIMessageChunk(content=raw)
+            return XBotModelChunk(content=raw)
         if not isinstance(raw, dict):
-            return AIMessageChunk(content=str(raw))
-        kwargs: dict[str, Any] = {"content": raw.get("content", "")}
-        additional_kwargs = dict(raw.get("additional_kwargs") or {})
-        reasoning = raw.get("reasoning") or raw.get("reasoning_content")
-        if reasoning:
-            additional_kwargs["reasoning_content"] = str(reasoning)
-        if additional_kwargs:
-            kwargs["additional_kwargs"] = additional_kwargs
-        if isinstance(raw.get("response_metadata"), dict):
-            kwargs["response_metadata"] = raw["response_metadata"]
-        if isinstance(raw.get("usage_metadata"), dict):
-            kwargs["usage_metadata"] = raw["usage_metadata"]
-        if isinstance(raw.get("tool_call_chunks"), list):
-            kwargs["tool_call_chunks"] = raw["tool_call_chunks"]
-        if isinstance(raw.get("tool_calls"), list):
-            kwargs["tool_calls"] = raw["tool_calls"]
-        return AIMessageChunk(**kwargs)
+            return XBotModelChunk(content=str(raw))
+        return XBotModelChunk(
+            content=str(raw.get("content", "")),
+            tool_calls=normalize_tool_calls(raw.get("tool_calls") or []),
+            tool_call_chunks=list(raw.get("tool_call_chunks") or []),
+            response_metadata=dict(raw.get("response_metadata") or {}),
+            usage_metadata=dict(raw.get("usage_metadata") or {}),
+            additional_kwargs=additional_kwargs(raw),
+        )
 
-    def _record_call(
+    def record_call(
         self,
         *,
-        messages: list[BaseMessage],
-        stop: list[str] | None,
+        messages: list[Any],
         kwargs: dict[str, Any],
-        response: AIMessage,
+        response: XBotModelResponse,
         raw_response: dict[str, Any],
     ) -> None:
-        """Record one provider call for assertions in tests."""
-        self._mock_call_history.append({
+        self.call_history.append({
             "messages": list(messages),
-            "stop": list(stop) if stop else None,
             "kwargs": dict(kwargs),
-            "content": response.content,
-            "tool_calls": getattr(response, "tool_calls", []) or [],
             "response": response,
-            "raw_response": dict(raw_response),
+            "raw_response": raw_response,
+            "tool_calls": list(response.tool_calls),
         })
 
-    @property
-    def _llm_type(self) -> str:
-        return "mock"
 
-    @property
-    def _identifying_params(self) -> dict[str, Any]:
-        return {"mock_responses": len(self._mock_responses)}
+def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        normalized.append({
+            "name": tool_call["name"],
+            "args": tool_call.get("args", {}),
+            "id": tool_call.get("id", f"call_{len(normalized)}"),
+            "type": "tool_call",
+        })
+    return normalized
 
-    def bind_tools(
-        self, tools: list[Any], **kwargs: Any
-    ) -> "MockLLM":
-        """Mock bind_tools — returns self since MockLLM handles tool calls
-        in its pre-configured response data."""
-        return self
+
+def additional_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(raw.get("additional_kwargs") or {})
+    reasoning = raw.get("reasoning") or raw.get("reasoning_content")
+    if reasoning:
+        kwargs["reasoning_content"] = str(reasoning)
+    return kwargs

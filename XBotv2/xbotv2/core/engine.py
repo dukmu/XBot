@@ -19,8 +19,6 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-
 from xbotv2.core.interactions import (
     InteractionDisconnected,
     InteractionResult,
@@ -28,6 +26,8 @@ from xbotv2.core.interactions import (
 )
 from xbotv2.core.state import SessionInfo
 from xbotv2.hooks.types import HookContext, HookStage
+from xbotv2.llm.messages import Message, XBotModelChunk, XBotModelResponse
+from xbotv2.tools.types import provider_tool_schema
 
 logger = logging.getLogger("xbotv2.engine")
 
@@ -35,6 +35,50 @@ logger = logging.getLogger("xbotv2.engine")
 # cancels the turn.  On timeout the engine yields an ``error`` event
 # and saves state — the user can retry or switch providers.
 _LLM_DISPATCH_TIMEOUT = 120.0  # seconds
+
+
+def merge_xbot_chunk(
+    aggregate: XBotModelResponse | None,
+    chunk: XBotModelChunk,
+) -> XBotModelResponse:
+    if not isinstance(aggregate, XBotModelResponse):
+        aggregate = XBotModelResponse()
+    aggregate.content += chunk.content
+    if chunk.tool_calls:
+        aggregate.tool_calls = chunk.tool_calls
+    if chunk.response_metadata:
+        aggregate.response_metadata.update(chunk.response_metadata)
+    if chunk.usage_metadata:
+        aggregate.usage_metadata.update(chunk.usage_metadata)
+    if chunk.additional_kwargs:
+        aggregate.additional_kwargs.update(chunk.additional_kwargs)
+    return aggregate
+
+
+def xbot_tool_call_deltas(
+    chunk: XBotModelChunk,
+    tool_stream_ids: dict[int, str],
+) -> list[dict[str, Any]]:
+    raw_chunks = chunk.tool_call_chunks or chunk.tool_calls
+    deltas: list[dict[str, Any]] = []
+    for index, tool_call in enumerate(raw_chunks):
+        chunk_index = int(tool_call.get("index", index))
+        prior_id = tool_stream_ids.get(chunk_index)
+        tool_id = tool_call.get("id") or prior_id or f"tool_{chunk_index}"
+        tool_stream_ids[chunk_index] = tool_id
+        args_delta = tool_call.get("args", {})
+        delta = {
+                "tool_call_id": tool_id,
+                "id": tool_id,
+                "name": tool_call.get("name", "tool"),
+                "args_delta": args_delta,
+                "args": args_delta,
+                "index": chunk_index,
+        }
+        if prior_id and prior_id != tool_id:
+            delta["replaces_tool_call_id"] = prior_id
+        deltas.append({"tool_calls": [delta]})
+    return deltas
 
 
 class Engine:
@@ -53,7 +97,7 @@ class Engine:
     def __init__(
         self,
         *,
-        llm: Any,  # BaseChatModel
+        llm: Any,
         tool_registry: Any,  # ToolRegistry
         hook_manager: Any,  # HookManager
         state_store: Any,  # CoreStateStore
@@ -75,43 +119,32 @@ class Engine:
         self.config = config
         self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
-        # ``data_dir`` is used by ``dump_conversation_state`` to land
-        # diagnostic dumps next to the log file. Best-effort — the
-        # engine can also derive it from ``self.state_store.root``.
-        self.data_dir: str | None = data_dir
 
-        # Runtime state (per-session, in-memory)
-        self._messages: list[BaseMessage] = []
-        self._session: SessionInfo | None = None
-        self._turn_count = 0
-        self._user_input_waiter = InteractionWaiter()
-        self._permission_waiter = InteractionWaiter()
-        self._client_event_sink: Any | None = None
+        self.messages: list[Message] = []
+        self.session: SessionInfo | None = None
+        self.turn_count = 0
+        self.user_input_waiter = InteractionWaiter()
+        self.permission_waiter = InteractionWaiter()
+        self.client_event_sink: Any | None = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
     # ------------------------------------------------------------------
 
     async def start_session(self) -> None:
-        """Create a new session. Runs ON_SESSION_START hooks.
-
-        If previous persisted state exists on disk, message history and turn
-        count are loaded and ON_SESSION_RESUME hooks run.
-        """
-        self._session = SessionInfo(
+        """Create a new session. Runs ON_SESSION_START hooks."""
+        self.session = SessionInfo(
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
             workspace_root=self.workspace_root,
             provider=str(getattr(self.config, "provider", "default")),
         )
-
-        existing_session = self.state_store.has_existing_session()
-        self._record_workspace("resume" if existing_session else "start")
-
-        if existing_session:
-            self._messages = self.state_store.read_messages()
-            self._turn_count = self.state_store.read_state().get("turn_count", 0)
-            self._session.turn_count = self._turn_count
+        if self.state_store.has_existing_session():
+            self.messages = self.state_store.read_messages()
+            self.turn_count = max(
+                sum(1 for m in self.messages if m.role == "user"), 0
+            )
+            self.session.turn_count = self.turn_count
             ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
             await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
         else:
@@ -119,23 +152,18 @@ class Engine:
             await self.hook_manager.run(HookStage.ON_SESSION_START, ctx, short_circuit=False)
 
     async def resume_session(self) -> None:
-        """Explicit resume: load persisted state and run ON_SESSION_RESUME hooks."""
-        state = self.state_store.read_state()
-        self._turn_count = state.get("turn_count", 0)
-
-        # Restore message history from disk
-        self._messages = self.state_store.read_messages()
-
-        self._session = SessionInfo(
+        """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
+        self.messages = self.state_store.read_messages()
+        self.turn_count = max(
+            sum(1 for m in self.messages if m.role == "user"), 0
+        )
+        self.session = SessionInfo(
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
             workspace_root=self.workspace_root,
             provider=str(getattr(self.config, "provider", "default")),
-            turn_count=self._turn_count,
+            turn_count=self.turn_count,
         )
-
-        self._record_workspace("explicit_resume")
-
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
 
@@ -143,40 +171,34 @@ class Engine:
         """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
         self.cancel_pending_user_inputs("session_closed")
         self.cancel_pending_permissions("session_closed")
-        self.state_store.append_event("session_closed", {"turn_count": self._turn_count})
         ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
         await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
-        await self._save_messages()
+        await self.save_messages()
 
     def set_client_event_sink(self, sink: Any | None) -> Any | None:
         """Install a live protocol sink for client-directed events."""
-        previous = self._client_event_sink
-        self._client_event_sink = sink
+        previous = self.client_event_sink
+        self.client_event_sink = sink
         return previous
 
     def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
-        """Answer a live ask_user request owned by this engine."""
-        return self._user_input_waiter.answer(request_id, answer=answer)
+        return self.user_input_waiter.answer(request_id, answer=answer)
 
     def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        """Cancel one live ask_user request."""
-        return self._user_input_waiter.cancel(request_id, reason)
+        return self.user_input_waiter.cancel(request_id, reason)
 
     def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[InteractionResult]:
-        """Cancel all live ask_user requests."""
-        return self._user_input_waiter.cancel_all(reason)
+        return self.user_input_waiter.cancel_all(reason)
 
     def submit_permission_response(
         self,
         request_id: str,
         decision: str,
     ) -> InteractionResult:
-        """Answer a live permission request owned by this engine."""
-        return self._permission_waiter.answer(request_id, decision=decision)
+        return self.permission_waiter.answer(request_id, decision=decision)
 
     def cancel_pending_permissions(self, reason: str = "cancelled") -> list[InteractionResult]:
-        """Cancel all live permission requests."""
-        return self._permission_waiter.cancel_all(reason)
+        return self.permission_waiter.cancel_all(reason)
 
     # ------------------------------------------------------------------
     # Turn execution
@@ -188,87 +210,21 @@ class Engine:
             async for event in self._run_turn_impl(user_input):
                 yield event
         except asyncio.CancelledError:
-            # The TUI pressed ESC (or the HTTP client disconnected
-            # mid-turn). Emit a structured turn_cancelled so the
-            # transcript shows what happened, then re-raise so the
-            # caller's task cancellation propagates.
-            logger.info("Turn %s interrupted by client", self._turn_count)
-            self.state_store.append_event(
-                "turn_cancelled",
-                {
-                    "turn": self._turn_count,
-                    "reason": "client_interrupt",
-                },
-            )
-            # **Critical**: if the cancel arrived between the LLM
-            # yielding an AIMessage with ``tool_calls`` (line ~607)
-            # and the tool_messages being appended (line ~733), the
-            # in-memory ``_messages`` list has an orphan AIMessage
-            # that the LLM provider will reject on the next turn
-            # ("An assistant message with 'tool_calls' must be
-            # followed by tool messages"). Backtrack: drop the last
-            # message if it carries unmatched tool_calls.
-            self._backtrack_orphan_tool_calls()
-            await self._save_messages()
+            logger.info("Turn %s interrupted by client", self.turn_count)
+            await self.save_messages()
             yield {
                 "type": "turn_cancelled",
                 "data": {
-                    "turn": self._turn_count,
+                    "turn": self.turn_count,
                     "reason": "client_interrupt",
                 },
             }
             raise
         except InteractionDisconnected as exc:
             logger.info("Turn stopped because the client disconnected during an interaction")
-            self.state_store.append_event(
-                "turn_cancelled",
-                {
-                    "turn": self._turn_count,
-                    "reason": "client_disconnected",
-                    "message": str(exc),
-                },
-            )
-            # Same orphan-tool_calls risk as the CancelledError path
-            # (code review v1.2 §2.3): the disconnect may arrive
-            # between AIMessage(tool_calls) append and tool_messages
-            # extend, leaving an inconsistent history on disk.
-            self._backtrack_orphan_tool_calls()
-            await self._save_messages()
+            await self.save_messages()
         except Exception as exc:
             logger.exception("Turn failed")
-            # When the LLM provider rejects the conversation
-            # (e.g. the LangChain 400 "An assistant message with
-            # 'tool_calls' must be followed by tool messages" we
-            # hit during v1.2 testing), the in-memory state
-            # usually looks *almost* right: ``_messages`` has
-            # the assistant message with tool_calls AND the
-            # matching ToolMessage, but the provider still
-            # complains. The dump is what makes the diff
-            # obvious. Best-effort: any failure inside the dump
-            # helper is itself logged and swallowed.
-            try:
-                from xbotv2.core.logging_config import dump_conversation_state
-
-                session_root = getattr(self.state_store, "root", None)
-                dump_conversation_state(
-                    logger,
-                    session_root=str(session_root) if session_root is not None else None,
-                    data_dir=self.data_dir,
-                    session_id=str(getattr(self.state_store, "session_id", "?")),
-                    turn=self._turn_count,
-                    messages=self._messages,
-                    error=exc,
-                )
-            except Exception:  # noqa: BLE001 — never break the error path
-                logger.exception("engine: dump_conversation_state failed")
-            self.state_store.append_event(
-                "error",
-                {
-                    "turn": self._turn_count,
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                },
-            )
             failure_ctx = self._make_hook_context(
                 HookStage.ON_STOP_FAILURE,
                 user_input=user_input,
@@ -286,7 +242,7 @@ class Engine:
                 error=exc,
             )
             await self.hook_manager.run(HookStage.ON_ERROR, ctx, short_circuit=False)
-            await self._save_messages()
+            await self.save_messages()
             yield {
                 "type": "error",
                 "data": {
@@ -335,10 +291,9 @@ class Engine:
             }
             return
 
-        self._turn_count += 1
+        self.turn_count += 1
 
-        # 1. Record user message
-        self._messages.append(HumanMessage(content=user_input))
+        self.messages.append(Message(role="user", content=user_input))
 
         accepted_ctx = self._make_hook_context(
             HookStage.AFTER_USER_MESSAGE_ACCEPT,
@@ -350,16 +305,13 @@ class Engine:
             short_circuit=False,
         )
 
-        # 2. ON_USER_MESSAGE hook
         um_ctx = self._make_hook_context(HookStage.ON_USER_MESSAGE, user_input=user_input)
         await self.hook_manager.run(HookStage.ON_USER_MESSAGE, um_ctx, short_circuit=False)
 
-        # 3. ON_TURN_START hook
         ts_ctx = self._make_hook_context(HookStage.ON_TURN_START, user_input=user_input)
         await self.hook_manager.run(HookStage.ON_TURN_START, ts_ctx, short_circuit=False)
 
-        self.state_store.append_event("turn_started", {"turn": self._turn_count})
-        yield {"type": "turn_started", "data": {"turn": self._turn_count}}
+        yield {"type": "turn_started", "data": {"turn": self.turn_count}}
 
         # 4. ReAct loop
         iteration = 0
@@ -396,15 +348,15 @@ class Engine:
                         turn_complete = True
                         break
 
-                    previous_message_count = len(self._messages)
-                    self._messages = short_circuit["messages"]
+                    previous_message_count = len(self.messages)
+                    self.messages = short_circuit["messages"]
                     post_compact_ctx = self._make_hook_context(
                         HookStage.POST_COMPACT,
                         compact_reason=compact_reason,
                     )
                     post_compact_ctx.state.update({
                         "previous_message_count": previous_message_count,
-                        "current_message_count": len(self._messages),
+                        "current_message_count": len(self.messages),
                     })
                     await self.hook_manager.run(
                         HookStage.POST_COMPACT,
@@ -417,7 +369,7 @@ class Engine:
                     break
 
             context_kwargs = {
-                "messages": self._messages,
+                "messages": self.messages,
                 "agent_name": getattr(self.config, "agent_name", "XBotv2"),
                 "agent_role": getattr(self.config, "agent_role", ""),
                 "user_name": "User",
@@ -429,7 +381,7 @@ class Engine:
                 ),
                 "memory": getattr(self.config, "memory", ""),
                 "sandbox_summary": self.sandbox_policy.describe() if self.sandbox_policy else "",
-                "turn_count": self._turn_count,
+                "turn_count": self.turn_count,
             }
             bcb_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT_BUILD)
             build_result = await self.hook_manager.run(
@@ -439,8 +391,8 @@ class Engine:
             )
             if isinstance(build_result, dict):
                 if "messages" in build_result:
-                    self._messages = build_result["messages"]
-                    context_kwargs["messages"] = self._messages
+                    self.messages = build_result["messages"]
+                    context_kwargs["messages"] = self.messages
                 if "context_kwargs" in build_result:
                     context_kwargs.update(build_result["context_kwargs"])
                 if "event" in build_result:
@@ -468,8 +420,6 @@ class Engine:
                 )
                 if component_ctx.context_components is not None:
                     context_components = component_ctx.context_components
-                if isinstance(component_result, dict) and "context_components" in component_result:
-                    context_components = component_result["context_components"]
 
                 context_messages = self.context_builder.messages_from_components(
                     context_components
@@ -519,7 +469,7 @@ class Engine:
             )
             if short_circuit is not None:
                 if isinstance(short_circuit, dict) and "messages" in short_circuit:
-                    self._messages.extend(short_circuit["messages"])
+                    self.messages.extend(short_circuit["messages"])
                 turn_complete = True
                 break
 
@@ -556,10 +506,7 @@ class Engine:
                 turn_complete = True
                 break
 
-            try:
-                llm_with_tools = self.llm.bind_tools(tools) if tools else self.llm
-            except NotImplementedError:
-                llm_with_tools = self.llm
+            llm_with_tools = self._bind_tools_for_provider(tools)
             model_request = {
                 "messages": context_messages,
                 "tools": tools,
@@ -591,14 +538,7 @@ class Engine:
                     model_request["messages"] = request_result["messages"]
                 if "tools" in request_result:
                     model_request["tools"] = request_result["tools"]
-                    try:
-                        model_request["llm"] = (
-                            self.llm.bind_tools(model_request["tools"])
-                            if model_request["tools"]
-                            else self.llm
-                        )
-                    except NotImplementedError:
-                        model_request["llm"] = self.llm
+                    model_request["llm"] = self._bind_tools_for_provider(model_request["tools"])
                 if "llm" in request_result:
                     model_request["llm"] = request_result["llm"]
                 if "event" in request_result:
@@ -629,7 +569,7 @@ class Engine:
                 logger.error(
                     "engine.turn LLM timed out after %ss (turn=%d)",
                     _LLM_DISPATCH_TIMEOUT,
-                    self._turn_count,
+                    self.turn_count,
                 )
                 raise asyncio.TimeoutError(
                     f"LLM call timed out after {_LLM_DISPATCH_TIMEOUT}s"
@@ -647,10 +587,17 @@ class Engine:
                     short_circuit=False,
                 )
                 raise
-            self._messages.append(response)
-
-            # Yield assistant message
             content = response.content if hasattr(response, "content") else str(response)
+            response_msg = Message(
+                role="assistant",
+                content=content,
+                tool_calls=getattr(response, "tool_calls", None) or [],
+                usage_metadata=getattr(response, "usage_metadata", None) or {},
+                response_metadata=getattr(response, "response_metadata", None) or {},
+                additional_kwargs=getattr(response, "additional_kwargs", None) or {},
+            )
+            self.messages.append(response_msg)
+
             yield {
                 "type": "assistant_message",
                 "data": {"content": content, "tool_calls": getattr(response, "tool_calls", None)},
@@ -689,7 +636,7 @@ class Engine:
             if agent_result is not None:
                 if isinstance(agent_result, dict):
                     if "messages" in agent_result:
-                        self._messages.extend(agent_result["messages"])
+                        self.messages.extend(agent_result["messages"])
                     if "event" in agent_result:
                         yield agent_result["event"]
                     turn_complete = bool(agent_result.get("turn_complete", True))
@@ -717,7 +664,7 @@ class Engine:
             normalized_calls = self._normalize_tool_calls(tool_calls)
             logger.info(
                 "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
-                self._turn_count,
+                self.turn_count,
                 len(normalized_calls),
                 [tc.get("name") for tc in normalized_calls],
             )
@@ -751,12 +698,12 @@ class Engine:
                 hook_context_factory=self._make_hook_context,
                 client_interaction_handler=(
                     self._handle_user_input_request
-                    if self._client_event_sink is not None
+                    if self.client_event_sink is not None
                     else None
                 ),
                 permission_interaction_handler=(
                     self._handle_permission_request
-                    if self._client_event_sink is not None
+                    if self.client_event_sink is not None
                     else None
                 ),
                 workspace_root=self.workspace_root,
@@ -773,31 +720,32 @@ class Engine:
 
             logger.info(
                 "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
-                self._turn_count,
+                self.turn_count,
                 len(tool_messages),
                 [getattr(tm, "tool_call_id", None) for tm in tool_messages],
                 [getattr(tm, "status", None) for tm in tool_messages],
             )
-            self._messages.extend(tool_messages)
+            self.messages.extend(tool_messages)
             # Persist immediately after tool messages are committed so
             # that even if the turn is cancelled later in this
             # iteration (during tool_result yield or the next LLM
-            # call), the disk is consistent: every AIMessage with
-            # tool_calls has its matching ToolMessages on disk.
-            await self._save_messages()
+            # call), the disk is consistent: every assistant message with
+            # tool_calls has its matching tool messages on disk.
+            await self.save_messages()
 
             # Yield tool results
             for tm in tool_messages:
                 for client_event in getattr(tm, "additional_kwargs", {}).get("xbotv2_events", []):
-                    await self._record_client_event(client_event, tool_result=tm)
-                    user_input_result = getattr(tm, "additional_kwargs", {}).get(
-                        "xbotv2_user_input_result"
+                    event_ctx = self._make_hook_context(
+                        HookStage.ON_CLIENT_EVENT,
+                        tool_result=tm,
+                        client_event=client_event,
                     )
-                    if (
-                        client_event.get("type") == "user_input_required"
-                        and isinstance(user_input_result, dict)
-                    ):
-                        self.record_user_input_result(client_event, user_input_result)
+                    await self.hook_manager.run(
+                        HookStage.ON_CLIENT_EVENT,
+                        event_ctx,
+                        short_circuit=False,
+                    )
                     yield client_event
 
                 yield {
@@ -856,146 +804,62 @@ class Engine:
             )
             raise
 
-        self.state_store.append_event("turn_finished", {"turn": self._turn_count})
+        await self.save_messages()
 
-        # Persist all messages to disk after each turn
-        await self._save_messages()
+        yield {"type": "turn_finished", "data": {"turn": self.turn_count}}
 
-        # Guard: verify the last message is not an orphan AIMessage with
-        # tool_calls that would cause the next turn's LLM to 400.  Serves
-        # as a silent sanity check for the 19 early-exit points (code
-        # review v1.2 §2.13).  In the normal path this is always a no-op.
-        self._backtrack_orphan_tool_calls()
-
-        yield {"type": "turn_finished", "data": {"turn": self._turn_count}}
+    def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
+        if not tools:
+            return self.llm
+        schemas = [provider_tool_schema(tool) for tool in tools]
+        try:
+            return self.llm.bind_tools(schemas)
+        except NotImplementedError:
+            return self.llm
 
     async def _stream_model_response(
         self,
         llm: Any,
         context_messages: list[Any],
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream provider chunks and reconstruct the final AIMessage.
+        """Stream provider chunks and reconstruct the final response."""
 
-        LangChain's public ``astream`` yields ``AIMessageChunk`` objects.
-        The final reconstructed message is passed back through an internal
-        sentinel so the existing hook/tool/history flow stays unchanged.
-        """
-
-        aggregate: AIMessageChunk | AIMessage | None = None
+        aggregate: XBotModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
         async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
             async for chunk in llm.astream(context_messages):
-                if isinstance(chunk, AIMessageChunk):
-                    aggregate = chunk if aggregate is None else aggregate + chunk  # type: ignore[operator]
-                    content = chunk.content if isinstance(chunk.content, str) else ""
-                    reasoning = self._extract_reasoning_delta(chunk)
-                    if content or reasoning:
-                        yield {
-                            "type": "assistant_message_delta",
-                            "data": {"content": content, "reasoning": reasoning},
-                        }
-                    tool_chunks = getattr(chunk, "tool_call_chunks", None)
-                    if tool_chunks:
-                        yield {
-                            "type": "tool_call_delta",
-                            "data": {
-                                "tool_calls": self._normalize_tool_call_chunks(
-                                    tool_chunks,
-                                    stream_ids=tool_stream_ids,
-                                )
-                            },
-                        }
+                if isinstance(chunk, XBotModelChunk):
+                    aggregate = merge_xbot_chunk(aggregate, chunk)
+                    if chunk.content:
+                        yield {"type": "assistant_message_delta", "data": {"content": chunk.content}}
+                    for tool_delta in xbot_tool_call_deltas(chunk, tool_stream_ids):
+                        yield {"type": "tool_call_delta", "data": tool_delta}
+                    reasoning = str(chunk.additional_kwargs.get("reasoning_content") or "")
+                    if reasoning:
+                        yield {"type": "reasoning_delta", "data": {"content": reasoning}}
                     continue
-                if isinstance(chunk, AIMessage):
+                if isinstance(chunk, XBotModelResponse):
                     aggregate = chunk
-                    content = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
-                    if content:
-                        yield {"type": "assistant_message_delta", "data": {"content": content}}
-                    tool_calls = getattr(chunk, "tool_calls", None)
-                    if tool_calls:
-                        yield {
-                            "type": "tool_call_delta",
-                            "data": {"tool_calls": self._normalize_tool_calls(tool_calls)},
-                        }
                     continue
                 aggregate = chunk  # type: ignore[assignment]
 
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")
-        response = self._chunk_to_message(aggregate) if isinstance(aggregate, AIMessageChunk) else aggregate
-        yield {"type": "_model_response", "data": {"response": response}}
+        yield {"type": "_model_response", "data": {"response": aggregate}}
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _backtrack_orphan_tool_calls(self) -> None:
-        """Remove the last message if it is an ``AIMessage`` with
-        ``tool_calls`` that have no matching ``ToolMessage`` following.
 
-        Called from the ``CancelledError`` and
-        ``InteractionDisconnected`` handlers because the LLM
-        provider rejects any conversation where an assistant message
-        with ``tool_calls`` is not immediately followed by tool
-        messages for **every** call id.  The cancel can arrive
-        between the AIMessage append (line ~607) and the
-        ``tool_messages.extend`` (line ~742), leaving the in-memory
-        list inconsistent.  Removing the orphan lets the next turn
-        proceed cleanly.
-        """
 
-        from langchain_core.messages import AIMessage, ToolMessage
-
-        if not self._messages:
-            return
-        last = self._messages[-1]
-        tool_calls = getattr(last, "tool_calls", None)
-        if not isinstance(last, AIMessage) or not tool_calls:
-            return
-        # Walk forward from the AIMessage's position — are there
-        # enough ToolMessages for every call id?
-        pos = len(self._messages) - 1
-        ids_seen: set[str] = set()
-        for candidate in self._messages[pos + 1:]:
-            if isinstance(candidate, ToolMessage):
-                ids_seen.add(getattr(candidate, "tool_call_id", ""))
-        expected = {tc.get("id") for tc in tool_calls if tc.get("id")}
-        if expected - ids_seen:
-            logger.warning(
-                "engine.turn backtracking orphan AIMessage with "
-                "tool_calls=%s (turn=%d); only found tool messages "
-                "for ids=%s",
-                [tc.get("name") for tc in tool_calls],
-                self._turn_count,
-                sorted(ids_seen) if ids_seen else "none",
-            )
-            self._messages.pop()
-
-    async def _save_messages(self) -> None:
-        """Persist messages and materialize state after each turn.
-
-        Uses truncate-then-append to keep the message log in sync with
-        the current message list (compaction may remove old messages).
-        Also materializes state.yaml so turn_count et al. are current.
-        """
+    async def save_messages(self) -> None:
+        """Persist messages after each turn. Runs BEFORE/AFTER_STATE_PERSIST hooks."""
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
-        self.state_store.replace_messages(self._messages)
-        self.state_store.materialize()
+        self.state_store.replace_messages(self.messages)
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
-
-    def _record_workspace(self, lifecycle: str) -> None:
-        """Record the external workspace root without creating directories."""
-        self.state_store.append_event(
-            "workspace_attached",
-            {
-                "workspace_root": self.workspace_root,
-                "lifecycle": lifecycle,
-                "status": "ready",
-            },
-        )
-        self.state_store.materialize()
 
     async def _handle_user_input_request(
         self,
@@ -1004,34 +868,32 @@ class Engine:
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
     ) -> dict[str, Any]:
-        """Emit a user-input request and wait for the live client answer."""
-        await self._record_client_event(client_event)
-        sink_result: dict[str, Any] | None = None
-        if self._client_event_sink is not None:
-            sink_result = await self._client_event_sink(
+        ctx = self._make_hook_context(
+            HookStage.ON_CLIENT_EVENT,
+            client_event=client_event,
+        )
+        await self.hook_manager.run(HookStage.ON_CLIENT_EVENT, ctx, short_circuit=False)
+
+        if self.client_event_sink is not None:
+            sink_result = await self.client_event_sink(
                 client_event,
                 timeout_seconds=timeout_seconds,
                 tool_call_id=tool_call_id,
             )
             if sink_result.get("status") == "disconnected":
-                if not sink_result.get("persisted"):
-                    self.record_user_input_result(client_event, sink_result)
                 raise InteractionDisconnected(
                     f"Client disconnected while waiting for {sink_result.get('request_id')}"
                 )
-        if sink_result is None:
-            request_id = str((client_event.get("data") or {}).get("request_id") or "")
-            wait_timeout = 0 if timeout_seconds is None else timeout_seconds
-            result = await self._user_input_waiter.wait(request_id, wait_timeout)
-            sink_result = {
-                "request_id": result.request_id,
-                "status": result.status,
-                "answer": result.answer,
-                "reason": result.reason,
-            }
-        if not sink_result.get("persisted"):
-            self.record_user_input_result(client_event, sink_result)
-        return sink_result
+            return sink_result
+        request_id = str((client_event.get("data") or {}).get("request_id") or "")
+        wait_timeout = 0 if timeout_seconds is None else timeout_seconds
+        result = await self.user_input_waiter.wait(request_id, wait_timeout)
+        return {
+            "request_id": result.request_id,
+            "status": result.status,
+            "answer": result.answer,
+            "reason": result.reason,
+        }
 
     async def _handle_permission_request(
         self,
@@ -1040,147 +902,54 @@ class Engine:
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
     ) -> dict[str, Any]:
-        """Emit a permission request and wait for the live client decision."""
-        await self._record_client_event(client_event)
-        sink_result: dict[str, Any] | None = None
-        if self._client_event_sink is not None:
-            sink_result = await self._client_event_sink(
+        ctx = self._make_hook_context(
+            HookStage.ON_CLIENT_EVENT,
+            client_event=client_event,
+        )
+        await self.hook_manager.run(HookStage.ON_CLIENT_EVENT, ctx, short_circuit=False)
+
+        if self.client_event_sink is not None:
+            sink_result = await self.client_event_sink(
                 client_event,
                 timeout_seconds=timeout_seconds,
                 tool_call_id=tool_call_id,
             )
             if sink_result.get("status") == "disconnected":
-                if not sink_result.get("persisted"):
-                    self.record_permission_result(client_event, sink_result)
                 raise InteractionDisconnected(
                     f"Client disconnected while waiting for {sink_result.get('request_id')}"
                 )
-        if sink_result is None:
-            request_id = str((client_event.get("data") or {}).get("request_id") or "")
-            wait_timeout = 0 if timeout_seconds is None else timeout_seconds
-            result = await self._permission_waiter.wait(request_id, wait_timeout)
-            sink_result = {
-                "request_id": result.request_id,
-                "status": result.status,
-                "decision": result.decision,
-                "reason": result.reason,
-            }
-        if not sink_result.get("persisted"):
-            self.record_permission_result(client_event, sink_result)
-        return sink_result
-
-    def record_user_input_result(
-        self,
-        client_event: dict[str, Any],
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Persist a live ask_user completion and refresh materialized state."""
-        self._record_user_input_completion(client_event, result)
-        return self.state_store.materialize()
-
-    def record_permission_result(
-        self,
-        client_event: dict[str, Any],
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Persist a live permission completion and refresh materialized state."""
-        self._record_permission_completion(client_event, result)
-        return self.state_store.materialize()
-
-    async def _record_client_event(
-        self,
-        client_event: dict[str, Any],
-        *,
-        tool_result: Any = None,
-    ) -> None:
-        event_ctx = self._make_hook_context(
-            HookStage.ON_CLIENT_EVENT,
-            tool_result=tool_result,
-            client_event=client_event,
-        )
-        await self.hook_manager.run(
-            HookStage.ON_CLIENT_EVENT,
-            event_ctx,
-            short_circuit=False,
-        )
-        self.state_store.append_event(
-            client_event.get("type", "client_event"),
-            client_event.get("data", {}),
-        )
-
-    def _record_user_input_completion(
-        self,
-        client_event: dict[str, Any],
-        result: dict[str, Any],
-    ) -> None:
-        data = client_event.get("data") or {}
-        request_id = str(result.get("request_id") or data.get("request_id") or "")
-        status = str(result.get("status") or "cancelled")
-        payload = {
-            "request_id": request_id,
-            "request_type": "user_input_required",
-            "request_source": data.get("source", "ask_user"),
-            "request_payload": data,
+            self.persist_permission_if_session_scope(client_event, sink_result)
+            return sink_result
+        request_id = str((client_event.get("data") or {}).get("request_id") or "")
+        wait_timeout = 0 if timeout_seconds is None else timeout_seconds
+        result = await self.permission_waiter.wait(request_id, wait_timeout)
+        return {
+            "request_id": result.request_id,
+            "status": result.status,
+            "decision": result.decision,
+            "reason": result.reason,
         }
-        if status == "answered":
-            self.state_store.append_event("user_input_response", {
-                **payload,
-                "answer": result.get("answer", ""),
-            })
-            return
-        self.state_store.append_event("user_input_cancelled", {
-            **payload,
-            "status": status,
-            "reason": result.get("reason") or status,
-        })
 
-    def _record_permission_completion(
+    def persist_permission_if_session_scope(
         self,
         client_event: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        data = client_event.get("data") or {}
-        request_id = str(result.get("request_id") or data.get("request_id") or "")
-        status = str(result.get("status") or "cancelled")
-        payload = {
-            "request_id": request_id,
-            "request_type": "permission_request",
-            "request_source": data.get("source", "permission_system"),
-            "request_payload": data,
-        }
-        if status == "answered":
-            if str(result.get("scope") or "once") in {"session", "always"}:
-                try:
-                    from pathlib import Path
-
-                    from xbotv2.config.policy import persist_permission_decision
-
-                    persist_permission_decision(
-                        config_dir=Path(self.data_dir) if self.data_dir else Path("data"),
-                        session_id=self.state_store.session_id,
-                        client_event=client_event,
-                        decision=str(result.get("decision") or ""),
-                        scope=str(result.get("scope") or "once"),
-                        engine=self,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("permission persistence failed")
-            self.state_store.append_event("permission_response", {
-                **payload,
-                "decision": result.get("decision", ""),
-                "scope": result.get("scope", "once"),
-            })
+        if str(result.get("scope") or "once") != "session":
             return
-        self.state_store.append_event("permission_cancelled", {
-            **payload,
-            "status": status,
-            "reason": result.get("reason") or status,
-        })
-
-    def _restore_messages(self) -> int:
-        """Load messages from disk into memory. Returns count loaded."""
-        self._messages = self.state_store.read_messages()
-        return len(self._messages)
+        try:
+            from pathlib import Path
+            from xbotv2.config.policy import persist_permission_decision
+            persist_permission_decision(
+                config_dir=Path(getattr(self.state_store, "root", "data")).parent.parent,
+                session_id=self.state_store.session_id,
+                client_event=client_event,
+                decision=str(result.get("decision") or ""),
+                scope="session",
+                engine=self,
+            )
+        except Exception:
+            logger.exception("permission persistence failed")
 
     @staticmethod
     def _default_hook_rejection_event(stage: HookStage) -> dict[str, Any]:
@@ -1213,21 +982,19 @@ class Engine:
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
     ) -> HookContext:
-        """Build a HookContext for the current engine state."""
         return HookContext(
             stage=stage,
-            state={"messages": self._messages},
+            state={"messages": self.messages},
             config=self.config,
             tools=self.tool_registry,
-            plugin_store=None,  # Plugins use their own store reference
-            session=self._session or SessionInfo(
+            plugin_store=None,
+            session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,
                 workspace_root=self.workspace_root,
                 provider=str(getattr(self.config, "provider", "default")),
-                turn_count=self._turn_count,
+                turn_count=self.turn_count,
             ),
-            emit=lambda e: self.state_store.append_event("hook_event", e),
             user_input=user_input,
             context_components=context_components,
             context_messages=context_messages,
@@ -1247,7 +1014,6 @@ class Engine:
 
     @staticmethod
     def _normalize_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
-        """Normalize tool calls from various formats to a standard dict."""
         result = []
         for i, tc in enumerate(tool_calls):
             if isinstance(tc, dict):
@@ -1255,138 +1021,27 @@ class Engine:
                     "name": tc.get("name", ""),
                     "args": tc.get("args", {}),
                     "id": tc.get("id", f"call_{i}"),
-                    "index": int(tc.get("index") if tc.get("index") is not None else i),
                 })
             else:
                 result.append({
                     "name": getattr(tc, "name", ""),
                     "args": getattr(tc, "args", {}),
                     "id": getattr(tc, "id", f"call_{i}"),
-                    "index": int(getattr(tc, "index", i) if getattr(tc, "index", None) is not None else i),
                 })
         return result
 
     @staticmethod
-    def _normalize_tool_call_chunks(
-        tool_chunks: list[Any],
-        *,
-        stream_ids: dict[int, str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Normalize streaming tool-call chunks for live UI previews.
-
-        Strict event shape for each item:
-        ``tool_call_id`` is always present, ``args_delta`` is the latest
-        partial provider chunk, and ``replaces_tool_call_id`` is present
-        exactly when a provider upgrades a provisional index id to a real id.
-        ``id``/``args`` remain as aliases for older clients.
-        """
-
-        result = []
-        for i, tc in enumerate(tool_chunks):
-            if isinstance(tc, dict):
-                index = int(tc.get("index") if tc.get("index") is not None else i)
-                name = tc.get("name") or "tool"
-                args_delta = tc.get("args") or tc.get("arguments") or ""
-                raw_id = tc.get("id") or tc.get("tool_call_id")
-            else:
-                raw_index = getattr(tc, "index", None)
-                index = int(raw_index if raw_index is not None else i)
-                name = getattr(tc, "name", None) or "tool"
-                args_delta = getattr(tc, "args", None) or getattr(tc, "arguments", None) or ""
-                raw_id = getattr(tc, "id", None) or getattr(tc, "tool_call_id", None)
-            previous_id = stream_ids.get(index) if stream_ids is not None else None
-            tool_call_id = str(raw_id or previous_id or f"tool_{index}")
-            if stream_ids is not None:
-                stream_ids[index] = tool_call_id
-            item = {
-                "tool_call_id": tool_call_id,
-                "id": tool_call_id,
-                "name": str(name),
-                "args_delta": args_delta,
-                "args": args_delta,
-                "index": index,
-            }
-            if previous_id and previous_id != tool_call_id:
-                item["replaces_tool_call_id"] = previous_id
-            result.append(item)
-        return result
-
-    @staticmethod
-    def _chunk_to_message(chunk: AIMessageChunk) -> AIMessage:
-        content = chunk.content if isinstance(chunk.content, str) else chunk.content
-        kwargs: dict[str, Any] = {
-            "content": content,
-            "additional_kwargs": dict(getattr(chunk, "additional_kwargs", {}) or {}),
-            "response_metadata": dict(getattr(chunk, "response_metadata", {}) or {}),
-        }
-        usage_metadata = getattr(chunk, "usage_metadata", None)
-        if usage_metadata is not None:
-            kwargs["usage_metadata"] = usage_metadata
-        tool_calls = getattr(chunk, "tool_calls", None)
-        if tool_calls:
-            kwargs["tool_calls"] = tool_calls
-        return AIMessage(**kwargs)
-
-    @staticmethod
-    def _extract_reasoning_delta(chunk: AIMessageChunk) -> str:
-        additional = getattr(chunk, "additional_kwargs", None)
-        if isinstance(additional, dict):
-            for key in ("reasoning_content", "reasoning"):
-                value = additional.get(key)
-                if isinstance(value, str):
-                    return value
-        return ""
-
-    @staticmethod
     def _extract_usage(response: Any) -> dict[str, int] | None:
-        """Extract provider token usage from LangChain response metadata."""
-        for candidate in (
-            getattr(response, "usage_metadata", None),
-            getattr(response, "response_metadata", None),
-            getattr(response, "additional_kwargs", None),
-        ):
-            usage = Engine._normalize_usage(candidate)
-            if usage:
-                return usage
-        return None
-
-    @staticmethod
-    def _normalize_usage(value: Any) -> dict[str, int] | None:
-        if not isinstance(value, dict):
+        usage_dict = getattr(response, "usage_metadata", None)
+        if not isinstance(usage_dict, dict):
             return None
-        for nested_key in ("token_usage", "usage"):
-            nested = value.get(nested_key)
-            if isinstance(nested, dict):
-                usage = Engine._normalize_usage(nested)
-                if usage:
-                    return usage
-
-        input_tokens = value.get("input_tokens", value.get("prompt_tokens"))
-        output_tokens = value.get("output_tokens", value.get("completion_tokens"))
-        total_tokens = value.get("total_tokens")
-        if input_tokens is None and output_tokens is None and total_tokens is None:
+        input_tokens = int(usage_dict.get("input_tokens") or 0)
+        output_tokens = int(usage_dict.get("output_tokens") or 0)
+        if not input_tokens and not output_tokens:
             return None
-
-        input_count = int(input_tokens or 0)
-        output_count = int(output_tokens or 0)
-        total_count = int(total_tokens or input_count + output_count)
         return {
-            "input_tokens": input_count,
-            "output_tokens": output_count,
-            "total_tokens": total_count,
-            "requests": int(value.get("requests") or 1),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": int(usage_dict.get("total_tokens") or input_tokens + output_tokens),
+            "requests": int(usage_dict.get("requests") or 1),
         }
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def messages(self) -> list[BaseMessage]:
-        """Current message history."""
-        return list(self._messages)
-
-    @property
-    def turn_count(self) -> int:
-        """Current turn count."""
-        return self._turn_count

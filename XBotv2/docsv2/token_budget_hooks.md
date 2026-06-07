@@ -87,7 +87,7 @@ These stages are now available for token budget plugins:
 | `ON_STOP` | Record successful turn stop reason. |
 | `ON_STOP_FAILURE` | Record turn or stop failure reason. |
 | `BEFORE_STATE_PERSIST` | Snapshot plugin stats before message-log replacement and materialization. |
-| `AFTER_STATE_PERSIST` | Confirm stable message ids, persistence, and materialized bookkeeping events. |
+| `AFTER_STATE_PERSIST` | Confirm stable message ids, persistence, and derived bookkeeping. |
 
 Persistence hooks are strict failure stages: all registered callbacks run, but
 any failure is raised after the stage. Token accounting plugins should treat

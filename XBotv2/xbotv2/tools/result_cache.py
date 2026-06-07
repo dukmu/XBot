@@ -18,7 +18,7 @@ def make_tool_result_cache_hook(
     max_inline_chars: int = DEFAULT_MAX_INLINE_CHARS,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
 ):
-    """Create an AFTER_TOOLS hook that caches large ToolMessage contents.
+    """Create an AFTER_TOOLS hook that caches large tool message contents.
 
     The hook mutates ``ctx.tool_results`` in place so the engine persists and
     emits the bounded message instead of the full output.

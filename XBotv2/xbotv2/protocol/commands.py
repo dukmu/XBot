@@ -46,8 +46,8 @@ COMMANDS: dict[str, ServerCommand] = {
     "sandbox": ServerCommand(
         name="sandbox",
         slash="/sandbox",
-        description="Inspect or update session sandbox policy.",
-        examples=["/sandbox status", "/sandbox set external_read ask"],
+        description="Inspect session sandbox policy.",
+        examples=["/sandbox status"],
     ),
 }
 
@@ -102,11 +102,6 @@ def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
             ctx.engine.config.provider = provider_name
         if hasattr(ctx.engine.state_store, "provider"):
             ctx.engine.state_store.provider = provider_name
-        ctx.engine.state_store.append_event(
-            "provider_switched",
-            {"provider": provider_name, "scope": "session"},
-        )
-        ctx.engine.state_store.materialize()
         return _result("provider", f"Provider switched to {provider_name} for this session.", data={"provider": provider_name})
     return _result("provider", "Usage: /provider status | list | use <name>", status="error")
 
@@ -116,30 +111,26 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
     if action in {"status", "list"}:
         config_key = "sandbox" if name == "sandbox" else "permissions"
         config = getattr(ctx.engine.config, config_key, {})
-        overrides = ctx.engine.state_store.read_state().get(f"{name}_overrides", {})
+        overrides = getattr(ctx, f"{name}_overrides", {})
         return _result(name, f"{name} policy: {config}; session overrides: {overrides}", data={"config": config, "overrides": overrides})
     if action == "set" and len(args) >= 3:
         key, value = args[1], args[2]
         valid, normalized, message = _validate_policy_override(name, key, value)
         if not valid:
             return _result(name, message, status="error")
-        ctx.engine.state_store.append_event(
-            f"{name}_override_set",
-            {"key": key, "value": normalized, "scope": "session"},
-        )
-        ctx.engine.state_store.materialize()
+        getattr(ctx, f"{name}_overrides")[key] = normalized
         _reload_live_policies(ctx)
         return _result(name, f"{name} override set for this session: {key}={normalized}")
     if action == "reset":
-        payload = {"scope": "session"}
+        overrides = getattr(ctx, f"{name}_overrides")
         if len(args) >= 2:
             key = args[1]
             valid, _normalized, message = _validate_policy_reset(name, key)
             if not valid:
                 return _result(name, message, status="error")
-            payload["key"] = key
-        ctx.engine.state_store.append_event(f"{name}_overrides_reset", payload)
-        ctx.engine.state_store.materialize()
+            overrides.pop(key, None)
+        else:
+            overrides.clear()
         _reload_live_policies(ctx)
         return _result(name, f"{name} session overrides reset.")
     return _result(name, f"Usage: /{name} status | set <key> <value> | reset", status="error")
@@ -164,24 +155,18 @@ def _validate_policy_override(name: str, key: str, value: str) -> tuple[bool, st
         if value not in {"allow", "deny", "ask"}:
             return False, "", "Permission value must be allow, deny, or ask."
         return True, value, ""
-    if key not in _SANDBOX_KEYS:
-        return False, "", "Sandbox key must be external_read, external_write, workspace_read, or workspace_write."
-    if value not in _SANDBOX_VALUES:
-        return False, "", "Sandbox value must be allow, readwrite, readonly, deny, or ask."
-    return True, value, ""
+    return False, "", f"Unknown {name} key: {key}"
 
 
 def _validate_policy_reset(name: str, key: str) -> tuple[bool, str, str]:
     key = key.strip()
     if not key:
         return False, "", f"/{name} reset key must be non-empty."
-    if name == "sandbox" and key not in _SANDBOX_KEYS:
-        return False, "", "Sandbox key must be external_read, external_write, workspace_read, or workspace_write."
     return True, key, ""
 
 
 def _reload_live_policies(ctx: Any) -> None:
-    """Rebuild active permission/sandbox objects from config plus command events."""
+    """Rebuild active permission/sandbox objects from config plus session overlays."""
     from xbotv2.config.loader import load_system_config
     from xbotv2.config.policy import (
         load_session_policy,
@@ -202,13 +187,9 @@ def _reload_live_policies(ctx: Any) -> None:
         base_config.sandbox,
         session_policy.get("sandbox"),
     )
-    state = ctx.engine.state_store.read_state()
-    for tool, decision in state.get("permission_overrides", {}).items():
+    for tool, decision in getattr(ctx, "permission_overrides", {}).items():
         if decision in {"allow", "deny", "ask"}:
             permissions.setdefault(decision, []).insert(0, {"tool": tool})
-    for key, value in state.get("sandbox_overrides", {}).items():
-        if key in _SANDBOX_KEYS and value in _SANDBOX_VALUES:
-            sandbox[key] = value
 
     ctx.engine.config.permissions = permissions
     ctx.engine.config.sandbox = sandbox
@@ -218,10 +199,6 @@ def _reload_live_policies(ctx: Any) -> None:
         data_root=data_dir,
         workspace_root=Path(ctx.workspace_root),
     )
-
-
-_SANDBOX_KEYS = {"external_read", "external_write", "workspace_read", "workspace_write"}
-_SANDBOX_VALUES = {"allow", "readwrite", "readonly", "deny", "ask"}
 
 
 def _status_message(ctx: Any) -> str:

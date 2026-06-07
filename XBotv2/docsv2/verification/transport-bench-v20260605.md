@@ -101,12 +101,9 @@ print(xbotv2.tui.__all__)
 ['CursesTuiClient', 'HttpTransport', 'TerminalSession', 'Transport', 'TuiMessage', 'TuiState', 'TuiTool', 'TuiTranscriptEntry']
 ```
 
-`xbotv2.tui.terminal.ProtocolClient` no longer exists. The TUI
-import tree references only `HttpTransport` and the abstract
-`Transport` protocol. The legacy `xbotv2/protocol/server.py` (stdio
-`RuntimeServer`) is kept in the source tree as a legacy alternative
-for engine integration testing but is no longer reachable from the
-TUI's import graph.
+`xbotv2.tui.terminal.ProtocolClient` no longer exists. The TUI import tree
+references only `HttpTransport` and the abstract `Transport` protocol. The
+legacy `xbotv2/protocol/server.py` stdio `RuntimeServer` has been removed.
 
 ## Open follow-ups (not blocking v1)
 
@@ -117,8 +114,8 @@ TUI's import graph.
   behaviour is not yet implemented (sse-streams on FastAPI do not
   natively support `Last-Event-ID`; we would need a `GET /events`
   endpoint to back-fill missed frames).
-- Permission/live interaction round-trip: the dispatcher can route
-  `permission_request` to a `permission_provider`, and the
+- Permission/live interaction round-trip: the HTTP session runtime can route
+  `permission_request` to the live client sink, and the
   `/interactions/permission-response` endpoint is wired. A full
   end-to-end integration test (HTTP client → mock LLM with tool
   call → permission_request → /interactions response → tool_result

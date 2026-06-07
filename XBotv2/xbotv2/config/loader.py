@@ -11,25 +11,13 @@ import yaml
 
 from xbotv2.config.models import ProviderConfig, SystemConfig, UserContext
 
-DEFAULT_SYSTEM_TEMPLATE = """\
-You are {agent_name}, {agent_role}.
 
-User: {user_name} ({user_id})
-Platform: {platform}
-"""
-
-
-def _expand_env(value: str) -> str:
+def expand_env(value: str) -> str:
     """Replace ${VAR} or $VAR patterns with environment variable values."""
     if not isinstance(value, str):
         return value
-    pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-    def replacer(match):
-        var_name = match.group(1)
-        return os.environ.get(var_name, "")
-
-    return pattern.sub(replacer, value)
+    pattern = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+    return pattern.sub(lambda m: os.environ.get(m.group(1), ""), value)
 
 
 def _expand_env_in_dict(data: dict[str, Any]) -> dict[str, Any]:
@@ -37,13 +25,13 @@ def _expand_env_in_dict(data: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for key, value in data.items():
         if isinstance(value, str):
-            result[key] = _expand_env(value)
+            result[key] = expand_env(value)
         elif isinstance(value, dict):
             result[key] = _expand_env_in_dict(value)
         elif isinstance(value, list):
             result[key] = [
                 _expand_env_in_dict(item) if isinstance(item, dict)
-                else _expand_env(item) if isinstance(item, str)
+                else expand_env(item) if isinstance(item, str)
                 else item
                 for item in value
             ]
@@ -126,6 +114,3 @@ def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemCo
     return SystemConfig(**data)
 
 
-def load_user_context_simple(config_dir: Path) -> dict[str, Any]:
-    """Load user context as a plain dict (non-Pydantic path)."""
-    return load_yaml(config_dir / "user.yaml")

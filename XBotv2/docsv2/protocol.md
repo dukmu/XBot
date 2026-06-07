@@ -8,8 +8,8 @@ The FastAPI app is created by `xbotv2.protocol.http_server.create_app()`. The
 transport client is `xbotv2.tui.transport_http.HttpTransport`. `TerminalSession`
 is the TUI-facing facade over the transport.
 
-The legacy JSONL stdio server module remains in source as a non-primary path,
-but Stage 2 TUI/server flows are HTTP-only.
+The legacy JSONL stdio server module has been removed. Stage 3 TUI/server
+flows are HTTP-only.
 
 ## Session API
 
@@ -111,13 +111,13 @@ POST /sessions/{session_id}/interactions/permission-response
 Request:
 
 ```json
-{"request_id": "permission:call_1", "decision": "allow", "scope": "once|session|always"}
+{"request_id": "permission:call_1", "decision": "allow", "scope": "once|session"}
 ```
 
-Allow continues the current tool call. `scope="session"` and `scope="always"`
-are forwarded to the engine so the approval can be persisted by the policy
-layer; `scope="once"` is not persisted. Deny, timeout, disconnect, and non-live
-execution fail closed.
+Allow continues the current tool call. `scope="session"` is forwarded to the
+engine so the approval can be persisted by the session policy layer;
+`scope="once"` is not persisted. Live approvals cannot mutate global config.
+Deny, timeout, disconnect, and non-live execution fail closed.
 
 ### User Input
 
@@ -157,9 +157,8 @@ Built-in server commands:
 - `/permission status|list|set <tool> <allow|deny|ask>|reset [tool]`
 - `/sandbox status|list|set <key> <allow|readwrite|readonly|deny|ask>|reset [key]`
 
-Policy command values are validated. `reset` updates both materialized state and
-the active in-memory session policy, so command effects are immediate without
-restarting the session.
+Policy command values are validated. `reset` updates the active in-memory session
+policy, so command effects are immediate without restarting the session.
 
 Command results return:
 
@@ -175,8 +174,7 @@ Command results return:
 }
 ```
 
-Command results append `server_command_result` events for audit but do not enter
-LLM message history.
+Command results render to clients only and do not enter LLM message history.
 
 ## Error Shape
 

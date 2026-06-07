@@ -38,7 +38,6 @@ from xbotv2.hooks.manager import HookManager
 from xbotv2.hooks.types import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
-from xbotv2.plugin.loader import _DefaultPlugin, resolve_dependencies as _resolve_dependencies
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -88,7 +87,7 @@ async def bootstrap(
         config_dir: Root data directory with config/ and sessions/.
         provider_name: Provider config name.
         session_id: Session identifier.
-        thread_id: LangGraph thread ID.
+        thread_id: session thread identifier.
         workspace_root: External workspace root. Defaults to current directory.
         plugin_dirs: Plugin directories to scan. ``None`` scans built-ins;
             an explicit empty list disables plugin discovery.
@@ -206,7 +205,7 @@ async def bootstrap(
             workspace_root=str(workspace_root),
             provider=provider_name,
         ),
-        emit=lambda e: state_store.append_event("hook_event", e),
+        emit=lambda e: None,
     )
     await hook_manager.run(HookStage.ON_SESSION_INIT, init_ctx, short_circuit=False)
 

@@ -1,8 +1,7 @@
-"""Textual protocol TUI client.
+"""Textual HTTP/SSE TUI client.
 
-This frontend is a standard JSONL protocol client. It talks to
-``xbotv2 --mode server`` through ``TerminalSession`` and does not import the
-runtime engine, bootstrap, LangChain, or LangGraph.
+This frontend talks to ``xbotv2 --mode server`` through ``TerminalSession``
+and does not import runtime engine or bootstrap modules.
 """
 
 from __future__ import annotations
@@ -976,7 +975,6 @@ class XBotTextualApp(App[None]):
                 InlineChoice("Allow once", "permission", {"decision": "allow", "scope": "once"}),
                 InlineChoice("Deny", "permission", {"decision": "deny", "scope": "once"}),
                 InlineChoice("Allow session", "permission", {"decision": "allow", "scope": "session"}),
-                InlineChoice("Always allow", "permission", {"decision": "allow", "scope": "always"}),
             ]
             return self._request_widget(notice, key=key, title=f"{notice.ts}  approval request", choices=choices)
         if notice.kind == "user_input_required":

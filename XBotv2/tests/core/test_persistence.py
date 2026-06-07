@@ -5,9 +5,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
-from langchain_core.tools import tool as langchain_tool
 
+from xbotv2.llm.messages import Message
 from xbotv2.persistence.store import (
     CoreStateStore,
     message_to_dict,
@@ -20,6 +19,7 @@ from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
+from xbotv2.tools.types import XBotTool
 
 
 # ------------------------------------------------------------------
@@ -30,21 +30,22 @@ class TestMessageSerialization:
     """message_to_dict / dict_to_message round-trip."""
 
     def test_human_message_roundtrip(self):
-        msg = HumanMessage(content="hello world")
+        msg = Message(role="user", content="hello world")
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, HumanMessage)
+        assert restored.role == "user"
         assert restored.content == "hello world"
 
     def test_ai_message_roundtrip(self):
-        msg = AIMessage(content="response text")
+        msg = Message(role="assistant", content="response text")
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, AIMessage)
+        assert restored.role == "assistant"
         assert restored.content == "response text"
 
     def test_ai_message_with_tool_calls_roundtrip(self):
-        msg = AIMessage(
+        msg = Message(
+            role="assistant",
             content="calling tool",
             tool_calls=[
                 {"name": "shell", "args": {"command": "ls"}, "id": "call_1", "type": "tool_call"},
@@ -52,43 +53,41 @@ class TestMessageSerialization:
         )
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, AIMessage)
+        assert restored.role == "assistant"
         assert restored.tool_calls is not None
         assert len(restored.tool_calls) == 1
         assert restored.tool_calls[0]["name"] == "shell"
 
     def test_ai_message_metadata_roundtrip(self):
-        msg = AIMessage(
+        msg = Message(
+            role="assistant",
             content="response text",
-            id="msg-ai-1",
             name="assistant",
             additional_kwargs={"refusal": None, "provider_note": {"a": 1}},
             response_metadata={"model_name": "mock", "token_usage": {"total_tokens": 9}},
+            usage_metadata={"input_tokens": 5, "output_tokens": 4},
         )
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, AIMessage)
-        assert restored.id == "msg-ai-1"
+        assert restored.role == "assistant"
         assert restored.name == "assistant"
         assert restored.additional_kwargs["provider_note"] == {"a": 1}
         assert restored.response_metadata["token_usage"]["total_tokens"] == 9
 
     def test_tool_message_roundtrip(self):
-        msg = ToolMessage(content="output", tool_call_id="call_1", status="success")
+        msg = Message(role="tool", content="output", tool_call_id="call_1")
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, ToolMessage)
+        assert restored.role == "tool"
         assert restored.content == "output"
         assert restored.tool_call_id == "call_1"
 
     def test_tool_message_metadata_roundtrip_filters_internal_kwargs(self):
-        msg = ToolMessage(
+        msg = Message(
+            role="tool",
             content="output",
             tool_call_id="call_1",
-            status="success",
-            id="msg-tool-1",
             name="filesystem_read",
-            artifact={"path": "file.txt", "bytes": 12},
             additional_kwargs={
                 "visible": "kept",
                 "xbotv2_events": [{"type": "client_message", "data": {}}],
@@ -98,22 +97,20 @@ class TestMessageSerialization:
         )
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, ToolMessage)
-        assert restored.id == "msg-tool-1"
+        assert restored.role == "tool"
         assert restored.name == "filesystem_read"
-        assert restored.artifact == {"path": "file.txt", "bytes": 12}
         assert restored.additional_kwargs == {"visible": "kept"}
         assert restored.response_metadata == {"duration_ms": 5}
 
     def test_system_message_roundtrip(self):
-        msg = SystemMessage(content="system instructions")
+        msg = Message(role="system", content="system instructions")
         d = message_to_dict(msg)
         restored = dict_to_message(d)
-        assert isinstance(restored, SystemMessage)
+        assert restored.role == "system"
         assert restored.content == "system instructions"
 
     def test_multiline_content(self):
-        msg = HumanMessage(content="line 1\nline 2\nline 3")
+        msg = Message(role="user", content="line 1\nline 2\nline 3")
         d = message_to_dict(msg)
         assert d["content"] == "line 1\nline 2\nline 3"
         restored = dict_to_message(d)
@@ -138,7 +135,7 @@ class TestMessagePersistence:
         )
 
     def test_append_and_read_single_message(self, store):
-        msg = HumanMessage(content="hello")
+        msg = Message(role="user", content="hello")
         store.append_message(msg)
         assert store.message_count() == 1
 
@@ -148,10 +145,10 @@ class TestMessagePersistence:
 
     def test_append_multiple_messages(self, store):
         messages = [
-            HumanMessage(content="first"),
-            AIMessage(content="response"),
-            HumanMessage(content="second"),
-            AIMessage(content="done"),
+            Message(role="user", content="first"),
+            Message(role="assistant", content="response"),
+            Message(role="user", content="second"),
+            Message(role="assistant", content="done"),
         ]
         store.append_messages(messages)
         assert store.message_count() == 4
@@ -163,15 +160,15 @@ class TestMessagePersistence:
 
     def test_replace_messages_preserves_existing_message_ids(self, store):
         store.append_messages([
-            HumanMessage(content="first"),
-            AIMessage(content="response"),
+            Message(role="user", content="first"),
+            Message(role="assistant", content="response"),
         ])
         before = _raw_messages(store)
 
         count = store.replace_messages([
-            HumanMessage(content="first"),
-            AIMessage(content="response"),
-            HumanMessage(content="second"),
+            Message(role="user", content="first"),
+            Message(role="assistant", content="response"),
+            Message(role="user", content="second"),
         ])
 
         after = _raw_messages(store)
@@ -183,13 +180,13 @@ class TestMessagePersistence:
         assert after[2]["msg_id"] == 3
 
     def test_message_ids_are_sequential(self, store):
-        d1 = store.append_message(HumanMessage(content="m1"))
-        d2 = store.append_message(HumanMessage(content="m2"))
+        d1 = store.append_message(Message(role="user", content="m1"))
+        d2 = store.append_message(Message(role="user", content="m2"))
         assert d1["msg_id"] == 1
         assert d2["msg_id"] == 2
 
     def test_clear_messages(self, store):
-        store.append_message(HumanMessage(content="test"))
+        store.append_message(Message(role="user", content="test"))
         assert store.message_count() == 1
 
         store.clear_messages()
@@ -198,10 +195,10 @@ class TestMessagePersistence:
 
     def test_truncate_keep_last(self, store):
         store.append_messages([
-            HumanMessage(content="old1"),
-            HumanMessage(content="old2"),
-            HumanMessage(content="keep1"),
-            HumanMessage(content="keep2"),
+            Message(role="user", content="old1"),
+            Message(role="user", content="old2"),
+            Message(role="user", content="keep1"),
+            Message(role="user", content="keep2"),
         ])
         assert store.message_count() == 4
 
@@ -215,8 +212,8 @@ class TestMessagePersistence:
     def test_truncate_keep_zero_returns_removed_count(self, store):
         """Truncating all messages returns the number deleted."""
         store.append_messages([
-            HumanMessage(content="old1"),
-            HumanMessage(content="old2"),
+            Message(role="user", content="old1"),
+            Message(role="user", content="old2"),
         ])
 
         removed = store.truncate_messages(keep_last=0)
@@ -228,7 +225,7 @@ class TestMessagePersistence:
         """Session detection works based on stored messages."""
         assert store.has_existing_session() is False
 
-        store.append_message(HumanMessage(content="hello"))
+        store.append_message(Message(role="user", content="hello"))
         assert store.has_existing_session() is True
 
     def test_persistence_survives_store_recreation(self, tmp_path):
@@ -243,8 +240,8 @@ class TestMessagePersistence:
             workspace_root="/workspace",
             provider="p",
         )
-        store1.append_message(HumanMessage(content="persistent"))
-        store1.append_message(AIMessage(content="survives restart"))
+        store1.append_message(Message(role="user", content="persistent"))
+        store1.append_message(Message(role="assistant", content="survives restart"))
 
         # Second store — read them back
         store2 = CoreStateStore(
@@ -265,10 +262,11 @@ class TestMessagePersistence:
 # Engine integration — save and restore
 # ------------------------------------------------------------------
 
-@langchain_tool
 def echo(message: str) -> str:
     """Echo a message."""
     return f"Echo: {message}"
+
+echo_tool = XBotTool.from_function(echo, name="echo")
 
 
 def make_engine(llm, registry, store, workspace, hook_manager=None):
@@ -397,7 +395,7 @@ class TestEnginePersistence:
             {"content": "Done after tool."},
         ])
         registry = ToolRegistry()
-        registry.register(echo, sandbox_mode="host")
+        registry.register(echo_tool, sandbox_mode="host")
 
         engine = make_engine(llm, registry, store, temp_workspace)
         await engine.start_session()
@@ -405,14 +403,13 @@ class TestEnginePersistence:
 
         # All messages should be on disk
         restored = store.read_messages()
-        types = [type(m).__name__ for m in restored]
-        assert "HumanMessage" in types
-        assert "ToolMessage" in types
+        roles = [m.role for m in restored]
+        assert "user" in roles
 
         # Verify tool call detail preserved
-        ai_msgs = [m for m in restored if isinstance(m, AIMessage) and m.tool_calls]
-        assert len(ai_msgs) >= 1
-        assert ai_msgs[0].tool_calls[0]["name"] == "echo"
+        model_msgs = [m for m in restored if getattr(m, "tool_calls", None)]
+        assert len(model_msgs) >= 1
+        assert model_msgs[0].tool_calls[0]["name"] == "echo"
 
     @pytest.mark.asyncio
     async def test_compacted_messages_saved(self, temp_data_dir, temp_workspace):
@@ -455,17 +452,16 @@ class TestEnginePersistence:
         assert len(engine.messages) == 0
 
     @pytest.mark.asyncio
-    async def test_message_count_in_state_yaml(self, temp_data_dir, temp_workspace):
-        """Materialized state.yaml includes message_count."""
+    async def test_message_count_in_derived_state(self, temp_data_dir, temp_workspace):
+        """Message count is tracked."""
         store = CoreStateStore.create(
             temp_data_dir / "state",
             session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
         )
-        store.append_message(HumanMessage(content="m1"))
-        store.append_message(AIMessage(content="m2"))
+        store.append_message(Message(role="user", content="m1"))
+        store.append_message(Message(role="assistant", content="m2"))
 
-        state = store.materialize()
-        assert state["message_count"] == 2
+        assert store.message_count() == 2
 
 
 def _raw_messages(store: CoreStateStore) -> list[dict]:

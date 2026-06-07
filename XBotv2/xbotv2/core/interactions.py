@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class InteractionCancelled(RuntimeError):
-    """Raised when a live interaction is cancelled by the client."""
-
-
 class InteractionDisconnected(RuntimeError):
     """Raised when the live client disconnects during an interaction."""
 
@@ -112,8 +108,4 @@ class InteractionWaiter:
         return list(self._pending)
 
 
-UserInputCancelled = InteractionCancelled
 UserInputDisconnected = InteractionDisconnected
-UserInputNotPending = InteractionNotPending
-UserInputResult = InteractionResult
-UserInputWaiter = InteractionWaiter

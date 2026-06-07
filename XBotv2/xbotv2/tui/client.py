@@ -1,7 +1,7 @@
 """Protocol-driven curses TUI client.
 
-The TUI layer consumes protocol events only. It must not import runtime,
-bootstrap, LangChain, or LangGraph modules.
+The TUI layer consumes protocol events only. It must not import runtime or
+bootstrap modules.
 """
 
 from __future__ import annotations
@@ -669,9 +669,9 @@ def _parse_permission_decision(text: str) -> dict[str, str]:
     normalized = text.strip().lower()
     parts = normalized.split()
     scope = "once"
-    if parts and parts[0] in {"always", "session", "once"}:
+    if parts and parts[0] in {"session", "once"}:
         scope = parts.pop(0)
-    elif parts and parts[-1] in {"always", "session", "once"}:
+    elif parts and parts[-1] in {"session", "once"}:
         scope = parts.pop()
     decision_text = " ".join(parts) if parts else normalized
     decision = "allow" if decision_text in {"allow", "approve", "approved", "yes", "y"} else "deny"

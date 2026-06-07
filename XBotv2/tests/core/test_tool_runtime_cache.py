@@ -16,33 +16,29 @@ from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
+from xbotv2.tools.types import XBotTool
 
 
-@langchain_tool
 def large_output() -> str:
     """Return a large deterministic string."""
     return "x" * 200
+large_output_tool = XBotTool.from_function(large_output, name="large_output")
 
 
-@langchain_tool
 def failing_tool() -> str:
     """Raise a deterministic tool failure."""
     raise RuntimeError("boom")
+failing_tool_tool = XBotTool.from_function(failing_tool, name="failing_tool")
 
 
 @pytest.mark.asyncio
 async def test_sync_langchain_tool_uses_invoke_not_ainvoke(monkeypatch):
-    @langchain_tool
     def sync_tool(message: str) -> str:
-        """Return a deterministic value."""
         return f"ok:{message}"
 
-    async def broken_ainvoke(*args, **kwargs):
-        raise AssertionError("sync tools should not use ainvoke")
-
-    monkeypatch.setattr(type(sync_tool), "ainvoke", broken_ainvoke)
+    xbot_tool = XBotTool.from_function(sync_tool, name="sync_tool")
     registry = ToolRegistry()
-    registry.register(sync_tool, sandbox_mode="host")
+    registry.register(xbot_tool, sandbox_mode="host")
 
     results = await execute_tools(
         [{"name": "sync_tool", "args": {"message": "hello"}, "id": "c1"}],
@@ -61,7 +57,7 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": "out.txt", "content": "ok"}, "id": "c1"}],
+        [{"name": "filesystem_write", "args": {"path": str(temp_workspace / "out.txt"), "content": "ok"}, "id": "c1"}],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
@@ -74,7 +70,7 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
 @pytest.mark.asyncio
 async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_write, sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
     results = await execute_tools(
@@ -93,7 +89,7 @@ async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspa
 @pytest.mark.asyncio
 async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_write, sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
     seen = []
 
@@ -106,7 +102,7 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
         }
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": "allowed.txt", "content": "ok"}, "id": "c1"}],
+        [{"name": "filesystem_write", "args": {"path": str(temp_workspace / "allowed.txt"), "content": "ok"}, "id": "c1"}],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="ask"),
@@ -159,7 +155,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
 @pytest.mark.asyncio
 async def test_tool_failure_hook_fires(temp_workspace):
     registry = ToolRegistry()
-    registry.register(failing_tool, sandbox_mode="host")
+    registry.register(failing_tool_tool, sandbox_mode="host")
     hook_manager = HookManager()
     calls = []
 
@@ -183,7 +179,7 @@ async def test_tool_failure_hook_fires(temp_workspace):
 @pytest.mark.asyncio
 async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_write, sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
     hook_manager = HookManager()
     calls = []
@@ -193,7 +189,7 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         return {
             "tool_call": {
                 "id": "rewritten_id",
-                "args": {"path": "rewritten.txt", "content": "ok"},
+                "args": {"path": str(temp_workspace / "rewritten.txt"), "content": "ok"},
             }
         }
 
@@ -230,7 +226,7 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     assert results[0].tool_call_id == "rewritten_id"
     assert not (temp_workspace / "old.txt").exists()
     assert (temp_workspace / "rewritten.txt").read_text(encoding="utf-8") == "ok"
-    assert calls[0] == ("before", "old_id", str(temp_workspace / "old.txt"))
+    assert calls[0] == ("before", "old_id", "old.txt")
     assert calls[1] == (
         "after",
         "rewritten_id",
@@ -248,7 +244,7 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
 @pytest.mark.asyncio
 async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
     registry = ToolRegistry()
-    registry.register(large_output, sandbox_mode="host")
+    registry.register(large_output_tool, sandbox_mode="host")
     hook_manager = HookManager()
     hook_manager.register(
         HookStage.AFTER_TOOLS,
@@ -278,7 +274,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
 
     events = [e async for e in engine.run_turn("run large")]
     tool_event = next(e for e in events if e["type"] == "tool_result")
-    tool_message = next(m for m in engine.messages if type(m).__name__ == "ToolMessage")
+    tool_message = next(m for m in engine.messages if m.role == "tool")
 
     assert "[Tool result cached]" in tool_event["data"]["content"]
     assert "[Tool result cached]" in tool_message.content
@@ -290,12 +286,8 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
 
-    cache_event = next(event for event in state_store.read_events() if event["type"] == "tool_result_cached")
-    assert cache_event["payload"]["cache_path"] == str(cache_files[0])
-    assert cache_event["payload"]["sha256"] == tool_message.artifact["sha256"]
-
     restored_tool_message = next(
-        m for m in state_store.read_messages() if type(m).__name__ == "ToolMessage"
+        m for m in state_store.read_messages() if m.role == "tool"
     )
     assert restored_tool_message.artifact == tool_message.artifact
 

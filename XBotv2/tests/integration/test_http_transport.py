@@ -206,10 +206,7 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     assert body["data"]["data"]["session_id"] == "cmds"
     state_root = Path(http_app.state.data_dir) / "sessions" / "cmds" / "state"
     messages_path = state_root / "messages.jsonl"
-    events_path = state_root / "events.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
-    events = events_path.read_text(encoding="utf-8")
-    assert "server_command_result" in events
     assert "command_result" not in messages
 
 
@@ -231,8 +228,9 @@ async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_http_policy_commands_materialize_session_overrides(
+async def test_http_policy_commands_update_session_overrides(
     client: httpx.AsyncClient,
+    http_app,
 ) -> None:
     open_response = await client.post(
         "/sessions", json={"session_id": "policy", "thread_id": "t"}
@@ -256,6 +254,11 @@ async def test_http_policy_commands_materialize_session_overrides(
     assert sandbox_response.status_code == 200
     assert status_response.status_code == 200
     assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
+    state_root = Path(http_app.state.data_dir) / "sessions" / "policy" / "state"
+    events_path = state_root / "events.jsonl"
+    events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
+    assert "permission_override_set" not in events
+    assert "sandbox_override_set" not in events
 
 
 @pytest.mark.asyncio
@@ -281,8 +284,8 @@ async def test_http_permission_response_preserves_scope() -> None:
             return []
 
     class _Engine:
-        _permission_waiter = _WaiterSpy()
-        _user_input_waiter = _WaiterSpy()
+        permission_waiter = _WaiterSpy()
+        user_input_waiter = _WaiterSpy()
 
     class _Context:
         engine = _Engine()
@@ -305,6 +308,38 @@ async def test_http_permission_response_preserves_scope() -> None:
         "decision": "allow",
         "scope": "session",
     }
+
+
+@pytest.mark.asyncio
+async def test_http_permission_response_rejects_always_scope() -> None:
+    from xbotv2.protocol.http_server import _resolve_interaction
+
+    class _Engine:
+        permission_waiter = object()
+        user_input_waiter = object()
+
+    class _Context:
+        engine = _Engine()
+
+    class _Manager:
+        async def get(self, session_id: str):
+            assert session_id == "permission-scope"
+            return _Context()
+
+    with pytest.raises(Exception) as exc_info:
+        await _resolve_interaction(
+            manager=_Manager(),
+            session_id="permission-scope",
+            payload={
+                "request_id": "permission:scope",
+                "decision": "allow",
+                "scope": "always",
+            },
+            kind="permission",
+        )
+
+    assert getattr(exc_info.value, "code") == "invalid_request"
+    assert "once or session" in getattr(exc_info.value, "message")
 
 
 @pytest.mark.asyncio
@@ -332,19 +367,19 @@ async def test_http_policy_command_reset_rebuilds_live_policy(
     assert permission_reset.status_code == 200
     assert ctx.engine.permission_system.check("shell", {}) == "ask"
 
-    sandbox_set = await client.post(
+    sandbox_status = await client.post(
+        "/sessions/policy-reset/commands",
+        json={"command": "sandbox", "args": ["status"]},
+    )
+    assert sandbox_status.status_code == 200
+    assert "sandbox" in sandbox_status.json()["data"]["message"].lower()
+
+    sandbox_invalid = await client.post(
         "/sessions/policy-reset/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
     )
-    assert sandbox_set.status_code == 200
-    assert ctx.engine.sandbox_policy.external_read == "deny"
-
-    sandbox_reset = await client.post(
-        "/sessions/policy-reset/commands",
-        json={"command": "sandbox", "args": ["reset", "external_read"]},
-    )
-    assert sandbox_reset.status_code == 200
-    assert ctx.engine.sandbox_policy.external_read == "ask"
+    assert sandbox_invalid.status_code == 200
+    assert sandbox_invalid.json()["data"]["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -513,7 +548,7 @@ async def test_http_interactions_endpoint_validates_request_id(
 
 
 class _GatedMockLLM(MockLLM):
-    """A ``MockLLM`` whose ``_agenerate`` blocks on an ``asyncio.Event``.
+    """A ``MockLLM`` whose stream blocks on an ``asyncio.Event``.
 
     The test sets ``release`` *after* verifying the SSE stream is open
     and the interrupt endpoint has been hit; the engine's
@@ -530,13 +565,11 @@ class _GatedMockLLM(MockLLM):
     def calls(self) -> int:
         return self._gated_calls  # type: ignore[has-type]
 
-    async def _agenerate(
+    async def astream(
         self,
         messages: list,
-        stop: list | None = None,
-        run_manager: Any | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ):
         object.__setattr__(
             self, "_gated_calls", self._gated_calls + 1  # type: ignore[has-type]
         )
@@ -544,9 +577,8 @@ class _GatedMockLLM(MockLLM):
         # this ``await`` will raise ``CancelledError`` and abort the
         # turn before the event is set.
         await self._gated_release.wait()  # type: ignore[has-type]
-        return await super()._agenerate(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
+        async for chunk in super().astream(messages, **kwargs):
+            yield chunk
 
 
 @pytest.mark.asyncio
@@ -558,9 +590,8 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
 
     This exercises the full production path:
     TUI ESC → ``HttpTransport.interrupt`` → ``POST /interrupt`` →
-    ``SessionContext.request_interrupt`` → ``turn_task.cancel`` →
-    ``Engine.run_turn`` catch ``CancelledError`` → yield
-    ``turn_cancelled`` → SSE → client.
+    session ``turn_task.cancel`` → ``Engine.run_turn`` catch
+    ``CancelledError`` → yield ``turn_cancelled`` → SSE → client.
 
     We spin up a **real** uvicorn process (not ``ASGITransport``)
     because ASGITransport buffers the entire response body before

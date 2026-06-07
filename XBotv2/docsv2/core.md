@@ -68,9 +68,9 @@ During an active turn, `ask` emits `permission_request` and waits for a live
 approval. Allow continues the current tool call. Deny, timeout, disconnect, or
 non-live execution fails closed.
 
-`/permission set <tool> <allow|deny|ask>` records a session override event and
-updates the in-memory permission system for that session. `/permission reset`
-removes the override from materialized state and rebuilds the active policy.
+`/permission set <tool> <allow|deny|ask>` updates the active session override and
+the in-memory permission system for that session. `/permission reset` removes the
+active override and rebuilds the active policy.
 
 ## Sandbox
 
@@ -88,10 +88,9 @@ External read attempts request approval through the same live permission flow.
 External writes are denied. Workspace symlink escapes are denied even when
 workspace access is otherwise allowed.
 
-`/sandbox set <key> <allow|readwrite|readonly|deny|ask>` records a session
-override event and updates the in-memory sandbox policy for that session.
-`/sandbox reset` removes the override from materialized state and rebuilds the
-active policy.
+`/sandbox set <key> <allow|readwrite|readonly|deny|ask>` updates the active
+session override and the in-memory sandbox policy for that session. `/sandbox
+reset` removes the active override and rebuilds the active policy.
 
 ## Built-In Tools
 
@@ -115,7 +114,7 @@ runtime rules
 sandbox summary
 plugin fragments
 sanitized message history
-current materialized state
+current derived state snapshot
 ```
 
 The builder memoizes stable prefixes and invalidates on fragment/config changes.
@@ -126,16 +125,14 @@ The builder memoizes stable prefixes and invalidates on fragment/config changes.
 
 - `events.jsonl`: append-only source of truth.
 - `messages.jsonl`: provider-facing message history for resume.
-- `state.yaml`: rebuildable materialized view.
 - `plugin_states/`: plugin-owned opaque blobs.
 - `artifacts/`: cached large tool outputs.
 
-`state.yaml` includes session metadata, workspace root, provider, counts, status,
-pending interactions, permission overrides, sandbox overrides, latest workspace
-attachment, plugin states, and artifact root.
+No separate `state.yaml` file is written. Remaining compatibility paths derive a
+snapshot with session metadata, counts, status, pending interactions, latest
+workspace attachment, plugin states, and artifact root.
 
-Provider-facing history does not include server command results. Commands append
-`server_command_result` events only.
+Provider-facing history does not include server command results.
 
 ## Events
 
@@ -151,7 +148,6 @@ Important core events:
 - `provider_switched`
 - `permission_override_set`, `permission_overrides_reset`
 - `sandbox_override_set`, `sandbox_overrides_reset`
-- `server_command_result`
 
 Status is derived from ordered events. A later `turn_started` reactivates prior
 `error` or `interrupted` state; `turn_finished` does not hide an interruption

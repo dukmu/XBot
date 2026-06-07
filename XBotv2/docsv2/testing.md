@@ -72,7 +72,7 @@ Stage 2 tests cover:
 - provider/permission/sandbox session override materialization
 - permission response scope forwarding for session/global approvals
 - policy command validation and live-policy reset behavior
-- command audit events not entering message history
+- command results not entering message history
 - TUI dynamic command completion and server command dispatch
 - live permission and user-input interaction flow
 - ESC interrupt and realtime usage rendering

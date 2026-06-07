@@ -1046,13 +1046,12 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
         await pilot.pause()
         await pilot.press("down")
         await pilot.press("down")
-        await pilot.press("down")
         await pilot.press("enter")
         for _ in range(3):
             await pilot.pause()
         rendered = html.unescape(app.export_screenshot(title="xbotv2-tui-replay")).replace("\xa0", " ")
 
-    assert session.permission_decision == {"decision": "allow", "scope": "always"}
+    assert session.permission_decision == {"decision": "allow", "scope": "session"}
     assert [(message.role, message.content.strip()) for message in app.state.messages] == [
         ("user", "当前磁盘用了多少"),
         # The first assistant_message carries tool_calls with
@@ -1144,9 +1143,9 @@ def test_permission_decision_parser_supports_scopes():
         "decision": "allow",
         "scope": "session",
     }
-    assert _parse_permission_decision("deny always") == {
+    assert _parse_permission_decision("deny once") == {
         "decision": "deny",
-        "scope": "always",
+        "scope": "once",
     }
 
 

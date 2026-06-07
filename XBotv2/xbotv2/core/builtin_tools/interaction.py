@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from langchain_core.tools import tool as langchain_tool
+from xbotv2.tools.types import XBotTool
 
 
-@langchain_tool
-def send_message(message: str, level: str = "info") -> dict:
+def send_message_to_user(message: str, level: str = "info") -> dict:
     """Send a non-blocking message event to the client user.
 
     Args:
@@ -27,8 +26,7 @@ def send_message(message: str, level: str = "info") -> dict:
     }
 
 
-@langchain_tool
-def ask_user(
+def ask_user_for_input(
     question: str,
     options: list[str] | None = None,
     timeout_seconds: float | None = None,
@@ -62,5 +60,8 @@ def ask_user(
         ],
     }
 
+
+send_message = XBotTool.from_function(send_message_to_user, name="send_message")
+ask_user = XBotTool.from_function(ask_user_for_input, name="ask_user")
 
 INTERACTION_TOOLS = [send_message, ask_user]
