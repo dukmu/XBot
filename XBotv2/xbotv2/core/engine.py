@@ -214,7 +214,7 @@ class Engine:
             raise
         except InteractionDisconnected as exc:
             logger.info("Turn stopped because the client disconnected during an interaction")
-        except Exception as exc:
+        except BaseException as exc:
             logger.exception("Turn failed")
             failure_ctx = self._make_hook_context(HookStage.ON_STOP_FAILURE, user_input=user_input, stop_reason="error", error=exc)
             await self.hook_manager.run(HookStage.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
@@ -511,7 +511,7 @@ class Engine:
                 raise asyncio.TimeoutError(
                     f"LLM call timed out after {_LLM_DISPATCH_TIMEOUT}s"
                 ) from None
-            except Exception as exc:
+            except BaseException as exc:
                 err_ctx = self._make_hook_context(
                     HookStage.ON_MODEL_REQUEST_ERROR,
                     context_messages=context_messages,
@@ -728,7 +728,7 @@ class Engine:
         stop_ctx = self._make_hook_context(HookStage.ON_STOP, stop_reason=stop_reason)
         try:
             await self.hook_manager.run(HookStage.ON_STOP, stop_ctx, short_circuit=False)
-        except Exception as exc:
+        except BaseException as exc:
             failure_ctx = self._make_hook_context(
                 HookStage.ON_STOP_FAILURE,
                 stop_reason=stop_reason,

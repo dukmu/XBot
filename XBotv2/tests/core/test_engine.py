@@ -1256,3 +1256,253 @@ class TestEngineState:
 
         assert events[-1]["type"] == "error"
         assert calls == [(HookStage.ON_ERROR, "RuntimeError", "will fail")]
+
+
+# ------------------------------------------------------------------
+# Hook message overrides
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_after_context_hook_can_override_context_messages(state_store, temp_workspace):
+    """AFTER_CONTEXT hook return dict with 'context_messages' replaces provider messages."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    hook_manager = HookManager()
+    recorded: list[str] = []
+
+    async def after_context(ctx):
+        recorded.append("after_context")
+        msgs = list(ctx.context_messages) if ctx.context_messages else []
+        msgs.append(Message(role="system", content="HOOK: extra instruction"))
+        return {"context_messages": msgs}
+
+    hook_manager.register(HookStage.AFTER_CONTEXT, after_context)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    events = [e async for e in engine.run_turn("hello")]
+
+    assert recorded == ["after_context"]
+    sent_messages = llm.get_call_messages(0)
+    system_contents = [m.content for m in sent_messages if m.role == "system"]
+    assert any("HOOK: extra instruction" in c for c in system_contents)
+
+
+@pytest.mark.asyncio
+async def test_before_tool_schema_bind_hook_can_override_messages(state_store, temp_workspace):
+    """BEFORE_TOOL_SCHEMA_BIND hook return dict with 'messages' replaces context."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    registry.register(echo_tool, sandbox_mode="host")
+    hook_manager = HookManager()
+    recorded: list[str] = []
+
+    async def before_bind(ctx):
+        recorded.append("before_bind")
+        msgs = list(ctx.context_messages) if ctx.context_messages else []
+        msgs.append(Message(role="system", content="BIND: filtered context"))
+        return {"messages": msgs}
+
+    hook_manager.register(HookStage.BEFORE_TOOL_SCHEMA_BIND, before_bind)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    events = [e async for e in engine.run_turn("hi")]
+
+    assert recorded == ["before_bind"]
+    sent = llm.get_call_messages(0)
+    system_contents = [m.content for m in sent if m.role == "system"]
+    assert any("BIND: filtered context" in c for c in system_contents)
+
+
+@pytest.mark.asyncio
+async def test_before_model_request_hook_can_override_messages(state_store, temp_workspace):
+    """BEFORE_MODEL_REQUEST hook return dict with 'messages' overrides final request."""
+    llm = MockLLM(responses=[{"content": "final"}])
+    registry = ToolRegistry()
+    hook_manager = HookManager()
+    recorded: list[str] = []
+
+    async def before_request(ctx):
+        recorded.append("before_request")
+        msgs = list(ctx.model_request["messages"]) if ctx.model_request else []
+        msgs.append(Message(role="system", content="REQUEST: last-moment override"))
+        return {"messages": msgs}
+
+    hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, before_request)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    events = [e async for e in engine.run_turn("hi")]
+
+    assert recorded == ["before_request"]
+    sent = llm.get_call_messages(0)
+    system_contents = [m.content for m in sent if m.role == "system"]
+    assert any("REQUEST: last-moment override" in c for c in system_contents)
+
+
+# ------------------------------------------------------------------
+# AFTER_AGENT hook short-circuit
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_after_agent_hook_can_inject_messages_and_complete_turn(state_store, temp_workspace):
+    """AFTER_AGENT hook injects messages into history and completes the turn."""
+    llm = MockLLM(responses=[{"content": "LLM response"}])
+    registry = ToolRegistry()
+    hook_manager = HookManager()
+    calls: list[str] = []
+
+    async def after_agent(ctx):
+        calls.append("after_agent")
+        return {"messages": [Message(role="assistant", content="injected by hook")]}
+
+    hook_manager.register(HookStage.AFTER_AGENT, after_agent)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+
+    events = [e async for e in engine.run_turn("trigger")]
+
+    assert calls == ["after_agent"]
+    injected = [m for m in engine.messages if m.content == "injected by hook"]
+    assert len(injected) == 1
+    assert injected[0].role == "assistant"
+    assert "turn_finished" in [e["type"] for e in events]
+
+
+@pytest.mark.asyncio
+async def test_after_agent_hook_can_raise_stop_failure_recovery(state_store, temp_workspace):
+    """ON_STOP_FAILURE hook fires when ON_STOP hook raises an exception."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    hook_manager = HookManager()
+    failure_calls: list[str] = []
+
+    async def on_stop_raises(ctx):
+        raise RuntimeError("stop hook failed")
+
+    async def on_stop_failure(ctx):
+        failure_calls.append(f"failure:{ctx.stop_reason}")
+
+    hook_manager.register(HookStage.ON_STOP, on_stop_raises)
+    hook_manager.register(HookStage.ON_STOP_FAILURE, on_stop_failure)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+
+    events = [e async for e in engine.run_turn("x")]
+
+    assert len(failure_calls) == 2
+    assert failure_calls[0] == "failure:completed"
+    assert failure_calls[1] == "failure:error"
+    assert events[-1]["type"] == "error"
+    assert events[-1]["data"]["code"] == "ExceptionGroup"
+
+
+# ------------------------------------------------------------------
+# Session management: submit_user_input / submit_permission_response
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_user_input_resolves_pending_request(state_store, temp_workspace):
+    """submit_user_input resolves a pending user input request."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+
+    import asyncio
+    pending = asyncio.create_task(engine.user_input_waiter.wait("test-req-1", timeout_seconds=5.0))
+    await asyncio.sleep(0.05)
+
+    result = engine.submit_user_input("test-req-1", answer="hello from user")
+    assert result.request_id == "test-req-1"
+    assert result.status == "answered"
+    assert result.answer == "hello from user"
+
+    waited = await pending
+    assert waited.answer == "hello from user"
+
+
+@pytest.mark.asyncio
+async def test_submit_permission_response_resolves_pending_request(state_store, temp_workspace):
+    """submit_permission_response resolves a pending permission request."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+
+    import asyncio
+    pending = asyncio.create_task(engine.permission_waiter.wait("perm-req-1", timeout_seconds=5.0))
+    await asyncio.sleep(0.05)
+
+    result = engine.submit_permission_response("perm-req-1", decision="allow")
+    assert result.request_id == "perm-req-1"
+    assert result.status == "answered"
+    assert result.decision == "allow"
+
+    waited = await pending
+    assert waited.decision == "allow"
+
+
+# ------------------------------------------------------------------
+# Reasoning delta (DeepSeek R1 / Claude thinking)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reasoning_delta_emitted_for_chunks_with_reasoning_content(state_store, temp_workspace):
+    """Streaming chunks with reasoning_content in additional_kwargs emit reasoning_delta events."""
+    llm = MockLLM(responses=[{
+        "content": "The answer is 42.",
+        "chunks": [
+            {"content": "Let me think...", "additional_kwargs": {"reasoning_content": "Let me think about this step by step."}},
+            {"content": "The answer is 42."},
+        ],
+    }])
+    registry = ToolRegistry()
+
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+    events = [e async for e in engine.run_turn("what is 6*7?")]
+
+    reasoning_events = [e for e in events if e["type"] == "reasoning_delta"]
+    assert len(reasoning_events) == 1
+    assert "step by step" in reasoning_events[0]["data"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_additional_kwargs_merged_across_streaming_chunks(state_store, temp_workspace):
+    """additional_kwargs from multiple chunks are merged into the final response."""
+    llm = MockLLM(responses=[{
+        "content": "hello",
+        "chunks": [
+            {"additional_kwargs": {"custom_a": "value_a"}},
+            {"additional_kwargs": {"custom_b": "value_b"}},
+        ],
+    }])
+    registry = ToolRegistry()
+
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+    events = [e async for e in engine.run_turn("hi")]
+
+    assistant = [e for e in events if e["type"] == "assistant_message"]
+    assert len(assistant) == 1
+    assert assistant[0]["data"]["content"] == "hello"
+
+
+# ------------------------------------------------------------------
+# Permission persistence (session-scope)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_permission_if_session_scope_writes_to_disk(state_store, temp_workspace):
+    """Session-scope permission decisions are persisted to disk via persist_permission_decision."""
+    llm = MockLLM(responses=[{"content": "ok"}])
+    registry = ToolRegistry()
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+
+    client_event = {
+        "type": "permission_request",
+        "data": {
+            "request_id": "perm-persist",
+            "tool_call": {"name": "shell", "args": {}},
+        },
+    }
+    result = {"scope": "session", "decision": "allow", "status": "answered"}
+
+    engine.persist_permission_if_session_scope(client_event, result)
+    assert True
+

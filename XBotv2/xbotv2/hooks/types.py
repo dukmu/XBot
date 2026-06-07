@@ -99,6 +99,7 @@ STRICT_FAILURE_STAGES = frozenset({
     HookStage.ON_SESSION_CLOSE,
     HookStage.BEFORE_STATE_PERSIST,
     HookStage.AFTER_STATE_PERSIST,
+    HookStage.ON_STOP,
 })
 
 
