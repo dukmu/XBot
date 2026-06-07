@@ -165,7 +165,7 @@ class CoreStateStore:
         return len(rewritten)
 
     def read_messages(self) -> list[Message]:
-        raw = _read_jsonl(self.messages_path)
+        raw = list(_iter_jsonl(self.messages_path))
         return [dict_to_message(d) for d in raw]
 
     def message_count(self) -> int:
@@ -257,10 +257,6 @@ class CoreStateStore:
                 with open(path) as f:
                     result[name] = yaml.safe_load(f) or {}
         return result
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return list(_iter_jsonl(path))
 
 
 def _message_identity_key(d: dict[str, Any]) -> str:

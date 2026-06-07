@@ -443,6 +443,43 @@ def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:
     return {"type": event.get("type", ""), "data": event.get("data", {})}
 
 
+async def _live_sink(
+    client_event: dict[str, Any],
+    *,
+    engine: Any,
+    events: asyncio.Queue[dict[str, Any] | None],
+    disconnect_task: asyncio.Task[Any],
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    event_type = str(client_event.get("type") or "")
+    event_data = client_event.get("data") or {}
+    req_id = str(event_data.get("request_id") or "")
+    await events.put(_event_to_payload(client_event))
+    waiter = engine.permission_waiter if event_type == "permission_request" else engine.user_input_waiter
+    wait_task = asyncio.create_task(waiter.wait(req_id, timeout_seconds))
+    try:
+        done, _ = await asyncio.wait({wait_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        wait_task.cancel()
+        raise
+    if wait_task not in done:
+        wait_task.cancel()
+        try:
+            await wait_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return {"request_id": req_id, "status": "disconnected", "reason": "client_disconnected"}
+    try:
+        result = wait_task.result()
+    except Exception as exc:
+        return {"request_id": req_id, "status": "error", "reason": str(exc)}
+    await events.put({
+        "type": "permission_response_recorded" if event_type == "permission_request" else "user_input_recorded",
+        "data": {"request_id": req_id, "status": result.status, "decision": result.decision, "scope": result.scope, "answer": result.answer, "pending_interactions": []},
+    })
+    return result.__dict__
+
+
 @asynccontextmanager
 async def _live_interaction_sink(
     ctx: SessionContext,
@@ -451,62 +488,8 @@ async def _live_interaction_sink(
 ) -> AsyncIterator[None]:
     disconnect_task = asyncio.create_task(disconnected.wait())
 
-    async def sink(
-        client_event: dict[str, Any],
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, Any]:
-        del tool_call_id
-        event_type = str(client_event.get("type") or "")
-        event_data = client_event.get("data") or {}
-        req_id = str(event_data.get("request_id") or "")
-        await events.put(_event_to_payload(client_event))
-        waiter = (
-            ctx.engine.permission_waiter  # noqa: SLF001
-            if event_type == "permission_request"
-            else ctx.engine.user_input_waiter  # noqa: SLF001
-        )
-        wait_task = asyncio.create_task(waiter.wait(req_id, timeout_seconds))
-        try:
-            done, _pending = await asyncio.wait(
-                {wait_task, disconnect_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        except BaseException:
-            wait_task.cancel()
-            raise
-        if wait_task not in done:
-            wait_task.cancel()
-            try:
-                await wait_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            return {
-                "request_id": req_id,
-                "status": "disconnected",
-                "reason": "client_disconnected",
-            }
-        try:
-            result = wait_task.result()
-        except Exception as exc:  # noqa: BLE001
-            return {"request_id": req_id, "status": "error", "reason": str(exc)}
-        await events.put({
-            "type": (
-                "permission_response_recorded"
-                if event_type == "permission_request"
-                else "user_input_recorded"
-            ),
-            "data": {
-                "request_id": req_id,
-                "status": result.status,
-                "decision": result.decision,
-                "scope": result.scope,
-                "answer": result.answer,
-                "pending_interactions": [],
-            },
-        })
-        return result.__dict__
+    async def sink(client_event, *, timeout_seconds=None, tool_call_id=""):
+        return await _live_sink(client_event, engine=ctx.engine, events=events, disconnect_task=disconnect_task, timeout_seconds=timeout_seconds)
 
     previous = ctx.engine.set_client_event_sink(sink)
     try:

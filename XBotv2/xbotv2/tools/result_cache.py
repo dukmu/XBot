@@ -39,7 +39,8 @@ def make_tool_result_cache_hook(
             cache_dir.mkdir(parents=True, exist_ok=True)
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
             tool_call_id = getattr(message, "tool_call_id", "tool")
-            path = cache_dir / f"{_safe_name(tool_call_id)}-{digest}.txt"
+            name = _safe_name(tool_call_id)
+            path = cache_dir / f"{name}-{digest}.txt"
             path.write_text(content, encoding="utf-8")
 
             replacement = _format_cached_result(
@@ -95,3 +96,4 @@ def _format_cached_result(
 
 def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)[:80] or "tool"
+

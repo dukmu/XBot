@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from xbotv2.core.interactions import (
@@ -205,51 +205,24 @@ class Engine:
     # ------------------------------------------------------------------
 
     async def run_turn(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
-        """Execute one user turn and emit ON_ERROR on failures."""
         try:
             async for event in self._run_turn_impl(user_input):
                 yield event
         except asyncio.CancelledError:
             logger.info("Turn %s interrupted by client", self.turn_count)
-            await self.save_messages()
-            yield {
-                "type": "turn_cancelled",
-                "data": {
-                    "turn": self.turn_count,
-                    "reason": "client_interrupt",
-                },
-            }
+            yield {"type": "turn_cancelled", "data": {"turn": self.turn_count, "reason": "client_interrupt"}}
             raise
         except InteractionDisconnected as exc:
             logger.info("Turn stopped because the client disconnected during an interaction")
-            await self.save_messages()
         except Exception as exc:
             logger.exception("Turn failed")
-            failure_ctx = self._make_hook_context(
-                HookStage.ON_STOP_FAILURE,
-                user_input=user_input,
-                stop_reason="error",
-                error=exc,
-            )
-            await self.hook_manager.run(
-                HookStage.ON_STOP_FAILURE,
-                failure_ctx,
-                short_circuit=False,
-            )
-            ctx = self._make_hook_context(
-                HookStage.ON_ERROR,
-                user_input=user_input,
-                error=exc,
-            )
+            failure_ctx = self._make_hook_context(HookStage.ON_STOP_FAILURE, user_input=user_input, stop_reason="error", error=exc)
+            await self.hook_manager.run(HookStage.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
+            ctx = self._make_hook_context(HookStage.ON_ERROR, user_input=user_input, error=exc)
             await self.hook_manager.run(HookStage.ON_ERROR, ctx, short_circuit=False)
+            yield {"type": "error", "data": {"code": type(exc).__name__, "message": str(exc)}}
+        finally:
             await self.save_messages()
-            yield {
-                "type": "error",
-                "data": {
-                    "code": type(exc).__name__,
-                    "message": str(exc),
-                },
-            }
 
     async def _run_turn_impl(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
@@ -326,45 +299,9 @@ class Engine:
                 HookStage.BEFORE_CONTEXT, bc_ctx, short_circuit=True
             )
             if short_circuit is not None:
-                # Hook short-circuited — could be compaction replacing messages
-                if isinstance(short_circuit, dict) and "messages" in short_circuit:
-                    compact_reason = str(short_circuit.get("compact_reason", "before_context"))
-                    pre_compact_ctx = self._make_hook_context(
-                        HookStage.PRE_COMPACT,
-                        compact_reason=compact_reason,
-                    )
-                    pre_compact_result = await self.hook_manager.run(
-                        HookStage.PRE_COMPACT,
-                        pre_compact_ctx,
-                        short_circuit=True,
-                    )
-                    if isinstance(pre_compact_result, dict):
-                        if "messages" in pre_compact_result:
-                            short_circuit["messages"] = pre_compact_result["messages"]
-                        if "compact_reason" in pre_compact_result:
-                            compact_reason = str(pre_compact_result["compact_reason"])
-                    elif pre_compact_result is not None:
-                        yield self._default_hook_rejection_event(HookStage.PRE_COMPACT)
-                        turn_complete = True
-                        break
-
-                    previous_message_count = len(self.messages)
-                    self.messages = short_circuit["messages"]
-                    post_compact_ctx = self._make_hook_context(
-                        HookStage.POST_COMPACT,
-                        compact_reason=compact_reason,
-                    )
-                    post_compact_ctx.state.update({
-                        "previous_message_count": previous_message_count,
-                        "current_message_count": len(self.messages),
-                    })
-                    await self.hook_manager.run(
-                        HookStage.POST_COMPACT,
-                        post_compact_ctx,
-                        short_circuit=False,
-                    )
-                elif not isinstance(short_circuit, dict):
-                    yield self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
+                result = await self._handle_compaction(short_circuit)
+                if result is not None:
+                    yield result
                     turn_complete = True
                     break
 
@@ -847,6 +784,28 @@ class Engine:
             raise RuntimeError("LLM stream produced no chunks")
         yield {"type": "_model_response", "data": {"response": aggregate}}
 
+    async def _handle_compaction(self, short_circuit: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(short_circuit, dict) or "messages" not in short_circuit:
+            return self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
+
+        compact_reason = str(short_circuit.get("compact_reason", "before_context"))
+        pre_compact_ctx = self._make_hook_context(HookStage.PRE_COMPACT, compact_reason=compact_reason)
+        pre_compact_result = await self.hook_manager.run(HookStage.PRE_COMPACT, pre_compact_ctx, short_circuit=True)
+        if isinstance(pre_compact_result, dict):
+            if "messages" in pre_compact_result:
+                short_circuit["messages"] = pre_compact_result["messages"]
+            if "compact_reason" in pre_compact_result:
+                compact_reason = str(pre_compact_result["compact_reason"])
+        elif pre_compact_result is not None:
+            return self._default_hook_rejection_event(HookStage.PRE_COMPACT)
+
+        previous_message_count = len(self.messages)
+        self.messages = short_circuit["messages"]
+        post_compact_ctx = self._make_hook_context(HookStage.POST_COMPACT, compact_reason=compact_reason)
+        post_compact_ctx.state.update({"previous_message_count": previous_message_count, "current_message_count": len(self.messages)})
+        await self.hook_manager.run(HookStage.POST_COMPACT, post_compact_ctx, short_circuit=False)
+        return None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -861,74 +820,41 @@ class Engine:
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
 
-    async def _handle_user_input_request(
+    async def _handle_client_interaction(
         self,
         client_event: dict[str, Any],
+        waiter: Any,
+        result_fields: tuple[str, ...],
         *,
         timeout_seconds: float | None = None,
-        tool_call_id: str = "",
+        on_sink_result: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        ctx = self._make_hook_context(
-            HookStage.ON_CLIENT_EVENT,
-            client_event=client_event,
-        )
+        ctx = self._make_hook_context(HookStage.ON_CLIENT_EVENT, client_event=client_event)
         await self.hook_manager.run(HookStage.ON_CLIENT_EVENT, ctx, short_circuit=False)
 
         if self.client_event_sink is not None:
             sink_result = await self.client_event_sink(
-                client_event,
-                timeout_seconds=timeout_seconds,
-                tool_call_id=tool_call_id,
+                client_event, timeout_seconds=timeout_seconds, tool_call_id="",
             )
             if sink_result.get("status") == "disconnected":
-                raise InteractionDisconnected(
-                    f"Client disconnected while waiting for {sink_result.get('request_id')}"
-                )
+                raise InteractionDisconnected(f"Client disconnected while waiting for {sink_result.get('request_id')}")
+            if on_sink_result:
+                on_sink_result(sink_result)
             return sink_result
         request_id = str((client_event.get("data") or {}).get("request_id") or "")
         wait_timeout = 0 if timeout_seconds is None else timeout_seconds
-        result = await self.user_input_waiter.wait(request_id, wait_timeout)
-        return {
-            "request_id": result.request_id,
-            "status": result.status,
-            "answer": result.answer,
-            "reason": result.reason,
-        }
+        result = await waiter.wait(request_id, wait_timeout)
+        return {f: getattr(result, f, "") for f in result_fields} | {"request_id": result.request_id, "status": result.status, "reason": result.reason}
 
-    async def _handle_permission_request(
-        self,
-        client_event: dict[str, Any],
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, Any]:
-        ctx = self._make_hook_context(
-            HookStage.ON_CLIENT_EVENT,
-            client_event=client_event,
+    async def _handle_user_input_request(self, client_event: dict[str, Any], *, timeout_seconds: float | None = None, tool_call_id: str = "") -> dict[str, Any]:
+        return await self._handle_client_interaction(client_event, self.user_input_waiter, ("answer",), timeout_seconds=timeout_seconds)
+
+    async def _handle_permission_request(self, client_event: dict[str, Any], *, timeout_seconds: float | None = None, tool_call_id: str = "") -> dict[str, Any]:
+        return await self._handle_client_interaction(
+            client_event, self.permission_waiter, ("decision", "scope"),
+            timeout_seconds=timeout_seconds,
+            on_sink_result=lambda r: self.persist_permission_if_session_scope(client_event, r),
         )
-        await self.hook_manager.run(HookStage.ON_CLIENT_EVENT, ctx, short_circuit=False)
-
-        if self.client_event_sink is not None:
-            sink_result = await self.client_event_sink(
-                client_event,
-                timeout_seconds=timeout_seconds,
-                tool_call_id=tool_call_id,
-            )
-            if sink_result.get("status") == "disconnected":
-                raise InteractionDisconnected(
-                    f"Client disconnected while waiting for {sink_result.get('request_id')}"
-                )
-            self.persist_permission_if_session_scope(client_event, sink_result)
-            return sink_result
-        request_id = str((client_event.get("data") or {}).get("request_id") or "")
-        wait_timeout = 0 if timeout_seconds is None else timeout_seconds
-        result = await self.permission_waiter.wait(request_id, wait_timeout)
-        return {
-            "request_id": result.request_id,
-            "status": result.status,
-            "decision": result.decision,
-            "reason": result.reason,
-        }
 
     def persist_permission_if_session_scope(
         self,

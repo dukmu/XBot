@@ -167,12 +167,6 @@ def is_slash_command(text: str) -> bool:
 # ----------------------------------------------------------------------
 
 
-def _normalise_query(query: str) -> str:
-    """Strip and lower-case a query for matching."""
-
-    return query.strip().lower()
-
-
 def search_commands(query: str) -> list[CommandSpec]:
     """Return commands matching ``query``, in stable display order.
 
@@ -189,7 +183,7 @@ def search_commands(query: str) -> list[CommandSpec]:
     command so the caller can safely show one entry per command.
     """
 
-    normalised = _normalise_query(query)
+    normalised = query.strip().lower()
     if not normalised:
         return [_COMMANDS[name] for name in _SEARCH_ORDER]
     if normalised.startswith("/"):

@@ -83,7 +83,7 @@ def persist_permission_decision(
     rule = _permission_rule_for_tool_call(tool_call)
     if not rule:
         return
-    path = _policy_target_path(config_dir, session_id, scope)
+    path = _session_policy_path(config_dir, session_id)
     doc = _read_yaml(path)
     permissions = doc.setdefault("permissions", {})
     _remove_rule(permissions, rule)
@@ -108,7 +108,7 @@ def _persist_sandbox_rule(
     paths = _tool_call_paths(tool_call, Path(workspace_root))
     if not paths:
         return
-    path = _policy_target_path(config_dir, session_id, scope)
+    path = _session_policy_path(config_dir, session_id)
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
@@ -121,14 +121,6 @@ def _persist_sandbox_rule(
         if engine is not None and getattr(engine, "sandbox_policy", None) is not None:
             engine.sandbox_policy.add_rule(resolved, access)
     _write_yaml(path, doc)
-
-
-def _policy_target_path(
-    config_dir: Path,
-    session_id: str,
-    scope: PermissionScope,
-) -> Path:
-    return _session_policy_path(config_dir, session_id)
 
 
 def _session_policy_path(config_dir: Path, session_id: str) -> Path:
