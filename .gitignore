@@ -12,3 +12,12 @@ uv.lock
 *.tmp
 
 output/
+
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.coverage
+*.py,coverage
