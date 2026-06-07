@@ -13,6 +13,7 @@ from xbotv2.plugin.loader import PluginLoader, _DefaultPlugin, resolve_dependenc
 from xbotv2.plugin.store import PluginStore
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
+from xbotv2.hooks.types import HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.tools.registry import ToolRegistry
 
@@ -325,7 +326,7 @@ def plugin_tool() -> str:
         with pytest.raises(FileNotFoundError, match="prompt fragment file not found"):
             await loader.load()
 
-        assert hook_manager.count("on_turn_start") == 0
+        assert len(hook_manager._hooks.get(HookStage.ON_TURN_START, [])) == 0
         assert "plugin_tool" not in tool_registry.registered_names()
         assert "broken" not in context_builder._fragments.get("system_instructions", {})
         assert loader.loaded_plugins == []
@@ -436,7 +437,7 @@ class BrokenPlugin(PluginBase):
         assert loader.loaded_plugins == []
         assert loader._records == {}
         assert loader._import_paths == []
-        assert hook_manager.count("on_turn_start") == 0
+        assert len(hook_manager._hooks.get(HookStage.ON_TURN_START, [])) == 0
         assert state_store.get_plugin_state("first")["unloaded"] is True
 
     @pytest.mark.asyncio
@@ -498,13 +499,13 @@ def plugin_tool() -> str:
         )
 
         await loader.load()
-        assert hook_manager.count("on_turn_start") == 1
+        assert len(hook_manager._hooks.get(HookStage.ON_TURN_START, [])) == 1
         assert tool_registry.registered("plugin_tool")
         assert "simple" in context_builder._fragments["system_instructions"]
 
         assert await loader.unload("simple") is True
         assert await loader.unload("simple") is False
-        assert hook_manager.count("on_turn_start") == 0
+        assert len(hook_manager._hooks.get(HookStage.ON_TURN_START, [])) == 0
         assert not tool_registry.registered("plugin_tool")
         assert "simple" not in context_builder._fragments["system_instructions"]
         assert loader.loaded_plugins == []

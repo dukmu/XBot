@@ -17,8 +17,6 @@ class InteractionNotPending(RuntimeError):
 
 @dataclass
 class InteractionResult:
-    """Result returned to a waiting live interaction."""
-
     request_id: str
     status: str
     answer: Any = None
@@ -28,71 +26,42 @@ class InteractionResult:
 
 
 class InteractionWaiter:
-    """Tracks live interaction requests for one engine instance."""
-
     def __init__(self) -> None:
         self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
 
     async def wait(self, request_id: str, timeout_seconds: float | None) -> InteractionResult:
-        """Wait for a matching answer, timeout, or cancellation."""
         if request_id in self._pending:
             raise InteractionNotPending(f"Duplicate pending interaction request: {request_id}")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[InteractionResult] = loop.create_future()
+        future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
             if timeout_seconds is None:
                 return await future
-            try:
-                return await asyncio.wait_for(future, timeout=float(timeout_seconds))
-            except asyncio.TimeoutError:
-                return InteractionResult(
-                    request_id=request_id,
-                    status="timeout",
-                    reason="timeout",
-                )
+            return await asyncio.wait_for(future, timeout=float(timeout_seconds))
+        except asyncio.TimeoutError:
+            return InteractionResult(request_id=request_id, status="timeout", reason="timeout")
         finally:
             self._pending.pop(request_id, None)
 
-    def answer(
-        self,
-        request_id: str,
-        *,
-        answer: Any = None,
-        decision: str = "",
-        scope: str = "once",
-    ) -> InteractionResult:
-        """Resolve one pending request with a client answer."""
+    def _resolve(self, request_id: str, result: InteractionResult) -> InteractionResult:
         future = self._pending.get(request_id)
         if future is None:
             raise InteractionNotPending(f"No live interaction request: {request_id}")
-        result = InteractionResult(
-            request_id=request_id,
-            status="answered",
-            answer=answer,
-            decision=decision,
-            scope=scope,
-        )
         if not future.done():
             future.set_result(result)
         return result
+
+    def answer(self, request_id: str, *, answer: Any = None, decision: str = "", scope: str = "once") -> InteractionResult:
+        return self._resolve(request_id, InteractionResult(
+            request_id=request_id, status="answered", answer=answer, decision=decision, scope=scope,
+        ))
 
     def cancel(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        """Resolve one pending request as cancelled."""
-        future = self._pending.get(request_id)
-        if future is None:
-            raise InteractionNotPending(f"No live interaction request: {request_id}")
-        result = InteractionResult(
-            request_id=request_id,
-            status="cancelled",
-            reason=reason,
-        )
-        if not future.done():
-            future.set_result(result)
-        return result
+        return self._resolve(request_id, InteractionResult(
+            request_id=request_id, status="cancelled", reason=reason,
+        ))
 
     def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
-        """Cancel every live request and return the emitted results."""
         results = []
         for request_id in list(self._pending):
             try:

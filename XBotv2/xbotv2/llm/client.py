@@ -142,25 +142,21 @@ def create_mock_llm(responses: list[dict[str, Any]] | None = None) -> Any:
     return MockLLM(responses=responses)
 
 
-def provider_values(provider_config: Any) -> tuple[str, str, str | None, str, float, int, list[dict[str, Any]]]:
+def _get_cfg(provider_config: Any, key: str, default: Any = None) -> Any:
     if isinstance(provider_config, dict):
-        return (
-            provider_config.get("provider", "openai"),
-            provider_config.get("model", "gpt-4"),
-            provider_config.get("base_url"),
-            provider_config.get("api_key", ""),
-            provider_config.get("temperature", 0.7),
-            provider_config.get("max_tokens", 4096),
-            provider_config.get("mock_responses", []),
-        )
+        return provider_config.get(key, default)
+    return getattr(provider_config, key, default)
+
+
+def provider_values(provider_config: Any) -> tuple[str, str, str | None, str, float, int, list[dict[str, Any]]]:
     return (
-        getattr(provider_config, "provider", "openai"),
-        getattr(provider_config, "model", "gpt-4"),
-        getattr(provider_config, "base_url", None),
-        getattr(provider_config, "api_key", ""),
-        getattr(provider_config, "temperature", 0.7),
-        getattr(provider_config, "max_tokens", 4096),
-        getattr(provider_config, "mock_responses", []),
+        _get_cfg(provider_config, "provider", "openai"),
+        _get_cfg(provider_config, "model", "gpt-4"),
+        _get_cfg(provider_config, "base_url"),
+        _get_cfg(provider_config, "api_key", ""),
+        _get_cfg(provider_config, "temperature", 0.7),
+        _get_cfg(provider_config, "max_tokens", 4096),
+        _get_cfg(provider_config, "mock_responses", []),
     )
 
 

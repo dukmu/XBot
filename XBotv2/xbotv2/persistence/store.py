@@ -94,6 +94,7 @@ class CoreStateStore:
         self.messages_path = self.root / "messages.jsonl"
         self.plugin_states_dir = self.root / "plugin_states"
         self.artifacts_dir = self.root / "artifacts"
+        self._max_msg_id = 0
 
     @classmethod
     def create(
@@ -238,14 +239,13 @@ class CoreStateStore:
             path.unlink()
 
     def _next_message_id(self) -> int:
-        if not self.messages_path.exists():
-            return 1
-        max_id = 0
-        for d in _iter_jsonl(self.messages_path):
-            mid = d.get("msg_id", 0)
-            if mid > max_id:
-                max_id = mid
-        return max_id + 1
+        if self._max_msg_id == 0 and self.messages_path.exists():
+            for d in _iter_jsonl(self.messages_path):
+                mid = d.get("msg_id", 0)
+                if mid > self._max_msg_id:
+                    self._max_msg_id = mid
+        self._max_msg_id += 1
+        return self._max_msg_id
 
     def _read_all_plugin_states(self) -> dict[str, Any]:
         result: dict[str, Any] = {}

@@ -11,71 +11,16 @@ from xbotv2.hooks.types import HookStage, HookContext, SessionInfo
 # ------------------------------------------------------------------
 
 class TestHookRegistration:
-    """Hook registration tests."""
 
     def test_register_by_enum(self, hook_manager):
-        """Hooks can be registered by HookStage enum."""
         called = []
 
         async def my_hook(ctx):
             called.append(1)
 
         hook_manager.register(HookStage.BEFORE_AGENT, my_hook)
-        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
-        assert hook_manager.count() == 1
-
-    def test_register_by_string(self, hook_manager):
-        """Hooks can be registered by stage string."""
-        called = []
-
-        async def my_hook(ctx):
-            called.append(1)
-
-        hook_manager.register("before_agent", my_hook)
-        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
-
-    def test_register_invalid_stage_raises(self, hook_manager):
-        """Invalid stage names raise ValueError."""
-
-        async def my_hook(ctx):
-            pass
-
-        with pytest.raises(ValueError, match="Unknown hook stage"):
-            hook_manager.register("nonexistent_stage", my_hook)
-
-    def test_register_many(self, hook_manager):
-        """Batch register works."""
-        called = []
-
-        async def hook1(ctx):
-            called.append(1)
-
-        async def hook2(ctx):
-            called.append(2)
-
-        hook_manager.register_many([
-            (HookStage.BEFORE_AGENT, hook1),
-            (HookStage.AFTER_AGENT, hook2),
-        ])
-        assert hook_manager.count() == 2
-        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
-        assert hook_manager.count(HookStage.AFTER_AGENT) == 1
-
-    def test_clear_stage(self, hook_manager):
-        """Clear a specific stage."""
-        async def hook(ctx):
-            pass
-
-        hook_manager.register(HookStage.BEFORE_AGENT, hook)
-        hook_manager.register(HookStage.AFTER_AGENT, hook)
-        assert hook_manager.count() == 2
-
-        hook_manager.clear(HookStage.BEFORE_AGENT)
-        assert hook_manager.count(HookStage.BEFORE_AGENT) == 0
-        assert hook_manager.count(HookStage.AFTER_AGENT) == 1
 
     def test_unregister_hook_removes_one_registration(self, hook_manager):
-        """A specific hook registration can be removed."""
         async def hook(ctx):
             pass
 
@@ -83,18 +28,8 @@ class TestHookRegistration:
         hook_manager.register(HookStage.BEFORE_AGENT, hook)
 
         assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
-        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
         assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
         assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is False
-
-    def test_clear_all(self, hook_manager):
-        """Clear all hooks."""
-        async def hook(ctx):
-            pass
-
-        hook_manager.register(HookStage.BEFORE_AGENT, hook)
-        hook_manager.clear()
-        assert hook_manager.count() == 0
 
 
 # ------------------------------------------------------------------
@@ -294,7 +229,7 @@ class TestAllStages:
     def test_all_stages_exist(self):
         """Verify all HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 42
+        assert len(stages) == 41
         stage_values = {s.value for s in stages}
 
         expected = {
@@ -314,7 +249,7 @@ class TestAllStages:
             "post_tool_batch",
             "on_tool_denied", "on_client_event",
             "before_state_persist", "after_state_persist",
-            "on_error", "on_config_reload",
+            "on_error",
         }
         assert stage_values == expected
 

@@ -841,7 +841,7 @@ class Engine:
                 if isinstance(chunk, XBotModelResponse):
                     aggregate = chunk
                     continue
-                aggregate = chunk  # type: ignore[assignment]
+                logger.warning("_stream_model_response: unexpected chunk type %s", type(chunk).__name__)
 
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")

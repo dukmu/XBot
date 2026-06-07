@@ -75,7 +75,6 @@ class HookStage(enum.Enum):
 
     # -- System events ----------------------------------------------------
     ON_ERROR = "on_error"
-    ON_CONFIG_RELOAD = "on_config_reload"
 
 
 # Stages that permit short-circuit (first truthy return stops execution)
@@ -91,12 +90,6 @@ SHORT_CIRCUIT_STAGES = frozenset({
     HookStage.BEFORE_TOOLS,
     HookStage.BEFORE_TOOL_CALL,
     HookStage.AFTER_TOOLS,
-})
-
-# Stages where pluggable tool registration is allowed
-TOOL_REGISTRATION_STAGES = frozenset({
-    HookStage.ON_SESSION_INIT,
-    HookStage.ON_CONFIG_RELOAD,
 })
 
 # Stages where hook failures must be visible to the caller. The manager still

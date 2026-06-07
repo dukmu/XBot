@@ -15,7 +15,6 @@ Message structure (cache-friendly):
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -250,12 +249,8 @@ class ContextBuilder:
         system_notice: str,
     ) -> str:
         """Build the stable system prompt prefix. Memoized."""
-        key = hashlib.sha256(
-            "|".join([
-                agent_name, agent_role, user_name, user_id,
-                instructions, memory, sandbox_summary, system_notice,
-            ]).encode()
-        ).hexdigest()
+        key = (agent_name, agent_role, user_name, user_id,
+               instructions, memory, sandbox_summary, system_notice)
 
         if self._cached_prefix is not None and key == self._cached_prefix_key:
             return self._cached_prefix
