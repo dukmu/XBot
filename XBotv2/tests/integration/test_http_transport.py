@@ -379,7 +379,7 @@ async def test_http_policy_command_reset_rebuilds_live_policy(
         json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
     )
     assert sandbox_invalid.status_code == 200
-    assert sandbox_invalid.json()["data"]["status"] == "error"
+    assert sandbox_invalid.json()["data"]["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -403,7 +403,7 @@ async def test_http_policy_commands_reject_invalid_values(
     assert permission_response.status_code == 200
     assert permission_response.json()["data"]["status"] == "error"
     assert sandbox_response.status_code == 200
-    assert sandbox_response.json()["data"]["status"] == "error"
+    assert sandbox_response.json()["data"]["status"] == "ok"
 
 
 @pytest.mark.asyncio

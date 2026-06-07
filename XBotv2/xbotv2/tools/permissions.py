@@ -49,14 +49,7 @@ class PermissionSystem:
     # ------------------------------------------------------------------
 
     def _load_config(self, config: Any) -> None:
-        """Load rules from a config object.
-
-        Accepts either a dict with deny/allow/ask keys (from JSON/permissions)
-        or a Pydantic model with the same structure.
-        """
-        if hasattr(config, "dict"):
-            data = config.dict()
-        elif hasattr(config, "model_dump"):
+        if hasattr(config, "model_dump"):
             data = config.model_dump()
         elif isinstance(config, dict):
             data = config

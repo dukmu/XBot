@@ -104,8 +104,6 @@ class SessionManager:
                 raise ValueError("resume mode requires session_id")
             if mode == "new":
                 session_id = session_id or _new_session_id()
-                if session_id in self._sessions:
-                    raise ValueError(f"session already exists: {session_id}")
             assert session_id is not None
             existing = self._sessions.get(session_id)
             if existing is not None:
@@ -281,10 +279,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/sessions/{session_id}/commands")
     async def run_command(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            ctx = await manager.get(session_id)
-        except SessionNotFound as exc:
-            raise HttpServerError("session_not_found", str(exc), status=404) from exc
+        ctx = await manager.get(session_id)
         raw = str(payload.get("raw") or "")
         command = str(payload.get("command") or "").strip().removeprefix("/")
         args = payload.get("args")
@@ -431,10 +426,11 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.exception_handler(HttpServerError)
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status,
-            content={"code": exc.code, "message": exc.message},
-        )
+        return JSONResponse(status_code=exc.status, content={"code": exc.code, "message": exc.message})
+
+    @app.exception_handler(SessionNotFound)
+    async def _on_session_not_found(_: Request, exc: SessionNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"code": "session_not_found", "message": str(exc)})
 
 
 def _new_session_id() -> str:

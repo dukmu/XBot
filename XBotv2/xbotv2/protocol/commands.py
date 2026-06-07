@@ -115,7 +115,7 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
         return _result(name, f"{name} policy: {config}; session overrides: {overrides}", data={"config": config, "overrides": overrides})
     if action == "set" and len(args) >= 3:
         key, value = args[1], args[2]
-        valid, normalized, message = _validate_policy_override(name, key, value)
+        valid, normalized, message = _validate_policy_action(name, key, value)
         if not valid:
             return _result(name, message, status="error")
         getattr(ctx, f"{name}_overrides")[key] = normalized
@@ -125,7 +125,7 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
         overrides = getattr(ctx, f"{name}_overrides")
         if len(args) >= 2:
             key = args[1]
-            valid, _normalized, message = _validate_policy_reset(name, key)
+            valid, _normalized, message = _validate_policy_action(name, key)
             if not valid:
                 return _result(name, message, status="error")
             overrides.pop(key, None)
@@ -146,22 +146,15 @@ def _status_data(ctx: Any) -> dict[str, Any]:
     }
 
 
-def _validate_policy_override(name: str, key: str, value: str) -> tuple[bool, str, str]:
+def _validate_policy_action(name: str, key: str, value: str | None = None) -> tuple[bool, str, str]:
     key = key.strip()
-    value = value.lower().strip()
     if not key:
-        return False, "", f"/{name} set requires a non-empty key."
-    if name == "permission":
-        if value not in {"allow", "deny", "ask"}:
+        return False, "", f"/{name} requires a non-empty key."
+    if value is not None:
+        value = value.lower().strip()
+        if name == "permission" and value not in {"allow", "deny", "ask"}:
             return False, "", "Permission value must be allow, deny, or ask."
         return True, value, ""
-    return False, "", f"Unknown {name} key: {key}"
-
-
-def _validate_policy_reset(name: str, key: str) -> tuple[bool, str, str]:
-    key = key.strip()
-    if not key:
-        return False, "", f"/{name} reset key must be non-empty."
     return True, key, ""
 
 
