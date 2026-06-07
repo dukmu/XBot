@@ -18,6 +18,7 @@ class TuiSessionConfig:
     session_mode: str | None = None
     no_plugins: bool = False
     base_url: str = "http://127.0.0.1:4096"
+    uds_path: str | None = None
 
     def create_terminal_session(self) -> TerminalSession:
         return TerminalSession(
@@ -29,4 +30,5 @@ class TuiSessionConfig:
             session_mode=self.session_mode,
             no_plugins=self.no_plugins,
             base_url=self.base_url,
+            uds_path=self.uds_path,
         )

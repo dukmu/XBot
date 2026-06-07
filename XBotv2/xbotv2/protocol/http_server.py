@@ -114,7 +114,7 @@ class SessionManager:
             if mode == "resume" and not state_root.exists():
                 raise SessionNotFound(session_id)
             if mode == "new" and state_root.exists():
-                raise ValueError(f"session state already exists: {session_id}")
+                mode = "resume"
             engine = await bootstrap(
                 config_dir=data_dir,
                 provider_name=provider_name,

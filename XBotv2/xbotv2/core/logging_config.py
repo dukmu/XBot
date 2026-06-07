@@ -117,7 +117,7 @@ def setup_logging(
         path = _resolve_log_file(data_dir)
 
     if also_stderr is None:
-        also_stderr = sys.stderr.isatty()
+        also_stderr = False
 
     root = logging.getLogger("xbotv2")
     # Avoid stacking handlers if setup_logging is called twice

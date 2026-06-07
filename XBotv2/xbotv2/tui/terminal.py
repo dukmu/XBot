@@ -64,6 +64,7 @@ class TerminalSession:
         no_plugins: bool = False,
         transport: Transport | None = None,
         token: str | None = None,
+        uds_path: str | None = None,
     ) -> None:
         self._data_dir = str(data_dir)
         self._provider_name = provider_name
@@ -72,7 +73,7 @@ class TerminalSession:
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
         self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
-        self._transport: Transport = transport or HttpTransport(base_url, token=token)
+        self._transport: Transport = transport or HttpTransport(base_url, token=token, uds_path=uds_path)
         self._connected = False
 
     @property

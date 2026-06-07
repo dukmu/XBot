@@ -26,16 +26,19 @@ class HttpTransport:
         *,
         token: str | None = None,
         timeout: float = 30.0,
+        uds_path: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        transport = httpx.AsyncHTTPTransport(uds=uds_path) if uds_path else None
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=headers,
             timeout=timeout,
+            transport=transport,
         )
         self._closed = False
 

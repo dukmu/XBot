@@ -86,6 +86,11 @@ def main():
         help="TUI mode only: connect to a specific HTTP server URL instead of auto-spawning",
     )
     parser.add_argument(
+        "--uds",
+        default=None,
+        help="Unix domain socket path (auto-generated when TUI spawns server without --server)",
+    )
+    parser.add_argument(
         "prompt", nargs="?", default=None, help="Single-shot prompt (for --mode once) or attach URL"
     )
     parser.add_argument(
@@ -129,28 +134,20 @@ def main():
 
 
 def _run_server(args) -> None:
-    """Run the HTTP/SSE server with uvicorn (v1: loopback only)."""
+    """Run the HTTP/SSE server with uvicorn."""
 
-    logging.getLogger("xbotv2").info(
-        "starting server mode data_dir=%s workspace=%s provider=%s bind=%s port=%s",
-        args.data_dir,
-        _workspace_root(args),
-        args.provider,
-        args.bind,
-        args.port,
-    )
-
-    if args.bind != "127.0.0.1":
-        print(
-            f"Error: --bind {args.bind} is not supported in v1; "
-            "use 127.0.0.1 only (see docsv2 §10.5.7).",
-            file=sys.stderr,
+    if not getattr(args, "uds", None):
+        logging.getLogger("xbotv2").info(
+            "starting server mode data_dir=%s workspace=%s provider=%s bind=%s port=%s",
+            args.data_dir, _workspace_root(args), args.provider, args.bind, args.port,
         )
-        sys.exit(2)
+        if args.bind != "127.0.0.1":
+            print(f"Error: --bind {args.bind} is not supported in v1; use 127.0.0.1 only (see docsv2 §10.5.7).", file=sys.stderr)
+            sys.exit(2)
 
     try:
         import uvicorn
-    except ImportError as exc:  # noqa: BLE001
+    except ImportError as exc:
         print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
         sys.exit(2)
 
@@ -162,42 +159,43 @@ def _run_server(args) -> None:
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
     )
-    uvicorn.run(
-        app,
-        host=args.bind,
-        port=args.port,
-        log_level="warning",
-    )
+    uds = getattr(args, "uds", None)
+    if uds:
+        uvicorn.run(app, uds=uds, log_level="warning")
+    else:
+        uvicorn.run(app, host=args.bind, port=args.port, log_level="warning")
 
 
 def _run_tui(args) -> None:
-    """Run the Textual TUI; auto-spawn an HTTP server unless --server is given."""
+    """Run the Textual TUI; auto-spawn server on Unix socket unless --server is given."""
 
     logging.getLogger("xbotv2").info(
         "starting tui mode data_dir=%s workspace=%s provider=%s server=%s log_file=%s log_level=%s",
-        args.data_dir,
-        _workspace_root(args),
-        args.provider,
-        args.server,
-        args.log_file,
-        args.log_level,
+        args.data_dir, _workspace_root(args), args.provider, args.server, args.log_file, args.log_level,
     )
 
     server_url = args.server
+    uds_path: str | None = getattr(args, "uds", None)
     spawned_server: subprocess.Popen | None = None
 
     if server_url is None:
-        # Auto-spawn a server subprocess and wait for /health.
-        server_url = f"http://127.0.0.1:{args.port}"
+        if uds_path is None:
+            uds_path = f"/tmp/xbotv2-{os.getpid()}.sock"
+        server_url = "http://localhost"
+        args.uds = uds_path
         spawned_server = _spawn_server(args)
-        if not _wait_for_health(server_url, timeout=15.0):
-            print(
-                f"Error: spawned server at {server_url} did not become healthy",
-                file=sys.stderr,
-            )
+        if not _wait_for_health(server_url, timeout=15.0, uds_path=uds_path):
+            print(f"Error: spawned server at {uds_path} did not become healthy", file=sys.stderr)
             if spawned_server is not None:
+                if spawned_server.poll() is not None:
+                    _, err = spawned_server.communicate(timeout=1)
+                    if err:
+                        print("Server stderr:", file=sys.stderr)
+                        for line in err.decode("utf-8", errors="replace").splitlines()[-20:]:
+                            print(f"  {line}", file=sys.stderr)
                 spawned_server.terminate()
                 spawned_server.wait()
+            _cleanup_socket(uds_path)
             sys.exit(2)
 
     from xbotv2.tui.textual_client import TextualTuiClient
@@ -210,6 +208,7 @@ def _run_tui(args) -> None:
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         base_url=server_url,
+        uds_path=uds_path,
     )
     try:
         asyncio.run(client.run())
@@ -220,6 +219,15 @@ def _run_tui(args) -> None:
                 spawned_server.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 spawned_server.kill()
+            _cleanup_socket(uds_path)
+
+
+def _cleanup_socket(path: str | None) -> None:
+    if path and os.path.exists(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _run_attach(args, url: str) -> None:
@@ -240,52 +248,53 @@ def _run_attach(args, url: str) -> None:
 
 
 def _spawn_server(args) -> subprocess.Popen:
-    """Launch an HTTP server as a subprocess and return the Popen handle."""
+    """Launch a server as a subprocess and return the Popen handle."""
 
     env = os.environ.copy()
     env["PYTHONPATH"] = _spawn_pythonpath()
     cmd = [
-        sys.executable,
-        str(Path(__file__).resolve()),
+        sys.executable, str(Path(__file__).resolve()),
         "--data-dir", args.data_dir,
         "--provider", args.provider,
         "--workspace", str(_workspace_root(args)),
         "--mode", "server",
-        "--bind", args.bind,
-        "--port", str(args.port),
         "--log-level", args.log_level,
     ]
+    uds = getattr(args, "uds", None)
+    if uds:
+        cmd.extend(["--uds", uds])
+    else:
+        cmd.extend(["--bind", args.bind, "--port", str(args.port)])
     if args.log_file:
         cmd.extend(["--log-file", args.log_file])
     if args.no_plugins:
         cmd.append("--no-plugins")
     logging.getLogger("xbotv2").info("spawning server subprocess cmd=%s", cmd)
     return subprocess.Popen(
-        cmd,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=None,
+        cmd, env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
 
 
-def _wait_for_health(url: str, *, timeout: float) -> bool:
+def _wait_for_health(url: str, *, timeout: float, uds_path: str | None = None) -> bool:
     """Poll GET /health until 200 or timeout."""
 
     import httpx
-
-    deadline = asyncio.get_event_loop().time() + timeout if asyncio.get_event_loop().is_running() else None
-    # Simple synchronous polling loop to keep the boot path linear.
     import time
+
+    client = httpx.Client(transport=httpx.HTTPTransport(uds=uds_path)) if uds_path else httpx.Client()
     end = time.time() + timeout
     while time.time() < end:
         try:
-            response = httpx.get(f"{url}/health", timeout=1.0)
+            response = client.get(f"{url}/health", timeout=1.0)
             if response.status_code == 200:
+                client.close()
                 return True
         except Exception:
             pass
         time.sleep(0.1)
+    client.close()
     return False
 
 

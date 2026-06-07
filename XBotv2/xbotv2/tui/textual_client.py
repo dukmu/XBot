@@ -70,6 +70,7 @@ class TextualTuiClient:
         session_mode: str | None = None,
         no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
+        uds_path: str | None = None,
     ) -> None:
         config = TuiSessionConfig(
             data_dir=data_dir,
@@ -80,6 +81,7 @@ class TextualTuiClient:
             session_mode=session_mode,
             no_plugins=no_plugins,
             base_url=base_url,
+            uds_path=uds_path,
         )
         self.app = XBotTextualApp(config=config)
 
@@ -119,6 +121,7 @@ class XBotTextualApp(App[None]):
         session_mode: str | None = None,
         no_plugins: bool = False,
         base_url: str = "http://127.0.0.1:4096",
+        uds_path: str | None = None,
     ) -> None:
         super().__init__()
         if config is None:
@@ -131,6 +134,7 @@ class XBotTextualApp(App[None]):
                 session_mode=session_mode,
                 no_plugins=no_plugins,
                 base_url=base_url,
+                uds_path=uds_path,
             )
         self.session = config.create_terminal_session()
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
