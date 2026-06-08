@@ -222,6 +222,7 @@ class XBotTextualApp(App[None]):
         text = _repair_mojibake(composer.text.strip())
         trace_event("tui.submit", {"text": text, "repr": repr(text)})
         composer.load_text("")
+        composer.clear()
         self._history_index = None
         self._resize_composer()
         if not text:
@@ -354,29 +355,21 @@ class XBotTextualApp(App[None]):
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
-        if spec.kind == "skill":
-            await self._send_skill_message(spec)
-            return
         await self._run_server_command(spec)
-
-    async def _send_skill_message(self, spec: CommandSpec) -> None:
-        """Send skill command directly as a user message.
-        
-        Server-side BEFORE_USER_MESSAGE_ACCEPT hook in SkillsPlugin
-        detects /skill-name prefix and expands with SKILL.md content.
-        """
-        composer = self.query_one("#input", ComposerTextArea)
-        composer.load_text(spec.raw)
-        await self.submit_composer()
 
     async def _run_server_command(self, spec: CommandSpec) -> None:
         if not self._connected:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
+        if spec.kind not in ("server",):
+            self.state.append_message("user", spec.raw)
+            await self._render_new_transcript_entries()
+            await self._collect_response(spec.raw)
+            return
         parts = [part for part in spec.args.split() if part]
         try:
             result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._record_error(exc)
             return
         data = result.get("data") if isinstance(result, dict) else {}
@@ -593,8 +586,8 @@ class XBotTextualApp(App[None]):
         if event_type == "turn_started":
             self.state.turn_active = True
             self.state.turn = int(event.get("data", {}).get("turn", self.state.turn))
-            self._turn_started_at[self.state.turn] = time.monotonic()
             self._finalize_activity()
+            await self._append_activity()
         elif event_type == "turn_finished":
             self.state.turn_active = False
             await self._cancel_stream_timer()
@@ -994,6 +987,9 @@ class XBotTextualApp(App[None]):
             body.update(render_text(message.content))
         elif message.content:
             await widget.mount(Static(render_text(message.content), classes="body"))
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is not None:
+            stream.scroll_end(animate=False)
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
