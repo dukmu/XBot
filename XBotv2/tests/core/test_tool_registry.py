@@ -163,8 +163,8 @@ class TestFiltering:
         assert tool_registry.get("tool_a") is not None
         assert tool_registry.get("tool_b") is None
 
-    def test_restrict_expands_prefix_and_rejects_unknown(self, tool_registry):
-        """Restrict supports group selectors but fails on unknown selectors."""
+    def test_restrict_expands_prefix_and_silently_ignores_unmatched(self, tool_registry):
+        """Restrict supports group selectors; unmatched selectors are silently ignored."""
         tool_registry.register(filesystem_read)
         tool_registry.register(filesystem_write)
         tool_registry.register(tool_a)
@@ -172,8 +172,8 @@ class TestFiltering:
         tool_registry.restrict(["filesystem"])
         assert set(tool_registry.names()) == {"filesystem_read", "filesystem_write"}
 
-        with pytest.raises(ValueError, match="Unknown tool selector"):
-            tool_registry.restrict(["missing"])
+        tool_registry.restrict(["missing"])
+        assert tool_registry.names() == []
 
 
 class TestQuery:

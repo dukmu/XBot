@@ -39,16 +39,12 @@ class Transport(Protocol):
     ) -> dict[str, Any]:
         """Open or resume a session. Returns the agent_name and status."""
 
-    async def list_commands(self) -> dict[str, Any]:
+    async def list_commands(self, session_id: str | None = None) -> dict[str, Any]:
         """Return server command metadata for completion/help."""
 
     async def run_command(
-        self,
-        *,
-        session_id: str,
-        command: str,
-        args: list[str],
-        raw: str,
+        self, *, session_id: str, command: str, args: list[str], raw: str,
+        kind: str = "server",
     ) -> dict[str, Any]:
         """Execute a server-side slash command."""
 

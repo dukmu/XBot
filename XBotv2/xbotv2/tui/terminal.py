@@ -110,14 +110,15 @@ class TerminalSession:
         self._connected = True
 
     async def list_commands(self) -> dict[str, Any]:
-        return await self._transport.list_commands()
+        return await self._transport.list_commands(self._session_id)
 
-    async def run_command(self, command: str, args: list[str], raw: str) -> dict[str, Any]:
+    async def run_command(self, command: str, args: list[str], raw: str, *, kind: str = "server") -> dict[str, Any]:
         return await self._transport.run_command(
             session_id=self._session_id,
             command=command,
             args=args,
             raw=raw,
+            kind=kind,
         )
 
     async def disconnect(self) -> None:

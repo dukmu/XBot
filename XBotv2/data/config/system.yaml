@@ -5,6 +5,9 @@ max_context_tokens: 32000
 tools:
   - shell
   - filesystem
+  - plugin:skills:*
+  - skills:*:*
+  - mcp:*:*
 plugins: {}
 hooks: []
 instructions: |

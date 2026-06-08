@@ -808,3 +808,54 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         and event.get("data", {}).get("status") == "success"
         for event in events
     )
+
+
+# ------------------------------------------------------------------
+# Skills + MCP integration (server-side)
+# ------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A FastAPI app with plugins enabled and skills discoverable."""
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "config" / "providers.yaml").write_text(
+        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
+        encoding="utf-8",
+    )
+    (data_dir / "config" / "user.yaml").write_text(
+        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
+        encoding="utf-8",
+    )
+    (data_dir / "config" / "system.yaml").write_text(
+        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
+        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+        "sandbox:\n  enabled: false\n  resources: []\n",
+        encoding="utf-8",
+    )
+
+    app = create_app(provider_name="default", data_dir=str(data_dir), no_plugins=False)
+    set_llm_override(app, MockLLM(responses=[{"content": "ok"}]))
+    return app
+
+
+@pytest_asyncio.fixture
+async def skills_client(skills_app) -> AsyncIterator[httpx.AsyncClient]:
+    transport = ASGITransport(app=skills_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_http_server_commands_include_kind(
+    skills_client: httpx.AsyncClient,
+) -> None:
+    """Server commands now include kind field."""
+    resp = await skills_client.get("/commands")
+    assert resp.status_code == 200
+    body = resp.json()
+    cmds = body.get("commands", [])
+    assert len(cmds) >= 4  # status, provider, permission, sandbox
+    kinds = {c.get("kind", "") for c in cmds}
+    assert "server" in kinds

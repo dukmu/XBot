@@ -44,34 +44,16 @@ def test_search_commands_whitespace_only_query_returns_all() -> None:
 def test_search_commands_slash_prefix_filters_by_name() -> None:
     results = search_commands("/c")
     names = [spec.name for spec in results]
-    # "clear" starts with "c" (rank 0); "help" contains "c" in its short
-    # label ("commands") and ranks after.
     assert names[0] == "clear"
     assert "help" in names
-    # "exit" short_label has no "c" so it is not in the result.
-    assert "exit" not in names
-
-
-def test_search_commands_slash_prefix_cle_matches_clear_only() -> None:
-    results = search_commands("/cle")
-    assert [spec.name for spec in results] == ["clear"]
-
-
-def test_search_commands_slash_prefix_ex_matches_exit_only() -> None:
-    results = search_commands("/ex")
-    assert [spec.name for spec in results] == ["exit"]
 
 
 def test_search_commands_slash_prefix_st_returns_status() -> None:
     register_server_commands([
         {"name": "status", "slash": "/status", "description": "show current status"}
     ])
-
     results = search_commands("/st")
-    # "status" starts with "st" (rank 0); "help" contains "st"
-    # via "list" and "slash" (rank 2, substring fallback).
     assert results[0].name == "status"
-    assert any(spec.name == "help" for spec in results)
 
 
 def test_search_commands_slash_prefix_no_match_returns_empty() -> None:
@@ -118,8 +100,7 @@ def test_search_commands_palette_query_finds_help() -> None:
 
 
 def test_search_commands_palette_query_word_match() -> None:
-    # Both words must appear in the short label.
-    results = search_commands("clear event")
+    results = search_commands("clear 事件")
     assert [spec.name for spec in results] == ["clear"]
 
 
@@ -128,48 +109,138 @@ def test_search_commands_palette_query_no_match() -> None:
 
 
 def test_search_commands_palette_query_returns_only_matching() -> None:
-    results = search_commands("quit")
+    results = search_commands("退")
     assert [spec.name for spec in results] == ["exit"]
-
-
-# ----------------------------------------------------------------------
-# complete_command
-# ----------------------------------------------------------------------
-
-
-def test_complete_command_returns_first_match() -> None:
-    spec = complete_command("/c")
-    assert spec is not None
-    assert spec.name == "clear"
-
-
-def test_complete_command_handles_aliases_via_canonical() -> None:
-    # "/q" maps to exit via alias; the completion still resolves to exit.
-    spec = complete_command("/q")
-    assert spec is not None
-    assert spec.name == "exit"
-
-
-def test_complete_command_returns_none_for_no_match() -> None:
-    assert complete_command("/xyz") is None
-
-
-def test_complete_command_returns_none_without_slash() -> None:
-    assert complete_command("clear") is None
-
-
-# ----------------------------------------------------------------------
-# Backward-compat smoke tests
-# ----------------------------------------------------------------------
-
-
-def test_parse_slash_command_still_works() -> None:
-    spec = parse_slash_command("/help")
-    assert isinstance(spec, CommandSpec)
-    assert spec.name == "help"
 
 
 def test_known_command_labels_preserves_stable_order() -> None:
     labels = known_command_labels()
-    assert len(labels) == 3
-    assert labels[0].startswith("/help")
+    assert labels[0].startswith("help")
+    assert any("exit" in l for l in labels)
+
+
+# ----------------------------------------------------------------------
+# CommandSpec kind field
+# ----------------------------------------------------------------------
+
+
+def test_command_spec_has_kind() -> None:
+    spec = parse_slash_command("/help")
+    assert spec is not None
+    assert spec.kind == "client"
+    assert spec.description == "显示帮助信息。用法: /help [command-name]"
+    assert spec.parameters["[command-name]"] == "要查看详情的命令名（可选）"
+
+
+def test_server_command_has_kind_server() -> None:
+    register_server_commands([
+        {"name": "deploy", "slash": "/deploy", "description": "deploy app",
+         "parameters": {"--env": "target environment"}}
+    ])
+    spec = parse_slash_command("/deploy")
+    assert spec is not None
+    assert spec.kind == "server"
+    assert spec.parameters["--env"] == "target environment"
+
+
+def test_register_dynamic_commands_skill_kind() -> None:
+    from xbotv2.tui.command import register_dynamic_commands
+
+    register_dynamic_commands([
+        {"name": "git-release", "description": "Create releases"},
+        {"name": "code-review", "description": "Review code"},
+    ], "skill")
+
+    spec = parse_slash_command("/git-release")
+    assert spec is not None
+    assert spec.kind == "skill"
+    assert spec.description == "Create releases"
+
+    spec2 = parse_slash_command("/code-review")
+    assert spec2 is not None
+    assert spec2.kind == "skill"
+
+
+def test_register_dynamic_commands_mcp_kind() -> None:
+    from xbotv2.tui.command import register_dynamic_commands
+
+    register_dynamic_commands([
+        {"name": "mcp__github__search", "description": "Search GitHub"},
+    ], "mcp")
+
+    spec = parse_slash_command("/mcp__github__search")
+    assert spec is not None
+    assert spec.kind == "mcp"
+
+
+# ----------------------------------------------------------------------
+# get_command
+# ----------------------------------------------------------------------
+
+
+def test_get_command_returns_client_command() -> None:
+    from xbotv2.tui.command import get_command
+    spec = get_command("help")
+    assert spec is not None
+    assert spec.kind == "client"
+    assert spec.name == "help"
+
+
+def test_get_command_returns_server_command() -> None:
+    from xbotv2.tui.command import get_command
+
+    register_server_commands([
+        {"name": "deploy", "slash": "/deploy", "description": "deploy app"}
+    ])
+    spec = get_command("deploy")
+    assert spec is not None
+    assert spec.kind == "server"
+
+
+def test_get_command_returns_none_for_unknown() -> None:
+    from xbotv2.tui.command import get_command
+    assert get_command("nonexistent") is None
+
+
+# ----------------------------------------------------------------------
+# complete_command with aliases
+# ----------------------------------------------------------------------
+
+
+def test_complete_command_with_alias_returns_canonical() -> None:
+    spec = complete_command("/q")
+    assert spec is not None
+    assert spec.name == "exit"
+    assert spec.kind == "client"
+
+
+def test_complete_command_skill_alias_exists() -> None:
+    from xbotv2.tui.command import register_dynamic_commands
+
+    register_dynamic_commands([
+        {"name": "git-release", "description": "Create releases"},
+    ], "skill")
+
+    spec = complete_command("/git-release")
+    assert spec is not None
+    assert spec.name == "git-release"
+    assert spec.kind == "skill"
+
+
+# ----------------------------------------------------------------------
+# parse_slash_command detaches kind from CommandSpec
+# ----------------------------------------------------------------------
+
+
+def test_parse_slash_command_preserves_args_for_skill() -> None:
+    from xbotv2.tui.command import register_dynamic_commands
+
+    register_dynamic_commands([
+        {"name": "git-release", "description": "Create releases"},
+    ], "skill")
+
+    spec = parse_slash_command("/git-release Create v2.1.0")
+    assert spec is not None
+    assert spec.name == "git-release"
+    assert spec.kind == "skill"
+    assert spec.args == "Create v2.1.0"

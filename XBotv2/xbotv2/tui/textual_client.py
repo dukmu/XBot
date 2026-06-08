@@ -27,6 +27,7 @@ from xbotv2.tui.client import (
 )
 from xbotv2.tui.command import (
     CommandSpec,
+    get_command,
     is_slash_command,
     known_command_labels,
     parse_slash_command,
@@ -55,6 +56,11 @@ from xbotv2.tui.textual_widgets import (
 
 
 logger = logging.getLogger("xbotv2.tui")
+
+
+def _kind_tag(kind: str) -> str:
+    _tags = {"client": "client cmd", "server": "server cmd", "skill": "skill", "tool": "tool", "mcp": "mcp"}
+    return f"[{_tags.get(kind, kind)}]"
 
 
 class TextualTuiClient:
@@ -331,15 +337,9 @@ class XBotTextualApp(App[None]):
         return Mode.COMPOSING
 
     async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
-        """Execute a parsed slash command.
-
-        Slash commands are local TUI operations and never reach the server
-        (per design doc §9.2).
-        """
-
         if spec is None:
             return
-        trace_event("tui.slash", {"name": spec.name, "raw": spec.raw})
+        trace_event("tui.slash", {"name": spec.name, "raw": spec.raw, "kind": spec.kind})
         if spec.name == "exit":
             self.exit()
             return
@@ -347,15 +347,40 @@ class XBotTextualApp(App[None]):
             await self._cmd_clear()
             return
         if spec.name == "help":
-            await self._cmd_help()
-            return
-        if spec.name == "status":
-            await self._run_server_command(spec)
+            await self._cmd_help(spec.args.strip() if spec.args else None)
             return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
+        if spec.kind == "skill":
+            await self._invoke_skill_command(spec)
+            return
         await self._run_server_command(spec)
+
+    async def _invoke_skill_command(self, spec: CommandSpec) -> None:
+        """Get skill content from server, then submit as user message."""
+        if not self._connected:
+            await self._append_local_notice("Not connected", "Server is not ready yet.")
+            return
+        parts = [p for p in spec.args.split() if p]
+        try:
+            result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
+        except Exception as exc:
+            self._record_error(exc)
+            return
+        data = result.get("data") if isinstance(result, dict) else {}
+        content = str(data.get("content") or data.get("message") or "")
+        instructions = spec.args.strip()
+        if instructions:
+            content = content + "\n\n" + instructions
+        if not content:
+            return
+        if hasattr(self, '_turn_worker_running') and self._turn_worker_running:
+            self._outbound_messages.put_nowait(content)
+        else:
+            composer = self.query_one("#input", ComposerTextArea)
+            composer.load_text(content)
+            await self.submit_composer()
 
     async def _run_server_command(self, spec: CommandSpec) -> None:
         if not self._connected:
@@ -363,7 +388,7 @@ class XBotTextualApp(App[None]):
             return
         parts = [part for part in spec.args.split() if part]
         try:
-            result = await self.session.run_command(spec.name, parts, spec.raw)
+            result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
         except Exception as exc:  # noqa: BLE001
             self._record_error(exc)
             return
@@ -394,10 +419,26 @@ class XBotTextualApp(App[None]):
         await self._render_new_transcript_entries()
         self._refresh_all()
 
-    async def _cmd_help(self) -> None:
-        """Append a help block listing the registered slash commands."""
-
-        body = "Slash commands (v1):\n" + "\n".join(known_command_labels())
+    async def _cmd_help(self, command_name: str | None = None) -> None:
+        if command_name:
+            spec = get_command(command_name.strip().lstrip("/"))
+            if spec is None:
+                await self._append_local_notice("Help", f"Unknown command: {command_name}")
+                return
+            lines = [
+                f"{spec.name} [{_kind_tag(spec.kind)}] {spec.description}",
+                "",
+            ]
+            if spec.parameters:
+                lines.append("Parameters:")
+                for param, desc in spec.parameters.items():
+                    lines.append(f"  {param}: {desc}")
+                lines.append("")
+            if spec.raw:
+                lines.append(f"Usage: {spec.raw} [args]")
+            await self._append_local_notice("Help", "\n".join(lines))
+            return
+        body = "Slash commands:\n" + "\n".join(known_command_labels())
         await self._append_local_notice("Help", body)
 
     def _get_completion_popup(self):

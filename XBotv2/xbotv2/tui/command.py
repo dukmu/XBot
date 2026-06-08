@@ -1,34 +1,10 @@
 """Slash command registry for the TUI composer.
 
-v1 ships four commands per the design document §9.2:
+Unified command system: client commands, server commands, skill invocations,
+and tool/MPC tool invocations all share the same CommandSpec format.
 
-- ``/exit`` (alias ``/quit``, ``/q``): quit the TUI.
-- ``/clear``: clear the event stream (session/thread preserved).
-- ``/help``: append help text to the event stream.
-- ``/status``: append a current-state summary to the event stream.
-
-The registry returns a ``CommandSpec`` describing what the caller should do;
-the actual side effects (exit, clear, append notice) live on the app and are
-invoked by the composer. The registry only classifies input.
-
-The registry also drives two v1.1 surfaces:
-
-- **Slash completion** — when the composer text starts with ``/``,
-  :func:`search_commands` returns the commands whose name matches
-  the typed prefix. The completion popup uses this to render the
-  candidate list and Tab accepts the highlighted entry.
-- **Command palette** (Ctrl+P) — :func:`search_commands` also accepts
-  arbitrary fuzzy queries and returns a ranked list, which the
-  palette dialog renders.
-
-Design constraints honored:
-
-- Unknown ``/foo`` is reported as a "not implemented" notice, not sent to
-  the server as a normal message (per §9.2 of the design doc).
-- Slash detection is conservative: a leading ``/`` followed by word chars
-  counts; whitespace terminates the command name.
-- Aliases resolve before unknown-command reporting.
-- Completion is case-insensitive on the leading prefix only.
+Type tags shown in completion:
+  [client cmd] [server cmd] [skill] [tool] [mcp]
 """
 
 from __future__ import annotations
@@ -36,98 +12,102 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-CommandName = str
+CommandKind = Literal["client", "server", "skill", "tool", "mcp"]
 
 
 @dataclass(frozen=True)
 class CommandSpec:
-    """Parsed result of a slash command line."""
-
-    name: CommandName
-    args: str
-    raw: str
-    display_label: str
-    # Optional short description used by the completion popup and the
-    # command palette. Defaults to the same text as display_label for
-    # backward compatibility.
-    short_label: str = field(default="")
+    name: str
+    kind: CommandKind
+    description: str
+    args: str = ""
+    raw: str = ""
+    display_label: str = ""
+    short_label: str = ""
+    parameters: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # object.__setattr__ is needed because the dataclass is frozen.
         if not self.short_label:
-            object.__setattr__(self, "short_label", self.display_label)
+            tag = _KIND_TAGS.get(self.kind, self.kind)
+            object.__setattr__(self, "short_label", f"{self.name} [{tag}] {self.description}")
+        if not self.display_label:
+            object.__setattr__(self, "display_label", self.short_label)
 
 
-# Aliases are normalised to the canonical command name. Keys are the
-# exact text the user must type (with leading slash, lowercase).
-_ALIASES: dict[str, str] = {
-    "/exit": "exit",
-    "/quit": "exit",
-    "/q": "exit",
-    "/clear": "clear",
-    "/help": "help",
+_KIND_TAGS: dict[CommandKind, str] = {
+    "client": "client cmd",
+    "server": "server cmd",
+    "skill": "skill",
+    "tool": "tool",
+    "mcp": "mcp",
 }
 
+_ALIASES: dict[str, str] = {
+    "/exit": "exit", "/quit": "exit", "/q": "exit",
+    "/clear": "clear", "/help": "help",
+}
 
-# Canonical command metadata: the human label rendered in the help/clear
-# confirmation row, and the docstring shown by ``/help``.
 _COMMANDS: dict[str, CommandSpec] = {
     "exit": CommandSpec(
-        name="exit",
-        args="",
+        name="exit", kind="client",
+        description="退出 TUI，不保存",
         raw="/exit",
-        display_label="/exit (alias: /quit, /q) — quit XBotv2 TUI",
-        short_label="/exit  — quit XBotv2 TUI",
+        parameters={"--force": "不保存直接退出"},
     ),
     "clear": CommandSpec(
-        name="clear",
-        args="",
+        name="clear", kind="client",
+        description="清除事件流（session/thread 保留）",
         raw="/clear",
-        display_label="/clear — clear the event stream (session/thread preserved)",
-        short_label="/clear — clear the event stream",
     ),
     "help": CommandSpec(
-        name="help",
-        args="",
+        name="help", kind="client",
+        description="显示帮助信息。用法: /help [command-name]",
         raw="/help",
-        display_label="/help — list available slash commands",
-        short_label="/help — list slash commands",
+        parameters={"[command-name]": "要查看详情的命令名（可选）"},
     ),
 }
 
-
-# Stable search order: keep the help/clear pair first so the most
-# frequently used commands surface at the top of the completion popup
-# and the palette.
 _SEARCH_ORDER: list[str] = ["help", "clear", "exit"]
 
 
 def register_server_commands(commands: list[dict]) -> None:
     for item in commands:
         name = str(item.get("name") or "").strip().removeprefix("/")
-        slash = str(item.get("slash") or f"/{name}")
         if not name:
             continue
+        kind = item.get("kind", "server")
+        slash = item.get("slash", f"/{name}")
         _ALIASES[slash.lower()] = name
         _COMMANDS[name] = CommandSpec(
             name=name,
-            args="",
+            kind=kind,  # type: ignore[arg-type]
+            description=str(item.get("description") or f"server command: {name}"),
             raw=slash,
-            display_label=f"{slash} — {item.get('description') or 'server command'}",
-            short_label=f"{slash} — {item.get('description') or 'server command'}",
+            parameters=item.get("parameters") or {},
+        )
+        if name not in _SEARCH_ORDER:
+            _SEARCH_ORDER.insert(max(0, len(_SEARCH_ORDER) - 1), name)
+
+
+def register_dynamic_commands(items: list[dict], kind: CommandKind) -> None:
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        slash = f"/{name}"
+        _ALIASES[slash.lower()] = name
+        _COMMANDS[name] = CommandSpec(
+            name=name,
+            kind=kind,
+            description=str(item.get("description") or name),
+            raw=slash,
+            parameters=item.get("parameters") or {},
         )
         if name not in _SEARCH_ORDER:
             _SEARCH_ORDER.insert(max(0, len(_SEARCH_ORDER) - 1), name)
 
 
 def parse_slash_command(text: str) -> CommandSpec | None:
-    """Return a ``CommandSpec`` if ``text`` is a recognised slash command.
-
-    Returns ``None`` for normal text (no leading ``/``) and a spec with
-    ``name="unknown"`` for unrecognised slash commands. The spec preserves
-    the original text so the caller can echo it back as a notice.
-    """
-
     stripped = text.strip()
     if not stripped.startswith("/"):
         return None
@@ -135,54 +115,40 @@ def parse_slash_command(text: str) -> CommandSpec | None:
     canonical = _ALIASES.get(head.lower())
     if canonical is None:
         return CommandSpec(
-            name="unknown",
-            args=tail.strip(),
-            raw=stripped,
-            display_label=f"{stripped} — not implemented in this build",
+            name="unknown", kind="client", description="",
+            args=tail.strip(), raw=stripped,
+            display_label=f"{stripped} — not implemented",
+            short_label=f"unknown: {stripped}",
         )
     base = _COMMANDS[canonical]
     return CommandSpec(
-        name=base.name,
-        args=tail.strip(),
-        raw=stripped,
-        display_label=base.display_label,
-        short_label=base.short_label,
+        name=base.name, kind=base.kind, description=base.description,
+        args=tail.strip(), raw=stripped,
+        display_label=base.display_label, short_label=base.short_label,
+        parameters=base.parameters,
     )
 
 
 def known_command_labels() -> tuple[str, ...]:
-    """Stable order of help-text lines, used by the ``/help`` handler."""
-
-    return tuple(_COMMANDS[order].display_label for order in _SEARCH_ORDER)
+    return tuple(
+        f"{_COMMANDS[name].display_label or _COMMANDS[name].short_label}"
+        for name in _SEARCH_ORDER
+    )
 
 
 def is_slash_command(text: str) -> bool:
-    """Quick classification without allocating a spec."""
-
     return text.strip().startswith("/")
 
 
-# ----------------------------------------------------------------------
-# Search / completion (v1.1)
-# ----------------------------------------------------------------------
+def get_command(name: str) -> CommandSpec | None:
+    return _COMMANDS.get(name)
+
+
+def all_commands() -> list[CommandSpec]:
+    return [_COMMANDS[name] for name in _SEARCH_ORDER]
 
 
 def search_commands(query: str) -> list[CommandSpec]:
-    """Return commands matching ``query``, in stable display order.
-
-    Two matching modes:
-
-    - If ``query`` starts with ``/`` (slash completion): match on the
-      command's canonical name with a case-insensitive prefix test.
-    - Otherwise (palette / fuzzy): match if every whitespace-separated
-      word in ``query`` is a substring of the command's
-      ``short_label``. Commands that match on a leading ``/name`` get
-      ranked before fuzzy matches.
-
-    The returned list is deduplicated and capped at every registered
-    command so the caller can safely show one entry per command.
-    """
-
     normalised = query.strip().lower()
     if not normalised:
         return [_COMMANDS[name] for name in _SEARCH_ORDER]
@@ -193,43 +159,32 @@ def search_commands(query: str) -> list[CommandSpec]:
             spec = _COMMANDS[name]
             short = spec.name
             if short.startswith(prefix) or name.startswith(prefix):
-                # Exact prefix matches first; otherwise fall back to
-                # substring matches inside the short label.
                 score = 0 if short.startswith(prefix) else 1
                 scored.append((score, spec))
                 continue
             if prefix and prefix in spec.short_label.lower():
                 scored.append((2, spec))
         scored.sort(key=lambda item: (item[0], _SEARCH_ORDER.index(item[1].name)))
-        return [spec for _score, spec in scored]
+        return [spec for _, spec in scored]
 
-    # Fuzzy palette mode: every whitespace-separated word in the query
-    # must appear (substring, case-insensitive) in the short label.
-    words = [word for word in normalised.split() if word]
+    words = [w for w in normalised.split() if w]
     scored: list[tuple[int, CommandSpec]] = []
     for name in _SEARCH_ORDER:
         spec = _COMMANDS[name]
         haystack = spec.short_label.lower()
-        if all(word in haystack for word in words):
-            # Higher score = weaker match. All-word matches with shorter
-            # labels rank first; we approximate by counting how many
-            # extra characters the label has beyond the longest word.
-            longest = max(len(word) for word in words)
+        if all(w in haystack for w in words):
+            longest = max(len(w) for w in words)
             scored.append((len(haystack) - longest, spec))
     scored.sort(key=lambda item: (item[0], _SEARCH_ORDER.index(item[1].name)))
-    return [spec for _score, spec in scored]
+    return [spec for _, spec in scored]
 
 
 def complete_command(prefix: str) -> CommandSpec | None:
-    """Return the single best completion for a slash prefix.
-
-    ``prefix`` is the current composer text (already including the
-    leading ``/``). The first match from :func:`search_commands` is
-    returned, or ``None`` if nothing matches. Used by the Tab key in
-    the composer to fill in the longest unambiguous completion.
-    """
-
     if not prefix.startswith("/"):
         return None
+    # Resolve alias before searching
+    canonical = _ALIASES.get(prefix.lower())
+    if canonical:
+        return _COMMANDS.get(canonical)
     matches = search_commands(prefix)
     return matches[0] if matches else None

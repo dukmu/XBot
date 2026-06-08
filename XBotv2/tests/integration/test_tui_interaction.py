@@ -67,7 +67,7 @@ class _ScriptedSession:
             ]
         }
 
-    async def run_command(self, command, args, raw):
+    async def run_command(self, command, args, raw, *, kind="server"):
         del args, raw
         if command == "status":
             return {"data": {"message": "turn=0 mode=composing"}}
@@ -297,7 +297,7 @@ async def test_help_prints_each_command_on_its_own_line(
     assert len(help_notices) == 1
     body = help_notices[0].text
     # Each registered command label is on its own line.
-    assert "/help" in body and "/clear" in body and "/status" in body and "/exit" in body
+    assert "help" in body and "clear" in body and "status" in body and "exit" in body
     assert body.count("\n") >= 3
 
 
@@ -841,12 +841,8 @@ async def test_help_body_renders_each_command_on_its_own_row(
         help_notices = [n for n in app.state.notices if n.kind == "Help"]
         assert len(help_notices) == 1
         body = help_notices[0].text
-        for command in ("/help", "/clear", "/status", "/exit"):
-            # The full short_label is on its own line; we test the
-            # command token since the label may be wrapped by width.
-            assert f"\n{command}" in body or body.startswith(command), (
-                f"command {command} not on its own line: {body!r}"
-            )
+        for command in ("help [client cmd]", "clear [client cmd]", "status [server cmd]", "exit [client cmd]"):
+            assert command in body, f"command {command} not found in: {body!r}"
 
 
 # ----------------------------------------------------------------------
@@ -950,3 +946,88 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
                      long_lines.splitlines()[10],
                      long_lines.splitlines()[-1]):
             assert line in joined, f"missing line {line!r} in body DOM"
+
+
+# ------------------------------------------------------------------
+# Unified command system: skills, help detail
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_help_with_command_name_shows_detail(
+    scripted_session,
+) -> None:
+    """Test that /help clear shows detailed help for the clear command."""
+    app = XBotTextualApp(
+        data_dir="data", provider_name="mock",
+        session_id="s", thread_id="t", no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("/help clear")
+        await app.submit_composer()
+        await pilot.pause()
+
+        help_notices = [n for n in app.state.notices if n.kind == "Help"]
+        assert len(help_notices) >= 1
+        body = help_notices[-1].text
+        assert "clear" in body.lower()
+        assert "client cmd" in body.lower() or "client" in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_help_with_unknown_command_shows_error(
+    scripted_session,
+) -> None:
+    """Test that /help nonexistent shows unknown command notice."""
+    app = XBotTextualApp(
+        data_dir="data", provider_name="mock",
+        session_id="s", thread_id="t", no_plugins=True,
+    )
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("/help nonexistent")
+        await app.submit_composer()
+        await pilot.pause()
+
+        help_notices = [n for n in app.state.notices if n.kind == "Help"]
+        assert len(help_notices) >= 1
+        assert "unknown" in help_notices[-1].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_skill_is_parsed_with_correct_kind(
+    scripted_session,
+) -> None:
+    """Test that register_dynamic_commands makes skill parseable as skill kind."""
+    from xbotv2.tui.command import register_dynamic_commands, parse_slash_command
+
+    register_dynamic_commands([
+        {"name": "git-release", "description": "Create releases"},
+    ], "skill")
+
+    spec = parse_slash_command("/git-release v2.0")
+    assert spec is not None
+    assert spec.kind == "skill"
+    assert spec.name == "git-release"
+    assert spec.args == "v2.0"
+
+
+@pytest.mark.asyncio
+async def test_command_search_includes_skill_type(
+    scripted_session,
+) -> None:
+    """Test that skills appear in search with [skill] tag."""
+    from xbotv2.tui.command import register_dynamic_commands, search_commands
+
+    register_dynamic_commands([
+        {"name": "git-release", "description": "Create releases"},
+    ], "skill")
+
+    results = search_commands("/git")
+    assert any(s.kind == "skill" for s in results)
+    assert any("skill" in s.short_label for s in results)

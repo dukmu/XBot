@@ -179,11 +179,6 @@ async def bootstrap(
             _plugin_configs,
         )
 
-    # Apply tool filter from system config after plugins are loaded so
-    # selectors can reference either core or plugin-provided tools.
-    if agent_config.tools:
-        tool_registry.restrict(agent_config.tools)
-
     # 7. Create LLM client
     if llm_override is not None:
         llm = llm_override
@@ -191,7 +186,7 @@ async def bootstrap(
         from xbotv2.llm.client import create_llm
         llm = create_llm(provider_config)
 
-    # 8. Run ON_SESSION_INIT hooks
+    # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
     from xbotv2.core.state import SessionInfo
     init_ctx = HookContext(
         stage=HookStage.ON_SESSION_INIT,
@@ -208,6 +203,11 @@ async def bootstrap(
         emit=lambda e: None,
     )
     await hook_manager.run(HookStage.ON_SESSION_INIT, init_ctx, short_circuit=False)
+
+    # Apply tool filter AFTER session init so plugin-discovered tools
+    # (skills, MCP) are registered before restrict runs.
+    if agent_config.tools:
+        tool_registry.restrict(agent_config.tools)
 
     # 9. Build engine
     engine = Engine(

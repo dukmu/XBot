@@ -13,14 +13,16 @@ class ServerCommand:
     slash: str
     description: str
     examples: list[str] = field(default_factory=list)
+    parameters: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "slash": self.slash,
+            "kind": "server",
             "description": self.description,
-            "scope": "server",
             "examples": self.examples,
+            "parameters": self.parameters,
         }
 
 
@@ -52,12 +54,26 @@ COMMANDS: dict[str, ServerCommand] = {
 }
 
 
-def list_commands() -> list[dict[str, Any]]:
-    return [command.to_dict() for command in COMMANDS.values()]
+def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    result = [command.to_dict() for command in COMMANDS.values()]
+    if extra:
+        result.extend(extra)
+    return result
 
 
-def execute_command(ctx: Any, command: str, args: list[str]) -> dict[str, Any]:
+def execute_command(ctx: Any, command: str, args: list[str], *, kind: str = "server") -> dict[str, Any]:
     command = command.lower().strip().removeprefix("/")
+    if kind == "skill":
+        entry = ctx.engine.tool_registry.get(command)
+        if entry:
+            content = entry.tool.invoke({})
+            instructions = " ".join(args) if args else ""
+            instruction_text = f"\n\n## Instructions\n{instructions}" if instructions else ""
+            return _result(command, f"## {command}\n\n{content}{instruction_text}",
+                          status="ok", data={"skill": command, "content": content})
+        return _result(command, f"Skill '{command}' not found", status="error")
+    if kind in ("tool", "mcp"):
+        return _result(command, f"Tool '{command}' available.", data={"tool": command})
     if command == "status":
         return _result("status", _status_message(ctx), data=_status_data(ctx))
     if command == "provider":

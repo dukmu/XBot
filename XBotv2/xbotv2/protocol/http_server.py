@@ -274,8 +274,8 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/sessions/{session_id}/commands")
     async def session_commands(session_id: str) -> dict[str, Any]:
-        await manager.get(session_id)
-        return {"commands": list_commands()}
+        ctx = await manager.get(session_id)
+        return {"commands": list_commands(extra=_tool_commands(ctx.engine.tool_registry))}
 
     @app.post("/sessions/{session_id}/commands")
     async def run_command(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -290,7 +290,7 @@ def _register_routes(app: FastAPI) -> None:
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
-        return execute_command(ctx, command, [str(arg) for arg in args])
+        return execute_command(ctx, command, [str(arg) for arg in args], kind=str(payload.get("kind") or "server"))
 
     @app.post("/sessions/{session_id}/messages")
     async def post_message(session_id: str, request: Request) -> Response:
@@ -441,6 +441,31 @@ def _new_session_id() -> str:
 
 def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:
     return {"type": event.get("type", ""), "data": event.get("data", {})}
+
+def _tool_commands(reg: Any) -> list[dict[str, Any]]:
+    result = []
+    for full_name in reg.registered_names():
+        entry = reg._entries.get(full_name)
+        if entry is None:
+            continue
+        ns = entry.namespace
+        kind = _ns_kind(ns)
+        display = entry.tool.name
+        desc = getattr(entry.tool, "description", "") or display
+        result.append({"name": display, "slash": f"/{display}", "kind": kind, "description": desc})
+    return result
+
+
+def _ns_kind(ns: str) -> str:
+    if ns == "builtin":
+        return "tool"
+    if ns.startswith("plugin:"):
+        return "tool"
+    if ns.startswith("skills:"):
+        return "skill"
+    if ns.startswith("mcp:"):
+        return "mcp"
+    return "tool"
 
 
 async def _live_sink(

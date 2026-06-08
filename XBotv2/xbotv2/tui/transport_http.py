@@ -89,22 +89,19 @@ class HttpTransport:
         )
         return payload
 
-    async def list_commands(self) -> dict[str, Any]:
-        response = await self._client.get("/commands")
+    async def list_commands(self, session_id: str | None = None) -> dict[str, Any]:
+        url = f"/sessions/{session_id}/commands" if session_id else "/commands"
+        response = await self._client.get(url)
         _raise_for_status(response)
         return response.json()
 
     async def run_command(
-        self,
-        *,
-        session_id: str,
-        command: str,
-        args: list[str],
-        raw: str,
+        self, *, session_id: str, command: str, args: list[str], raw: str,
+        kind: str = "server",
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/commands",
-            json={"command": command, "args": args, "raw": raw},
+            json={"command": command, "args": args, "raw": raw, "kind": kind},
         )
         _raise_for_status(response)
         return response.json()

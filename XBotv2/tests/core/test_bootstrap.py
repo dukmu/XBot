@@ -77,19 +77,19 @@ class TestBootstrapBasics:
         assert [tool.name for tool in engine.tool_registry.get_all()] == ["filesystem_read"]
 
     @pytest.mark.asyncio
-    async def test_bootstrap_unknown_tool_filter_raises(self, temp_data_dir):
-        """Unknown tool selectors fail closed instead of exposing all tools."""
+    async def test_bootstrap_unknown_tool_filter_silently_ignored(self, temp_data_dir):
+        """Unknown tool selectors are silently ignored (no tools enabled)."""
         system = temp_data_dir / "config" / "system.yaml"
         system.write_text("tools:\n  - no_such_tool\n", encoding="utf-8")
 
-        with pytest.raises(ValueError, match="Unknown tool selector"):
-            await bootstrap(
-                config_dir=str(temp_data_dir),
-                session_id="test-session",
-                thread_id="test-thread",
-                plugin_dirs=[],
-                llm_override=MockLLM(responses=[]),
-            )
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+        assert len(engine.tool_registry) == 0
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_can_select_plugin_tools(
