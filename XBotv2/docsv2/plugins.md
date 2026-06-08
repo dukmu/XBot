@@ -1,133 +1,118 @@
-# Plugin System
+# XBotv2 Plugin System
 
-## Overview
+## Architecture
 
-XBotv2 plugins are independent Python packages that extend the core engine
-through hooks, tools, and prompt fragments. Plugins are discovered,
-loaded, and wired at bootstrap time.
+```
+Core -> never imports -> Plugins (builtin_plugins)
+Plugins -> import -> Core (xbotv2)
+```
 
-Workspace instructions are provided through `AGENTS.md`. Runtime extension
-still belongs to plugin manifests; workspace docs do not register hooks or
-tools directly.
+Plugins extend the engine via hooks, tools, and prompt fragments.
+They live in `builtin_plugins/` and are loaded by `PluginLoader` during bootstrap.
+Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 
-## Plugin Manifest
+## PluginBase
 
-Each plugin directory contains a `plugin.yaml`:
+```python
+class PluginBase(ABC):
+    async def on_load(self, config): ...     # Called at load time
+    async def on_unload(self): ...           # Cleanup
+    def register_hooks(self, manager): ...   # Register hooks
+    def register_tools(self, registry): ...  # Register tools
+    def get_prompt_fragments(self): ...      # Prompt injection
+```
+
+Hooks and tools can be declared in `plugin.yaml` manifest or registered
+programmatically in the plugin class.
+
+## plugin.yaml Manifest
 
 ```yaml
-name: my_plugin
+name: my-plugin
 version: "1.0.0"
-description: "What this plugin does"
-depends_on: []  # Optional dependencies
-
+description: What this plugin does
 hooks:
-  - stage: before_agent
-    handler: my_plugin.hooks:inject_context
-
+  - stage: on_session_init
+    handler: my_plugin.hooks:on_init
 tools:
   - handler: my_plugin.tools:my_tool
     sandbox_mode: host
     execution_mode: sequential
-
 prompt_fragments:
   - stage: system_instructions
-    file: prompts/instructions.md
-  - stage: dag_suffix
-    handler: my_plugin.context:render_state
+    file: prompts/system.md
 ```
-
-## Plugin Lifecycle
-
-1. **Discovery**: `PluginLoader` scans plugin directories for `plugin.yaml`
-2. **Resolution**: Topological sort by `depends_on`
-3. **Loading**: Plugin class instantiated with isolated `PluginStore`
-4. **Initialization**: `on_load(config)` called
-5. **Registration**: Hooks → HookManager, Tools → ToolRegistry,
-   Fragments → ContextBuilder
-6. **Tool selection**: registered tools remain visible unless filtered by
-   provider binding hooks or policy
-7. **Runtime**: Plugin hooks execute during engine lifecycle
-8. **Unload**: `on_unload()` called, hooks/tools/fragments removed
-
-Because plugin registration happens during bootstrap, tool availability is
-deterministic before the first model request. Provider-binding hooks may narrow
-the visible schema set for a request, but they do not remove registered tools.
-
-If plugin registration fails after `on_load()` succeeds, the loader rolls back
-the plugin's newly registered hooks, tools, and prompt fragments before
-re-raising the original error. It then calls `on_unload()` so partially
-initialized plugin resources can clean themselves up.
-
-`PluginLoader.unload(name)` removes resources registered by that plugin:
-hook callbacks, tool registry entries, and prompt fragments. Manifest-only
-default plugins use a no-op `on_unload()` but still have registered resources
-removed. Tool unload tracking uses all registered tool names, not only the
-currently visible/restricted tool view, so hidden plugin tools are still
-cleaned up. `unload_all()` unloads in reverse load order. External plugin
-module paths stay importable while plugins are loaded and stale modules are
-dropped when the same plugin name is loaded from a different directory.
-
-## PluginBase
-
-Plugins extend `PluginBase`:
-
-```python
-class MyPlugin(PluginBase):
-    async def on_load(self, config: dict) -> None:
-        """Called at startup. Validate config, init state."""
-
-    async def on_unload(self) -> None:
-        """Called at shutdown. Clean up resources."""
-
-    def register_hooks(self, manager: HookManager) -> None:
-        """Register hook handlers."""
-
-    def register_tools(self, registry: ToolRegistry) -> None:
-        """Register tools."""
-
-    def get_prompt_fragments(self) -> dict[str, str]:
-        """Return rendered prompt text by injection stage."""
-```
-
-## Default Plugin
-
-If a plugin has no Python class, the system creates a `_DefaultPlugin`
-instance that uses manifest-driven registration. This works for simple
-plugins that only provide tools and static prompt fragments.
-
-## Plugin Store
-
-Each plugin gets an isolated key-value store:
-
-```python
-class PluginStore:
-    async def get(key, default=None) -> Any
-    async def set(key, value) -> None
-    async def delete(key) -> None
-    async def all() -> dict
-```
-
-Plugin state is persisted as opaque blobs by `CoreStateStore`. Core
-never reads or interprets plugin state.
 
 ## Built-in Plugins
 
-| Plugin | Purpose | Key Hooks |
-|--------|---------|-----------|
-| `compact` | Context compaction | `before_context` (check thresholds, summarize) |
-| `planning` | DAG task planning | `on_session_init`, `before_context`, `on_turn_end` |
-| `skills` | Skill loading | `on_config_reload` |
-| `memory` | Long-term memory | (tools only) |
-| `summary` | Summary artifacts | (tools only) |
-| `mailbox` | Inter-agent messages | `on_turn_start` (check pending) |
-| `subagent` | Subagent management | (tools only) |
+### SkillsPlugin (`builtin_plugins/skills/`)
 
-## Creating a Plugin
+Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 
-1. Create directory: `builtin_plugins/<name>/`
-2. Write `plugin.yaml` manifest
-3. Create `plugin.py` with PluginBase subclass
-4. Define hook handlers and tools
-5. Test independently with core engine
+**Files:**
+- `plugin.yaml`: manifest
+- `plugin.py`: SkillsPlugin class
+- `registry.py`: SkillRegistry — YAML frontmatter parsing, directory scanning
+- `skill_tool.py`: `load_skill()` with `` !`cmd` `` shell injection preprocessing
+- `permission_scope.py`: per-turn tool permission overrides
 
-Plugins can also be loaded from external directories specified in config.
+**Hooks:**
+- `ON_SESSION_INIT`: discover SKILL.md files from 6 paths
+- `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
+- `AFTER_CONTEXT`: inject active skill content into context
+- `ON_TURN_END`: clear active skills and permission scopes
+- `BEFORE_TOOL_CALL`: apply allowed-tools/disallowed-tools overrides
+
+**Tools:**
+- `skill` (namespace `plugin:skills:skill`): load a skill by name
+- Each discovered skill registered as ToolRegistry entry (namespace `skills:<scope>:<name>`)
+
+**Features:**
+- Shell injection: `` !`command` `` placeholders expanded via subprocess (10s timeout)
+- allowed-tools / disallowed-tools frontmatter fields
+- disable-model-invocation for manual-only skills
+
+### MCPPlugin (`builtin_plugins/mcp/`)
+
+Connects to MCP (Model Context Protocol) servers and registers their tools.
+
+**Files:**
+- `plugin.yaml`: manifest
+- `plugin.py`: MCPPlugin class
+- `client.py`: MCPClient with StdioTransport and HttpTransport
+- `tool.py`: MCPTool wrapper (XBotTool-compatible callable)
+
+**Hooks:**
+- `ON_SESSION_INIT`: connect to enabled MCP servers, fetch tools, register
+- `ON_SESSION_CLOSE`: disconnect all servers
+
+**Transport types:**
+- `local` (stdio): subprocess with JSON-RPC over stdin/stdout
+- `remote` (HTTP): HTTP POST with JSON-RPC body
+
+**Configuration** (in `system.yaml` plugins section):
+```yaml
+plugins:
+  mcp:
+    servers:
+      github:
+        type: local
+        command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+        enabled: true
+```
+
+## Tool Namespace Convention
+
+Tools follow `source:name:tool` naming:
+
+| Source | Name | Key | Slash |
+|---|---|---|---|
+| `builtin` | `core` | `builtin:core:shell` | `/shell` |
+| `plugin` | plugin-name | `plugin:skills:skill` | `/skill` |
+| `skills` | scope | `skills:global:find-skills` | `/find-skills` |
+| `mcp` | server-name | `mcp:github:search` | `/search` |
+
+Plugins declare namespace when registering tools:
+```python
+ctx.tools.register(tool, namespace="plugin:skills")
+```

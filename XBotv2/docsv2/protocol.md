@@ -1,187 +1,83 @@
-# Protocol And Client Events
+# XBotv2 Protocol
 
 ## Transport
 
-The production TUI protocol is HTTP + SSE.
+XBotv2 supports two transports:
 
-The FastAPI app is created by `xbotv2.protocol.http_server.create_app()`. The
-transport client is `xbotv2.tui.transport_http.HttpTransport`. `TerminalSession`
-is the TUI-facing facade over the transport.
+- **Unix Domain Socket** (default for local TUI): auto-generated at
+  `/tmp/xbotv2-{pid}.sock`. Server subprocess spawned and bound to it.
+  No TCP port needed. Socket cleaned up on exit.
 
-The legacy JSONL stdio server module has been removed. Stage 3 TUI/server
-flows are HTTP-only.
+- **HTTP/SSE** (TCP, for remote): `--server URL` flag. Server binds
+  `--bind`:`--port` (default `127.0.0.1:4096`). SSE streaming over TCP.
 
-## Session API
+TUI transport is selectable at startup:
+```bash
+python -m xbotv2 tui                    # UDS (default)
+python -m xbotv2 tui --server http://..  # HTTP remote
+python -m xbotv2 server --bind 0.0.0.0   # server-only
+```
 
-### `GET /health`
+## Session
 
-Returns server health, protocol version, uptime, session count, and server
-workspace default.
+### Modes
 
-### `POST /hello`
+- `new`: create session, generate session_id if not provided
+- `resume`: reconnect to existing session state on disk
+- **Auto-upgrade**: when `mode=new` but session state already exists,
+  server silently switches to `mode=resume`
 
-Request:
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Health check |
+| POST | `/hello` | Client handshake |
+| POST | `/sessions` | Open session (new/resume) |
+| POST | `/sessions/{id}/messages` | Send message, receive SSE stream |
+| POST | `/sessions/{id}/interrupt` | Cancel running turn |
+| GET | `/sessions/{id}/commands` | List available commands (includes skills/tools) |
+| POST | `/sessions/{id}/commands` | Execute server/skill/tool command |
+| POST | `/sessions/{id}/interactions/permission-response` | Submit permission decision |
+| POST | `/sessions/{id}/interactions/user-input` | Submit user input answer |
+| POST | `/sessions/{id}/shutdown` | Close session |
+
+## Command System
+
+`GET /sessions/{id}/commands` returns unified command list with `kind` field:
 
 ```json
-{"session_id": "optional", "thread_id": "agent"}
+[
+  {"name": "status", "kind": "server", "description": "Server status"},
+  {"name": "shell", "kind": "tool", "description": "Execute shell"},
+  {"name": "find-skills", "kind": "skill", "description": "Find skills"},
+  {"name": "search", "kind": "mcp", "description": "MCP search"}
+]
 ```
 
-Response includes `server_name`, `protocol_version`, `session_id`, and
-`thread_id`.
+Kinds: `client` (local TUI only), `server`, `skill`, `tool`, `mcp`.
 
-### `POST /sessions`
+Skills are loaded via `register_dynamic_command()` from plugins during
+`ON_SESSION_INIT`. Server `execute_command(kind="skill")` returns skill content.
 
-Request:
+## Stream Events
 
-```json
-{
-  "session_id": null,
-  "thread_id": "agent",
-  "workspace_root": "/repo/project",
-  "mode": "new"
-}
-```
+| Event | Data |
+|---|---|
+| `turn_started` | `{turn}` |
+| `turn_finished` | `{turn}` |
+| `assistant_message_delta` | `{content}` (includes reasoning via `additional_kwargs`) |
+| `assistant_message` | `{content, tool_calls}` |
+| `tool_call_delta` | `{index, id, name, args}` |
+| `tool_calls_started` | `[{name, args, id}]` |
+| `tool_result` | `{tool_call_id, content, status}` |
+| `permission_request` | `{request_id, reason, tool_call}` |
+| `permission_response_recorded` | `{request_id, decision}` |
+| `usage` | `{input_tokens, output_tokens, total_tokens}` |
+| `error` | `{code, message}` |
 
-Modes:
+## Provider Events (internal)
 
-- `new`: default. Creates a generated session id if omitted. Fails if explicit
-  session state already exists.
-- `resume`: requires an existing session id. Missing state returns 404.
-
-Response:
-
-```json
-{
-  "session_id": "20260606-143012-a8f2",
-  "thread_id": "agent",
-  "status": "ready",
-  "agent_name": "XBotv2",
-  "workspace_root": "/repo/project",
-  "provider": "default"
-}
-```
-
-One server can host sessions from different `workspace_root` values.
-
-## Message Stream
-
-### `POST /sessions/{session_id}/messages`
-
-Sends one user message and returns `text/event-stream`.
-
-Streamed event types include:
-
-- `turn_started`, `turn_finished`, `turn_cancelled`
-- `assistant_delta`, `assistant_message`
-- `tool_calls_started`, `tool_call_delta`, `tool_result`
-- `usage`
-- `client_message`
-- `permission_request`, `permission_denied`, `permission_response_recorded`
-- `user_input_required`, `user_input_recorded`
-- `error`
-- terminal `end`
-
-Only one active turn is allowed per session. A concurrent message returns an
-`engine_busy` stream error.
-
-## Live Interactions
-
-### Permission And Sandbox Approval
-
-When permission or sandbox policy requires approval, the engine emits
-`permission_request` with:
-
-```json
-{
-  "request_id": "permission:<tool_call_id>",
-  "source": "permission_system|sandbox",
-  "tool_call": {"name": "...", "args": {}, "id": "..."},
-  "decision": "ask",
-  "reason": "...",
-  "resume_supported": false
-}
-```
-
-The TUI responds through:
-
-```http
-POST /sessions/{session_id}/interactions/permission-response
-```
-
-Request:
-
-```json
-{"request_id": "permission:call_1", "decision": "allow", "scope": "once|session"}
-```
-
-Allow continues the current tool call. `scope="session"` is forwarded to the
-engine so the approval can be persisted by the session policy layer;
-`scope="once"` is not persisted. Live approvals cannot mutate global config.
-Deny, timeout, disconnect, and non-live execution fail closed.
-
-### User Input
-
-`ask_user` emits `user_input_required` and waits for:
-
-```http
-POST /sessions/{session_id}/interactions/user-input
-```
-
-Request:
-
-```json
-{"request_id": "user_input:call_1", "answer": "..."}
-```
-
-## Interrupt
-
-`POST /sessions/{session_id}/interrupt` cancels the current turn task if one is
-running. Idle interrupt is a successful no-op.
-
-## Server Commands
-
-The server owns runtime command metadata and execution.
-
-Endpoints:
-
-```http
-GET /commands
-GET /sessions/{session_id}/commands
-POST /sessions/{session_id}/commands
-```
-
-Built-in server commands:
-
-- `/status`
-- `/provider status|list|use <name>`
-- `/permission status|list|set <tool> <allow|deny|ask>|reset [tool]`
-- `/sandbox status|list|set <key> <allow|readwrite|readonly|deny|ask>|reset [key]`
-
-Policy command values are validated. `reset` updates the active in-memory session
-policy, so command effects are immediate without restarting the session.
-
-Command results return:
-
-```json
-{
-  "type": "command_result",
-  "data": {
-    "command": "status",
-    "status": "ok",
-    "message": "...",
-    "data": {}
-  }
-}
-```
-
-Command results render to clients only and do not enter LLM message history.
-
-## Error Shape
-
-REST errors use stable JSON:
-
-```json
-{"code": "session_not_found", "message": "..."}
-```
-
-The HTTP transport parses this body before raising so TUI error text is stable.
+`_model_response` event carries aggregated `XBotModelResponse` with
+content, tool_calls, usage_metadata, additional_kwargs (including
+reasoning_content if present).

@@ -159,6 +159,8 @@ class XBotTextualApp(App[None]):
         self._resolved_choice_keys: set[str] = set()
         self._active_choice_key: str | None = None
         self._active_choice_index = 0
+        self._pending_stream_deltas = 0
+        self._stream_timer: asyncio.Task | None = None
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._submitted_interaction_ids: set[str] = set()
@@ -589,14 +591,18 @@ class XBotTextualApp(App[None]):
         event_type = str(event.get("type") or "")
         refresh_input = False
         if event_type == "turn_started":
-            await self._append_activity()
-            refresh_input = True
+            self.state.turn_active = True
+            self.state.turn = int(event.get("data", {}).get("turn", self.state.turn))
+            self._turn_started_at[self.state.turn] = time.monotonic()
+            self._finalize_activity()
         elif event_type == "turn_finished":
-            self._interaction_response_pending = False
+            self.state.turn_active = False
+            await self._cancel_stream_timer()
             self._finalize_activity()
             refresh_input = True
         elif event_type == "turn_cancelled":
             self._interaction_response_pending = False
+            await self._cancel_stream_timer()
             self._finalize_activity()
             self.state.status = "Interrupted"
             self._refresh_status()
@@ -604,8 +610,11 @@ class XBotTextualApp(App[None]):
         elif event_type == "usage":
             self._update_activity()
         elif event_type == "assistant_message_delta":
-            await self._refresh_streaming_assistant_widget()
+            if self._stream_timer is None:
+                self._stream_timer = asyncio.create_task(self._stream_tick())
+            return  # timer handles all rendering
         elif event_type == "assistant_message":
+            await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
         elif event_type == "tool_call_delta":
             await self._refresh_changed_tool_widgets()
@@ -614,10 +623,8 @@ class XBotTextualApp(App[None]):
         elif event_type == "tool_result":
             await self._refresh_changed_tool_widgets()
         elif event_type in {
-            "user_input_recorded",
-            "permission_response_recorded",
-            "permission_denied",
-            "error",
+            "user_input_recorded", "permission_response_recorded",
+            "permission_denied", "error",
         }:
             self._interaction_response_pending = False
             refresh_input = True
@@ -627,6 +634,24 @@ class XBotTextualApp(App[None]):
         self._refresh_status()
         if refresh_input:
             self._refresh_input_mode()
+
+    async def _stream_tick(self) -> None:
+        """Refresh streaming assistant widget at ~50ms intervals."""
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                await self._refresh_streaming_assistant_widget()
+        except asyncio.CancelledError:
+            pass
+
+    async def _cancel_stream_timer(self) -> None:
+        if self._stream_timer is not None:
+            self._stream_timer.cancel()
+            try:
+                await self._stream_timer
+            except asyncio.CancelledError:
+                pass
+            self._stream_timer = None
 
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:

@@ -3,9 +3,9 @@
 ## Overview
 
 XBotv2 is a plugin-extensible AI agent runtime with a minimal core ReAct loop.
-The core owns provider calls, tool execution, permissions, sandboxing, protocol
-streaming, and append-only persistence. Advanced concepts such as planning,
-compaction, skills, memory, and subagents remain plugin responsibilities.
+The core owns provider calls, tool execution, permissions, sandboxing (BubblewrapBackend),
+protocol streaming (HTTP/SSE + Unix domain socket), and append-only persistence
+(`messages.jsonl`). Skills, MCP tools, and plugin extensions live in `builtin_plugins/`.
 
 ## Architecture Principle
 
@@ -14,15 +14,11 @@ Plugins -> import -> Core (xbotv2)
 Core -> never imports -> Plugins (builtin_plugins)
 ```
 
-Core defines interfaces and bootstrap wires configured plugins at runtime via
-manifests. Passing `plugin_dirs=[]` explicitly disables plugin discovery and is
-the pure-core test mode. The CLI exposes the same boundary with `--no-plugins`.
+Core defines interfaces; bootstrap wires plugins at runtime via manifests.
+`plugin_dirs=[]` disables plugin discovery (pure-core test mode).
+`--no-plugins` CLI flag equivalent.
 
-## Stage 2 Runtime Model
-
-Stage 2 removes the old multi-personality and internal session-workspace model.
-
-Runtime identity is:
+## Runtime Identity
 
 ```yaml
 session_id: generated-or-explicit
@@ -31,7 +27,7 @@ workspace_root: /actual/project/root
 provider: current-provider
 ```
 
-Configuration sources are:
+Configuration:
 
 ```text
 data/config/system.yaml
@@ -41,149 +37,125 @@ data/config/sandbox.yaml
 <workspace_root>/AGENTS.md
 ```
 
-No runtime path reads `data/personalities/*`. No runtime creates
-`sessions/<sid>/workspace`.
-
 ## Core Components
 
 ### Engine (`xbotv2/core/engine.py`)
 
-- Minimal 3-node loop: `prepare_context -> agent -> tools -> repeat`.
-- Runs hooks around lifecycle, context, model, permission, tool, and persistence
-  stages.
-- Records `workspace_attached` for the external workspace root.
-- Saves provider-facing message history separately from server command results.
-- Can stream live interaction events for user input and permission/sandbox
-  decisions.
+ReAct loop: user message accept → context build (with hook injection) →
+LLM call (streaming) → tool execution → repeat. Uses XBot-owned `Message`
+dataclass and `XBotTool` throughout. No LangChain dependency.
 
-### HTTP Session Runtime (`xbotv2/protocol/http_server.py`)
-
-- One HTTP server can host many sessions with different `workspace_root` values.
-- `mode="new"` is the default and creates a generated session id when omitted.
-- `mode="resume"` requires an existing session id and returns not found if the
-  session state is missing.
-- Each session has its own engine, provider, workspace root, turn lock, and live
-  command overlays.
-
-### Configuration (`xbotv2/config/`)
-
-- `SystemConfig` describes the general agent prompt, tool selectors, hooks,
-  memory, permissions, and sandbox defaults.
-- `load_system_config()` merges `system.yaml`, `permissions.yaml`,
-  `sandbox.yaml`, and workspace `AGENTS.md`.
-- `load_provider_config()` reads `providers.yaml`; provider config is independent
-  of system prompt and session state.
-- `load_provider_names()` exposes configured provider names for `/provider list`.
-
-### Workspace Model
-
-- `workspace_root` defaults to the process cwd or `--workspace`.
-- Shell and filesystem tools resolve relative paths against `workspace_root`.
-- Session persistence remains under `data/sessions/<session_id>/state`.
-- Sandbox policy controls access inside and outside the workspace.
-
-### Hook System (`xbotv2/hooks/`)
-
-- Core hook stages cover session lifecycle, turn lifecycle, user intake, context,
-  model request/response, permissions, tools, client events, and persistence.
-- System config may register hooks with `hooks:` entries using `module:function`
-  targets; broken targets fail during bootstrap.
-- Loop hooks can short-circuit. Unstructured short-circuit values fail closed
-  rather than silently continuing.
-- Hook context uses `SessionInfo(session_id, thread_id, workspace_root, provider)`.
-
-### Plugin System (`xbotv2/plugin/`)
-
-- Plugins are declared via `plugin.yaml` manifests.
-- Plugins register hooks, tools, and prompt fragments.
-- Each plugin owns isolated state via `PluginStore`.
-- Plugin load is rollback-safe: failed registration removes newly added hooks,
-  tools, fragments, and temporary import paths.
+Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
+`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`, `ON_TOOL_CALL_FAILURE`,
+`PRE_COMPACT`, `POST_COMPACT`.
 
 ### Tool System (`xbotv2/tools/`)
 
-- `ToolRegistry` stores sandbox mode, execution mode, and lock metadata.
-- System `tools:` selectors restrict visible and executable tools after core and
-  plugin tools are registered.
-- `PermissionSystem` applies deny -> allow -> ask -> default precedence.
-- `SandboxPolicy` enforces path access with Stage 2 defaults:
+- **XBotTool** (`types.py`): native tool dataclass with `from_function()`, supports
+  async functions and keyword-only parameter injection (sandbox, skill_registry).
+- **ToolRegistry** (`registry.py`): namespace-aware registration (`source:name:tool`),
+  restrict() with wildcard selectors.
+- **SandboxPolicy** (`sandbox.py`): integrates **BubblewrapBackend** (`sandbox_bwrap.py`)
+  for process isolation. Provides capability methods: `run_shell`, `read_file`,
+  `write_file`, `list_dir`.
+- **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
 
-```yaml
-external_read: ask
-external_write: deny
-workspace_read: allow
-workspace_write: allow
+### Hooks (`xbotv2/hooks/`)
+
+42 `HookStage` enum values covering session/turn/tool/context/compaction lifecycle.
+`HookManager` with register/run, short-circuit support, and strict failure stages.
+
+### LLM Provider (`xbotv2/llm/`)
+
+- `OpenAICompatibleProvider`: streaming (`stream=True`) with `reasoning_effort` and
+  `thinking_enabled` config. Yields per-token deltas including reasoning content.
+- `AnthropicProvider`: same interface for Anthropic models.
+- `MockLLM`: deterministic test provider, supports chunk streaming with
+  `additional_kwargs`.
+- `Message` dataclass (`messages.py`): XBot-owned, persisted to `messages.jsonl`.
+
+### Context Builder (`xbotv2/core/context.py`)
+
+Assembles provider messages: system prefix → plugin fragments → runtime rules →
+history → dag suffix → current state. SHA256 cache replaced with tuple key.
+
+## Plugin System
+
+### SkillsPlugin (`builtin_plugins/skills/`)
+
+Discovers SKILL.md files (agentskills.io standard) from:
+`.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global `~/.`).
+
+- Registers `skill` tool via XBotTool (namespace `plugin:skills:skill`)
+- Registers discovered skills as ToolRegistry entries (namespace `skills:<scope>:<name>`)
+- BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
+- Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
+- allowed-tools / disallowed-tools frontmatter support
+
+### MCPPlugin (`builtin_plugins/mcp/`)
+
+Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
+- Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
+- Eager connection at bootstrap, silent skip on failure
+- MCPTool wraps as XBotTool-compatible callable
+
+## Namespace Protocol
+
+Tools are identified by `source:name:tool`:
+
+| Source | Name | Example | Slash |
+|---|---|---|---|
+| `builtin` | `core` | `builtin:core:shell` | `/shell` |
+| `plugin` | plugin name | `plugin:skills:skill` | `/skill` |
+| `skills` | scope/path | `skills:global:find-skills` | `/find-skills` |
+| `mcp` | server name | `mcp:github:search` | `/search` |
+
+Tool (third tier) is the slash command name, must be globally unique.
+If conflicting, use full `source:name:tool` as command.
+
+## Transport
+
+### HTTP/SSE (`xbotv2/protocol/http_server.py`)
+
+FastAPI app with SSE streaming. SessionManager with per-session context.
+
+### Unix Domain Socket (`__main__.py`)
+
+Default TUI transport: auto-generates `/tmp/xbotv2-{pid}.sock`, spawns server
+subprocess bound to it. No TCP port needed for local use. `--server URL` for
+remote HTTP connection.
+
+### Session Resume
+
+Auto-upgrade: when `mode=new` but session state exists on disk, server
+switches to `mode=resume` silently. `--session` CLI arg preserved across restarts.
+
+## Unified Command System
+
+`CommandSpec` with `kind` field (`client`, `server`, `skill`, `tool`, `mcp`).
+TUI fetches commands from `GET /sessions/{id}/commands` which enumerates
+ToolRegistry entries. `/help [name]` shows detailed help. All non-client
+commands go through unified server command path.
+
+## Persistence
+
+```
+data/sessions/<sid>/state/
+├── messages.jsonl          # XBot-owned Message objects, append-only
+├── plugin_states/          # per-plugin YAML state
+└── artifacts/              # cached tool outputs
 ```
 
-- External read attempts emit permission requests and fail closed until a live
-  approval allows the current call.
-- Workspace symlink escapes remain denied.
-- Oversized tool results are cached under state artifacts and replaced with a
-  bounded preview before they enter history.
+No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` persists
+via `replace_messages()` (full rewrite each turn).
 
-### Built-in Tools (`xbotv2/core/builtin_tools/`)
+## Streaming & Reasoning
 
-- `filesystem_read`, `filesystem_write`, `filesystem_list` return structured JSON
-  text and operate relative to the session workspace root.
-- `shell` runs commands with cwd set to `workspace_root` unless explicitly
-  provided.
-- `send_message` emits non-blocking client notices.
-- `ask_user` emits `user_input_required` and waits for a live client response.
+Provider uses `stream=True` with `async for chunk in response`.
+Reasoning content (DeepSeek thinking mode) extracted from `delta.reasoning_content`,
+emitted as regular content deltas with `## Thinking` header.
+Reasoning preserved in `Message.additional_kwargs.reasoning_content` and
+re-passed to API for tool-call turns via `provider_messages`.
 
-### Persistence (`xbotv2/persistence/`)
-
-- `events.jsonl` is the append-only event log while Stage 3 migration is in progress.
-- `messages.jsonl` stores provider-facing LangChain messages for resume.
-- No separate `state.yaml` file is written; remaining compatibility paths derive
-  a snapshot directly from logs and plugin state.
-- Server command results are returned to clients only and are not appended to LLM
-  message history.
-
-### Protocol And TUI
-
-- Production TUI transport is HTTP + SSE using FastAPI/httpx.
-- `GET /commands` and session command endpoints expose server-owned command
-  metadata and execution.
-- Local TUI commands are `/exit`, `/clear`, and `/help`.
-- Server commands are `/status`, `/provider`, `/permission`, and `/sandbox`.
-- Textual and curses clients interact through the transport/session boundary and
-  do not import runtime engine modules.
-
-## Derived State Snapshot
-
-The temporary compatibility snapshot is intentionally minimal:
-
-```yaml
-schema_version: 2
-session_id: string
-thread_id: string
-workspace_root: string
-provider: string
-turn_count: integer
-event_count: integer
-message_count: integer
-status: active | error | interrupted | closed
-mailbox_pending: integer
-pending_interactions: []
-permission_overrides: {}
-sandbox_overrides: {}
-workspace: {}
-plugin_states: {}
-artifacts_root: string
-```
-
-No DAG, plan, task mode, skills, or compaction fields live in core state.
-
-## Data Layout
-
-Checked-in data config uses Stage 2 layout:
-
-```text
-data/config/user.yaml
-data/config/system.yaml
-data/config/providers.yaml
-data/config/permissions.yaml
-data/config/sandbox.yaml
-```
-
-Runtime session/log output is ignored. Config files stay trackable.
+TUI uses timer-based rendering (`_stream_timer` at 50ms intervals) —
+streaming events are near-zero-cost on the hot path.

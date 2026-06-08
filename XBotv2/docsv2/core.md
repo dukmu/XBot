@@ -1,154 +1,135 @@
-# Core Engine
+# XBotv2 Core Runtime
 
-## ReAct Loop
+## Engine (`xbotv2/core/engine.py`)
 
-The core engine implements a minimal ReAct loop:
+ReAct loop: user message → context → LLM → tools → repeat.
+Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.
 
-```text
-prepare_context -> agent -> tools -> repeat
-                         \-> end when no tool calls
+### Streaming
+
+Provider `stream=True` yields per-token `XBotModelChunk`s.
+Engine emits `assistant_message_delta` events for each content delta and
+`tool_call_delta` for partial tool calls. Final response aggregated into
+`XBotModelResponse` and emitted as `assistant_message` event.
+
+Timer-based TUI rendering (`_stream_timer` at 50ms intervals) ensures
+per-token overhead is near-zero.
+
+### Reasoning / Thinking
+
+Provider extracts `reasoning_content` from streaming deltas (DeepSeek thinking mode).
+Emitted as regular `assistant_message_delta` with `## Thinking` header.
+Stored in `Message.additional_kwargs.reasoning_content`.
+Re-passed to API for tool-call turns via `provider_messages`.
+
+### Hooks
+
+42 `HookStage` values. Key stages:
+`BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
+`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`,
+`ON_TOOL_CALL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `BEFORE_TOOL_CALL`,
+`ON_PERMISSION_REQUEST`, `ON_SESSION_INIT`.
+
+Short-circuit hooks (BEFORE_*, AFTER_AGENT, BEFORE_TOOLS) return truthy to
+stop execution. All other hooks run all callbacks.
+
+ExceptionGroup from strict hooks (ON_SESSION_INIT, ON_SESSION_CLOSE,
+BEFORE_STATE_PERSIST, AFTER_STATE_PERSIST, ON_STOP) caught with BaseException.
+
+### Compaction
+
+`_handle_compaction()` method: BEFORE_CONTEXT short-circuit → PRE_COMPACT
+hook → message replacement → POST_COMPACT hook. Depth-4 nesting extracted
+to dedicated method.
+
+## Tools
+
+### XBotTool (`tools/types.py`)
+
+```python
+@dataclass(frozen=True)
+class XBotTool:
+    name: str
+    description: str
+    function: Callable
+    parameters: dict          # JSON Schema
 ```
 
-Hooks run around each stage. Loop hooks can short-circuit with structured
-results; invalid short-circuits fail closed.
+`from_function()` extracts docstrings and signatures. Supports async functions
+via `ainvoke()`. Keyword-only parameters with defaults (like `sandbox=None`)
+are injected at invocation time.
 
-## Bootstrap
+### ToolRegistry (`tools/registry.py`)
 
-`bootstrap()` builds one engine for one session:
+Namespace protocol: `source:name:tool` (e.g., `builtin:core:shell`,
+`plugin:skills:skill`, `skills:global:find-skills`, `mcp:github:search`).
 
-1. Validate runtime identifiers.
-2. Resolve `workspace_root` from `--workspace` or process cwd.
-3. Load system config from `data/config/system.yaml` and workspace `AGENTS.md`.
-4. Load provider config from `data/config/providers.yaml`.
-5. Merge global and session permission/sandbox policy.
-6. Create `CoreStateStore` under `data/sessions/<sid>/state`.
-7. Register core tools and configured hooks.
-8. Load plugins unless `plugin_dirs=[]` or `--no-plugins` is used.
-9. Create the LLM client or use a test override.
-10. Run `ON_SESSION_INIT` and return `Engine`.
+`restrict()` supports wildcard selectors: `builtin:*:*`, `skills:*:*`,
+`mcp:*:*`, `plugin:skills:*`. Bare names default to builtin.
 
-No personality id or internal session workspace is part of bootstrap.
+`get()` matches by both registry key and display name (fallback).
 
-## Configuration
+### Sandbox (`tools/sandbox.py`, `tools/sandbox_bwrap.py`)
 
-Core reads these files:
+`BubblewrapBackend` provides process isolation via `bwrap`.
+`SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
+`write_file`, `list_dir`. Tools call these directly via `sandbox` kwarg
+injection. Bwrap mounts enforce access control at OS level — no Python
+path extraction/checking.
 
-```text
-data/config/system.yaml
-data/config/providers.yaml
-data/config/permissions.yaml
-data/config/sandbox.yaml
-data/config/user.yaml
-```
+### Permissions (`tools/permissions.py`)
 
-Workspace `AGENTS.md` is optional. If present, it is appended to system
-instructions and sent to the provider as part of the system context.
-
-## Workspace
-
-The workspace is external and real:
-
-- Default: process current working directory.
-- Override: `--workspace PATH` or HTTP `workspace_root`.
-- Shell cwd defaults to `workspace_root`.
-- Filesystem paths resolve relative to `workspace_root`.
-- Session state persists separately under `data/sessions/<sid>/state`.
-
-## Permissions
-
-Permission decisions use `allow`, `deny`, and `ask`.
-
-Effective policy is:
-
-```text
-built-in defaults -> global config -> session overrides -> one-shot live decision
-```
-
-During an active turn, `ask` emits `permission_request` and waits for a live
-approval. Allow continues the current tool call. Deny, timeout, disconnect, or
-non-live execution fails closed.
-
-`/permission set <tool> <allow|deny|ask>` updates the active session override and
-the in-memory permission system for that session. `/permission reset` removes the
-active override and rebuilds the active policy.
-
-## Sandbox
-
-Default sandbox behavior:
-
-```yaml
-enabled: true
-external_read: ask
-external_write: deny
-workspace_read: allow
-workspace_write: allow
-```
-
-External read attempts request approval through the same live permission flow.
-External writes are denied. Workspace symlink escapes are denied even when
-workspace access is otherwise allowed.
-
-`/sandbox set <key> <allow|readwrite|readonly|deny|ask>` updates the active
-session override and the in-memory sandbox policy for that session. `/sandbox
-reset` removes the active override and rebuilds the active policy.
-
-## Built-In Tools
-
-- `filesystem_read`: structured JSON with content, metadata, and truncation info.
-- `filesystem_write`: overwrite, append, prepend, insert line, replace lines,
-  regex replace, and single-file unified diff patch modes.
-- `filesystem_list`: structured JSON directory listing.
-- `shell`: executes with cwd set to `workspace_root` unless explicit cwd is
-  provided.
-- `send_message`: emits a non-blocking client message event.
-- `ask_user`: emits `user_input_required` and waits for live client input.
-
-## Context Building
-
-Context is assembled from:
-
-```text
-system prompt
-system instructions + AGENTS.md
-runtime rules
-sandbox summary
-plugin fragments
-sanitized message history
-current derived state snapshot
-```
-
-The builder memoizes stable prefixes and invalidates on fragment/config changes.
+Tri-state: deny → allow → ask → default. Regex pattern matching on
+tool names and parameters. `BEFORE_TOOL_CALL` hook can override with
+`{"deny_reason": "..."}` or return `None` to allow.
 
 ## Persistence
 
-`CoreStateStore` manages:
+```
+data/sessions/<sid>/state/
+├── messages.jsonl          # JSONL, full rewrite each turn
+├── plugin_states/          # per-plugin YAML files
+└── artifacts/              # cached large tool outputs
+```
 
-- `events.jsonl`: append-only source of truth.
-- `messages.jsonl`: provider-facing message history for resume.
-- `plugin_states/`: plugin-owned opaque blobs.
-- `artifacts/`: cached large tool outputs.
+`CoreStateStore` (`persistence/store.py`):
+- `replace_messages()`: full rewrite of `messages.jsonl` each turn
+- `read_messages()`: reconstruct Message objects from JSONL
+- `has_existing_session()`: session resume detection
+- `_max_msg_id` cached to avoid O(n) scan
 
-No separate `state.yaml` file is written. Remaining compatibility paths derive a
-snapshot with session metadata, counts, status, pending interactions, latest
-workspace attachment, plugin states, and artifact root.
+No `events.jsonl`, `state.yaml`, or materializer.
 
-Provider-facing history does not include server command results.
+## Context Builder (`core/context.py`)
 
-## Events
+Assembly order:
+```
+[system_prefix]
+[plugin fragments: system_instructions stage]
+[runtime rules]
+[sandbox summary]
+[active skills (if any)]
+[message history]
+[plugin fragments: dag_suffix stage]
+[current state]
+```
 
-Important core events:
+Cache key uses tuple (was SHA256). `_sanitize_history` removes orphaned
+tool messages before provider conversion.
 
-- `workspace_attached`
-- `turn_started`, `turn_finished`, `turn_cancelled`
-- `session_closed`
-- `assistant_message`, `tool_result`, `tool_result_cached`
-- `client_message`, `user_input_required`, `user_input_response`,
-  `user_input_cancelled`
-- `permission_request`, `permission_response`, `permission_denied`
-- `provider_switched`
-- `permission_override_set`, `permission_overrides_reset`
-- `sandbox_override_set`, `sandbox_overrides_reset`
+## LLM Provider (`llm/client.py`)
 
-Status is derived from ordered events. A later `turn_started` reactivates prior
-`error` or `interrupted` state; `turn_finished` does not hide an interruption
-raised during the same turn.
+`OpenAICompatibleProvider` (OpenAI, DeepSeek, LM Studio) and `AnthropicProvider`.
+Shared configuration via `reasoning_effort` and `thinking_enabled`.
+`provider_values()` extracts all config from dict or Pydantic model via `_get_cfg`.
+
+`provider_messages()` converts XBot `Message` → provider format.
+Preserves `reasoning_content` for tool-call turns.
+
+## Startup (`core/bootstrap.py`)
+
+Order: config → state store → hooks → tools → sandbox → permissions →
+plugins → LLM → ON_SESSION_INIT → restrict → engine.
+
+`restrict()` runs AFTER `ON_SESSION_INIT` so plugin-discovered tools
+are included in the enabled set.
