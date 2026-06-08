@@ -203,11 +203,10 @@ class TuiState:
             self.pending_permission_active = False
             self.pending_permission_request_id = None
             self.pending_permission_payload = None
-            self.append_notice(
-                "permission_denied",
-                str(data.get("reason") or "Tool call denied."),
-                payload=data,
-            )
+            request_id = str(data.get("request_id") or "")
+            reason = str(data.get("reason") or "Tool call denied.")
+            if not self._update_permission_notice(request_id, "denied"):
+                self.append_notice("permission_denied", reason, payload=data)
         elif event_type == "user_input_required":
             self.pending_user_input_request_id = str(data.get("request_id") or "") or None
             self.pending_user_input_payload = data
@@ -232,11 +231,7 @@ class TuiState:
             self._refresh_status()
             request_id = str(data.get("request_id") or "permission")
             decision = str(data.get("decision") or "recorded")
-            self.append_notice(
-                "permission_response_recorded",
-                f"{request_id}: {decision}",
-                payload=data,
-            )
+            self._update_permission_notice(request_id, decision)
         elif event_type == "error":
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
@@ -270,6 +265,17 @@ class TuiState:
     ) -> None:
         self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
+
+    def _update_permission_notice(self, request_id: str, decision: str) -> bool:
+        """Update existing permission_request notice instead of creating new one. Returns True if found."""
+        for i, notice in enumerate(self.notices):
+            rid = str(notice.payload.get("request_id") or "")
+            if rid == request_id and notice.kind == "permission_request":
+                marker = "✓" if decision == "allow" else "✗"
+                notice.kind = "permission_response_recorded"
+                notice.text = f"{marker} {decision}"
+                return True
+        return False
 
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:
         if self.status in {"Error", "Shutdown"}:

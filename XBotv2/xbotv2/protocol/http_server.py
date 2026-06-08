@@ -457,10 +457,6 @@ def _tool_commands(reg: Any) -> list[dict[str, Any]]:
 
 
 def _ns_kind(ns: str) -> str:
-    if ns == "builtin":
-        return "tool"
-    if ns.startswith("plugin:"):
-        return "tool"
     if ns.startswith("skills:"):
         return "skill"
     if ns.startswith("mcp:"):

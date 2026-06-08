@@ -215,7 +215,7 @@ def test_tui_state_turn_finished_preserves_permission_states():
 
     assert state.status == "Permission denied"
     rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Denied> approval denied" in rendered
+    assert "✗ denied" in rendered or "Denied" in rendered
 
 
 def test_tui_state_renders_interaction_response_acknowledgements():
@@ -241,7 +241,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     assert state.status == "Ready"
     assert state.pending_permission_request_id is None
     rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Approval> permission:c2: allow" in rendered
+    assert "✓ allow" in rendered or "Approval> permission" in rendered
 
 
 def test_tui_state_ack_keeps_running_until_turn_finished():

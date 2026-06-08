@@ -241,7 +241,7 @@ class TestProviderConfig:
         """Unknown provider names fail closed instead of silently using OpenAI."""
         from xbotv2.llm.client import create_llm
 
-        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+        with pytest.raises(ValueError, match="Unknown provider"):
             create_llm({"provider": "not-a-provider", "model": "x"})
 
     def test_mock_llm_records_input_messages(self):

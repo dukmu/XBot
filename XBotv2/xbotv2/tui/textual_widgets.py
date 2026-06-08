@@ -138,10 +138,11 @@ def message_widget(state: TuiState, message: TuiMessage) -> Vertical:
 
 def tool_widget(tool: TuiTool) -> Vertical:
     elapsed = tool.elapsed(time.monotonic())
+    args_str = tool.args_preview if tool.args_preview else ""
     if tool.finished_at > 0:
-        title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
+        title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.2f}s".rstrip()
     else:
-        title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
+        title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.1f}s…".rstrip()
     return entry_widget("tool", title, tool_detail(tool))
 
 

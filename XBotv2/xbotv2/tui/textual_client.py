@@ -353,34 +353,19 @@ class XBotTextualApp(App[None]):
             await self._append_local_notice("Unknown command", spec.display_label)
             return
         if spec.kind == "skill":
-            await self._invoke_skill_command(spec)
+            await self._send_skill_message(spec)
             return
         await self._run_server_command(spec)
 
-    async def _invoke_skill_command(self, spec: CommandSpec) -> None:
-        """Get skill content from server, then submit as user message."""
-        if not self._connected:
-            await self._append_local_notice("Not connected", "Server is not ready yet.")
-            return
-        parts = [p for p in spec.args.split() if p]
-        try:
-            result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
-        except Exception as exc:
-            self._record_error(exc)
-            return
-        data = result.get("data") if isinstance(result, dict) else {}
-        content = str(data.get("content") or data.get("message") or "")
-        instructions = spec.args.strip()
-        if instructions:
-            content = content + "\n\n" + instructions
-        if not content:
-            return
-        if hasattr(self, '_turn_worker_running') and self._turn_worker_running:
-            self._outbound_messages.put_nowait(content)
-        else:
-            composer = self.query_one("#input", ComposerTextArea)
-            composer.load_text(content)
-            await self.submit_composer()
+    async def _send_skill_message(self, spec: CommandSpec) -> None:
+        """Send skill command directly as a user message.
+        
+        Server-side BEFORE_USER_MESSAGE_ACCEPT hook in SkillsPlugin
+        detects /skill-name prefix and expands with SKILL.md content.
+        """
+        composer = self.query_one("#input", ComposerTextArea)
+        composer.load_text(spec.raw)
+        await self.submit_composer()
 
     async def _run_server_command(self, spec: CommandSpec) -> None:
         if not self._connected:
@@ -975,6 +960,9 @@ class XBotTextualApp(App[None]):
             return
         widget = self._message_widgets.get(index)
         if widget is None:
+            await self._render_new_transcript_entries()
+            widget = self._message_widgets.get(index)
+        if widget is None:
             return
         body = self._query_child_first(widget, ".body")
         if body is not None:
@@ -993,10 +981,11 @@ class XBotTextualApp(App[None]):
         # Rebuild the title so the elapsed time is included (and
         # frozen on tool_result).
         elapsed = tool.elapsed(_time.monotonic())
+        args_str = tool.args_preview if tool.args_preview else ""
         if tool.finished_at > 0:
-            title = f"tool  {tool.name}  {tool.status}  {elapsed:.2f}s"
+            title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.2f}s".rstrip()
         else:
-            title = f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
+            title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.1f}s…".rstrip()
         meta = self._query_child_first(widget, ".meta")
         if meta is None:
             return

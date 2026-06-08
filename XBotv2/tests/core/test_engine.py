@@ -1443,12 +1443,12 @@ async def test_submit_permission_response_resolves_pending_request(state_store, 
 
 
 @pytest.mark.asyncio
-async def test_reasoning_delta_emitted_for_chunks_with_reasoning_content(state_store, temp_workspace):
-    """Streaming chunks with reasoning_content in additional_kwargs emit reasoning_delta events."""
+async def test_reasoning_emitted_as_content_in_stream(state_store, temp_workspace):
+    """Reasoning content appears in assistant_message_delta via provider."""
     llm = MockLLM(responses=[{
         "content": "The answer is 42.",
         "chunks": [
-            {"content": "Let me think...", "additional_kwargs": {"reasoning_content": "Let me think about this step by step."}},
+            {"content": "Let me think...", "additional_kwargs": {"reasoning_content": "step by step"}},
             {"content": "The answer is 42."},
         ],
     }])
@@ -1457,9 +1457,8 @@ async def test_reasoning_delta_emitted_for_chunks_with_reasoning_content(state_s
     engine = make_engine(llm, registry, state_store, temp_workspace)
     events = [e async for e in engine.run_turn("what is 6*7?")]
 
-    reasoning_events = [e for e in events if e["type"] == "reasoning_delta"]
-    assert len(reasoning_events) == 1
-    assert "step by step" in reasoning_events[0]["data"]["content"]
+    deltas = [e for e in events if e["type"] == "assistant_message_delta"]
+    assert len(deltas) == 2
 
 
 @pytest.mark.asyncio

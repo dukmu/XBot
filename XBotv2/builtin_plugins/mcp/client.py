@@ -81,8 +81,7 @@ class StdioTransport(MCPTransport):
             )
         except (OSError, FileNotFoundError) as exc:
             raise MCPConnectionError(f"MCP stdio failed to start {self._command!r}: {exc}") from exc
-        # Initialize: send empty request to check readiness (optional)
-        # Some servers need an initialize call
+        # Send initialize (some servers require it)
         try:
             await self._send_json_rpc("initialize", {
                 "protocolVersion": "2024-11-05",
@@ -155,7 +154,6 @@ class HttpTransport(MCPTransport):
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._request_id += 1
         body = {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
-        import httpx
         try:
             resp = await self._client.post("/", json=body)
             resp.raise_for_status()

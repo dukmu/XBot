@@ -31,6 +31,7 @@ class SkillsPlugin(PluginBase):
 
     def register_hooks(self, manager: HookManager) -> None:
         manager.register(HookStage.ON_SESSION_INIT, self._on_session_init)
+        manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
         manager.register(HookStage.AFTER_CONTEXT, self._on_after_context)
         manager.register(HookStage.ON_TURN_END, self._on_turn_end)
         manager.register(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
@@ -67,6 +68,26 @@ class SkillsPlugin(PluginBase):
             ns = f"skills:{s.scope}"
             ctx.tools.register(fake, sandbox_mode="host", owner_plugin=self.manifest.name, namespace=ns)
 
+    async def _on_before_user_message(self, ctx: HookContext):
+        """Expand /skill-name [instructions] with SKILL.md content."""
+        text = (ctx.user_input or "").strip()
+        if not text.startswith("/"):
+            return
+        parts = text.split(None, 1)
+        skill_name = parts[0][1:]  # strip leading /
+        skill = self._registry.load_skill(skill_name)
+        if skill is None:
+            return
+        instructions = parts[1] if len(parts) > 1 else ""
+        content = await load_skill(skill_name, skill_registry=self._registry)
+        expanded = f"## {skill_name}\n\n{content}"
+        if instructions:
+            expanded += f"\n\n## Instructions\n{instructions}"
+        if skill.allowed_tools or skill.disallowed_tools:
+            self._permission_scope.add(allowed=skill.allowed_tools, disallowed=skill.disallowed_tools)
+        self._active_skills[skill_name] = skill_name
+        return {"user_input": expanded}
+
     async def _on_after_context(self, ctx: HookContext) -> None:
         if not self._active_skills:
             return
@@ -86,7 +107,7 @@ class SkillsPlugin(PluginBase):
     async def _on_before_tool(self, ctx: HookContext) -> None:
         if not self._active_skills:
             return
-        tool_name = str(ctx.tool_call.get("name", "")) if ctx.tool_call else ""
+        tool_name = ctx.tool_call.get("name", "") if ctx.tool_call else ""
         if not tool_name:
             return
         decision = self._permission_scope.check(tool_name)

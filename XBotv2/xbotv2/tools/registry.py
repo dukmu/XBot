@@ -124,7 +124,7 @@ class ToolRegistry:
         if not tool_names:
             return self.get_all()
         expanded = self._expand_selectors(tool_names)
-        return [self._entries[name].tool for name in expanded if name in self._entries]
+        return [self._entries[name].tool for name in expanded]
 
     def restrict(self, tool_names: list[str] | None) -> list[str]:
         if not tool_names:
@@ -161,17 +161,15 @@ class ToolRegistry:
         if ":" in selector:
             ns, _, name_part = selector.partition(":")
             ns_re = _wildcard_to_regex(ns)
-            name_re = _wildcard_to_regex(name_part) if name_part != "*" else ".*"
+            name_re = _wildcard_to_regex(name_part)
             pattern = re.compile(f"^{ns_re}:{name_re}$")
             return sorted(n for n in self._entries if pattern.match(n))
 
-        # Bare selector with wildcard: strip * for prefix matching
         if selector.endswith("*"):
             prefix = selector.rstrip("*")
             return sorted(n for n in self._entries if n.startswith(prefix))
 
-        # Bare selector without wildcard: exact match or bare-prefix match
-        prefix_matches = [n for n in self._entries if n == selector or ("::" not in n and n.startswith(selector))]
+        prefix_matches = [n for n in self._entries if n == selector or (":" not in n and n.startswith(selector))]
         if prefix_matches:
             return sorted(prefix_matches)
         return sorted(n for n in self._entries if n.endswith(f":{selector}"))

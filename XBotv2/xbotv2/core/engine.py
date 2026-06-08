@@ -771,9 +771,6 @@ class Engine:
                         yield {"type": "assistant_message_delta", "data": {"content": chunk.content}}
                     for tool_delta in xbot_tool_call_deltas(chunk, tool_stream_ids):
                         yield {"type": "tool_call_delta", "data": tool_delta}
-                    reasoning = str(chunk.additional_kwargs.get("reasoning_content") or "")
-                    if reasoning:
-                        yield {"type": "reasoning_delta", "data": {"content": reasoning}}
                     continue
                 if isinstance(chunk, XBotModelResponse):
                     aggregate = chunk

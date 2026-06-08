@@ -64,14 +64,8 @@ def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str
 def execute_command(ctx: Any, command: str, args: list[str], *, kind: str = "server") -> dict[str, Any]:
     command = command.lower().strip().removeprefix("/")
     if kind == "skill":
-        entry = ctx.engine.tool_registry.get(command)
-        if entry:
-            content = entry.tool.invoke({})
-            instructions = " ".join(args) if args else ""
-            instruction_text = f"\n\n## Instructions\n{instructions}" if instructions else ""
-            return _result(command, f"## {command}\n\n{content}{instruction_text}",
-                          status="ok", data={"skill": command, "content": content})
-        return _result(command, f"Skill '{command}' not found", status="error")
+        return _result(command, f"Skill '{command}' available. Use /{command} [instructions] to invoke.",
+                       status="ok")
     if kind in ("tool", "mcp"):
         return _result(command, f"Tool '{command}' available.", data={"tool": command})
     if command == "status":
