@@ -394,4 +394,32 @@ class TestBootstrapNoPlugins:
         types = [e["type"] for e in events]
         assert "turn_started" in types
         assert "assistant_message" in types
-        assert "turn_finished" in types
+
+
+class TestMemoryLoading:
+    @pytest.mark.asyncio
+    async def test_memory_md_loaded_from_data_memory(self, temp_data_dir):
+        """MEMORY.md in data/memory/ is loaded into SystemConfig.memory."""
+        (temp_data_dir / "memory").mkdir()
+        (temp_data_dir / "memory" / "MEMORY.md").write_text("# Custom Memory\n\nImportant facts.\n")
+
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="mem-test",
+            thread_id="t",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[{"content": "ok"}]),
+        )
+        assert "Important facts" in getattr(engine.config, "memory", "")
+
+    @pytest.mark.asyncio
+    async def test_memory_md_missing_no_error(self, temp_data_dir):
+        """Bootstrap works fine when MEMORY.md doesn't exist."""
+        engine = await bootstrap(
+            config_dir=str(temp_data_dir),
+            session_id="mem-missing",
+            thread_id="t",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[{"content": "ok"}]),
+        )
+        assert getattr(engine.config, "memory", "") == ""

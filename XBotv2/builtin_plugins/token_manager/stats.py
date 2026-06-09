@@ -76,5 +76,23 @@ class TokenStatsCollector:
             "cumulative_completion_tokens": self.cumulative_completion,
             "cumulative_cache_hit_tokens": self.cumulative_cache_hit,
             "cumulative_cache_miss_tokens": self.cumulative_cache_miss,
-            "last_turn": self._current.to_dict() if self._current else None,
+            "last_turn": _turn_to_dict(self._current) if self._current else None,
         }
+
+
+def _turn_to_dict(t: TurnStats) -> dict[str, Any]:
+    return {
+        "turn": t.turn,
+        "started_at": t.started_at,
+        "finished_at": t.finished_at,
+        "prompt_tokens": t.prompt_tokens,
+        "completion_tokens": t.completion_tokens,
+        "cache_hit_tokens": t.cache_hit_tokens,
+        "cache_miss_tokens": t.cache_miss_tokens,
+        "cache_write_tokens": t.cache_write_tokens,
+        "provider": t.provider,
+        "model": t.model,
+        "tool_calls": t.tool_calls,
+        "context_messages": t.context_messages,
+        "estimated_prompt": t.estimated_prompt,
+    }
