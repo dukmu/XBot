@@ -40,15 +40,17 @@ class SandboxPolicy:
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
         enabled: bool = True,
+        network: bool = True,
     ) -> None:
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
-        self._backend = BubblewrapBackend(self.workspace_root)
+        self._network = network
         self._rules: list[SandboxResourceRule] = []
 
         if config:
             self._load_config(config)
+        self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
         self._rules.append(SandboxResourceRule(path=str(self.workspace_root), access="readwrite"))
         self._rules.append(SandboxResourceRule(path=str(self.data_root), access="readonly"))
 
@@ -189,6 +191,7 @@ class SandboxPolicy:
 
     def _load_config(self, config: dict[str, Any]) -> None:
         self.enabled = config.get("enabled", self.enabled)
+        self._network = config.get("network", True)
         for rule_data in config.get("resources", []):
             path = _expand_path_placeholders(
                 str(rule_data.get("path", "")),

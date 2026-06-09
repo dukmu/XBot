@@ -309,11 +309,22 @@ def openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def openai_usage(usage: Any) -> dict[str, Any]:
     if usage is None:
         return {}
-    return {
+    result = {
         "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
         "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
         "total_tokens": getattr(usage, "total_tokens", 0) or 0,
     }
+    # DeepSeek disk cache: cached tokens are discounted
+    hit = getattr(usage, "prompt_cache_hit_tokens", None) or getattr(usage, "cache_read_input_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None) or getattr(usage, "cache_creation_input_tokens", None)
+    write = getattr(usage, "prompt_cache_write_tokens", None)
+    if hit is not None:
+        result["cache_read_input_tokens"] = int(hit)
+    if miss is not None:
+        result["cache_creation_input_tokens"] = int(miss)
+    if write is not None:
+        result["prompt_cache_write_tokens"] = int(write)
+    return result
 
 
 def _parse_tool_args(raw: str) -> dict[str, Any]:

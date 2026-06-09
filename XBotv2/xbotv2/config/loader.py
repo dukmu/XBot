@@ -95,7 +95,7 @@ def load_provider_names(config_dir: Path) -> tuple[str, list[str]]:
 
 
 def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemConfig:
-    """Load runtime config from config/system.yaml and workspace AGENTS.md."""
+    """Load runtime config from config/system.yaml, workspace AGENTS.md, and data/memory/MEMORY.md."""
     data = load_yaml(config_dir / "config" / "system.yaml")
     permissions = load_yaml(config_dir / "config" / "permissions.yaml")
     sandbox = load_yaml(config_dir / "config" / "sandbox.yaml")
@@ -111,6 +111,9 @@ def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemCo
         data["instructions"] = "\n\n".join(
             part for part in (existing, agents_text) if part.strip()
         )
+    memory_path = config_dir / "memory" / "MEMORY.md"
+    if memory_path.exists():
+        data["memory"] = memory_path.read_text(encoding="utf-8")
     return SystemConfig(**data)
 
 

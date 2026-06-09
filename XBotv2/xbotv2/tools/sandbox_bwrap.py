@@ -29,7 +29,7 @@ class SandboxMountSpec:
 class BubblewrapBackend:
     workspace_root: Path
     timeout_seconds: float = 60.0
-    network: bool = False
+    network: bool = True
     max_output_chars: int = 100_000
 
     async def create_process(
@@ -71,19 +71,12 @@ class BubblewrapBackend:
     ) -> str:
         proc = await self.create_process(payload, mount_specs, cwd=cwd)
         stdout, stderr = await self.communicate(proc, stdin=stdin)
-        return _format_result(stdout, stderr, proc.returncode, self.max_output_chars)
+        return _format_result(stdout, stderr, proc.returncode)
 
 
-def backend_available() -> bool:
-    return shutil.which("bwrap") is not None
-
-
-def _format_result(stdout: str, stderr: str, returncode: int, max_chars: int) -> str:
+def _format_result(stdout: str, stderr: str, returncode: int) -> str:
     payload = {"stdout": stdout, "stderr": stderr, "exit_code": returncode}
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    if len(text) > max_chars:
-        return text[:max_chars] + f"\n...[truncated to {max_chars} chars]"
-    return text
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str) -> list[str]:
@@ -167,3 +160,7 @@ def _is_under(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def backend_available() -> bool:
+    return shutil.which("bwrap") is not None

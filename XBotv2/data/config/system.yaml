@@ -20,8 +20,5 @@ instructions: |
   5. Ask the user for clarification when the request is ambiguous.
   6. Use shell commands for system operations, filesystem tools for file I/O.
   7. Long results may be truncated and return a preview; avoid reading large cached content directly.
-  8. For large files, first clarify their size and avoid fully loading them.
-memory: |
-  ## Memory
+   8. For large files, first clarify their size and avoid fully loading them.
 
-  No persistent memories yet. Use memory tools to store important information.
