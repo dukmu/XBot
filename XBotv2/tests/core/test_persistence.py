@@ -73,6 +73,11 @@ class TestMessageSerialization:
         assert restored.name == "assistant"
         assert restored.additional_kwargs["provider_note"] == {"a": 1}
         assert restored.response_metadata["token_usage"]["total_tokens"] == 9
+        # usage_metadata must round-trip — without this, TUI
+        # token totals reset to 0 on resume (see issue from
+        # session 20260609-170727-7449).
+        assert restored.usage_metadata == {"input_tokens": 5, "output_tokens": 4}
+        assert d["usage_metadata"] == {"input_tokens": 5, "output_tokens": 4}
 
     def test_tool_message_roundtrip(self):
         msg = Message(role="tool", content="output", tool_call_id="call_1")

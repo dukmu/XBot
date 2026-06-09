@@ -141,8 +141,39 @@ def test_tui_state_updates_streaming_tool_call_args_by_index():
     })
 
     assert state.tools["call_1"].name == "shell"
-    assert state.tools["call_1"].args_preview == '{"command": "df -h"}'
+    # Mid-stream: raw JSON accumulates in args_streaming, args_preview
+    # is empty so the title does not show half-formed JSON.
+    assert state.tools["call_1"].args_preview == ""
+    assert state.tools["call_1"].args_streaming == '{"command": "df -h"}'
+    assert state.tools["call_1"].args_finalized is False
     assert [entry.kind for entry in state.transcript] == ["tool"]
+
+
+def test_tui_state_finalizes_tool_args_on_tool_calls_started():
+    state = TuiState()
+
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+    state.apply_event({
+        "type": "tool_call_delta",
+        "data": {
+            "tool_calls": [
+                {"tool_call_id": "call_1", "name": "shell", "args_delta": '{"command"', "index": 0},
+            ]
+        },
+    })
+    state.apply_event({
+        "type": "tool_calls_started",
+        "data": {
+            "tool_calls": [
+                {"tool_call_id": "call_1", "name": "shell", "args": {"command": "df -h"}},
+            ]
+        },
+    })
+
+    # tool_calls_started carries the final parsed dict; args_preview
+    # becomes the clean dict repr and args_finalized is True.
+    assert state.tools["call_1"].args_finalized is True
+    assert state.tools["call_1"].args_preview == '{"command": "df -h"}'
 
 
 def test_tui_state_renames_provisional_streaming_tool_id():

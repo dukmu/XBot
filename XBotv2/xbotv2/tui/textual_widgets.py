@@ -10,6 +10,7 @@ from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
 from textual.events import Key
 from textual.widgets import Static, TextArea
+from textwrap import shorten
 
 from xbotv2.tui.client import TuiMessage, TuiState, TuiTool
 
@@ -138,7 +139,11 @@ def message_widget(state: TuiState, message: TuiMessage) -> Vertical:
 
 def tool_widget(tool: TuiTool) -> Vertical:
     elapsed = tool.elapsed(time.monotonic())
-    args_str = tool.args_preview if tool.args_preview else ""
+    # Title shows args only when the parsed dict has arrived
+    # (tool_calls_started). During streaming the title stays short
+    # so the user does not see half-formed JSON like
+    # ``{"command": "cu`` flicker past.
+    args_str = tool.args_preview if tool.args_finalized else ""
     if tool.finished_at > 0:
         title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.2f}s".rstrip()
     else:
@@ -148,8 +153,12 @@ def tool_widget(tool: TuiTool) -> Vertical:
 
 def tool_detail(tool: TuiTool) -> str:
     parts: list[str] = []
-    if tool.args_preview:
+    if tool.args_finalized and tool.args_preview:
         parts.append(f"args: {tool.args_preview}")
+    elif tool.args_streaming:
+        # Truncate the streaming buffer; the full dict repr will
+        # replace this line as soon as tool_calls_started arrives.
+        parts.append(f"args: {shorten(tool.args_streaming, width=160, placeholder='…')}")
     if tool.summary:
         parts.append(f"result: {tool.summary}")
     return "\n".join(parts)

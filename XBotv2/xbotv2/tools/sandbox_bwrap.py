@@ -94,7 +94,15 @@ def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str
         "--dev", "/dev",
         "--tmpfs", "/tmp",
     ]
-    if not network:
+    if network:
+        # Share the host network namespace so DNS and TCP egress
+        # work inside the sandbox. Without this, --unshare-net is
+        # the default and any HTTP/curl/etc. fails with
+        # ``Connection timed out`` (see issue from session
+        # 20260609-170727-7449 where the model spent 12 turns
+        # trying to reach the internet before falling back).
+        args.append("--share-net")
+    else:
         args.append("--unshare-net")
 
     args.extend(_system_mount_args())
@@ -130,6 +138,28 @@ def _system_mount_args() -> list[str]:
             args.extend(["--symlink", os.readlink(path_str), path_str])
         elif path.exists():
             args.extend(["--ro-bind", path_str, path_str])
+    # DNS, name service switch, and TLS roots must be reachable
+    # inside the sandbox. Without these, ``curl example.com``
+    # fails with ``Could not resolve host`` even when
+    # ``--share-net`` is on. We bind individual files (not
+    # ``/etc``) so unrelated host config (e.g. ``/etc/passwd``)
+    # stays invisible to the sandbox.
+    for path_str in (
+        "/etc/resolv.conf",
+        "/etc/nsswitch.conf",
+        "/etc/hosts",
+        "/etc/host.conf",
+        "/etc/services",
+        "/etc/protocols",
+        "/etc/ssl/certs",
+        "/etc/ssl/openssl.cnf",
+    ):
+        path = Path(path_str)
+        if path.is_symlink():
+            target = os.readlink(path_str)
+            args.extend(["--symlink", target, path_str])
+        elif path.exists():
+            args.extend(["--ro-bind-try", path_str, path_str])
     return args
 
 

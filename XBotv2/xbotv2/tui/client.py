@@ -38,6 +38,8 @@ class TuiTool:
     tool_call_id: str
     name: str
     args_preview: str = ""
+    args_streaming: str = ""
+    args_finalized: bool = False
     status: str = "pending"
     summary: str = ""
     # Wall-clock seconds between ``tool_calls_started`` and
@@ -324,7 +326,12 @@ class TuiState:
                 if tool is None:
                     continue
                 lines.append(shorten(f"Tool {tool.name} [{tool.status}]", width=width, placeholder="..."))
-                detail = " | ".join(part for part in (tool.args_preview, tool.summary) if part)
+                # Show finalized args (clean dict repr) when available;
+                # fall back to the raw streaming buffer so the user
+                # still sees something mid-stream. Avoids
+                # ``{"command": "cu`` flicker in narrow terminals.
+                preview = tool.args_preview if tool.args_finalized else tool.args_streaming
+                detail = " | ".join(part for part in (preview, tool.summary) if part)
                 if detail:
                     lines.extend(_wrap(f"  {detail}", width))
             elif entry.kind == "error":
@@ -360,7 +367,14 @@ class TuiState:
                 tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
                 self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
             tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
-            tool.args_preview = _preview(raw_tool.get("args") or raw_tool.get("arguments") or "")
+            # tool_calls_started carries the FINAL parsed args (dict).
+            # Replace the streaming preview with the clean dict repr
+            # and mark finalized so the title/body no longer show the
+            # raw partial JSON string.
+            final_args = raw_tool.get("args") or raw_tool.get("arguments")
+            if final_args:
+                tool.args_preview = _preview(final_args)
+                tool.args_finalized = True
             tool.status = "pending"
             # Stamp the start of this tool call only on the FIRST
             # tool_calls_started event for this id — re-firing the
@@ -393,13 +407,20 @@ class TuiState:
                 tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
                 self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
             tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            # Accumulate raw JSON in args_streaming only. The
+            # title and body keep args_preview empty until the
+            # tool_calls_started event delivers the parsed dict —
+            # this prevents the user from seeing half-formed
+            # ``{"command": "cu`` in the title mid-stream.
+            if tool.args_finalized:
+                continue
             args = raw_tool.get("args_delta")
             if args is None:
                 args = raw_tool.get("args") or raw_tool.get("arguments") or ""
             if isinstance(args, str):
-                tool.args_preview = _preview(f"{tool.args_preview}{args}")
+                tool.args_streaming = f"{tool.args_streaming}{args}"
             elif args:
-                tool.args_preview = _preview(args)
+                tool.args_streaming = str(args)
             tool.status = "pending"
             if tool.started_at <= 0:
                 tool.started_at = _time.monotonic()
@@ -449,6 +470,8 @@ class TuiState:
         else:
             if not existing.args_preview:
                 existing.args_preview = old_tool.args_preview
+            if not existing.args_streaming:
+                existing.args_streaming = old_tool.args_streaming
             if existing.started_at <= 0:
                 existing.started_at = old_tool.started_at
         for entry in self.transcript:

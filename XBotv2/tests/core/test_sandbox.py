@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from xbotv2.tools.sandbox import SandboxPolicy, SandboxResourceRule
+from xbotv2.tools.sandbox_bwrap import _build_args
 
 
 class TestSandboxResourceRule:
@@ -68,3 +69,25 @@ class TestResourcePathResolution:
         )
         resolved = policy.resolve_resource_path("skills/test.md")
         assert str(temp_workspace / "data" / "skills" / "test.md") in resolved
+
+
+class TestBubblewrapBuildArgs:
+    def test_network_true_uses_share_net(self, temp_workspace):
+        args = _build_args([], network=True, cwd=str(temp_workspace))
+        assert "--share-net" in args
+        assert "--unshare-net" not in args
+
+    def test_network_false_uses_unshare_net(self, temp_workspace):
+        args = _build_args([], network=False, cwd=str(temp_workspace))
+        assert "--unshare-net" in args
+        assert "--share-net" not in args
+
+    def test_etc_dns_files_are_bound(self, temp_workspace):
+        args = _build_args([], network=True, cwd=str(temp_workspace))
+        # resolv.conf and nsswitch.conf must be bind-mounted so
+        # DNS resolution works inside the sandbox.
+        assert "--ro-bind-try" in args
+        assert "/etc/resolv.conf" in args
+        assert "/etc/nsswitch.conf" in args
+        # TLS roots too — curl on HTTPS endpoints.
+        assert "/etc/ssl/certs" in args

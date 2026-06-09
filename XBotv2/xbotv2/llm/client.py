@@ -74,11 +74,15 @@ class OpenAICompatibleProvider:
             if delta is None:
                 continue
 
-            # Reasoning content (DeepSeek R1 / thinking mode) — show first with header
+            # Reasoning content (DeepSeek R1 / thinking mode). The
+            # provider yields the raw reasoning text verbatim; the
+            # TUI renders it as part of the assistant message bubble.
+            # We do NOT inject a `## Thinking` header here — injecting
+            # one would compound each turn the reasoning is replayed
+            # to the model and produce `## Thinking\n\n## Thinking\n\n…`
+            # chains (see XBotv2/data/sessions/20260609-170727-7449).
             rc = getattr(delta, "reasoning_content", None) or ""
             if rc:
-                if not reasoning_parts:
-                    rc = "## Thinking\n\n" + rc
                 reasoning_parts.append(rc)
                 yield XBotModelChunk(content=rc, additional_kwargs={"reasoning_content": rc})
                 continue
@@ -251,6 +255,28 @@ def create_mock_llm(responses: list[dict[str, Any]]) -> Any:
     return MockLLM(responses=responses)
 
 
+_REASONING_HEADER = "## Thinking\n\n"
+
+
+def _strip_reasoning_headers(text: str) -> str:
+    """Collapse leading ``## Thinking\n\n`` repetitions.
+
+    Older sessions persisted multiple ``## Thinking`` headers (one
+    per round-trip) when reasoning was re-emitted to the model. The
+    chain would compound each turn, producing
+    ``## Thinking\n\n## Thinking\n\n…`` with 4-20 nested headers
+    after a few rounds. Strip them so the model sees a single clean
+    block, and any pre-existing chain collapses to one.
+    """
+
+    if not text:
+        return text
+    changed = True
+    while changed and text.startswith(_REASONING_HEADER):
+        text = text[len(_REASONING_HEADER):]
+    return text
+
+
 def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
@@ -265,7 +291,7 @@ def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
                 item["tool_calls"] = [openai_tool_call_for_request(tc) for tc in tool_calls]
                 reasoning = (getattr(message, "additional_kwargs", {}) or {}).get("reasoning_content")
                 if reasoning:
-                    item["reasoning_content"] = reasoning
+                    item["reasoning_content"] = _strip_reasoning_headers(str(reasoning))
             result.append(item)
     return result
 

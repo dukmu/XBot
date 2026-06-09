@@ -41,6 +41,8 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
         })
     if msg.response_metadata:
         d["response_metadata"] = _json_safe(msg.response_metadata)
+    if msg.usage_metadata:
+        d["usage_metadata"] = _json_safe(msg.usage_metadata)
     if msg.artifact is not None:
         d["artifact"] = _json_safe(msg.artifact)
     return d
@@ -56,6 +58,7 @@ def dict_to_message(d: dict[str, Any]) -> Message:
         name=d.get("name", ""),
         additional_kwargs=dict(d.get("additional_kwargs") or {}),
         response_metadata=dict(d.get("response_metadata") or {}),
+        usage_metadata=dict(d.get("usage_metadata") or {}),
         artifact=d.get("artifact"),
     )
 
