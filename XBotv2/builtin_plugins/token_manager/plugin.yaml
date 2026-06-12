@@ -1,0 +1,3 @@
+name: token_manager
+version: "1.0.0"
+description: Token estimation, usage tracking, and budget control

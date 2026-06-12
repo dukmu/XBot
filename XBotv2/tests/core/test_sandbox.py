@@ -1,176 +1,68 @@
-"""Tests for SandboxPolicy."""
+"""Tests for SandboxPolicy with BubblewrapBackend."""
 
-import os
 from pathlib import Path
 
 import pytest
 
 from xbotv2.tools.sandbox import SandboxPolicy, SandboxResourceRule
+from xbotv2.tools.sandbox_bwrap import _build_args
 
 
 class TestSandboxResourceRule:
-    """Resource rule matching."""
-
     def test_rule_matches_subpath(self):
-        """A rule for /foo matches /foo/bar."""
         rule = SandboxResourceRule(path="/foo", access="readwrite")
         assert rule.matches("/foo/bar") is True
         assert rule.matches("/foo/bar/baz") is True
 
     def test_rule_matches_exact(self):
-        """A rule for /foo matches /foo itself."""
         rule = SandboxResourceRule(path="/foo")
         assert rule.matches("/foo") is True
 
     def test_rule_does_not_match_sibling(self):
-        """A rule for /foo does not match /bar."""
         rule = SandboxResourceRule(path="/foo")
         assert rule.matches("/bar") is False
 
     def test_rule_does_not_match_parent(self):
-        """A rule for /foo/bar does not match /foo."""
         rule = SandboxResourceRule(path="/foo/bar")
         assert rule.matches("/foo") is False
 
 
 class TestSandboxPolicyBasics:
-    """Policy creation and description."""
+    def test_default_enabled(self, temp_workspace):
+        policy = SandboxPolicy(workspace_root=str(temp_workspace))
+        assert policy.enabled is True
 
     def test_default_disabled(self, temp_workspace):
-        """Sandbox is disabled by default."""
-        policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        )
+        policy = SandboxPolicy(enabled=False, workspace_root=str(temp_workspace))
         assert policy.enabled is False
 
     def test_describe_disabled(self, temp_workspace):
-        """Description reflects disabled state."""
-        policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        )
+        policy = SandboxPolicy(enabled=False, workspace_root=str(temp_workspace))
         desc = policy.describe()
         assert "disabled" in desc.lower()
 
     def test_describe_enabled(self, temp_workspace):
-        """Description reflects enabled state."""
-        policy = SandboxPolicy(
-            enabled=True,
-            workspace_root=str(temp_workspace),
-        )
+        policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
         desc = policy.describe()
         assert "enabled" in desc.lower()
 
     def test_config_loading(self, temp_workspace):
-        """Config dict loads resource rules."""
         policy = SandboxPolicy(
             config={
                 "enabled": True,
-                "resources": [
-                    {"path": "/data", "access": "readonly"},
-                ],
+                "resources": [{"path": "/data", "access": "readonly"}],
             },
             workspace_root=str(temp_workspace),
         )
         assert policy.enabled is True
 
-
-class TestToolGuard:
-    """Tool call guard decisions."""
-
-    def test_host_tools_always_allowed(self, temp_workspace):
-        """Host-mode tools bypass sandbox checks."""
-        policy = SandboxPolicy(
-            enabled=True,
-            workspace_root=str(temp_workspace),
-        )
-        allowed, reason = policy.guard_tool_call(
-            "some_tool", {"path": "/etc/passwd"}, "host"
-        )
-        assert allowed is True
-        assert reason == ""
-
-    def test_sandboxed_tool_denied_outside_workspace(self, temp_workspace):
-        """When sandbox enabled, workspace-relative paths outside workspace denied."""
-        ws = Path(temp_workspace)
-        policy = SandboxPolicy(
-            enabled=True,
-            workspace_root=str(ws),
-        )
-        # An absolute path outside workspace
-        outside = "/etc/passwd"
-        allowed, reason = policy.guard_tool_call(
-            "filesystem_read", {"path": outside}, "sandboxed"
-        )
-        assert allowed is False
-        assert "denied" in reason.lower() or "escape" in reason.lower()
-
-    def test_disabled_sandbox_allows_workspace(self, temp_workspace):
-        """When disabled, workspace paths are allowed."""
-        ws = Path(temp_workspace)
-        (ws / "test.txt").write_text("hello")
-        policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(ws),
-        )
-        allowed, reason = policy.guard_tool_call(
-            "filesystem_read", {"path": "test.txt"}, "sandboxed"
-        )
-        assert allowed is True
-
-    def test_disabled_sandbox_denies_absolute_outside(self, temp_workspace):
-        """When disabled, absolute paths outside workspace are denied."""
-        ws = Path(temp_workspace)
-        policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(ws),
-        )
-        allowed, reason = policy.guard_tool_call(
-            "filesystem_read", {"path": "/etc/shadow"}, "sandboxed"
-        )
-        assert allowed is False
-
-    def test_symlink_escape_detection(self, temp_workspace):
-        """Symlinks pointing outside workspace are detected."""
-        ws = Path(temp_workspace)
-        # Create a symlink that points outside
-        symlink_path = ws / "escape_link"
-        symlink_path.symlink_to("/etc/passwd")
-
-        policy = SandboxPolicy(
-            enabled=True,
-            workspace_root=str(ws),
-        )
-        allowed, reason = policy.guard_tool_call(
-            "filesystem_read", {"path": "escape_link"}, "sandboxed"
-        )
-        assert allowed is False
-        assert "escape" in reason.lower() or "denied" in reason.lower()
-
-        # Cleanup
-        symlink_path.unlink()
+    def test_backend_availability_property(self, temp_workspace):
+        policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
+        assert isinstance(policy.backend_available, bool)
 
 
-class TestPathResolution:
-    """Path resolution against workspace/data roots."""
-
-    def test_resolve_relative_to_workspace(self, temp_workspace):
-        """Relative paths resolve against workspace."""
-        ws = Path(temp_workspace)
-        policy = SandboxPolicy(workspace_root=str(ws))
-        resolved = policy.resolve_tool_path("subdir/file.txt")
-        assert resolved == str((ws / "subdir" / "file.txt").resolve())
-
-    def test_resolve_absolute_unchanged(self, temp_workspace):
-        """Absolute paths stay absolute (resolved)."""
-        ws = Path(temp_workspace)
-        policy = SandboxPolicy(workspace_root=str(ws))
-        resolved = policy.resolve_tool_path("/tmp/some_file")
-        assert resolved == "/tmp/some_file"
-
+class TestResourcePathResolution:
     def test_resolve_resource_path(self, temp_workspace):
-        """Resource paths resolve against data root."""
         policy = SandboxPolicy(
             workspace_root=str(temp_workspace),
             data_root=str(temp_workspace / "data"),
@@ -179,19 +71,122 @@ class TestPathResolution:
         assert str(temp_workspace / "data" / "skills" / "test.md") in resolved
 
 
-class TestOneCallApprovals:
-    """Transient path approvals."""
+class TestBubblewrapBuildArgs:
+    def test_network_true_uses_share_net(self, temp_workspace):
+        args = _build_args([], network=True, cwd=str(temp_workspace))
+        assert "--share-net" in args
+        assert "--unshare-net" not in args
 
-    def test_approve_once(self, temp_workspace):
-        """One-call approval is tracked."""
-        policy = SandboxPolicy(workspace_root=str(temp_workspace))
-        policy.approve_once("/some/path", "read")
-        assert ("/some/path", "read") in policy._one_call_approvals
+    def test_network_false_uses_unshare_net(self, temp_workspace):
+        args = _build_args([], network=False, cwd=str(temp_workspace))
+        assert "--unshare-net" in args
+        assert "--share-net" not in args
 
-    def test_clear_one_call_approvals(self, temp_workspace):
-        """Clear removes all approvals."""
+    def test_etc_dns_files_are_bound(self, temp_workspace):
+        args = _build_args([], network=True, cwd=str(temp_workspace))
+        # resolv.conf and nsswitch.conf must be bind-mounted so
+        # DNS resolution works inside the sandbox.
+        assert "--ro-bind-try" in args
+        assert "/etc/resolv.conf" in args
+        assert "/etc/nsswitch.conf" in args
+        # TLS roots too — curl on HTTPS endpoints.
+        assert "/etc/ssl/certs" in args
+
+
+class TestSandboxPolicySerialisation:
+    def test_to_dict_round_trip(self, temp_workspace):
+        """to_dict() output reconstructs an identical policy via update_from_config."""
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "network": False,
+                "external_read": "ask",
+                "external_write": "deny",
+                "workspace_read": "allow",
+                "workspace_write": "allow",
+                "resources": [
+                    {"path": "/dev/null", "access": "readonly"},
+                ],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        d = policy.to_dict()
+        assert d["enabled"] is True
+        assert d["network"] is False
+        assert d["external_read"] == "ask"
+        assert d["external_write"] == "deny"
+        assert d["workspace_read"] == "allow"
+        assert d["workspace_write"] == "allow"
+        assert len(d["resources"]) >= 1
+
+        policy2 = SandboxPolicy(
+            config=d,
+            workspace_root=str(temp_workspace),
+        )
+        assert policy2.to_dict() == d
+
+    def test_save_and_load_from_file(self, temp_workspace, tmp_path):
+        """save() writes YAML; another SandboxPolicy can read it back."""
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "network": True,
+                "external_read": "readonly",
+                "external_write": "deny",
+                "workspace_read": "allow",
+                "workspace_write": "allow",
+                "resources": [{"path": "/tmp", "access": "readwrite"}],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        path = tmp_path / "sandbox.yaml"
+        policy.save(path)
+        assert path.exists()
+
+        from xbotv2.config.loader import load_yaml
+        data = load_yaml(path)
+        policy2 = SandboxPolicy(
+            config=data,
+            workspace_root=str(temp_workspace),
+        )
+        assert policy2.enabled is True
+        assert policy2.network is True
+        assert policy2.external_read == "readonly"
+        assert policy2.external_write == "deny"
+        assert policy2.to_dict() == policy.to_dict()
+
+    def test_update_from_config_changes_network(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={"network": True},
+            workspace_root=str(temp_workspace),
+        )
+        assert policy.network is True
+        policy.update_from_config({"network": False})
+        assert policy.network is False
+
+    def test_update_from_config_preserves_untouched_keys(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={"enabled": True, "network": True},
+            workspace_root=str(temp_workspace),
+        )
+        policy.update_from_config({"network": False})
+        assert policy.enabled is True
+        assert policy.network is False
+
+    def test_to_dict_excludes_implicit_workspace_data_rules(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={
+                "resources": [{"path": "/dev/null", "access": "readonly"}],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        d = policy.to_dict()
+        paths = [r["path"] for r in d.get("resources", [])]
+        assert str(temp_workspace) not in paths
+
+    def test_external_read_default_values(self, temp_workspace):
         policy = SandboxPolicy(workspace_root=str(temp_workspace))
-        policy.approve_once("/p1", "read")
-        policy.approve_once("/p2", "write")
-        policy.clear_one_call_approvals()
-        assert len(policy._one_call_approvals) == 0
+        assert policy.external_read == "readonly"
+        assert policy.external_write == "deny"
+        assert policy.workspace_read == "allow"
+        assert policy.workspace_write == "allow"

@@ -93,6 +93,17 @@ class TestRegistration:
         removed = tool_registry.unregister_plugin_tools("nonexistent")
         assert removed == []
 
+    def test_unregister_single_tool(self, tool_registry):
+        """A single tool can be unregistered by name."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+        tool_registry.restrict(["tool_a", "tool_b"])
+
+        assert tool_registry.unregister("tool_a") is True
+        assert tool_registry.unregister("tool_a") is False
+        assert not tool_registry.registered("tool_a")
+        assert tool_registry.names() == ["tool_b"]
+
 
 class TestFiltering:
     """Tool filtering and wildcard expansion."""
@@ -139,6 +150,31 @@ class TestFiltering:
         result = tool_registry.filter(["nonexistent"])
         assert len(result) == 0
 
+    def test_restrict_limits_visible_and_executable_tools(self, tool_registry):
+        """Restrict changes registry visibility, unlike pure filter()."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+
+        enabled = tool_registry.restrict(["tool_a"])
+
+        assert enabled == ["tool_a"]
+        assert tool_registry.names() == ["tool_a"]
+        assert [tool.name for tool in tool_registry.get_all()] == ["tool_a"]
+        assert tool_registry.get("tool_a") is not None
+        assert tool_registry.get("tool_b") is None
+
+    def test_restrict_expands_prefix_and_silently_ignores_unmatched(self, tool_registry):
+        """Restrict supports group selectors; unmatched selectors are silently ignored."""
+        tool_registry.register(filesystem_read)
+        tool_registry.register(filesystem_write)
+        tool_registry.register(tool_a)
+
+        tool_registry.restrict(["filesystem"])
+        assert set(tool_registry.names()) == {"filesystem_read", "filesystem_write"}
+
+        tool_registry.restrict(["missing"])
+        assert tool_registry.names() == []
+
 
 class TestQuery:
     """Query methods."""
@@ -148,6 +184,15 @@ class TestQuery:
         tool_registry.register(tool_a)
         tool_registry.register(tool_b)
         assert set(tool_registry.names()) == {"tool_a", "tool_b"}
+
+    def test_registered_names_ignores_restrictions(self, tool_registry):
+        """Introspection can see hidden registered tools."""
+        tool_registry.register(tool_a)
+        tool_registry.register(tool_b)
+        tool_registry.restrict(["tool_a"])
+
+        assert tool_registry.names() == ["tool_a"]
+        assert set(tool_registry.registered_names()) == {"tool_a", "tool_b"}
 
     def test_get_all(self, tool_registry):
         """Get all tool instances."""

@@ -1,0 +1,733 @@
+"""Protocol-driven curses TUI client.
+
+The TUI layer consumes protocol events only. It must not import runtime or
+bootstrap modules.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import curses
+import json
+import queue
+from concurrent.futures import Future
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from textwrap import shorten
+from typing import Any
+
+from xbotv2.protocol.frames import ProtocolFrame
+from xbotv2.tui.terminal import TerminalSession
+
+@dataclass
+class TuiMessage:
+    role: str
+    content: str
+    ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    reasoning: str = ""
+
+
+@dataclass
+class TuiTranscriptEntry:
+    kind: str
+    key: str
+
+
+@dataclass
+class TuiTool:
+    tool_call_id: str
+    name: str
+    args_preview: str = ""
+    args_streaming: str = ""
+    args_finalized: bool = False
+    status: str = "pending"
+    summary: str = ""
+    # Wall-clock seconds between ``tool_calls_started`` and
+    # ``tool_result``. Set when the result arrives. While pending,
+    # the value is the live elapsed (see ``elapsed()``).
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    # Permission state — set when the engine sends a
+    # ``permission_request`` for this tool. The TUI renders
+    # inline approval choices inside the tool widget instead of
+    # creating a separate notice entry.
+    permission_pending: bool = False
+    permission_request_id: str = ""
+    permission_reason: str = ""
+
+    def elapsed(self, now: float | None = None) -> float:
+        """Return seconds since the tool started.
+
+        Returns 0.0 if the tool never started (defensive default).
+        """
+
+        if self.started_at <= 0:
+            return 0.0
+        end = self.finished_at if self.finished_at > 0 else (now or self.started_at)
+        return max(0.0, end - self.started_at)
+
+
+@dataclass
+class TuiNotice:
+    kind: str
+    text: str
+    ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TuiState:
+    session_id: str = "default"
+    thread_id: str = "agent"
+    agent_name: str = "XBotv2"
+    status: str = "Disconnected"
+    usage: dict[str, int] = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+    })
+    turn_usage: dict[str, int] = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+    })
+    messages: list[TuiMessage] = field(default_factory=list)
+    tools: dict[str, TuiTool] = field(default_factory=dict)
+    notices: list[TuiNotice] = field(default_factory=list)
+    transcript: list[TuiTranscriptEntry] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    turn: int = 0
+    turn_active: bool = False
+    pending_user_input_request_id: str | None = None
+    pending_permission_request_id: str | None = None
+    pending_user_input_payload: dict[str, Any] | None = None
+    pending_permission_payload: dict[str, Any] | None = None
+    pending_user_input_active: bool = False
+    pending_permission_active: bool = False
+    _tool_transcript_keys: set[str] = field(default_factory=set)
+    _streaming_assistant_index: int | None = None
+    _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
+    _changed_tool_ids: set[str] = field(default_factory=set)
+    _tool_id_renames: dict[str, str] = field(default_factory=dict)
+
+    def apply_frame(self, frame: ProtocolFrame) -> None:
+        self.session_id = frame.session_id or self.session_id
+        self.thread_id = frame.thread_id or self.thread_id
+        self.apply_event({"type": frame.type, "data": frame.payload})
+
+    def apply_event(self, event: dict[str, Any]) -> None:
+        self._changed_tool_ids.clear()
+        self._tool_id_renames.clear()
+        event_type = str(event.get("type") or "")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+        if event_type == "hello_ok":
+            self.status = f"Connected to {data.get('server_name') or 'server'}"
+        elif event_type == "session_ready":
+            self.agent_name = str(data.get("agent_name") or self.agent_name)
+            self.status = "Ready"
+        elif event_type == "turn_started":
+            self.turn = int(data.get("turn") or self.turn or 0)
+            self.turn_active = True
+            self.turn_usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "requests": 0,
+            }
+            self._streaming_assistant_index = None
+            self._streaming_tool_ids.clear()
+            self._refresh_status(reset_terminal=True)
+        elif event_type == "turn_finished":
+            self.turn = int(data.get("turn") or self.turn or 0)
+            self.turn_active = False
+            self._refresh_status()
+        elif event_type == "turn_cancelled":
+            self.turn = int(data.get("turn") or self.turn or 0)
+            self.turn_active = False
+            self.status = "Interrupted"
+            self._refresh_status()
+        elif event_type == "assistant_message":
+            content = str(data.get("content") or "")
+            tool_calls = data.get("tool_calls")
+            if content.strip():
+                if self._streaming_assistant_index is not None:
+                    self._streaming_assistant_index = None
+                else:
+                    self.append_message("assistant", content)
+            elif tool_calls:
+                # Reset the streaming index so the next LLM call
+                # creates a fresh message entry. Reasoning (if any)
+                # was already streamed; the tool widget itself tells
+                # the user the model is acting.
+                self._streaming_assistant_index = None
+            self._apply_tool_calls(tool_calls)
+        elif event_type == "assistant_message_delta":
+            content = str(data.get("content") or "")
+            reasoning = str(data.get("reasoning") or "")
+            self.append_assistant_delta(content, reasoning)
+        elif event_type == "tool_call_delta":
+            self._apply_tool_call_delta(data.get("tool_calls"))
+        elif event_type == "tool_calls_started":
+            self._apply_tool_calls(data.get("tool_calls"))
+        elif event_type == "tool_result":
+            tool = self._tool(
+                str(data.get("tool_call_id") or "tool"),
+                name=str(data.get("name") or "tool"),
+            )
+            tool.status = str(data.get("status") or "completed")
+            tool.summary = _preview(data.get("content") or data.get("summary") or "")
+            # Mark the wall-clock end of this tool call so the
+            # transcript can show "shell success  0.4s" (per user
+            # request: per-tool latency in the entry title).
+            import time as _time
+            tool.finished_at = _time.monotonic()
+            self._ensure_tool_transcript(tool.tool_call_id)
+            self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "usage":
+            self._apply_usage(data)
+        elif event_type == "status":
+            self.status = str(data.get("text") or data.get("message") or self.status)
+        elif event_type == "client_message":
+            self.append_notice("client_message", str(data.get("message") or data))
+        elif event_type == "permission_request":
+            self.pending_permission_request_id = str(data.get("request_id") or "") or None
+            self.pending_permission_payload = data
+            self.pending_permission_active = True
+            self._refresh_status()
+            tool_call = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else {}
+            tool_id = str(tool_call.get("id") or "")
+            if tool_id and tool_id in self.tools:
+                tool = self.tools[tool_id]
+                tool.permission_pending = True
+                tool.permission_request_id = self.pending_permission_request_id or ""
+                tool.permission_reason = str(data.get("reason") or "")
+                tool.status = "pending approval"
+                self._changed_tool_ids.add(tool_id)
+        elif event_type == "permission_denied":
+            self.status = "Permission denied"
+            self.pending_permission_active = False
+            self.pending_permission_request_id = None
+            self.pending_permission_payload = None
+            request_id = str(data.get("request_id") or "")
+            for tool in list(self.tools.values()):
+                if tool.permission_request_id == request_id:
+                    tool.permission_pending = False
+                    tool.status = "denied"
+                    self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "user_input_required":
+            self.pending_user_input_request_id = str(data.get("request_id") or "") or None
+            self.pending_user_input_payload = data
+            self.pending_user_input_active = True
+            self._refresh_status()
+            question = str(data.get("question") or "User input required.")
+            self.append_notice("user_input_required", question, payload=data)
+        elif event_type == "user_input_recorded":
+            self.pending_user_input_request_id = None
+            self.pending_user_input_active = False
+            self.pending_user_input_payload = None
+            self._refresh_status()
+            self.append_notice(
+                "user_input_recorded",
+                str(data.get("status") or data.get("request_id") or "User input recorded."),
+                payload=data,
+            )
+        elif event_type == "permission_response_recorded":
+            self.pending_permission_request_id = None
+            self.pending_permission_active = False
+            self.pending_permission_payload = None
+            self._refresh_status()
+            request_id = str(data.get("request_id") or "")
+            decision = str(data.get("decision") or str(data.get("status") or "approved"))
+            # Strip the "permission:" prefix that the engine adds
+            # to request_id.  This makes the lookup exact (one
+            # tool per id) rather than a scan that could match
+            # the wrong tool if two tools ever share a request_id.
+            tool_id = request_id
+            if tool_id.startswith("permission:"):
+                tool_id = tool_id[len("permission:"):]
+            tool = self.tools.get(tool_id)
+            if tool is not None:
+                tool.permission_pending = False
+                tool.status = decision if decision else "approved"
+                self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "error":
+            self.status = "Error"
+            self.errors.append(str(data.get("message") or data))
+            self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
+        elif event_type == "shutdown_ok":
+            self.status = "Shutdown"
+
+    def append_message(self, role: str, content: str) -> None:
+        content = _repair_mojibake(content)
+        self.messages.append(TuiMessage(role=role, content=content))
+        self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
+
+    def append_assistant_delta(self, content: str, reasoning: str = "") -> None:
+        if not content and not reasoning:
+            return
+        if self._streaming_assistant_index is None:
+            self.append_message("assistant", "")
+            self._streaming_assistant_index = len(self.messages) - 1
+        try:
+            msg = self.messages[self._streaming_assistant_index]
+            if content:
+                msg.content += content
+            if reasoning:
+                msg.reasoning += reasoning
+        except IndexError:
+            self.append_message("assistant", content or "")
+            self._streaming_assistant_index = len(self.messages) - 1
+
+    def append_notice(
+        self,
+        kind: str,
+        text: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
+        self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
+
+    def _update_permission_notice(self, request_id: str, decision: str) -> bool:
+        """Update existing permission_request notice instead of creating new one. Returns True if found."""
+        for i, notice in enumerate(self.notices):
+            rid = str(notice.payload.get("request_id") or "")
+            if rid == request_id and notice.kind == "permission_request":
+                marker = "✓" if decision == "allow" else "✗"
+                notice.kind = "permission_response_recorded"
+                notice.text = f"{marker} {decision}"
+                return True
+        return False
+
+    def _refresh_status(self, *, reset_terminal: bool = False) -> None:
+        if self.status in {"Error", "Shutdown"}:
+            return
+        if self.status == "Permission denied" and not reset_terminal:
+            return
+        if self.pending_permission_active:
+            self.status = "Approval required"
+        elif self.pending_user_input_active:
+            self.status = "Waiting for user"
+        elif self.turn_active:
+            self.status = "Running"
+        else:
+            self.status = "Ready"
+
+    def lines(self, *, width: int, height: int) -> list[str]:
+        width = max(20, width)
+        height = max(5, height)
+        lines = [
+            f"XBotv2  {self.session_id}/{self.thread_id}  {self.status}"[:width],
+            f"Agent {self.agent_name}  Turn {self.turn}  Tokens {self.usage['total_tokens']}"[:width],
+            "=" * min(width, 200),
+        ]
+
+        body_height = max(1, height - 5)
+        body = self._transcript_lines(width, body_height) or ["No messages yet."]
+        for index in range(body_height):
+            lines.append((body[index] if index < len(body) else "")[:width])
+
+        lines.append("-" * min(width, 200))
+        lines.append("[Enter] send  /exit quit"[:width])
+        return lines[:height]
+
+    def _transcript_lines(self, width: int, height: int) -> list[str]:
+        lines: list[str] = []
+        for entry in self.transcript:
+            if entry.kind == "message":
+                try:
+                    message = self.messages[int(entry.key)]
+                except (ValueError, IndexError):
+                    continue
+                label = self.agent_name if message.role == "assistant" else "You"
+                if message.reasoning:
+                    lines.extend(_wrap(f"{label} (thinking)> {message.reasoning}", width))
+                lines.extend(_wrap(f"{label}> {message.content}", width))
+            elif entry.kind == "tool":
+                tool = self.tools.get(entry.key)
+                if tool is None:
+                    continue
+                lines.append(shorten(f"Tool {tool.name} [{tool.status}]", width=width, placeholder="..."))
+                # Show finalized args (clean dict repr) when available;
+                # fall back to the raw streaming buffer so the user
+                # still sees something mid-stream. Avoids
+                # ``{"command": "cu`` flicker in narrow terminals.
+                preview = tool.args_preview if tool.args_finalized else tool.args_streaming
+                detail = " | ".join(part for part in (preview, tool.summary) if part)
+                if detail:
+                    lines.extend(_wrap(f"  {detail}", width))
+            elif entry.kind == "error":
+                try:
+                    error = self.errors[int(entry.key)]
+                except (ValueError, IndexError):
+                    continue
+                lines.extend(_wrap(f"Error> {error}", width))
+            elif entry.kind == "notice":
+                try:
+                    notice = self.notices[int(entry.key)]
+                except (ValueError, IndexError):
+                    continue
+                lines.extend(_wrap(f"{_notice_label(notice.kind)}> {notice.text}", width))
+        return lines[-height:]
+
+    def _apply_tool_calls(self, tool_calls: Any) -> None:
+        if not isinstance(tool_calls, list):
+            return
+        import time as _time
+        for index, raw_tool in enumerate(tool_calls):
+            if not isinstance(raw_tool, dict):
+                continue
+            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
+            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
+            if raw_id:
+                tool_call_id = str(raw_id)
+                previous_id = self._streaming_tool_ids.get(stream_index)
+                if previous_id and previous_id != tool_call_id:
+                    self._rename_tool(previous_id, tool_call_id)
+                self._streaming_tool_ids[stream_index] = tool_call_id
+            else:
+                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
+                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
+            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            # tool_calls_started carries the FINAL parsed args (dict).
+            # Replace the streaming preview with the clean dict repr
+            # and mark finalized so the title/body no longer show the
+            # raw partial JSON string.
+            final_args = raw_tool.get("args") or raw_tool.get("arguments")
+            if final_args:
+                tool.args_preview = _preview(final_args)
+                tool.args_finalized = True
+            tool.status = "pending"
+            # Stamp the start of this tool call only on the FIRST
+            # tool_calls_started event for this id — re-firing the
+            # same call (e.g. on resume) should not reset the clock.
+            if tool.started_at <= 0:
+                tool.started_at = _time.monotonic()
+            self._ensure_tool_transcript(tool_call_id)
+            self._changed_tool_ids.add(tool_call_id)
+
+    def _apply_tool_call_delta(self, tool_calls: Any) -> None:
+        if not isinstance(tool_calls, list):
+            return
+        import time as _time
+        for index, raw_tool in enumerate(tool_calls):
+            if not isinstance(raw_tool, dict):
+                continue
+            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
+            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
+            if raw_id:
+                tool_call_id = str(raw_id)
+                previous_id = str(
+                    raw_tool.get("replaces_tool_call_id")
+                    or self._streaming_tool_ids.get(stream_index)
+                    or ""
+                )
+                if previous_id and previous_id != tool_call_id:
+                    self._rename_tool(previous_id, tool_call_id)
+                self._streaming_tool_ids[stream_index] = tool_call_id
+            else:
+                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
+                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
+            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            # Accumulate raw JSON in args_streaming only. The
+            # title and body keep args_preview empty until the
+            # tool_calls_started event delivers the parsed dict —
+            # this prevents the user from seeing half-formed
+            # ``{"command": "cu`` in the title mid-stream.
+            if tool.args_finalized:
+                continue
+            args = raw_tool.get("args_delta")
+            if args is None:
+                args = raw_tool.get("args") or raw_tool.get("arguments") or ""
+            if isinstance(args, str):
+                tool.args_streaming = f"{tool.args_streaming}{args}"
+            elif args:
+                tool.args_streaming = str(args)
+            tool.status = "pending"
+            if tool.started_at <= 0:
+                tool.started_at = _time.monotonic()
+            self._ensure_tool_transcript(tool_call_id)
+            self._changed_tool_ids.add(tool_call_id)
+
+    def _apply_usage(self, data: dict[str, Any]) -> None:
+        usage = data.get("total") if isinstance(data.get("total"), dict) else data
+        delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
+        if not isinstance(usage, dict):
+            return
+        for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
+            val = int(usage.get(key) or 0)
+            if key in usage:
+                self.usage[key] = val
+            # When no ``delta`` sub-key exists, treat the flat data
+            # itself as the delta — the engine sends one ``usage``
+            # event per LLM call, and each event carries the current
+            # provider-side consumption, which IS the turn-level delta.
+            if isinstance(delta, dict):
+                if key in delta:
+                    self.turn_usage[key] += int(delta.get(key) or 0)
+            elif key in usage:
+                self.turn_usage[key] += val
+
+    def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
+        if tool_call_id not in self.tools:
+            self.tools[tool_call_id] = TuiTool(tool_call_id=tool_call_id, name=name)
+        elif name != "tool":
+            self.tools[tool_call_id].name = name
+        return self.tools[tool_call_id]
+
+    def _ensure_tool_transcript(self, tool_call_id: str) -> None:
+        if tool_call_id in self._tool_transcript_keys:
+            return
+        self._tool_transcript_keys.add(tool_call_id)
+        self.transcript.append(TuiTranscriptEntry(kind="tool", key=tool_call_id))
+
+    def _rename_tool(self, old_id: str, new_id: str) -> None:
+        if old_id == new_id or old_id not in self.tools:
+            return
+        old_tool = self.tools.pop(old_id)
+        existing = self.tools.get(new_id)
+        if existing is None:
+            old_tool.tool_call_id = new_id
+            self.tools[new_id] = old_tool
+        else:
+            if not existing.args_preview:
+                existing.args_preview = old_tool.args_preview
+            if not existing.args_streaming:
+                existing.args_streaming = old_tool.args_streaming
+            if existing.started_at <= 0:
+                existing.started_at = old_tool.started_at
+        for entry in self.transcript:
+            if entry.kind == "tool" and entry.key == old_id:
+                entry.key = new_id
+        if old_id in self._tool_transcript_keys:
+            self._tool_transcript_keys.remove(old_id)
+            self._tool_transcript_keys.add(new_id)
+        self._tool_id_renames[old_id] = new_id
+        self._changed_tool_ids.update({old_id, new_id})
+
+
+class CursesTuiClient:
+    """Curses UI shell around TerminalSession."""
+
+    def __init__(
+        self,
+        data_dir: Path | str = "data",
+        provider_name: str = "default",
+        session_id: str | None = None,
+        thread_id: str = "agent",
+        workspace_root: Path | str | None = None,
+        session_mode: str | None = None,
+        no_plugins: bool = False,
+        server_url: str = "http://127.0.0.1:4096",
+    ) -> None:
+        self.session = TerminalSession(
+            data_dir=data_dir,
+            provider_name=provider_name,
+            session_id=session_id,
+            thread_id=thread_id,
+            workspace_root=workspace_root,
+            session_mode=session_mode,
+            no_plugins=no_plugins,
+            base_url=server_url,
+        )
+        self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
+        self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._pending: set[Future] = set()
+        self._answers: queue.Queue[str] = queue.Queue()
+        self._permission_decisions: queue.Queue[dict[str, str]] = queue.Queue()
+        self._closed = False
+
+    async def run(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        await self.session.connect()
+        self.state.status = "Ready"
+        try:
+            await asyncio.to_thread(curses.wrapper, self._run_curses)
+        finally:
+            self._closed = True
+            for future in list(self._pending):
+                future.cancel()
+            await self.session.disconnect()
+
+    def _run_curses(self, stdscr: Any) -> None:
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        stdscr.timeout(100)
+        input_buffer = ""
+
+        while True:
+            self._drain_events()
+            self._draw(stdscr, input_buffer)
+            ch = stdscr.getch()
+
+            if ch == -1:
+                continue
+            if ch in (10, 13):
+                text = input_buffer.strip()
+                input_buffer = ""
+                if text == "/exit":
+                    return
+                if text:
+                    self._send_text(text)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                input_buffer = input_buffer[:-1]
+            elif 0 <= ch < 256:
+                input_buffer += chr(ch)
+
+    def _draw(self, stdscr: Any, input_buffer: str) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        for row, line in enumerate(self.state.lines(width=width, height=max(1, height - 1))):
+            try:
+                stdscr.addnstr(row, 0, line, max(1, width - 1))
+            except curses.error:
+                pass
+        try:
+            stdscr.addnstr(max(0, height - 1), 0, f"> {input_buffer}", max(1, width - 1))
+        except curses.error:
+            pass
+        stdscr.refresh()
+
+    def _send_text(self, text: str) -> None:
+        if self._loop is None:
+            raise RuntimeError("CursesTuiClient is not running")
+        if self.state.pending_user_input_active:
+            self._answers.put(text)
+            return
+        if self.state.pending_permission_active:
+            self._permission_decisions.put(_parse_permission_decision(text))
+            return
+        self.state.append_message("user", text)
+        future = asyncio.run_coroutine_threadsafe(self._collect_response(text), self._loop)
+        self._pending.add(future)
+        future.add_done_callback(self._pending.discard)
+
+    async def _collect_response(self, text: str) -> None:
+        try:
+            async for event in self.session.send_message(
+                text,
+                input_provider=self._answer_live_input,
+                permission_provider=self._answer_live_permission,
+            ):
+                self._events.put(event)
+        except BaseException as exc:
+            self._events.put(exc)
+
+    async def _answer_live_input(self, payload: dict[str, Any]) -> str:
+        del payload
+        return await asyncio.to_thread(self._answers.get)
+
+    async def _answer_live_permission(self, payload: dict[str, Any]) -> str:
+        del payload
+        return await asyncio.to_thread(self._permission_decisions.get)
+
+    def _drain_events(self) -> None:
+        while True:
+            try:
+                item = self._events.get_nowait()
+            except queue.Empty:
+                return
+            if isinstance(item, BaseException):
+                self.state.status = "Error"
+                self.state.errors.append(str(item))
+                self.state.transcript.append(
+                    TuiTranscriptEntry(kind="error", key=str(len(self.state.errors) - 1))
+                )
+                continue
+            self.state.apply_event(item)
+
+
+def _preview(value: Any, *, width: int = 120) -> str:
+    """Render a short, single-line-friendly preview of ``value``.
+
+    Newlines are preserved (so multi-line tool results stay
+    multi-line in the TUI body) and each line is independently
+    shortened to ``width`` characters. This is what the design doc
+    §5.3 calls for: the body of a tool entry shows ``args`` and
+    ``result`` as plain text, fully expanded.
+    """
+
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            text = str(value)
+    return "\n".join(
+        shorten(line, width=width, placeholder="...") for line in text.splitlines() or [""]
+    )
+
+
+def _repair_mojibake(text: str) -> str:
+    """Repair common UTF-8 bytes decoded as Latin-1/CP1252 mojibake."""
+
+    if not text or not any(marker in text for marker in ("Ã", "Â", "å", "æ", "ç", "è", "é")):
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return text
+    return repaired if _cjk_score(repaired) > _cjk_score(text) else text
+
+
+def _cjk_score(text: str) -> int:
+    return sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    if width <= 0:
+        return [""]
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        if len(word) > width:
+            if current:
+                lines.append(current)
+                current = ""
+            lines.extend(word[index : index + width] for index in range(0, len(word), width))
+            continue
+        candidate = f"{current} {word}".strip()
+        if len(candidate) <= width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _notice_label(kind: str) -> str:
+    labels = {
+        "client_message": "Notice",
+        "permission_request": "Approval",
+        "permission_denied": "Denied",
+        "user_input_required": "Question",
+        "user_input_recorded": "Answer",
+        "permission_response_recorded": "Approval",
+    }
+    return labels.get(kind, "Event")
+
+
+def _parse_permission_decision(text: str) -> dict[str, str]:
+    normalized = text.strip().lower()
+    parts = normalized.split()
+    scope = "once"
+    if parts and parts[0] in {"session", "once"}:
+        scope = parts.pop(0)
+    elif parts and parts[-1] in {"session", "once"}:
+        scope = parts.pop()
+    decision_text = " ".join(parts) if parts else normalized
+    decision = "allow" if decision_text in {"allow", "approve", "approved", "yes", "y"} else "deny"
+    return {"decision": decision, "scope": scope}

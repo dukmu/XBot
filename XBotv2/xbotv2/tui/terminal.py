@@ -1,170 +1,235 @@
-"""Terminal (non-curses) client — ported from XBot v1.
+"""Session facade for the TUI over a ``Transport``.
 
-Communicates with the server over JSONL via stdin/stdout subprocess.
+The TUI calls ``TerminalSession`` for all server interaction. v1 ships
+only ``HttpTransport``; the transport can be injected for testing.
+
+This module replaces the historical stdio ``ProtocolClient`` with a
+``Transport``-based implementation. The stdio path is removed in v1
+per the design document §10.5.2.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
+import secrets
+from datetime import datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, AsyncIterator, Awaitable, Callable
 
-from xbotv2.protocol.frames import ProtocolFrame, frame_from_json
+from xbotv2.tui.transport import Transport
+from xbotv2.tui.transport_http import HttpTransport
 
 
-class ProtocolClient:
-    """JSONL client that talks to an xbotv2 server subprocess."""
+# Aliases for the live-interaction provider callbacks. A provider may be
+# either a coroutine function (called by the TUI's per-prompt queues) or
+# a plain function that returns a value synchronously. The two helpers
+# below let ``send_message`` accept both.
+InputProvider = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+PermissionProvider = Callable[[dict[str, Any]], Awaitable[dict[str, str]] | dict[str, str]]
 
-    def __init__(self, server_cmd: list[str]) -> None:
-        self._server_cmd = server_cmd
-        self._process: asyncio.subprocess.Process | None = None
-        self._seq = 0
 
-    async def start(self) -> None:
-        """Launch the server subprocess."""
-        self._process = await asyncio.create_subprocess_exec(
-            *self._server_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=sys.stderr,
-        )
+def _new_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
-    async def stop(self) -> None:
-        """Terminate the server."""
-        if self._process:
-            self._process.stdin.close()
-            await self._process.wait()
-            self._process = None
 
-    def send(
-        self,
-        frame_type: str,
-        session_id: str,
-        thread_id: str,
-        payload: dict[str, Any] | None = None,
-        request_id: str = "",
-    ) -> ProtocolFrame:
-        """Build and send a frame. Returns the frame (for request_id tracking)."""
-        self._seq += 1
-        frame = ProtocolFrame(
-            seq=self._seq,
-            direction="client_to_server",
-            type=frame_type,
-            session_id=session_id,
-            thread_id=thread_id,
-            request_id=request_id,
-            payload=payload or {},
-        )
-        if self._process and self._process.stdin:
-            self._process.stdin.write(frame.to_json_line().encode("utf-8"))
-        return frame
-
-    async def read_frame(self) -> ProtocolFrame | None:
-        """Read one frame from the server's stdout."""
-        if not self._process or not self._process.stdout:
-            return None
-        try:
-            line = await self._process.stdout.readline()
-        except (EOFError, ConnectionError):
-            return None
-        if not line:
-            return None
-        return frame_from_json(line.decode("utf-8").strip())
+def _await_maybe(value: Awaitable[Any] | Any) -> Any:
+    if hasattr(value, "__await__"):
+        return value  # type: ignore[return-value]
+    return value
 
 
 class TerminalSession:
-    """Interactive terminal session using the JSONL protocol.
+    """High-level session over a ``Transport``.
 
-    Usage::
+    Lifecycle::
 
-        async with TerminalSession() as session:
-            await session.connect()
-            async for response in session.send_message("hello"):
-                print(response)
+        session = TerminalSession(base_url="http://127.0.0.1:4096")
+        await session.connect()
+        async for event in session.send_message(
+            "hi", input_provider=..., permission_provider=...
+        ):
+            ...
+        await session.disconnect()
     """
 
     def __init__(
         self,
+        *,
         data_dir: Path | str = "data",
-        personality_id: str = "default",
         provider_name: str = "default",
+        session_id: str | None = None,
+        thread_id: str = "agent",
+        workspace_root: Path | str | None = None,
+        session_mode: str | None = None,
+        base_url: str = "http://127.0.0.1:4096",
+        no_plugins: bool = False,
+        transport: Transport | None = None,
+        token: str | None = None,
+        uds_path: str | None = None,
     ) -> None:
         self._data_dir = str(data_dir)
-        self._personality_id = personality_id
         self._provider_name = provider_name
-        self._client: ProtocolClient | None = None
-        self._session_id = "default"
-        self._thread_id = "agent"
+        self._no_plugins = no_plugins
+        self._session_id = session_id or _new_session_id()
+        self._session_mode = session_mode or "new"
+        self._thread_id = thread_id
+        self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
+        self._transport: Transport = transport or HttpTransport(base_url, token=token, uds_path=uds_path)
+        self._connected = False
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
+
+    @property
+    def transport(self) -> Transport:
+        return self._transport
+
+    async def connect(self) -> None:
+        """Perform hello + open_session."""
+
+        if self._connected:
+            return
+        hello = await self._transport.hello(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
+        server_session = str(hello.get("session_id") or self._session_id)
+        server_thread = str(hello.get("thread_id") or self._thread_id)
+        self._session_id = server_session
+        self._thread_id = server_thread
+        await self._transport.open_session(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            workspace_root=self._workspace_root,
+            mode=self._session_mode,
+        )
+        self._connected = True
+
+    async def list_commands(self) -> dict[str, Any]:
+        return await self._transport.list_commands(self._session_id)
+
+    async def run_command(self, command: str, args: list[str], raw: str, *, kind: str = "server") -> dict[str, Any]:
+        return await self._transport.run_command(
+            session_id=self._session_id,
+            command=command,
+            args=args,
+            raw=raw,
+            kind=kind,
+        )
+
+    async def disconnect(self) -> None:
+        """Best-effort session shutdown + transport close."""
+
+        if not self._connected:
+            await self._transport.close()
+            return
+        try:
+            await self._transport.shutdown(session_id=self._session_id)
+        except Exception:
+            pass
+        self._connected = False
+        await self._transport.close()
 
     async def __aenter__(self) -> "TerminalSession":
         await self.connect()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *exc_info: Any) -> None:
         await self.disconnect()
 
-    async def connect(self) -> None:
-        """Start the server and perform handshake."""
-        server_cmd = [
-            sys.executable, "-m", "xbotv2",
-            "--data-dir", self._data_dir,
-            "--personality", self._personality_id,
-            "--provider", self._provider_name,
-            "--mode", "server",
-        ]
-        self._client = ProtocolClient(server_cmd)
-        await self._client.start()
+    def send_message(
+        self,
+        content: str,
+        *,
+        input_provider: InputProvider | None = None,
+        permission_provider: PermissionProvider | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Send one user message and yield every server event.
 
-        # Handshake
-        self._client.send(
-            "hello",
-            self._session_id,
-            self._thread_id,
-            {"client_name": "terminal", "personality_id": self._personality_id},
+        The yielded events are the SSE payloads shaped as
+        ``{"type": str, "data": dict}``. Live ``permission_request`` and
+        ``user_input_required`` events are intercepted: their payload is
+        passed to the matching provider, the provider's response is sent
+        back to the server via the transport, and the recording events
+        (``permission_response_recorded`` / ``user_input_recorded``) are
+        also yielded as they arrive.
+        """
+
+        return self._send_message_impl(content, input_provider, permission_provider)
+
+    async def _send_message_impl(
+        self,
+        content: str,
+        input_provider: InputProvider | None,
+        permission_provider: PermissionProvider | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        request_id = f"tui-{self._session_id}-{id(self)}"
+        stream = self._transport.send_message(
+            session_id=self._session_id,
+            content=content,
+            request_id=request_id,
         )
-        hello_ok = await self._client.read_frame()
-        if hello_ok and hello_ok.type != "hello_ok":
-            raise RuntimeError(f"Handshake failed: {hello_ok}")
+        async for event in stream:
+            event_type = str(event.get("type") or "")
 
-        # Open session
-        self._client.send(
-            "session.open",
-            self._session_id,
-            self._thread_id,
+            # **Order matters**: yield the event to the TUI FIRST so
+            # ``apply_event`` + ``_handle_stream_event`` can update
+            # the status bar and transcript BEFORE we block on the
+            # user's response.  Otherwise the UI stays frozen on
+            # "Running" while the tools sit in "pending" forever.
+            if event_type == "permission_request":
+                yield event
+                if permission_provider is not None:
+                    payload = event.get("data") or {}
+                    response = _await_maybe(permission_provider(payload))
+                    if hasattr(response, "__await__"):
+                        response = await response  # type: ignore[unreachable]
+                    decision = str(response.get("decision") or "deny")
+                    scope = str(response.get("scope") or "once")
+                    await self._transport.send_permission_response(
+                        session_id=self._session_id,
+                        request_id=str(payload.get("request_id") or ""),
+                        decision=decision,
+                        scope=scope,
+                    )
+                continue
+            if event_type == "user_input_required":
+                yield event
+                if input_provider is not None:
+                    payload = event.get("data") or {}
+                    answer = _await_maybe(input_provider(payload))
+                    if hasattr(answer, "__await__"):
+                        answer = await answer  # type: ignore[unreachable]
+                    await self._transport.send_user_input(
+                        session_id=self._session_id,
+                        request_id=str(payload.get("request_id") or ""),
+                        answer=answer,
+                    )
+                continue
+
+            yield event
+
+    async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
+        return await self._transport.send_user_input(
+            session_id=self._session_id,
+            request_id=request_id,
+            answer=answer,
         )
-        ready = await self._client.read_frame()
-        if ready and ready.type != "session_ready":
-            raise RuntimeError(f"Session open failed: {ready}")
 
-    async def disconnect(self) -> None:
-        """Shut down the server."""
-        if self._client:
-            self._client.send("shutdown", self._session_id, self._thread_id)
-            await self._client.stop()
-
-    async def send_message(self, content: str):
-        """Send a user message and yield responses."""
-        if not self._client:
-            raise RuntimeError("Not connected")
-
-        self._client.send(
-            "user.message",
-            self._session_id,
-            self._thread_id,
-            {"content": content},
+    async def respond_permission(
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        scope: str = "once",
+    ) -> dict[str, Any]:
+        return await self._transport.send_permission_response(
+            session_id=self._session_id,
+            request_id=request_id,
+            decision=decision,
+            scope=scope,
         )
-
-        while True:
-            frame = await self._client.read_frame()
-            if frame is None:
-                break
-
-            yield {
-                "type": frame.type,
-                "data": frame.payload,
-            }
-
-            if frame.type in ("turn_finished", "error"):
-                break

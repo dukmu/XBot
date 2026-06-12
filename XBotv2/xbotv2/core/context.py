@@ -4,26 +4,38 @@ Assembles the provider message list for each LLM call. Supports injection
 points where plugins can add text without core knowing about plugin content.
 
 Message structure (cache-friendly):
-    [SystemMessage: system_prefix]
-    [SystemMessage: plugin fragments (system_instructions stage)]
-    [SystemMessage: runtime rules]
-    [SystemMessage: sandbox summary]
+    [system prefix]
+    [plugin fragments (system_instructions stage)]
+    [runtime rules]
+    [sandbox summary]
     [... message history ...]
-    [SystemMessage: plugin fragments (dag_suffix stage)]
-    [SystemMessage: current state]
+    [plugin fragments (dag_suffix stage)]
+    [current state]
 """
 
 from __future__ import annotations
 
-import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from xbotv2.llm.messages import Message
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class ContextComponent:
+    """A source-tagged context section before provider message conversion."""
+
+    role: str
+    source: str
+    content: str
+    plugin_name: str | None = None
+    stage: str | None = None
+    message: Message | None = None
 
 
 class ContextBuilder:
@@ -89,7 +101,7 @@ class ContextBuilder:
     def build(
         self,
         *,
-        messages: list[BaseMessage],
+        messages: list[Message],
         agent_name: str = "XBotv2",
         agent_role: str = "",
         user_name: str = "User",
@@ -101,22 +113,10 @@ class ContextBuilder:
         turn_count: int = 0,
         mailbox_pending: int = 0,
         active_subagents: int = 0,
-    ) -> list[BaseMessage]:
-        """Build the complete message list for an LLM call.
-
-        Args:
-            messages: Message history so far.
-            agent_name, agent_role, user_name, user_id: Identity fields.
-            instructions: Agent instructions text.
-            memory: Long-term memory text.
-            sandbox_summary: Sandbox status text.
-            system_notice: Runtime notice.
-            turn_count, mailbox_pending, active_subagents: Current state.
-        """
-        result: list[BaseMessage] = []
-
-        # 1. Stable system prefix (memoized)
-        result.append(SystemMessage(content=self._build_system_prefix(
+    ) -> list[Message]:
+        """Build the complete message list for an LLM call."""
+        return self.messages_from_components(self.build_components(
+            messages=messages,
             agent_name=agent_name,
             agent_role=agent_role,
             user_name=user_name,
@@ -125,41 +125,112 @@ class ContextBuilder:
             memory=memory,
             sandbox_summary=sandbox_summary,
             system_notice=system_notice,
-        )))
+            turn_count=turn_count,
+            mailbox_pending=mailbox_pending,
+            active_subagents=active_subagents,
+        ))
 
-        # 2. Plugin fragments: system_instructions stage
-        for text in self._fragments["system_instructions"].values():
+    def build_components(
+        self,
+        *,
+        messages: list[Message],
+        agent_name: str = "XBotv2",
+        agent_role: str = "",
+        user_name: str = "User",
+        user_id: str = "default-user",
+        instructions: str = "",
+        memory: str = "",
+        sandbox_summary: str = "",
+        system_notice: str = "",
+        turn_count: int = 0,
+        mailbox_pending: int = 0,
+        active_subagents: int = 0,
+    ) -> list[ContextComponent]:
+        """Build source-tagged context components in provider render order."""
+        components: list[ContextComponent] = []
+
+        components.append(ContextComponent(
+            role="system",
+            source="system_prefix",
+            content=self._build_system_prefix(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                user_name=user_name,
+                user_id=user_id,
+                instructions=instructions,
+                memory=memory,
+                sandbox_summary=sandbox_summary,
+                system_notice=system_notice,
+            ),
+        ))
+
+        for plugin_name, text in self._fragments["system_instructions"].items():
             if text.strip():
-                result.append(SystemMessage(content=text))
+                components.append(ContextComponent(
+                    role="system",
+                    source="plugin_fragment",
+                    content=text,
+                    plugin_name=plugin_name,
+                    stage="system_instructions",
+                ))
 
-        # 3. Runtime rules (hardcoded — plugins can add via system_rules stage)
-        rules = self._build_rules(mailbox_pending)
-        result.append(SystemMessage(content=rules))
+        components.append(ContextComponent(
+            role="system",
+            source="runtime_rules",
+            content=self._build_rules(mailbox_pending),
+        ))
 
-        # 4. Plugin fragments: system_rules stage
-        for text in self._fragments["system_rules"].values():
+        for plugin_name, text in self._fragments["system_rules"].items():
             if text.strip():
-                result.append(SystemMessage(content=text))
+                components.append(ContextComponent(
+                    role="system",
+                    source="plugin_fragment",
+                    content=text,
+                    plugin_name=plugin_name,
+                    stage="system_rules",
+                ))
 
-        # 5. History (sanitized)
-        result.extend(self._sanitize_history(messages))
+        for message in self._sanitize_history(messages):
+            components.append(ContextComponent(
+                role=message.role,
+                source="history",
+                content=str(getattr(message, "content", "")),
+                message=message,
+            ))
 
-        # 6. Plugin fragments: dag_suffix stage (dynamic)
         suffix_parts: list[str] = []
-        for text in self._fragments["dag_suffix"].values():
+        suffix_owners: list[str] = []
+        for plugin_name, text in self._fragments["dag_suffix"].items():
             if text.strip():
                 suffix_parts.append(text)
+                suffix_owners.append(plugin_name)
 
-        # 7. Current state (always last)
-        suffix_parts.append(self._build_current_state(
+        current_state = self._build_current_state(
             turn_count=turn_count,
             mailbox_pending=mailbox_pending,
             active_subagents=active_subagents,
             user_name=user_name,
             user_id=user_id,
+        )
+        suffix_parts.append(current_state)
+        components.append(ContextComponent(
+            role="system",
+            source="context_suffix",
+            content="\n\n".join(suffix_parts),
+            plugin_name=",".join(suffix_owners) if suffix_owners else None,
+            stage="dag_suffix" if suffix_owners else None,
         ))
-        result.append(SystemMessage(content="\n\n".join(suffix_parts)))
 
+        return components
+
+    @staticmethod
+    def messages_from_components(components: list[ContextComponent]) -> list[Message]:
+        result: list[Message] = []
+        for component in components:
+            if component.message is not None:
+                result.append(component.message)
+            else:
+                result.append(Message(role="system", content=component.content))
         return result
 
     # ------------------------------------------------------------------
@@ -178,12 +249,8 @@ class ContextBuilder:
         system_notice: str,
     ) -> str:
         """Build the stable system prompt prefix. Memoized."""
-        key = hashlib.sha256(
-            "|".join([
-                agent_name, agent_role, user_name, user_id,
-                instructions, memory, sandbox_summary, system_notice,
-            ]).encode()
-        ).hexdigest()
+        key = (agent_name, agent_role, user_name, user_id,
+               instructions, memory, sandbox_summary, system_notice)
 
         if self._cached_prefix is not None and key == self._cached_prefix_key:
             return self._cached_prefix
@@ -245,7 +312,7 @@ class ContextBuilder:
         """Build the current-state suffix section."""
         lines = [
             "# Current State",
-            f"Time: {_now_iso()}",
+            f"Time: {now_iso()}",
             f"User: {user_name} ({user_id})",
             f"Turn: {turn_count + 1}",
         ]
@@ -256,21 +323,19 @@ class ContextBuilder:
         return "\n".join(lines)
 
     @staticmethod
-    def _sanitize_history(messages: list[BaseMessage]) -> list[BaseMessage]:
-        """Drop orphan ToolMessages before sending to providers."""
+    def _sanitize_history(messages: list[Message]) -> list[Message]:
         valid_tool_call_ids: set[str] = set()
-        sanitized: list[BaseMessage] = []
+        sanitized: list[Message] = []
 
         for msg in messages:
-            if isinstance(msg, AIMessage):
-                for call in getattr(msg, "tool_calls", []) or []:
-                    call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+            if msg.role == "assistant" and msg.tool_calls:
+                for call in msg.tool_calls:
+                    call_id = call.get("id", "")
                     if call_id:
                         valid_tool_call_ids.add(str(call_id))
                 sanitized.append(msg)
-            elif isinstance(msg, ToolMessage):
-                tool_call_id = getattr(msg, "tool_call_id", None)
-                if tool_call_id and str(tool_call_id) in valid_tool_call_ids:
+            elif msg.role == "tool":
+                if msg.tool_call_id and msg.tool_call_id in valid_tool_call_ids:
                     sanitized.append(msg)
             else:
                 sanitized.append(msg)

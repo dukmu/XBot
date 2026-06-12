@@ -2,8 +2,6 @@
 # Compiled Python files
 *.pyc
 __pycache__/
-data/
-data_test/
 
 # Dependencies
 uv.lock
@@ -12,3 +10,14 @@ uv.lock
 .copilot/
 *.log
 *.tmp
+
+output/
+
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.coverage
+*.py,coverage

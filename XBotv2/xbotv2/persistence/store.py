@@ -1,37 +1,81 @@
-"""Persistent append-only state store.
+"""Persistent message store.
 
 Manages:
-- events.jsonl: append-only event log
-- state.yaml: materialized view (rebuildable from events)
+- messages.jsonl: append-only message history
 - plugin_states/: opaque per-plugin state files (core never interprets)
-
-Design principle: the JSONL files are append-only source of truth.
-state.yaml is a materialized view that can be rebuilt from logs.
+- artifacts/: cached large tool outputs
 """
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from xbotv2.llm.messages import Message
 
-def _now_iso() -> str:
+
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class CoreStateStore:
-    """Minimal append-only state store for the core engine.
+def message_to_dict(msg: Message) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "role": msg.role,
+        "content": msg.content,
+        "status": msg.status,
+    }
+    if msg.name:
+        d["name"] = msg.name
+    if msg.tool_calls:
+        d["tool_calls"] = _json_safe(list(msg.tool_calls))
+    if msg.tool_call_id:
+        d["tool_call_id"] = msg.tool_call_id
+    if msg.additional_kwargs:
+        d["additional_kwargs"] = _json_safe({
+            k: v for k, v in msg.additional_kwargs.items()
+            if not str(k).startswith("xbotv2_")
+        })
+    if msg.response_metadata:
+        d["response_metadata"] = _json_safe(msg.response_metadata)
+    if msg.usage_metadata:
+        d["usage_metadata"] = _json_safe(msg.usage_metadata)
+    if msg.artifact is not None:
+        d["artifact"] = _json_safe(msg.artifact)
+    return d
 
-    Manages:
-    - events.jsonl: append-only event log
-    - state.yaml: materialized view
-    - plugin states: opaque blobs owned by plugins
-    """
+
+def dict_to_message(d: dict[str, Any]) -> Message:
+    return Message(
+        role=d.get("role", "assistant"),
+        content=d.get("content", ""),
+        status=d.get("status", ""),
+        tool_calls=list(d.get("tool_calls") or []),
+        tool_call_id=d.get("tool_call_id", ""),
+        name=d.get("name", ""),
+        additional_kwargs=dict(d.get("additional_kwargs") or {}),
+        response_metadata=dict(d.get("response_metadata") or {}),
+        usage_metadata=dict(d.get("usage_metadata") or {}),
+        artifact=d.get("artifact"),
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        return str(value)
+
+
+class CoreStateStore:
 
     SCHEMA_VERSION = 2
 
@@ -41,21 +85,19 @@ class CoreStateStore:
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str,
+        workspace_root: str,
+        provider: str,
     ) -> None:
         self.root = Path(root)
         self.session_id = session_id
         self.thread_id = thread_id
-        self.personality_id = personality_id
+        self.workspace_root = workspace_root
+        self.provider = provider
 
-        self.events_path = self.root / "events.jsonl"
-        self.state_path = self.root / "state.yaml"
+        self.messages_path = self.root / "messages.jsonl"
         self.plugin_states_dir = self.root / "plugin_states"
         self.artifacts_dir = self.root / "artifacts"
-
-    # ------------------------------------------------------------------
-    # Factory
-    # ------------------------------------------------------------------
+        self._max_msg_id = 0
 
     @classmethod
     def create(
@@ -64,9 +106,9 @@ class CoreStateStore:
         *,
         session_id: str,
         thread_id: str,
-        personality_id: str,
+        workspace_root: str,
+        provider: str,
     ) -> "CoreStateStore":
-        """Create a new state store with the required directory layout."""
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
         (root / "plugin_states").mkdir(exist_ok=True)
@@ -76,77 +118,112 @@ class CoreStateStore:
             root=root,
             session_id=session_id,
             thread_id=thread_id,
-            personality_id=personality_id,
+            workspace_root=workspace_root,
+            provider=provider,
         )
-        store._ensure_event_log()
-        store.materialize()
+        if not store.messages_path.exists():
+            store.messages_path.touch()
         return store
 
-    # ------------------------------------------------------------------
-    # Events (append-only JSONL)
-    # ------------------------------------------------------------------
+    def append_message(self, msg: Message) -> dict[str, Any]:
+        d = message_to_dict(msg)
+        d["msg_id"] = self._next_message_id()
+        d["ts"] = now_iso()
+        with open(self.messages_path, "a") as f:
+            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return d
 
-    def append_event(self, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Append one event to events.jsonl. Returns the enriched event dict."""
-        event = {
-            "event_id": self._next_event_id(),
-            "ts": _now_iso(),
-            "type": event_type,
-            "payload": payload or {},
-        }
-        with open(self.events_path, "a") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        return event
+    def append_messages(self, messages: list[Message]) -> int:
+        for msg in messages:
+            self.append_message(msg)
+        return len(messages)
 
-    def read_events(self) -> list[dict[str, Any]]:
-        """Read all events from the log."""
-        if not self.events_path.exists():
-            return []
-        events: list[dict[str, Any]] = []
-        with open(self.events_path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    events.append(json.loads(line))
-        return events
+    def replace_messages(self, messages: list[Message]) -> int:
+        previous = list(_iter_jsonl(self.messages_path))
+        previous_by_key: dict[str, list[dict[str, Any]]] = {}
+        for entry in previous:
+            key = _message_identity_key(entry)
+            previous_by_key.setdefault(key, []).append(entry)
 
-    # ------------------------------------------------------------------
-    # Materialized state
-    # ------------------------------------------------------------------
+        rewritten: list[dict[str, Any]] = []
+        next_id = max((entry.get("msg_id", 0) for entry in previous), default=0) + 1
+        for msg in messages:
+            d = message_to_dict(msg)
+            key = _message_identity_key(d)
+            matches = previous_by_key.get(key) or []
+            if matches:
+                old = matches.pop(0)
+                d["msg_id"] = old.get("msg_id", next_id)
+                d["ts"] = old.get("ts", now_iso())
+            else:
+                d["msg_id"] = next_id
+                d["ts"] = now_iso()
+                next_id += 1
+            rewritten.append(d)
 
-    def materialize(self) -> dict[str, Any]:
-        """Build (and persist) the materialized state.yaml from events."""
-        events = self.read_events()
-        state = {
+        self.messages_path.write_text("")
+        with open(self.messages_path, "a") as f:
+            for d in rewritten:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return len(rewritten)
+
+    def read_messages(self) -> list[Message]:
+        raw = list(_iter_jsonl(self.messages_path))
+        return [dict_to_message(d) for d in raw]
+
+    def message_count(self) -> int:
+        if not self.messages_path.exists():
+            return 0
+        return sum(1 for _ in _iter_jsonl(self.messages_path))
+
+    def truncate_messages(self, keep_last: int = 0) -> int:
+        if not self.messages_path.exists() or keep_last <= 0:
+            if self.messages_path.exists():
+                removed = self.message_count()
+                self.messages_path.unlink()
+                return removed
+            return 0
+
+        all_msgs = list(_iter_jsonl(self.messages_path))
+        if len(all_msgs) <= keep_last:
+            return 0
+
+        removed = len(all_msgs) - keep_last
+        kept = all_msgs[-keep_last:]
+        self.messages_path.write_text("")
+        for d in kept:
+            with open(self.messages_path, "a") as f:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return removed
+
+    def clear_messages(self) -> None:
+        if self.messages_path.exists():
+            self.messages_path.unlink()
+
+    def has_existing_session(self) -> bool:
+        return self.messages_path.exists() and self.message_count() > 0
+
+    def read_state(self) -> dict[str, Any]:
+        return {
             "schema_version": self.SCHEMA_VERSION,
             "session_id": self.session_id,
             "thread_id": self.thread_id,
-            "personality_id": self.personality_id,
-            "turn_count": sum(1 for e in events if e.get("type") == "turn_started"),
-            "event_count": len(events),
-            "status": self._determine_status(events),
-            "mailbox_pending": self._count_mailbox_pending(events),
+            "workspace_root": self.workspace_root,
+            "provider": self.provider,
+            "turn_count": 0,
+            "event_count": 0,
+            "message_count": self.message_count(),
+            "status": "active",
+            "mailbox_pending": 0,
+            "pending_interactions": [],
+            "permission_overrides": {},
+            "sandbox_overrides": {},
+            "workspace": {},
             "plugin_states": self._read_all_plugin_states(),
             "artifacts_root": str(self.artifacts_dir),
-            "updated_at": _now_iso(),
         }
-        with open(self.state_path, "w") as f:
-            yaml.safe_dump(state, f, default_flow_style=False, sort_keys=False)
-        return state
-
-    def read_state(self) -> dict[str, Any]:
-        """Read the materialized state from disk (or rebuild it)."""
-        if self.state_path.exists():
-            with open(self.state_path) as f:
-                return yaml.safe_load(f) or {}
-        return self.materialize()
-
-    # ------------------------------------------------------------------
-    # Plugin state (opaque to core)
-    # ------------------------------------------------------------------
 
     def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
-        """Read a plugin's state file. Returns {} if not found."""
         path = self.plugin_states_dir / f"{plugin_name}.yaml"
         if path.exists():
             with open(path) as f:
@@ -154,53 +231,24 @@ class CoreStateStore:
         return {}
 
     def set_plugin_state(self, plugin_name: str, data: dict[str, Any]) -> None:
-        """Write a plugin's state file."""
         self.plugin_states_dir.mkdir(parents=True, exist_ok=True)
         path = self.plugin_states_dir / f"{plugin_name}.yaml"
         with open(path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
     def delete_plugin_state(self, plugin_name: str) -> None:
-        """Remove a plugin's state file."""
         path = self.plugin_states_dir / f"{plugin_name}.yaml"
         if path.exists():
             path.unlink()
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_event_log(self) -> None:
-        if not self.events_path.exists():
-            self.events_path.touch()
-
-    def _next_event_id(self) -> int:
-        events = self.read_events()
-        if not events:
-            return 1
-        return max(e.get("event_id", 0) for e in events) + 1
-
-    @staticmethod
-    def _determine_status(events: list[dict[str, Any]]) -> str:
-        for e in reversed(events):
-            if e.get("type") == "session_closed":
-                return "closed"
-            if e.get("type") == "error":
-                return "error"
-            if e.get("type") == "interrupted":
-                return "interrupted"
-        return "active"
-
-    @staticmethod
-    def _count_mailbox_pending(events: list[dict[str, Any]]) -> int:
-        sent = 0
-        acked = 0
-        for e in events:
-            if e.get("type") == "mailbox_send":
-                sent += 1
-            elif e.get("type") == "mailbox_acknowledge":
-                acked += 1
-        return max(0, sent - acked)
+    def _next_message_id(self) -> int:
+        if self._max_msg_id == 0 and self.messages_path.exists():
+            for d in _iter_jsonl(self.messages_path):
+                mid = d.get("msg_id", 0)
+                if mid > self._max_msg_id:
+                    self._max_msg_id = mid
+        self._max_msg_id += 1
+        return self._max_msg_id
 
     def _read_all_plugin_states(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -212,3 +260,18 @@ class CoreStateStore:
                 with open(path) as f:
                     result[name] = yaml.safe_load(f) or {}
         return result
+
+
+def _message_identity_key(d: dict[str, Any]) -> str:
+    payload = {k: v for k, v in d.items() if k not in {"msg_id", "ts"}}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _iter_jsonl(path: Path):
+    if not path.exists():
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)

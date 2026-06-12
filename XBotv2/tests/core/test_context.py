@@ -1,9 +1,9 @@
 """Tests for ContextBuilder — fragment injection and caching."""
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage
 
 from xbotv2.core.context import ContextBuilder
+from xbotv2.llm.messages import Message
 
 
 class TestContextBuilderBasics:
@@ -12,26 +12,26 @@ class TestContextBuilderBasics:
     def test_build_minimal_context(self, context_builder):
         """Build context with only required fields."""
         messages = context_builder.build(
-            messages=[HumanMessage(content="hello")],
+            messages=[Message(role="user", content="hello")],
             agent_name="TestBot",
             user_name="tester",
         )
         assert len(messages) > 0
         # First message is system prefix
-        assert isinstance(messages[0], SystemMessage)
+        assert messages[0].role == "system"
         assert "TestBot" in messages[0].content
 
     def test_build_includes_history(self, context_builder):
         """History messages appear after system messages."""
         messages = context_builder.build(
             messages=[
-                HumanMessage(content="hello"),
-                HumanMessage(content="world"),
+                Message(role="user", content="hello"),
+                Message(role="user", content="world"),
             ],
             agent_name="TestBot",
         )
         # Find the human messages
-        human_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+        human_msgs = [m for m in messages if m.role == "user"]
         assert len(human_msgs) == 2
 
     def test_build_ends_with_current_state(self, context_builder):
@@ -42,7 +42,7 @@ class TestContextBuilderBasics:
             turn_count=5,
         )
         last = messages[-1]
-        assert isinstance(last, SystemMessage)
+        assert last.role == "system"
         assert "Current State" in last.content
         assert "Turn: 6" in last.content  # turn_count + 1
 
@@ -125,6 +125,63 @@ class TestFragmentInjection:
         assert len(messages) > 0
 
 
+class TestContextComponents:
+    """Source-tagged context components for token accounting."""
+
+    def test_build_components_preserves_source_and_owner_metadata(self, context_builder):
+        context_builder.register_fragment(
+            "system_instructions", "skills", "## Skills\nUse skills."
+        )
+        context_builder.register_fragment(
+            "system_rules", "compact", "## Compact\nStay small."
+        )
+        components = context_builder.build_components(
+            messages=[Message(role="user", content="hello")],
+            agent_name="TestBot",
+        )
+
+        sources = [component.source for component in components]
+        assert sources[:3] == [
+            "system_prefix",
+            "plugin_fragment",
+            "runtime_rules",
+        ]
+        assert "history" in sources
+        assert sources[-1] == "context_suffix"
+
+        skills = next(
+            component
+            for component in components
+            if component.plugin_name == "skills"
+        )
+        assert skills.stage == "system_instructions"
+        assert "Skills" in skills.content
+
+        compact = next(
+            component
+            for component in components
+            if component.plugin_name == "compact"
+        )
+        assert compact.stage == "system_rules"
+        assert "Compact" in compact.content
+
+    def test_messages_from_components_roundtrips_to_build_shape(self, context_builder):
+        raw_messages = [Message(role="user", content="hello")]
+        direct = context_builder.build(messages=raw_messages, agent_name="TestBot")
+        via_components = context_builder.messages_from_components(
+            context_builder.build_components(messages=raw_messages, agent_name="TestBot")
+        )
+
+        assert [type(message) for message in via_components] == [
+            type(message) for message in direct
+        ]
+        assert via_components[0].content == direct[0].content
+        assert via_components[1].content == direct[1].content
+        assert via_components[2].content == direct[2].content
+        assert "Current State" in via_components[-1].content
+        assert "Current State" in direct[-1].content
+
+
 class TestCacheIsolation:
     """System prefix caching is instance-level, not module-level."""
 
@@ -164,32 +221,21 @@ class TestSanitization:
     """Message history sanitization."""
 
     def test_drops_orphan_tool_messages(self, context_builder):
-        """Orphan ToolMessages (no matching AIMessage) are removed."""
-        from langchain_core.messages import AIMessage, ToolMessage
-
-        # AIMessage with a tool call, then a ToolMessage for a different ID
         messages = [
-            AIMessage(
-                content="test",
-                tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}],
-            ),
-            ToolMessage(content="result", tool_call_id="call_2"),  # orphan
+            Message(role="assistant", content="test",
+                    tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}]),
+            Message(role="tool", content="result", tool_call_id="call_2"),
         ]
         sanitized = context_builder._sanitize_history(messages)
-        tool_msgs = [m for m in sanitized if isinstance(m, ToolMessage)]
+        tool_msgs = [m for m in sanitized if m.role == "tool"]
         assert len(tool_msgs) == 0
 
     def test_keeps_valid_tool_messages(self, context_builder):
-        """Valid ToolMessages (matching AIMessage) are kept."""
-        from langchain_core.messages import AIMessage, ToolMessage
-
         messages = [
-            AIMessage(
-                content="test",
-                tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}],
-            ),
-            ToolMessage(content="result", tool_call_id="call_1"),
+            Message(role="assistant", content="test",
+                    tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}]),
+            Message(role="tool", content="result", tool_call_id="call_1"),
         ]
         sanitized = context_builder._sanitize_history(messages)
-        tool_msgs = [m for m in sanitized if isinstance(m, ToolMessage)]
+        tool_msgs = [m for m in sanitized if m.role == "tool"]
         assert len(tool_msgs) == 1
