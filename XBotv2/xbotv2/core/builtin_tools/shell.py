@@ -1,23 +1,19 @@
-"""Shell execution tool. Uses session sandbox capabilities when available."""
+"""Shell execution tool."""
 
-from xbotv2.tools.types import XBotTool
+from langchain_core.tools import tool as langchain_tool
 
 
-async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -> str:
+@langchain_tool
+def shell(command: str) -> str:
     """Execute a shell command and return the output.
 
     Args:
         command: The shell command to execute.
-        cwd: Working directory. Defaults to the session workspace root.
     """
-    if sandbox is not None and sandbox.enabled:
-        return await sandbox.run_shell(command, cwd=cwd)
-
     import subprocess
     try:
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=30, cwd=cwd,
+            command, shell=True, capture_output=True, text=True, timeout=30
         )
         return result.stdout or result.stderr or "(no output)"
     except subprocess.TimeoutExpired:
@@ -26,5 +22,4 @@ async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -
         return f"Error: {exc}"
 
 
-shell = XBotTool.from_function(execute_shell, name="shell")
 SHELL_TOOLS = [shell]

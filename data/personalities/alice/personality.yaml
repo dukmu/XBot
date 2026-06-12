@@ -1,0 +1,33 @@
+name: "alice"
+provider: "openai"
+agent_role: "一个温和、清晰、可靠的本地助手。"
+max_context_tokens: 8000
+include_reasoning: false
+tools:
+  - shell
+  - filesystem
+  - ask
+  - message_send
+  - memory_update
+  - memory_list
+  - memory_search
+  - task_begin
+  - task_status
+  - task_exit
+  - plan_add_nodes
+  - plan_autofill
+  - plan_next
+  - plan_update
+  - plan_node_history
+  - plan_remove_node
+  - summary_add
+  - summary_list
+  - summary_read
+  - context_head
+  - context_rewind
+  - mailbox_send
+  - mailbox_read
+  - debug_analyze
+  - compact
+  - skill_load
+skills: []

@@ -11,25 +11,77 @@ from xbotv2.hooks.types import HookStage, HookContext, SessionInfo
 # ------------------------------------------------------------------
 
 class TestHookRegistration:
+    """Hook registration tests."""
 
     def test_register_by_enum(self, hook_manager):
+        """Hooks can be registered by HookStage enum."""
         called = []
 
         async def my_hook(ctx):
             called.append(1)
 
         hook_manager.register(HookStage.BEFORE_AGENT, my_hook)
+        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
+        assert hook_manager.count() == 1
 
-    def test_unregister_hook_removes_one_registration(self, hook_manager):
+    def test_register_by_string(self, hook_manager):
+        """Hooks can be registered by stage string."""
+        called = []
+
+        async def my_hook(ctx):
+            called.append(1)
+
+        hook_manager.register("before_agent", my_hook)
+        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
+
+    def test_register_invalid_stage_raises(self, hook_manager):
+        """Invalid stage names raise ValueError."""
+
+        async def my_hook(ctx):
+            pass
+
+        with pytest.raises(ValueError, match="Unknown hook stage"):
+            hook_manager.register("nonexistent_stage", my_hook)
+
+    def test_register_many(self, hook_manager):
+        """Batch register works."""
+        called = []
+
+        async def hook1(ctx):
+            called.append(1)
+
+        async def hook2(ctx):
+            called.append(2)
+
+        hook_manager.register_many([
+            (HookStage.BEFORE_AGENT, hook1),
+            (HookStage.AFTER_AGENT, hook2),
+        ])
+        assert hook_manager.count() == 2
+        assert hook_manager.count(HookStage.BEFORE_AGENT) == 1
+        assert hook_manager.count(HookStage.AFTER_AGENT) == 1
+
+    def test_clear_stage(self, hook_manager):
+        """Clear a specific stage."""
         async def hook(ctx):
             pass
 
         hook_manager.register(HookStage.BEFORE_AGENT, hook)
-        hook_manager.register(HookStage.BEFORE_AGENT, hook)
+        hook_manager.register(HookStage.AFTER_AGENT, hook)
+        assert hook_manager.count() == 2
 
-        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
-        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is True
-        assert hook_manager.unregister(HookStage.BEFORE_AGENT, hook) is False
+        hook_manager.clear(HookStage.BEFORE_AGENT)
+        assert hook_manager.count(HookStage.BEFORE_AGENT) == 0
+        assert hook_manager.count(HookStage.AFTER_AGENT) == 1
+
+    def test_clear_all(self, hook_manager):
+        """Clear all hooks."""
+        async def hook(ctx):
+            pass
+
+        hook_manager.register(HookStage.BEFORE_AGENT, hook)
+        hook_manager.clear()
+        assert hook_manager.count() == 0
 
 
 # ------------------------------------------------------------------
@@ -123,35 +175,6 @@ class TestHookExecution:
         assert order == ["fail", "good"]
 
     @pytest.mark.asyncio
-    async def test_strict_lifecycle_hook_errors_run_all_then_raise(
-        self, hook_manager, hook_context
-    ):
-        """Critical lifecycle stages run all callbacks, then expose failures."""
-        order = []
-
-        async def failing_hook(ctx):
-            order.append("fail")
-            raise RuntimeError("persist failed")
-
-        async def good_hook(ctx):
-            order.append("good")
-
-        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, failing_hook)
-        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, good_hook)
-
-        hook_context.stage = HookStage.BEFORE_STATE_PERSIST
-        with pytest.raises(ExceptionGroup, match="before_state_persist") as exc_info:
-            await hook_manager.run(
-                HookStage.BEFORE_STATE_PERSIST,
-                hook_context,
-                short_circuit=False,
-            )
-
-        assert order == ["fail", "good"]
-        assert len(exc_info.value.exceptions) == 1
-        assert isinstance(exc_info.value.exceptions[0], RuntimeError)
-
-    @pytest.mark.asyncio
     async def test_hook_error_in_loop_raises(self, hook_manager, hook_context):
         """An error in a loop hook propagates (short_circuit=True)."""
         async def failing_hook(ctx):
@@ -201,12 +224,7 @@ class TestHookContext:
         ctx = HookContext(
             stage=HookStage.ON_USER_MESSAGE,
             user_input="hello",
-            session=SessionInfo(
-                session_id="s",
-                thread_id="t",
-                workspace_root="/workspace",
-                provider="p",
-            ),
+            session=SessionInfo(session_id="s", thread_id="t", personality_id="p"),
         )
 
         received = []
@@ -224,32 +242,21 @@ class TestHookContext:
 # ------------------------------------------------------------------
 
 class TestAllStages:
-    """All hook stages are defined and work."""
+    """All 18 stages are defined and work."""
 
     def test_all_stages_exist(self):
-        """Verify all HookStage values."""
+        """Verify all 17 HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 41
+        assert len(stages) == 17
         stage_values = {s.value for s in stages}
 
         expected = {
             "on_session_init", "on_session_start", "on_session_resume", "on_session_close",
-            "on_turn_start", "on_turn_end", "on_stop", "on_stop_failure",
-            "before_user_message_accept", "after_user_message_accept",
-            "before_context", "pre_compact", "post_compact",
-            "before_context_build", "after_context",
-            "after_context_components_build", "after_context_build",
-            "before_agent", "before_tool_schema_bind", "after_tool_schema_bind",
-            "before_model_request", "after_model_response", "on_model_request_error",
-            "after_agent",
+            "on_turn_start", "on_turn_end",
+            "before_context", "after_context", "before_agent", "after_agent",
             "before_tools", "after_tools",
             "on_user_message", "on_assistant_message", "on_tool_message",
-            "on_tool_calls_parsed", "on_permission_request", "on_permission_denied",
-            "before_tool_call", "after_tool_call", "on_tool_call_failure",
-            "post_tool_batch",
-            "on_tool_denied", "on_client_event",
-            "before_state_persist", "after_state_persist",
-            "on_error",
+            "on_error", "on_config_reload",
         }
         assert stage_values == expected
 
@@ -257,14 +264,6 @@ class TestAllStages:
         """Only loop stages permit short-circuit."""
         from xbotv2.hooks.types import SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_CONTEXT in SHORT_CIRCUIT_STAGES
-        assert HookStage.PRE_COMPACT in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_CONTEXT_BUILD in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_TOOL_SCHEMA_BIND in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_TOOL_CALL in SHORT_CIRCUIT_STAGES
         assert HookStage.AFTER_TOOLS in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_MODEL_REQUEST in SHORT_CIRCUIT_STAGES
-        assert HookStage.AFTER_CONTEXT_BUILD not in SHORT_CIRCUIT_STAGES
-        assert HookStage.ON_STOP not in SHORT_CIRCUIT_STAGES
-        assert HookStage.POST_TOOL_BATCH not in SHORT_CIRCUIT_STAGES
         assert HookStage.ON_SESSION_START not in SHORT_CIRCUIT_STAGES
         assert HookStage.ON_ERROR not in SHORT_CIRCUIT_STAGES

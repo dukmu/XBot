@@ -2,160 +2,123 @@
 
 ## Overview
 
-XBotv2 is a plugin-extensible AI agent runtime with a minimal core ReAct loop.
-The core owns provider calls, tool execution, permissions, sandboxing (BubblewrapBackend),
-protocol streaming (HTTP/SSE + Unix domain socket), and append-only persistence
-(`messages.jsonl`). Skills, MCP tools, and plugin extensions live in `builtin_plugins/`.
+XBotv2 is a plugin-extensible AI agent runtime. The core engine implements
+a minimal ReAct loop. All advanced features (DAG planning, context compaction,
+skills, memory, subagents) are implemented as independent plugins.
 
 ## Architecture Principle
 
-```text
-Plugins -> import -> Core (xbotv2)
-Core -> never imports -> Plugins (builtin_plugins)
+```
+Plugins ──import──→ Core (xbotv2)
+Core ──NEVER imports──→ Plugins (builtin_plugins)
 ```
 
-Core defines interfaces; bootstrap wires plugins at runtime via manifests.
-`plugin_dirs=[]` disables plugin discovery (pure-core test mode).
-`--no-plugins` CLI flag equivalent.
-
-## Runtime Identity
-
-```yaml
-session_id: generated-or-explicit
-thread_id: agent
-workspace_root: /actual/project/root
-provider: current-provider
-```
-
-Configuration:
-
-```text
-data/config/system.yaml
-data/config/providers.yaml
-data/config/permissions.yaml
-data/config/sandbox.yaml
-<workspace_root>/AGENTS.md
-```
+Core defines interfaces; plugins implement them. The bootstrap sequence
+discovers and wires plugins at runtime via `plugin.yaml` manifests.
 
 ## Core Components
 
 ### Engine (`xbotv2/core/engine.py`)
+- **3-node ReAct loop**: `prepare_context → agent → tools → repeat`
+- Each stage runs before/after hooks with optional short-circuiting
+- No DAG, plan, task-mode, skills, or compaction concepts
+- Pure linear execution — works without any plugins
 
-ReAct loop: user message accept → context build (with hook injection) →
-LLM call (streaming) → tool execution → repeat. Uses XBot-owned `Message`
-dataclass and `XBotTool` throughout. No LangChain dependency.
+### Hook System (`xbotv2/hooks/`)
+- **17 lifecycle stages**: session (4), turn (2), loop (6), message (3),
+  system events (2)
+- Loop hooks short-circuit on truthy return
+- Lifecycle hooks always run all callbacks
+- `ON_SESSION_INIT` hooks can register tools
 
-Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
-`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`, `ON_TOOL_CALL_FAILURE`,
-`PRE_COMPACT`, `POST_COMPACT`.
+### Plugin System (`xbotv2/plugin/`)
+- Plugins declared via `plugin.yaml` manifest
+- Each plugin gets isolated `PluginStore` (opaque to core)
+- Dependency resolution via topological sort
+- Plugins register: hooks, tools, prompt fragments
 
 ### Tool System (`xbotv2/tools/`)
+- `ToolRegistry` with sandbox/execution metadata
+- `SandboxPolicy` for resource access control
+- `PermissionSystem` with deny→allow→ask precedence
+- Plugin ownership tracking for unload/reload
 
-- **XBotTool** (`types.py`): native tool dataclass with `from_function()`, supports
-  async functions and keyword-only parameter injection (sandbox, skill_registry).
-- **ToolRegistry** (`registry.py`): namespace-aware registration (`source:name:tool`),
-  restrict() with wildcard selectors.
-- **SandboxPolicy** (`sandbox.py`): integrates **BubblewrapBackend** (`sandbox_bwrap.py`)
-  for process isolation. Provides capability methods: `run_shell`, `read_file`,
-  `write_file`, `list_dir`.
-- **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
+### Persistence (`xbotv2/persistence/`)
+- Append-only `events.jsonl` — source of truth
+- `state.yaml` — materialized view (rebuildable from events)
+- Plugin states as opaque blobs in `plugin_states/`
 
-### Hooks (`xbotv2/hooks/`)
+### Context Building (`xbotv2/core/context.py`)
+- Pluggable fragment injection points
+- Cache-friendly: stable prefix memoized, dynamic suffix at end
+- Instance-level caches (no module-level globals)
 
-42 `HookStage` enum values covering session/turn/tool/context/compaction lifecycle.
-`HookManager` with register/run, short-circuit support, and strict failure stages.
+### Built-in Tools (`xbotv2/core/builtin_tools/`)
+- `base.py`: `ask` tool
+- `filesystem.py`: `filesystem_read`, `filesystem_write`, `filesystem_list`
+- `shell.py`: `shell` tool
 
-### LLM Provider (`xbotv2/llm/`)
+## Plugin Architecture
 
-- `OpenAICompatibleProvider`: streaming (`stream=True`) with `reasoning_effort` and
-  `thinking_enabled` config. Yields per-token deltas including reasoning content.
-- `AnthropicProvider`: same interface for Anthropic models.
-- `MockLLM`: deterministic test provider, supports chunk streaming with
-  `additional_kwargs`.
-- `Message` dataclass (`messages.py`): XBot-owned, persisted to `messages.jsonl`.
-
-### Context Builder (`xbotv2/core/context.py`)
-
-Assembles provider messages: system prefix → plugin fragments → runtime rules →
-history → dag suffix → current state. SHA256 cache replaced with tuple key.
-
-## Plugin System
-
-### SkillsPlugin (`builtin_plugins/skills/`)
-
-Discovers SKILL.md files (agentskills.io standard) from:
-`.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global `~/.`).
-
-- Registers `skill` tool via XBotTool (namespace `plugin:skills:skill`)
-- Registers discovered skills as ToolRegistry entries (namespace `skills:<scope>:<name>`)
-- BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
-- Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
-- allowed-tools / disallowed-tools frontmatter support
-
-### MCPPlugin (`builtin_plugins/mcp/`)
-
-Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
-- Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
-- Eager connection at bootstrap, silent skip on failure
-- MCPTool wraps as XBotTool-compatible callable
-
-## Namespace Protocol
-
-Tools are identified by `source:name:tool`:
-
-| Source | Name | Example | Slash |
-|---|---|---|---|
-| `builtin` | `core` | `builtin:core:shell` | `/shell` |
-| `plugin` | plugin name | `plugin:skills:skill` | `/skill` |
-| `skills` | scope/path | `skills:global:find-skills` | `/find-skills` |
-| `mcp` | server name | `mcp:github:search` | `/search` |
-
-Tool (third tier) is the slash command name, must be globally unique.
-If conflicting, use full `source:name:tool` as command.
-
-## Transport
-
-### HTTP/SSE (`xbotv2/protocol/http_server.py`)
-
-FastAPI app with SSE streaming. SessionManager with per-session context.
-
-### Unix Domain Socket (`__main__.py`)
-
-Default TUI transport: auto-generates `/tmp/xbotv2-{pid}.sock`, spawns server
-subprocess bound to it. No TCP port needed for local use. `--server URL` for
-remote HTTP connection.
-
-### Session Resume
-
-Auto-upgrade: when `mode=new` but session state exists on disk, server
-switches to `mode=resume` silently. `--session` CLI arg preserved across restarts.
-
-## Unified Command System
-
-`CommandSpec` with `kind` field (`client`, `server`, `skill`, `tool`, `mcp`).
-TUI fetches commands from `GET /sessions/{id}/commands` which enumerates
-ToolRegistry entries. `/help [name]` shows detailed help. All non-client
-commands go through unified server command path.
-
-## Persistence
-
+### Directory Layout
 ```
-data/sessions/<sid>/state/
-├── messages.jsonl          # XBot-owned Message objects, append-only
-├── plugin_states/          # per-plugin YAML state
-└── artifacts/              # cached tool outputs
+builtin_plugins/<name>/
+  plugin.yaml        # Manifest: name, version, hooks, tools, deps
+  plugin.py          # PluginBase subclass (optional)
+  hooks.py           # Hook handler functions
+  tools.py           # Tool definitions
+  prompts/           # Prompt fragment .md files
 ```
 
-No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` persists
-via `replace_messages()` (full rewrite each turn).
+### Plugin Manifest
+```yaml
+name: planning
+version: "1.0.0"
+description: "DAG-based task planning"
+depends_on: []
+hooks:
+  - stage: on_session_init
+    handler: planning.hooks:on_init
+tools:
+  - handler: planning.tools:plan_add_nodes
+prompt_fragments:
+  - stage: dag_suffix
+    handler: planning.context:render_dag_state
+```
 
-## Streaming & Reasoning
+## State Model
 
-Provider uses `stream=True` with `async for chunk in response`.
-Reasoning content (DeepSeek thinking mode) extracted from `delta.reasoning_content`,
-emitted as regular content deltas with `## Thinking` header.
-Reasoning preserved in `Message.additional_kwargs.reasoning_content` and
-re-passed to API for tool-call turns via `provider_messages`.
+Core state is intentionally minimal:
+```yaml
+schema_version: 2
+session_id, thread_id, personality_id: str
+turn_count, event_count: int
+status: active | error | interrupted | closed
+mailbox_pending: int
+plugin_states: { <name>: <opaque> }
+```
 
-TUI uses timer-based rendering (`_stream_timer` at 50ms intervals) —
-streaming events are near-zero-cost on the hot path.
+No DAG, plan, task-mode, skills, or compaction fields in core state.
+All such concepts live in plugin-owned state namespaces.
+
+## Hook Lifecycle
+
+| Stage | Short-Circuit? | Purpose |
+|-------|---------------|---------|
+| ON_SESSION_INIT | No | Plugin init, tool registration |
+| ON_SESSION_START | No | New session setup |
+| ON_SESSION_RESUME | No | Session restored from checkpoint |
+| ON_SESSION_CLOSE | No | Cleanup, finalize |
+| ON_TURN_START | No | User message received |
+| ON_TURN_END | No | Turn complete |
+| BEFORE_CONTEXT | Yes | Before context assembly (compact) |
+| AFTER_CONTEXT | Yes | After context assembly |
+| BEFORE_AGENT | Yes | Before LLM call (skills injection) |
+| AFTER_AGENT | Yes | After LLM call |
+| BEFORE_TOOLS | Yes | Before tool execution (sandbox guard) |
+| AFTER_TOOLS | Yes | After tool execution (cache) |
+| ON_USER_MESSAGE | No | User input parsed |
+| ON_ASSISTANT_MESSAGE | No | LLM response received |
+| ON_TOOL_MESSAGE | No | Tool result received |
+| ON_ERROR | No | Error occurred |
+| ON_CONFIG_RELOAD | No | Config was reloaded |

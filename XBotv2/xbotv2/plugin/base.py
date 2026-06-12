@@ -92,16 +92,17 @@ class PluginBase(ABC):
                 handler = self._resolve_handler(decl.handler)
                 fragments[decl.stage] = handler()
             elif decl.file:
-                from pathlib import Path
-
-                plugin_dir = self.manifest.plugin_dir or Path.cwd()
-                file_path = plugin_dir / decl.file
-                if not file_path.exists():
-                    raise FileNotFoundError(
-                        f"Plugin '{self.manifest.name}' prompt fragment file not found: {file_path}"
-                    )
-                with open(file_path) as f:
-                    fragments[decl.stage] = f.read()
+                # Resolve relative to plugin directory
+                import os
+                plugin_dir = os.path.dirname(self.manifest.__class__.model_config.get(
+                    "plugin_dir", ""
+                ) if hasattr(self.manifest.__class__, "model_config") else "")
+                file_path = os.path.join(plugin_dir, decl.file) if plugin_dir else decl.file
+                try:
+                    with open(file_path) as f:
+                        fragments[decl.stage] = f.read()
+                except FileNotFoundError:
+                    fragments[decl.stage] = ""
 
         return fragments
 

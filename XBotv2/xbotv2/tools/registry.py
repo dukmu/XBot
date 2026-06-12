@@ -1,21 +1,7 @@
-"""Extensible tool registry with namespace-aware registration and filtering.
-
-Namespaced tools use the format ``namespace:name``. Built-in tools are
-bare names (default namespace). Plugin tools use the plugin name as
-namespace. MCP tools use ``mcp.<server>`` as namespace.
-
-``restrict()`` supports namespace patterns:
-  - ``"*"`` or ``None``: all tools
-  - ``"shell"``: bare name match (backwards-compat)
-  - ``"builtin:*"``: all tools with namespace ``builtin``
-  - ``"skills:*"``: all skills plugin tools
-  - ``"skills:skill"``: specific namespaced tool
-  - ``"mcp.*:*"``: wildcard namespace match
-"""
+"""Extensible tool registry with plugin ownership tracking."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -25,18 +11,37 @@ RegisteredExecutionMode = Literal["parallel", "sequential"]
 
 @dataclass
 class ToolEntry:
-    tool: Any
+    """Metadata for one registered tool."""
+
+    tool: Any  # BaseTool instance
     sandbox_mode: RegisteredSandboxMode = "host"
     execution_mode: RegisteredExecutionMode = "sequential"
     lock_fields: tuple[str, ...] = ()
     owner_plugin: str | None = None
-    namespace: str = "builtin"
 
 
 class ToolRegistry:
+    """Pluggable tool registry.
+
+    Maps tool names to ToolEntry objects. Supports:
+    - Registration with sandbox/execution metadata
+    - Wildcard expansion for tool groups (e.g. "filesystem" → filesystem_read, write, list)
+    - Plugin ownership tracking for unload/reload
+    - Filtering by enabled tool list
+
+    Usage::
+
+        registry = ToolRegistry()
+        registry.register(filesystem_read, sandbox_mode="sandboxed")
+        tools = registry.filter(["filesystem_read", "shell"])
+    """
+
     def __init__(self) -> None:
         self._entries: dict[str, ToolEntry] = {}
-        self._enabled_names: set[str] | None = None
+
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
 
     def register(
         self,
@@ -46,31 +51,31 @@ class ToolRegistry:
         execution_mode: RegisteredExecutionMode = "sequential",
         lock_fields: tuple[str, ...] = (),
         owner_plugin: str | None = None,
-        namespace: str | None = None,
     ) -> None:
+        """Register a tool."""
         name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
-        ns = namespace or "builtin"
-        full_name = f"{ns}:{name}" if ns != "builtin" else name
-        self._entries[full_name] = ToolEntry(
+        self._entries[name] = ToolEntry(
             tool=tool,
             sandbox_mode=sandbox_mode,
             execution_mode=execution_mode,
             lock_fields=lock_fields,
             owner_plugin=owner_plugin,
-            namespace=ns,
         )
 
     def register_many(
-        self, tools: list[Any], *,
+        self,
+        tools: list[Any],
+        *,
         sandbox_modes: dict[str, RegisteredSandboxMode] | None = None,
         execution_modes: dict[str, RegisteredExecutionMode] | None = None,
         lock_fields: dict[str, tuple[str, ...]] | None = None,
         owner_plugin: str | None = None,
-        namespace: str | None = None,
     ) -> None:
+        """Batch-register tools."""
         sandbox_modes = sandbox_modes or {}
         execution_modes = execution_modes or {}
         lock_fields_map = lock_fields or {}
+
         for tool in tools:
             name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
             self.register(
@@ -79,114 +84,84 @@ class ToolRegistry:
                 execution_mode=execution_modes.get(name, "sequential"),
                 lock_fields=lock_fields_map.get(name, ()),
                 owner_plugin=owner_plugin,
-                namespace=namespace,
             )
 
     def unregister_plugin_tools(self, plugin_name: str) -> list[str]:
-        removed = [n for n, e in self._entries.items() if e.owner_plugin == plugin_name]
+        """Remove all tools owned by *plugin_name*. Returns removed names."""
+        removed = [
+            name
+            for name, entry in self._entries.items()
+            if entry.owner_plugin == plugin_name
+        ]
         for name in removed:
             del self._entries[name]
         return removed
 
-    def unregister(self, name: str) -> bool:
-        if name not in self._entries:
-            return False
-        del self._entries[name]
-        if self._enabled_names is not None:
-            self._enabled_names.discard(name)
-        return True
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
 
     def get(self, name: str) -> ToolEntry | None:
-        if name in self._entries and self._is_enabled(name):
-            return self._entries[name]
-        # Fallback: match by tool display name (XBotTool.name attribute)
-        for full_name, entry in self._entries.items():
-            if getattr(entry.tool, "name", "") == name and self._is_enabled(full_name):
-                return entry
-        return None
+        """Return the ToolEntry for *name*, or None."""
+        return self._entries.get(name)
 
     def registered(self, name: str) -> bool:
-        return name in self._entries and (self._enabled_names is None or name in self._enabled_names)
+        """Return whether *name* is registered."""
+        return name in self._entries
 
     def get_all(self) -> list[Any]:
-        return [e.tool for name, e in self._entries.items() if self._is_enabled(name)]
+        """Return all registered tool instances."""
+        return [e.tool for e in self._entries.values()]
 
     def names(self) -> list[str]:
-        return [name for name in self._entries if self._is_enabled(name)]
-
-    def registered_names(self) -> list[str]:
-        return list(self._entries)
+        """Return all registered tool names."""
+        return list(self._entries.keys())
 
     def sandbox_modes(self) -> dict[str, RegisteredSandboxMode]:
-        return {name: e.sandbox_mode for name, e in self._entries.items() if self._is_enabled(name)}
+        """Return {tool_name: sandbox_mode} for all registered tools."""
+        return {name: entry.sandbox_mode for name, entry in self._entries.items()}
+
+    # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
 
     def filter(self, tool_names: list[str] | None) -> list[Any]:
+        """Return tool instances for the requested names.
+
+        If *tool_names* is None or empty, return all tools.
+
+        Supports wildcard expansion: "filesystem*" or bare "filesystem" expands
+        to filesystem_read, filesystem_write, filesystem_list.
+        """
         if not tool_names:
             return self.get_all()
-        expanded = self._expand_selectors(tool_names)
-        return [self._entries[name].tool for name in expanded]
 
-    def restrict(self, tool_names: list[str] | None) -> list[str]:
-        if not tool_names:
-            self._enabled_names = None
-            return self.names()
-
-        expanded: set[str] = set()
-        for selector in tool_names:
-            matches = self._expand_selector(selector)
-            expanded.update(matches)
-        self._enabled_names = expanded
-        return self.names()
-
-    def __len__(self) -> int:
-        return len(self.names())
-
-    def __contains__(self, name: str) -> bool:
-        return self.registered(name)
-
-    def _expand_selectors(self, selectors: list[str]) -> list[str]:
-        result: list[str] = []
+        result: list[Any] = []
         seen: set[str] = set()
-        for sel in selectors:
-            for name in self._expand_selector(sel):
-                if name not in seen:
-                    result.append(name)
-                    seen.add(name)
+
+        for name in tool_names:
+            # Determine prefix for matching
+            if name.endswith("*"):
+                prefix = name.rstrip("*")
+            else:
+                prefix = name
+
+            # Try exact match first
+            if name in self._entries and name not in seen:
+                result.append(self._entries[name].tool)
+                seen.add(name)
+                continue
+
+            # Try prefix expansion (for bare "filesystem" or explicit "filesystem*")
+            for entry_name, entry in self._entries.items():
+                if entry_name.startswith(prefix) and entry_name not in seen:
+                    result.append(entry.tool)
+                    seen.add(entry_name)
+
         return result
 
-    def _expand_selector(self, selector: str) -> list[str]:
-        if selector in self._entries:
-            return [selector]
+    def __len__(self) -> int:
+        return len(self._entries)
 
-        if ":" in selector:
-            ns, _, name_part = selector.partition(":")
-            ns_re = _wildcard_to_regex(ns)
-            name_re = _wildcard_to_regex(name_part)
-            pattern = re.compile(f"^{ns_re}:{name_re}$")
-            return sorted(n for n in self._entries if pattern.match(n))
-
-        if selector.endswith("*"):
-            prefix = selector.rstrip("*")
-            return sorted(n for n in self._entries if n.startswith(prefix))
-
-        prefix_matches = [n for n in self._entries if n == selector or (":" not in n and n.startswith(selector))]
-        if prefix_matches:
-            return sorted(prefix_matches)
-        return sorted(n for n in self._entries if n.endswith(f":{selector}"))
-
-    def _is_enabled(self, name: str) -> bool:
-        return self._enabled_names is None or name in self._enabled_names
-
-
-def _wildcard_to_regex(pattern: str) -> str:
-    result = []
-    for ch in pattern:
-        if ch == "*":
-            result.append(".*")
-        elif ch == "?":
-            result.append(".")
-        elif ch in r".^$+?{}[]|()\\":
-            result.append("\\" + ch)
-        else:
-            result.append(ch)
-    return "".join(result)
+    def __contains__(self, name: str) -> bool:
+        return name in self._entries

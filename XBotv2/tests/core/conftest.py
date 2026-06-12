@@ -1,4 +1,4 @@
-"""Core test fixtures — no built-in/Phase4 plugins loaded."""
+"""Core test fixtures — NO plugins loaded."""
 
 import pytest
 
@@ -59,8 +59,7 @@ def state_store(temp_data_dir):
         temp_data_dir / "sessions" / "default" / "state",
         session_id="test-session",
         thread_id="test-thread",
-        workspace_root=str(temp_data_dir),
-        provider="default",
+        personality_id="default",
     )
     return store
 
@@ -71,8 +70,7 @@ def session_info():
     return SessionInfo(
         session_id="test-session",
         thread_id="test-thread",
-        workspace_root="/workspace",
-        provider="default",
+        personality_id="default",
     )
 
 

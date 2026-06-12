@@ -3,7 +3,7 @@
 
 Usage:
     python main.py                          # Interactive terminal mode
-    python main.py --mode server            # HTTP/SSE server
+    python main.py --mode server            # JSONL stdio server
     python main.py --mode once "hello"      # Single-shot query
 """
 

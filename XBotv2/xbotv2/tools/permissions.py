@@ -49,7 +49,14 @@ class PermissionSystem:
     # ------------------------------------------------------------------
 
     def _load_config(self, config: Any) -> None:
-        if hasattr(config, "model_dump"):
+        """Load rules from a config object.
+
+        Accepts either a dict with deny/allow/ask keys (from JSON/permissions)
+        or a Pydantic model with the same structure.
+        """
+        if hasattr(config, "dict"):
+            data = config.dict()
+        elif hasattr(config, "model_dump"):
             data = config.model_dump()
         elif isinstance(config, dict):
             data = config
@@ -62,16 +69,6 @@ class PermissionSystem:
             self._allow_rules.append(self._parse_rule(rule_data, "allow"))
         for rule_data in data.get("ask", []):
             self._ask_rules.append(self._parse_rule(rule_data, "ask"))
-
-    def add_rule(self, decision: PermissionDecision, rule_data: dict[str, Any]) -> None:
-        """Add one live permission rule to the in-memory policy."""
-        rule = self._parse_rule(rule_data, decision)
-        target = {
-            "deny": self._deny_rules,
-            "allow": self._allow_rules,
-            "ask": self._ask_rules,
-        }[decision]
-        target.insert(0, rule)
 
     @staticmethod
     def _parse_rule(data: dict, decision: PermissionDecision) -> PermissionRule:
