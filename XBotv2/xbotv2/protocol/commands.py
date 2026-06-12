@@ -129,6 +129,8 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
         if not valid:
             return _result(name, message, status="error")
         getattr(ctx, f"{name}_overrides")[key] = normalized
+        if name == "sandbox":
+            _persist_sandbox_overrides(ctx, key, normalized)
         _reload_live_policies(ctx)
         return _result(name, f"{name} override set for this session: {key}={normalized}")
     if action == "reset":
@@ -139,8 +141,12 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
             if not valid:
                 return _result(name, message, status="error")
             overrides.pop(key, None)
+            if name == "sandbox":
+                _remove_sandbox_override(ctx, key)
         else:
             overrides.clear()
+            if name == "sandbox":
+                _clear_sandbox_overrides(ctx)
         _reload_live_policies(ctx)
         return _result(name, f"{name} session overrides reset.")
     return _result(name, f"Usage: /{name} status | set <key> <value> | reset", status="error")
@@ -164,8 +170,35 @@ def _validate_policy_action(name: str, key: str, value: str | None = None) -> tu
         value = value.lower().strip()
         if name == "permission" and value not in {"allow", "deny", "ask"}:
             return False, "", "Permission value must be allow, deny, or ask."
+        if name == "sandbox":
+            normalized = _normalize_sandbox_value(key, value)
+            if normalized is None:
+                return False, "", f"Invalid value {value!r} for sandbox.{key}"
+            return True, normalized, ""
         return True, value, ""
     return True, key, ""
+
+
+def _normalize_sandbox_value(key: str, value: str) -> str | bool | None:
+    """Coerce a user-supplied sandbox value to the correct Python type."""
+    special = {
+        "enabled": "bool",
+        "network": "bool",
+        "external_read": "str",
+        "external_write": "str",
+        "workspace_read": "str",
+        "workspace_write": "str",
+    }
+    kind = special.get(key)
+    if kind == "bool":
+        if value in {"true", "yes", "1"}:
+            return True
+        if value in {"false", "no", "0"}:
+            return False
+        return None
+    if kind == "str" and value in {"ask", "deny", "allow", "readonly", "readwrite"}:
+        return value
+    return value if key not in special else None
 
 
 def _reload_live_policies(ctx: Any) -> None:
@@ -186,22 +219,59 @@ def _reload_live_policies(ctx: Any) -> None:
         base_config.permissions,
         session_policy.get("permissions"),
     )
-    sandbox = merge_sandbox_config(
-        base_config.sandbox,
-        session_policy.get("sandbox"),
-    )
     for tool, decision in getattr(ctx, "permission_overrides", {}).items():
         if decision in {"allow", "deny", "ask"}:
             permissions.setdefault(decision, []).insert(0, {"tool": tool})
 
+    sandbox = merge_sandbox_config(
+        base_config.sandbox,
+        session_policy.get("sandbox"),
+        overrides=getattr(ctx, "sandbox_overrides", None),
+    )
+
     ctx.engine.config.permissions = permissions
     ctx.engine.config.sandbox = sandbox
     ctx.engine.permission_system = PermissionSystem(permissions)
-    ctx.engine.sandbox_policy = SandboxPolicy(
+    sandbox_policy = SandboxPolicy(
         sandbox,
         data_root=data_dir,
         workspace_root=Path(ctx.workspace_root),
     )
+    ctx.engine.sandbox_policy = sandbox_policy
+
+
+def _persist_sandbox_overrides(ctx: Any, key: str, value: Any) -> None:
+    overrides = getattr(ctx, "sandbox_overrides", {})
+    if not overrides:
+        return
+    from xbotv2.config.policy import persist_sandbox_config
+    try:
+        persist_sandbox_config(
+            config_dir=Path(ctx.data_dir),
+            session_id=ctx.session_id,
+            sandbox=dict(overrides),
+        )
+    except Exception as exc:
+        from xbotv2.protocol.http_server import logger
+        logger.warning("sandbox override persist failed: %s", exc)
+
+
+def _remove_sandbox_override(ctx: Any, key: str) -> None:
+    overrides = getattr(ctx, "sandbox_overrides", {})
+    if overrides:
+        _persist_sandbox_overrides(ctx, key, None)
+
+
+def _clear_sandbox_overrides(ctx: Any) -> None:
+    from xbotv2.config.policy import clear_sandbox_config
+    try:
+        clear_sandbox_config(
+            config_dir=Path(ctx.data_dir),
+            session_id=ctx.session_id,
+        )
+    except Exception as exc:
+        from xbotv2.protocol.http_server import logger
+        logger.warning("sandbox override clear failed: %s", exc)
 
 
 def _status_message(ctx: Any) -> str:
