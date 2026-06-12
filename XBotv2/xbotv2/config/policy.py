@@ -32,15 +32,60 @@ def merge_permission_config(
 def merge_sandbox_config(
     base: dict[str, Any] | None,
     overlay: dict[str, Any] | None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Merge sandbox config with session resources before global resources."""
+    """Merge sandbox config: base → session overlay → live overrides.
+
+    Session resources are prepended before global resources so
+    per-session approvals take priority over the baseline config.
+    """
+
     base = dict(base or {})
     overlay = dict(overlay or {})
+    overrides = dict(overrides or {})
     resources = list(overlay.get("resources", [])) + list(base.get("resources", []))
-    merged = {**base, **overlay}
+    merged = {**base, **overlay, **overrides}
     if resources:
         merged["resources"] = resources
     return merged
+
+
+def persist_sandbox_config(
+    *,
+    config_dir: Path,
+    session_id: str,
+    sandbox: dict[str, Any],
+) -> None:
+    """Write top-level sandbox keys to the session policy file.
+
+    Callers should strip implicit workspace/data-root rules before
+    passing the dict — only user-visible keys (enabled, network,
+    resources, external_read/write, …) should be persisted.
+    """
+
+    if not sandbox:
+        return
+    path = _session_policy_path(config_dir, session_id)
+    doc = _read_yaml(path)
+    sandbox_section = doc.setdefault("sandbox", {})
+    clean: dict[str, Any] = {k: v for k, v in sandbox.items() if not k.startswith("_")}
+    sandbox_section.update(clean)
+    _write_yaml(path, doc)
+
+
+def clear_sandbox_config(
+    *,
+    config_dir: Path,
+    session_id: str,
+) -> None:
+    """Remove the session sandbox overlay entirely from policy.yaml."""
+    path = _session_policy_path(config_dir, session_id)
+    doc = _read_yaml(path)
+    doc.pop("sandbox", None)
+    if doc:
+        _write_yaml(path, doc)
+    elif path.exists():
+        path.unlink()
 
 
 def persist_permission_decision(

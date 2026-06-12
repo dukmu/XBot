@@ -91,3 +91,102 @@ class TestBubblewrapBuildArgs:
         assert "/etc/nsswitch.conf" in args
         # TLS roots too — curl on HTTPS endpoints.
         assert "/etc/ssl/certs" in args
+
+
+class TestSandboxPolicySerialisation:
+    def test_to_dict_round_trip(self, temp_workspace):
+        """to_dict() output reconstructs an identical policy via update_from_config."""
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "network": False,
+                "external_read": "ask",
+                "external_write": "deny",
+                "workspace_read": "allow",
+                "workspace_write": "allow",
+                "resources": [
+                    {"path": "/dev/null", "access": "readonly"},
+                ],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        d = policy.to_dict()
+        assert d["enabled"] is True
+        assert d["network"] is False
+        assert d["external_read"] == "ask"
+        assert d["external_write"] == "deny"
+        assert d["workspace_read"] == "allow"
+        assert d["workspace_write"] == "allow"
+        assert len(d["resources"]) >= 1
+
+        policy2 = SandboxPolicy(
+            config=d,
+            workspace_root=str(temp_workspace),
+        )
+        assert policy2.to_dict() == d
+
+    def test_save_and_load_from_file(self, temp_workspace, tmp_path):
+        """save() writes YAML; another SandboxPolicy can read it back."""
+        policy = SandboxPolicy(
+            config={
+                "enabled": True,
+                "network": True,
+                "external_read": "readonly",
+                "external_write": "deny",
+                "workspace_read": "allow",
+                "workspace_write": "allow",
+                "resources": [{"path": "/tmp", "access": "readwrite"}],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        path = tmp_path / "sandbox.yaml"
+        policy.save(path)
+        assert path.exists()
+
+        from xbotv2.config.loader import load_yaml
+        data = load_yaml(path)
+        policy2 = SandboxPolicy(
+            config=data,
+            workspace_root=str(temp_workspace),
+        )
+        assert policy2.enabled is True
+        assert policy2.network is True
+        assert policy2.external_read == "readonly"
+        assert policy2.external_write == "deny"
+        assert policy2.to_dict() == policy.to_dict()
+
+    def test_update_from_config_changes_network(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={"network": True},
+            workspace_root=str(temp_workspace),
+        )
+        assert policy.network is True
+        policy.update_from_config({"network": False})
+        assert policy.network is False
+
+    def test_update_from_config_preserves_untouched_keys(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={"enabled": True, "network": True},
+            workspace_root=str(temp_workspace),
+        )
+        policy.update_from_config({"network": False})
+        assert policy.enabled is True
+        assert policy.network is False
+
+    def test_to_dict_excludes_implicit_workspace_data_rules(self, temp_workspace):
+        policy = SandboxPolicy(
+            config={
+                "resources": [{"path": "/dev/null", "access": "readonly"}],
+            },
+            workspace_root=str(temp_workspace),
+        )
+        d = policy.to_dict()
+        paths = [r["path"] for r in d.get("resources", [])]
+        assert str(temp_workspace) not in paths
+
+    def test_external_read_default_values(self, temp_workspace):
+        policy = SandboxPolicy(workspace_root=str(temp_workspace))
+        assert policy.external_read == "readonly"
+        assert policy.external_write == "deny"
+        assert policy.workspace_read == "allow"
+        assert policy.workspace_write == "allow"

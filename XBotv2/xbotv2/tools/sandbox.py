@@ -41,11 +41,19 @@ class SandboxPolicy:
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
         enabled: bool = True,
         network: bool = True,
+        external_read: str = "readonly",
+        external_write: str = "deny",
+        workspace_read: str = "allow",
+        workspace_write: str = "allow",
     ) -> None:
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
         self._network = network
+        self.external_read = external_read
+        self.external_write = external_write
+        self.workspace_read = workspace_read
+        self.workspace_write = workspace_write
         self._rules: list[SandboxResourceRule] = []
 
         if config:
@@ -53,6 +61,10 @@ class SandboxPolicy:
         self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
         self._rules.append(SandboxResourceRule(path=str(self.workspace_root), access="readwrite"))
         self._rules.append(SandboxResourceRule(path=str(self.data_root), access="readonly"))
+
+    @property
+    def network(self) -> bool:
+        return self._network
 
     @property
     def backend_available(self) -> bool:
@@ -186,12 +198,16 @@ class SandboxPolicy:
         return f"Sandbox disabled. Workspace: {self.workspace_root}."
 
     # ------------------------------------------------------------------
-    # Config loading
+    # Config loading / serialisation
     # ------------------------------------------------------------------
 
     def _load_config(self, config: dict[str, Any]) -> None:
         self.enabled = config.get("enabled", self.enabled)
         self._network = config.get("network", True)
+        self.external_read = str(config.get("external_read", "readonly"))
+        self.external_write = str(config.get("external_write", "deny"))
+        self.workspace_read = str(config.get("workspace_read", "allow"))
+        self.workspace_write = str(config.get("workspace_write", "allow"))
         for rule_data in config.get("resources", []):
             path = _expand_path_placeholders(
                 str(rule_data.get("path", "")),
@@ -200,6 +216,81 @@ class SandboxPolicy:
             )
             access = rule_data.get("access", "readonly")
             self._rules.append(SandboxResourceRule(path=path, access=access))
+
+    def update_from_config(self, config: dict[str, Any]) -> None:
+        """Apply a sparse config dict on top of live state.
+
+        Keys not present in *config* are left untouched,
+        but ``resources`` / ``network`` / ``enabled`` are
+        reapplied fully — the existing rule-list is rebuilt.
+
+        This is the sibling of ``_load_config`` for
+        post-bootstrap live updates (e.g. ``/sandbox set``
+        and session-policy reload).
+        """
+
+        if "enabled" in config:
+            self.enabled = config["enabled"]
+        if "network" in config:
+            self._network = config["network"]
+            self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
+        for field in ("external_read", "external_write", "workspace_read", "workspace_write"):
+            if field in config:
+                setattr(self, field, str(config[field]))
+        if "resources" in config:
+            self._rules = [r for r in self._rules if r.path not in {
+                str(self.workspace_root), str(self.data_root),
+            }]
+            for rule_data in config["resources"]:
+                path = _expand_path_placeholders(
+                    str(rule_data.get("path", "")),
+                    str(self.workspace_root),
+                    str(self.data_root),
+                )
+                self._rules.append(SandboxResourceRule(path=path, access=rule_data.get("access", "readonly")))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the live sandbox config back to the format
+        used by sandbox.yaml and sessions/<id>/policy.yaml."""
+        d: dict[str, Any] = {
+            "enabled": self.enabled,
+            "network": self._network,
+            "external_read": self.external_read,
+            "external_write": self.external_write,
+            "workspace_read": self.workspace_read,
+            "workspace_write": self.workspace_write,
+        }
+        rules = [
+            {"path": r.path, "access": r.access}
+            for r in self._rules
+            if r.path not in {str(self.workspace_root), str(self.data_root)}
+        ]
+        if rules:
+            d["resources"] = rules
+        return d
+
+    def save(self, path: Path | str) -> None:
+        """Persist the live sandbox config to *path* as YAML.
+
+        The file is written atomically: a temporary sibling is
+        created, populated, and then renamed over *path*.
+        """
+
+        import tempfile
+
+        import yaml
+
+        target = Path(path)
+        content = yaml.safe_dump(
+            self.to_dict(), allow_unicode=True, sort_keys=False, default_flow_style=False
+        )
+        fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".sandbox-", suffix=".tmp")
+        try:
+            os.write(fd, content.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(target))
 
 
 def _path_kind(path_str: str) -> Literal["file", "dir"]:

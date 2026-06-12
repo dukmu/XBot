@@ -156,8 +156,16 @@ def _system_mount_args() -> list[str]:
     ):
         path = Path(path_str)
         if path.is_symlink():
-            target = os.readlink(path_str)
-            args.extend(["--symlink", target, path_str])
+            real = os.path.realpath(path_str)
+            if os.path.exists(real):
+                # Follow the symlink to the real file and bind
+                # that at the expected path.  Without this, WSL
+                # symlinks like /etc/resolv.conf → /mnt/wsl/…
+                # stay dangling inside the sandbox.
+                args.extend(["--ro-bind-try", real, path_str])
+            else:
+                target = os.readlink(path_str)
+                args.extend(["--symlink", target, path_str])
         elif path.exists():
             args.extend(["--ro-bind-try", path_str, path_str])
     return args
