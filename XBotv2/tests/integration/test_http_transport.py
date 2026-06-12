@@ -397,7 +397,7 @@ async def test_http_policy_commands_reject_invalid_values(
     )
     sandbox_response = await client.post(
         "/sessions/policy-invalid/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "sometimes"]},
+        json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
     )
 
     assert permission_response.status_code == 200
@@ -859,3 +859,69 @@ async def test_http_server_commands_include_kind(
     assert len(cmds) >= 4  # status, provider, permission, sandbox
     kinds = {c.get("kind", "") for c in cmds}
     assert "server" in kinds
+
+
+@pytest.mark.asyncio
+async def test_http_sandbox_set_persists_to_policy_yaml(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    open_resp = await client.post(
+        "/sessions", json={"session_id": "sandbox-persist", "thread_id": "t"}
+    )
+    assert open_resp.status_code == 200
+
+    # Set network=false — should persist to policy.yaml
+    set_network = await client.post(
+        "/sessions/sandbox-persist/commands",
+        json={"command": "sandbox", "args": ["set", "network", "false"]},
+    )
+    assert set_network.status_code == 200
+    assert set_network.json()["data"]["status"] == "ok"
+
+    # Set external_read=deny — also persisted
+    set_ext = await client.post(
+        "/sessions/sandbox-persist/commands",
+        json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
+    )
+    assert set_ext.status_code == 200
+
+    ctx = await http_app.state.manager.get("sandbox-persist")
+    # Live overrides are in memory
+    assert ctx.sandbox_overrides.get("network") is False
+    assert ctx.sandbox_overrides.get("external_read") == "deny"
+    # Engine sandbox policy reflects the overrides
+    assert ctx.engine.sandbox_policy.network is False
+    assert ctx.engine.sandbox_policy.external_read == "deny"
+
+    # policy.yaml file was written
+    policy_path = Path(ctx.data_dir) / "sessions" / "sandbox-persist" / "policy.yaml"
+    assert policy_path.exists()
+    import yaml
+    doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    assert doc["sandbox"]["network"] is False
+    assert doc["sandbox"]["external_read"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_http_sandbox_set_rejects_invalid_values(
+    client: httpx.AsyncClient,
+) -> None:
+    await client.post(
+        "/sessions", json={"session_id": "sandbox-validate", "thread_id": "t"}
+    )
+
+    bad = await client.post(
+        "/sessions/sandbox-validate/commands",
+        json={"command": "sandbox", "args": ["set", "external_read", "garbage"]},
+    )
+    assert bad.status_code == 200
+    assert bad.json()["data"]["status"] == "error"
+    assert "Invalid value" in bad.json()["data"]["message"]
+
+    bad_network = await client.post(
+        "/sessions/sandbox-validate/commands",
+        json={"command": "sandbox", "args": ["set", "network", "maybe"]},
+    )
+    assert bad_network.status_code == 200
+    assert bad_network.json()["data"]["status"] == "error"

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import xbotv2.__main__ as xbot_main
 from xbotv2.protocol.frames import ProtocolFrame
-from xbotv2.tui.client import CursesTuiClient, TuiState, _parse_permission_decision, _repair_mojibake
+from xbotv2.tui.client import CursesTuiClient, TuiState, TuiTool, TuiTranscriptEntry, _parse_permission_decision, _repair_mojibake
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import (
     queue_user_message,
@@ -83,13 +83,11 @@ def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
         },
     })
 
-    # v1.3: whitespace-only assistant messages with tool_calls now
-    # insert a "Thinking…" placeholder so the transcript is not
-    # blank while the tools run (code review §Problem 3).
-    assert len(state.messages) == 1
-    assert state.messages[0].content == "Thinking…"
+    # No placeholder — the tool widget itself shows the model is
+    # acting. Reasoning, if any, was already streamed via deltas.
+    assert len(state.messages) == 0
     assert state.tools["call_1"].name == "shell"
-    assert len(state.transcript) == 2  # message entry + tool entry
+    assert len(state.transcript) == 1  # tool entry only
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -233,20 +231,24 @@ def test_tui_state_turn_finished_preserves_permission_states():
     state = TuiState()
 
     state.apply_frame(_frame("turn_started", {"turn": 1}))
-    state.apply_frame(_frame("permission_request", {"reason": "approval needed"}))
+    # Permission requests now link to tool widgets
+    state.tools["call_req"] = TuiTool(tool_call_id="call_req", name="shell")
+    state.apply_frame(
+        _frame("permission_request", {"reason": "approval needed", "tool_call": {"id": "call_req"}})
+    )
     state.apply_frame(_frame("turn_finished", {"turn": 1}))
 
     assert state.status == "Approval required"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Approval> approval needed" in rendered
+    assert state.tools["call_req"].permission_pending is True
 
     state.apply_frame(_frame("turn_started", {"turn": 2}))
-    state.apply_frame(_frame("permission_denied", {"reason": "approval denied"}))
+    state.apply_frame(
+        _frame("permission_denied", {"request_id": "perm:call_deny", "tool_call": {"id": "call_deny"}})
+    )
+    # No matching tool for this denied call, status just flips
     state.apply_frame(_frame("turn_finished", {"turn": 2}))
 
     assert state.status == "Permission denied"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "✗ denied" in rendered or "Denied" in rendered
 
 
 def test_tui_state_renders_interaction_response_acknowledgements():
@@ -260,8 +262,16 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     rendered = "\n".join(state.lines(width=80, height=8))
     assert "Answer> user_input:c1" in rendered
 
-    state.apply_frame(_frame("permission_request", {"request_id": "permission:c2"}))
+    # Permission requests attach to tool widgets now, not notices
+    state.tools["c2"] = TuiTool(tool_call_id="c2", name="shell")
+    state.apply_frame(
+        _frame(
+            "permission_request",
+            {"request_id": "permission:c2", "tool_call": {"name": "shell", "id": "c2"}},
+        )
+    )
     assert state.pending_permission_request_id == "permission:c2"
+    assert state.tools["c2"].permission_pending is True
     state.apply_frame(
         _frame(
             "permission_response_recorded",
@@ -271,8 +281,8 @@ def test_tui_state_renders_interaction_response_acknowledgements():
 
     assert state.status == "Ready"
     assert state.pending_permission_request_id is None
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "✓ allow" in rendered or "Approval> permission" in rendered
+    assert state.tools["c2"].permission_pending is False
+    assert state.tools["c2"].status == "allow"
 
 
 def test_tui_state_ack_keeps_running_until_turn_finished():
@@ -817,10 +827,20 @@ async def test_textual_app_headless_renders_inline_permission_options():
         async def send_message(self, text, input_provider=None, permission_provider=None):
             del text, input_provider
             yield {"type": "turn_started", "data": {"turn": 1}}
+            # Tool must exist before permission can be linked to it
+            yield {
+                "type": "tool_calls_started",
+                "data": {
+                    "tool_calls": [
+                        {"name": "shell", "args": {"command": "ls"}, "id": "c1"},
+                    ]
+                },
+            }
             payload = {
                 "request_id": "permission:c1",
                 "source": "permission_system",
-                "reason": "Permission approval required for tool: shell.",
+                "reason": "Approval: shell",
+                "tool_call": {"name": "shell", "args": {"command": "ls"}, "id": "c1"},
             }
             yield {
                 "type": "permission_request",
@@ -859,8 +879,9 @@ async def test_textual_app_headless_renders_inline_permission_options():
         await pilot.pause()
 
         assert list(app.query(Button)) == []
-        assert app._active_choice_key == "0"
-        assert "Allow" in str(app._choice_widgets["0"].content)
+        # Choice key is the tool_call_id, not a numeric notice index
+        assert app._active_choice_key == "c1"
+        assert "Allow" in str(app._choice_widgets["c1"].content)
         assert input_widget.disabled is True
         assert input_widget.display is False
         assert app.focused is None
@@ -902,14 +923,20 @@ async def test_textual_app_confirming_permission_twice_submits_once():
 
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
+        # Pre-create tool so permission can be linked
+        app.state.tools["c_dup"] = TuiTool(tool_call_id="c_dup", name="shell")
         app.state.apply_event({
             "type": "permission_request",
             "data": {
                 "request_id": "permission:dup",
-                "reason": "Permission approval required for tool: shell.",
+                "reason": "Approval: shell",
+                "tool_call": {"name": "shell", "args": {}, "id": "c_dup"},
             },
         })
+        # Mount the tool widget so choices are registered
+        app.state.transcript = [TuiTranscriptEntry(kind="tool", key="c_dup")]
         await app._render_new_transcript_entries()
+        await app._refresh_changed_tool_widgets()
         await pilot.pause()
 
         assert await app.confirm_active_choice() is True
@@ -920,10 +947,8 @@ async def test_textual_app_confirming_permission_twice_submits_once():
         "scope": "once",
     }
     assert app._permission_decisions.empty()
-    assert [
-        notice.kind for notice in app.state.notices
-        if notice.kind == "Approval queued"
-    ] == ["Approval queued"]
+    # No separate notice — tool status updates in place
+    assert app.state.tools["c_dup"].status == "allow (once)"
 
 
 @pytest.mark.asyncio
@@ -1028,7 +1053,8 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
             payload = {
                 "request_id": "permission:shell",
                 "source": "permission_system",
-                "reason": "Permission approval required for tool: shell.",
+                "reason": "Approval: shell",
+                "tool_call": {"name": "shell", "args": {"command": "df -h"}, "id": "call_shell"},
             }
             yield {"type": "permission_request", "data": payload}
             parsed = permission_provider(payload)
@@ -1085,16 +1111,11 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
     assert session.permission_decision == {"decision": "allow", "scope": "session"}
     assert [(message.role, message.content.strip()) for message in app.state.messages] == [
         ("user", "当前磁盘用了多少"),
-        # The first assistant_message carries tool_calls with
-        # whitespace-only content → the TUI inserts a Thinking…
-        # placeholder (v1.3: code review fix §Problem 3).
-        ("assistant", "Thinking…"),
         ("assistant", "当前磁盘使用情况：已执行 df -h。问题是：当前磁盘用了多少"),
     ]
     assert rendered.count("当前磁盘用了多少") >= 2
     assert "当前磁盘使用情况" in rendered
     assert "Filesystem" in rendered
-    assert rendered.count("approval queued") == 1
 
 
 @pytest.mark.asyncio
@@ -1479,27 +1500,37 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
 def test_apply_event_permission_request_sets_status_to_approval_required():
     """``permission_request`` flips ``pending_permission_active`` and
-    calls ``_refresh_status`` which should produce ``Approval
-    required`` — the TUI's status bar relies on this.
+    attaches the permission state to the matching tool widget instead
+    of creating a separate notice entry.
     """
 
     state = TuiState()
+    # Pre-create the tool so the request_id can be linked
+    state.tools["call_1"] = TuiTool(tool_call_id="call_1", name="shell")
+    state._changed_tool_ids.clear()
+
     state.apply_event(
         {
             "type": "permission_request",
             "data": {
                 "request_id": "perm:call_1",
                 "reason": "Tool 'shell' needs approval",
-                "tool_call": {"name": "shell", "args": {"command": "ls"}},
+                "tool_call": {"name": "shell", "args": {"command": "ls"}, "id": "call_1"},
             },
         }
     )
 
     assert state.pending_permission_active is True
     assert state.status == "Approval required"
+    # Permission is attached to the tool widget, not a separate notice
+    tool = state.tools["call_1"]
+    assert tool.permission_pending is True
+    assert tool.permission_request_id == "perm:call_1"
+    assert tool.status == "pending approval"
+    assert "call_1" in state._changed_tool_ids
+    # No separate notice entry is created
     notice_entries = [e for e in state.transcript if e.kind == "notice"]
-    assert len(notice_entries) == 1
-    assert state.notices[0].kind == "permission_request"
+    assert len(notice_entries) == 0
 
 
 # ----------------------------------------------------------------------
@@ -1572,8 +1603,8 @@ def test_apply_usage_with_delta_still_works():
 
 def test_assistant_message_with_tool_calls_but_no_content_shows_thinking():
     """When the LLM returns tool_calls without visible text, the TUI
-    should still insert a synthetic ``Thinking…`` entry so the
-    transcript doesn't look empty while tools run.
+    does NOT insert a placeholder — the tool widget itself signals
+    activity. Reasoning was already streamed via deltas if present.
     """
 
     state = TuiState()
@@ -1589,9 +1620,8 @@ def test_assistant_message_with_tool_calls_but_no_content_shows_thinking():
         }
     )
 
-    thinking_msgs = [m for m in state.messages if m.content == "Thinking…"]
-    assert len(thinking_msgs) == 1
-    # The tool call should still be recorded
+    # No placeholder message — tool widget is sufficient
+    assert len(state.messages) == 0
     assert "call_1" in state.tools
     assert state.tools["call_1"].status == "pending"
 
