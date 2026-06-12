@@ -25,6 +25,7 @@ class TuiMessage:
     role: str
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    reasoning: str = ""
 
 
 @dataclass
@@ -47,6 +48,13 @@ class TuiTool:
     # the value is the live elapsed (see ``elapsed()``).
     started_at: float = 0.0
     finished_at: float = 0.0
+    # Permission state — set when the engine sends a
+    # ``permission_request`` for this tool. The TUI renders
+    # inline approval choices inside the tool widget instead of
+    # creating a separate notice entry.
+    permission_pending: bool = False
+    permission_request_id: str = ""
+    permission_reason: str = ""
 
     def elapsed(self, now: float | None = None) -> float:
         """Return seconds since the tool started.
@@ -147,25 +155,20 @@ class TuiState:
             tool_calls = data.get("tool_calls")
             if content.strip():
                 if self._streaming_assistant_index is not None:
-                    try:
-                        self.messages[self._streaming_assistant_index].content = content
-                    except IndexError:
-                        self.append_message("assistant", content)
                     self._streaming_assistant_index = None
                 else:
                     self.append_message("assistant", content)
             elif tool_calls:
-                # Model responded with tool calls but no visible text.
-                # Show a synthetic thinking entry so the user can see
-                # what the model is about to call before the tool
-                # results arrive.
-                if self._streaming_assistant_index is None:
-                    self.append_message("assistant", "Thinking…")
+                # Reset the streaming index so the next LLM call
+                # creates a fresh message entry. Reasoning (if any)
+                # was already streamed; the tool widget itself tells
+                # the user the model is acting.
+                self._streaming_assistant_index = None
             self._apply_tool_calls(tool_calls)
         elif event_type == "assistant_message_delta":
             content = str(data.get("content") or "")
             reasoning = str(data.get("reasoning") or "")
-            self.append_assistant_delta(reasoning + content)
+            self.append_assistant_delta(content, reasoning)
         elif event_type == "tool_call_delta":
             self._apply_tool_call_delta(data.get("tool_calls"))
         elif event_type == "tool_calls_started":
@@ -195,20 +198,26 @@ class TuiState:
             self.pending_permission_payload = data
             self.pending_permission_active = True
             self._refresh_status()
-            self.append_notice(
-                "permission_request",
-                str(data.get("reason") or "Tool approval required."),
-                payload=data,
-            )
+            tool_call = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else {}
+            tool_id = str(tool_call.get("id") or "")
+            if tool_id and tool_id in self.tools:
+                tool = self.tools[tool_id]
+                tool.permission_pending = True
+                tool.permission_request_id = self.pending_permission_request_id or ""
+                tool.permission_reason = str(data.get("reason") or "")
+                tool.status = "pending approval"
+                self._changed_tool_ids.add(tool_id)
         elif event_type == "permission_denied":
             self.status = "Permission denied"
             self.pending_permission_active = False
             self.pending_permission_request_id = None
             self.pending_permission_payload = None
             request_id = str(data.get("request_id") or "")
-            reason = str(data.get("reason") or "Tool call denied.")
-            if not self._update_permission_notice(request_id, "denied"):
-                self.append_notice("permission_denied", reason, payload=data)
+            for tool in list(self.tools.values()):
+                if tool.permission_request_id == request_id:
+                    tool.permission_pending = False
+                    tool.status = "denied"
+                    self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "user_input_required":
             self.pending_user_input_request_id = str(data.get("request_id") or "") or None
             self.pending_user_input_payload = data
@@ -231,9 +240,20 @@ class TuiState:
             self.pending_permission_active = False
             self.pending_permission_payload = None
             self._refresh_status()
-            request_id = str(data.get("request_id") or "permission")
-            decision = str(data.get("decision") or "recorded")
-            self._update_permission_notice(request_id, decision)
+            request_id = str(data.get("request_id") or "")
+            decision = str(data.get("decision") or str(data.get("status") or "approved"))
+            # Strip the "permission:" prefix that the engine adds
+            # to request_id.  This makes the lookup exact (one
+            # tool per id) rather than a scan that could match
+            # the wrong tool if two tools ever share a request_id.
+            tool_id = request_id
+            if tool_id.startswith("permission:"):
+                tool_id = tool_id[len("permission:"):]
+            tool = self.tools.get(tool_id)
+            if tool is not None:
+                tool.permission_pending = False
+                tool.status = decision if decision else "approved"
+                self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "error":
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
@@ -246,16 +266,20 @@ class TuiState:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
-    def append_assistant_delta(self, content: str) -> None:
-        if not content:
+    def append_assistant_delta(self, content: str, reasoning: str = "") -> None:
+        if not content and not reasoning:
             return
         if self._streaming_assistant_index is None:
             self.append_message("assistant", "")
             self._streaming_assistant_index = len(self.messages) - 1
         try:
-            self.messages[self._streaming_assistant_index].content += content
+            msg = self.messages[self._streaming_assistant_index]
+            if content:
+                msg.content += content
+            if reasoning:
+                msg.reasoning += reasoning
         except IndexError:
-            self.append_message("assistant", content)
+            self.append_message("assistant", content or "")
             self._streaming_assistant_index = len(self.messages) - 1
 
     def append_notice(
@@ -320,6 +344,8 @@ class TuiState:
                 except (ValueError, IndexError):
                     continue
                 label = self.agent_name if message.role == "assistant" else "You"
+                if message.reasoning:
+                    lines.extend(_wrap(f"{label} (thinking)> {message.reasoning}", width))
                 lines.extend(_wrap(f"{label}> {message.content}", width))
             elif entry.kind == "tool":
                 tool = self.tools.get(entry.key)

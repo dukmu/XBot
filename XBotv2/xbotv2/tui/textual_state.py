@@ -53,6 +53,10 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
         color = "cyan" if message.role == "user" else "green"
         text = Text()
         text.append(f"{label}\n", style=f"bold {color}")
+        if message.reasoning:
+            text.append("(thinking) ", style="dim italic")
+            text.append(message.reasoning, style="dim italic")
+            text.append("\n")
         text.append(message.content)
         return text
     if kind == "tool":
@@ -63,14 +67,12 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
         text.append("Tool ", style="bold yellow")
         text.append(tool.name, style="yellow")
         text.append(f" [{tool.status}]\n", style="dim")
-        # Show finalized args (clean dict repr) when available;
-        # fall back to the streaming buffer so the user still sees
-        # something mid-stream. Prevents ``{"command": "cu`` from
-        # appearing as a permanent half-formed line.
         if tool.args_finalized and tool.args_preview:
             text.append(f"args: {tool.args_preview}\n", style="dim")
         elif tool.args_streaming:
             text.append(f"args: {tool.args_streaming}…\n", style="dim")
+        if tool.permission_pending:
+            text.append("  waiting for approval…\n", style="dim italic")
         if tool.summary:
             text.append(f"result: {tool.summary}")
         return text

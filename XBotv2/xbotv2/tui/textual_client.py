@@ -44,9 +44,11 @@ from xbotv2.tui.textual_widgets import (
     ComposerTextArea,
     InlineChoice,
     TranscriptScroll,
+    _build_title,
     entry_widget,
     message_widget,
     notice_title,
+    render_reasoning,
     render_text,
     spinner,
     status_renderable,
@@ -615,13 +617,23 @@ class XBotTextualApp(App[None]):
             await self._refresh_changed_tool_widgets()
         elif event_type == "tool_result":
             await self._refresh_changed_tool_widgets()
+        elif event_type == "permission_request":
+            await self._refresh_changed_tool_widgets()
+            refresh_input = True
+        elif event_type == "permission_denied":
+            self._interaction_response_pending = False
+            await self._refresh_changed_tool_widgets()
+            refresh_input = True
+        elif event_type == "permission_response_recorded":
+            self._interaction_response_pending = False
+            await self._refresh_changed_tool_widgets()
+            refresh_input = True
         elif event_type in {
-            "user_input_recorded", "permission_response_recorded",
-            "permission_denied", "error",
+            "user_input_recorded", "error",
         }:
             self._interaction_response_pending = False
             refresh_input = True
-        elif event_type in {"permission_request", "user_input_required"}:
+        elif event_type in {"user_input_required"}:
             refresh_input = True
         await self._render_new_transcript_entries()
         self._refresh_status()
@@ -656,15 +668,23 @@ class XBotTextualApp(App[None]):
             self._rendered_transcript_entries = len(self.state.transcript)
             for entry in entries:
                 widget = self._widget_for_entry(entry)
-                if widget is not None:
-                    await stream.mount(widget)
-            # Defer the scroll to after the layout pass: ``mount()``
-            # is awaited but the height of multi-line bodies is not
-            # known until Textual measures the new children. Without
-            # ``call_after_refresh`` the very first entry after a fresh
-            # session_open would render with scroll_y=0 (not at the
-            # bottom). The transcript itself can scroll — only
-            # individual entries stay fully expanded.
+                if widget is None:
+                    continue
+                # If this widget is already mounted in the DOM,
+                # skip the mount.  Textual's parent attribute is
+                # updated synchronously by ``mount()``, so a second
+                # mount of the SAME widget object would raise
+                # MountError.
+                if widget.parent is stream:
+                    continue
+                # If the widget is mounted somewhere else (orphan),
+                # detach it first.
+                if widget.parent is not None:
+                    try:
+                        await widget.remove()
+                    except Exception:  # noqa: BLE001
+                        pass
+                await stream.mount(widget)
             self.call_after_refresh(
                 lambda: stream.scroll_end(animate=False)
             )
@@ -756,10 +776,18 @@ class XBotTextualApp(App[None]):
         self._resolve_active_choice(choice.label)
         if choice.kind == "permission":
             self._permission_decisions.put_nowait(dict(choice.payload))
-            await self._append_local_notice(
-                "Approval queued",
-                f"{choice.payload['decision']} ({choice.payload['scope']})",
-            )
+            # Update the tool widget status in-place so the title
+            # transitions from "pending approval" to the decision
+            # immediately — no separate notice entry.
+            for tool in list(self.state.tools.values()):
+                if tool.permission_request_id == request_id:
+                    decision = choice.payload.get("decision", "allow")
+                    scope = choice.payload.get("scope", "once")
+                    tool.permission_pending = False
+                    tool.status = f"{decision} ({scope})"
+                    self.state._changed_tool_ids.add(tool.tool_call_id)
+                    await self._refresh_tool_widget(tool.tool_call_id)
+                    break
         else:
             self._answers.put_nowait(str(choice.payload["answer"]))
             await self._append_local_notice("Answer queued", choice.label)
@@ -934,6 +962,9 @@ class XBotTextualApp(App[None]):
                 message = self.state.messages[int(key)]
             except (ValueError, IndexError):
                 return None
+            existing = self._message_widgets.get(int(key))
+            if existing is not None:
+                return existing
             widget = message_widget(self.state, message)
             self._message_widgets[int(key)] = widget
             return widget
@@ -941,8 +972,21 @@ class XBotTextualApp(App[None]):
             tool = self.state.tools.get(key)
             if tool is None:
                 return None
+            widget_id = tool.tool_call_id
+            existing = self._tool_widgets.get(widget_id)
+            if existing is not None:
+                # Make sure the cached widget still reflects the
+                # current tool state.  If the previous render used
+                # a DIFFERENT tool object (e.g. after a resume that
+                # rebuilt state.tools) the widget body is stale and
+                # must be refreshed.
+                try:
+                    self._refresh_tool_widget_sync(widget_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                return existing
             widget = tool_widget(tool)
-            self._tool_widgets[tool.tool_call_id] = widget
+            self._tool_widgets[widget_id] = widget
             return widget
         if kind == "notice":
             try:
@@ -957,6 +1001,32 @@ class XBotTextualApp(App[None]):
                 return None
             return entry_widget("error", "Error", error)
         return None
+
+    def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
+        """Synchronously refresh the cached tool widget in place.
+
+        Used by ``_widget_for_entry`` to make sure a reused
+        widget body matches the current tool state.  Only the
+        title and body widgets are updated — choice widgets are
+        not touched here; ``_sync_tool_permission_choices``
+        (async) handles those.
+        """
+        import time as _time
+        tool = self.state.tools.get(tool_call_id)
+        widget = self._tool_widgets.get(tool_call_id)
+        if tool is None or widget is None:
+            return
+        elapsed = tool.elapsed(_time.monotonic())
+        title = _build_title(tool, elapsed)
+        meta = self._query_child_first(widget, ".meta")
+        if meta is not None:
+            meta.update(title)
+        detail = tool_detail(tool)
+        body = self._query_child_first(widget, ".body")
+        if body is not None:
+            body.update(detail)
+        elif detail:
+            widget.mount(Static(render_text(detail), classes="body"))
 
     async def _refresh_changed_tool_widgets(self) -> None:
         for old_id, new_id in self.state._tool_id_renames.items():
@@ -982,14 +1052,34 @@ class XBotTextualApp(App[None]):
             widget = self._message_widgets.get(index)
         if widget is None:
             return
+        await self._apply_streaming_message_widget(widget, message)
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is not None:
+            stream.scroll_end(animate=False)
+
+    async def _apply_streaming_message_widget(
+        self, widget: Any, message: TuiMessage
+    ) -> None:
+        """Render reasoning + content of a streaming message into *widget*.
+
+        Reasoning (when present) goes into a separate ``.reasoning``
+        Static so the user can distinguish model thinking from the
+        final reply. The body always reflects the visible content
+        only — never a concatenation of reasoning + content.
+        """
+        reasoning = self._query_child_first(widget, ".reasoning")
+        if message.reasoning:
+            if reasoning is not None:
+                reasoning.update(render_reasoning(message.reasoning))
+            else:
+                await widget.mount(
+                    Static(render_reasoning(message.reasoning), classes="reasoning")
+                )
         body = self._query_child_first(widget, ".body")
         if body is not None:
             body.update(render_text(message.content))
         elif message.content:
             await widget.mount(Static(render_text(message.content), classes="body"))
-        stream = self._safe_query_one("#transcript", VerticalScroll)
-        if stream is not None:
-            stream.scroll_end(animate=False)
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
@@ -999,14 +1089,8 @@ class XBotTextualApp(App[None]):
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
             return
-        # Rebuild the title so the elapsed time is included (and
-        # frozen on tool_result).
         elapsed = tool.elapsed(_time.monotonic())
-        args_str = tool.args_preview if tool.args_preview else ""
-        if tool.finished_at > 0:
-            title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.2f}s".rstrip()
-        else:
-            title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.1f}s…".rstrip()
+        title = _build_title(tool, elapsed)
         meta = self._query_child_first(widget, ".meta")
         if meta is None:
             return
@@ -1017,6 +1101,49 @@ class XBotTextualApp(App[None]):
             body.update(detail)
         elif detail:
             await widget.mount(Static(render_text(detail), classes="body"))
+        # Permission choices are mounted / removed inside the tool
+        # widget so the user can approve / deny a tool call inline
+        # without a separate notice entry in the transcript.
+        await self._sync_tool_permission_choices(widget, tool)
+
+    async def _sync_tool_permission_choices(
+        self, widget: Vertical, tool: TuiTool
+    ) -> None:
+        key = tool.tool_call_id
+        # Remove any existing choice widget from this tool entry
+        for child in list(widget.children):
+            if isinstance(child, Static) and "choice" in (child.classes or ""):
+                await child.remove()
+        for ck in list(self._choice_payloads.keys()):
+            if ck == key:
+                self._choice_payloads.pop(ck, None)
+                self._choice_request_ids.pop(ck, None)
+                self._choice_widgets.pop(ck, None)
+                self._resolved_choice_keys.discard(ck)
+                if self._active_choice_key == ck:
+                    self._active_choice_key = None
+
+        if not tool.permission_pending or not tool.permission_request_id:
+            return
+
+        choices = [
+            InlineChoice("Allow once", "permission", {"decision": "allow", "scope": "once"}),
+            InlineChoice("Deny", "permission", {"decision": "deny", "scope": "once"}),
+            InlineChoice("Allow session", "permission", {"decision": "allow", "scope": "session"}),
+        ]
+        self._choice_payloads[key] = choices
+        self._choice_request_ids[key] = tool.permission_request_id
+        if self._active_choice_key is None and key not in self._resolved_choice_keys:
+            self._active_choice_key = key
+            self._active_choice_index = 0
+        choice_widget = Static(
+            self._choice_renderable(key),
+            classes=self._choice_classes(key),
+            markup=False,
+        )
+        self._choice_widgets[key] = choice_widget
+        await widget.mount(choice_widget)
+        self.call_after_refresh(self._refresh_input_mode)
 
     def _query_child_first(self, widget: Any, selector: str) -> Any | None:
         try:

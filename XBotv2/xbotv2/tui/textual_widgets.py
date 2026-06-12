@@ -134,21 +134,64 @@ class InlineChoice:
 
 def message_widget(state: TuiState, message: TuiMessage) -> Vertical:
     label = "You" if message.role == "user" else state.agent_name
-    return entry_widget(message.role, f"{message.ts}  {label}", message.content)
+    return entry_widget_with_renderable(
+        message.role,
+        f"{message.ts}  {label}",
+        render_text(message.content),
+        reasoning=render_reasoning(message.reasoning) if message.reasoning else None,
+    )
+
+
+def entry_widget_with_renderable(
+    kind: str,
+    title: str,
+    body: Text | str,
+    *,
+    reasoning: Text | None = None,
+) -> Vertical:
+    children = [Static(render_text(title), classes="meta")]
+    if reasoning is not None:
+        children.append(Static(reasoning, classes="reasoning"))
+    if body:
+        children.append(Static(body, classes="body"))
+    return Vertical(*children, classes=f"entry {kind}")
 
 
 def tool_widget(tool: TuiTool) -> Vertical:
+    """Build a single unified tool entry for every tool state.
+
+    The title is TUI-generated from the tool state — the server
+    never dictates the presentation.  When a permission check is
+    pending the widget shows ``pending approval``; after the
+    decision arrives (via ``permission_response_recorded`` or
+    ``permission_denied``) it transitions to ``allow (once)`` /
+    ``deny``; when the result lands it shows the final status.
+    """
+
     elapsed = tool.elapsed(time.monotonic())
-    # Title shows args only when the parsed dict has arrived
-    # (tool_calls_started). During streaming the title stays short
-    # so the user does not see half-formed JSON like
-    # ``{"command": "cu`` flicker past.
-    args_str = tool.args_preview if tool.args_finalized else ""
-    if tool.finished_at > 0:
-        title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.2f}s".rstrip()
+    if tool.permission_pending:
+        title = _build_title(tool, elapsed)
+    elif tool.finished_at > 0:
+        title = _build_title(tool, elapsed)
     else:
-        title = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:.1f}s…".rstrip()
+        title = _build_title(tool, elapsed)
     return entry_widget("tool", title, tool_detail(tool))
+
+
+def _build_title(tool: TuiTool, elapsed: float) -> str:
+    args_str = tool.args_preview if tool.args_finalized else ""
+
+    if tool.permission_pending:
+        return f"tool  {tool.name}  pending approval  {elapsed:.1f}s…".rstrip()
+
+    if tool.status == "denied":
+        return f"tool  {tool.name}  denied  {elapsed:.1f}s".rstrip()
+
+    suffix = ".2f" if tool.finished_at > 0 else ".1f"
+    fmt = f"tool  {tool.name}  {args_str}  {tool.status}  {elapsed:{suffix}}s"
+    if tool.finished_at <= 0:
+        fmt += "…"
+    return fmt.rstrip()
 
 
 def tool_detail(tool: TuiTool) -> str:
@@ -156,19 +199,31 @@ def tool_detail(tool: TuiTool) -> str:
     if tool.args_finalized and tool.args_preview:
         parts.append(f"args: {tool.args_preview}")
     elif tool.args_streaming:
-        # Truncate the streaming buffer; the full dict repr will
-        # replace this line as soon as tool_calls_started arrives.
         parts.append(f"args: {shorten(tool.args_streaming, width=160, placeholder='…')}")
+    if tool.permission_pending and tool.permission_reason:
+        parts.append(tool.permission_reason)
     if tool.summary:
         parts.append(f"result: {tool.summary}")
     return "\n".join(parts)
 
 
-def entry_widget(kind: str, title: str, body: str) -> Vertical:
+def entry_widget(kind: str, title: str, body: str, *, reasoning: str = "") -> Vertical:
     children = [Static(render_text(title), classes="meta")]
+    if reasoning:
+        children.append(Static(render_text(reasoning), classes="reasoning"))
     if body:
         children.append(Static(render_text(body), classes="body"))
     return Vertical(*children, classes=f"entry {kind}")
+
+
+def render_reasoning(content: str) -> Text:
+    """Render reasoning content in a visually distinct style.
+
+    The TUI uses this for the ``.reasoning`` Static so the user
+    can tell model thinking apart from the final reply. Reasoning
+    is dim + italic.
+    """
+    return Text(content, style="dim italic", no_wrap=False, justify="left")
 
 
 def render_text(content: str) -> Text:
