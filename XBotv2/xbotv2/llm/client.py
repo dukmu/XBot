@@ -66,9 +66,10 @@ class OpenAICompatibleProvider:
         done = False
 
         async for chunk in response:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                final_usage = openai_usage(usage)
             if not chunk.choices:
-                if getattr(chunk, "usage", None):
-                    final_usage = openai_usage(chunk.usage)
                 continue
             delta = chunk.choices[0].delta
             if delta is None:
@@ -180,20 +181,96 @@ class AnthropicProvider:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
         if self.thinking_enabled:
             api_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-        response = await self.client.messages.create(**api_kwargs)
-        content_parts = []
-        tool_calls: list[dict[str, Any]] = []
-        for block in response.content:
-            if getattr(block, "type", "") == "text":
-                content_parts.append(block.text)
-            if getattr(block, "type", "") == "tool_use":
-                tool_calls.append({"name": block.name, "args": block.input, "id": block.id, "type": "tool_call"})
-        yield XBotModelChunk(
-            content="".join(content_parts),
-            tool_calls=tool_calls,
-            response_metadata={"model_name": response.model},
-            usage_metadata=anthropic_usage(getattr(response, "usage", None)),
-        )
+
+        # Track per-block state for tool_use blocks — the SDK
+        # streams the JSON in pieces and we yield the parsed
+        # args once the block ends.
+        tool_blocks: dict[int, dict[str, Any]] = {}
+        tool_json: dict[int, list[str]] = {}
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        final_usage: dict[str, Any] = {}
+
+        async with self.client.messages.stream(**api_kwargs) as stream:
+            async for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    idx = int(getattr(event, "index", 0))
+                    if getattr(block, "type", "") == "tool_use":
+                        tool_blocks[idx] = {
+                            "id": getattr(block, "id", ""),
+                            "name": getattr(block, "name", ""),
+                        }
+                        tool_json[idx] = []
+                elif event_type == "content_block_delta":
+                    idx = int(getattr(event, "index", 0))
+                    delta = getattr(event, "delta", None)
+                    if delta is None:
+                        continue
+                    if getattr(delta, "type", "") == "input_json_delta":
+                        partial = getattr(delta, "partial_json", "")
+                        if partial:
+                            tool_json.setdefault(idx, []).append(partial)
+                elif event_type == "content_block_stop":
+                    idx = int(getattr(event, "index", 0))
+                    meta = tool_blocks.get(idx)
+                    if meta is not None:
+                        raw = "".join(tool_json.get(idx, []))
+                        try:
+                            args = json.loads(raw) if raw else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        yield XBotModelChunk(
+                            tool_calls=[{
+                                "id": meta.get("id", ""),
+                                "name": meta.get("name", ""),
+                                "args": args,
+                                "index": idx,
+                                "type": "tool_call",
+                            }]
+                        )
+                elif event_type == "text":
+                    text = getattr(event, "text", "")
+                    if text:
+                        text_parts.append(text)
+                        yield XBotModelChunk(content=text)
+                elif event_type == "thinking":
+                    thinking = getattr(event, "thinking", "")
+                    if thinking:
+                        reasoning_parts.append(thinking)
+                        yield XBotModelChunk(
+                            content=thinking,
+                            additional_kwargs={"reasoning_content": thinking},
+                        )
+                elif event_type == "message_delta":
+                    usage = getattr(event, "usage", None)
+                    if usage is not None:
+                        final_usage = anthropic_usage(usage)
+
+            final_message = await stream.get_final_message()
+            # Reconstruct the full text + tool calls from the final
+            # message so the engine sees the same shape as the
+            # OpenAI provider: complete content + complete tool calls
+            # in a single XBotModelResponse.
+            final_text = "".join(text_parts)
+            final_tool_calls: list[dict[str, Any]] = []
+            for block in getattr(final_message, "content", []) or []:
+                btype = getattr(block, "type", "")
+                if btype == "tool_use":
+                    final_tool_calls.append({
+                        "name": getattr(block, "name", ""),
+                        "args": getattr(block, "input", {}) or {},
+                        "id": getattr(block, "id", ""),
+                        "type": "tool_call",
+                    })
+            yield XBotModelResponse(
+                content=final_text,
+                tool_calls=final_tool_calls,
+                response_metadata={"model_name": getattr(final_message, "model", self.model)},
+                usage_metadata=final_usage,
+                additional_kwargs={"reasoning_content": "".join(reasoning_parts)} if reasoning_parts else {},
+            )
 
 
 def create_llm(provider_config: Any) -> Any:

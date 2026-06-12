@@ -768,7 +768,22 @@ class Engine:
                 if isinstance(chunk, XBotModelChunk):
                     aggregate = merge_xbot_chunk(aggregate, chunk)
                     if chunk.content:
-                        yield {"type": "assistant_message_delta", "data": {"content": chunk.content}}
+                        is_reasoning = bool(
+                            (chunk.additional_kwargs or {}).get("reasoning_content")
+                        )
+                        # Tag reasoning vs content so the TUI can
+                        # render them separately and never mix them
+                        # into the same message.
+                        if is_reasoning:
+                            yield {
+                                "type": "assistant_message_delta",
+                                "data": {"reasoning": chunk.content},
+                            }
+                        else:
+                            yield {
+                                "type": "assistant_message_delta",
+                                "data": {"content": chunk.content},
+                            }
                     for tool_delta in xbot_tool_call_deltas(chunk, tool_stream_ids):
                         yield {"type": "tool_call_delta", "data": tool_delta}
                     continue
