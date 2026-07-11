@@ -7,14 +7,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.tools import ToolCall
 
 
 PermissionScope = str
 
 
-def load_session_policy(config_dir: Path, session_id: str) -> dict[str, Any]:
+def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
     """Load optional session-local policy overlay."""
-    return _read_yaml(_session_policy_path(config_dir, session_id))
+    return _read_yaml(paths.session(session_id).policy_file)
 
 
 def merge_permission_config(
@@ -52,7 +54,7 @@ def merge_sandbox_config(
 
 def persist_sandbox_config(
     *,
-    config_dir: Path,
+    paths: RuntimePaths,
     session_id: str,
     sandbox: dict[str, Any],
 ) -> None:
@@ -65,7 +67,7 @@ def persist_sandbox_config(
 
     if not sandbox:
         return
-    path = _session_policy_path(config_dir, session_id)
+    path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
     sandbox_section = doc.setdefault("sandbox", {})
     clean: dict[str, Any] = {k: v for k, v in sandbox.items() if not k.startswith("_")}
@@ -75,11 +77,11 @@ def persist_sandbox_config(
 
 def clear_sandbox_config(
     *,
-    config_dir: Path,
+    paths: RuntimePaths,
     session_id: str,
 ) -> None:
     """Remove the session sandbox overlay entirely from policy.yaml."""
-    path = _session_policy_path(config_dir, session_id)
+    path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
     doc.pop("sandbox", None)
     if doc:
@@ -90,7 +92,7 @@ def clear_sandbox_config(
 
 def persist_permission_decision(
     *,
-    config_dir: Path,
+    paths: RuntimePaths,
     session_id: str,
     client_event: dict[str, Any],
     decision: str,
@@ -110,13 +112,14 @@ def persist_permission_decision(
 
     data = client_event.get("data") or {}
     source = str(data.get("source") or "permission_system")
-    tool_call = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else {}
-    if not tool_call:
+    raw_tool_call = data.get("tool_call")
+    if not isinstance(raw_tool_call, dict):
         return
+    tool_call = ToolCall.from_dict(raw_tool_call)
 
     if source == "sandbox":
         _persist_sandbox_rule(
-            config_dir=config_dir,
+            paths=paths,
             session_id=session_id,
             tool_call=tool_call,
             decision=decision,
@@ -128,7 +131,7 @@ def persist_permission_decision(
     rule = _permission_rule_for_tool_call(tool_call)
     if not rule:
         return
-    path = _session_policy_path(config_dir, session_id)
+    path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
     permissions = doc.setdefault("permissions", {})
     _remove_rule(permissions, rule)
@@ -142,24 +145,24 @@ def persist_permission_decision(
 
 def _persist_sandbox_rule(
     *,
-    config_dir: Path,
+    paths: RuntimePaths,
     session_id: str,
-    tool_call: dict[str, Any],
+    tool_call: ToolCall,
     decision: str,
     scope: PermissionScope,
     engine: Any | None,
 ) -> None:
-    workspace_root = getattr(engine, "workspace_root", config_dir)
-    paths = _tool_call_paths(tool_call, Path(workspace_root))
-    if not paths:
+    workspace_root = getattr(engine, "workspace_root", paths.data_dir)
+    resolved_paths = _tool_call_paths(tool_call, Path(workspace_root))
+    if not resolved_paths:
         return
-    path = _session_policy_path(config_dir, session_id)
+    path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
     resources = sandbox.setdefault("resources", [])
     access = "readwrite" if decision == "allow" else "deny"
-    for resolved in paths:
+    for resolved in resolved_paths:
         rule = {"path": resolved, "access": access}
         if rule not in resources:
             resources.insert(0, rule)
@@ -168,19 +171,14 @@ def _persist_sandbox_rule(
     _write_yaml(path, doc)
 
 
-def _session_policy_path(config_dir: Path, session_id: str) -> Path:
-    return config_dir / "sessions" / session_id / "policy.yaml"
-
-
-def _permission_rule_for_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
-    tool_name = str(tool_call.get("name") or "")
+def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
+    tool_name = tool_call.name
     if not tool_name:
         return {}
     rule: dict[str, Any] = {"tool": re.escape(tool_name)}
-    args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
     params = {
         key: re.escape(str(value))
-        for key, value in sorted(args.items())
+        for key, value in sorted(tool_call.args.items())
         if isinstance(value, (str, int, float, bool))
     }
     if params:
@@ -188,12 +186,11 @@ def _permission_rule_for_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
     return rule
 
 
-def _tool_call_paths(tool_call: dict[str, Any], workspace_root: Path) -> list[str]:
-    args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
+def _tool_call_paths(tool_call: ToolCall, workspace_root: Path) -> list[str]:
     path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
     paths: list[str] = []
     for key in path_keys:
-        value = args.get(key)
+        value = tool_call.args.get(key)
         if not isinstance(value, str):
             continue
         path = Path(value)

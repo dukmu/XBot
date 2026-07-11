@@ -7,7 +7,8 @@ import logging
 from typing import Any, AsyncIterator
 
 from xbotv2.config.loader import expand_env
-from xbotv2.llm.messages import XBotModelChunk, XBotModelResponse
+from xbotv2.api.messages import ModelChunk, ModelResponse
+from xbotv2.api.tools import ToolCall, ToolCallDelta
 
 logger = logging.getLogger("xbotv2.llm")
 
@@ -43,7 +44,7 @@ class OpenAICompatibleProvider:
         clone.bound_tools = list(tools)
         return clone
 
-    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[XBotModelChunk]:
+    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": provider_messages(messages),
@@ -85,14 +86,14 @@ class OpenAICompatibleProvider:
             rc = getattr(delta, "reasoning_content", None) or ""
             if rc:
                 reasoning_parts.append(rc)
-                yield XBotModelChunk(content=rc, additional_kwargs={"reasoning_content": rc})
+                yield ModelChunk(content=rc, additional_kwargs={"reasoning_content": rc})
                 continue
 
             # Regular content
             c = getattr(delta, "content", None) or ""
             if c:
                 content_parts.append(c)
-                yield XBotModelChunk(content=c)
+                yield ModelChunk(content=c)
 
             # Tool calls
             tc_list = getattr(delta, "tool_calls", None) or []
@@ -109,13 +110,13 @@ class OpenAICompatibleProvider:
                         buf["name"] = fn.name
                     if getattr(fn, "arguments", None):
                         buf["args"] += fn.arguments
-                yield XBotModelChunk(
-                    tool_call_chunks=[{
-                        "index": idx,
-                        "id": buf["id"],
-                        "name": buf.get("name", ""),
-                        "args": buf.get("args", ""),
-                    }]
+                yield ModelChunk(
+                    tool_call_chunks=[ToolCallDelta(
+                        index=idx,
+                        id=buf["id"],
+                        name=buf.get("name", ""),
+                        args=buf.get("args", ""),
+                    )]
                 )
 
             # Finish reason
@@ -126,10 +127,10 @@ class OpenAICompatibleProvider:
         full_content = "".join(content_parts)
         full_reasoning = "".join(reasoning_parts)
         tool_calls = [
-            {"name": b["name"], "args": _parse_tool_args(b["args"]), "id": b["id"], "type": "tool_call"}
+            ToolCall(id=b["id"], name=b["name"], args=_parse_tool_args(b["args"]))
             for b in tool_call_buffers.values() if b["name"]
         ]
-        yield XBotModelResponse(
+        yield ModelResponse(
             content=full_content,
             tool_calls=tool_calls,
             response_metadata={"model_name": self.model},
@@ -169,7 +170,7 @@ class AnthropicProvider:
         clone.bound_tools = [anthropic_tool_schema(tool) for tool in tools]
         return clone
 
-    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[XBotModelChunk]:
+    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages(messages),
@@ -221,25 +222,23 @@ class AnthropicProvider:
                             args = json.loads(raw) if raw else {}
                         except json.JSONDecodeError:
                             args = {}
-                        yield XBotModelChunk(
-                            tool_calls=[{
-                                "id": meta.get("id", ""),
-                                "name": meta.get("name", ""),
-                                "args": args,
-                                "index": idx,
-                                "type": "tool_call",
-                            }]
+                        yield ModelChunk(
+                            tool_calls=[ToolCall(
+                                id=meta.get("id", ""),
+                                name=meta.get("name", ""),
+                                args=args,
+                            )]
                         )
                 elif event_type == "text":
                     text = getattr(event, "text", "")
                     if text:
                         text_parts.append(text)
-                        yield XBotModelChunk(content=text)
+                        yield ModelChunk(content=text)
                 elif event_type == "thinking":
                     thinking = getattr(event, "thinking", "")
                     if thinking:
                         reasoning_parts.append(thinking)
-                        yield XBotModelChunk(
+                        yield ModelChunk(
                             content=thinking,
                             additional_kwargs={"reasoning_content": thinking},
                         )
@@ -252,19 +251,18 @@ class AnthropicProvider:
             # Reconstruct the full text + tool calls from the final
             # message so the engine sees the same shape as the
             # OpenAI provider: complete content + complete tool calls
-            # in a single XBotModelResponse.
+            # in a single ModelResponse.
             final_text = "".join(text_parts)
-            final_tool_calls: list[dict[str, Any]] = []
+            final_tool_calls: list[ToolCall] = []
             for block in getattr(final_message, "content", []) or []:
                 btype = getattr(block, "type", "")
                 if btype == "tool_use":
-                    final_tool_calls.append({
-                        "name": getattr(block, "name", ""),
-                        "args": getattr(block, "input", {}) or {},
-                        "id": getattr(block, "id", ""),
-                        "type": "tool_call",
-                    })
-            yield XBotModelResponse(
+                    final_tool_calls.append(ToolCall(
+                        id=getattr(block, "id", ""),
+                        name=getattr(block, "name", ""),
+                        args=getattr(block, "input", {}) or {},
+                    ))
+            yield ModelResponse(
                 content=final_text,
                 tool_calls=final_tool_calls,
                 response_metadata={"model_name": getattr(final_message, "model", self.model)},
@@ -379,21 +377,19 @@ def message_role(message: Any) -> str:
     return "assistant"
 
 
-def openai_tool_call_for_request(tool_call: dict[str, Any]) -> dict[str, Any]:
+def openai_tool_call_for_request(tool_call: ToolCall) -> dict[str, Any]:
     return {
-        "id": tool_call.get("id", ""),
+        "id": tool_call.id,
         "type": "function",
         "function": {
-            "name": tool_call.get("name", ""),
-            "arguments": json.dumps(tool_call.get("args", {}), ensure_ascii=False)
-            if isinstance(tool_call.get("args"), dict)
-            else str(tool_call.get("args", "{}")),
+            "name": tool_call.name,
+            "arguments": json.dumps(tool_call.args, ensure_ascii=False),
         },
     }
 
 
-def openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
+def openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
+    result: list[ToolCall] = []
     for tc in tool_calls:
         args = tc.get("function", {}).get("arguments", "{}")
         if isinstance(args, str):
@@ -401,11 +397,11 @@ def openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 args = json.loads(args)
             except (json.JSONDecodeError, TypeError):
                 args = {}
-        result.append({
-            "name": tc.get("function", {}).get("name", tc.get("name", "")),
-            "args": args,
-            "id": tc.get("id", ""),
-        })
+        result.append(ToolCall(
+            id=tc.get("id", ""),
+            name=tc.get("function", {}).get("name", tc.get("name", "")),
+            args=args,
+        ))
     return result
 
 
@@ -456,7 +452,7 @@ def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
                 item["content"] += [
-                    {"type": "tool_use", "id": tc.get("id", ""), "name": tc.get("name", ""), "input": tc.get("args", {})}
+                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
                     for tc in tool_calls
                 ]
             result.append(item)

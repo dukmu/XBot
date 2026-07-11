@@ -7,15 +7,20 @@ from pathlib import Path
 import pytest
 import yaml
 
-from xbotv2.plugin.manifest import PluginManifest
-from xbotv2.plugin.base import PluginBase, PluginSetupContext
-from xbotv2.plugin.loader import PluginLoader, _DefaultPlugin, resolve_dependencies
+from xbotv2.api.plugins import PluginBase, PluginManifest
+from xbotv2.plugin.loader import (
+    PluginLoader,
+    _DefaultPlugin,
+    _PluginSetupContext,
+    resolve_dependencies,
+)
 from xbotv2.plugin.store import PluginStore
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage
+from xbotv2.api.hooks import HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.tools.registry import ToolRegistry
+from xbotv2.api.paths import RuntimePaths
 
 
 # ------------------------------------------------------------------
@@ -32,7 +37,7 @@ def _make_manifest_tuple(name: str, deps: list[str] | None = None) -> tuple[Plug
 
 def _setup_plugin(plugin):
     context = ContextBuilder()
-    setup = PluginSetupContext(
+    setup = _PluginSetupContext(
         plugin_name=plugin.manifest.name,
         hooks=HookManager(),
         tools=ToolRegistry(),
@@ -183,8 +188,7 @@ class TestPromptFragmentFiles:
         (prompts_dir / "rules.md").write_text("## Plugin Rules\nStay isolated.\n")
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -258,8 +262,7 @@ class TestPluginLoader:
         (prompts_dir / "instructions.md").write_text("Loader instructions\n")
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -319,8 +322,7 @@ def plugin_tool() -> str:
         monkeypatch.syspath_prepend(str(plugins_root))
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -352,7 +354,7 @@ def plugin_tool() -> str:
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             """
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class BrokenPlugin(PluginBase):
     async def on_load(self, config):
@@ -364,8 +366,7 @@ class BrokenPlugin(PluginBase):
         )
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -395,7 +396,7 @@ class BrokenPlugin(PluginBase):
         first_dir.mkdir(parents=True)
         (first_dir / "__init__.py").write_text(
             """
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class FirstPlugin(PluginBase):
     async def on_load(self, config):
@@ -417,7 +418,7 @@ class FirstPlugin(PluginBase):
         broken_dir.mkdir(parents=True)
         (broken_dir / "__init__.py").write_text(
             """
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class BrokenPlugin(PluginBase):
     async def on_load(self, config):
@@ -429,8 +430,7 @@ class BrokenPlugin(PluginBase):
         )
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -494,8 +494,7 @@ def plugin_tool() -> str:
         monkeypatch.syspath_prepend(str(plugins_root))
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -549,8 +548,7 @@ def plugin_tool() -> str:
         monkeypatch.syspath_prepend(str(plugins_root))
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -583,7 +581,7 @@ def plugin_tool() -> str:
         unload_marker = tmp_path / "unloaded.txt"
         (plugin_dir / "__init__.py").write_text(
             f"""
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class ClassyPlugin(PluginBase):
     async def on_load(self, config):
@@ -600,8 +598,7 @@ class ClassyPlugin(PluginBase):
         monkeypatch.syspath_prepend(str(plugins_root))
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )
@@ -628,7 +625,7 @@ class ClassyPlugin(PluginBase):
             class_name = f"{name.title()}Plugin"
             (plugin_dir / "__init__.py").write_text(
                 f"""
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class {class_name}(PluginBase):
     async def on_load(self, config):
@@ -645,8 +642,7 @@ class {class_name}(PluginBase):
         monkeypatch.syspath_prepend(str(plugins_root))
 
         state_store = CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s",
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
             thread_id="t",
             workspace_root="/workspace", provider="default",
         )

@@ -4,7 +4,8 @@ from xbotv2.llm.client import (
     _strip_reasoning_headers,
     provider_messages,
 )
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
+from xbotv2.api.tools import ToolCall
 
 
 def test_strip_reasoning_headers_no_header():
@@ -39,7 +40,7 @@ def test_provider_messages_strips_reasoning_header_on_replay():
     msg = Message(
         role="assistant",
         content="",
-        tool_calls=[{"name": "shell", "args": {"command": "ls"}, "id": "c1"}],
+        tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
         additional_kwargs={"reasoning_content": "## Thinking\n\n## Thinking\n\nchain"},
     )
     out = provider_messages([msg])

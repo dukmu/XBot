@@ -1,16 +1,18 @@
-"""XBot-owned message and provider response types."""
+"""Provider-neutral message and model stream types."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
+from xbotv2.api.tools import ToolCall, ToolCallDelta
+
 
 @dataclass
 class Message:
     role: str = ""
     content: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str = ""
     name: str = ""
     status: str = ""
@@ -21,19 +23,22 @@ class Message:
 
 
 @dataclass
-class XBotModelResponse:
+class ModelResponse:
     content: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     response_metadata: dict[str, Any] = field(default_factory=dict)
     usage_metadata: dict[str, Any] = field(default_factory=dict)
     additional_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
-class XBotModelChunk:
+class ModelChunk:
     content: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    tool_call_chunks: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_chunks: list[ToolCallDelta] = field(default_factory=list)
     response_metadata: dict[str, Any] = field(default_factory=dict)
     usage_metadata: dict[str, Any] = field(default_factory=dict)
     additional_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+__all__ = ["Message", "ModelChunk", "ModelResponse"]

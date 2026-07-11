@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
 
 
 def now_iso() -> str:
@@ -333,9 +333,9 @@ class ContextBuilder:
         for msg in messages:
             if msg.role == "assistant" and msg.tool_calls:
                 for call in msg.tool_calls:
-                    call_id = call.get("id", "")
+                    call_id = call.id
                     if call_id:
-                        valid_tool_call_ids.add(str(call_id))
+                        valid_tool_call_ids.add(call_id)
                 sanitized.append(msg)
             elif msg.role == "tool":
                 if msg.tool_call_id and msg.tool_call_id in valid_tool_call_ids:

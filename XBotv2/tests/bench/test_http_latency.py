@@ -27,6 +27,7 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from xbotv2.api.paths import RuntimePaths
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
@@ -58,7 +59,7 @@ async def http_app(tmp_path: Path):
     )
     app = create_app(
         provider_name="default",
-        data_dir=str(data_dir),
+        paths=RuntimePaths.from_data_dir(data_dir),
         no_plugins=True,
     )
     set_llm_override(

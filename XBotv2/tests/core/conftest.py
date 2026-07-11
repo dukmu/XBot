@@ -3,13 +3,14 @@
 import pytest
 
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage, HookContext, SessionInfo
+from xbotv2.api.hooks import HookStage, HookContext, SessionInfo
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.core.context import ContextBuilder
 from xbotv2.llm.mock import MockLLM
 from xbotv2.persistence.store import CoreStateStore
+from xbotv2.api.paths import RuntimePaths
 
 
 @pytest.fixture
@@ -56,8 +57,7 @@ def mock_llm():
 def state_store(temp_data_dir):
     """CoreStateStore in temp directory."""
     store = CoreStateStore.create(
-        temp_data_dir / "sessions" / "default" / "state",
-        session_id="test-session",
+        RuntimePaths.from_data_dir(temp_data_dir).session("test-session"),
         thread_id="test-thread",
         workspace_root=str(temp_data_dir),
         provider="default",

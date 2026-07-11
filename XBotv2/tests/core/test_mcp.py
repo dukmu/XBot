@@ -144,7 +144,7 @@ class TestMCPToolWrapper:
     async def test_mcp_tool_as_xbot_tool(self, echo_server_script):
         from builtin_plugins.mcp.client import MCPClient
         from builtin_plugins.mcp.tool import MCPTool
-        from xbotv2.tools.types import XBotTool
+        from xbotv2.api.tools import Tool
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -154,7 +154,7 @@ class TestMCPToolWrapper:
 
         add_def = next(t for t in tools if t["name"] == "add")
         mcp_tool = MCPTool(client, "test", add_def)
-        xbot_tool = XBotTool.from_function(mcp_tool, name="mcp__test__add")
+        xbot_tool = Tool.from_function(mcp_tool, name="mcp__test__add")
 
         result = await xbot_tool.ainvoke({"a": 10, "b": 20})
         assert "30" in result.content

@@ -3,7 +3,8 @@
 import pytest
 
 from xbotv2.core.context import ContextBuilder
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
+from xbotv2.api.tools import ToolCall
 
 
 class TestContextBuilderBasics:
@@ -222,8 +223,11 @@ class TestSanitization:
 
     def test_drops_orphan_tool_messages(self, context_builder):
         messages = [
-            Message(role="assistant", content="test",
-                    tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}]),
+            Message(
+                role="assistant",
+                content="test",
+                tool_calls=[ToolCall("call_1", "shell", {})],
+            ),
             Message(role="tool", content="result", tool_call_id="call_2"),
         ]
         sanitized = context_builder._sanitize_history(messages)
@@ -232,8 +236,11 @@ class TestSanitization:
 
     def test_keeps_valid_tool_messages(self, context_builder):
         messages = [
-            Message(role="assistant", content="test",
-                    tool_calls=[{"name": "shell", "args": {}, "id": "call_1"}]),
+            Message(
+                role="assistant",
+                content="test",
+                tool_calls=[ToolCall("call_1", "shell", {})],
+            ),
             Message(role="tool", content="result", tool_call_id="call_1"),
         ]
         sanitized = context_builder._sanitize_history(messages)

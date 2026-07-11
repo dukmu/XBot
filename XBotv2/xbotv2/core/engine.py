@@ -24,10 +24,10 @@ from xbotv2.core.interactions import (
     InteractionResult,
     InteractionWaiter,
 )
-from xbotv2.core.state import SessionInfo
-from xbotv2.hooks.types import HookContext, HookStage
-from xbotv2.llm.messages import Message, XBotModelChunk, XBotModelResponse
-from xbotv2.tools.types import provider_tool_schema
+from xbotv2.api.runtime import SessionInfo
+from xbotv2.api.hooks import HookContext, HookStage
+from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 
 logger = logging.getLogger("xbotv2.engine")
 
@@ -38,11 +38,11 @@ _LLM_DISPATCH_TIMEOUT = 120.0  # seconds
 
 
 def merge_xbot_chunk(
-    aggregate: XBotModelResponse | None,
-    chunk: XBotModelChunk,
-) -> XBotModelResponse:
-    if not isinstance(aggregate, XBotModelResponse):
-        aggregate = XBotModelResponse()
+    aggregate: ModelResponse | None,
+    chunk: ModelChunk,
+) -> ModelResponse:
+    if not isinstance(aggregate, ModelResponse):
+        aggregate = ModelResponse()
     aggregate.content += chunk.content
     if chunk.tool_calls:
         aggregate.tool_calls = chunk.tool_calls
@@ -56,21 +56,21 @@ def merge_xbot_chunk(
 
 
 def xbot_tool_call_deltas(
-    chunk: XBotModelChunk,
+    chunk: ModelChunk,
     tool_stream_ids: dict[int, str],
 ) -> list[dict[str, Any]]:
     raw_chunks = chunk.tool_call_chunks or chunk.tool_calls
     deltas: list[dict[str, Any]] = []
     for index, tool_call in enumerate(raw_chunks):
-        chunk_index = int(tool_call.get("index", index))
+        chunk_index = tool_call.index if isinstance(tool_call, ToolCallDelta) else index
         prior_id = tool_stream_ids.get(chunk_index)
-        tool_id = tool_call.get("id") or prior_id or f"tool_{chunk_index}"
+        tool_id = tool_call.id or prior_id or f"tool_{chunk_index}"
         tool_stream_ids[chunk_index] = tool_id
-        args_delta = tool_call.get("args", {})
+        args_delta = tool_call.args
         delta = {
                 "tool_call_id": tool_id,
                 "id": tool_id,
-                "name": tool_call.get("name", "tool"),
+                "name": tool_call.name or "tool",
                 "args_delta": args_delta,
                 "args": args_delta,
                 "index": chunk_index,
@@ -107,7 +107,6 @@ class Engine:
         config: Any,  # SystemConfig
         workspace_root: str | None = None,
         max_iterations: int = 50,
-        data_dir: str | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -126,6 +125,7 @@ class Engine:
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
+        self.paths = state_store.paths.runtime
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -537,7 +537,10 @@ class Engine:
 
             yield {
                 "type": "assistant_message",
-                "data": {"content": content, "tool_calls": getattr(response, "tool_calls", None)},
+                "data": {
+                    "content": content,
+                    "tool_calls": [call.to_dict() for call in response.tool_calls],
+                },
             }
             usage = self._extract_usage(response)
             if usage:
@@ -583,7 +586,7 @@ class Engine:
                     break
 
             # Check for tool calls
-            tool_calls = getattr(response, "tool_calls", None)
+            tool_calls = response.tool_calls
             if not tool_calls:
                 turn_complete = True
                 break
@@ -597,13 +600,12 @@ class Engine:
                 # Hook denied tool execution
                 break
 
-            # Normalize tool calls
-            normalized_calls = self._normalize_tool_calls(tool_calls)
+            normalized_calls = list(tool_calls)
             logger.info(
                 "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
                 self.turn_count,
                 len(normalized_calls),
-                [tc.get("name") for tc in normalized_calls],
+                [call.name for call in normalized_calls],
             )
             parsed_ctx = self._make_hook_context(
                 HookStage.ON_TOOL_CALLS_PARSED,
@@ -617,11 +619,10 @@ class Engine:
             )
             yield {
                 "type": "tool_calls_started",
-                "data": {"tool_calls": normalized_calls},
+                "data": {"tool_calls": [call.to_dict() for call in normalized_calls]},
             }
             tool_names_by_id = {
-                str(tc.get("id") or ""): str(tc.get("name") or "tool")
-                for tc in normalized_calls
+                call.id: call.name or "tool" for call in normalized_calls
             }
 
             # Execute tools
@@ -761,11 +762,11 @@ class Engine:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""
 
-        aggregate: XBotModelResponse | None = None
+        aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
         async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
             async for chunk in llm.astream(context_messages):
-                if isinstance(chunk, XBotModelChunk):
+                if isinstance(chunk, ModelChunk):
                     aggregate = merge_xbot_chunk(aggregate, chunk)
                     if chunk.content:
                         is_reasoning = bool(
@@ -787,7 +788,7 @@ class Engine:
                     for tool_delta in xbot_tool_call_deltas(chunk, tool_stream_ids):
                         yield {"type": "tool_call_delta", "data": tool_delta}
                     continue
-                if isinstance(chunk, XBotModelResponse):
+                if isinstance(chunk, ModelResponse):
                     aggregate = chunk
                     continue
                 logger.warning("_stream_model_response: unexpected chunk type %s", type(chunk).__name__)
@@ -879,7 +880,7 @@ class Engine:
             from pathlib import Path
             from xbotv2.config.policy import persist_permission_decision
             persist_permission_decision(
-                config_dir=Path(getattr(self.state_store, "root", "data")).parent.parent,
+                paths=self.paths,
                 session_id=self.state_store.session_id,
                 client_event=client_event,
                 decision=str(result.get("decision") or ""),
@@ -910,8 +911,8 @@ class Engine:
         agent_response: Any = None,
         model_request: dict[str, Any] | None = None,
         model_response: Any = None,
-        tool_calls: list[dict[str, Any]] | None = None,
-        tool_call: dict[str, Any] | None = None,
+        tool_calls: list[ToolCall] | None = None,
+        tool_call: ToolCall | None = None,
         tool_results: list[Any] | None = None,
         tool_result: Any = None,
         stop_reason: str | None = None,
@@ -950,24 +951,6 @@ class Engine:
             client_event=client_event,
             error=error,
         )
-
-    @staticmethod
-    def _normalize_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
-        result = []
-        for i, tc in enumerate(tool_calls):
-            if isinstance(tc, dict):
-                result.append({
-                    "name": tc.get("name", ""),
-                    "args": tc.get("args", {}),
-                    "id": tc.get("id", f"call_{i}"),
-                })
-            else:
-                result.append({
-                    "name": getattr(tc, "name", ""),
-                    "args": getattr(tc, "args", {}),
-                    "id": getattr(tc, "id", f"call_{i}"),
-                })
-        return result
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, int] | None:

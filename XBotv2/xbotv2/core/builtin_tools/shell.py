@@ -1,7 +1,7 @@
 """Shell execution tool. Uses session sandbox capabilities when available."""
 
-from xbotv2.contracts import ToolResult
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import ToolResult
+from xbotv2.api.tools import Tool
 
 
 async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -> ToolResult:
@@ -30,5 +30,5 @@ async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -
         return ToolResult.failure("command_failed", str(exc))
 
 
-shell = XBotTool.from_function(execute_shell, name="shell")
+shell = Tool.from_function(execute_shell, name="shell")
 SHELL_TOOLS = [shell]

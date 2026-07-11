@@ -3,6 +3,9 @@
 import json
 
 import pytest
+
+from xbotv2.api.tools import ToolCall
+from xbotv2.api.paths import RuntimePaths
 from xbotv2.protocol.frames import (
     ProtocolFrame,
     ProtocolEncoder,
@@ -271,12 +274,7 @@ class TestProviderConfig:
 
         assert llm.verify_tool_call_made("shell")
         assert llm._mock_call_history[0]["tool_calls"] == [
-            {
-                "name": "shell",
-                "args": {"command": "pwd"},
-                "id": "c1",
-                "type": "tool_call",
-            }
+            ToolCall("c1", "shell", {"command": "pwd"})
         ]
 
 
@@ -289,7 +287,7 @@ class TestProviderConfigLoader:
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
-        # config_dir is the data root; providers.yaml lives at config_dir/config/
+        # data_dir is the data root; providers.yaml lives at <data_dir>/config/
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
@@ -306,14 +304,14 @@ openai:
 """)
 
         # Load default → should get deepseek
-        c = load_provider_config(tmp_path, "default")
+        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "default")
         assert c.provider == "deepseek"
         assert c.model == "deepseek-chat"
         assert c.base_url == "https://api.deepseek.com/v1"
         assert c.api_key == "sk-test-123"  # env var expanded
 
         # Load openai → should get openai section
-        c2 = load_provider_config(tmp_path, "openai")
+        c2 = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "openai")
         assert c2.provider == "openai"
         assert c2.model == "gpt-4o"
         assert c2.api_key == "sk-openai-xxx"
@@ -333,7 +331,7 @@ test:
   api_key: ${MY_KEY}
 """)
 
-        c = load_provider_config(tmp_path, "test")
+        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
         assert c.api_key == "expanded-value"
 
     def test_missing_env_var_becomes_empty(self, tmp_path):
@@ -349,7 +347,7 @@ test:
   api_key: ${NONEXISTENT_VAR}
 """)
 
-        c = load_provider_config(tmp_path, "test")
+        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
         assert c.api_key == ""
 
     def test_unknown_provider_returns_builtin_default(self, tmp_path):
@@ -364,6 +362,6 @@ default:
   model: fallback-model
 """)
 
-        c = load_provider_config(tmp_path, "nonexistent_provider")
+        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "nonexistent_provider")
         assert c.provider == "openai"
         assert c.model == "gpt-4"

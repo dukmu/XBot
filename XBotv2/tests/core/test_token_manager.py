@@ -2,7 +2,8 @@
 
 import pytest
 
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
+from xbotv2.api.tools import ToolCall
 
 
 class TestTokenEstimator:
@@ -16,9 +17,11 @@ class TestTokenEstimator:
     def test_estimate_message_tokens(self):
         from builtin_plugins.token_manager.estimator import estimate_message_tokens
 
-        msg = Message(role="assistant", content="hello", tool_calls=[
-            {"name": "shell", "args": {"cmd": "ls"}},
-        ])
+        msg = Message(
+            role="assistant",
+            content="hello",
+            tool_calls=[ToolCall("call_1", "shell", {"cmd": "ls"})],
+        )
         tokens = estimate_message_tokens(msg)
         assert tokens >= 2  # content + tool name + args
 
@@ -34,13 +37,13 @@ class TestTokenEstimator:
 
     def test_estimate_tool_schema_tokens(self):
         from builtin_plugins.token_manager.estimator import estimate_tool_schema_tokens
-        from xbotv2.tools.types import XBotTool
+        from xbotv2.api.tools import Tool
 
         def echo(msg: str) -> str:
             """Echo a message back."""
             return msg
 
-        tool = XBotTool.from_function(echo, name="echo")
+        tool = Tool.from_function(echo, name="echo")
         tokens = estimate_tool_schema_tokens([tool])
         assert tokens > 0
 
@@ -128,14 +131,14 @@ class TestTokenBudgetController:
 
     def test_tool_schema_included(self):
         from builtin_plugins.token_manager.budget import TokenBudgetController
-        from xbotv2.tools.types import XBotTool
+        from xbotv2.api.tools import Tool
 
         def big_tool(very_long_param_name: str, another_param: str) -> str:
             """A tool with a long description """ + "x" * 500
             return "ok"
 
         budget = TokenBudgetController(max_context_tokens=1000, output_reservation=100)
-        tool = XBotTool.from_function(big_tool, name="big_tool")
+        tool = Tool.from_function(big_tool, name="big_tool")
         msgs = [Message(role="user", content="hello")]
         check = budget.check_context(msgs, tools=[tool])
         assert check["tool_schema_tokens"] > 0

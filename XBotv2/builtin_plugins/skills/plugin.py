@@ -15,7 +15,7 @@ from xbotv2.api import (
     PluginManifest,
     PluginSetupContext,
     PluginStore,
-    XBotTool,
+    Tool,
 )
 
 from .permission_scope import SkillPermissionScope
@@ -56,7 +56,7 @@ class SkillsPlugin(PluginBase):
             plugin._active_skills[name] = name
             return content
 
-        tool = XBotTool.from_function(_load_skill, name="skill")
+        tool = Tool.from_function(_load_skill, name="skill")
         ctx.register_tool(tool, sandbox_mode="sandboxed", namespace="plugin:skills")
 
     async def _on_session_init(self, ctx: HookContext) -> None:
@@ -68,7 +68,7 @@ class SkillsPlugin(PluginBase):
                 def _skill_invoke(**kwargs):
                     return c
                 return _skill_invoke
-            fake = XBotTool.from_function(_make_skill_invoke(), name=s.name)
+            fake = Tool.from_function(_make_skill_invoke(), name=s.name)
             ns = f"skills:{s.scope}"
             ctx.tools.register(fake, sandbox_mode="host", owner_plugin=self.manifest.name, namespace=ns)
 
@@ -113,7 +113,7 @@ class SkillsPlugin(PluginBase):
     async def _on_before_tool(self, ctx: HookContext) -> None:
         if not self._active_skills:
             return
-        tool_name = ctx.tool_call.get("name", "") if ctx.tool_call else ""
+        tool_name = ctx.tool_call.name if ctx.tool_call else ""
         if not tool_name:
             return
         decision = self._permission_scope.check(tool_name)

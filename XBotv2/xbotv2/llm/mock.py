@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from xbotv2.llm.messages import XBotModelChunk, XBotModelResponse
+from xbotv2.api.messages import ModelChunk, ModelResponse
+from xbotv2.api.tools import ToolCall, ToolCallDelta
 
 
 class MockLLM:
@@ -21,16 +22,16 @@ class MockLLM:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages: list[Any], **kwargs: Any) -> XBotModelResponse:
+    def invoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
         response = self.next_response()
         result = self.to_response(response)
         self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
         return result
 
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> XBotModelResponse:
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
         return self.invoke(messages, **kwargs)
 
-    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[XBotModelChunk]:
+    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
         response = self.next_response()
         result = self.to_response(response)
         self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
@@ -40,7 +41,7 @@ class MockLLM:
                 yield self.to_chunk(chunk)
             yield result
             return
-        yield XBotModelChunk(
+        yield ModelChunk(
             content=result.content,
             tool_calls=result.tool_calls,
             response_metadata=result.response_metadata,
@@ -56,7 +57,7 @@ class MockLLM:
             1
             for call in self.call_history
             for tool_call in call.get("tool_calls", [])
-            if tool_call.get("name") == tool_name
+            if tool_call.name == tool_name
         )
         return count >= min_count
 
@@ -79,8 +80,8 @@ class MockLLM:
         self.call_count += 1
         return response
 
-    def to_response(self, response: dict[str, Any]) -> XBotModelResponse:
-        return XBotModelResponse(
+    def to_response(self, response: dict[str, Any]) -> ModelResponse:
+        return ModelResponse(
             content=str(response.get("content", "")),
             tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
             response_metadata=dict(response.get("response_metadata") or {}),
@@ -88,15 +89,23 @@ class MockLLM:
             additional_kwargs=additional_kwargs(response),
         )
 
-    def to_chunk(self, raw: Any) -> XBotModelChunk:
+    def to_chunk(self, raw: Any) -> ModelChunk:
         if isinstance(raw, str):
-            return XBotModelChunk(content=raw)
+            return ModelChunk(content=raw)
         if not isinstance(raw, dict):
-            return XBotModelChunk(content=str(raw))
-        return XBotModelChunk(
+            return ModelChunk(content=str(raw))
+        return ModelChunk(
             content=str(raw.get("content", "")),
             tool_calls=normalize_tool_calls(raw.get("tool_calls") or []),
-            tool_call_chunks=list(raw.get("tool_call_chunks") or []),
+            tool_call_chunks=[
+                ToolCallDelta(
+                    index=int(chunk.get("index", 0)),
+                    id=str(chunk.get("id") or ""),
+                    name=str(chunk.get("name") or ""),
+                    args=str(chunk.get("args") or ""),
+                )
+                for chunk in raw.get("tool_call_chunks") or []
+            ],
             response_metadata=dict(raw.get("response_metadata") or {}),
             usage_metadata=dict(raw.get("usage_metadata") or {}),
             additional_kwargs=additional_kwargs(raw),
@@ -107,7 +116,7 @@ class MockLLM:
         *,
         messages: list[Any],
         kwargs: dict[str, Any],
-        response: XBotModelResponse,
+        response: ModelResponse,
         raw_response: dict[str, Any],
     ) -> None:
         self.call_history.append({
@@ -119,15 +128,13 @@ class MockLLM:
         })
 
 
-def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
+def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
+    normalized: list[ToolCall] = []
     for tool_call in tool_calls:
-        normalized.append({
-            "name": tool_call["name"],
-            "args": tool_call.get("args", {}),
-            "id": tool_call.get("id", f"call_{len(normalized)}"),
-            "type": "tool_call",
-        })
+        normalized.append(ToolCall.from_dict(
+            tool_call,
+            default_id=f"call_{len(normalized)}",
+        ))
     return normalized
 
 

@@ -3,28 +3,26 @@
 import json
 
 import pytest
+from xbotv2.api.paths import RuntimePaths
 from pydantic import ValidationError
 
 from xbotv2.api import (
     HookAction,
     HookDecision,
-    HelloRequest,
-    MessageRequest,
-    PROTOCOL_VERSION,
-    ProtocolFrame,
     ToolCall,
     ToolResult,
-    XBotTool,
+    Tool,
 )
-from xbotv2.protocol.frames import frame_from_json
+from xbotv2.protocol.frames import PROTOCOL_VERSION, ProtocolFrame, frame_from_json
 from xbotv2.protocol.http_server import create_app
+from xbotv2.protocol.models import HelloRequest, MessageRequest
 
 
 def test_public_api_exports_core_extension_types():
-    assert ToolCall(id="1", name="read").arguments == {}
+    assert ToolCall(id="1", name="read").args == {}
     assert ToolResult.success("ok").status == "success"
     assert HookDecision(HookAction.DENY, "policy").reason == "policy"
-    assert XBotTool is not None
+    assert Tool is not None
 
 
 def test_wire_models_reject_unknown_fields():
@@ -52,7 +50,7 @@ def test_frame_parser_rejects_unknown_protocol_version():
 
 
 def test_openapi_uses_typed_request_contracts():
-    schema = create_app(no_plugins=True).openapi()
+    schema = create_app(paths=RuntimePaths.from_data_dir("data"), no_plugins=True).openapi()
     paths = schema["paths"]
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")

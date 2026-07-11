@@ -1,4 +1,4 @@
-"""Versioned public HTTP and event protocol models."""
+"""Versioned HTTP request and response models."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from xbotv2.protocol.frames import PROTOCOL_VERSION, ProtocolFrame
+from xbotv2.protocol.frames import PROTOCOL_VERSION
 
 
 class WireModel(BaseModel):
@@ -101,22 +101,21 @@ class Event(WireModel):
 
 SessionMode = Literal["new", "resume"]
 
+
 __all__ = [
-    "PROTOCOL_VERSION",
-    "ProtocolFrame",
-    "WireModel",
-    "HelloRequest",
-    "HelloResponse",
-    "OpenSessionRequest",
-    "OpenSessionResponse",
-    "CommandRequest",
     "CommandInfo",
     "CommandListResponse",
+    "CommandRequest",
     "CommandResponse",
     "CommandResult",
-    "MessageRequest",
-    "InteractionResponseRequest",
     "ErrorResponse",
     "Event",
+    "HelloRequest",
+    "HelloResponse",
+    "InteractionResponseRequest",
+    "MessageRequest",
+    "OpenSessionRequest",
+    "OpenSessionResponse",
     "SessionMode",
+    "WireModel",
 ]

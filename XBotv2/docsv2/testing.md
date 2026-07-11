@@ -68,7 +68,7 @@ llm = MockLLM(responses=[{
 
 ## Fixtures
 
-- `temp_data_dir`: isolated data/config directory
+- `temp_data_dir`: isolated data directory (contains `config/` subdir)
 - `temp_workspace`: isolated workspace directory
 - `state_store`: CoreStateStore with a session
 - `sandbox_policy`: SandboxPolicy(enabled=False)

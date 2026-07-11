@@ -21,9 +21,8 @@ def estimate_message_tokens(message: Any) -> int:
     content = getattr(message, "content", "") or ""
     total = estimate_tokens(content)
     for tc in getattr(message, "tool_calls", []) or []:
-        args = str(tc.get("args", {}))
-        total += estimate_tokens(str(tc.get("name", "")))
-        total += estimate_tokens(args)
+        total += estimate_tokens(tc.name)
+        total += estimate_tokens(str(tc.args))
     return total
 
 
@@ -34,7 +33,7 @@ def estimate_context_tokens(context_messages: list[Any]) -> int:
 def estimate_tool_schema_tokens(tools: list[Any]) -> int:
     total = 0
     for tool in tools:
-        schema = getattr(tool, "to_provider_schema", None)
+        schema = getattr(tool, "provider_schema", None)
         if schema:
             total += estimate_tokens(str(schema()))
         elif hasattr(tool, "function"):

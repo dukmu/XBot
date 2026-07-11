@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from xbotv2.config.models import ProviderConfig, SystemConfig, UserContext
+from xbotv2.api.paths import RuntimePaths
 
 
 def expand_env(value: str) -> str:
@@ -49,14 +50,14 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return result if result is not None else {}
 
 
-def load_user_context(config_dir: Path) -> UserContext:
-    """Load user context from <config_dir>/config/user.yaml."""
-    data = load_yaml(config_dir / "config" / "user.yaml")
+def load_user_context(paths: RuntimePaths) -> UserContext:
+    """Load the global user context."""
+    data = load_yaml(paths.user_config)
     return UserContext(**data)
 
 
-def load_provider_config(config_dir: Path, provider_name: str = "default") -> ProviderConfig:
-    """Load provider config from <config_dir>/config/providers.yaml.
+def load_provider_config(paths: RuntimePaths, provider_name: str = "default") -> ProviderConfig:
+    """Load one provider configuration.
 
     The providers.yaml file can either use the Stage 2 shape
     ``{default: name, providers: {name: config}}`` or directly map provider
@@ -64,7 +65,7 @@ def load_provider_config(config_dir: Path, provider_name: str = "default") -> Pr
 
     Environment variables like ${DEEPSEEK_API_KEY} are expanded at load time.
     """
-    all_data = load_yaml(config_dir / "config" / "providers.yaml")
+    all_data = load_yaml(paths.providers_config)
     if not all_data:
         return ProviderConfig()
 
@@ -83,9 +84,9 @@ def load_provider_config(config_dir: Path, provider_name: str = "default") -> Pr
     return ProviderConfig(**section)
 
 
-def load_provider_names(config_dir: Path) -> tuple[str, list[str]]:
+def load_provider_names(paths: RuntimePaths) -> tuple[str, list[str]]:
     """Return the configured default provider name and provider names."""
-    all_data = load_yaml(config_dir / "config" / "providers.yaml")
+    all_data = load_yaml(paths.providers_config)
     if not all_data:
         return "default", []
     providers = all_data.get("providers") if isinstance(all_data.get("providers"), dict) else all_data
@@ -94,11 +95,11 @@ def load_provider_names(config_dir: Path) -> tuple[str, list[str]]:
     return default, names
 
 
-def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemConfig:
-    """Load runtime config from config/system.yaml, workspace AGENTS.md, and data/memory/MEMORY.md."""
-    data = load_yaml(config_dir / "config" / "system.yaml")
-    permissions = load_yaml(config_dir / "config" / "permissions.yaml")
-    sandbox = load_yaml(config_dir / "config" / "sandbox.yaml")
+def load_system_config(paths: RuntimePaths, workspace_root: Path | str) -> SystemConfig:
+    """Load global configuration and workspace instructions."""
+    data = load_yaml(paths.system_config)
+    permissions = load_yaml(paths.permissions_config)
+    sandbox = load_yaml(paths.sandbox_config)
     if permissions:
         data["permissions"] = permissions
     if sandbox:
@@ -111,9 +112,8 @@ def load_system_config(config_dir: Path, workspace_root: Path | str) -> SystemCo
         data["instructions"] = "\n\n".join(
             part for part in (existing, agents_text) if part.strip()
         )
-    memory_path = config_dir / "memory" / "MEMORY.md"
+    memory_path = paths.memory_file
     if memory_path.exists():
         data["memory"] = memory_path.read_text(encoding="utf-8")
     return SystemConfig(**data)
-
 

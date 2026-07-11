@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from xbotv2.api.paths import RuntimePaths
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
@@ -83,7 +84,7 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     app = create_app(
         provider_name="default",
-        data_dir=str(data_dir),
+        paths=RuntimePaths.from_data_dir(data_dir),
         no_plugins=True,
     )
     # Inject a mock LLM that returns one canned response per turn.
@@ -225,7 +226,7 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     body = result_response.json()
     assert body["type"] == "command_result"
     assert body["data"]["data"]["session_id"] == "cmds"
-    state_root = Path(http_app.state.data_dir) / "sessions" / "cmds" / "state"
+    state_root = http_app.state.paths.session("cmds").state_dir
     messages_path = state_root / "messages.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
     assert "command_result" not in messages
@@ -275,7 +276,7 @@ async def test_http_policy_commands_update_session_overrides(
     assert sandbox_response.status_code == 200
     assert status_response.status_code == 200
     assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
-    state_root = Path(http_app.state.data_dir) / "sessions" / "policy" / "state"
+    state_root = http_app.state.paths.session("policy").state_dir
     events_path = state_root / "events.jsonl"
     events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
     assert "permission_override_set" not in events
@@ -447,7 +448,7 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
     )
     app = create_app(
         provider_name="default",
-        data_dir=str(data_dir),
+        paths=RuntimePaths.from_data_dir(data_dir),
         no_plugins=True,
     )
 
@@ -760,7 +761,7 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
 
     app = create_app(
         provider_name="default",
-        data_dir=str(data_dir),
+        paths=RuntimePaths.from_data_dir(data_dir),
         workspace_root=str(workspace),
         no_plugins=True,
     )
@@ -858,7 +859,7 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         encoding="utf-8",
     )
 
-    app = create_app(provider_name="default", data_dir=str(data_dir), no_plugins=False)
+    app = create_app(provider_name="default", paths=RuntimePaths.from_data_dir(data_dir), no_plugins=False)
     set_llm_override(app, MockLLM(responses=[{"content": "ok"}]))
     return app
 
@@ -918,7 +919,7 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
     assert ctx.engine.sandbox_policy.external_read == "deny"
 
     # policy.yaml file was written
-    policy_path = Path(ctx.data_dir) / "sessions" / "sandbox-persist" / "policy.yaml"
+    policy_path = ctx.paths.session("sandbox-persist").policy_file
     assert policy_path.exists()
     import yaml
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))

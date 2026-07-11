@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
 from xbotv2.persistence.store import (
     CoreStateStore,
     message_to_dict,
@@ -19,7 +19,8 @@ from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import Tool, ToolCall
+from xbotv2.api.paths import RuntimePaths
 
 
 # ------------------------------------------------------------------
@@ -48,7 +49,7 @@ class TestMessageSerialization:
             role="assistant",
             content="calling tool",
             tool_calls=[
-                {"name": "shell", "args": {"command": "ls"}, "id": "call_1", "type": "tool_call"},
+                ToolCall("call_1", "shell", {"command": "ls"}),
             ],
         )
         d = message_to_dict(msg)
@@ -56,7 +57,7 @@ class TestMessageSerialization:
         assert restored.role == "assistant"
         assert restored.tool_calls is not None
         assert len(restored.tool_calls) == 1
-        assert restored.tool_calls[0]["name"] == "shell"
+        assert restored.tool_calls[0].name == "shell"
 
     def test_ai_message_metadata_roundtrip(self):
         msg = Message(
@@ -132,8 +133,7 @@ class TestMessagePersistence:
     @pytest.fixture
     def store(self, tmp_path):
         return CoreStateStore.create(
-            tmp_path / "state",
-            session_id="s1",
+            RuntimePaths.from_data_dir(tmp_path).session("s1"),
             thread_id="t1",
             workspace_root="/workspace",
             provider="default",
@@ -235,12 +235,11 @@ class TestMessagePersistence:
 
     def test_persistence_survives_store_recreation(self, tmp_path):
         """Messages persist even after creating a new store instance."""
-        root = tmp_path / "state"
+        paths = RuntimePaths.from_data_dir(tmp_path).session("s1")
 
         # First store — write messages
         store1 = CoreStateStore.create(
-            root,
-            session_id="s1",
+            paths,
             thread_id="t1",
             workspace_root="/workspace",
             provider="p",
@@ -250,8 +249,7 @@ class TestMessagePersistence:
 
         # Second store — read them back
         store2 = CoreStateStore(
-            root=root,
-            session_id="s1",
+            paths=paths,
             thread_id="t1",
             workspace_root="/workspace",
             provider="p",
@@ -271,7 +269,7 @@ def echo(message: str) -> str:
     """Echo a message."""
     return f"Echo: {message}"
 
-echo_tool = XBotTool.from_function(echo, name="echo")
+echo_tool = Tool.from_function(echo, name="echo")
 
 
 def make_engine(llm, registry, store, workspace, hook_manager=None):
@@ -294,8 +292,7 @@ class TestEnginePersistence:
     async def test_messages_persisted_after_turn(self, temp_data_dir, temp_workspace):
         """After run_turn, messages are on disk."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "Hello!"}])
         registry = ToolRegistry()
@@ -316,8 +313,7 @@ class TestEnginePersistence:
     async def test_session_restores_messages(self, temp_data_dir, temp_workspace):
         """A new engine on the same store restores previous messages."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
         registry = ToolRegistry()
@@ -341,8 +337,7 @@ class TestEnginePersistence:
     async def test_engine_save_preserves_existing_message_ids(self, temp_data_dir, temp_workspace):
         """Repeated turn saves do not churn ids for unchanged history messages."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
         registry = ToolRegistry()
@@ -366,8 +361,7 @@ class TestEnginePersistence:
     async def test_resume_session_explicit(self, temp_data_dir, temp_workspace):
         """Explicit resume_session loads messages and turn count."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "Before resume"}])
         registry = ToolRegistry()
@@ -389,8 +383,7 @@ class TestEnginePersistence:
     async def test_tool_call_messages_persist(self, temp_data_dir, temp_workspace):
         """Messages with tool calls round-trip through persistence."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[
             {
@@ -414,14 +407,13 @@ class TestEnginePersistence:
         # Verify tool call detail preserved
         model_msgs = [m for m in restored if getattr(m, "tool_calls", None)]
         assert len(model_msgs) >= 1
-        assert model_msgs[0].tool_calls[0]["name"] == "echo"
+        assert model_msgs[0].tool_calls[0].name == "echo"
 
     @pytest.mark.asyncio
     async def test_compacted_messages_saved(self, temp_data_dir, temp_workspace):
         """After messages are truncated (simulating compaction), save reflects it."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         llm = MockLLM(responses=[{"content": "R1"}, {"content": "R2"}, {"content": "R3"}])
         registry = ToolRegistry()
@@ -444,8 +436,7 @@ class TestEnginePersistence:
     async def test_fresh_session_has_no_messages(self, temp_data_dir, temp_workspace):
         """A brand-new session starts with zero messages."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="fresh", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("fresh"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         assert store.message_count() == 0
         assert store.has_existing_session() is False
@@ -460,8 +451,7 @@ class TestEnginePersistence:
     async def test_message_count_in_derived_state(self, temp_data_dir, temp_workspace):
         """Message count is tracked."""
         store = CoreStateStore.create(
-            temp_data_dir / "state",
-            session_id="s1", thread_id="t1", workspace_root="/workspace", provider="p",
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
         )
         store.append_message(Message(role="user", content="m1"))
         store.append_message(Message(role="assistant", content="m2"))

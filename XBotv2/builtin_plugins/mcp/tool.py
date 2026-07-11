@@ -1,4 +1,4 @@
-"""MCPTool — wraps an MCP server tool as an XBotTool-compatible callable."""
+"""MCPTool — wraps an MCP server tool as an Tool-compatible callable."""
 
 from __future__ import annotations
 

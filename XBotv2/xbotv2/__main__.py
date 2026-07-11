@@ -31,6 +31,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from xbotv2.api.paths import RuntimePaths
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -154,8 +156,8 @@ def _run_server(args) -> None:
     from xbotv2.protocol.http_server import create_app
 
     app = create_app(
+        paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
-        data_dir=args.data_dir,
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
     )
@@ -337,13 +339,11 @@ async def _terminal_loop(args):
     """Direct engine terminal session — reads from stdin, prints responses."""
     from xbotv2.core.bootstrap import bootstrap
 
-    data_dir = Path(args.data_dir).resolve()
-
     print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
 
     try:
         engine = await bootstrap(
-            config_dir=str(data_dir),
+            paths=RuntimePaths.from_data_dir(args.data_dir),
             provider_name=args.provider,
             session_id=getattr(args, "session", None),
             thread_id=getattr(args, "thread", "agent"),
@@ -408,11 +408,9 @@ def _run_once(args):
         print("Error: --mode once requires a prompt argument")
         sys.exit(1)
 
-    data_dir = Path(args.data_dir).resolve()
-
     async def single_shot():
         engine = await bootstrap(
-            config_dir=str(data_dir),
+            paths=RuntimePaths.from_data_dir(args.data_dir),
             provider_name=args.provider,
             session_id=getattr(args, "session", None),
             thread_id=getattr(args, "thread", "agent"),

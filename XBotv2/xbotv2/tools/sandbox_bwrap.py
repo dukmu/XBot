@@ -8,7 +8,6 @@ arguments or make access decisions.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -73,12 +72,10 @@ class BubblewrapBackend:
     ) -> str:
         proc = await self.create_process(payload, mount_specs, cwd=cwd)
         stdout, stderr = await self.communicate(proc, stdin=stdin)
-        return _format_result(stdout, stderr, proc.returncode)
-
-
-def _format_result(stdout: str, stderr: str, returncode: int) -> str:
-    payload = {"stdout": stdout, "stderr": stderr, "exit_code": returncode}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+        if proc.returncode:
+            detail = stderr.strip() or stdout.strip() or "no error output"
+            raise RuntimeError(f"Sandbox command failed with exit code {proc.returncode}: {detail}")
+        return stdout
 
 
 def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str) -> list[str]:

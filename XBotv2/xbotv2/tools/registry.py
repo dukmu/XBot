@@ -99,7 +99,7 @@ class ToolRegistry:
     def get(self, name: str) -> ToolEntry | None:
         if name in self._entries and self._is_enabled(name):
             return self._entries[name]
-        # Fallback: match by tool display name (XBotTool.name attribute)
+        # Fallback: match by tool display name.
         for full_name, entry in self._entries.items():
             if getattr(entry.tool, "name", "") == name and self._is_enabled(full_name):
                 return entry

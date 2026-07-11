@@ -17,7 +17,9 @@ from typing import Any
 
 import yaml
 
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
+from xbotv2.api.paths import SessionPaths
+from xbotv2.api.tools import ToolCall
 
 
 def now_iso() -> str:
@@ -33,7 +35,7 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
     if msg.name:
         d["name"] = msg.name
     if msg.tool_calls:
-        d["tool_calls"] = _json_safe(list(msg.tool_calls))
+        d["tool_calls"] = [call.to_dict() for call in msg.tool_calls]
     if msg.tool_call_id:
         d["tool_call_id"] = msg.tool_call_id
     if msg.additional_kwargs:
@@ -55,7 +57,7 @@ def dict_to_message(d: dict[str, Any]) -> Message:
         role=d.get("role", "assistant"),
         content=d.get("content", ""),
         status=d.get("status", ""),
-        tool_calls=list(d.get("tool_calls") or []),
+        tool_calls=[ToolCall.from_dict(call) for call in d.get("tool_calls") or []],
         tool_call_id=d.get("tool_call_id", ""),
         name=d.get("name", ""),
         additional_kwargs=dict(d.get("additional_kwargs") or {}),
@@ -83,42 +85,39 @@ class CoreStateStore:
 
     def __init__(
         self,
-        root: Path,
+        paths: SessionPaths,
         *,
-        session_id: str,
         thread_id: str,
         workspace_root: str,
         provider: str,
     ) -> None:
-        self.root = Path(root)
-        self.session_id = session_id
+        self.paths = paths
+        self.root = paths.state_dir
+        self.session_id = paths.session_id
         self.thread_id = thread_id
         self.workspace_root = workspace_root
         self.provider = provider
 
-        self.messages_path = self.root / "messages.jsonl"
-        self.plugin_states_dir = self.root / "plugin_states"
-        self.artifacts_dir = self.root / "artifacts"
+        self.messages_path = paths.messages_file
+        self.plugin_states_dir = paths.plugin_states_dir
+        self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
 
     @classmethod
     def create(
         cls,
-        root: Path,
+        paths: SessionPaths,
         *,
-        session_id: str,
         thread_id: str,
         workspace_root: str,
         provider: str,
     ) -> "CoreStateStore":
-        root = Path(root)
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "plugin_states").mkdir(exist_ok=True)
-        (root / "artifacts").mkdir(exist_ok=True)
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        paths.plugin_states_dir.mkdir(exist_ok=True)
+        paths.artifacts_dir.mkdir(exist_ok=True)
 
         store = cls(
-            root=root,
-            session_id=session_id,
+            paths=paths,
             thread_id=thread_id,
             workspace_root=workspace_root,
             provider=provider,

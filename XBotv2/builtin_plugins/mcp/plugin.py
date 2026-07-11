@@ -11,7 +11,7 @@ from xbotv2.api import (
     PluginManifest,
     PluginSetupContext,
     PluginStore,
-    XBotTool,
+    Tool,
 )
 
 from .client import MCPClient, MCPConnectionError
@@ -61,7 +61,7 @@ class MCPPlugin(PluginBase):
             for tool_def in tools:
                 mcp_tool = MCPTool(self._client, server_name, tool_def)
                 tool_name = f"mcp__{server_name}__{tool_def['name']}"
-                xbot_tool = XBotTool.from_function(mcp_tool, name=tool_name)
+                xbot_tool = Tool.from_function(mcp_tool, name=tool_name)
                 try:
                     ctx.tools.register(xbot_tool, sandbox_mode="host", owner_plugin=self.manifest.name, namespace=f"mcp:{server_name}")
                     registered += 1

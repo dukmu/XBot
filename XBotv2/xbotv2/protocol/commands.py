@@ -86,7 +86,7 @@ def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     if action == "list":
         from xbotv2.config.loader import load_provider_names
 
-        default, names = load_provider_names(Path(ctx.data_dir))
+        default, names = load_provider_names(ctx.paths)
         current = ctx.provider_name
         if not names:
             return _result("provider", "No providers configured.", data={"default": default, "providers": []})
@@ -102,10 +102,10 @@ def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         from xbotv2.llm.client import create_llm
 
         provider_name = args[1]
-        _default, names = load_provider_names(Path(ctx.data_dir))
+        _default, names = load_provider_names(ctx.paths)
         if provider_name not in names:
             return _result("provider", f"Unknown provider: {provider_name}", status="error")
-        provider_config = load_provider_config(Path(ctx.data_dir), provider_name)
+        provider_config = load_provider_config(ctx.paths, provider_name)
         ctx.engine.llm = create_llm(provider_config)
         ctx.provider_name = provider_name
         if hasattr(ctx.engine.config, "provider"):
@@ -214,9 +214,8 @@ def _reload_live_policies(ctx: Any) -> None:
     from xbotv2.tools.permissions import PermissionSystem
     from xbotv2.tools.sandbox import SandboxPolicy
 
-    data_dir = Path(ctx.data_dir)
-    base_config = load_system_config(data_dir, Path(ctx.workspace_root))
-    session_policy = load_session_policy(data_dir, ctx.session_id)
+    base_config = load_system_config(ctx.paths, Path(ctx.workspace_root))
+    session_policy = load_session_policy(ctx.paths, ctx.session_id)
     permissions = merge_permission_config(
         base_config.permissions,
         session_policy.get("permissions"),
@@ -236,7 +235,7 @@ def _reload_live_policies(ctx: Any) -> None:
     ctx.engine.permission_system = PermissionSystem(permissions)
     sandbox_policy = SandboxPolicy(
         sandbox,
-        data_root=data_dir,
+        data_root=ctx.paths.data_dir,
         workspace_root=Path(ctx.workspace_root),
     )
     ctx.engine.sandbox_policy = sandbox_policy
@@ -249,7 +248,7 @@ def _persist_sandbox_overrides(ctx: Any, key: str, value: Any) -> None:
     from xbotv2.config.policy import persist_sandbox_config
     try:
         persist_sandbox_config(
-            config_dir=Path(ctx.data_dir),
+            paths=ctx.paths,
             session_id=ctx.session_id,
             sandbox=dict(overrides),
         )
@@ -268,7 +267,7 @@ def _clear_sandbox_overrides(ctx: Any) -> None:
     from xbotv2.config.policy import clear_sandbox_config
     try:
         clear_sandbox_config(
-            config_dir=Path(ctx.data_dir),
+            paths=ctx.paths,
             session_id=ctx.session_id,
         )
     except Exception as exc:

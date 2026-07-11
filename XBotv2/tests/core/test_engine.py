@@ -6,13 +6,13 @@ from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder, ContextComponent
 from xbotv2.core.builtin_tools.shell import shell
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage
+from xbotv2.api.hooks import HookStage
 from xbotv2.llm.mock import MockLLM
-from xbotv2.llm.messages import Message
+from xbotv2.api.messages import Message
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import Tool
 
 
 def tool_name(tool):
@@ -23,12 +23,12 @@ def tool_name(tool):
 
 def echo(message: str) -> str:
     return f"Echo: {message}"
-echo_tool = XBotTool.from_function(echo, name="echo")
+echo_tool = Tool.from_function(echo, name="echo")
 
 
 def shout(message: str) -> str:
     return message.upper()
-shout_tool = XBotTool.from_function(shout, name="shout")
+shout_tool = Tool.from_function(shout, name="shout")
 
 
 def send_notice(message: str) -> dict:
@@ -36,7 +36,7 @@ def send_notice(message: str) -> dict:
         "content": "notice sent",
         "events": [{"type": "client_message", "data": {"message": message}}],
     }
-send_notice_tool = XBotTool.from_function(send_notice, name="send_notice")
+send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 
 
 def request_input(question: str) -> dict:
@@ -813,16 +813,16 @@ class TestEngineHooks:
         calls = []
 
         async def parsed(ctx):
-            calls.append(("parsed", [call["name"] for call in ctx.tool_calls]))
+            calls.append(("parsed", [call.name for call in ctx.tool_calls]))
 
         async def before_call(ctx):
-            calls.append(("before", ctx.tool_call["name"]))
+            calls.append(("before", ctx.tool_call.name))
 
         async def after_call(ctx):
-            calls.append(("after", ctx.tool_call["name"], ctx.tool_result.status))
+            calls.append(("after", ctx.tool_call.name, ctx.tool_result.status))
 
         async def denied(ctx):
-            calls.append(("denied", ctx.tool_call["name"], type(ctx.error).__name__))
+            calls.append(("denied", ctx.tool_call.name, type(ctx.error).__name__))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.ON_TOOL_CALLS_PARSED, parsed)
@@ -1504,4 +1504,3 @@ async def test_persist_permission_if_session_scope_writes_to_disk(state_store, t
 
     engine.persist_permission_if_session_scope(client_event, result)
     assert True
-

@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from xbotv2.api.paths import RuntimePaths
 import yaml
 
 from xbotv2.core.bootstrap import _resolve_plugin_dirs, bootstrap
@@ -16,7 +17,7 @@ class TestBootstrapBasics:
     async def test_bootstrap_creates_engine(self, temp_data_dir):
         """Bootstrap returns a working engine."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -30,7 +31,7 @@ class TestBootstrapBasics:
         """Runtime identifiers cannot escape the configured data directory."""
         with pytest.raises(ValueError, match="session_id"):
             await bootstrap(
-                config_dir=str(temp_data_dir),
+                paths=RuntimePaths.from_data_dir(temp_data_dir),
                 session_id="../escape",
                 thread_id="test-thread",
                 plugin_dirs=[],
@@ -43,7 +44,7 @@ class TestBootstrapBasics:
     async def test_bootstrap_registers_core_tools(self, temp_data_dir):
         """Core base tools are always registered."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -66,7 +67,7 @@ class TestBootstrapBasics:
         system.write_text("tools:\n  - filesystem_read\n", encoding="utf-8")
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -83,7 +84,7 @@ class TestBootstrapBasics:
         system.write_text("tools:\n  - no_such_tool\n", encoding="utf-8")
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -123,7 +124,7 @@ def plugin_tool() -> str:
         system.write_text("tools:\n  - plugin_tool\n", encoding="utf-8")
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[plugins_root],
@@ -160,7 +161,7 @@ hooks:
         )
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -187,7 +188,7 @@ hooks:
 
         with pytest.raises(ModuleNotFoundError):
             await bootstrap(
-                config_dir=str(temp_data_dir),
+                paths=RuntimePaths.from_data_dir(temp_data_dir),
                 session_id="test-session",
                 thread_id="test-thread",
                 plugin_dirs=[],
@@ -212,7 +213,7 @@ version: 0.1.0
         (plugin_dir / "__init__.py").write_text(
             f"""
 import json
-from xbotv2.plugin.base import PluginBase
+from xbotv2.api.plugins import PluginBase
 
 class ConfiguredPlugin(PluginBase):
     async def on_load(self, config=None):
@@ -223,7 +224,7 @@ class ConfiguredPlugin(PluginBase):
         monkeypatch.syspath_prepend(str(plugin_dir))
 
         await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[plugin_root],
@@ -237,7 +238,7 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_engine_runs_turn(self, temp_data_dir, temp_workspace):
         """Engine from bootstrap can run a turn."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -255,7 +256,7 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_creates_state(self, temp_data_dir):
         """Bootstrap creates the state store with messages file."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -273,7 +274,7 @@ class ConfiguredPlugin(PluginBase):
         )
         llm = MockLLM(responses=[{"content": "ok"}])
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             workspace_root=temp_workspace,
@@ -303,7 +304,7 @@ class ConfiguredPlugin(PluginBase):
             {"content": "done"},
         ])
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             workspace_root=temp_workspace,
@@ -320,7 +321,7 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_default_session_id_is_generated(self, temp_data_dir):
         """Omitting session_id creates a fresh generated session instead of default."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             thread_id="test-thread",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
@@ -350,7 +351,7 @@ class ConfiguredPlugin(PluginBase):
         )
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
@@ -382,7 +383,7 @@ class TestBootstrapNoPlugins:
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):
         """Core engine with no plugins runs ReAct correctly."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],  # Explicitly no plugin dirs
@@ -404,7 +405,7 @@ class TestMemoryLoading:
         (temp_data_dir / "memory" / "MEMORY.md").write_text("# Custom Memory\n\nImportant facts.\n")
 
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="mem-test",
             thread_id="t",
             plugin_dirs=[],
@@ -416,7 +417,7 @@ class TestMemoryLoading:
     async def test_memory_md_missing_no_error(self, temp_data_dir):
         """Bootstrap works fine when MEMORY.md doesn't exist."""
         engine = await bootstrap(
-            config_dir=str(temp_data_dir),
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="mem-missing",
             thread_id="t",
             plugin_dirs=[],

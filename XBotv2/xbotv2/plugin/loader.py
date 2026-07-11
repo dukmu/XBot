@@ -12,10 +12,9 @@ import yaml
 
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage
+from xbotv2.api.hooks import HookStage
+from xbotv2.api.plugins import PluginBase, PluginManifest
 from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.base import PluginBase, PluginSetupContext
-from xbotv2.plugin.manifest import PluginManifest
 from xbotv2.plugin.store import PluginStore
 from xbotv2.tools.registry import ToolRegistry
 
@@ -28,6 +27,45 @@ class LoadedPluginRecord:
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
     fragment_stages: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _PluginSetupContext:
+    """Transactional adapter from the public plugin API to core services."""
+
+    plugin_name: str
+    hooks: HookManager
+    tools: ToolRegistry
+    context: ContextBuilder
+    hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
+    tool_names: list[str] = field(default_factory=list)
+    fragment_stages: list[str] = field(default_factory=list)
+
+    def register_hook(self, stage: HookStage, callback: Any) -> None:
+        self.hooks.register(stage, callback)
+        self.hook_refs.append((stage, callback))
+
+    def register_tool(self, tool: Any, **options: Any) -> str:
+        before = set(self.tools.registered_names())
+        self.tools.register(tool, owner_plugin=self.plugin_name, **options)
+        added = [name for name in self.tools.registered_names() if name not in before]
+        if len(added) != 1:
+            raise RuntimeError("Plugin tool registration must add exactly one tool")
+        self.tool_names.extend(added)
+        return added[0]
+
+    def add_prompt_fragment(self, stage: str, text: str) -> None:
+        self.context.register_fragment(stage, self.plugin_name, text)
+        if stage not in self.fragment_stages:
+            self.fragment_stages.append(stage)
+
+    def rollback(self) -> None:
+        for stage, callback in reversed(self.hook_refs):
+            self.hooks.unregister(stage, callback)
+        for tool_name in reversed(self.tool_names):
+            self.tools.unregister(tool_name)
+        for stage in reversed(self.fragment_stages):
+            self.context.unregister_fragment(stage, self.plugin_name)
 
 
 class PluginLoader:
@@ -165,7 +203,7 @@ class PluginLoader:
 
     def _register(self, plugin: Any) -> LoadedPluginRecord:
         plugin_name = plugin.manifest.name
-        setup = PluginSetupContext(
+        setup = _PluginSetupContext(
             plugin_name=plugin_name,
             hooks=self.hook_manager,
             tools=self.tool_registry,

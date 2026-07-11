@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from xbotv2.contracts import ClientEvent, ToolResult
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import ClientEvent, ToolResult
+from xbotv2.api.tools import Tool
 
 
 def send_message_to_user(message: str, level: str = "info") -> ToolResult:
@@ -55,7 +55,7 @@ def ask_user_for_input(
     )
 
 
-send_message = XBotTool.from_function(send_message_to_user, name="send_message")
-ask_user = XBotTool.from_function(ask_user_for_input, name="ask_user")
+send_message = Tool.from_function(send_message_to_user, name="send_message")
+ask_user = Tool.from_function(ask_user_for_input, name="ask_user")
 
 INTERACTION_TOOLS = [send_message, ask_user]

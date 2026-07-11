@@ -6,8 +6,15 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from xbotv2.contracts import HookAction, HookDecision
-from xbotv2.hooks.types import HookFn, HookStage, HookContext, SHORT_CIRCUIT_STAGES, STRICT_FAILURE_STAGES
+from xbotv2.api.hooks import (
+    HookAction,
+    HookContext,
+    HookDecision,
+    HookFn,
+    HookStage,
+    SHORT_CIRCUIT_STAGES,
+    STRICT_FAILURE_STAGES,
+)
 
 logger = logging.getLogger("xbotv2.hooks")
 

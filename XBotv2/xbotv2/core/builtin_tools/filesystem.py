@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from xbotv2.contracts import ToolResult
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import ToolResult
+from xbotv2.api.tools import Tool
 
 WriteMode = Literal[
     "overwrite", "append", "prepend", "insert_line",
@@ -368,11 +368,11 @@ def _json_error(code: str, message: str, **extra: Any) -> ToolResult:
     )
 
 
-filesystem_read = XBotTool.from_function(read_file, name="filesystem_read")
-filesystem_write = XBotTool.from_function(write_file, name="filesystem_write")
-filesystem_list = XBotTool.from_function(list_files, name="filesystem_list")
-filesystem_search = XBotTool.from_function(search_text, name="search_text")
-filesystem_find = XBotTool.from_function(find_files, name="find_files")
+filesystem_read = Tool.from_function(read_file, name="filesystem_read")
+filesystem_write = Tool.from_function(write_file, name="filesystem_write")
+filesystem_list = Tool.from_function(list_files, name="filesystem_list")
+filesystem_search = Tool.from_function(search_text, name="search_text")
+filesystem_find = Tool.from_function(find_files, name="find_files")
 FILESYSTEM_TOOLS = [
     filesystem_read,
     filesystem_write,

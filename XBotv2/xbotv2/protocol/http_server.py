@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from xbotv2.api.protocol import (
+from xbotv2.protocol.models import (
     CommandRequest,
     CommandListResponse,
     CommandResponse,
@@ -33,6 +33,7 @@ from xbotv2.api.protocol import (
     OpenSessionRequest,
     OpenSessionResponse,
 )
+from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
 from xbotv2.protocol.frames import PROTOCOL_VERSION
@@ -59,7 +60,7 @@ class SessionContext:
     session_id: str
     thread_id: str
     provider_name: str
-    data_dir: str
+    paths: RuntimePaths
     workspace_root: str
     no_plugins: bool
     engine: Any
@@ -85,7 +86,8 @@ class SessionContext:
 class SessionManager:
     """Owns active HTTP sessions keyed by session id."""
 
-    def __init__(self) -> None:
+    def __init__(self, paths: RuntimePaths) -> None:
+        self.paths = paths
         self._sessions: dict[str, SessionContext] = {}
         self._lock = asyncio.Lock()
 
@@ -106,7 +108,6 @@ class SessionManager:
         session_id: str | None,
         thread_id: str,
         provider_name: str,
-        data_dir: str,
         workspace_root: str,
         mode: str = "new",
         no_plugins: bool,
@@ -126,13 +127,13 @@ class SessionManager:
                 if mode == "resume":
                     return existing
                 raise SessionExists(session_id)
-            state_root = Path(data_dir) / "sessions" / session_id / "state"
-            if mode == "resume" and not state_root.exists():
+            session_paths = self.paths.session(session_id)
+            if mode == "resume" and not session_paths.state_dir.exists():
                 raise SessionNotFound(session_id)
-            if mode == "new" and state_root.exists():
+            if mode == "new" and session_paths.state_dir.exists():
                 raise SessionExists(session_id)
             engine = await bootstrap(
-                config_dir=data_dir,
+                paths=self.paths,
                 provider_name=provider_name,
                 session_id=session_id,
                 thread_id=thread_id,
@@ -145,7 +146,7 @@ class SessionManager:
                 session_id=session_id,
                 thread_id=thread_id,
                 provider_name=provider_name,
-                data_dir=data_dir,
+                paths=self.paths,
                 workspace_root=workspace_root,
                 no_plugins=no_plugins,
                 engine=engine,
@@ -179,8 +180,8 @@ class HttpServerError(Exception):
 
 def create_app(
     *,
+    paths: RuntimePaths,
     provider_name: str = "default",
-    data_dir: str = "data",
     workspace_root: str | None = None,
     no_plugins: bool = False,
     server_name: str = "xbotv2",
@@ -193,7 +194,7 @@ def create_app(
     """
 
     started_at = time.monotonic()
-    manager = SessionManager()
+    manager = SessionManager(paths)
     # Stash the LLM override on app.state so the open_session route can use it.
     # This is a test seam: production passes llm_override=None and the server
     # loads the configured provider. Tests pass a MockLLM to skip network.
@@ -210,7 +211,7 @@ def create_app(
     app.state.manager = manager
     app.state.server_name = server_name
     app.state.provider_name = provider_name
-    app.state.data_dir = data_dir
+    app.state.paths = paths
     app.state.workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
     app.state.no_plugins = no_plugins
     app.state.started_at = started_at
@@ -264,7 +265,6 @@ def _register_routes(app: FastAPI) -> None:
                 session_id=raw_session_id,
                 thread_id=thread_id,
                 provider_name=app.state.provider_name,
-                data_dir=app.state.data_dir,
                 workspace_root=workspace_root,
                 mode=payload.mode,
                 no_plugins=app.state.no_plugins,

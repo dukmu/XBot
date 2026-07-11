@@ -32,10 +32,11 @@ from xbotv2.config.policy import (
     merge_permission_config,
     merge_sandbox_config,
 )
+from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookContext, HookStage
+from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.tools.permissions import PermissionSystem
@@ -74,7 +75,7 @@ CORE_BASE_TOOLS = [
 
 async def bootstrap(
     *,
-    config_dir: Path | str = "data",
+    paths: RuntimePaths,
     provider_name: str = "default",
     session_id: str | None = None,
     thread_id: str = "agent",
@@ -86,7 +87,7 @@ async def bootstrap(
     """Bootstrap the complete XBotv2 runtime.
 
     Args:
-        config_dir: Root data directory with config/ and sessions/.
+        paths: Canonical runtime filesystem layout.
         provider_name: Provider config name.
         session_id: Session identifier.
         thread_id: session thread identifier.
@@ -99,7 +100,6 @@ async def bootstrap(
     Returns:
         A fully-wired Engine ready to run turns.
     """
-    config_dir = Path(config_dir)
     _validate_identifier("provider_name", provider_name)
     session_id = session_id or _new_session_id()
     _validate_identifier("session_id", session_id)
@@ -108,12 +108,12 @@ async def bootstrap(
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    agent_config = load_system_config(config_dir, workspace_root)
+    agent_config = load_system_config(paths, workspace_root)
     provider_name = provider_name or agent_config.provider
-    provider_config = load_provider_config(config_dir, provider_name)
-    load_user_context(config_dir)  # Validates config exists
+    provider_config = load_provider_config(paths, provider_name)
+    load_user_context(paths)
 
-    session_policy = load_session_policy(config_dir, session_id)
+    session_policy = load_session_policy(paths, session_id)
     agent_config.permissions = merge_permission_config(
         agent_config.permissions,
         session_policy.get("permissions"),
@@ -128,12 +128,11 @@ async def bootstrap(
         _plugin_configs = {**_plugin_configs, **agent_config.plugins}
 
     # Ensure session state directory
-    state_root = config_dir / "sessions" / session_id / "state"
+    session_paths = paths.session(session_id)
 
     # 2. Create CoreStateStore
     state_store = CoreStateStore.create(
-        state_root,
-        session_id=session_id,
+        session_paths,
         thread_id=thread_id,
         workspace_root=str(workspace_root),
         provider=provider_name,
@@ -162,7 +161,7 @@ async def bootstrap(
     # 5. Create SandboxPolicy + PermissionSystem
     sandbox = SandboxPolicy(
         agent_config.sandbox,
-        data_root=config_dir,
+        data_root=paths.data_dir,
         workspace_root=workspace_root,
     )
     permissions = PermissionSystem(agent_config.permissions)
@@ -190,7 +189,7 @@ async def bootstrap(
         llm = create_llm(provider_config)
 
     # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
-    from xbotv2.core.state import SessionInfo
+    from xbotv2.api.runtime import SessionInfo
     init_ctx = HookContext(
         stage=HookStage.ON_SESSION_INIT,
         state={},
@@ -224,7 +223,6 @@ async def bootstrap(
         permission_system=permissions,
         workspace_root=str(workspace_root),
         config=agent_config,
-        data_dir=str(config_dir),
     )
     engine.plugin_loader = plugin_loader
 

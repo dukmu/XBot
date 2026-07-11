@@ -62,10 +62,10 @@ class TestSandboxPolicyBasics:
         assert isinstance(policy.backend_available, bool)
 
     @pytest.mark.asyncio
-    async def test_capability_unwraps_backend_stdout(self, temp_workspace):
+    async def test_capability_returns_backend_stdout(self, temp_workspace):
         class Backend:
             async def run(self, *args, **kwargs):
-                return json.dumps({"stdout": "result\n", "stderr": "", "exit_code": 0})
+                return "result\n"
 
         policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
         policy._backend = Backend()
@@ -76,7 +76,7 @@ class TestSandboxPolicyBasics:
     async def test_capability_raises_on_backend_failure(self, temp_workspace):
         class Backend:
             async def run(self, *args, **kwargs):
-                return json.dumps({"stdout": "", "stderr": "denied", "exit_code": 2})
+                raise RuntimeError("Sandbox command failed with exit code 2: denied")
 
         policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
         policy._backend = Backend()

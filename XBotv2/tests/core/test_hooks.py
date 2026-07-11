@@ -4,7 +4,7 @@ import pytest
 from xbotv2.api import HookAction, HookDecision
 
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookStage, HookContext, SessionInfo
+from xbotv2.api.hooks import HookStage, HookContext, SessionInfo
 
 
 # ------------------------------------------------------------------
@@ -284,7 +284,7 @@ class TestAllStages:
 
     def test_short_circuit_stages(self):
         """Only loop stages permit short-circuit."""
-        from xbotv2.hooks.types import SHORT_CIRCUIT_STAGES
+        from xbotv2.api.hooks import SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_CONTEXT in SHORT_CIRCUIT_STAGES
         assert HookStage.PRE_COMPACT in SHORT_CIRCUIT_STAGES
         assert HookStage.BEFORE_CONTEXT_BUILD in SHORT_CIRCUIT_STAGES

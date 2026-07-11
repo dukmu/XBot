@@ -9,26 +9,26 @@ from xbotv2.core.builtin_tools.filesystem import filesystem_write
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookContext, HookStage, SessionInfo
+from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.tools.types import XBotTool
+from xbotv2.api.tools import Tool, ToolCall
 
 
 def large_output() -> str:
     """Return a large deterministic string."""
     return "x" * 200
-large_output_tool = XBotTool.from_function(large_output, name="large_output")
+large_output_tool = Tool.from_function(large_output, name="large_output")
 
 
 def failing_tool() -> str:
     """Raise a deterministic tool failure."""
     raise RuntimeError("boom")
-failing_tool_tool = XBotTool.from_function(failing_tool, name="failing_tool")
+failing_tool_tool = Tool.from_function(failing_tool, name="failing_tool")
 
 
 @pytest.mark.asyncio
@@ -36,12 +36,12 @@ async def test_sync_langchain_tool_uses_invoke_not_ainvoke(monkeypatch):
     def sync_tool(message: str) -> str:
         return f"ok:{message}"
 
-    xbot_tool = XBotTool.from_function(sync_tool, name="sync_tool")
+    xbot_tool = Tool.from_function(sync_tool, name="sync_tool")
     registry = ToolRegistry()
     registry.register(xbot_tool, sandbox_mode="host")
 
     results = await execute_tools(
-        [{"name": "sync_tool", "args": {"message": "hello"}, "id": "c1"}],
+        [ToolCall("c1", "sync_tool", {"message": "hello"})],
         registry,
         permission_system=PermissionSystem(default_decision="allow"),
     )
@@ -57,7 +57,13 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": str(temp_workspace / "out.txt"), "content": "ok"}, "id": "c1"}],
+        [
+            ToolCall(
+                "c1",
+                "filesystem_write",
+                {"path": str(temp_workspace / "out.txt"), "content": "ok"},
+            )
+        ],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
@@ -76,11 +82,11 @@ async def test_host_tool_does_not_receive_enabled_sandbox(temp_workspace):
         return "ok"
 
     registry = ToolRegistry()
-    registry.register(XBotTool.from_function(inspect_backend), sandbox_mode="host")
+    registry.register(Tool.from_function(inspect_backend), sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
 
     results = await execute_tools(
-        [{"name": "inspect_backend", "args": {}, "id": "c1"}],
+        [ToolCall("c1", "inspect_backend", {})],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
@@ -99,11 +105,11 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
         return "ok"
 
     registry = ToolRegistry()
-    registry.register(XBotTool.from_function(inspect_backend), sandbox_mode="sandboxed")
+    registry.register(Tool.from_function(inspect_backend), sandbox_mode="sandboxed")
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
 
     results = await execute_tools(
-        [{"name": "inspect_backend", "args": {}, "id": "c1"}],
+        [ToolCall("c1", "inspect_backend", {})],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
@@ -120,7 +126,7 @@ async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspa
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": "blocked.txt", "content": "no"}, "id": "c1"}],
+        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="ask"),
@@ -148,7 +154,13 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
         }
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": str(temp_workspace / "allowed.txt"), "content": "ok"}, "id": "c1"}],
+        [
+            ToolCall(
+                "c1",
+                "filesystem_write",
+                {"path": str(temp_workspace / "allowed.txt"), "content": "ok"},
+            )
+        ],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="ask"),
@@ -169,10 +181,10 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     calls = []
 
     async def permission_request(ctx):
-        calls.append(("permission_request", ctx.tool_call["name"], ctx.permission_decision))
+        calls.append(("permission_request", ctx.tool_call.name, ctx.permission_decision))
 
     async def tool_denied(ctx):
-        calls.append(("denied", ctx.tool_call["name"], type(ctx.error).__name__))
+        calls.append(("denied", ctx.tool_call.name, type(ctx.error).__name__))
 
     async def post_batch(ctx):
         calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
@@ -182,7 +194,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": "blocked.txt", "content": "no"}, "id": "c1"}],
+        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="ask"),
@@ -206,12 +218,12 @@ async def test_tool_failure_hook_fires(temp_workspace):
     calls = []
 
     async def failure(ctx):
-        calls.append((ctx.tool_call["name"], type(ctx.error).__name__, ctx.tool_result.status))
+        calls.append((ctx.tool_call.name, type(ctx.error).__name__, ctx.tool_result.status))
 
     hook_manager.register(HookStage.ON_TOOL_CALL_FAILURE, failure)
 
     results = await execute_tools(
-        [{"name": "failing_tool", "args": {}, "id": "c1"}],
+        [ToolCall("c1", "failing_tool", {})],
         registry,
         permission_system=PermissionSystem(default_decision="allow"),
         hook_manager=hook_manager,
@@ -231,27 +243,31 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     calls = []
 
     async def rewrite_tool_call(ctx):
-        calls.append(("before", ctx.tool_call["id"], ctx.tool_call["args"]["path"]))
+        calls.append(("before", ctx.tool_call.id, ctx.tool_call.args["path"]))
         return {
-            "tool_call": {
-                "id": "rewritten_id",
-                "args": {"path": str(temp_workspace / "rewritten.txt"), "content": "ok"},
-            }
+            "tool_call": ToolCall(
+                "rewritten_id",
+                ctx.tool_call.name,
+                {
+                    "path": str(temp_workspace / "rewritten.txt"),
+                    "content": "ok",
+                },
+            )
         }
 
     async def after_tool_call(ctx):
         calls.append((
             "after",
-            ctx.tool_call["id"],
-            ctx.tool_call["args"]["path"],
+            ctx.tool_call.id,
+            ctx.tool_call.args["path"],
             ctx.tool_result.tool_call_id,
         ))
 
     async def post_batch(ctx):
         calls.append((
             "batch",
-            ctx.tool_calls[0]["id"],
-            ctx.tool_calls[0]["args"]["path"],
+            ctx.tool_calls[0].id,
+            ctx.tool_calls[0].args["path"],
             ctx.tool_results[0].tool_call_id,
         ))
 
@@ -260,7 +276,13 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
 
     results = await execute_tools(
-        [{"name": "filesystem_write", "args": {"path": "old.txt", "content": "no"}, "id": "old_id"}],
+        [
+            ToolCall(
+                "old_id",
+                "filesystem_write",
+                {"path": "old.txt", "content": "no"},
+            )
+        ],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
