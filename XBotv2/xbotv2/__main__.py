@@ -161,9 +161,11 @@ def _run_server(args) -> None:
     )
     uds = getattr(args, "uds", None)
     if uds:
-        uvicorn.run(app, uds=uds, log_level="warning")
+        uvicorn.run(app, uds=uds, log_level="warning", ws="none")
     else:
-        uvicorn.run(app, host=args.bind, port=args.port, log_level="warning")
+        uvicorn.run(
+            app, host=args.bind, port=args.port, log_level="warning", ws="none"
+        )
 
 
 def _run_tui(args) -> None:

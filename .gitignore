@@ -21,3 +21,4 @@ nosetests.xml
 coverage.xml
 *.coverage
 *.py,coverage
+*.egg-info/

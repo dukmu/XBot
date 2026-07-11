@@ -14,6 +14,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from xbotv2.protocol.frames import PROTOCOL_VERSION
+
 from xbotv2.tui.trace import trace_event
 
 
@@ -52,6 +54,7 @@ class HttpTransport:
             "/hello",
             json={
                 "client_name": "xbotv2-tui",
+                "protocol_version": PROTOCOL_VERSION,
                 "session_id": session_id,
                 "thread_id": thread_id,
             },

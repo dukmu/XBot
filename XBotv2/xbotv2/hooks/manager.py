@@ -6,6 +6,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+from xbotv2.contracts import HookAction, HookDecision
 from xbotv2.hooks.types import HookFn, HookStage, HookContext, SHORT_CIRCUIT_STAGES, STRICT_FAILURE_STAGES
 
 logger = logging.getLogger("xbotv2.hooks")
@@ -35,6 +36,18 @@ class HookManager:
         for hook in self._hooks.get(stage, []):
             try:
                 result = await hook(ctx)
+                if isinstance(result, HookDecision):
+                    if result.action is HookAction.CONTINUE:
+                        continue
+                    if not short_circuit:
+                        logger.warning(
+                            "Ignoring control-flow decision from observer hook %r at %s",
+                            hook,
+                            stage.value,
+                        )
+                        continue
+                    ctx.short_circuit_result = result
+                    return result
                 if short_circuit and result is not None:
                     ctx.short_circuit_result = result
                     return result

@@ -121,6 +121,16 @@ async def test_http_hello_returns_protocol_info(client: httpx.AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_http_hello_rejects_unknown_protocol(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/hello",
+        json={"protocol_version": "xbotv2.v999", "client_name": "future"},
+    )
+    assert response.status_code == 426
+    assert response.json()["code"] == "unsupported_protocol"
+
+
+@pytest.mark.asyncio
 async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/sessions", json={"session_id": "s1", "thread_id": "t1"}
@@ -154,6 +164,17 @@ async def test_http_resume_missing_session_returns_404(client: httpx.AsyncClient
 
     assert response.status_code == 404
     assert response.json()["code"] == "session_not_found"
+
+
+@pytest.mark.asyncio
+async def test_http_new_existing_session_returns_409(client: httpx.AsyncClient) -> None:
+    payload = {"session_id": "duplicate", "thread_id": "t1", "mode": "new"}
+    first = await client.post("/sessions", json=payload)
+    assert first.status_code == 200
+
+    second = await client.post("/sessions", json=payload)
+    assert second.status_code == 409
+    assert second.json()["code"] == "session_exists"
 
 
 @pytest.mark.asyncio
@@ -613,7 +634,7 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
         port = s.getsockname()[1]
 
     config = uvicorn.Config(
-        http_app, host="127.0.0.1", port=port, log_level="warning"
+        http_app, host="127.0.0.1", port=port, log_level="warning", ws="none"
     )
     server = uvicorn.Server(config)
     server_thread = threading.Thread(target=server.run, daemon=True)
@@ -757,7 +778,9 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="warning", ws="none"
+        )
     )
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()

@@ -62,8 +62,9 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
 
 ### Hooks (`xbotv2/hooks/`)
 
-42 `HookStage` enum values covering session/turn/tool/context/compaction lifecycle.
-`HookManager` with register/run, short-circuit support, and strict failure stages.
+41 `HookStage` values cover session, turn, tool, context, and compaction
+lifecycle. Guard control flow uses explicit `HookDecision`; critical lifecycle
+stages aggregate failures with `ExceptionGroup`.
 
 ### LLM Provider (`xbotv2/llm/`)
 
@@ -96,7 +97,8 @@ Discovers SKILL.md files (agentskills.io standard) from:
 
 Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
 - Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
-- Eager connection at bootstrap, silent skip on failure
+- Eager connection at bootstrap with per-server diagnostics. Optional failures
+  mark the plugin degraded; servers configured with `required: true` fail startup.
 - MCPTool wraps as XBotTool-compatible callable
 
 ## Namespace Protocol
@@ -127,8 +129,8 @@ remote HTTP connection.
 
 ### Session Resume
 
-Auto-upgrade: when `mode=new` but session state exists on disk, server
-switches to `mode=resume` silently. `--session` CLI arg preserved across restarts.
+Session creation uses explicit `new` and `resume` modes. The server does not
+silently change the requested mode.
 
 ## Unified Command System
 
@@ -146,8 +148,9 @@ data/sessions/<sid>/state/
 └── artifacts/              # cached tool outputs
 ```
 
-No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` persists
-via `replace_messages()` (full rewrite each turn).
+No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` appends new
+messages in normal turns and uses an atomic replacement only after compaction or
+history mutation.
 
 ## Streaming & Reasoning
 

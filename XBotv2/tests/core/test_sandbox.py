@@ -1,5 +1,6 @@
 """Tests for SandboxPolicy with BubblewrapBackend."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,29 @@ class TestSandboxPolicyBasics:
         policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
         assert isinstance(policy.backend_available, bool)
 
+    @pytest.mark.asyncio
+    async def test_capability_unwraps_backend_stdout(self, temp_workspace):
+        class Backend:
+            async def run(self, *args, **kwargs):
+                return json.dumps({"stdout": "result\n", "stderr": "", "exit_code": 0})
+
+        policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
+        policy._backend = Backend()
+
+        assert await policy.run_shell("echo result") == "result\n"
+
+    @pytest.mark.asyncio
+    async def test_capability_raises_on_backend_failure(self, temp_workspace):
+        class Backend:
+            async def run(self, *args, **kwargs):
+                return json.dumps({"stdout": "", "stderr": "denied", "exit_code": 2})
+
+        policy = SandboxPolicy(enabled=True, workspace_root=str(temp_workspace))
+        policy._backend = Backend()
+
+        with pytest.raises(RuntimeError, match="exit code 2: denied"):
+            await policy.run_shell("false")
+
 
 class TestResourcePathResolution:
     def test_resolve_resource_path(self, temp_workspace):
@@ -91,6 +115,29 @@ class TestBubblewrapBuildArgs:
         assert "/etc/nsswitch.conf" in args
         # TLS roots too — curl on HTTPS endpoints.
         assert "/etc/ssl/certs" in args
+
+
+class TestBubblewrapCapabilities:
+    @pytest.mark.asyncio
+    async def test_real_file_and_shell_capabilities(self, tmp_path):
+        policy = SandboxPolicy(
+            enabled=True,
+            workspace_root=tmp_path,
+            data_root=tmp_path / ".data",
+        )
+        if not policy.backend_available:
+            pytest.skip("bubblewrap is not installed")
+
+        (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+        read_data = json.loads(await policy.read_file("sample.txt"))
+        search_data = json.loads(await policy.search_text("alpha"))
+        list_data = json.loads(await policy.list_dir(".", recursive=True))
+
+        assert read_data["content"] == "alpha\nbeta"
+        assert search_data["match_count"] == 1
+        assert list_data["entry_count"] >= 1
+        assert await policy.run_shell("printf sandbox-ok") == "sandbox-ok"
 
 
 class TestSandboxPolicySerialisation:

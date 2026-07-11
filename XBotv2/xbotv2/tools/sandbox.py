@@ -138,10 +138,10 @@ class SandboxPolicy:
             "; it = p.rglob('*') if recursive else p.iterdir()"
             "; entries = sorted(it, key=lambda x: (not x.is_dir(), str(x)))"
             "; limited = entries[:max_entries] if max_entries > 0 else entries"
-            "; def meta(e):"
-            "  s = e.stat();"
-            "  return {'name':e.name,'path':str(e),'relative_path':str(e.relative_to(p)),"
-            "    'kind':'directory' if e.is_dir() else 'file','size_bytes':s.st_size,'mtime':s.st_mtime}"
+            "; meta=lambda e:{'name':e.name,'path':str(e),"
+            "'relative_path':str(e.relative_to(p)),"
+            "'kind':'directory' if e.is_dir() else 'file',"
+            "'size_bytes':e.stat().st_size,'mtime':e.stat().st_mtime}"
             "; r = {'ok':True,'path':str(p),'resolved_path':str(p.resolve()),"
             "  'kind':'directory','recursive':recursive,'entry_count':len(entries),"
             "  'returned_entries':len(limited),'truncated':max_entries>0 and len(entries)>max_entries,"
@@ -153,6 +153,44 @@ class SandboxPolicy:
              str(self.workspace_root / path),
              "1" if recursive else "0",
              str(max_entries)],
+            spec,
+        )
+
+    async def search_text(
+        self,
+        pattern: str,
+        path: str = ".",
+        glob: str | None = None,
+        max_results: int = 200,
+    ) -> str:
+        spec = self._mount_specs()
+        script = (
+            "import fnmatch,json,pathlib,re,sys"
+            "; root=pathlib.Path(sys.argv[1])"
+            "; pattern=sys.argv[2]"
+            "; glob=sys.argv[3] or None"
+            "; limit=int(sys.argv[4])"
+            "; rx=re.compile(pattern)"
+            "; matches=[]"
+            "; files=(p for p in root.rglob('*') if p.is_file())"
+            "; exec(\"for p in files:\\n"
+            "  rel=str(p.relative_to(root))\\n"
+            "  if glob and not fnmatch.fnmatch(rel,glob): continue\\n"
+            "  try: lines=p.read_text('utf-8').splitlines()\\n"
+            "  except (OSError,UnicodeDecodeError): continue\\n"
+            "  for number,line in enumerate(lines,1):\\n"
+            "    if rx.search(line): matches.append(f'{rel}:{number}:{line}')\")"
+            "; limited=matches[:limit] if limit>0 else matches"
+            "; result={'ok':True,'path':str(root),'pattern':pattern,'matches':limited,"
+            "'match_count':len(matches),'returned_matches':len(limited),"
+            "'truncated':limit>0 and len(matches)>limit}"
+            "; print(json.dumps(result,ensure_ascii=False),end='')"
+        )
+        return await self._backend.run(
+            [
+                "python3", "-c", script,
+                str(self.workspace_root / path), pattern, glob or "", str(max_results),
+            ],
             spec,
         )
 

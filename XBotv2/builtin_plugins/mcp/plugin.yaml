@@ -1,3 +1,4 @@
 name: mcp
 version: "1.0.0"
 description: Model Context Protocol tool integration (local + remote servers)
+api_version: "1"

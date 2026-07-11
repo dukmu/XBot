@@ -68,6 +68,52 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
 
 
 @pytest.mark.asyncio
+async def test_host_tool_does_not_receive_enabled_sandbox(temp_workspace):
+    seen = []
+
+    async def inspect_backend(*, sandbox=None):
+        seen.append(sandbox)
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(XBotTool.from_function(inspect_backend), sandbox_mode="host")
+    sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
+
+    results = await execute_tools(
+        [{"name": "inspect_backend", "args": {}, "id": "c1"}],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "success"
+    assert seen == [None]
+
+
+@pytest.mark.asyncio
+async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
+    seen = []
+
+    async def inspect_backend(*, sandbox=None):
+        seen.append(sandbox)
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(XBotTool.from_function(inspect_backend), sandbox_mode="sandboxed")
+    sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
+
+    results = await execute_tools(
+        [{"name": "inspect_backend", "args": {}, "id": "c1"}],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "success"
+    assert seen == [sandbox]
+
+
+@pytest.mark.asyncio
 async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspace):
     registry = ToolRegistry()
     registry.register(filesystem_write, sandbox_mode="host")

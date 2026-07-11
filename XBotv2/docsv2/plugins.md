@@ -17,13 +17,13 @@ Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 class PluginBase(ABC):
     async def on_load(self, config): ...     # Called at load time
     async def on_unload(self): ...           # Cleanup
-    def register_hooks(self, manager): ...   # Register hooks
-    def register_tools(self, registry): ...  # Register tools
-    def get_prompt_fragments(self): ...      # Prompt injection
+    def setup(self, ctx): ...                # Register all extensions
 ```
 
-Hooks and tools can be declared in `plugin.yaml` manifest or registered
-programmatically in the plugin class.
+Manifest-only plugins declare hooks, tools, and prompt fragments in
+`plugin.yaml`. Python plugins override `setup(ctx)` and use
+`ctx.register_hook`, `ctx.register_tool`, and `ctx.add_prompt_fragment`.
+The setup transaction records every resource for rollback and unload.
 
 ## plugin.yaml Manifest
 
@@ -68,7 +68,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - Each discovered skill registered as ToolRegistry entry (namespace `skills:<scope>:<name>`)
 
 **Features:**
-- Shell injection: `` !`command` `` placeholders expanded via subprocess (10s timeout)
+- Shell injection: `` !`command` `` placeholders run only through the enabled
+  session sandbox. There is no host subprocess fallback.
 - allowed-tools / disallowed-tools frontmatter fields
 - disable-model-invocation for manual-only skills
 

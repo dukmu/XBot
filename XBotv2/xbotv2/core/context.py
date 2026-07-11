@@ -89,6 +89,9 @@ class ContextBuilder:
         self._fragments.get(stage, {}).pop(plugin_name, None)
         self.invalidate_cache()
 
+    def get_fragment(self, stage: str, plugin_name: str) -> str | None:
+        return self._fragments.get(stage, {}).get(plugin_name)
+
     def invalidate_cache(self) -> None:
         """Force the stable prefix to be rebuilt next call."""
         self._cached_prefix = None

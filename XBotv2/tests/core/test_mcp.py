@@ -136,7 +136,7 @@ class TestMCPToolWrapper:
         assert tool.__doc__ == "Echo back the message"
 
         result = await tool(message="hi from mcp tool")
-        assert "hi from mcp tool" in result
+        assert "hi from mcp tool" in result.content
 
         await client.disconnect_all()
 
@@ -157,7 +157,7 @@ class TestMCPToolWrapper:
         xbot_tool = XBotTool.from_function(mcp_tool, name="mcp__test__add")
 
         result = await xbot_tool.ainvoke({"a": 10, "b": 20})
-        assert "30" in result
+        assert "30" in result.content
 
         await client.disconnect_all()
 

@@ -25,8 +25,12 @@ class MCPClient:
 
     async def connect_and_list(self, name: str, cfg: dict[str, Any]) -> list[dict[str, Any]]:
         transport = self._create_transport(cfg)
-        await transport.connect()
-        result = await transport.call("tools/list", {})
+        try:
+            await transport.connect()
+            result = await transport.call("tools/list", {})
+        except BaseException:
+            await transport.disconnect()
+            raise
         self._transports[name] = transport
         return result.get("tools", [])
 
@@ -92,13 +96,26 @@ class StdioTransport(MCPTransport):
             pass  # Not all servers require initialize
 
     async def disconnect(self) -> None:
-        if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        if proc.stdin is not None:
+            proc.stdin.close()
             try:
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
+                await proc.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        if proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=0.2)
             except asyncio.TimeoutError:
-                self._proc.kill()
-                await self._proc.wait()
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._proc is None:

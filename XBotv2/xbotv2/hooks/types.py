@@ -118,6 +118,7 @@ class HookContext:
     state: dict[str, Any] = field(default_factory=dict)
     config: Any | None = None  # SystemConfig (avoid circular import)
     tools: Any | None = None  # ToolRegistry
+    sandbox: Any | None = None  # SandboxPolicy capability
     plugin_store: "PluginStore | None" = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo(
         session_id="", thread_id="", workspace_root="", provider="default",

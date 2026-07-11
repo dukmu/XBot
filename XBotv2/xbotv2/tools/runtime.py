@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
+from xbotv2.contracts import HookAction, HookDecision, ToolResult
 from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.hooks.types import HookStage
 from xbotv2.llm.messages import Message
@@ -215,17 +216,24 @@ def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[st
 
 
 def _is_user_input_wait_result(result: Any) -> bool:
+    if isinstance(result, ToolResult):
+        return result.wait_for_user
     return isinstance(result, dict) and bool(result.get("wait_for_user"))
 
 
 async def _tool_message_from_user_input_wait(
-    result: dict[str, Any],
+    result: ToolResult | dict[str, Any],
     tool_call_id: str,
     client_interaction_handler: Any,
 ) -> Message:
+    raw_events = (
+        [{"type": event.type, "data": event.data} for event in result.client_events]
+        if isinstance(result, ToolResult)
+        else result.get("events", [])
+    )
     events = [
         _normalize_client_event(event, tool_call_id)
-        for event in result.get("events", [])
+        for event in raw_events
     ]
     event = next(
         (
@@ -411,6 +419,20 @@ async def _execute_one_tool(
             results.append(msg)
             await _emit_tool_denied(hook_manager, hook_context_factory, tc, str(before_result["deny_reason"]))
             return
+    elif isinstance(before_result, HookDecision):
+        if before_result.action is HookAction.DENY:
+            reason = before_result.reason or f"Tool call denied by hook: {tool_name}"
+            msg = _error_message(tc, reason)
+            observed_tool_calls.append({**tc, "args": args})
+            results.append(msg)
+            await _emit_tool_denied(hook_manager, hook_context_factory, tc, reason)
+            return
+        if before_result.action is HookAction.STOP:
+            reason = before_result.reason or f"Tool call stopped by hook: {tool_name}"
+            msg = _error_message(tc, reason)
+            observed_tool_calls.append({**tc, "args": args})
+            results.append(msg)
+            return
     elif before_result is not None:
         msg = _error_message(tc, f"Tool call blocked by hook: {tool_name}")
         observed_tool_calls.append({**tc, "args": args})
@@ -419,7 +441,12 @@ async def _execute_one_tool(
         return
 
     try:
-        if sandbox_policy and sandbox_policy.enabled:
+        use_sandbox = (
+            entry.sandbox_mode == "sandboxed"
+            and sandbox_policy is not None
+            and sandbox_policy.enabled
+        )
+        if use_sandbox:
             result = await asyncio.wait_for(
                 tool.ainvoke(args, sandbox=sandbox_policy),
                 timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
@@ -460,6 +487,32 @@ async def _execute_one_tool(
 def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
     if hasattr(value, "role") and value.role == "tool":
         return value
+    if isinstance(value, ToolResult):
+        additional_kwargs: dict[str, Any] = {}
+        if value.client_events:
+            additional_kwargs["xbotv2_events"] = [
+                _normalize_client_event(
+                    {"type": event.type, "data": event.data}, tool_call_id
+                )
+                for event in value.client_events
+            ]
+        if value.data is not None:
+            additional_kwargs["xbotv2_data"] = value.data
+        if value.error is not None:
+            additional_kwargs["xbotv2_error"] = {
+                "code": value.error.code,
+                "message": value.error.message,
+                "retryable": value.error.retryable,
+                "details": value.error.details,
+            }
+        return Message(
+            role="tool",
+            content=value.content,
+            tool_call_id=tool_call_id,
+            status=value.status,
+            additional_kwargs=additional_kwargs,
+            artifact=list(value.artifacts),
+        )
     if isinstance(value, dict):
         additional_kwargs = {}
         if "events" in value:

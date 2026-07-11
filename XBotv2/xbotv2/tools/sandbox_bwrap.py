@@ -51,6 +51,8 @@ class BubblewrapBackend:
         )
 
     async def communicate(self, proc, stdin: str | None = None) -> tuple[str, str]:
+        if stdin is None and proc.stdin is not None:
+            proc.stdin.close()
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(stdin.encode("utf-8") if stdin is not None else None),

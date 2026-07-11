@@ -20,7 +20,19 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from xbotv2.api.protocol import (
+    CommandRequest,
+    CommandListResponse,
+    CommandResponse,
+    HelloRequest,
+    HelloResponse,
+    InteractionResponseRequest,
+    MessageRequest,
+    OpenSessionRequest,
+    OpenSessionResponse,
+)
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
 from xbotv2.protocol.frames import PROTOCOL_VERSION
@@ -34,6 +46,10 @@ class SessionNotFound(KeyError):
 
 class SessionBusy(RuntimeError):
     """The session is already processing a turn; the new request is rejected."""
+
+
+class SessionExists(RuntimeError):
+    """A new session was requested with an identifier already in use."""
 
 
 @dataclass
@@ -109,12 +125,12 @@ class SessionManager:
             if existing is not None:
                 if mode == "resume":
                     return existing
-                raise ValueError(f"session already exists: {session_id}")
+                raise SessionExists(session_id)
             state_root = Path(data_dir) / "sessions" / session_id / "state"
             if mode == "resume" and not state_root.exists():
                 raise SessionNotFound(session_id)
             if mode == "new" and state_root.exists():
-                mode = "resume"
+                raise SessionExists(session_id)
             engine = await bootstrap(
                 config_dir=data_dir,
                 provider_name=provider_name,
@@ -223,24 +239,26 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     @app.post("/hello")
-    async def hello(payload: dict[str, Any]) -> dict[str, Any]:
-        session_id = str(payload.get("session_id") or "").strip()
-        thread_id = str(payload.get("thread_id") or "agent").strip() or "agent"
-        return {
-            "server_name": app.state.server_name,
-            "protocol_version": PROTOCOL_VERSION,
-            "session_id": session_id,
-            "thread_id": thread_id,
-        }
+    async def hello(payload: HelloRequest) -> HelloResponse:
+        if payload.protocol_version != PROTOCOL_VERSION:
+            raise HttpServerError(
+                "unsupported_protocol",
+                f"Protocol {payload.protocol_version!r} is not supported; expected {PROTOCOL_VERSION!r}",
+                status=426,
+            )
+        return HelloResponse(
+            server_name=app.state.server_name,
+            session_id=(payload.session_id or "").strip(),
+            thread_id=payload.thread_id.strip() or "agent",
+        )
 
     @app.post("/sessions")
-    async def open_session(payload: dict[str, Any]) -> dict[str, Any]:
-        raw_session_id = str(payload.get("session_id") or "").strip() or None
-        thread_id = str(payload.get("thread_id") or "agent").strip() or "agent"
+    async def open_session(payload: OpenSessionRequest) -> OpenSessionResponse:
+        raw_session_id = (payload.session_id or "").strip() or None
+        thread_id = payload.thread_id.strip() or "agent"
         workspace_root = str(
-            Path(payload.get("workspace_root") or app.state.workspace_root).resolve()
+            Path(payload.workspace_root or app.state.workspace_root).resolve()
         )
-        mode = str(payload.get("mode") or "new")
         try:
             ctx = await manager.open_session(
                 session_id=raw_session_id,
@@ -248,66 +266,59 @@ def _register_routes(app: FastAPI) -> None:
                 provider_name=app.state.provider_name,
                 data_dir=app.state.data_dir,
                 workspace_root=workspace_root,
-                mode=mode,
+                mode=payload.mode,
                 no_plugins=app.state.no_plugins,
                 llm_override=app.state.llm_override.get("value"),
             )
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
+        except SessionExists as exc:
+            raise HttpServerError("session_exists", str(exc), status=409) from exc
         except Exception as exc:  # noqa: BLE001
             logger.exception("Session open failed for %s", raw_session_id or "<new>")
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return {
-            "session_id": ctx.session_id,
-            "thread_id": ctx.thread_id,
-            "status": "ready",
-            "agent_name": getattr(ctx.engine.config, "agent_name", "XBotv2"),
-            "workspace_root": ctx.workspace_root,
-            "provider": ctx.provider_name,
-        }
+        return OpenSessionResponse(
+            session_id=ctx.session_id,
+            thread_id=ctx.thread_id,
+            agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
+            workspace_root=ctx.workspace_root,
+            provider=ctx.provider_name,
+        )
 
     @app.get("/commands")
-    async def commands() -> dict[str, Any]:
-        return {"commands": list_commands()}
+    async def commands() -> CommandListResponse:
+        return CommandListResponse(commands=list_commands())
 
     @app.get("/sessions/{session_id}/commands")
-    async def session_commands(session_id: str) -> dict[str, Any]:
+    async def session_commands(session_id: str) -> CommandListResponse:
         ctx = await manager.get(session_id)
-        return {"commands": list_commands(extra=_tool_commands(ctx.engine.tool_registry))}
+        return CommandListResponse(
+            commands=list_commands(extra=_tool_commands(ctx.engine.tool_registry))
+        )
 
     @app.post("/sessions/{session_id}/commands")
-    async def run_command(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def run_command(session_id: str, payload: CommandRequest) -> CommandResponse:
         ctx = await manager.get(session_id)
-        raw = str(payload.get("raw") or "")
-        command = str(payload.get("command") or "").strip().removeprefix("/")
-        args = payload.get("args")
-        if not isinstance(args, list):
+        raw = payload.raw
+        command = payload.command.strip().removeprefix("/")
+        args = payload.args
+        if args is None:
             parts = raw.split()
             if not command and parts:
                 command = parts[0].removeprefix("/")
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
-        return execute_command(ctx, command, [str(arg) for arg in args], kind=str(payload.get("kind") or "server"))
+        return CommandResponse.model_validate(
+            execute_command(ctx, command, args, kind=payload.kind)
+        )
 
     @app.post("/sessions/{session_id}/messages")
-    async def post_message(session_id: str, request: Request) -> Response:
-        try:
-            payload = await request.json()
-        except Exception as exc:  # noqa: BLE001
-            raise HttpServerError(
-                "invalid_request", f"Body must be JSON: {exc}", status=400
-            ) from exc
-        content = str(payload.get("content") or "")
-        if not content.strip():
-            raise HttpServerError(
-                "invalid_request",
-                "payload.content must be non-empty",
-                status=400,
-            )
-        client_request_id = str(payload.get("request_id") or "")
+    async def post_message(session_id: str, payload: MessageRequest) -> Response:
+        content = payload.content
+        client_request_id = payload.request_id
         try:
             ctx = await manager.get(session_id)
         except SessionNotFound as exc:
@@ -376,23 +387,23 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/sessions/{session_id}/interactions/permission-response")
     async def post_permission_response(
-        session_id: str, payload: dict[str, Any], request: Request
+        session_id: str, payload: InteractionResponseRequest, request: Request
     ) -> dict[str, Any]:
         return await _resolve_interaction(
             manager=request.app.state.manager,
             session_id=session_id,
-            payload=payload,
+            payload=payload.model_dump(),
             kind="permission",
         )
 
     @app.post("/sessions/{session_id}/interactions/user-input")
     async def post_user_input(
-        session_id: str, payload: dict[str, Any], request: Request
+        session_id: str, payload: InteractionResponseRequest, request: Request
     ) -> dict[str, Any]:
         return await _resolve_interaction(
             manager=request.app.state.manager,
             session_id=session_id,
-            payload=payload,
+            payload=payload.model_dump(),
             kind="user_input",
         )
 
@@ -426,11 +437,41 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.exception_handler(HttpServerError)
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status, content={"code": exc.code, "message": exc.message})
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "code": exc.code,
+                "message": exc.message,
+                "details": {},
+                "retryable": False,
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _on_validation_error(
+        _: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "code": "invalid_request",
+                "message": "Request does not match the protocol schema",
+                "details": {"errors": exc.errors()},
+                "retryable": False,
+            },
+        )
 
     @app.exception_handler(SessionNotFound)
     async def _on_session_not_found(_: Request, exc: SessionNotFound) -> JSONResponse:
-        return JSONResponse(status_code=404, content={"code": "session_not_found", "message": str(exc)})
+        return JSONResponse(
+            status_code=404,
+            content={
+                "code": "session_not_found",
+                "message": str(exc),
+                "details": {},
+                "retryable": False,
+            },
+        )
 
 
 def _new_session_id() -> str:

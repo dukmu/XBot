@@ -1,4 +1,7 @@
-# XBotv2 Stage 3 Plan
+# XBotv2 Stage 3 Plan (Historical)
+
+> Archived implementation plan. This is not a current specification; see
+> `docsv2/README.md`.
 
 ## Goal
 

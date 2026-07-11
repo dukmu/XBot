@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookContext, HookStage
-from xbotv2.plugin.base import PluginBase
-from xbotv2.plugin.manifest import PluginManifest
-from xbotv2.plugin.store import PluginStore
+from xbotv2.api import (
+    HookContext,
+    HookStage,
+    PluginBase,
+    PluginManifest,
+    PluginSetupContext,
+    PluginStore,
+)
 
 from .budget import TokenBudgetController
 from .estimator import estimate_context_tokens, estimate_tool_schema_tokens
@@ -37,13 +40,13 @@ class TokenManagerPlugin(PluginBase):
                 soft_limit_ratio=float(config.get("soft_limit_ratio", 0.8)),
             )
 
-    def register_hooks(self, manager: HookManager) -> None:
-        manager.register(HookStage.ON_TURN_START, self._on_turn_start)
-        manager.register(HookStage.BEFORE_MODEL_REQUEST, self._on_before_model_request)
-        manager.register(HookStage.AFTER_MODEL_RESPONSE, self._on_after_model_response)
-        manager.register(HookStage.ON_TOOL_CALLS_PARSED, self._on_tool_calls_parsed)
-        manager.register(HookStage.ON_TURN_END, self._on_turn_end)
-        manager.register(HookStage.BEFORE_STATE_PERSIST, self._on_before_state_persist)
+    def setup(self, ctx: PluginSetupContext) -> None:
+        ctx.register_hook(HookStage.ON_TURN_START, self._on_turn_start)
+        ctx.register_hook(HookStage.BEFORE_MODEL_REQUEST, self._on_before_model_request)
+        ctx.register_hook(HookStage.AFTER_MODEL_RESPONSE, self._on_after_model_response)
+        ctx.register_hook(HookStage.ON_TOOL_CALLS_PARSED, self._on_tool_calls_parsed)
+        ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
+        ctx.register_hook(HookStage.BEFORE_STATE_PERSIST, self._on_before_state_persist)
 
     async def _on_turn_start(self, ctx: HookContext) -> None:
         self._stats.start_turn(

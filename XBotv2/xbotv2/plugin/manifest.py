@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,6 +43,9 @@ class PluginManifest(BaseModel):
     name: str = Field(..., description="Unique plugin name")
     version: str = Field(..., description="Semver version")
     description: str = Field(default="", description="Human-readable description")
+    api_version: Literal["1"] = Field(
+        default="1", description="XBot plugin API major version"
+    )
     depends_on: list[str] = Field(default_factory=list, description="Plugin dependencies")
     hooks: list[HookDeclaration] = Field(default_factory=list)
     tools: list[ToolDeclaration] = Field(default_factory=list)

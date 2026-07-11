@@ -61,6 +61,8 @@ CORE_BASE_TOOLS = [
     (FILESYSTEM_TOOLS[0], "sandboxed", "parallel", ("path",)),   # filesystem_read
     (FILESYSTEM_TOOLS[1], "sandboxed", "sequential", ("path",)),  # filesystem_write
     (FILESYSTEM_TOOLS[2], "sandboxed", "parallel", ("path",)),   # filesystem_list
+    (FILESYSTEM_TOOLS[3], "sandboxed", "parallel", ("path",)),   # search_text
+    (FILESYSTEM_TOOLS[4], "sandboxed", "parallel", ("path",)),   # find_files
     (INTERACTION_TOOLS[0], "host", "sequential", ()),  # send_message
     (INTERACTION_TOOLS[1], "host", "sequential", ()),  # ask_user
 ]
@@ -168,9 +170,10 @@ async def bootstrap(
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # no-plugin mode used by core freeze tests and pure-core embeddings.
     resolved_plugin_dirs = _resolve_plugin_dirs(plugin_dirs)
+    plugin_loader: PluginLoader | None = None
 
     if resolved_plugin_dirs:
-        await _load_plugins(
+        plugin_loader = await _load_plugins(
             resolved_plugin_dirs,
             hook_manager,
             tool_registry,
@@ -193,6 +196,7 @@ async def bootstrap(
         state={},
         config=agent_config,
         tools=tool_registry,
+        sandbox=sandbox,
         plugin_store=None,
         session=SessionInfo(
             session_id=session_id,
@@ -222,6 +226,7 @@ async def bootstrap(
         config=agent_config,
         data_dir=str(config_dir),
     )
+    engine.plugin_loader = plugin_loader
 
     return engine
 
@@ -269,7 +274,7 @@ async def _load_plugins(
     context_builder: ContextBuilder,
     state_store: CoreStateStore,
     plugin_configs: dict[str, dict[str, Any]],
-) -> None:
+) -> PluginLoader:
     """Discover, load, and wire plugins."""
     loader = PluginLoader(
         plugin_dirs=plugin_dirs,
@@ -280,6 +285,7 @@ async def _load_plugins(
         plugin_configs=plugin_configs,
     )
     await loader.load()
+    return loader
 
 
 def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> None:

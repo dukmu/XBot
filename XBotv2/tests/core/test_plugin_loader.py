@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from xbotv2.plugin.manifest import PluginManifest
-from xbotv2.plugin.base import PluginBase
+from xbotv2.plugin.base import PluginBase, PluginSetupContext
 from xbotv2.plugin.loader import PluginLoader, _DefaultPlugin, resolve_dependencies
 from xbotv2.plugin.store import PluginStore
 from xbotv2.core.context import ContextBuilder
@@ -28,6 +28,18 @@ def _make_manifest(name: str, version: str = "1.0.0", deps: list[str] | None = N
 
 def _make_manifest_tuple(name: str, deps: list[str] | None = None) -> tuple[PluginManifest, Path]:
     return (_make_manifest(name, deps=deps), Path(f"/fake/{name}"))
+
+
+def _setup_plugin(plugin):
+    context = ContextBuilder()
+    setup = PluginSetupContext(
+        plugin_name=plugin.manifest.name,
+        hooks=HookManager(),
+        tools=ToolRegistry(),
+        context=context,
+    )
+    plugin.setup(setup)
+    return context
 
 
 # ------------------------------------------------------------------
@@ -160,9 +172,9 @@ class TestPromptFragmentFiles:
         )
         plugin = _DefaultPlugin(manifest, store=None)
 
-        fragments = plugin.get_prompt_fragments()
+        context = _setup_plugin(plugin)
 
-        assert fragments["system_instructions"] == "## Static Instructions\nUse care.\n"
+        assert context.get_fragment("system_instructions", "simple") == "## Static Instructions\nUse care.\n"
 
     def test_plugin_base_loads_prompt_file_relative_to_plugin_dir(self, tmp_path):
         plugin_dir = tmp_path / "plugins" / "classy"
@@ -191,9 +203,9 @@ class TestPromptFragmentFiles:
 
         plugin = ClassyPlugin(manifest, PluginStore(state_store, "classy"))
 
-        fragments = plugin.get_prompt_fragments()
+        context = _setup_plugin(plugin)
 
-        assert fragments["system_rules"] == "## Plugin Rules\nStay isolated.\n"
+        assert context.get_fragment("system_rules", "classy") == "## Plugin Rules\nStay isolated.\n"
 
     def test_default_plugin_missing_prompt_file_raises(self, tmp_path):
         plugin_dir = tmp_path / "plugins" / "broken"
@@ -209,7 +221,7 @@ class TestPromptFragmentFiles:
         plugin = _DefaultPlugin(manifest, store=None)
 
         with pytest.raises(FileNotFoundError, match="prompt fragment file not found"):
-            plugin.get_prompt_fragments()
+            _setup_plugin(plugin)
 
     def test_default_plugin_invalid_handler_raises(self):
         manifest = PluginManifest(
@@ -222,7 +234,7 @@ class TestPromptFragmentFiles:
         plugin = _DefaultPlugin(manifest, store=None)
 
         with pytest.raises(ValueError, match="Invalid handler path"):
-            plugin.register_hooks(HookManager())
+            _setup_plugin(plugin)
 
 
 class TestPluginLoader:

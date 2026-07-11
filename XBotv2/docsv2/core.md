@@ -24,14 +24,15 @@ Re-passed to API for tool-call turns via `provider_messages`.
 
 ### Hooks
 
-42 `HookStage` values. Key stages:
+41 `HookStage` values cover the existing lifecycle. Key stages:
 `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`,
 `ON_TOOL_CALL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `BEFORE_TOOL_CALL`,
 `ON_PERMISSION_REQUEST`, `ON_SESSION_INIT`.
 
-Short-circuit hooks (BEFORE_*, AFTER_AGENT, BEFORE_TOOLS) return truthy to
-stop execution. All other hooks run all callbacks.
+Guard hooks return explicit `HookDecision` values. Transform hooks return a
+stage-specific dictionary. Observer hooks run all callbacks and ignore results.
+See [hooks.md](hooks.md).
 
 ExceptionGroup from strict hooks (ON_SESSION_INIT, ON_SESSION_CLOSE,
 BEFORE_STATE_PERSIST, AFTER_STATE_PERSIST, ON_STOP) caught with BaseException.
@@ -93,7 +94,7 @@ data/sessions/<sid>/state/
 ```
 
 `CoreStateStore` (`persistence/store.py`):
-- `replace_messages()`: full rewrite of `messages.jsonl` each turn
+- `sync_messages()`: append new messages; atomically rewrite changed history
 - `read_messages()`: reconstruct Message objects from JSONL
 - `has_existing_session()`: session resume detection
 - `_max_msg_id` cached to avoid O(n) scan

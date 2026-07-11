@@ -9,6 +9,8 @@ Manages:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -134,12 +136,32 @@ class CoreStateStore:
         return d
 
     def append_messages(self, messages: list[Message]) -> int:
-        for msg in messages:
-            self.append_message(msg)
+        if not messages:
+            return 0
+        with open(self.messages_path, "a", encoding="utf-8") as stream:
+            for msg in messages:
+                d = message_to_dict(msg)
+                d["msg_id"] = self._next_message_id()
+                d["ts"] = now_iso()
+                stream.write(json.dumps(d, ensure_ascii=False) + "\n")
         return len(messages)
 
-    def replace_messages(self, messages: list[Message]) -> int:
+    def sync_messages(self, messages: list[Message]) -> int:
+        """Persist current history, appending in the normal case.
+
+        A rewrite is only needed when existing messages changed or disappeared,
+        which occurs during context compaction or explicit truncation.
+        """
         previous = list(_iter_jsonl(self.messages_path))
+        serialized = [message_to_dict(message) for message in messages]
+        previous_payloads = [
+            {k: v for k, v in entry.items() if k not in {"msg_id", "ts"}}
+            for entry in previous
+        ]
+        if serialized[:len(previous_payloads)] == previous_payloads:
+            self.append_messages(messages[len(previous_payloads):])
+            return len(messages)
+
         previous_by_key: dict[str, list[dict[str, Any]]] = {}
         for entry in previous:
             key = _message_identity_key(entry)
@@ -161,10 +183,8 @@ class CoreStateStore:
                 next_id += 1
             rewritten.append(d)
 
-        self.messages_path.write_text("")
-        with open(self.messages_path, "a") as f:
-            for d in rewritten:
-                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        self._atomic_write(rewritten)
+        self._max_msg_id = max((entry["msg_id"] for entry in rewritten), default=0)
         return len(rewritten)
 
     def read_messages(self) -> list[Message]:
@@ -190,10 +210,8 @@ class CoreStateStore:
 
         removed = len(all_msgs) - keep_last
         kept = all_msgs[-keep_last:]
-        self.messages_path.write_text("")
-        for d in kept:
-            with open(self.messages_path, "a") as f:
-                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        self._atomic_write(kept)
+        self._max_msg_id = max((entry.get("msg_id", 0) for entry in kept), default=0)
         return removed
 
     def clear_messages(self) -> None:
@@ -260,6 +278,25 @@ class CoreStateStore:
                 with open(path) as f:
                     result[name] = yaml.safe_load(f) or {}
         return result
+
+    def _atomic_write(self, entries: list[dict[str, Any]]) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(
+            prefix="messages-", suffix=".jsonl.tmp", dir=self.root
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                for entry in entries:
+                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_name, self.messages_path)
+        except BaseException:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+            raise
 
 
 def _message_identity_key(d: dict[str, Any]) -> str:

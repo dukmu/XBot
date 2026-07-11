@@ -1,6 +1,7 @@
 """Tests for HookManager and HookStage lifecycle."""
 
 import pytest
+from xbotv2.api import HookAction, HookDecision
 
 from xbotv2.hooks.manager import HookManager
 from xbotv2.hooks.types import HookStage, HookContext, SessionInfo
@@ -79,6 +80,34 @@ class TestHookExecution:
         result = await hook_manager.run(HookStage.BEFORE_AGENT, hook_context)
         assert result == "short_circuit"
         assert order == [1]  # hook2 never ran
+
+    @pytest.mark.asyncio
+    async def test_continue_decision_does_not_short_circuit(self, hook_manager, hook_context):
+        order = []
+
+        async def continue_hook(ctx):
+            order.append("continue")
+            return HookDecision(HookAction.CONTINUE)
+
+        async def next_hook(ctx):
+            order.append("next")
+
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, continue_hook)
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, next_hook)
+
+        assert await hook_manager.run(HookStage.BEFORE_TOOL_CALL, hook_context) is None
+        assert order == ["continue", "next"]
+
+    @pytest.mark.asyncio
+    async def test_deny_decision_short_circuits_with_reason(self, hook_manager, hook_context):
+        decision = HookDecision(HookAction.DENY, "blocked by policy")
+
+        async def deny_hook(ctx):
+            return decision
+
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, deny_hook)
+
+        assert await hook_manager.run(HookStage.BEFORE_TOOL_CALL, hook_context) is decision
 
     @pytest.mark.asyncio
     async def test_no_short_circuit_for_lifecycle_hook(self, hook_manager, hook_context):

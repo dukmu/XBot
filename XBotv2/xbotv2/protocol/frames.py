@@ -44,7 +44,13 @@ class ProtocolFrame(BaseModel):
 
 
 def frame_from_json(line: str) -> ProtocolFrame:
-    return ProtocolFrame.model_validate_json(line)
+    frame = ProtocolFrame.model_validate_json(line)
+    if frame.protocol_version != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Unsupported protocol version {frame.protocol_version!r}; "
+            f"expected {PROTOCOL_VERSION!r}"
+        )
+    return frame
 
 
 class ProtocolEncoder:

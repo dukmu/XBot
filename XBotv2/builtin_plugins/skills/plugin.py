@@ -5,14 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from xbotv2.hooks.manager import HookManager
-from xbotv2.hooks.types import HookContext, HookStage
-from xbotv2.llm.messages import Message
-from xbotv2.plugin.base import PluginBase
-from xbotv2.plugin.manifest import PluginManifest
-from xbotv2.plugin.store import PluginStore
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.types import XBotTool
+from xbotv2.api import (
+    HookAction,
+    HookContext,
+    HookDecision,
+    HookStage,
+    Message,
+    PluginBase,
+    PluginManifest,
+    PluginSetupContext,
+    PluginStore,
+    XBotTool,
+)
 
 from .permission_scope import SkillPermissionScope
 from .registry import SkillRegistry
@@ -29,21 +33,21 @@ class SkillsPlugin(PluginBase):
     async def on_load(self, config: dict[str, Any]) -> None:
         pass
 
-    def register_hooks(self, manager: HookManager) -> None:
-        manager.register(HookStage.ON_SESSION_INIT, self._on_session_init)
-        manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
-        manager.register(HookStage.AFTER_CONTEXT, self._on_after_context)
-        manager.register(HookStage.ON_TURN_END, self._on_turn_end)
-        manager.register(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
-
-    def register_tools(self, registry: ToolRegistry) -> None:
+    def setup(self, ctx: PluginSetupContext) -> None:
+        ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
+        ctx.register_hook(HookStage.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
+        ctx.register_hook(HookStage.AFTER_CONTEXT, self._on_after_context)
+        ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
+        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
         plugin = self
 
-        async def _load_skill(name: str) -> str:
+        async def _load_skill(name: str, *, sandbox=None) -> str:
             skill = plugin._registry.load_skill(name)
             if skill is None:
                 return f"Error: skill '{name}' not found"
-            content = await load_skill(name, skill_registry=plugin._registry)
+            content = await load_skill(
+                name, skill_registry=plugin._registry, sandbox=sandbox
+            )
             if skill.allowed_tools or skill.disallowed_tools:
                 plugin._permission_scope.add(
                     allowed=skill.allowed_tools,
@@ -53,7 +57,7 @@ class SkillsPlugin(PluginBase):
             return content
 
         tool = XBotTool.from_function(_load_skill, name="skill")
-        registry.register(tool, sandbox_mode="host", owner_plugin=self.manifest.name, namespace="plugin:skills")
+        ctx.register_tool(tool, sandbox_mode="sandboxed", namespace="plugin:skills")
 
     async def _on_session_init(self, ctx: HookContext) -> None:
         ws = getattr(ctx.session, "workspace_root", "") or str(Path.cwd())
@@ -79,7 +83,9 @@ class SkillsPlugin(PluginBase):
         if skill is None:
             return
         instructions = parts[1] if len(parts) > 1 else ""
-        content = await load_skill(skill_name, skill_registry=self._registry)
+        content = await load_skill(
+            skill_name, skill_registry=self._registry, sandbox=ctx.sandbox
+        )
         expanded = f"## {skill_name}\n\n{content}"
         if instructions:
             expanded += f"\n\n## Instructions\n{instructions}"
@@ -112,5 +118,8 @@ class SkillsPlugin(PluginBase):
             return
         decision = self._permission_scope.check(tool_name)
         if decision == "deny":
-            return {"deny_reason": f"Tool '{tool_name}' disallowed by active skill"}
+            return HookDecision(
+                HookAction.DENY,
+                f"Tool '{tool_name}' disallowed by active skill",
+            )
         return None

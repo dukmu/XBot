@@ -163,14 +163,14 @@ class TestMessagePersistence:
         assert restored[0].content == "first"
         assert restored[3].content == "done"
 
-    def test_replace_messages_preserves_existing_message_ids(self, store):
+    def test_sync_messages_preserves_existing_message_ids(self, store):
         store.append_messages([
             Message(role="user", content="first"),
             Message(role="assistant", content="response"),
         ])
         before = _raw_messages(store)
 
-        count = store.replace_messages([
+        count = store.sync_messages([
             Message(role="user", content="first"),
             Message(role="assistant", content="response"),
             Message(role="user", content="second"),

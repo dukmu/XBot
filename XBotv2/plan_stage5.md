@@ -1,4 +1,7 @@
-# Stage 5: Unified Command System & Namespace Protocol
+# Stage 5: Unified Command System & Namespace Protocol (Historical)
+
+> Archived implementation plan. This is not a current specification; see
+> `docsv2/README.md`.
 
 ## 命名空间协议
 

@@ -3,8 +3,10 @@
 import json
 
 from xbotv2.core.builtin_tools.filesystem import (
+    filesystem_find,
     filesystem_list,
     filesystem_read,
+    filesystem_search,
     filesystem_write,
 )
 
@@ -37,6 +39,30 @@ class TestFilesystemReadList:
         assert data["entry_count"] == 2
         assert {entry["name"] for entry in data["entries"]} == {"dir", "file.txt"}
         assert all("size_bytes" in entry for entry in data["entries"])
+
+    def test_find_files_filters_by_glob(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("print('x')", encoding="utf-8")
+        (tmp_path / "README.md").write_text("docs", encoding="utf-8")
+
+        data = _payload(filesystem_find.invoke({
+            "path": str(tmp_path), "pattern": "*.py"
+        }))
+
+        assert data["ok"] is True
+        assert data["files"] == ["src/app.py"]
+
+    def test_search_text_returns_line_matches(self, tmp_path):
+        (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("alpha two\n", encoding="utf-8")
+
+        data = _payload(filesystem_search.invoke({
+            "path": str(tmp_path), "pattern": "alpha"
+        }))
+
+        assert data["ok"] is True
+        assert data["match_count"] == 2
+        assert all("alpha" in match for match in data["matches"])
 
 
 class TestFilesystemWriteModes:

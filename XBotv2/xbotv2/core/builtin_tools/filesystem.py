@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from xbotv2.contracts import ToolResult
 from xbotv2.tools.types import XBotTool
 
 WriteMode = Literal[
@@ -15,10 +16,10 @@ WriteMode = Literal[
 ]
 
 
-async def read_file(path: str, offset: int = 0, limit: int = 2000, *, sandbox=None) -> str:
+async def read_file(path: str, offset: int = 0, limit: int = 2000, *, sandbox=None) -> ToolResult:
     """Read a text file and return JSON with content and file metadata."""
     if sandbox is not None and sandbox.enabled:
-        return await sandbox.read_file(path, offset=offset, limit=limit)
+        return _tool_result_from_json(await sandbox.read_file(path, offset=offset, limit=limit))
 
     p = Path(path)
     if not p.exists():
@@ -51,7 +52,7 @@ async def write_file(
     line: int | None = None, start_line: int | None = None, end_line: int | None = None,
     pattern: str | None = None, replacement: str = "",
     *, sandbox=None,
-) -> str:
+) -> ToolResult:
     """Write or patch a text file and return JSON metadata."""
     if sandbox is not None and sandbox.enabled:
         return await _sandboxed_write(sandbox, path, content, mode, line, start_line, end_line, pattern, replacement)
@@ -99,14 +100,15 @@ async def _sandboxed_write(sandbox, path, content, mode, line, start_line, end_l
         )
     except ValueError as exc:
         return _json_error("invalid_write", str(exc), path=path, mode=mode)
-    return await sandbox.write_file(path, new_text)
+    return _tool_result_from_json(await sandbox.write_file(path, new_text))
 
 
-async def list_files(path: str = ".", recursive: bool = False, max_entries: int = 500, *, sandbox=None) -> str:
+async def list_files(path: str = ".", recursive: bool = False, max_entries: int = 500, *, sandbox=None) -> ToolResult:
     """List files/directories and return JSON metadata."""
     if sandbox is not None and sandbox.enabled:
-        return await sandbox.list_dir(path, recursive=recursive, max_entries=max_entries)
-
+        return _tool_result_from_json(
+            await sandbox.list_dir(path, recursive=recursive, max_entries=max_entries)
+        )
     p = Path(path)
     if not p.exists():
         return _json_error("path_not_found", f"Path not found: {path}", path=path)
@@ -126,6 +128,98 @@ async def list_files(path: str = ".", recursive: bool = False, max_entries: int 
     except Exception as exc:
         return _json_error("list_failed", f"Error listing {path}: {exc}", path=path)
 
+
+async def search_text(
+    pattern: str,
+    path: str = ".",
+    glob: str | None = None,
+    max_results: int = 200,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Search UTF-8 text recursively and return matching lines."""
+    if not pattern:
+        return _json_error("invalid_pattern", "pattern must be non-empty", path=path)
+    if sandbox is not None and sandbox.enabled:
+        return _tool_result_from_json(
+            await sandbox.search_text(pattern, path, glob, max_results)
+        )
+    root = Path(path)
+    if not root.is_dir():
+        return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
+    try:
+        expression = re.compile(pattern)
+    except re.error as exc:
+        return _json_error("invalid_pattern", str(exc), path=path)
+    import fnmatch
+
+    matches: list[str] = []
+    for candidate in root.rglob("*"):
+        if not candidate.is_file():
+            continue
+        relative = str(candidate.relative_to(root))
+        if glob and not fnmatch.fnmatch(relative, glob):
+            continue
+        try:
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        matches.extend(
+            f"{relative}:{number}:{line}"
+            for number, line in enumerate(lines, 1)
+            if expression.search(line)
+        )
+    limited = matches[:max_results] if max_results > 0 else matches
+    return _json_ok({
+        "path": path,
+        "pattern": pattern,
+        "matches": limited,
+        "match_count": len(matches),
+        "returned_matches": len(limited),
+        "truncated": max_results > 0 and len(matches) > max_results,
+    })
+
+
+async def find_files(
+    pattern: str = "*",
+    path: str = ".",
+    max_results: int = 500,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Find files recursively by glob pattern."""
+    if sandbox is not None and sandbox.enabled:
+        listing = _parse_sandbox_result(
+            await sandbox.list_dir(path, recursive=True, max_entries=0)
+        )
+        if not listing.get("ok"):
+            return _tool_result_from_data(listing)
+        paths = [
+            str(entry.get("relative_path") or entry.get("path") or "")
+            for entry in listing.get("entries", [])
+            if entry.get("kind") == "file"
+        ]
+        import fnmatch
+
+        matches = [candidate for candidate in paths if fnmatch.fnmatch(candidate, pattern)]
+    else:
+        root = Path(path)
+        if not root.is_dir():
+            return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
+        matches = sorted(
+            str(candidate.relative_to(root))
+            for candidate in root.rglob(pattern)
+            if candidate.is_file()
+        )
+    limited = matches[:max_results] if max_results > 0 else matches
+    return _json_ok({
+        "path": path,
+        "pattern": pattern,
+        "files": limited,
+        "file_count": len(matches),
+        "returned_files": len(limited),
+        "truncated": max_results > 0 and len(matches) > max_results,
+    })
 
 def _parse_sandbox_result(text: str) -> dict[str, Any]:
     try:
@@ -244,15 +338,45 @@ def _ensure_line_ending(content: str) -> str:
     return content if content.endswith("\n") else content + "\n"
 
 
-def _json_ok(payload: dict[str, Any]) -> str:
-    return json.dumps({"ok": True, **payload}, ensure_ascii=False)
+def _tool_result_from_json(value: str) -> ToolResult:
+    return _tool_result_from_data(_parse_sandbox_result(value))
 
 
-def _json_error(code: str, message: str, **extra: Any) -> str:
-    return json.dumps({"ok": False, "error": {"code": code, "message": message}, **extra}, ensure_ascii=False)
+def _tool_result_from_data(data: dict[str, Any]) -> ToolResult:
+    content = json.dumps(data, ensure_ascii=False)
+    if data.get("ok", True):
+        return ToolResult.success(content, data=data)
+    error = data.get("error") or {}
+    return ToolResult.failure(
+        str(error.get("code") or "tool_error"),
+        str(error.get("message") or content),
+    )
+
+
+def _json_ok(payload: dict[str, Any]) -> ToolResult:
+    return _tool_result_from_data({"ok": True, **payload})
+
+
+def _json_error(code: str, message: str, **extra: Any) -> ToolResult:
+    data = {"ok": False, "error": {"code": code, "message": message}, **extra}
+    result = ToolResult.failure(code, message)
+    return ToolResult(
+        status=result.status,
+        content=json.dumps(data, ensure_ascii=False),
+        data=data,
+        error=result.error,
+    )
 
 
 filesystem_read = XBotTool.from_function(read_file, name="filesystem_read")
 filesystem_write = XBotTool.from_function(write_file, name="filesystem_write")
 filesystem_list = XBotTool.from_function(list_files, name="filesystem_list")
-FILESYSTEM_TOOLS = [filesystem_read, filesystem_write, filesystem_list]
+filesystem_search = XBotTool.from_function(search_text, name="search_text")
+filesystem_find = XBotTool.from_function(find_files, name="find_files")
+FILESYSTEM_TOOLS = [
+    filesystem_read,
+    filesystem_write,
+    filesystem_list,
+    filesystem_search,
+    filesystem_find,
+]

@@ -24,8 +24,8 @@ python -m xbotv2 server --bind 0.0.0.0   # server-only
 
 - `new`: create session, generate session_id if not provided
 - `resume`: reconnect to existing session state on disk
-- **Auto-upgrade**: when `mode=new` but session state already exists,
-  server silently switches to `mode=resume`
+- `new` with an existing explicit id returns HTTP 409; `resume` with a missing
+  id returns HTTP 404. The server never changes modes implicitly.
 
 ### Endpoints
 

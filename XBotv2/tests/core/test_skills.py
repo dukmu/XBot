@@ -110,11 +110,19 @@ Body
 
 
 class TestSkillToolAndShellInjection:
+    class FakeSandbox:
+        enabled = True
+
+        async def run_shell(self, command):
+            return command.removeprefix("echo ")
+
     @pytest.mark.asyncio
     async def test_shell_injection_expands_command(self):
         from builtin_plugins.skills.skill_tool import _preprocess
 
-        result = await _preprocess("hello !`echo world`")
+        result = await _preprocess(
+            "hello !`echo world`", sandbox=self.FakeSandbox()
+        )
         assert "world" in result
 
     @pytest.mark.asyncio
@@ -128,10 +136,19 @@ class TestSkillToolAndShellInjection:
     async def test_shell_injection_multiple_commands(self):
         from builtin_plugins.skills.skill_tool import _preprocess
 
-        result = await _preprocess("a !`echo X` and !`echo Y` end")
+        result = await _preprocess(
+            "a !`echo X` and !`echo Y` end", sandbox=self.FakeSandbox()
+        )
         assert "X" in result
         assert "Y" in result
         assert "!`" not in result
+
+    @pytest.mark.asyncio
+    async def test_shell_injection_without_sandbox_does_not_execute(self):
+        from builtin_plugins.skills.skill_tool import _preprocess
+
+        result = await _preprocess("hello !`echo unsafe`")
+        assert result == "hello [shell injection unavailable: enabled sandbox required]"
 
     @pytest.mark.asyncio
     async def test_load_skill_returns_content(self):

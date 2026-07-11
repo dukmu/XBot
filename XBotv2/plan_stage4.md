@@ -1,4 +1,7 @@
-# Stage 4: Skills + MCP as Plugin Extensions
+# Stage 4: Skills + MCP as Plugin Extensions (Historical)
+
+> Archived implementation plan. This is not a current specification; see
+> `docsv2/README.md`.
 
 ## 核心原则
 

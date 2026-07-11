@@ -153,12 +153,14 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
 
 
 def _status_data(ctx: Any) -> dict[str, Any]:
+    loader = getattr(ctx.engine, "plugin_loader", None)
     return {
         "session_id": ctx.session_id,
         "thread_id": ctx.thread_id,
         "workspace_root": ctx.workspace_root,
         "provider": ctx.provider_name,
         "turn_active": ctx.turn_lock.locked(),
+        "plugins": loader.diagnostics() if loader is not None else [],
     }
 
 
