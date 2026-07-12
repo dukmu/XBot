@@ -1,5 +1,6 @@
 """Tests for PluginLoader — discovery, dependency resolution, loading."""
 
+import asyncio
 import tempfile
 import sys
 import types
@@ -685,6 +686,69 @@ class BrokenPlugin(PluginBase):
 
         assert str(plugins_root) not in sys.path
         assert loader.loaded_plugins == []
+        assert loader._import_paths == []
+
+    @pytest.mark.asyncio
+    async def test_setup_cancellation_rolls_back_partial_registrations(
+        self,
+        tmp_path,
+    ):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "cancelled"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            """
+import asyncio
+from xbotv2.api import HookStage, PluginBase, Tool
+
+def dynamic_tool() -> str:
+    return "ok"
+
+async def on_turn_start(ctx):
+    return None
+
+class CancelledPlugin(PluginBase):
+    def setup(self, ctx):
+        ctx.register_hook(HookStage.ON_TURN_START, on_turn_start)
+        ctx.register_tool(Tool.from_function(dynamic_tool))
+        ctx.add_prompt_fragment("system_instructions", "partial")
+        raise asyncio.CancelledError()
+
+    async def on_unload(self):
+        await self.store.set("cleaned", True)
+""",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "cancelled", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        state_store = CoreStateStore.create(
+            RuntimePaths.from_data_dir(tmp_path).session("s"),
+            thread_id="t",
+            workspace_root="/workspace",
+            provider="default",
+        )
+        hooks = HookManager()
+        tools = ToolRegistry()
+        context = ContextBuilder()
+        loader = PluginLoader(
+            plugin_dirs=[plugins_root],
+            state_store=state_store,
+            hook_manager=hooks,
+            tool_registry=tools,
+            context_builder=context,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await loader.load()
+
+        assert hooks._hooks.get(HookStage.ON_TURN_START, []) == []
+        assert "plugin:cancelled:dynamic_tool" not in tools.registered_names()
+        assert context.get_fragment("system_instructions", "cancelled") is None
+        assert state_store.get_plugin_state("cancelled") == {"cleaned": True}
+        assert loader.loaded_plugins == []
+        assert loader._records == {}
         assert loader._import_paths == []
 
     @pytest.mark.asyncio

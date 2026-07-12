@@ -271,7 +271,7 @@ class PluginLoader:
                 tool_names=setup.tool_names,
                 fragment_stages=setup.fragment_stages,
             )
-        except Exception:
+        except BaseException:
             setup.rollback()
             raise
 

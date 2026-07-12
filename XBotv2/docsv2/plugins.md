@@ -39,6 +39,11 @@ the original load error instead of replacing it. Explicit `unload_all()` also
 continues after individual callback failures and reports an exception group
 after every plugin has been cleaned.
 
+The setup transaction also rolls back on task cancellation. Hooks, tools, and
+prompt fragments registered before a `CancelledError` are removed before the
+cancel propagates; the partially initialized plugin still receives
+`on_unload()` for its own resources.
+
 Bootstrap remains transactional after loading: failures while creating the LLM
 or running `ON_SESSION_INIT` trigger `unload_all()`. This removes runtime tools
 registered by initialization hooks and closes plugin-owned external resources.
