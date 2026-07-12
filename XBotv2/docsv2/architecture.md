@@ -100,6 +100,8 @@ Discovers SKILL.md files (agentskills.io standard) from:
 - BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
 - Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
 - allowed-tools / disallowed-tools frontmatter support
+- `disable-model-invocation: true` for skills available only through explicit
+  `/skill-name` user invocation
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 

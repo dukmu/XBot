@@ -34,6 +34,7 @@ class Skill:
     frontmatter: dict[str, object] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
+    disable_model_invocation: bool = False
     scope: str = "project"
 
 
@@ -116,6 +117,12 @@ class SkillRegistry:
         disallowed = fm.get("disallowed-tools") or fm.get("disallowed_tools") or []
         if isinstance(disallowed, str):
             disallowed = [t.strip() for t in disallowed.split(",") if t.strip()]
+        disable_model_invocation = fm.get(
+            "disable-model-invocation",
+            fm.get("disable_model_invocation", False),
+        )
+        if not isinstance(disable_model_invocation, bool):
+            return None
 
         return Skill(
             name=name,
@@ -125,6 +132,7 @@ class SkillRegistry:
             frontmatter=fm,
             allowed_tools=list(allowed),
             disallowed_tools=list(disallowed),
+            disable_model_invocation=disable_model_invocation,
             scope=scope,
         )
 

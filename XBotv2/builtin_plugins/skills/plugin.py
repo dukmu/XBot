@@ -21,7 +21,7 @@ from xbotv2.api import (
 )
 
 from .permission_scope import SkillPermissionScope
-from .registry import SkillRegistry
+from .registry import Skill, SkillRegistry
 from .skill_tool import load_skill
 
 
@@ -52,6 +52,8 @@ class SkillsPlugin(PluginBase):
             skill = self._registry.load_skill(name)
             if skill is None:
                 return f"Error: skill '{name}' not found"
+            if skill.disable_model_invocation:
+                return f"Error: skill '{name}' requires explicit /{name} invocation"
             content = await load_skill(
                 name, skill_registry=self._registry, sandbox=sandbox
             )
@@ -81,8 +83,10 @@ class SkillsPlugin(PluginBase):
         self._registry.discover(Path(ws))
         try:
             for skill in self._registry.list_skills():
+                if skill.disable_model_invocation:
+                    continue
                 registered_name = ctx.plugin_runtime.register_tool(
-                    self._skill_as_tool(skill.name, skill.content),
+                    self._skill_as_tool(skill),
                     options=ToolRegistrationOptions(
                         sandbox_mode="host",
                         namespace=f"skills:{skill.scope}",
@@ -96,11 +100,12 @@ class SkillsPlugin(PluginBase):
         self._initialized = True
 
     @staticmethod
-    def _skill_as_tool(name: str, content: str) -> Tool:
+    def _skill_as_tool(skill: Skill) -> Tool:
         def invoke() -> str:
-            return content
+            return skill.content
 
-        return Tool.from_function(invoke, name=name)
+        invoke.__doc__ = skill.description
+        return Tool.from_function(invoke, name=skill.name)
 
     def _rollback_skill_tools(self, runtime: RuntimePluginContext) -> None:
         for registered_name in reversed(self._skill_tools):
@@ -134,7 +139,7 @@ class SkillsPlugin(PluginBase):
         if not self._active_skills:
             return
         parts = ["## Active Skills"]
-        for name in self._active_skills:
+        for name in sorted(self._active_skills):
             parts.append(f"\n### {name}")
         parts.append("")
         content = "\n".join(parts)

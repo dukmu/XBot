@@ -221,7 +221,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 
 **Tools:**
 - `skill` (namespace `plugin:skills:skill`): load a skill by name
-- Each discovered skill is registered as a tool (namespace `skills:<scope>:<name>`)
+- Each model-invocable skill is registered as a tool (namespace
+  `skills:<scope>:<name>`) with its SKILL.md description in the provider schema
 
 **Features:**
 - Repeated initialization on the same loaded plugin is idempotent; partial
@@ -229,7 +230,9 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - Shell injection: `` !`command` `` placeholders run only through the enabled
   session sandbox. There is no host subprocess fallback.
 - allowed-tools / disallowed-tools frontmatter fields
-- disable-model-invocation for manual-only skills
+- `disable-model-invocation: true` keeps a skill out of the model tool list and
+  blocks the generic `skill` tool from loading it; explicit `/skill-name`
+  invocation remains available. The value must be a YAML boolean.
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 

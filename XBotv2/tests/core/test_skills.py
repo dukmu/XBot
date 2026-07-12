@@ -43,6 +43,26 @@ description: A skill found via .agents path
 Agents path skill.
 """)
 
+    manual_dir = ws / ".agents" / "skills" / "manual-only"
+    manual_dir.mkdir(parents=True)
+    (manual_dir / "SKILL.md").write_text("""---
+name: manual-only
+description: A manually invoked skill
+disable-model-invocation: true
+---
+Manual skill content.
+""")
+
+    invalid_flag_dir = ws / ".agents" / "skills" / "invalid-flag"
+    invalid_flag_dir.mkdir(parents=True)
+    (invalid_flag_dir / "SKILL.md").write_text("""---
+name: invalid-flag
+description: Invalid manual-only flag
+disable-model-invocation: "true"
+---
+Invalid flag content.
+""")
+
     return ws
 
 
@@ -57,6 +77,7 @@ class TestSkillRegistry:
         assert "test-skill" in names
         assert "agents-skill" in names
         assert "invalid-skill" not in names
+        assert "invalid-flag" not in names
 
     def test_skill_parses_frontmatter(self, skill_workspace):
         from builtin_plugins.skills.registry import SkillRegistry
@@ -70,6 +91,10 @@ class TestSkillRegistry:
         assert "git" in str(skill.allowed_tools)
         assert "AskUserQuestion" in str(skill.disallowed_tools)
         assert "test skill body" in skill.content.lower()
+
+        manual = reg.load_skill("manual-only")
+        assert manual is not None
+        assert manual.disable_model_invocation is True
 
     def test_skill_found_via_agents_path(self, skill_workspace):
         from builtin_plugins.skills.registry import SkillRegistry
@@ -150,7 +175,64 @@ Body
 
         assert registry.registered_names() == first_names
         assert owned_names == first_names
+        assert "skills:project:manual-only" not in first_names
+        entry = registry.get("skills:project:test-skill")
+        assert entry is not None
+        assert entry.tool.description == "A test skill for integration testing"
         assert plugin._initialized is True
+
+    @pytest.mark.asyncio
+    async def test_manual_only_skill_requires_explicit_user_invocation(
+        self,
+        skill_workspace,
+    ):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import PluginManifest
+
+        class SetupContext:
+            def __init__(self):
+                self.skill_tool = None
+
+            def register_hook(self, stage, callback):
+                pass
+
+            def register_tool(self, tool, options=None):
+                self.skill_tool = tool
+                return "plugin:skills:skill"
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._registry._scan_global = lambda: None
+        plugin._registry.discover(skill_workspace)
+        setup = SetupContext()
+        plugin.setup(setup)
+
+        model_result = await setup.skill_tool.ainvoke({"name": "manual-only"})
+        manual_result = await plugin._on_before_user_message(
+            SimpleNamespace(user_input="/manual-only focus", sandbox=None)
+        )
+
+        assert model_result == (
+            "Error: skill 'manual-only' requires explicit /manual-only invocation"
+        )
+        assert manual_result["user_input"].startswith("## manual-only")
+        assert "Manual skill content." in manual_result["user_input"]
+        assert "## Instructions\nfocus" in manual_result["user_input"]
+
+    @pytest.mark.asyncio
+    async def test_active_skill_context_order_is_stable(self):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import Message, PluginManifest
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._active_skills.update({"zeta", "alpha"})
+        ctx = SimpleNamespace(
+            context_messages=[Message(role="system", content="base")]
+        )
+
+        result = await plugin._on_after_context(ctx)
+        content = result["context_messages"][1].content
+
+        assert content.index("### alpha") < content.index("### zeta")
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_rolls_back_partial_registration(
