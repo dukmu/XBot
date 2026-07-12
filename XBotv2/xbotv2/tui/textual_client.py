@@ -153,7 +153,6 @@ class XBotTextualApp(App[None]):
         self._stream_timer: asyncio.Task | None = None
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
-        self._submitted_interaction_ids: set[str] = set()
         self._interaction_response_pending = False
         self._turn_started_at: dict[int, float] = {}
         self._input_history: list[str] = []
@@ -385,7 +384,6 @@ class XBotTextualApp(App[None]):
         self._resolved_choice_keys.clear()
         self._active_choice_key = None
         self._active_choice_index = 0
-        self._submitted_interaction_ids.clear()
         await self._render_new_transcript_entries()
         self._refresh_all()
 
@@ -584,6 +582,7 @@ class XBotTextualApp(App[None]):
             self._interaction_response_pending = False
             await self._cancel_stream_timer()
             self._finalize_activity()
+            await self._refresh_changed_tool_widgets()
             self._refresh_status()
             refresh_input = True
         elif event_type == "usage":
@@ -616,6 +615,8 @@ class XBotTextualApp(App[None]):
             "user_input_recorded", "error",
         }:
             self._interaction_response_pending = False
+            if event_type == "error":
+                await self._refresh_changed_tool_widgets()
             refresh_input = True
         elif event_type in {"user_input_required"}:
             refresh_input = True
@@ -700,10 +701,10 @@ class XBotTextualApp(App[None]):
             return
         composer.disabled = False
         composer.display = True
-        if self.state.pending_user_input_active:
+        if self.state.pending_user_input_payload is not None:
             hint.update("Answer required")
             self._set_input_placeholder("Type an answer")
-        elif self.state.pending_permission_active:
+        elif self.state.pending_permission_payload is not None:
             hint.update("Approval required")
             self._set_input_placeholder("Type allow/deny")
         elif self.state.turn_active:
@@ -752,9 +753,6 @@ class XBotTextualApp(App[None]):
         if not choices or key is None:
             return False
         request_id = self._choice_request_ids.get(key, key)
-        if request_id in self._submitted_interaction_ids:
-            return False
-        self._submitted_interaction_ids.add(request_id)
         choice = choices[self._active_choice_index]
         self._interaction_response_pending = True
         self._resolve_active_choice(choice.label)

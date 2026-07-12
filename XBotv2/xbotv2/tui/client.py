@@ -91,12 +91,8 @@ class TuiState:
     errors: list[str] = field(default_factory=list)
     turn: int = 0
     turn_active: bool = False
-    pending_user_input_request_id: str | None = None
-    pending_permission_request_id: str | None = None
     pending_user_input_payload: dict[str, Any] | None = None
     pending_permission_payload: dict[str, Any] | None = None
-    pending_user_input_active: bool = False
-    pending_permission_active: bool = False
     _tool_transcript_keys: set[str] = field(default_factory=set)
     _streaming_assistant_index: int | None = None
     _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
@@ -117,6 +113,7 @@ class TuiState:
         elif event_type == "turn_started":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
+            self._clear_pending_interactions(tool_status="cancelled")
             self.turn_usage = {
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -133,6 +130,7 @@ class TuiState:
         elif event_type == "turn_cancelled":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self._clear_pending_interactions(tool_status="cancelled")
             self.status = "Interrupted"
             self._refresh_status()
         elif event_type == "assistant_message":
@@ -178,23 +176,19 @@ class TuiState:
         elif event_type == "client_message":
             self.append_notice("client_message", str(data.get("message") or data))
         elif event_type == "permission_request":
-            self.pending_permission_request_id = str(data.get("request_id") or "") or None
             self.pending_permission_payload = data
-            self.pending_permission_active = True
             self._refresh_status()
             tool_call = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else {}
             tool_id = str(tool_call.get("id") or "")
             if tool_id and tool_id in self.tools:
                 tool = self.tools[tool_id]
                 tool.permission_pending = True
-                tool.permission_request_id = self.pending_permission_request_id or ""
+                tool.permission_request_id = str(data.get("request_id") or "")
                 tool.permission_reason = str(data.get("reason") or "")
                 tool.status = "pending approval"
                 self._changed_tool_ids.add(tool_id)
         elif event_type == "permission_denied":
             self.status = "Permission denied"
-            self.pending_permission_active = False
-            self.pending_permission_request_id = None
             self.pending_permission_payload = None
             request_id = str(data.get("request_id") or "")
             tool = self._tool_for_permission_request(request_id)
@@ -203,15 +197,11 @@ class TuiState:
                 tool.status = "denied"
                 self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "user_input_required":
-            self.pending_user_input_request_id = str(data.get("request_id") or "") or None
             self.pending_user_input_payload = data
-            self.pending_user_input_active = True
             self._refresh_status()
             question = str(data.get("question") or "User input required.")
             self.append_notice("user_input_required", question, payload=data)
         elif event_type == "user_input_recorded":
-            self.pending_user_input_request_id = None
-            self.pending_user_input_active = False
             self.pending_user_input_payload = None
             self._refresh_status()
             self.append_notice(
@@ -220,8 +210,6 @@ class TuiState:
                 payload=data,
             )
         elif event_type == "permission_response_recorded":
-            self.pending_permission_request_id = None
-            self.pending_permission_active = False
             self.pending_permission_payload = None
             self._refresh_status()
             request_id = str(data.get("request_id") or "")
@@ -232,6 +220,7 @@ class TuiState:
                 tool.status = decision if decision else "approved"
                 self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "error":
+            self._clear_pending_interactions(tool_status="failed")
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
@@ -269,6 +258,15 @@ class TuiState:
         self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
 
+    def _clear_pending_interactions(self, *, tool_status: str) -> None:
+        self.pending_user_input_payload = None
+        self.pending_permission_payload = None
+        for tool in self.tools.values():
+            if tool.permission_pending:
+                tool.permission_pending = False
+                tool.status = tool_status
+                self._changed_tool_ids.add(tool.tool_call_id)
+
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:
         if self.status == "Shutdown":
             return
@@ -277,9 +275,9 @@ class TuiState:
             and not reset_terminal
         ):
             return
-        if self.pending_permission_active:
+        if self.pending_permission_payload is not None:
             self.status = "Approval required"
-        elif self.pending_user_input_active:
+        elif self.pending_user_input_payload is not None:
             self.status = "Waiting for user"
         elif self.turn_active:
             self.status = "Running"

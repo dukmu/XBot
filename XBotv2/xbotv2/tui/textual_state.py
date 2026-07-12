@@ -18,10 +18,10 @@ def route_submitted_text(
     text: str,
 ) -> SubmitRoute:
     """Route submitted text to a pending live interaction when present."""
-    if state.pending_user_input_active:
+    if state.pending_user_input_payload is not None:
         answers.put_nowait(text)
         return "user_input"
-    if state.pending_permission_active:
+    if state.pending_permission_payload is not None:
         permission_decisions.put_nowait(_parse_permission_decision(text))
         return "permission"
     return "message"

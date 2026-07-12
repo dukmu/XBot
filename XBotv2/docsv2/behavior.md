@@ -45,6 +45,11 @@ acknowledged on the original stream before the turn continues. A client that
 cannot support an interaction must fail or cancel it explicitly rather than
 leave the engine waiting indefinitely.
 
+The TUI keeps each pending interaction payload as its state source instead of
+duplicating active flags and request ids. A cancelled or failed turn, and the
+start of a new turn, clears unresolved client interaction state so later input
+cannot be routed to an expired request.
+
 An accepted turn has a closed lifecycle. Once `turn_started` is visible, the
 client eventually receives one `turn_finished` or `turn_cancelled`. Engine
 failures remain visible as `error` and are followed by `turn_finished`, allowing

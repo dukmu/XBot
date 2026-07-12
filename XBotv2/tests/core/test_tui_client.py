@@ -272,7 +272,8 @@ def test_tui_state_renders_interaction_response_acknowledgements():
             },
         )
     )
-    assert state.pending_permission_request_id == "approval-7f3a"
+    assert state.pending_permission_payload is not None
+    assert state.pending_permission_payload["request_id"] == "approval-7f3a"
     assert state.tools["c2"].permission_pending is True
     state.apply_event(
         _frame(
@@ -282,7 +283,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
     )
 
     assert state.status == "Ready"
-    assert state.pending_permission_request_id is None
+    assert state.pending_permission_payload is None
     assert state.tools["c2"].permission_pending is False
     assert state.tools["c2"].status == "allow"
 
@@ -295,7 +296,7 @@ def test_tui_state_ack_keeps_running_until_turn_finished():
     state.apply_event(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
 
     assert state.status == "Running"
-    assert state.pending_user_input_request_id is None
+    assert state.pending_user_input_payload is None
 
     state.apply_event(_frame("turn_finished", {"turn": 1}))
 
@@ -314,6 +315,52 @@ def test_tui_state_permission_denied_resets_on_next_turn():
     state.apply_event(_frame("turn_started", {"turn": 2}))
 
     assert state.status == "Running"
+
+
+@pytest.mark.parametrize(
+    ("request_type", "request_data", "terminal_type", "terminal_data", "expected_status"),
+    [
+        (
+            "user_input_required",
+            {"request_id": "question-1", "question": "Continue?"},
+            "turn_cancelled",
+            {"turn": 1},
+            "Interrupted",
+        ),
+        (
+            "permission_request",
+            {
+                "request_id": "approval-1",
+                "tool_call": {"id": "call-1", "name": "shell"},
+            },
+            "error",
+            {"message": "turn failed"},
+            "Error",
+        ),
+    ],
+)
+def test_terminal_events_clear_pending_interactions(
+    request_type, request_data, terminal_type, terminal_data, expected_status
+):
+    state = TuiState()
+    state.tools["call-1"] = TuiTool(tool_call_id="call-1", name="shell")
+    answers: asyncio.Queue[str] = asyncio.Queue()
+    permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
+
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(_frame(request_type, request_data))
+    state.apply_event(_frame(terminal_type, terminal_data))
+
+    assert state.pending_user_input_payload is None
+    assert state.pending_permission_payload is None
+    assert state.status == expected_status
+    assert (
+        route_submitted_text(state, answers, permission_decisions, "next")
+        == "message"
+    )
+    assert answers.empty()
+    assert permission_decisions.empty()
+    assert state.tools["call-1"].permission_pending is False
 
 
 @pytest.mark.asyncio
@@ -899,6 +946,58 @@ async def test_textual_app_confirming_permission_twice_submits_once():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_cancellation_clears_pending_permission_ui():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(_frame("turn_started", {"turn": 1}))
+        app.state.tools["call-cancel"] = TuiTool(
+            tool_call_id="call-cancel",
+            name="shell",
+        )
+        app.state.transcript.append(
+            TuiTranscriptEntry(kind="tool", key="call-cancel")
+        )
+        app.state.apply_event(
+            _frame(
+                "permission_request",
+                {
+                    "request_id": "approval-cancel",
+                    "tool_call": {"id": "call-cancel", "name": "shell"},
+                },
+            )
+        )
+        await app._render_new_transcript_entries()
+        await app._refresh_changed_tool_widgets()
+        await pilot.pause()
+
+        assert app._active_choice_key == "call-cancel"
+
+        event = _frame("turn_cancelled", {"turn": 1, "reason": "client_interrupt"})
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        await pilot.pause()
+
+        composer = app.query_one("#input")
+        assert app._active_choice_key is None
+        assert app.state.pending_permission_payload is None
+        assert app.state.tools["call-cancel"].status == "cancelled"
+        assert composer.disabled is False
+        assert composer.display is True
+
+
+@pytest.mark.asyncio
 async def test_textual_app_headless_renders_inline_ask_user_options():
     from textual.widgets import Button
     from xbotv2.tui.textual_client import XBotTextualApp
@@ -1410,10 +1509,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
 
 def test_apply_event_permission_request_sets_status_to_approval_required():
-    """``permission_request`` flips ``pending_permission_active`` and
-    attaches the permission state to the matching tool widget instead
-    of creating a separate notice entry.
-    """
+    """A permission request becomes the active payload and updates its tool."""
 
     state = TuiState()
     # Pre-create the tool so the request_id can be linked
@@ -1431,7 +1527,8 @@ def test_apply_event_permission_request_sets_status_to_approval_required():
         }
     )
 
-    assert state.pending_permission_active is True
+    assert state.pending_permission_payload is not None
+    assert state.pending_permission_payload["request_id"] == "perm:call_1"
     assert state.status == "Approval required"
     # Permission is attached to the tool widget, not a separate notice
     tool = state.tools["call_1"]
