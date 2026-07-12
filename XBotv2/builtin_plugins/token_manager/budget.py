@@ -1,16 +1,12 @@
-"""Token budget controller — enforces max_context_tokens, coordinates with compaction."""
+"""Observe-only token budget threshold checks."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from .estimator import estimate_context_tokens, estimate_tool_schema_tokens
 
-logger = logging.getLogger("xbotv2.token_manager")
-
-
-class TokenBudgetController:
+class TokenBudgetChecker:
     def __init__(
         self,
         max_context_tokens: int = 32000,

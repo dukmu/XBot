@@ -1,6 +1,6 @@
 name: token_manager
 version: "1.0.0"
-description: Token estimation, usage tracking, and budget control
+description: Token estimation, usage tracking, and observe-only budget checks
 api_version: "1"
 config_schema:
   type: object

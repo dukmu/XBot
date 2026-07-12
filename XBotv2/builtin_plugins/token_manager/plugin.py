@@ -1,7 +1,8 @@
-"""TokenManagerPlugin — token estimation, usage tracking, and budget control."""
+"""TokenManagerPlugin: token estimation and observe-only budget checks."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from xbotv2.api import (
@@ -13,10 +14,8 @@ from xbotv2.api import (
     PluginStore,
 )
 
-from .budget import TokenBudgetController
+from .budget import TokenBudgetChecker
 from .stats import TokenStatsCollector
-
-import logging
 
 logger = logging.getLogger("xbotv2.token_manager")
 
@@ -25,7 +24,7 @@ class TokenManagerPlugin(PluginBase):
     def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
         super().__init__(manifest, store)
         self._stats = TokenStatsCollector()
-        self._budget = TokenBudgetController(
+        self._budget = TokenBudgetChecker(
             max_context_tokens=32000,
             output_reservation=4096,
             soft_limit_ratio=0.8,
@@ -33,7 +32,7 @@ class TokenManagerPlugin(PluginBase):
 
     async def on_load(self, config: dict[str, Any]) -> None:
         if config:
-            self._budget = TokenBudgetController(
+            self._budget = TokenBudgetChecker(
                 max_context_tokens=int(config.get("max_context_tokens", 32000)),
                 output_reservation=int(config.get("output_reservation", 4096)),
                 soft_limit_ratio=float(config.get("soft_limit_ratio", 0.8)),
@@ -87,4 +86,8 @@ class TokenManagerPlugin(PluginBase):
         return self._stats.summary()
 
     def diagnostics(self) -> dict[str, Any]:
-        return {"status": "ready", "usage": self.summary()}
+        return {
+            "status": "ready",
+            "mode": "observe_only",
+            "usage": self.summary(),
+        }

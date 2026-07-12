@@ -286,6 +286,16 @@ plugins:
         enabled: true
 ```
 
+### TokenManagerPlugin (`builtin_plugins/token_manager/`)
+
+Uses public model-request, model-response, tool-call, and turn Hooks to estimate
+request size and collect usage. It is the template for observation/policy
+plugins that do not need runtime internals. Diagnostics explicitly report
+`mode: observe_only`: threshold violations are logged but do not compact,
+filter, reject, or otherwise alter the request. In-memory statistics are reset
+on unload. See [Token manager plugin](token_manager.md) for its current
+contract and remaining behavior gaps.
+
 ## Tool Namespace Convention
 
 Tools use one canonical registered name:

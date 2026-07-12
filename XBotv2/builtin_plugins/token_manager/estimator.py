@@ -1,14 +1,8 @@
-"""Token estimator — character-based fallback and provider-specific token counting.
-
-Prefer provider tokenizers; fall back to 4 chars ≈ 1 token (conservative).
-"""
+"""Provider-neutral character-based token approximation."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
-
-logger = logging.getLogger("xbotv2.token_manager")
 
 _CHARS_PER_TOKEN = 4
 
