@@ -125,7 +125,13 @@ class Tool:
         return result
 
     async def ainvoke(self, args: dict[str, Any], **injected: Any) -> Any:
-        result = self.function(**args, **self._injected(injected))
+        kwargs = {**args, **self._injected(injected)}
+        if inspect.iscoroutinefunction(self.function):
+            return await self.function(**kwargs)
+
+        import asyncio
+
+        result = await asyncio.to_thread(self.function, **kwargs)
         return await result if inspect.isawaitable(result) else result
 
     def provider_schema(self) -> dict[str, Any]:

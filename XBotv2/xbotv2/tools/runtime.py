@@ -453,19 +453,11 @@ async def _execute_one_tool(
             and sandbox_policy is not None
             and sandbox_policy.enabled
         )
-        if use_sandbox:
-            result = await asyncio.wait_for(
-                tool.ainvoke(args, sandbox=sandbox_policy),
-                timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
-            )
-        elif hasattr(tool, "ainvoke"):
-            result = await asyncio.wait_for(tool.ainvoke(args), timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS)
-        elif hasattr(tool, "invoke"):
-            result = await asyncio.to_thread(tool.invoke, args)
-        elif callable(tool):
-            result = await asyncio.to_thread(tool, **args) if args else await asyncio.to_thread(tool)
-        else:
-            result = f"Tool {tool_name} is not callable"
+        result = await _invoke_tool(
+            tool,
+            args,
+            sandbox=sandbox_policy if use_sandbox else None,
+        )
 
         if _is_user_input_wait_result(result):
             message = await _tool_message_from_user_input_wait(result, tool_id, client_interaction_handler)
@@ -542,29 +534,17 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
     return Message(role="tool", content=str(value), tool_call_id=tool_call_id, status="success")
 
 
-# ----------------------------------------------------------------------
-# Sync-tool execution helpers (added 2026-06-05 per user tool-chain review)
-# ----------------------------------------------------------------------
-
-# Hard wall-clock cap on a single tool invocation. The shell tool
-# already enforces a 30s ``subprocess.run(timeout=30)``, but that
-# timeout is for the *command*; the wrapping dispatch loop has no
-# timeout. A tool that never returns (e.g. an LLM-augmented tool that
-# accidentally awaits the event loop, or a sandbox guard that
-# deadlocks) would freeze the asyncio loop indefinitely. 60s is
-# generous for any reasonable tool and matches the shell's internal
-# timeout.
 _TOOL_DISPATCH_TIMEOUT_SECONDS = 60.0
 
 
-async def _invoke_with_timeout(coro_factory, args, *, tool_name: str) -> Any:
-    try:
-        if asyncio.iscoroutinefunction(coro_factory):
-            return await asyncio.wait_for(coro_factory(*args), timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS)
-        return await asyncio.wait_for(
-            asyncio.to_thread(coro_factory, *args),
-            timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("tool %s exceeded dispatch timeout %.1fs", tool_name, _TOOL_DISPATCH_TIMEOUT_SECONDS)
-        return f"Error: tool {tool_name!r} exceeded the {_TOOL_DISPATCH_TIMEOUT_SECONDS:.0f}s dispatch timeout"
+async def _invoke_tool(tool: Any, args: dict[str, Any], *, sandbox: Any = None) -> Any:
+    """Invoke any registered tool without blocking the event loop."""
+    if hasattr(tool, "ainvoke"):
+        call = tool.ainvoke(args, **({"sandbox": sandbox} if sandbox else {}))
+    elif hasattr(tool, "invoke"):
+        call = asyncio.to_thread(tool.invoke, args)
+    elif callable(tool):
+        call = asyncio.to_thread(tool, **args)
+    else:
+        raise TypeError(f"Tool {tool!r} is not callable")
+    return await asyncio.wait_for(call, timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS)

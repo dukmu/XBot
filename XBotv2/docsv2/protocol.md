@@ -78,6 +78,6 @@ Skills are loaded via `register_dynamic_command()` from plugins during
 
 ## Provider Events (internal)
 
-`_model_response` event carries aggregated `XBotModelResponse` with
+`_model_response` event carries an aggregated `ModelResponse` with
 content, tool_calls, usage_metadata, additional_kwargs (including
 reasoning_content if present).

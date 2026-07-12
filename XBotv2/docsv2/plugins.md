@@ -4,7 +4,7 @@
 
 ```
 Core -> never imports -> Plugins (builtin_plugins)
-Plugins -> import -> Core (xbotv2)
+Plugins -> import -> Stable API (xbotv2.api)
 ```
 
 Plugins extend the engine via hooks, tools, and prompt fragments.
@@ -65,7 +65,7 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 
 **Tools:**
 - `skill` (namespace `plugin:skills:skill`): load a skill by name
-- Each discovered skill registered as ToolRegistry entry (namespace `skills:<scope>:<name>`)
+- Each discovered skill is registered as a tool (namespace `skills:<scope>:<name>`)
 
 **Features:**
 - Shell injection: `` !`command` `` placeholders run only through the enabled
@@ -81,7 +81,7 @@ Connects to MCP (Model Context Protocol) servers and registers their tools.
 - `plugin.yaml`: manifest
 - `plugin.py`: MCPPlugin class
 - `client.py`: MCPClient with StdioTransport and HttpTransport
-- `tool.py`: MCPTool wrapper (XBotTool-compatible callable)
+- `tool.py`: MCP tool adapter returning `ToolResult`
 
 **Hooks:**
 - `ON_SESSION_INIT`: connect to enabled MCP servers, fetch tools, register
@@ -113,7 +113,11 @@ Tools follow `source:name:tool` naming:
 | `skills` | scope | `skills:global:find-skills` | `/find-skills` |
 | `mcp` | server-name | `mcp:github:search` | `/search` |
 
-Plugins declare namespace when registering tools:
+Plugins register tools only through their setup capability:
 ```python
-ctx.tools.register(tool, namespace="plugin:skills")
+ctx.register_tool(tool, namespace="plugin:skills")
 ```
+
+`PluginSetupContext` deliberately does not expose `ToolRegistry`, `HookManager`,
+or `ContextBuilder`. The loader owns those implementations and records every
+registration so a failed setup can be rolled back atomically.

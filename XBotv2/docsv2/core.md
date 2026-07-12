@@ -7,10 +7,10 @@ Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.
 
 ### Streaming
 
-Provider `stream=True` yields per-token `XBotModelChunk`s.
+Provider `stream=True` yields per-token `ModelChunk` objects.
 Engine emits `assistant_message_delta` events for each content delta and
 `tool_call_delta` for partial tool calls. Final response aggregated into
-`XBotModelResponse` and emitted as `assistant_message` event.
+`ModelResponse` and emitted as an `assistant_message` event.
 
 Timer-based TUI rendering (`_stream_timer` at 50ms intervals) ensures
 per-token overhead is near-zero.
@@ -45,11 +45,11 @@ to dedicated method.
 
 ## Tools
 
-### XBotTool (`tools/types.py`)
+### Tool (`api/tools.py`)
 
 ```python
 @dataclass(frozen=True)
-class XBotTool:
+class Tool:
     name: str
     description: str
     function: Callable
@@ -88,7 +88,7 @@ tool names and parameters. `BEFORE_TOOL_CALL` hook can override with
 
 ```
 data/sessions/<sid>/state/
-├── messages.jsonl          # JSONL, full rewrite each turn
+├── messages.jsonl          # append normally; atomic rewrite after history mutation
 ├── plugin_states/          # per-plugin YAML files
 └── artifacts/              # cached large tool outputs
 ```

@@ -16,10 +16,10 @@ an `ExceptionGroup` containing failures. Other observer failures are logged.
 Guard and transform failures propagate immediately because continuing with a
 partially authorized or partially transformed operation is unsafe.
 
-`HookContext` exposes session metadata and scoped capabilities, including the
-tool registry and sandbox policy. Plugins must not import Engine internals.
+`HookContext` exposes session metadata and stage-specific data. Plugins register
+callbacks through `PluginSetupContext`; they do not receive the hook manager,
+tool registry, context builder, or engine implementation.
 
 The complete stage enum is exported as `xbotv2.api.HookStage`. New stages are
 not added for internal implementation details; a stage is justified only when a
 plugin needs a stable interception point.
-

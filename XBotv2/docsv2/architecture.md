@@ -10,7 +10,7 @@ protocol streaming (HTTP/SSE + Unix domain socket), and append-only persistence
 ## Architecture Principle
 
 ```text
-Plugins -> import -> Core (xbotv2)
+Plugins -> import -> Stable API (xbotv2.api)
 Core -> never imports -> Plugins (builtin_plugins)
 ```
 
@@ -42,8 +42,8 @@ data/config/sandbox.yaml
 ### Engine (`xbotv2/core/engine.py`)
 
 ReAct loop: user message accept → context build (with hook injection) →
-LLM call (streaming) → tool execution → repeat. Uses XBot-owned `Message`
-dataclass and `XBotTool` throughout. No LangChain dependency.
+LLM call (streaming) → tool execution → repeat. Uses the provider-neutral
+`Message`, `ToolCall`, and `Tool` types from `xbotv2.api`.
 
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`, `ON_TOOL_CALL_FAILURE`,
@@ -51,7 +51,7 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
 
 ### Tool System (`xbotv2/tools/`)
 
-- **XBotTool** (`types.py`): native tool dataclass with `from_function()`, supports
+- **Tool** (`api/tools.py`): native tool dataclass with `from_function()`, supports
   async functions and keyword-only parameter injection (sandbox, skill_registry).
 - **ToolRegistry** (`registry.py`): namespace-aware registration (`source:name:tool`),
   restrict() with wildcard selectors.
@@ -73,7 +73,7 @@ stages aggregate failures with `ExceptionGroup`.
 - `AnthropicProvider`: same interface for Anthropic models.
 - `MockLLM`: deterministic test provider, supports chunk streaming with
   `additional_kwargs`.
-- `Message` dataclass (`messages.py`): XBot-owned, persisted to `messages.jsonl`.
+- `Message` dataclass (`api/messages.py`): XBot-owned, persisted to `messages.jsonl`.
 
 ### Context Builder (`xbotv2/core/context.py`)
 
@@ -87,7 +87,7 @@ history → dag suffix → current state. SHA256 cache replaced with tuple key.
 Discovers SKILL.md files (agentskills.io standard) from:
 `.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global `~/.`).
 
-- Registers `skill` tool via XBotTool (namespace `plugin:skills:skill`)
+- Registers `skill` via the stable `Tool` API (namespace `plugin:skills:skill`)
 - Registers discovered skills as ToolRegistry entries (namespace `skills:<scope>:<name>`)
 - BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
 - Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
@@ -99,7 +99,7 @@ Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
 - Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
 - Eager connection at bootstrap with per-server diagnostics. Optional failures
   mark the plugin degraded; servers configured with `required: true` fail startup.
-- MCPTool wraps as XBotTool-compatible callable
+- MCP tools are adapted to the stable `ToolResult` contract
 
 ## Namespace Protocol
 
@@ -120,6 +120,7 @@ If conflicting, use full `source:name:tool` as command.
 ### HTTP/SSE (`xbotv2/protocol/http_server.py`)
 
 FastAPI app with SSE streaming. SessionManager with per-session context.
+Wire DTOs are owned by `protocol/models.py`; `api/` contains no transport types.
 
 ### Unix Domain Socket (`__main__.py`)
 
