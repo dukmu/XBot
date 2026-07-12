@@ -91,7 +91,7 @@ async def execute_tools(
 
         await _execute_one_tool(
             call, entry, registry,
-            sandbox_policy, permission_system,
+            sandbox_policy,
             hook_manager, hook_context_factory,
             client_interaction_handler,
             workspace_root,
@@ -227,7 +227,7 @@ async def _tool_message_from_user_input_wait(
     client_interaction_handler: Any,
 ) -> Message:
     raw_events = (
-        [{"type": event.type, "data": event.data} for event in result.client_events]
+        [event.to_dict() for event in result.client_events]
         if isinstance(result, ToolResult)
         else result.get("events", [])
     )
@@ -270,9 +270,14 @@ async def _tool_message_from_user_input_wait(
             },
         )
 
+    timeout_seconds = (
+        result.timeout_seconds
+        if isinstance(result, ToolResult)
+        else result.get("timeout_seconds")
+    )
     response = await client_interaction_handler(
         event,
-        timeout_seconds=result.get("timeout_seconds"),
+        timeout_seconds=timeout_seconds,
         tool_call_id=tool_call_id,
     )
     status = str(response.get("status") or "")
@@ -366,7 +371,7 @@ def _error_message(call: ToolCall, reason: str, events: list[dict[str, Any]] | N
 
 async def _execute_one_tool(
     call: ToolCall, entry: Any, registry: Any,
-    sandbox_policy: Any, permission_system: Any,
+    sandbox_policy: Any,
     hook_manager: Any, hook_context_factory: Any,
     client_interaction_handler: Any,
     workspace_root: str | None,
@@ -494,19 +499,14 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
         if value.client_events:
             additional_kwargs["xbotv2_events"] = [
                 _normalize_client_event(
-                    {"type": event.type, "data": event.data}, tool_call_id
+                    event.to_dict(), tool_call_id
                 )
                 for event in value.client_events
             ]
         if value.data is not None:
             additional_kwargs["xbotv2_data"] = value.data
         if value.error is not None:
-            additional_kwargs["xbotv2_error"] = {
-                "code": value.error.code,
-                "message": value.error.message,
-                "retryable": value.error.retryable,
-                "details": value.error.details,
-            }
+            additional_kwargs["xbotv2_error"] = value.error.to_dict()
         return Message(
             role="tool",
             content=value.content,
@@ -516,7 +516,7 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             artifact=list(value.artifacts),
         )
     if isinstance(value, dict):
-        additional_kwargs = {}
+        additional_kwargs: dict[str, Any] = {}
         if "events" in value:
             additional_kwargs["xbotv2_events"] = [
                 _normalize_client_event(event, tool_call_id)
@@ -524,12 +524,32 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             ]
         if value.get("turn_complete") is not None:
             additional_kwargs["xbotv2_turn_complete"] = bool(value["turn_complete"])
+        if "data" in value:
+            additional_kwargs["xbotv2_data"] = value["data"]
+        if value.get("error") is not None:
+            error = value["error"]
+            if hasattr(error, "to_dict"):
+                error = error.to_dict()
+            elif isinstance(error, dict):
+                error = dict(error)
+            else:
+                error = {
+                    "code": "tool_error",
+                    "message": str(error),
+                    "retryable": False,
+                    "details": {},
+                }
+            additional_kwargs["xbotv2_error"] = error
+        artifacts = value.get("artifacts", value.get("artifact"))
+        if artifacts is not None and not isinstance(artifacts, (list, tuple)):
+            artifacts = [artifacts]
         return Message(
             role="tool",
             content=str(value.get("content", "")),
             tool_call_id=str(value.get("tool_call_id", tool_call_id)),
             status=value.get("status", "success"),
             additional_kwargs=additional_kwargs,
+            artifact=list(artifacts or []),
         )
     return Message(role="tool", content=str(value), tool_call_id=tool_call_id, status="success")
 

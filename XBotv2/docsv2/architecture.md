@@ -45,6 +45,13 @@ ReAct loop: user message accept → context build (with hook injection) →
 LLM call (streaming) → tool execution → repeat. Uses the provider-neutral
 `Message`, `ToolCall`, and `Tool` types from `xbotv2.api`.
 
+The turn implementation is an orchestrator over stage-specific methods:
+message admission/start, context construction, model-request preparation,
+streamed model handling, tool-batch execution, and turn finish. Each method
+interprets only the Hook stages it owns; there is no shared catch-all Hook
+result interpreter. Internal model/tool completion records are consumed by the
+orchestrator and never cross the C/S event boundary.
+
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`, `ON_TOOL_CALL_FAILURE`,
 `PRE_COMPACT`, `POST_COMPACT`.
@@ -53,8 +60,8 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
 
 - **Tool** (`api/tools.py`): native tool dataclass with `from_function()`, supports
   async functions and keyword-only parameter injection (sandbox, skill_registry).
-- **ToolRegistry** (`registry.py`): namespace-aware registration (`source:name:tool`),
-  restrict() with wildcard selectors.
+- **ToolRegistry** (`registry.py`): namespace-aware canonical names and
+  `restrict()` with wildcard selectors.
 - **SandboxPolicy** (`sandbox.py`): integrates **BubblewrapBackend** (`sandbox_bwrap.py`)
   for process isolation. Provides capability methods: `run_shell`, `read_file`,
   `write_file`, `list_dir`.
@@ -78,7 +85,8 @@ stages aggregate failures with `ExceptionGroup`.
 ### Context Builder (`xbotv2/core/context.py`)
 
 Assembles provider messages: system prefix → plugin fragments → runtime rules →
-history → dag suffix → current state. SHA256 cache replaced with tuple key.
+history → `context_suffix` plugin fragments → current state. SHA256 cache
+replaced with tuple key.
 
 ## Plugin System
 
@@ -99,21 +107,24 @@ Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
 - Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
 - Eager connection at bootstrap with per-server diagnostics. Optional failures
   mark the plugin degraded; servers configured with `required: true` fail startup.
-- MCP tools are adapted to the stable `ToolResult` contract
+- Performs the required initialize/initialized handshake before tool discovery
+- Preserves MCP input schemas and adapts call data/errors to `ToolResult`
+- Supports MCP tools only; HTTP is request/response JSON-RPC, not Streamable HTTP
 
 ## Namespace Protocol
 
-Tools are identified by `source:name:tool`:
+Tools use canonical registered names:
 
 | Source | Name | Example | Slash |
 |---|---|---|---|
-| `builtin` | `core` | `builtin:core:shell` | `/shell` |
+| `builtin` | `core` | `shell` | `/shell` |
 | `plugin` | plugin name | `plugin:skills:skill` | `/skill` |
 | `skills` | scope/path | `skills:global:find-skills` | `/find-skills` |
 | `mcp` | server name | `mcp:github:search` | `/search` |
 
-Tool (third tier) is the slash command name, must be globally unique.
-If conflicting, use full `source:name:tool` as command.
+The callable name is the slash command display name and may be ambiguous.
+Command discovery exposes `registered_name`; non-core names use
+`source:owner:name`, while built-in core names remain bare.
 
 ## Transport
 
@@ -121,6 +132,8 @@ If conflicting, use full `source:name:tool` as command.
 
 FastAPI app with SSE streaming. SessionManager with per-session context.
 Wire DTOs are owned by `protocol/models.py`; `api/` contains no transport types.
+The HTTP bridge owns the Engine async stream and closes it when the SSE
+consumer completes or disconnects.
 
 ### Unix Domain Socket (`__main__.py`)
 

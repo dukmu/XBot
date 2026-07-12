@@ -29,39 +29,27 @@ class PluginStore:
     def __init__(self, core_store: "CoreStateStore", plugin_name: str) -> None:
         self._core = core_store
         self._name = plugin_name
-        self._cache: dict[str, Any] | None = None
 
     async def get(self, key: str, default: Any = None) -> Any:
         """Read a value from the plugin's namespace."""
-        self._ensure_loaded()
-        return self._cache.get(key, default)  # type: ignore[union-attr]
+        return self._core.get_plugin_state(self._name).get(key, default)
 
     async def set(self, key: str, value: Any) -> None:
         """Write a value to the plugin's namespace (persisted immediately)."""
-        self._ensure_loaded()
-        self._cache[key] = value  # type: ignore[index]
-        self._core.set_plugin_state(self._name, self._cache)  # type: ignore[index]
+        state = self._core.get_plugin_state(self._name)
+        state[key] = value
+        self._core.set_plugin_state(self._name, state)
 
     async def delete(self, key: str) -> None:
         """Remove a key from the plugin's namespace."""
-        self._ensure_loaded()
-        self._cache.pop(key, None)  # type: ignore[union-attr]
-        self._core.set_plugin_state(self._name, self._cache)  # type: ignore[index]
+        state = self._core.get_plugin_state(self._name)
+        state.pop(key, None)
+        self._core.set_plugin_state(self._name, state)
 
     async def all(self) -> dict[str, Any]:
         """Return all key-value pairs in the plugin's namespace."""
-        self._ensure_loaded()
-        return dict(self._cache)  # type: ignore[arg-type]
+        return self._core.get_plugin_state(self._name)
 
     async def clear(self) -> None:
         """Remove all keys from the plugin's namespace."""
-        self._cache = {}
         self._core.set_plugin_state(self._name, {})
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _ensure_loaded(self) -> None:
-        if self._cache is None:
-            self._cache = self._core.get_plugin_state(self._name)

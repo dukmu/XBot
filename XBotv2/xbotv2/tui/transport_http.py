@@ -9,24 +9,25 @@ See ``docsv2/tui_opencode_requirements.md`` §10.5.
 
 from __future__ import annotations
 
-import json
 from typing import Any, AsyncIterator
 
 import httpx
 
-from xbotv2.protocol.frames import PROTOCOL_VERSION
+from xbotv2.protocol.version import PROTOCOL_VERSION
 from xbotv2.protocol.models import (
     CommandListResponse,
     CommandRequest,
     CommandResponse,
-    Event,
     HelloRequest,
     HelloResponse,
-    InteractionResponseRequest,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
+    PermissionResponseRequest,
+    ServerEvent,
+    UserInputResponseRequest,
 )
+from xbotv2.protocol.sse import SseDecoder, SseMessage, decode_server_event
 
 from xbotv2.tui.trace import trace_event
 
@@ -152,7 +153,7 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/interactions/permission-response",
-            json=InteractionResponseRequest(
+            json=PermissionResponseRequest(
                 request_id=request_id,
                 decision=decision,
                 scope=scope,
@@ -179,7 +180,7 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/interactions/user-input",
-            json=InteractionResponseRequest(
+            json=UserInputResponseRequest(
                 request_id=request_id,
                 answer=answer,
             ).model_dump(),
@@ -240,68 +241,38 @@ class HttpTransport:
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
             _raise_for_status(response)
-            event_name: str | None = None
-            data_lines: list[str] = []
-            event_id: int | None = None
+            decoder = SseDecoder()
             async for raw_line in response.aiter_lines():
-                # aiter_lines strips the trailing newline but keeps blank lines.
-                if raw_line == "":
-                    if not data_lines:
-                        event_name = None
-                        data_lines = []
-                        event_id = None
-                        continue
-                    payload_text = "\n".join(data_lines)
-                    try:
-                        event = json.loads(payload_text)
-                    except json.JSONDecodeError:
-                        event = {
-                            "type": "error",
-                            "data": {
-                                "code": "sse_decode_error",
-                                "message": payload_text,
-                            },
-                        }
-                    trace_event(
-                        "tui.http",
-                        {
-                            "stage": f"{trace_label}.event",
-                            "event": event_name,
-                            "id": event_id,
-                            "event_type": event.get("type"),
-                        },
-                    )
-                    yield Event.model_validate(event).model_dump()
-                    if event.get("type") == "end":
-                        return
-                    event_name = None
-                    data_lines = []
-                    event_id = None
+                message = decoder.feed(raw_line)
+                if message is None:
                     continue
-                if raw_line.startswith(":"):
-                    # Comment / keep-alive
-                    continue
-                if ":" in raw_line:
-                    field, _, value = raw_line.partition(":")
-                    if value.startswith(" "):
-                        value = value[1:]
-                    if field == "event":
-                        event_name = value
-                    elif field == "data":
-                        data_lines.append(value)
-                    elif field == "id":
-                        try:
-                            event_id = int(value)
-                        except ValueError:
-                            event_id = None
-            # Server closed the stream without an explicit "end" event.
-            if data_lines:
-                payload_text = "\n".join(data_lines)
-                try:
-                    event = Event.model_validate_json(payload_text)
-                    yield event.model_dump()
-                except json.JSONDecodeError:
-                    pass
+                event = decode_server_event(message)
+                _trace_sse_event(trace_label, message, event)
+                yield event.model_dump()
+                if event.type == "end":
+                    return
+
+            message = decoder.finish()
+            if message is not None:
+                event = decode_server_event(message)
+                _trace_sse_event(trace_label, message, event)
+                yield event.model_dump()
+
+
+def _trace_sse_event(
+    trace_label: str,
+    message: SseMessage,
+    event: ServerEvent,
+) -> None:
+    trace_event(
+        "tui.http",
+        {
+            "stage": f"{trace_label}.event",
+            "event": message.event,
+            "id": message.event_id,
+            "event_type": event.type,
+        },
+    )
 
 
 def _raise_for_status(response: httpx.Response) -> None:

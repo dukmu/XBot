@@ -9,33 +9,21 @@ Message structure (cache-friendly):
     [runtime rules]
     [sandbox summary]
     [... message history ...]
-    [plugin fragments (dag_suffix stage)]
+    [plugin fragments (context_suffix stage)]
     [current state]
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from xbotv2.api.context import ContextComponent, PromptFragmentStage
 from xbotv2.api.messages import Message
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-@dataclass(frozen=True)
-class ContextComponent:
-    """A source-tagged context section before provider message conversion."""
-
-    role: str
-    source: str
-    content: str
-    plugin_name: str | None = None
-    stage: str | None = None
-    message: Message | None = None
 
 
 class ContextBuilder:
@@ -45,7 +33,7 @@ class ContextBuilder:
     - "system_prefix": inserted after the system base prompt
     - "system_instructions": inserted after agent instructions
     - "system_rules": inserted after runtime rules
-    - "dag_suffix": inserted at the end, after message history
+    - "context_suffix": inserted at the end, after message history
 
     Plugins register fragments at named stages. Core renders them in
     order but never inspects their content.
@@ -54,11 +42,11 @@ class ContextBuilder:
     fragments and suffix are rebuilt each turn.
     """
 
-    FRAGMENT_STAGES = (
+    FRAGMENT_STAGES: tuple[PromptFragmentStage, ...] = (
         "system_prefix",
         "system_instructions",
         "system_rules",
-        "dag_suffix",
+        "context_suffix",
     )
 
     def __init__(self) -> None:
@@ -74,7 +62,12 @@ class ContextBuilder:
     # Fragment registration (called by plugin loader)
     # ------------------------------------------------------------------
 
-    def register_fragment(self, stage: str, plugin_name: str, text: str) -> None:
+    def register_fragment(
+        self,
+        stage: PromptFragmentStage,
+        plugin_name: str,
+        text: str,
+    ) -> None:
         """Register a prompt fragment from a plugin."""
         if stage not in self.FRAGMENT_STAGES:
             raise ValueError(
@@ -84,12 +77,20 @@ class ContextBuilder:
         self._fragments[stage][plugin_name] = text
         self.invalidate_cache()
 
-    def unregister_fragment(self, stage: str, plugin_name: str) -> None:
+    def unregister_fragment(
+        self,
+        stage: PromptFragmentStage,
+        plugin_name: str,
+    ) -> None:
         """Remove a plugin's fragment."""
         self._fragments.get(stage, {}).pop(plugin_name, None)
         self.invalidate_cache()
 
-    def get_fragment(self, stage: str, plugin_name: str) -> str | None:
+    def get_fragment(
+        self,
+        stage: PromptFragmentStage,
+        plugin_name: str,
+    ) -> str | None:
         return self._fragments.get(stage, {}).get(plugin_name)
 
     def invalidate_cache(self) -> None:
@@ -203,7 +204,7 @@ class ContextBuilder:
 
         suffix_parts: list[str] = []
         suffix_owners: list[str] = []
-        for plugin_name, text in self._fragments["dag_suffix"].items():
+        for plugin_name, text in self._fragments["context_suffix"].items():
             if text.strip():
                 suffix_parts.append(text)
                 suffix_owners.append(plugin_name)
@@ -221,7 +222,7 @@ class ContextBuilder:
             source="context_suffix",
             content="\n\n".join(suffix_parts),
             plugin_name=",".join(suffix_owners) if suffix_owners else None,
-            stage="dag_suffix" if suffix_owners else None,
+            stage="context_suffix" if suffix_owners else None,
         ))
 
         return components
@@ -229,7 +230,11 @@ class ContextBuilder:
     @staticmethod
     def messages_from_components(components: list[ContextComponent]) -> list[Message]:
         result: list[Message] = []
-        for component in components:
+        for index, component in enumerate(components):
+            if not isinstance(component, ContextComponent):
+                raise TypeError(
+                    f"context component {index} must be a ContextComponent"
+                )
             if component.message is not None:
                 result.append(component.message)
             else:

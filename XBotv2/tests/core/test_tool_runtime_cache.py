@@ -6,6 +6,7 @@ import pytest
 from langchain_core.tools import tool as langchain_tool
 
 from xbotv2.core.builtin_tools.filesystem import filesystem_write
+from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
@@ -170,6 +171,92 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     assert seen == [("permission_request", "permission:c1", "c1")]
     assert results[0].status == "success"
     assert (temp_workspace / "allowed.txt").read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_builtin_ask_user_waits_for_live_answer() -> None:
+    registry = ToolRegistry()
+    registry.register(ask_user, sandbox_mode="host")
+    seen: list[tuple[str, str, float | None]] = []
+
+    async def answer(event, **kwargs):
+        seen.append((
+            event["type"],
+            event["data"]["request_id"],
+            kwargs["timeout_seconds"],
+        ))
+        return {
+            "request_id": event["data"]["request_id"],
+            "status": "answered",
+            "answer": "continue",
+        }
+
+    results = await execute_tools(
+        [ToolCall(
+            "c1",
+            "ask_user",
+            {
+                "question": "Continue?",
+                "options": ["continue", "stop"],
+                "timeout_seconds": 3,
+            },
+        )],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+        client_interaction_handler=answer,
+    )
+
+    assert seen == [("user_input_required", "user_input:c1", 3)]
+    assert results[0].status == "success"
+    assert results[0].content == "User answered: continue"
+
+
+@pytest.mark.asyncio
+async def test_dictionary_tool_result_preserves_structured_fields() -> None:
+    def structured_result() -> dict:
+        return {
+            "status": "error",
+            "content": "failed",
+            "data": {"attempt": 1},
+            "error": {
+                "code": "dict_error",
+                "message": "failed",
+                "retryable": False,
+                "details": {},
+            },
+            "artifacts": [{
+                "id": "artifact-1",
+                "media_type": "text/plain",
+                "name": "result.txt",
+            }],
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool.from_function(structured_result),
+        sandbox_mode="host",
+    )
+
+    results = await execute_tools(
+        [ToolCall("c1", "structured_result", {})],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].additional_kwargs == {
+        "xbotv2_data": {"attempt": 1},
+        "xbotv2_error": {
+            "code": "dict_error",
+            "message": "failed",
+            "retryable": False,
+            "details": {},
+        },
+    }
+    assert results[0].artifact == [{
+        "id": "artifact-1",
+        "media_type": "text/plain",
+        "name": "result.txt",
+    }]
 
 
 @pytest.mark.asyncio

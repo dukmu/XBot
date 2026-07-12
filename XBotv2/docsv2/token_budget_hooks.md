@@ -1,9 +1,10 @@
 # Token Budget And Fine-Grained Hooks
 
-This document records the Phase 1-3 freeze analysis for token estimation,
-usage accounting, budget control, and the hook surface that supports them as
-plugins. The hook surface described here is implemented in core; the token
-estimator/statistics/budget plugin itself is still future work.
+This document records the Phase 1-3 analysis for token estimation, usage
+accounting, budget control, and the hook surface that supports them as plugins.
+The hook surface described here is implemented in core. The built-in token
+manager is the current template for this area and should continue to evolve
+through the public plugin API.
 
 ## Current State
 
@@ -49,7 +50,7 @@ budget controller yet. Existing related mechanisms are narrower:
   character count, stores the full content under session artifacts, and records
   structured cache metadata on ToolMessage artifacts.
 
-## Freeze Risk
+## Iteration Risk
 
 Without a token-budget plugin, future compact/planning/skills plugins can still
 silently consume context budget with static prompt fragments, tool schemas, or
@@ -57,9 +58,9 @@ history growth. The implemented hook surface now provides the raw evidence
 needed to explain and optimize budget by source, but no runtime module consumes
 that evidence yet.
 
-The Phase 1-3 core can freeze as a plugin-capable foundation, but token
-budgeting should remain a documented Phase 4+ plugin target until estimator,
-statistics, and policy modules are added.
+The Phase 1-3 core can act as a plugin-capable foundation, but token budgeting
+still needs iterative work until estimator, statistics, and policy modules are
+complete.
 
 ## Implemented Hook Stages
 

@@ -1,12 +1,4 @@
-"""Run the XBotv2 Phase 1-3 freeze gate.
-
-This script intentionally mirrors the documented gate instead of adding new
-policy:
-
-1. Core tests.
-2. Compile all runtime modules.
-3. Check staged/unstaged diff whitespace.
-"""
+"""Run the repository checks required after an XBotv2 iteration."""
 
 from __future__ import annotations
 
@@ -16,7 +8,7 @@ from pathlib import Path
 
 
 COMMANDS = (
-    ("uv", "run", "pytest", "XBotv2/tests/core/", "-q"),
+    (sys.executable, "-m", "pytest", "XBotv2/tests/core/", "-q"),
     (sys.executable, "-m", "compileall", "-q", "XBotv2/xbotv2"),
     ("git", "diff", "--check"),
 )

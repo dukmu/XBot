@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -107,6 +108,83 @@ Body
         reg.discover(ws)
         assert reg.load_skill("wrong-name") is None
         assert reg.load_skill("my-skill") is None
+
+    @pytest.mark.asyncio
+    async def test_plugin_unload_resets_runtime_state(self, skill_workspace):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import PluginManifest
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._registry.discover(skill_workspace)
+        plugin._active_skills.add("test-skill")
+        plugin._permission_scope.add(allowed=["shell"], disallowed=[])
+
+        await plugin.on_unload()
+
+        assert plugin.diagnostics() == {
+            "status": "ready",
+            "skills": 0,
+            "active_skills": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_plugin_session_init_is_idempotent(self, skill_workspace):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import PluginManifest
+        from xbotv2.plugin.loader import _RuntimePluginContext
+        from xbotv2.tools.registry import ToolRegistry
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._registry._scan_global = lambda: None
+        registry = ToolRegistry()
+        owned_names: list[str] = []
+        runtime = _RuntimePluginContext("skills", registry, owned_names)
+        ctx = SimpleNamespace(
+            plugin_runtime=runtime,
+            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        )
+
+        await plugin._on_session_init(ctx)
+        first_names = registry.registered_names()
+        await plugin._on_session_init(ctx)
+
+        assert registry.registered_names() == first_names
+        assert owned_names == first_names
+        assert plugin._initialized is True
+
+    @pytest.mark.asyncio
+    async def test_plugin_session_init_rolls_back_partial_registration(
+        self, skill_workspace
+    ):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import PluginManifest, Tool
+        from xbotv2.plugin.loader import _RuntimePluginContext
+        from xbotv2.tools.registry import ToolRegistry
+
+        def existing_tool() -> str:
+            return "existing"
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._registry._scan_global = lambda: None
+        registry = ToolRegistry()
+        collision_name = registry.register(
+            Tool.from_function(existing_tool, name="test-skill"),
+            namespace="skills:project",
+        )
+        owned_names: list[str] = []
+        runtime = _RuntimePluginContext("skills", registry, owned_names)
+        ctx = SimpleNamespace(
+            plugin_runtime=runtime,
+            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        )
+
+        with pytest.raises(ValueError, match="already registered"):
+            await plugin._on_session_init(ctx)
+
+        assert registry.registered_names() == [collision_name]
+        assert owned_names == []
+        assert plugin._initialized is False
+        assert plugin.diagnostics()["skills"] == 0
 
 
 class TestSkillToolAndShellInjection:

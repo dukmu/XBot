@@ -26,17 +26,21 @@ from xbotv2.protocol.models import (
     CommandRequest,
     CommandListResponse,
     CommandResponse,
+    ErrorResponse,
     HelloRequest,
     HelloResponse,
-    InteractionResponseRequest,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
+    PermissionResponseRequest,
+    UserInputResponseRequest,
+    server_event,
 )
+from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
-from xbotv2.protocol.frames import PROTOCOL_VERSION
+from xbotv2.protocol.version import PROTOCOL_VERSION
 
 logger = logging.getLogger("xbotv2.http_server")
 
@@ -171,11 +175,21 @@ class SessionManager:
 class HttpServerError(Exception):
     """Domain error with an HTTP status hint."""
 
-    def __init__(self, code: str, message: str, status: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status: int = 400,
+        *,
+        details: dict[str, Any] | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.details = details or {}
+        self.retryable = retryable
 
 
 def create_app(
@@ -318,7 +332,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/sessions/{session_id}/messages")
     async def post_message(session_id: str, payload: MessageRequest) -> Response:
         content = payload.content
-        client_request_id = payload.request_id
+        client_request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
         try:
             ctx = await manager.get(session_id)
         except SessionNotFound as exc:
@@ -338,13 +352,26 @@ def _register_routes(app: FastAPI) -> None:
                 return _format_sse(
                     event={"type": "end", "data": {"status": "ok"}},
                     seq=seq + 1,
+                    session_id=ctx.session_id,
+                    thread_id=ctx.thread_id,
+                    request_id=client_request_id,
                 )
 
             try:
                 try:
-                    async for event in run_turn_stream(ctx, content=content):
+                    async for event in run_turn_stream(
+                        ctx,
+                        content=content,
+                        request_id=client_request_id,
+                    ):
                         seq += 1
-                        yield _format_sse(event=event, seq=seq)
+                        yield _format_sse(
+                            event=event,
+                            seq=seq,
+                            session_id=ctx.session_id,
+                            thread_id=ctx.thread_id,
+                            request_id=client_request_id,
+                        )
                 except SessionBusy as exc:
                     seq += 1
                     yield _format_sse(
@@ -356,6 +383,9 @@ def _register_routes(app: FastAPI) -> None:
                             },
                         },
                         seq=seq,
+                        session_id=ctx.session_id,
+                        thread_id=ctx.thread_id,
+                        request_id=client_request_id,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("SSE stream errored for %s", session_id)
@@ -363,9 +393,18 @@ def _register_routes(app: FastAPI) -> None:
                     yield _format_sse(
                         event={
                             "type": "error",
-                            "data": {"code": "stream_failed", "message": str(exc)},
+                            "data": {
+                                "code": "stream_failed",
+                                "message": str(exc),
+                                "details": {
+                                    "exception_type": type(exc).__name__,
+                                },
+                            },
                         },
                         seq=seq,
+                        session_id=ctx.session_id,
+                        thread_id=ctx.thread_id,
+                        request_id=client_request_id,
                     )
             except asyncio.CancelledError:
                 # TUI pressed ESC, or the HTTP client disconnected mid-turn.
@@ -387,7 +426,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/sessions/{session_id}/interactions/permission-response")
     async def post_permission_response(
-        session_id: str, payload: InteractionResponseRequest, request: Request
+        session_id: str, payload: PermissionResponseRequest, request: Request
     ) -> dict[str, Any]:
         return await _resolve_interaction(
             manager=request.app.state.manager,
@@ -398,7 +437,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/sessions/{session_id}/interactions/user-input")
     async def post_user_input(
-        session_id: str, payload: InteractionResponseRequest, request: Request
+        session_id: str, payload: UserInputResponseRequest, request: Request
     ) -> dict[str, Any]:
         return await _resolve_interaction(
             manager=request.app.state.manager,
@@ -439,12 +478,12 @@ def _register_routes(app: FastAPI) -> None:
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status,
-            content={
-                "code": exc.code,
-                "message": exc.message,
-                "details": {},
-                "retryable": False,
-            },
+            content=_error_payload(
+                exc.code,
+                exc.message,
+                details=exc.details,
+                retryable=exc.retryable,
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -453,25 +492,34 @@ def _register_routes(app: FastAPI) -> None:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=400,
-            content={
-                "code": "invalid_request",
-                "message": "Request does not match the protocol schema",
-                "details": {"errors": exc.errors()},
-                "retryable": False,
-            },
+            content=_error_payload(
+                "invalid_request",
+                "Request does not match the protocol schema",
+                details={"errors": exc.errors()},
+            ),
         )
 
     @app.exception_handler(SessionNotFound)
     async def _on_session_not_found(_: Request, exc: SessionNotFound) -> JSONResponse:
         return JSONResponse(
             status_code=404,
-            content={
-                "code": "session_not_found",
-                "message": str(exc),
-                "details": {},
-                "retryable": False,
-            },
+            content=_error_payload("session_not_found", str(exc)),
         )
+
+
+def _error_payload(
+    code: str,
+    message: str,
+    *,
+    details: dict[str, Any] | None = None,
+    retryable: bool = False,
+) -> dict[str, Any]:
+    return ErrorResponse(
+        code=code,
+        message=message,
+        details=details or {},
+        retryable=retryable,
+    ).model_dump()
 
 
 def _new_session_id() -> str:
@@ -485,15 +533,21 @@ def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_commands(reg: Any) -> list[dict[str, Any]]:
     result = []
-    for full_name in reg.registered_names():
-        entry = reg._entries.get(full_name)
-        if entry is None:
-            continue
+    for entry in reg.registered_entries():
         ns = entry.namespace
         kind = _ns_kind(ns)
         display = entry.tool.name
         desc = getattr(entry.tool, "description", "") or display
-        result.append({"name": display, "slash": f"/{display}", "kind": kind, "description": desc})
+        result.append(
+            {
+                "name": display,
+                "slash": f"/{display}",
+                "kind": kind,
+                "description": desc,
+                "registered_name": entry.registered_name,
+                "namespace": ns,
+            }
+        )
     return result
 
 
@@ -516,13 +570,20 @@ async def _live_sink(
     event_type = str(client_event.get("type") or "")
     event_data = client_event.get("data") or {}
     req_id = str(event_data.get("request_id") or "")
-    await events.put(_event_to_payload(client_event))
     waiter = engine.permission_waiter if event_type == "permission_request" else engine.user_input_waiter
-    wait_task = asyncio.create_task(waiter.wait(req_id, timeout_seconds))
+    pending = waiter.register(req_id)
+    wait_task = asyncio.create_task(
+        waiter.wait_registered(req_id, pending, timeout_seconds)
+    )
     try:
+        await events.put(_event_to_payload(client_event))
         done, _ = await asyncio.wait({wait_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED)
     except BaseException:
         wait_task.cancel()
+        try:
+            await wait_task
+        except (asyncio.CancelledError, Exception):
+            pass
         raise
     if wait_task not in done:
         wait_task.cancel()
@@ -570,9 +631,11 @@ async def _pump_turn(
     ctx: SessionContext,
     events: asyncio.Queue[dict[str, Any] | None],
     content: str,
+    request_id: str,
 ) -> None:
+    turn_stream = ctx.engine.run_turn(content, request_id=request_id)
     try:
-        async for event in ctx.engine.run_turn(content):
+        async for event in turn_stream:
             await events.put(_event_to_payload(event))
     except asyncio.CancelledError:
         logger.info("Turn cancelled for session %s", ctx.session_id)
@@ -581,16 +644,26 @@ async def _pump_turn(
         logger.exception("Engine run_turn failed")
         await events.put({
             "type": "error",
-            "data": {"code": "turn_failed", "message": str(exc)},
+            "data": {
+                "code": "turn_failed",
+                "message": str(exc),
+                "details": {"exception_type": type(exc).__name__},
+            },
         })
     finally:
-        await events.put(None)
+        try:
+            close = getattr(turn_stream, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            await events.put(None)
 
 
 async def run_turn_stream(
     ctx: SessionContext,
     *,
     content: str,
+    request_id: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     if ctx.turn_lock.locked():
         raise SessionBusy(ctx.session_id)
@@ -598,24 +671,31 @@ async def run_turn_stream(
     async with ctx.turn_lock:
         events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         disconnected = asyncio.Event()
-        pump_task = asyncio.create_task(_pump_turn(ctx, events, content))
+        stream_completed = False
+        pump_task = asyncio.create_task(
+            _pump_turn(ctx, events, content, request_id)
+        )
         ctx.turn_task = pump_task
         try:
             async with _live_interaction_sink(ctx, events, disconnected):
                 while True:
                     event = await events.get()
                     if event is None:
+                        stream_completed = True
                         break
                     yield event
         finally:
-            ctx.turn_task = None
             disconnected.set()
+            if not stream_completed and not pump_task.done():
+                pump_task.cancel()
             try:
                 await pump_task
             except asyncio.CancelledError:
                 pass
             except Exception:  # noqa: BLE001
                 logger.exception("pump_task ended with error for session %s", ctx.session_id)
+            finally:
+                ctx.turn_task = None
 
 
 async def _resolve_interaction(
@@ -698,7 +778,14 @@ def _pending_snapshot(ctx: SessionContext) -> list[str]:
     )
 
 
-def _format_sse(*, event: dict[str, Any], seq: int) -> bytes:
+def _format_sse(
+    *,
+    event: dict[str, Any],
+    seq: int,
+    session_id: str = "",
+    thread_id: str = "agent",
+    request_id: str = "",
+) -> bytes:
     """Format a single SSE frame.
 
     Per §10.5.4: ``event: <type>`` and ``data: <json>`` on separate
@@ -707,10 +794,13 @@ def _format_sse(*, event: dict[str, Any], seq: int) -> bytes:
     either listener style.
     """
 
-    payload = json.dumps(event, ensure_ascii=False, default=str)
-    type_name = event.get("type", "message") or "message"
-    return (
-        f"event: {type_name}\n"
-        f"id: {seq}\n"
-        f"data: {payload}\n\n"
-    ).encode("utf-8")
+    payload_event = server_event(
+        protocol_version=PROTOCOL_VERSION,
+        session_id=session_id,
+        thread_id=thread_id,
+        request_id=request_id,
+        sequence=seq,
+        type=str(event.get("type", "message") or "message"),
+        data=dict(event.get("data") or {}),
+    )
+    return encode_server_event(payload_event)

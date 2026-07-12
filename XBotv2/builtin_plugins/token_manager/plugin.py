@@ -14,7 +14,6 @@ from xbotv2.api import (
 )
 
 from .budget import TokenBudgetController
-from .estimator import estimate_context_tokens, estimate_tool_schema_tokens
 from .stats import TokenStatsCollector
 
 import logging
@@ -40,28 +39,29 @@ class TokenManagerPlugin(PluginBase):
                 soft_limit_ratio=float(config.get("soft_limit_ratio", 0.8)),
             )
 
+    async def on_unload(self) -> None:
+        self._stats.reset()
+
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.ON_TURN_START, self._on_turn_start)
         ctx.register_hook(HookStage.BEFORE_MODEL_REQUEST, self._on_before_model_request)
         ctx.register_hook(HookStage.AFTER_MODEL_RESPONSE, self._on_after_model_response)
         ctx.register_hook(HookStage.ON_TOOL_CALLS_PARSED, self._on_tool_calls_parsed)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
-        ctx.register_hook(HookStage.BEFORE_STATE_PERSIST, self._on_before_state_persist)
 
     async def _on_turn_start(self, ctx: HookContext) -> None:
-        self._stats.start_turn(
-            turn=int(getattr(ctx, "turn_count", 0) or 0),
-        )
+        self._stats.start_turn(turn=ctx.session.turn_count)
 
     async def _on_before_model_request(self, ctx: HookContext) -> None:
-        msgs = ctx.model_request.get("messages", []) if ctx.model_request else []
-        tools = ctx.model_request.get("tools", []) if ctx.model_request else []
-        estimated = estimate_context_tokens(msgs)
-        tool_tokens = estimate_tool_schema_tokens(tools)
-        self._stats._current.estimated_prompt = estimated + tool_tokens if self._stats._current else 0
-        self._stats._current.context_messages = len(msgs) if self._stats._current else 0
-
+        request = ctx.model_request or {}
+        msgs = list(request.get("messages") or [])
+        tools = list(request.get("tools") or [])
         check = self._budget.check_context(msgs, tools)
+        self._stats.update_context(
+            estimated_prompt=check["total_estimated"],
+            message_count=len(msgs),
+        )
+
         if check["action"] == "hard_limit_exceeded":
             logger.warning("token budget hard limit exceeded: %s", check)
         elif check["action"] == "soft_limit_exceeded":
@@ -83,9 +83,8 @@ class TokenManagerPlugin(PluginBase):
     async def _on_turn_end(self, ctx: HookContext) -> None:
         self._stats.finish_turn()
 
-    async def _on_before_state_persist(self, ctx: HookContext) -> None:
-        state = self._stats.summary()
-        ctx.state["token_stats"] = state
-
     def summary(self) -> dict[str, Any]:
         return self._stats.summary()
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {"status": "ready", "usage": self.summary()}

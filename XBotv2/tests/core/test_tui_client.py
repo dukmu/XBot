@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import xbotv2.__main__ as xbot_main
-from xbotv2.protocol.frames import ProtocolFrame
-from xbotv2.tui.client import CursesTuiClient, TuiState, TuiTool, TuiTranscriptEntry, _parse_permission_decision, _repair_mojibake
+from xbotv2.tui.client import TuiState, TuiTool, TuiTranscriptEntry, _parse_permission_decision, _repair_mojibake
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.textual_state import (
     queue_user_message,
@@ -21,7 +20,7 @@ from xbotv2.tui.textual_state import (
 )
 
 
-def test_tui_state_applies_protocol_frames_and_renders_lines():
+def test_tui_state_applies_protocol_events_and_renders_lines():
     state = TuiState()
     frames = [
         _frame("hello_ok", {"server_name": "xbotv2"}),
@@ -41,7 +40,7 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
     ]
 
     for frame in frames:
-        state.apply_frame(frame)
+        state.apply_event(frame)
 
     assert state.status == "Ready"
     assert state.agent_name == "TestBot"
@@ -62,7 +61,7 @@ def test_tui_state_applies_protocol_frames_and_renders_lines():
 def test_tui_state_applies_usage_totals():
     state = TuiState()
 
-    state.apply_frame(_frame("usage", {"total": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}}))
+    state.apply_event(_frame("usage", {"total": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}}))
 
     assert state.usage == {
         "input_tokens": 12,
@@ -214,11 +213,11 @@ def test_tui_state_renames_provisional_streaming_tool_id():
 def test_tui_state_turn_finished_preserves_waiting_for_user():
     state = TuiState()
 
-    state.apply_frame(_frame("turn_started", {"turn": 1}))
-    state.apply_frame(
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(
         _frame("user_input_required", {"question": "Proceed?", "options": ["yes", "no"]})
     )
-    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+    state.apply_event(_frame("turn_finished", {"turn": 1}))
 
     assert state.status == "Waiting for user"
     assert state.notices[-1].kind == "user_input_required"
@@ -230,23 +229,23 @@ def test_tui_state_turn_finished_preserves_waiting_for_user():
 def test_tui_state_turn_finished_preserves_permission_states():
     state = TuiState()
 
-    state.apply_frame(_frame("turn_started", {"turn": 1}))
+    state.apply_event(_frame("turn_started", {"turn": 1}))
     # Permission requests now link to tool widgets
     state.tools["call_req"] = TuiTool(tool_call_id="call_req", name="shell")
-    state.apply_frame(
+    state.apply_event(
         _frame("permission_request", {"reason": "approval needed", "tool_call": {"id": "call_req"}})
     )
-    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+    state.apply_event(_frame("turn_finished", {"turn": 1}))
 
     assert state.status == "Approval required"
     assert state.tools["call_req"].permission_pending is True
 
-    state.apply_frame(_frame("turn_started", {"turn": 2}))
-    state.apply_frame(
+    state.apply_event(_frame("turn_started", {"turn": 2}))
+    state.apply_event(
         _frame("permission_denied", {"request_id": "perm:call_deny", "tool_call": {"id": "call_deny"}})
     )
     # No matching tool for this denied call, status just flips
-    state.apply_frame(_frame("turn_finished", {"turn": 2}))
+    state.apply_event(_frame("turn_finished", {"turn": 2}))
 
     assert state.status == "Permission denied"
 
@@ -254,8 +253,8 @@ def test_tui_state_turn_finished_preserves_permission_states():
 def test_tui_state_renders_interaction_response_acknowledgements():
     state = TuiState()
 
-    state.apply_frame(_frame("user_input_required", {"question": "Proceed?"}))
-    state.apply_frame(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
+    state.apply_event(_frame("user_input_required", {"question": "Proceed?"}))
+    state.apply_event(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
 
     assert state.status == "Ready"
     assert state.notices[-1].kind == "user_input_recorded"
@@ -264,18 +263,21 @@ def test_tui_state_renders_interaction_response_acknowledgements():
 
     # Permission requests attach to tool widgets now, not notices
     state.tools["c2"] = TuiTool(tool_call_id="c2", name="shell")
-    state.apply_frame(
+    state.apply_event(
         _frame(
             "permission_request",
-            {"request_id": "permission:c2", "tool_call": {"name": "shell", "id": "c2"}},
+            {
+                "request_id": "approval-7f3a",
+                "tool_call": {"name": "shell", "id": "c2"},
+            },
         )
     )
-    assert state.pending_permission_request_id == "permission:c2"
+    assert state.pending_permission_request_id == "approval-7f3a"
     assert state.tools["c2"].permission_pending is True
-    state.apply_frame(
+    state.apply_event(
         _frame(
             "permission_response_recorded",
-            {"request_id": "permission:c2", "decision": "allow"},
+            {"request_id": "approval-7f3a", "decision": "allow"},
         )
     )
 
@@ -288,14 +290,14 @@ def test_tui_state_renders_interaction_response_acknowledgements():
 def test_tui_state_ack_keeps_running_until_turn_finished():
     state = TuiState()
 
-    state.apply_frame(_frame("turn_started", {"turn": 1}))
-    state.apply_frame(_frame("user_input_required", {"request_id": "user_input:c1"}))
-    state.apply_frame(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(_frame("user_input_required", {"request_id": "user_input:c1"}))
+    state.apply_event(_frame("user_input_recorded", {"request_id": "user_input:c1"}))
 
     assert state.status == "Running"
     assert state.pending_user_input_request_id is None
 
-    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+    state.apply_event(_frame("turn_finished", {"turn": 1}))
 
     assert state.status == "Ready"
 
@@ -303,13 +305,13 @@ def test_tui_state_ack_keeps_running_until_turn_finished():
 def test_tui_state_permission_denied_resets_on_next_turn():
     state = TuiState()
 
-    state.apply_frame(_frame("turn_started", {"turn": 1}))
-    state.apply_frame(_frame("permission_denied", {"reason": "no"}))
-    state.apply_frame(_frame("turn_finished", {"turn": 1}))
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(_frame("permission_denied", {"reason": "no"}))
+    state.apply_event(_frame("turn_finished", {"turn": 1}))
 
     assert state.status == "Permission denied"
 
-    state.apply_frame(_frame("turn_started", {"turn": 2}))
+    state.apply_event(_frame("turn_started", {"turn": 2}))
 
     assert state.status == "Running"
 
@@ -446,15 +448,6 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
     assert assistant_event["data"]["content"] == "收到：当前磁盘用了多少"
 
 
-def test_curses_client_drains_background_events_without_curses():
-    client = CursesTuiClient()
-    client._events.put({"type": "assistant_message", "data": {"content": "live"}})
-
-    client._drain_events()
-
-    assert client.state.messages[-1].content == "live"
-
-
 def test_mode_tui_imports_textual_client_lazily():
     tree = ast.parse(Path("XBotv2/xbotv2/__main__.py").read_text(encoding="utf-8"))
     run_tui = next(
@@ -497,23 +490,6 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "DEBUG" in captured["cmd"]
     assert "--log-file" in captured["cmd"]
     assert "./run.log" in captured["cmd"]
-
-
-def test_mode_curses_uses_curses_client():
-    args = argparse.Namespace(
-        provider="default",
-        workspace=None,
-        bind="127.0.0.1",
-        port=4096,
-    )
-
-    with patch("xbotv2.tui.client.CursesTuiClient") as client_cls:
-        client = client_cls.return_value
-        client.run = AsyncMock()
-        xbot_main._run_curses(args)
-
-    client_cls.assert_called_once()
-    client.run.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1112,46 +1088,6 @@ async def test_textual_composer_history_and_multiline_resize():
         assert int(input_widget.styles.height.value) >= 3
 
 
-def test_curses_client_records_reader_errors():
-    client = CursesTuiClient()
-    client._events.put(RuntimeError("reader failed"))
-
-    client._drain_events()
-
-    assert client.state.status == "Error"
-    assert client.state.errors == ["reader failed"]
-
-
-def test_curses_client_routes_text_to_live_user_input_queue():
-    client = CursesTuiClient()
-    client._loop = object()
-    client.state.apply_event({
-        "type": "user_input_required",
-        "data": {"request_id": "user_input:c1", "question": "Proceed?"},
-    })
-
-    client._send_text("yes")
-
-    assert client._answers.get_nowait() == "yes"
-    assert client.state.messages == []
-    assert client._pending == set()
-
-
-def test_curses_client_routes_text_to_live_permission_queue():
-    client = CursesTuiClient()
-    client._loop = object()
-    client.state.apply_event({
-        "type": "permission_request",
-        "data": {"request_id": "permission:c1", "reason": "approve?"},
-    })
-
-    client._send_text("yes")
-
-    assert client._permission_decisions.get_nowait() == {"decision": "allow", "scope": "once"}
-    assert client.state.messages == []
-    assert client._pending == set()
-
-
 def test_permission_decision_parser_supports_scopes():
     assert _parse_permission_decision("session allow") == {
         "decision": "allow",
@@ -1185,6 +1121,7 @@ async def test_terminal_session_yields_live_interaction_once_without_provider():
                     "data": {"request_id": "user_input:c2", "question": "continue?"},
                 }
                 yield {"type": "turn_finished", "data": {"turn": 1}}
+                yield {"type": "end", "data": {"status": "ok"}}
 
             return _events()
 
@@ -1217,20 +1154,26 @@ async def test_terminal_session_yields_live_interaction_once_without_provider():
 
 
 @pytest.mark.asyncio
-async def test_curses_client_marks_ready_after_session_connect():
-    client = CursesTuiClient()
-    client.session.connect = AsyncMock()
-    client.session.disconnect = AsyncMock()
+async def test_terminal_session_consumes_transport_end_sentinel():
+    class FakeTransport:
+        def send_message(self, *, session_id, content, request_id):
+            async def _events():
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "turn_finished", "data": {"turn": 1}}
+                yield {"type": "end", "data": {"status": "ok"}}
 
-    async def fake_to_thread(func, *args, **kwargs):
-        func(*args, **kwargs)
+            return _events()
 
-    with patch("xbotv2.tui.client.curses.wrapper") as wrapper, \
-            patch("xbotv2.tui.client.asyncio.to_thread", fake_to_thread):
-        await client.run()
+    session = TerminalSession(
+        transport=FakeTransport(), session_id="s", thread_id="t"
+    )
 
-    wrapper.assert_called_once()
-    assert client.state.status == "Ready"
+    events = [event async for event in session.send_message("run")]
+
+    assert [event["type"] for event in events] == [
+        "turn_started",
+        "turn_finished",
+    ]
 
 
 def test_tui_modules_do_not_import_runtime_boundaries():
@@ -1256,16 +1199,8 @@ def test_tui_modules_do_not_import_runtime_boundaries():
         assert not any(name.startswith(forbidden) for name in imports)
 
 
-def _frame(frame_type: str, payload: dict) -> ProtocolFrame:
-    return ProtocolFrame(
-        seq=1,
-        direction="server_to_client",
-        type=frame_type,
-        session_id="s",
-        thread_id="t",
-        request_id="req",
-        payload=payload,
-    )
+def _frame(frame_type: str, payload: dict) -> dict:
+    return {"type": frame_type, "data": payload}
 
 
 # ----------------------------------------------------------------------
@@ -1307,9 +1242,26 @@ def test_tui_state_records_engine_error_event():
     assert error_entries[0].key == "0"
 
 
+def test_tui_state_closes_failed_turn_without_hiding_error():
+    state = TuiState()
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(
+        _frame("error", {"code": "engine_error", "message": "failed"})
+    )
+    state.apply_event(_frame("turn_finished", {"turn": 1}))
+
+    assert state.turn_active is False
+    assert state.status == "Error"
+
+    state.apply_event(_frame("turn_started", {"turn": 2}))
+
+    assert state.turn_active is True
+    assert state.status == "Running"
+
+
 def test_tui_state_renders_error_with_visible_label_in_lines():
     """When the transcript is rendered into plain lines (e.g. for
-    snapshot tests, log capture, or the curses fallback), the error
+    snapshot tests or log capture), the error
     must be visible with a leading ``Error>`` marker — *not* buried
     as a normal message.
     """

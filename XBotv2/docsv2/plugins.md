@@ -14,16 +14,160 @@ Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 ## PluginBase
 
 ```python
-class PluginBase(ABC):
-    async def on_load(self, config): ...     # Called at load time
-    async def on_unload(self): ...           # Cleanup
+class PluginBase:
+    async def on_load(self, config): ...     # Optional plugin-owned initialization
+    async def on_unload(self): ...           # Optional plugin-owned cleanup
     def setup(self, ctx): ...                # Register all extensions
+```
+
+`PluginBase` supplies no-op lifecycle defaults. Override only the callbacks the
+plugin needs.
+
+## Lifecycle Contract
+
+| Phase | Plugin responsibility | Loader guarantee |
+|---|---|---|
+| configuration | Declare `config_schema` in the manifest | Schema and values are validated before module import |
+| `on_load(config)` | Create plugin-owned resources from validated config; keep cleanup safe after partial initialization | No core registrations exist yet; `on_unload` is attempted if `on_load` raises |
+| `setup(ctx)` | Register hooks, tools, and prompt fragments through `ctx` | Registration is transactional |
+| hook execution | Use `ctx.plugin_runtime` for dynamic tools | Dynamic resources join the same ownership record |
+| `on_unload()` | Close clients, subprocesses, and other external resources | Core resources are removed even if this callback raises; store data remains |
+
+Loading is atomic across dependency order. If a later plugin fails, already
+loaded plugins are unloaded in reverse order. Cleanup failures are attached to
+the original load error instead of replacing it. Explicit `unload_all()` also
+continues after individual callback failures and reports an exception group
+after every plugin has been cleaned.
+
+Bootstrap remains transactional after loading: failures while creating the LLM
+or running `ON_SESSION_INIT` trigger `unload_all()`. This removes runtime tools
+registered by initialization hooks and closes plugin-owned external resources.
+Normal `Engine.close_session()` runs close hooks, persists messages, and then
+calls `unload_all()`. Failure in one phase does not skip later cleanup phases;
+the close operation propagates collected failures after cleanup finishes.
+
+`on_unload` must be idempotent enough to handle partial initialization. The
+loader invokes it after any entered `on_load`, even when `on_load` itself raises,
+so resources created before the failure can be released.
+
+Tool keys are unique. Duplicate registration fails before registry mutation, so
+a plugin cannot accidentally replace a core or another plugin's tool.
+
+## Plugin Store
+
+Each plugin receives one isolated `PluginStore` namespace. `set`, `delete`, and
+`clear` persist immediately through atomic file replacement; there is no flush
+phase at unload. State survives plugin unload and session resume until the
+plugin explicitly clears it.
+
+Reads return a fresh persisted snapshot. Mutating a list or mapping returned by
+`get` or `all` does not update state; call `set` explicitly. Values must be
+YAML-safe, and failed serialization preserves the previous file. Operations in
+one session event loop are serialized because a store operation performs no
+internal await. Cross-process transactions over the same session directory are
+not supported.
+
+Plugin names are validated before a store path is constructed, and persisted
+plugin state must contain a mapping.
+
+Plugin configuration uses Draft 2020-12 JSON Schema. An invalid schema prevents
+manifest discovery; invalid values raise `PluginConfigError` with the plugin
+name and failing path before the plugin module is imported. Schema `default`
+keywords are documentation only and are not injected into config; plugins
+should retain explicit runtime defaults in `on_load`.
+
+## Plugin Template
+
+```python
+from typing import Any
+
+from xbotv2.api import (
+    HookContext,
+    HookStage,
+    PluginBase,
+    PluginSetupContext,
+    Tool,
+    ToolRegistrationOptions,
+)
+
+
+class ExamplePlugin(PluginBase):
+    async def on_load(self, config: dict[str, Any]) -> None:
+        self._config = dict(config)
+
+    def setup(self, ctx: PluginSetupContext) -> None:
+        ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
+        ctx.register_tool(
+            Tool.from_function(self._run, name="example"),
+            options=ToolRegistrationOptions(namespace="plugin:example"),
+        )
+
+    async def on_unload(self) -> None:
+        # Close only resources owned directly by this plugin.
+        pass
+
+    async def _on_session_init(self, ctx: HookContext) -> None:
+        # Dynamic tools, when needed, use ctx.plugin_runtime.register_tool(...).
+        pass
+
+    async def _run(self, value: str) -> str:
+        return value
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {"status": "ready"}
 ```
 
 Manifest-only plugins declare hooks, tools, and prompt fragments in
 `plugin.yaml`. Python plugins override `setup(ctx)` and use
 `ctx.register_hook`, `ctx.register_tool`, and `ctx.add_prompt_fragment`.
-The setup transaction records every resource for rollback and unload.
+The setup transaction should record every resource for rollback and unload.
+
+Prompt fragments use the public `PromptFragmentStage` values, in render order:
+`system_prefix`, `system_instructions`, `system_rules`, and `context_suffix`.
+The suffix stage renders after message history and before the core current-state
+text. Unknown stages are rejected during manifest validation; Python plugins
+using `ctx.add_prompt_fragment()` receive the same validation from the context
+builder.
+After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
+`ContextComponent` values. A Hook may replace the component list, but every
+replacement entry must remain a `ContextComponent`; provider conversion does
+not accept ad hoc dictionaries or private core objects.
+Runtime registrations performed from hooks must either use a recorded plugin
+capability or be moved into setup; otherwise unload and failure rollback cannot
+be complete.
+
+Plugin hooks receive `ctx.plugin_runtime` when they are invoked through the
+loader. Dynamic tools discovered at runtime must be registered through that
+capability:
+
+```python
+ctx.plugin_runtime.register_tool(
+    tool,
+    options=ToolRegistrationOptions(namespace="plugin:my-plugin"),
+)
+```
+
+Those runtime registrations are appended to the plugin record and are removed
+during plugin unload. A plugin that owns a shorter-lived dynamic resource may
+call `ctx.plugin_runtime.unregister_tool(registered_name)`. The capability
+rejects names outside that plugin's ownership record.
+
+Tool registration options are explicit:
+
+```python
+from xbotv2.api import ToolRegistrationOptions
+
+ctx.register_tool(
+    tool,
+    options=ToolRegistrationOptions(
+        sandbox_mode="sandboxed",
+        namespace="plugin:my-plugin",
+    ),
+)
+```
+
+The loader records each returned registered name in the plugin's single
+ownership record so unload and rollback can remove every resource.
 
 ## plugin.yaml Manifest
 
@@ -37,10 +181,16 @@ hooks:
 tools:
   - handler: my_plugin.tools:my_tool
     sandbox_mode: host
-    execution_mode: sequential
 prompt_fragments:
   - stage: system_instructions
     file: prompts/system.md
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    endpoint:
+      type: string
+      minLength: 1
 ```
 
 ## Built-in Plugins
@@ -57,7 +207,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `permission_scope.py`: per-turn tool permission overrides
 
 **Hooks:**
-- `ON_SESSION_INIT`: discover SKILL.md files from 6 paths
+- `ON_SESSION_INIT`: transactionally discover SKILL.md files from 6 paths and
+  register each discovered skill once
 - `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
 - `AFTER_CONTEXT`: inject active skill content into context
 - `ON_TURN_END`: clear active skills and permission scopes
@@ -68,6 +219,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - Each discovered skill is registered as a tool (namespace `skills:<scope>:<name>`)
 
 **Features:**
+- Repeated initialization on the same loaded plugin is idempotent; partial
+  dynamic registration failure rolls back that discovery attempt.
 - Shell injection: `` !`command` `` placeholders run only through the enabled
   session sandbox. There is no host subprocess fallback.
 - allowed-tools / disallowed-tools frontmatter fields
@@ -84,12 +237,38 @@ Connects to MCP (Model Context Protocol) servers and registers their tools.
 - `tool.py`: MCP tool adapter returning `ToolResult`
 
 **Hooks:**
-- `ON_SESSION_INIT`: connect to enabled MCP servers, fetch tools, register
-- `ON_SESSION_CLOSE`: disconnect all servers
+- `ON_SESSION_INIT`: connect to enabled MCP servers, validate tool definitions,
+  and register each server transactionally
+- `ON_SESSION_CLOSE`: unregister session tools and disconnect all servers
+
+Initialization is idempotent within an open session. A registration failure
+rolls back every tool and the connection for that server. Optional server
+failures leave diagnostics degraded and allow bootstrap to continue; a server
+with `required: true` rolls back every server initialized by that hook call and
+fails bootstrap. Session close resets the plugin so a later initialization can
+reconnect and register a fresh tool set. `on_unload` remains a final cleanup
+path for bootstrap failures and abnormal shutdown.
 
 **Transport types:**
-- `local` (stdio): subprocess with JSON-RPC over stdin/stdout
-- `remote` (HTTP): HTTP POST with JSON-RPC body
+- `local` (stdio): subprocess with newline-delimited JSON-RPC. Requests are
+  serialized so response ids cannot be consumed by the wrong caller; server
+  notifications received while awaiting a response are skipped.
+- `remote` (HTTP): one JSON-RPC request/response per HTTP POST.
+
+Both transports perform `initialize` using protocol version `2024-11-05`, send
+`notifications/initialized`, and only then request `tools/list`. A mismatched
+protocol version, invalid initialize response, invalid tool schema, or failed
+registration aborts that server transaction. MCP `inputSchema` is preserved as
+the public `Tool.parameters` schema. Successful calls retain the raw MCP result
+in `ToolResult.data`; MCP `isError` becomes a structured `mcp_tool_error`.
+
+This built-in is deliberately a tools client, not a complete MCP SDK. It does
+not currently implement resources, prompts, roots, sampling, server requests,
+or subscription notifications. The HTTP transport is a JSON-RPC POST endpoint;
+it does not claim Streamable HTTP session or SSE support. Add those capabilities
+as a coherent transport implementation, preferably through a maintained MCP
+SDK, rather than extending the current client with isolated compatibility
+branches.
 
 **Configuration** (in `system.yaml` plugins section):
 ```yaml
@@ -104,20 +283,40 @@ plugins:
 
 ## Tool Namespace Convention
 
-Tools follow `source:name:tool` naming:
+Tools use one canonical registered name:
 
 | Source | Name | Key | Slash |
 |---|---|---|---|
-| `builtin` | `core` | `builtin:core:shell` | `/shell` |
+| `builtin` | `core` | `shell` | `/shell` |
 | `plugin` | plugin-name | `plugin:skills:skill` | `/skill` |
 | `skills` | scope | `skills:global:find-skills` | `/find-skills` |
-| `mcp` | server-name | `mcp:github:search` | `/search` |
+| `mcp` | server-name | `mcp:github:mcp__github__search` | `/mcp__github__search` |
 
-Plugins register tools only through their setup capability:
+Plugins should register tools through setup or another recorded plugin
+capability:
 ```python
-ctx.register_tool(tool, namespace="plugin:skills")
+ctx.register_tool(
+    tool,
+    options=ToolRegistrationOptions(namespace="plugin:skills"),
+)
 ```
 
 `PluginSetupContext` deliberately does not expose `ToolRegistry`, `HookManager`,
 or `ContextBuilder`. The loader owns those implementations and records every
 registration so a failed setup can be rolled back atomically.
+
+The built-in Skills, MCP, and token-manager plugins are the reference templates
+for third-party plugins. When those plugins need behavior that the public API
+cannot express, first verify that the gap is shared rather than plugin-local.
+Shared gaps belong in the public API; plugin-local concerns stay inside the
+plugin instead of receiving special runtime access or a new public wrapper.
+
+- Skills demonstrates setup tools, lifecycle hooks, runtime-discovered tools,
+  per-turn state, diagnostics, and unload reset.
+- MCP demonstrates external client ownership, degraded diagnostics, dynamic
+  tools, session cleanup, and unload cleanup as a final safety net.
+- Token Manager demonstrates a hook-only plugin with configuration,
+  diagnostics, model-request inspection, public collector methods, and
+  unload-time in-memory state reset.
+  It does not write into `HookContext.state`: that mapping is a stage payload,
+  not a generic plugin persistence channel.

@@ -5,6 +5,11 @@
 ReAct loop: user message → context → LLM → tools → repeat.
 Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.
 
+`_run_turn_impl()` coordinates explicit stage methods for message admission,
+context construction, model-request preparation, streamed response handling,
+tool batches, and turn finish. Stage-specific methods retain their own Hook
+return rules; internal completion records are not protocol events.
+
 ### Streaming
 
 Provider `stream=True` yields per-token `ModelChunk` objects.
@@ -62,11 +67,12 @@ are injected at invocation time.
 
 ### ToolRegistry (`tools/registry.py`)
 
-Namespace protocol: `source:name:tool` (e.g., `builtin:core:shell`,
-`plugin:skills:skill`, `skills:global:find-skills`, `mcp:github:search`).
+Identity is the canonical registered name. Built-in core keys are bare (for
+example `shell`); non-core examples include `plugin:skills:skill`,
+`skills:global:find-skills`, and `mcp:github:search`.
 
-`restrict()` supports wildcard selectors: `builtin:*:*`, `skills:*:*`,
-`mcp:*:*`, `plugin:skills:*`. Bare names default to builtin.
+`restrict()` supports canonical keys, namespace selectors such as
+`skills:*` and `mcp:*`, and bare display-name fallbacks.
 
 `get()` matches by both registry key and display name (fallback).
 
@@ -111,7 +117,7 @@ Assembly order:
 [sandbox summary]
 [active skills (if any)]
 [message history]
-[plugin fragments: dag_suffix stage]
+[plugin fragments: context_suffix stage]
 [current state]
 ```
 

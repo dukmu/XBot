@@ -65,3 +65,15 @@ class TestPluginState:
         store.set_plugin_state("plugin_b", {"enabled": False})
         assert store.get_plugin_state("plugin_a") == {"enabled": True}
         assert store.get_plugin_state("plugin_b") == {"enabled": False}
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "../escape", "nested/name"])
+    def test_plugin_state_paths_reject_unsafe_names(self, temp_data_dir, name):
+        store = CoreStateStore.create(
+            _session_paths(temp_data_dir),
+            thread_id="t1",
+            workspace_root="/workspace",
+            provider="default",
+        )
+
+        with pytest.raises(ValueError, match="Invalid plugin state name"):
+            store.set_plugin_state(name, {"value": True})

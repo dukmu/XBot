@@ -1,24 +1,14 @@
-"""Protocol-driven curses TUI client.
-
-The TUI layer consumes protocol events only. It must not import runtime or
-bootstrap modules.
-"""
+"""Protocol-driven state shared by TUI clients."""
 
 from __future__ import annotations
 
-import asyncio
-import curses
 import json
-import queue
-from concurrent.futures import Future
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from textwrap import shorten
 from typing import Any
 
-from xbotv2.protocol.frames import ProtocolFrame
-from xbotv2.tui.terminal import TerminalSession
 
 @dataclass
 class TuiMessage:
@@ -113,11 +103,6 @@ class TuiState:
     _changed_tool_ids: set[str] = field(default_factory=set)
     _tool_id_renames: dict[str, str] = field(default_factory=dict)
 
-    def apply_frame(self, frame: ProtocolFrame) -> None:
-        self.session_id = frame.session_id or self.session_id
-        self.thread_id = frame.thread_id or self.thread_id
-        self.apply_event({"type": frame.type, "data": frame.payload})
-
     def apply_event(self, event: dict[str, Any]) -> None:
         self._changed_tool_ids.clear()
         self._tool_id_renames.clear()
@@ -183,8 +168,7 @@ class TuiState:
             # Mark the wall-clock end of this tool call so the
             # transcript can show "shell success  0.4s" (per user
             # request: per-tool latency in the entry title).
-            import time as _time
-            tool.finished_at = _time.monotonic()
+            tool.finished_at = time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
             self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "usage":
@@ -213,11 +197,11 @@ class TuiState:
             self.pending_permission_request_id = None
             self.pending_permission_payload = None
             request_id = str(data.get("request_id") or "")
-            for tool in list(self.tools.values()):
-                if tool.permission_request_id == request_id:
-                    tool.permission_pending = False
-                    tool.status = "denied"
-                    self._changed_tool_ids.add(tool.tool_call_id)
+            tool = self._tool_for_permission_request(request_id)
+            if tool is not None:
+                tool.permission_pending = False
+                tool.status = "denied"
+                self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "user_input_required":
             self.pending_user_input_request_id = str(data.get("request_id") or "") or None
             self.pending_user_input_payload = data
@@ -242,14 +226,7 @@ class TuiState:
             self._refresh_status()
             request_id = str(data.get("request_id") or "")
             decision = str(data.get("decision") or str(data.get("status") or "approved"))
-            # Strip the "permission:" prefix that the engine adds
-            # to request_id.  This makes the lookup exact (one
-            # tool per id) rather than a scan that could match
-            # the wrong tool if two tools ever share a request_id.
-            tool_id = request_id
-            if tool_id.startswith("permission:"):
-                tool_id = tool_id[len("permission:"):]
-            tool = self.tools.get(tool_id)
+            tool = self._tool_for_permission_request(request_id)
             if tool is not None:
                 tool.permission_pending = False
                 tool.status = decision if decision else "approved"
@@ -292,21 +269,13 @@ class TuiState:
         self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
 
-    def _update_permission_notice(self, request_id: str, decision: str) -> bool:
-        """Update existing permission_request notice instead of creating new one. Returns True if found."""
-        for i, notice in enumerate(self.notices):
-            rid = str(notice.payload.get("request_id") or "")
-            if rid == request_id and notice.kind == "permission_request":
-                marker = "✓" if decision == "allow" else "✗"
-                notice.kind = "permission_response_recorded"
-                notice.text = f"{marker} {decision}"
-                return True
-        return False
-
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:
-        if self.status in {"Error", "Shutdown"}:
+        if self.status == "Shutdown":
             return
-        if self.status == "Permission denied" and not reset_terminal:
+        if (
+            self.status in {"Error", "Interrupted", "Permission denied"}
+            and not reset_terminal
+        ):
             return
         if self.pending_permission_active:
             self.status = "Approval required"
@@ -377,7 +346,6 @@ class TuiState:
     def _apply_tool_calls(self, tool_calls: Any) -> None:
         if not isinstance(tool_calls, list):
             return
-        import time as _time
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
@@ -406,14 +374,13 @@ class TuiState:
             # tool_calls_started event for this id — re-firing the
             # same call (e.g. on resume) should not reset the clock.
             if tool.started_at <= 0:
-                tool.started_at = _time.monotonic()
+                tool.started_at = time.monotonic()
             self._ensure_tool_transcript(tool_call_id)
             self._changed_tool_ids.add(tool_call_id)
 
     def _apply_tool_call_delta(self, tool_calls: Any) -> None:
         if not isinstance(tool_calls, list):
             return
-        import time as _time
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
@@ -449,7 +416,7 @@ class TuiState:
                 tool.args_streaming = str(args)
             tool.status = "pending"
             if tool.started_at <= 0:
-                tool.started_at = _time.monotonic()
+                tool.started_at = time.monotonic()
             self._ensure_tool_transcript(tool_call_id)
             self._changed_tool_ids.add(tool_call_id)
 
@@ -478,6 +445,16 @@ class TuiState:
         elif name != "tool":
             self.tools[tool_call_id].name = name
         return self.tools[tool_call_id]
+
+    def _tool_for_permission_request(self, request_id: str) -> TuiTool | None:
+        return next(
+            (
+                tool
+                for tool in self.tools.values()
+                if tool.permission_request_id == request_id
+            ),
+            None,
+        )
 
     def _ensure_tool_transcript(self, tool_call_id: str) -> None:
         if tool_call_id in self._tool_transcript_keys:
@@ -508,134 +485,6 @@ class TuiState:
             self._tool_transcript_keys.add(new_id)
         self._tool_id_renames[old_id] = new_id
         self._changed_tool_ids.update({old_id, new_id})
-
-
-class CursesTuiClient:
-    """Curses UI shell around TerminalSession."""
-
-    def __init__(
-        self,
-        session_id: str | None = None,
-        thread_id: str = "agent",
-        workspace_root: Path | str | None = None,
-        session_mode: str | None = None,
-        server_url: str = "http://127.0.0.1:4096",
-    ) -> None:
-        self.session = TerminalSession(
-            session_id=session_id,
-            thread_id=thread_id,
-            workspace_root=workspace_root,
-            session_mode=session_mode,
-            base_url=server_url,
-        )
-        self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
-        self._events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._pending: set[Future] = set()
-        self._answers: queue.Queue[str] = queue.Queue()
-        self._permission_decisions: queue.Queue[dict[str, str]] = queue.Queue()
-        self._closed = False
-
-    async def run(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        await self.session.connect()
-        self.state.status = "Ready"
-        try:
-            await asyncio.to_thread(curses.wrapper, self._run_curses)
-        finally:
-            self._closed = True
-            for future in list(self._pending):
-                future.cancel()
-            await self.session.disconnect()
-
-    def _run_curses(self, stdscr: Any) -> None:
-        try:
-            curses.curs_set(1)
-        except curses.error:
-            pass
-        stdscr.timeout(100)
-        input_buffer = ""
-
-        while True:
-            self._drain_events()
-            self._draw(stdscr, input_buffer)
-            ch = stdscr.getch()
-
-            if ch == -1:
-                continue
-            if ch in (10, 13):
-                text = input_buffer.strip()
-                input_buffer = ""
-                if text == "/exit":
-                    return
-                if text:
-                    self._send_text(text)
-            elif ch in (curses.KEY_BACKSPACE, 127, 8):
-                input_buffer = input_buffer[:-1]
-            elif 0 <= ch < 256:
-                input_buffer += chr(ch)
-
-    def _draw(self, stdscr: Any, input_buffer: str) -> None:
-        stdscr.erase()
-        height, width = stdscr.getmaxyx()
-        for row, line in enumerate(self.state.lines(width=width, height=max(1, height - 1))):
-            try:
-                stdscr.addnstr(row, 0, line, max(1, width - 1))
-            except curses.error:
-                pass
-        try:
-            stdscr.addnstr(max(0, height - 1), 0, f"> {input_buffer}", max(1, width - 1))
-        except curses.error:
-            pass
-        stdscr.refresh()
-
-    def _send_text(self, text: str) -> None:
-        if self._loop is None:
-            raise RuntimeError("CursesTuiClient is not running")
-        if self.state.pending_user_input_active:
-            self._answers.put(text)
-            return
-        if self.state.pending_permission_active:
-            self._permission_decisions.put(_parse_permission_decision(text))
-            return
-        self.state.append_message("user", text)
-        future = asyncio.run_coroutine_threadsafe(self._collect_response(text), self._loop)
-        self._pending.add(future)
-        future.add_done_callback(self._pending.discard)
-
-    async def _collect_response(self, text: str) -> None:
-        try:
-            async for event in self.session.send_message(
-                text,
-                input_provider=self._answer_live_input,
-                permission_provider=self._answer_live_permission,
-            ):
-                self._events.put(event)
-        except BaseException as exc:
-            self._events.put(exc)
-
-    async def _answer_live_input(self, payload: dict[str, Any]) -> str:
-        del payload
-        return await asyncio.to_thread(self._answers.get)
-
-    async def _answer_live_permission(self, payload: dict[str, Any]) -> str:
-        del payload
-        return await asyncio.to_thread(self._permission_decisions.get)
-
-    def _drain_events(self) -> None:
-        while True:
-            try:
-                item = self._events.get_nowait()
-            except queue.Empty:
-                return
-            if isinstance(item, BaseException):
-                self.state.status = "Error"
-                self.state.errors.append(str(item))
-                self.state.transcript.append(
-                    TuiTranscriptEntry(kind="error", key=str(len(self.state.errors) - 1))
-                )
-                continue
-            self.state.apply_event(item)
 
 
 def _preview(value: Any, *, width: int = 120) -> str:

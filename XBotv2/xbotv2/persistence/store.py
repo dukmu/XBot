@@ -241,22 +241,37 @@ class CoreStateStore:
         }
 
     def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
-        path = self.plugin_states_dir / f"{plugin_name}.yaml"
+        path = self._plugin_state_path(plugin_name)
         if path.exists():
-            with open(path) as f:
-                return yaml.safe_load(f) or {}
+            with open(path, encoding="utf-8") as stream:
+                state = yaml.safe_load(stream)
+            if state is None:
+                return {}
+            if not isinstance(state, dict):
+                raise ValueError(
+                    f"Plugin state for {plugin_name!r} must contain a mapping"
+                )
+            return state
         return {}
 
     def set_plugin_state(self, plugin_name: str, data: dict[str, Any]) -> None:
         self.plugin_states_dir.mkdir(parents=True, exist_ok=True)
-        path = self.plugin_states_dir / f"{plugin_name}.yaml"
-        with open(path, "w") as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        path = self._plugin_state_path(plugin_name)
+        _atomic_write_yaml(path, data)
 
     def delete_plugin_state(self, plugin_name: str) -> None:
-        path = self.plugin_states_dir / f"{plugin_name}.yaml"
+        path = self._plugin_state_path(plugin_name)
         if path.exists():
             path.unlink()
+
+    def _plugin_state_path(self, plugin_name: str) -> Path:
+        if (
+            not plugin_name
+            or plugin_name in {".", ".."}
+            or Path(plugin_name).name != plugin_name
+        ):
+            raise ValueError(f"Invalid plugin state name: {plugin_name!r}")
+        return self.plugin_states_dir / f"{plugin_name}.yaml"
 
     def _next_message_id(self) -> int:
         if self._max_msg_id == 0 and self.messages_path.exists():
@@ -274,8 +289,7 @@ class CoreStateStore:
         for path in sorted(self.plugin_states_dir.iterdir()):
             if path.suffix == ".yaml":
                 name = path.stem
-                with open(path) as f:
-                    result[name] = yaml.safe_load(f) or {}
+                result[name] = self.get_plugin_state(name)
         return result
 
     def _atomic_write(self, entries: list[dict[str, Any]]) -> None:
@@ -311,3 +325,23 @@ def _iter_jsonl(path: Path):
             line = line.strip()
             if line:
                 yield json.loads(line)
+
+
+def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f"{path.stem}-",
+        suffix=".yaml.tmp",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise

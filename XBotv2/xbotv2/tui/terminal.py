@@ -169,6 +169,8 @@ class TerminalSession:
         )
         async for event in stream:
             event_type = str(event.get("type") or "")
+            if event_type == "end":
+                return
 
             # **Order matters**: yield the event to the TUI FIRST so
             # ``apply_event`` + ``_handle_stream_event`` can update

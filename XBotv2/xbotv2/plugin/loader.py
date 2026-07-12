@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +14,12 @@ import yaml
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
-from xbotv2.api.plugins import PluginBase, PluginManifest
+from xbotv2.api.context import PromptFragmentStage
+from xbotv2.api.plugins import (
+    PluginBase,
+    PluginManifest,
+    ToolRegistrationOptions,
+)
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.store import PluginStore
 from xbotv2.tools.registry import ToolRegistry
@@ -30,6 +36,35 @@ class LoadedPluginRecord:
 
 
 @dataclass
+class _RuntimePluginContext:
+    """Runtime adapter that records resources registered from plugin hooks."""
+
+    plugin_name: str
+    tools: ToolRegistry
+    tool_names: list[str]
+
+    def register_tool(
+        self,
+        tool: Any,
+        options: ToolRegistrationOptions | None = None,
+    ) -> str:
+        return _register_plugin_tool(
+            tools=self.tools,
+            plugin_name=self.plugin_name,
+            tool=tool,
+            options=options,
+            tool_names=self.tool_names,
+        )
+
+    def unregister_tool(self, registered_name: str) -> bool:
+        """Remove one runtime tool owned by this plugin."""
+        if registered_name not in self.tool_names:
+            return False
+        self.tool_names.remove(registered_name)
+        return self.tools.unregister(registered_name)
+
+
+@dataclass
 class _PluginSetupContext:
     """Transactional adapter from the public plugin API to core services."""
 
@@ -42,19 +77,38 @@ class _PluginSetupContext:
     fragment_stages: list[str] = field(default_factory=list)
 
     def register_hook(self, stage: HookStage, callback: Any) -> None:
-        self.hooks.register(stage, callback)
-        self.hook_refs.append((stage, callback))
+        async def plugin_hook(ctx: Any) -> Any:
+            previous_runtime = getattr(ctx, "plugin_runtime", None)
+            ctx.plugin_runtime = _RuntimePluginContext(
+                plugin_name=self.plugin_name,
+                tools=self.tools,
+                tool_names=self.tool_names,
+            )
+            try:
+                result = callback(ctx)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+            finally:
+                ctx.plugin_runtime = previous_runtime
 
-    def register_tool(self, tool: Any, **options: Any) -> str:
-        before = set(self.tools.registered_names())
-        self.tools.register(tool, owner_plugin=self.plugin_name, **options)
-        added = [name for name in self.tools.registered_names() if name not in before]
-        if len(added) != 1:
-            raise RuntimeError("Plugin tool registration must add exactly one tool")
-        self.tool_names.extend(added)
-        return added[0]
+        self.hooks.register(stage, plugin_hook)
+        self.hook_refs.append((stage, plugin_hook))
 
-    def add_prompt_fragment(self, stage: str, text: str) -> None:
+    def register_tool(
+        self,
+        tool: Any,
+        options: ToolRegistrationOptions | None = None,
+    ) -> str:
+        return _register_plugin_tool(
+            tools=self.tools,
+            plugin_name=self.plugin_name,
+            tool=tool,
+            options=options,
+            tool_names=self.tool_names,
+        )
+
+    def add_prompt_fragment(self, stage: PromptFragmentStage, text: str) -> None:
         self.context.register_fragment(stage, self.plugin_name, text)
         if stage not in self.fragment_stages:
             self.fragment_stages.append(stage)
@@ -87,15 +141,18 @@ class PluginLoader:
         self.tool_registry = tool_registry
         self.context_builder = context_builder
         self.plugin_configs = plugin_configs or {}
-        self.loaded_plugins: list[Any] = []
         self._records: dict[str, LoadedPluginRecord] = {}
         self._import_paths: list[str] = []
+
+    @property
+    def loaded_plugins(self) -> list[Any]:
+        return [record.plugin for record in self._records.values()]
 
     def diagnostics(self) -> list[dict[str, Any]]:
         """Return serializable plugin health without exposing plugin objects."""
         result: list[dict[str, Any]] = []
         for plugin in self.loaded_plugins:
-            details = plugin.diagnostics()
+            details = dict(plugin.diagnostics())
             result.append({
                 "name": plugin.manifest.name,
                 "version": plugin.manifest.version,
@@ -124,46 +181,35 @@ class PluginLoader:
                 manifests.append((manifest, candidate))
         return manifests
 
-    @staticmethod
-    def resolve_order(
-        manifests: list[tuple[PluginManifest, Path]],
-    ) -> list[tuple[PluginManifest, Path]]:
-        """Topologically sort manifests by depends_on."""
-        return resolve_dependencies(manifests)
-
     async def load(self) -> list[Any]:
         """Discover, instantiate, initialize, and register plugins."""
-        ordered = self.resolve_order(self.discover())
+        ordered = resolve_dependencies(self.discover())
         for manifest, plugin_dir in ordered:
             plugin = None
-            on_load_completed = False
-            import_path_checkpoint = len(self._import_paths)
             try:
+                plugin_config = dict(self.plugin_configs.get(manifest.name, {}))
+                manifest.validate_config(plugin_config)
                 self._ensure_importable(manifest, plugin_dir)
                 plugin_store = PluginStore(self.state_store, manifest.name)
                 plugin = instantiate_plugin(manifest, plugin_store)
 
-                await plugin.on_load(self.plugin_configs.get(manifest.name, {}))
-                on_load_completed = True
+                await plugin.on_load(plugin_config)
                 self._records[manifest.name] = self._register(plugin)
-            except Exception:
-                if plugin is not None and on_load_completed:
+            except BaseException as load_error:
+                cleanup_errors: list[BaseException] = []
+                if plugin is not None:
                     try:
                         await plugin.on_unload()
-                    finally:
-                        if not self.loaded_plugins:
-                            self._release_import_paths()
-                        else:
-                            self._release_import_paths_since(import_path_checkpoint)
-                            await self.unload_all()
-                        raise
-                if not self.loaded_plugins:
-                    self._release_import_paths()
-                else:
-                    self._release_import_paths_since(import_path_checkpoint)
+                    except BaseException as cleanup_error:
+                        cleanup_errors.append(cleanup_error)
+                try:
                     await self.unload_all()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+                self._release_import_paths()
+                for cleanup_error in cleanup_errors:
+                    load_error.add_note(f"Plugin cleanup also failed: {cleanup_error!r}")
                 raise
-            self.loaded_plugins.append(plugin)
         return list(self.loaded_plugins)
 
     async def unload(self, plugin_name: str) -> bool:
@@ -171,34 +217,42 @@ class PluginLoader:
 
         Returns ``True`` when a loaded plugin was found and unloaded.
         """
-        record = self._records.pop(plugin_name, None)
+        record = self._records.get(plugin_name)
         if record is None:
             return False
 
-        await record.plugin.on_unload()
+        unload_error: BaseException | None = None
+        try:
+            await record.plugin.on_unload()
+        except BaseException as exc:
+            unload_error = exc
+        self._records.pop(plugin_name, None)
         for stage, fn in reversed(record.hook_refs):
             self.hook_manager.unregister(stage, fn)
         for tool_name in reversed(record.tool_names):
             self.tool_registry.unregister(tool_name)
-        self.tool_registry.unregister_plugin_tools(plugin_name)
         for stage in record.fragment_stages:
             self.context_builder.unregister_fragment(stage, plugin_name)
-        self.loaded_plugins = [
-            plugin
-            for plugin in self.loaded_plugins
-            if plugin.manifest.name != plugin_name
-        ]
-        if not self.loaded_plugins:
+        if not self._records:
             self._release_import_paths()
+        if unload_error is not None:
+            raise unload_error
         return True
 
     async def unload_all(self) -> list[str]:
         """Unload all loaded plugins in reverse load order."""
         unloaded: list[str] = []
-        for plugin in reversed(list(self.loaded_plugins)):
-            plugin_name = plugin.manifest.name
-            if await self.unload(plugin_name):
+        errors: list[BaseException] = []
+        for plugin_name in reversed(list(self._records)):
+            try:
+                was_unloaded = await self.unload(plugin_name)
+            except BaseException as exc:
+                was_unloaded = plugin_name not in self._records
+                errors.append(exc)
+            if was_unloaded:
                 unloaded.append(plugin_name)
+        if errors:
+            raise BaseExceptionGroup("One or more plugins failed during unload", errors)
         return unloaded
 
     def _register(self, plugin: Any) -> LoadedPluginRecord:
@@ -250,15 +304,12 @@ class PluginLoader:
                 sys.modules.pop(name, None)
 
     def _release_import_paths(self) -> None:
-        self._release_import_paths_since(0)
-
-    def _release_import_paths_since(self, index: int) -> None:
-        for path in reversed(self._import_paths[index:]):
+        for path in reversed(self._import_paths):
             try:
                 sys.path.remove(path)
             except ValueError:
                 pass
-        del self._import_paths[index:]
+        self._import_paths.clear()
 
 
 def resolve_dependencies(
@@ -299,7 +350,7 @@ def resolve_dependencies(
     return result
 
 
-def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> Any | None:
+def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> Any:
     """Instantiate a PluginBase subclass or manifest-driven default plugin."""
     class_name = "".join(part.title() for part in manifest.name.split("_")) + "Plugin"
 
@@ -319,6 +370,24 @@ def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> A
             continue
 
     return _DefaultPlugin(manifest, plugin_store)
+
+
+def _register_plugin_tool(
+    tools: ToolRegistry,
+    plugin_name: str,
+    tool: Any,
+    *,
+    options: ToolRegistrationOptions | None,
+    tool_names: list[str],
+) -> str:
+    registration = options or ToolRegistrationOptions()
+    registered_name = tools.register(
+        tool,
+        sandbox_mode=registration.sandbox_mode,
+        namespace=registration.namespace,
+    )
+    tool_names.append(registered_name)
+    return registered_name
 
 
 def _module_belongs_to_path(module: Any, plugin_dir: Path) -> bool:

@@ -56,16 +56,16 @@ from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
-# (tool, sandbox_mode, execution_mode, lock_fields)
+# (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
-    (SHELL_TOOLS[0], "sandboxed", "sequential", ()),
-    (FILESYSTEM_TOOLS[0], "sandboxed", "parallel", ("path",)),   # filesystem_read
-    (FILESYSTEM_TOOLS[1], "sandboxed", "sequential", ("path",)),  # filesystem_write
-    (FILESYSTEM_TOOLS[2], "sandboxed", "parallel", ("path",)),   # filesystem_list
-    (FILESYSTEM_TOOLS[3], "sandboxed", "parallel", ("path",)),   # search_text
-    (FILESYSTEM_TOOLS[4], "sandboxed", "parallel", ("path",)),   # find_files
-    (INTERACTION_TOOLS[0], "host", "sequential", ()),  # send_message
-    (INTERACTION_TOOLS[1], "host", "sequential", ()),  # ask_user
+    (SHELL_TOOLS[0], "sandboxed"),
+    (FILESYSTEM_TOOLS[0], "sandboxed"),  # filesystem_read
+    (FILESYSTEM_TOOLS[1], "sandboxed"),  # filesystem_write
+    (FILESYSTEM_TOOLS[2], "sandboxed"),  # filesystem_list
+    (FILESYSTEM_TOOLS[3], "sandboxed"),  # search_text
+    (FILESYSTEM_TOOLS[4], "sandboxed"),  # find_files
+    (INTERACTION_TOOLS[0], "host"),  # send_message
+    (INTERACTION_TOOLS[1], "host"),  # ask_user
 ]
 
 
@@ -149,13 +149,10 @@ async def bootstrap(
     _register_configured_hooks(agent_config, hook_manager)
 
     # 4. Register core base tools (always available)
-    for tool, sandbox_mode, execution_mode, lock_fields in CORE_BASE_TOOLS:
+    for tool, sandbox_mode in CORE_BASE_TOOLS:
         tool_registry.register(
             tool,
             sandbox_mode=sandbox_mode,
-            execution_mode=execution_mode,
-            lock_fields=lock_fields,
-            owner_plugin=None,  # Core-owned
         )
 
     # 5. Create SandboxPolicy + PermissionSystem
@@ -167,7 +164,7 @@ async def bootstrap(
     permissions = PermissionSystem(agent_config.permissions)
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
-    # no-plugin mode used by core freeze tests and pure-core embeddings.
+    # No-plugin mode used by isolated core tests and pure-core embeddings.
     resolved_plugin_dirs = _resolve_plugin_dirs(plugin_dirs)
     plugin_loader: PluginLoader | None = None
 
@@ -181,52 +178,66 @@ async def bootstrap(
             _plugin_configs,
         )
 
-    # 7. Create LLM client
-    if llm_override is not None:
-        llm = llm_override
-    else:
-        from xbotv2.llm.client import create_llm
-        llm = create_llm(provider_config)
+    try:
+        # 7. Create LLM client
+        if llm_override is not None:
+            llm = llm_override
+        else:
+            from xbotv2.llm.client import create_llm
+            llm = create_llm(provider_config)
 
-    # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
-    from xbotv2.api.runtime import SessionInfo
-    init_ctx = HookContext(
-        stage=HookStage.ON_SESSION_INIT,
-        state={},
-        config=agent_config,
-        tools=tool_registry,
-        sandbox=sandbox,
-        plugin_store=None,
-        session=SessionInfo(
-            session_id=session_id,
-            thread_id=thread_id,
+        # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
+        from xbotv2.api.runtime import SessionInfo
+        init_ctx = HookContext(
+            stage=HookStage.ON_SESSION_INIT,
+            state={},
+            config=agent_config,
+            tools=tool_registry,
+            sandbox=sandbox,
+            plugin_store=None,
+            session=SessionInfo(
+                session_id=session_id,
+                thread_id=thread_id,
+                workspace_root=str(workspace_root),
+                provider=provider_name,
+            ),
+            emit=lambda e: None,
+        )
+        await hook_manager.run(
+            HookStage.ON_SESSION_INIT,
+            init_ctx,
+            short_circuit=False,
+        )
+
+        # Apply tool filter AFTER session init so plugin-discovered tools
+        # (skills, MCP) are registered before restrict runs.
+        if agent_config.tools:
+            tool_registry.restrict(agent_config.tools)
+
+        # 9. Build engine
+        engine = Engine(
+            llm=llm,
+            tool_registry=tool_registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=context_builder,
+            sandbox_policy=sandbox,
+            permission_system=permissions,
             workspace_root=str(workspace_root),
-            provider=provider_name,
-        ),
-        emit=lambda e: None,
-    )
-    await hook_manager.run(HookStage.ON_SESSION_INIT, init_ctx, short_circuit=False)
-
-    # Apply tool filter AFTER session init so plugin-discovered tools
-    # (skills, MCP) are registered before restrict runs.
-    if agent_config.tools:
-        tool_registry.restrict(agent_config.tools)
-
-    # 9. Build engine
-    engine = Engine(
-        llm=llm,
-        tool_registry=tool_registry,
-        hook_manager=hook_manager,
-        state_store=state_store,
-        context_builder=context_builder,
-        sandbox_policy=sandbox,
-        permission_system=permissions,
-        workspace_root=str(workspace_root),
-        config=agent_config,
-    )
-    engine.plugin_loader = plugin_loader
-
-    return engine
+            config=agent_config,
+            plugin_loader=plugin_loader,
+        )
+        return engine
+    except BaseException as bootstrap_error:
+        if plugin_loader is not None:
+            try:
+                await plugin_loader.unload_all()
+            except BaseException as cleanup_error:
+                bootstrap_error.add_note(
+                    f"Plugin cleanup after bootstrap failure also failed: "
+                    f"{cleanup_error!r}"
+                )
+        raise
 
 
 # ------------------------------------------------------------------

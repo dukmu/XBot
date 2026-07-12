@@ -51,11 +51,22 @@ class ToolError:
     retryable: bool = False
     details: dict[str, JsonValue] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "retryable": self.retryable,
+            "details": self.details,
+        }
+
 
 @dataclass(frozen=True)
 class ClientEvent:
     type: str
     data: dict[str, JsonValue] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {"type": self.type, "data": self.data}
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,13 @@ class ArtifactRef:
     id: str
     media_type: str = "application/octet-stream"
     name: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "media_type": self.media_type,
+            "name": self.name,
+        }
 
 
 @dataclass(frozen=True)

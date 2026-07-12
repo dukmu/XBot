@@ -63,9 +63,9 @@ class TestTokenStatsCollector:
         assert t.cache_hit_tokens == 200
         assert t.cache_miss_tokens == 30
         assert t.tool_calls == 1
-        assert s.cumulative_prompt == 100
-        assert s.cumulative_completion == 50
-        assert s.cumulative_cache_hit == 200
+        assert s.summary()["cumulative_prompt_tokens"] == 100
+        assert s.summary()["cumulative_completion_tokens"] == 50
+        assert s.summary()["cumulative_cache_hit_tokens"] == 200
 
     def test_multiple_turns_cumulative(self):
         from builtin_plugins.token_manager.stats import TokenStatsCollector
@@ -74,8 +74,8 @@ class TestTokenStatsCollector:
         s.start_turn(1); s.record_usage(100, 50); s.finish_turn()
         s.start_turn(2); s.record_usage(200, 80); s.finish_turn()
 
-        assert s.cumulative_prompt == 300
-        assert s.cumulative_completion == 130
+        assert s.summary()["cumulative_prompt_tokens"] == 300
+        assert s.summary()["cumulative_completion_tokens"] == 130
         assert len(s.turns) == 2
 
     def test_summary(self):
@@ -87,7 +87,8 @@ class TestTokenStatsCollector:
         summary = s.summary()
         assert summary["turns"] == 1
         assert summary["cumulative_prompt_tokens"] == 100
-        assert summary["last_turn"] is None  # current is None after finish
+        assert summary["last_turn"]["turn"] == 1
+        assert summary["last_turn"]["prompt_tokens"] == 100
 
     def test_summary_with_active_turn(self):
         from builtin_plugins.token_manager.stats import TokenStatsCollector
@@ -100,6 +101,80 @@ class TestTokenStatsCollector:
         assert summary["last_turn"] is not None
         assert summary["last_turn"]["turn"] == 1
         assert summary["last_turn"]["prompt_tokens"] == 100
+
+    def test_context_update_and_reset(self):
+        from builtin_plugins.token_manager.stats import TokenStatsCollector
+
+        stats = TokenStatsCollector()
+        stats.start_turn(3)
+        stats.update_context(estimated_prompt=120, message_count=7)
+
+        assert stats.summary()["last_turn"]["estimated_prompt"] == 120
+        assert stats.summary()["last_turn"]["context_messages"] == 7
+
+        stats.reset()
+        assert stats.summary()["turns"] == 0
+        assert stats.summary()["last_turn"] is None
+
+    def test_plugin_diagnostics_expose_health_and_usage(self):
+        from builtin_plugins.token_manager.plugin import TokenManagerPlugin
+        from xbotv2.api import PluginManifest
+
+        plugin = TokenManagerPlugin(
+            PluginManifest(name="token_manager", version="1"),
+            store=None,
+        )
+
+        diagnostics = plugin.diagnostics()
+
+        assert diagnostics["status"] == "ready"
+        assert diagnostics["usage"]["turns"] == 0
+
+    @pytest.mark.asyncio
+    async def test_plugin_unload_resets_in_memory_stats(self):
+        from builtin_plugins.token_manager.plugin import TokenManagerPlugin
+        from xbotv2.api import PluginManifest
+
+        plugin = TokenManagerPlugin(
+            PluginManifest(name="token_manager", version="1"),
+            store=None,
+        )
+        plugin._stats.start_turn(1)
+        plugin._stats.record_usage(10, 5)
+        plugin._stats.finish_turn()
+
+        await plugin.on_unload()
+
+        assert plugin.summary()["turns"] == 0
+        assert plugin.summary()["last_turn"] is None
+
+    @pytest.mark.asyncio
+    async def test_plugin_reads_public_model_request(self):
+        from builtin_plugins.token_manager.plugin import TokenManagerPlugin
+        from xbotv2.api import HookContext, HookStage, PluginManifest, Tool
+
+        def echo(value: str) -> str:
+            return value
+
+        plugin = TokenManagerPlugin(
+            PluginManifest(name="token_manager", version="1"),
+            store=None,
+        )
+        plugin._stats.start_turn(1)
+        ctx = HookContext(
+            stage=HookStage.BEFORE_MODEL_REQUEST,
+            model_request={
+                "messages": [Message(role="user", content="hello")],
+                "tools": [Tool.from_function(echo)],
+                "llm": object(),
+            },
+        )
+
+        await plugin._on_before_model_request(ctx)
+
+        current = plugin.summary()["last_turn"]
+        assert current["context_messages"] == 1
+        assert current["estimated_prompt"] > 0
 
 
 class TestTokenBudgetController:

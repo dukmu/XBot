@@ -6,6 +6,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from xbotv2.api.context import ContextComponent
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.tools import ToolCall
 
@@ -98,10 +99,11 @@ class HookContext:
     tools: Any | None = None
     sandbox: Any | None = None
     plugin_store: Any | None = None
+    plugin_runtime: Any | None = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo("", ""))
     emit: Callable[[Any], None] = field(default=lambda _: None)
     user_input: str | None = None
-    context_components: list[Any] | None = None
+    context_components: list[ContextComponent] | None = None
     context_messages: list[Any] | None = None
     agent_response: Any | None = None
     model_request: dict[str, Any] | None = None
@@ -116,7 +118,7 @@ class HookContext:
     client_event: dict[str, Any] | None = None
     error: Exception | None = None
     short_circuit_result: Any | None = None
-
+    request_id: str = ""
 
 HookFn = Callable[[HookContext], Any]
 

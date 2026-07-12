@@ -69,10 +69,10 @@ class TestFragmentInjection:
         found = [m for m in messages if "Test Instructions" in m.content]
         assert len(found) == 1
 
-    def test_register_fragment_dag_suffix(self, context_builder):
-        """Fragments at dag_suffix appear before current state."""
+    def test_register_fragment_context_suffix(self, context_builder):
+        """Fragments at context_suffix appear before current state."""
         context_builder.register_fragment(
-            "dag_suffix", "planning_plugin", "## Plan Status\nActive: node-1"
+            "context_suffix", "planning_plugin", "## Plan Status\nActive: node-1"
         )
         messages = context_builder.build(messages=[], agent_name="TestBot")
         # Find the suffix section
@@ -102,10 +102,10 @@ class TestFragmentInjection:
     def test_multiple_plugins_same_stage(self, context_builder):
         """Multiple plugins can inject at the same stage."""
         context_builder.register_fragment(
-            "dag_suffix", "plugin_a", "## Plugin A"
+            "context_suffix", "plugin_a", "## Plugin A"
         )
         context_builder.register_fragment(
-            "dag_suffix", "plugin_b", "## Plugin B"
+            "context_suffix", "plugin_b", "## Plugin B"
         )
         messages = context_builder.build(messages=[], agent_name="TestBot")
         suffix_idx = None
@@ -166,6 +166,21 @@ class TestContextComponents:
         assert compact.stage == "system_rules"
         assert "Compact" in compact.content
 
+    def test_context_suffix_preserves_stage_and_owner_metadata(self, context_builder):
+        context_builder.register_fragment(
+            "context_suffix",
+            "status",
+            "## Runtime Status\nReady.",
+        )
+
+        components = context_builder.build_components(messages=[])
+
+        suffix = components[-1]
+        assert suffix.source == "context_suffix"
+        assert suffix.stage == "context_suffix"
+        assert suffix.plugin_name == "status"
+        assert "Runtime Status" in suffix.content
+
     def test_messages_from_components_roundtrips_to_build_shape(self, context_builder):
         raw_messages = [Message(role="user", content="hello")]
         direct = context_builder.build(messages=raw_messages, agent_name="TestBot")
@@ -181,6 +196,10 @@ class TestContextComponents:
         assert via_components[2].content == direct[2].content
         assert "Current State" in via_components[-1].content
         assert "Current State" in direct[-1].content
+
+    def test_messages_from_components_rejects_untyped_values(self, context_builder):
+        with pytest.raises(TypeError, match="must be a ContextComponent"):
+            context_builder.messages_from_components([object()])
 
 
 class TestCacheIsolation:

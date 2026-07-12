@@ -1,35 +1,31 @@
 """Extensible tool registry with namespace-aware registration and filtering.
 
 Namespaced tools use the format ``namespace:name``. Built-in tools are
-bare names (default namespace). Plugin tools use the plugin name as
-namespace. MCP tools use ``mcp.<server>`` as namespace.
+bare names (default namespace).
 
 ``restrict()`` supports namespace patterns:
   - ``"*"`` or ``None``: all tools
   - ``"shell"``: bare name match (backwards-compat)
-  - ``"builtin:*"``: all tools with namespace ``builtin``
-  - ``"skills:*"``: all skills plugin tools
-  - ``"skills:skill"``: specific namespaced tool
-  - ``"mcp.*:*"``: wildcard namespace match
+  - ``"filesystem*"``: all tools with that prefix
+  - ``"skills:*"``: all discovered skill tools
+  - ``"skills:global:*"``: all global skill tools
+  - ``"mcp:github:*"``: all tools from one MCP server
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 RegisteredSandboxMode = Literal["sandboxed", "host"]
-RegisteredExecutionMode = Literal["parallel", "sequential"]
 
 
 @dataclass
 class ToolEntry:
     tool: Any
+    registered_name: str
     sandbox_mode: RegisteredSandboxMode = "host"
-    execution_mode: RegisteredExecutionMode = "sequential"
-    lock_fields: tuple[str, ...] = ()
-    owner_plugin: str | None = None
     namespace: str = "builtin"
 
 
@@ -43,50 +39,32 @@ class ToolRegistry:
         tool: Any,
         *,
         sandbox_mode: RegisteredSandboxMode = "host",
-        execution_mode: RegisteredExecutionMode = "sequential",
-        lock_fields: tuple[str, ...] = (),
-        owner_plugin: str | None = None,
         namespace: str | None = None,
-    ) -> None:
+    ) -> str:
         name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
         ns = namespace or "builtin"
-        full_name = f"{ns}:{name}" if ns != "builtin" else name
+        full_name = name if ns == "builtin" else f"{ns}:{name}"
+        if full_name in self._entries:
+            raise ValueError(f"Tool {full_name!r} is already registered")
+        duplicate = next(
+            (
+                entry.registered_name
+                for entry in self._entries.values()
+                if getattr(entry.tool, "name", "") == name
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise ValueError(
+                f"Tool name {name!r} is already registered as {duplicate!r}"
+            )
         self._entries[full_name] = ToolEntry(
             tool=tool,
+            registered_name=full_name,
             sandbox_mode=sandbox_mode,
-            execution_mode=execution_mode,
-            lock_fields=lock_fields,
-            owner_plugin=owner_plugin,
             namespace=ns,
         )
-
-    def register_many(
-        self, tools: list[Any], *,
-        sandbox_modes: dict[str, RegisteredSandboxMode] | None = None,
-        execution_modes: dict[str, RegisteredExecutionMode] | None = None,
-        lock_fields: dict[str, tuple[str, ...]] | None = None,
-        owner_plugin: str | None = None,
-        namespace: str | None = None,
-    ) -> None:
-        sandbox_modes = sandbox_modes or {}
-        execution_modes = execution_modes or {}
-        lock_fields_map = lock_fields or {}
-        for tool in tools:
-            name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
-            self.register(
-                tool,
-                sandbox_mode=sandbox_modes.get(name, "host"),
-                execution_mode=execution_modes.get(name, "sequential"),
-                lock_fields=lock_fields_map.get(name, ()),
-                owner_plugin=owner_plugin,
-                namespace=namespace,
-            )
-
-    def unregister_plugin_tools(self, plugin_name: str) -> list[str]:
-        removed = [n for n, e in self._entries.items() if e.owner_plugin == plugin_name]
-        for name in removed:
-            del self._entries[name]
-        return removed
+        return full_name
 
     def unregister(self, name: str) -> bool:
         if name not in self._entries:
@@ -117,14 +95,9 @@ class ToolRegistry:
     def registered_names(self) -> list[str]:
         return list(self._entries)
 
-    def sandbox_modes(self) -> dict[str, RegisteredSandboxMode]:
-        return {name: e.sandbox_mode for name, e in self._entries.items() if self._is_enabled(name)}
-
-    def filter(self, tool_names: list[str] | None) -> list[Any]:
-        if not tool_names:
-            return self.get_all()
-        expanded = self._expand_selectors(tool_names)
-        return [self._entries[name].tool for name in expanded]
+    def registered_entries(self) -> tuple[ToolEntry, ...]:
+        """Return all registered tools in registration order."""
+        return tuple(self._entries.values())
 
     def restrict(self, tool_names: list[str] | None) -> list[str]:
         if not tool_names:
@@ -143,16 +116,6 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return self.registered(name)
-
-    def _expand_selectors(self, selectors: list[str]) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
-        for sel in selectors:
-            for name in self._expand_selector(sel):
-                if name not in seen:
-                    result.append(name)
-                    seen.add(name)
-        return result
 
     def _expand_selector(self, selector: str) -> list[str]:
         if selector in self._entries:

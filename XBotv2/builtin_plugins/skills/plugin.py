@@ -15,7 +15,9 @@ from xbotv2.api import (
     PluginManifest,
     PluginSetupContext,
     PluginStore,
+    RuntimePluginContext,
     Tool,
+    ToolRegistrationOptions,
 )
 
 from .permission_scope import SkillPermissionScope
@@ -28,10 +30,16 @@ class SkillsPlugin(PluginBase):
         super().__init__(manifest, store)
         self._registry = SkillRegistry()
         self._permission_scope = SkillPermissionScope()
-        self._active_skills: dict[str, str] = {}
+        self._active_skills: set[str] = set()
+        self._skill_tools: list[str] = []
+        self._initialized = False
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        pass
+    async def on_unload(self) -> None:
+        self._registry = SkillRegistry()
+        self._active_skills.clear()
+        self._permission_scope.clear()
+        self._skill_tools.clear()
+        self._initialized = False
 
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
@@ -39,38 +47,66 @@ class SkillsPlugin(PluginBase):
         ctx.register_hook(HookStage.AFTER_CONTEXT, self._on_after_context)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
-        plugin = self
 
         async def _load_skill(name: str, *, sandbox=None) -> str:
-            skill = plugin._registry.load_skill(name)
+            skill = self._registry.load_skill(name)
             if skill is None:
                 return f"Error: skill '{name}' not found"
             content = await load_skill(
-                name, skill_registry=plugin._registry, sandbox=sandbox
+                name, skill_registry=self._registry, sandbox=sandbox
             )
             if skill.allowed_tools or skill.disallowed_tools:
-                plugin._permission_scope.add(
+                self._permission_scope.add(
                     allowed=skill.allowed_tools,
                     disallowed=skill.disallowed_tools,
                 )
-            plugin._active_skills[name] = name
+            self._active_skills.add(name)
             return content
 
         tool = Tool.from_function(_load_skill, name="skill")
-        ctx.register_tool(tool, sandbox_mode="sandboxed", namespace="plugin:skills")
+        ctx.register_tool(
+            tool,
+            options=ToolRegistrationOptions(
+                sandbox_mode="sandboxed",
+                namespace="plugin:skills",
+            ),
+        )
 
     async def _on_session_init(self, ctx: HookContext) -> None:
+        if ctx.plugin_runtime is None:
+            raise RuntimeError("SkillsPlugin requires plugin runtime registration capability")
+        if self._initialized:
+            return
         ws = getattr(ctx.session, "workspace_root", "") or str(Path.cwd())
         self._registry.discover(Path(ws))
-        for s in self._registry.list_skills():
-            content = s.content
-            def _make_skill_invoke(c=content):
-                def _skill_invoke(**kwargs):
-                    return c
-                return _skill_invoke
-            fake = Tool.from_function(_make_skill_invoke(), name=s.name)
-            ns = f"skills:{s.scope}"
-            ctx.tools.register(fake, sandbox_mode="host", owner_plugin=self.manifest.name, namespace=ns)
+        try:
+            for skill in self._registry.list_skills():
+                registered_name = ctx.plugin_runtime.register_tool(
+                    self._skill_as_tool(skill.name, skill.content),
+                    options=ToolRegistrationOptions(
+                        sandbox_mode="host",
+                        namespace=f"skills:{skill.scope}",
+                    ),
+                )
+                self._skill_tools.append(registered_name)
+        except Exception:
+            self._rollback_skill_tools(ctx.plugin_runtime)
+            self._registry = SkillRegistry()
+            raise
+        self._initialized = True
+
+    @staticmethod
+    def _skill_as_tool(name: str, content: str) -> Tool:
+        def invoke() -> str:
+            return content
+
+        return Tool.from_function(invoke, name=name)
+
+    def _rollback_skill_tools(self, runtime: RuntimePluginContext) -> None:
+        for registered_name in reversed(self._skill_tools):
+            runtime.unregister_tool(registered_name)
+        self._skill_tools.clear()
+        self._initialized = False
 
     async def _on_before_user_message(self, ctx: HookContext):
         """Expand /skill-name [instructions] with SKILL.md content."""
@@ -91,7 +127,7 @@ class SkillsPlugin(PluginBase):
             expanded += f"\n\n## Instructions\n{instructions}"
         if skill.allowed_tools or skill.disallowed_tools:
             self._permission_scope.add(allowed=skill.allowed_tools, disallowed=skill.disallowed_tools)
-        self._active_skills[skill_name] = skill_name
+        self._active_skills.add(skill_name)
         return {"user_input": expanded}
 
     async def _on_after_context(self, ctx: HookContext) -> None:
@@ -123,3 +159,10 @@ class SkillsPlugin(PluginBase):
                 f"Tool '{tool_name}' disallowed by active skill",
             )
         return None
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "skills": len(self._registry.list_skills()),
+            "active_skills": len(self._active_skills),
+        }

@@ -29,19 +29,48 @@ class InteractionWaiter:
     def __init__(self) -> None:
         self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
 
-    async def wait(self, request_id: str, timeout_seconds: float | None) -> InteractionResult:
+    def register(self, request_id: str) -> asyncio.Future[InteractionResult]:
+        """Register a request before exposing it to a live client."""
         if request_id in self._pending:
-            raise InteractionNotPending(f"Duplicate pending interaction request: {request_id}")
+            raise InteractionNotPending(
+                f"Duplicate pending interaction request: {request_id}"
+            )
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
+        return future
+
+    async def wait(
+        self,
+        request_id: str,
+        timeout_seconds: float | None,
+    ) -> InteractionResult:
+        future = self.register(request_id)
+        return await self.wait_registered(request_id, future, timeout_seconds)
+
+    async def wait_registered(
+        self,
+        request_id: str,
+        future: asyncio.Future[InteractionResult],
+        timeout_seconds: float | None,
+    ) -> InteractionResult:
+        """Wait for a request previously created by :meth:`register`."""
+        if self._pending.get(request_id) is not future:
+            raise InteractionNotPending(
+                f"No matching live interaction request: {request_id}"
+            )
         try:
             if timeout_seconds is None:
                 return await future
             return await asyncio.wait_for(future, timeout=float(timeout_seconds))
         except asyncio.TimeoutError:
-            return InteractionResult(request_id=request_id, status="timeout", reason="timeout")
+            return InteractionResult(
+                request_id=request_id,
+                status="timeout",
+                reason="timeout",
+            )
         finally:
-            self._pending.pop(request_id, None)
+            if self._pending.get(request_id) is future:
+                self._pending.pop(request_id, None)
 
     def _resolve(self, request_id: str, result: InteractionResult) -> InteractionResult:
         future = self._pending.get(request_id)

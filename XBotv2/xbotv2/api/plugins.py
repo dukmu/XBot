@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import importlib
-from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from xbotv2.api.hooks import HookStage
+from xbotv2.api.context import PromptFragmentStage
 from xbotv2.api.tools import Tool
+
+
+class PluginConfigError(ValueError):
+    """Raised when configured plugin values do not match the manifest schema."""
+
+    def __init__(self, plugin_name: str, path: tuple[str | int, ...], message: str) -> None:
+        self.plugin_name = plugin_name
+        self.path = path
+        self.validation_message = message
+        location = "$" + "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in path
+        )
+        super().__init__(f"Plugin {plugin_name!r} config at {location}: {message}")
 
 
 class HookDeclaration(BaseModel):
@@ -19,14 +36,26 @@ class HookDeclaration(BaseModel):
 
 
 class ToolDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     handler: str
     sandbox_mode: str = "host"
-    execution_mode: str = "sequential"
-    lock_fields: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRegistrationOptions:
+    """Public setup-time options for registering one plugin tool."""
+
+    sandbox_mode: Literal["host", "sandboxed"] = "host"
+    namespace: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.sandbox_mode not in {"host", "sandboxed"}:
+            raise ValueError("sandbox_mode must be 'host' or 'sandboxed'")
 
 
 class PromptFragmentDeclaration(BaseModel):
-    stage: str
+    stage: PromptFragmentStage
     file: str | None = None
     handler: str | None = None
 
@@ -34,7 +63,7 @@ class PromptFragmentDeclaration(BaseModel):
 class PluginManifest(BaseModel):
     """Validated contents of a plugin's ``plugin.yaml`` file."""
 
-    name: str
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     version: str
     description: str = ""
     api_version: Literal["1"] = "1"
@@ -45,9 +74,36 @@ class PluginManifest(BaseModel):
     config_schema: dict[str, Any] | None = None
     plugin_dir: Path | None = Field(default=None, exclude=True)
 
+    @model_validator(mode="after")
+    def _validate_config_schema(self) -> "PluginManifest":
+        if self.config_schema is not None:
+            try:
+                Draft202012Validator.check_schema(self.config_schema)
+            except SchemaError as exc:
+                raise ValueError(f"config_schema is invalid: {exc.message}") from exc
+        return self
+
+    def validate_config(self, config: dict[str, Any]) -> None:
+        """Validate configured values without applying schema defaults."""
+        if self.config_schema is None:
+            return
+        validator = Draft202012Validator(self.config_schema)
+        errors = sorted(
+            validator.iter_errors(config),
+            key=lambda error: tuple(str(part) for part in error.absolute_path),
+        )
+        if not errors:
+            return
+        error = errors[0]
+        raise PluginConfigError(
+            self.name,
+            tuple(error.absolute_path),
+            error.message,
+        )
+
 
 class PluginStore(Protocol):
-    """Per-plugin persistent key-value storage."""
+    """Immediately persisted, per-plugin YAML-compatible key-value storage."""
 
     async def get(self, key: str, default: Any = None) -> Any: ...
     async def set(self, key: str, value: Any) -> None: ...
@@ -56,22 +112,36 @@ class PluginStore(Protocol):
     async def clear(self) -> None: ...
 
 
+class RuntimePluginContext(Protocol):
+    """Capabilities available to a plugin hook at runtime."""
+
+    def register_tool(
+        self,
+        tool: Tool,
+        options: ToolRegistrationOptions | None = None,
+    ) -> str: ...
+    def unregister_tool(self, registered_name: str) -> bool: ...
+
+
 class PluginSetupContext(Protocol):
     """Capabilities available while a plugin registers extensions."""
 
     def register_hook(self, stage: HookStage, callback: Any) -> None: ...
-    def register_tool(self, tool: Tool, **options: Any) -> str: ...
-    def add_prompt_fragment(self, stage: str, text: str) -> None: ...
+    def register_tool(
+        self,
+        tool: Tool,
+        options: ToolRegistrationOptions | None = None,
+    ) -> str: ...
+    def add_prompt_fragment(self, stage: PromptFragmentStage, text: str) -> None: ...
 
 
-class PluginBase(ABC):
+class PluginBase:
     """Base class for plugin API version 1."""
 
     def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
         self.manifest = manifest
         self.store = store
 
-    @abstractmethod
     async def on_load(self, config: dict[str, Any]) -> None:
         """Validate configuration and initialize external resources."""
 
@@ -88,9 +158,9 @@ class PluginBase(ABC):
         for declaration in self.manifest.tools:
             ctx.register_tool(
                 self._resolve_handler(declaration.handler),
-                sandbox_mode=declaration.sandbox_mode,
-                execution_mode=declaration.execution_mode,
-                lock_fields=tuple(declaration.lock_fields),
+                options=ToolRegistrationOptions(
+                    sandbox_mode=declaration.sandbox_mode,
+                ),
             )
         for declaration in self.manifest.prompt_fragments:
             ctx.add_prompt_fragment(declaration.stage, self._render_fragment(declaration))
@@ -128,5 +198,7 @@ __all__ = [
     "PluginSetupContext",
     "PluginStore",
     "PromptFragmentDeclaration",
+    "RuntimePluginContext",
     "ToolDeclaration",
+    "ToolRegistrationOptions",
 ]

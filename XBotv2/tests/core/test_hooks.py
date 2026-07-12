@@ -1,10 +1,49 @@
 """Tests for HookManager and HookStage lifecycle."""
 
+import re
+from pathlib import Path
+
 import pytest
 from xbotv2.api import HookAction, HookDecision
 
 from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookStage, HookContext, SessionInfo
+from xbotv2.api.hooks import (
+    SHORT_CIRCUIT_STAGES,
+    STRICT_FAILURE_STAGES,
+    HookStage,
+    HookContext,
+    SessionInfo,
+)
+
+
+def _hook_stage_matrix_rows() -> dict[str, list[str]]:
+    matrix = Path(__file__).parents[2] / "docsv2" / "hook_stage_matrix.md"
+    rows: dict[str, list[str]] = {}
+    for line in matrix.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\| `([^`]+)` \| (.+) \|$", line)
+        if not match:
+            continue
+        rows[match.group(1)] = [cell.strip() for cell in match.group(2).split("|")]
+    return rows
+
+
+def test_hook_stage_matrix_covers_every_stage():
+    rows = _hook_stage_matrix_rows()
+
+    assert set(rows) == {stage.value for stage in HookStage}
+
+
+def test_hook_stage_matrix_matches_short_and_strict_sets():
+    rows = _hook_stage_matrix_rows()
+    short_stages = {stage.value for stage in SHORT_CIRCUIT_STAGES}
+    strict_stages = {stage.value for stage in STRICT_FAILURE_STAGES}
+
+    for stage, cells in rows.items():
+        short = cells[1]
+        strict = cells[2]
+        if stage in short_stages:
+            assert short == "default"
+        assert (strict == "yes") == (stage in strict_stages)
 
 
 # ------------------------------------------------------------------

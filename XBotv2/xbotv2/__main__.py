@@ -11,7 +11,7 @@ Options:
     --data-dir PATH     Data directory (default: data)
     --provider NAME     Provider config to use (default: default)
     --workspace PATH    Workspace root (default: current directory)
-    --mode MODE         Run mode: server, terminal, tui, curses, once, attach
+    --mode MODE         Run mode: server, terminal, tui, once, attach
     --bind HOST         Server bind address (must be 127.0.0.1 in v1)
     --port PORT         Server port (default: 4096)
     --server URL        Use a specific HTTP server URL (TUI mode only)
@@ -68,7 +68,7 @@ def main():
     parser.add_argument(
         "--mode",
         default="terminal",
-        choices=["server", "terminal", "tui", "curses", "once"],
+        choices=["server", "terminal", "tui", "once"],
         help="Run mode (default: terminal)",
     )
     parser.add_argument(
@@ -125,8 +125,6 @@ def main():
         _run_server(args)
     elif args.mode == "tui":
         _run_tui(args)
-    elif args.mode == "curses":
-        _run_curses(args)
     elif args.mode == "terminal":
         _run_terminal(args)
     elif args.mode == "once":
@@ -311,19 +309,6 @@ def _workspace_root(args) -> Path:
 def _run_terminal(args):
     """Run interactive terminal mode using direct engine."""
     asyncio.run(_terminal_loop(args))
-
-
-def _run_curses(args):
-    """Run the curses TUI over the HTTP server boundary."""
-    from xbotv2.tui.client import CursesTuiClient
-
-    client = CursesTuiClient(
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        workspace_root=str(_workspace_root(args)),
-        server_url=f"http://{args.bind}:{args.port}",
-    )
-    asyncio.run(client.run())
 
 
 async def _terminal_loop(args):

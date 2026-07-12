@@ -27,6 +27,133 @@ class TestBootstrapBasics:
         assert engine.turn_count == 0
 
     @pytest.mark.asyncio
+    async def test_session_init_failure_unloads_runtime_plugin_resources(
+        self,
+        temp_data_dir,
+        tmp_path,
+    ):
+        import sys
+
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "init_fail"
+        plugin_dir.mkdir(parents=True)
+        unload_marker = tmp_path / "unloaded.txt"
+        (plugin_dir / "__init__.py").write_text(
+            f"""
+from pathlib import Path
+from xbotv2.api import HookStage, PluginBase, Tool, ToolRegistrationOptions
+
+def runtime_tool() -> str:
+    return "ok"
+
+class InitFailPlugin(PluginBase):
+    def setup(self, ctx):
+        ctx.register_hook(HookStage.ON_SESSION_INIT, self.on_session_init)
+
+    async def on_session_init(self, ctx):
+        ctx.plugin_runtime.register_tool(
+            Tool.from_function(runtime_tool),
+            options=ToolRegistrationOptions(namespace="plugin:init-fail"),
+        )
+        raise RuntimeError("session init failed")
+
+    async def on_unload(self):
+        Path({str(unload_marker)!r}).write_text("unloaded", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "init_fail", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(
+            BaseExceptionGroup,
+            match="Hook failures for stage on_session_init",
+        ) as exc_info:
+            await bootstrap(
+                paths=RuntimePaths.from_data_dir(temp_data_dir),
+                session_id="init-fail",
+                thread_id="t",
+                plugin_dirs=[plugins_root],
+                llm_override=MockLLM(responses=[]),
+            )
+
+        assert "session init failed" in repr(exc_info.value.exceptions[0])
+        assert unload_marker.read_text(encoding="utf-8") == "unloaded"
+        assert str(plugins_root) not in sys.path
+
+    @pytest.mark.asyncio
+    async def test_normal_session_close_unloads_runtime_plugin_resources(
+        self,
+        temp_data_dir,
+        tmp_path,
+    ):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "normal_close"
+        plugin_dir.mkdir(parents=True)
+        lifecycle_log = tmp_path / "lifecycle.txt"
+        (plugin_dir / "__init__.py").write_text(
+            f"""
+from pathlib import Path
+from xbotv2.api import HookStage, PluginBase, Tool, ToolRegistrationOptions
+
+LOG = Path({str(lifecycle_log)!r})
+
+def runtime_tool() -> str:
+    return "ok"
+
+class NormalClosePlugin(PluginBase):
+    def setup(self, ctx):
+        ctx.register_hook(HookStage.ON_SESSION_INIT, self.on_session_init)
+        ctx.register_hook(HookStage.ON_SESSION_CLOSE, self.on_session_close)
+
+    async def on_session_init(self, ctx):
+        ctx.plugin_runtime.register_tool(
+            Tool.from_function(runtime_tool),
+            options=ToolRegistrationOptions(namespace="plugin:normal-close"),
+        )
+
+    async def on_session_close(self, ctx):
+        del ctx
+        LOG.write_text("close\\n", encoding="utf-8")
+
+    async def on_unload(self):
+        with LOG.open("a", encoding="utf-8") as stream:
+            stream.write("unload\\n")
+""",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "normal_close", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="normal-close",
+            thread_id="t",
+            plugin_dirs=[plugins_root],
+            llm_override=MockLLM(responses=[]),
+        )
+        loader = engine.plugin_loader
+        tool_name = "plugin:normal-close:runtime_tool"
+        assert loader is not None
+        assert engine.tool_registry.registered(tool_name)
+
+        await engine.start_session()
+        await engine.close_session()
+
+        assert lifecycle_log.read_text(encoding="utf-8").splitlines() == [
+            "close",
+            "unload",
+        ]
+        assert not engine.tool_registry.registered(tool_name)
+        assert loader.loaded_plugins == []
+        assert loader._records == {}
+        assert engine.plugin_loader is None
+
+    @pytest.mark.asyncio
     async def test_bootstrap_rejects_path_like_identifiers(self, temp_data_dir, tmp_path):
         """Runtime identifiers cannot escape the configured data directory."""
         with pytest.raises(ValueError, match="session_id"):

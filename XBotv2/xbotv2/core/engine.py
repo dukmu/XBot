@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from xbotv2.core.interactions import (
@@ -27,7 +29,36 @@ from xbotv2.core.interactions import (
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.context import ContextComponent
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from xbotv2.persistence.store import message_to_dict
+
+
+@dataclass(slots=True)
+class _TurnStartResult:
+    user_input: str
+    events: list[dict[str, Any]]
+    proceed: bool
+
+
+@dataclass(slots=True)
+class _ContextBuildResult:
+    messages: list[Any] | None = None
+    event: dict[str, Any] | None = None
+    turn_complete: bool | None = None
+
+
+@dataclass(slots=True)
+class _ModelRequestResult:
+    request: dict[str, Any] | None = None
+    event: dict[str, Any] | None = None
+    turn_complete: bool | None = None
+
+
+@dataclass(slots=True)
+class _ToolBatchResult:
+    stop_loop: bool = False
+    turn_complete: bool = False
 
 logger = logging.getLogger("xbotv2.engine")
 
@@ -81,6 +112,36 @@ def xbot_tool_call_deltas(
     return deltas
 
 
+def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
+    """Build the client-visible result without dropping structured metadata."""
+    data: dict[str, Any] = {
+        "tool_call_id": message.tool_call_id,
+        "name": name,
+        "content": message.content,
+        "status": message.status or "success",
+    }
+    metadata = message.additional_kwargs
+    if "xbotv2_data" in metadata:
+        data["data"] = metadata["xbotv2_data"]
+    if "xbotv2_error" in metadata:
+        data["error"] = metadata["xbotv2_error"]
+    if message.artifact:
+        artifacts = (
+            message.artifact
+            if isinstance(message.artifact, (list, tuple))
+            else [message.artifact]
+        )
+        data["artifacts"] = [
+            artifact.to_dict()
+            if hasattr(artifact, "to_dict")
+            else dict(artifact)
+            if isinstance(artifact, dict)
+            else {"id": str(artifact)}
+            for artifact in artifacts
+        ]
+    return data
+
+
 class Engine:
     """Core ReAct loop engine.
 
@@ -107,6 +168,7 @@ class Engine:
         config: Any,  # SystemConfig
         workspace_root: str | None = None,
         max_iterations: int = 50,
+        plugin_loader: Any | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -118,14 +180,20 @@ class Engine:
         self.config = config
         self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
+        self.plugin_loader = plugin_loader
 
         self.messages: list[Message] = []
+        self._persisted_messages: list[dict[str, Any]] = []
         self.session: SessionInfo | None = None
         self.turn_count = 0
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
         self.paths = state_store.paths.runtime
+        self._request_id: ContextVar[str] = ContextVar(
+            f"xbotv2_request_id_{id(self)}",
+            default="",
+        )
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -141,6 +209,7 @@ class Engine:
         )
         if self.state_store.has_existing_session():
             self.messages = self.state_store.read_messages()
+            self._persisted_messages = self._message_snapshot()
             self.turn_count = max(
                 sum(1 for m in self.messages if m.role == "user"), 0
             )
@@ -154,6 +223,7 @@ class Engine:
     async def resume_session(self) -> None:
         """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
         self.messages = self.state_store.read_messages()
+        self._persisted_messages = self._message_snapshot()
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
         )
@@ -168,12 +238,32 @@ class Engine:
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
 
     async def close_session(self) -> None:
-        """Execute ON_SESSION_CLOSE hooks. Messages remain persisted on disk."""
+        """Close hooks, persist messages, and release plugin resources."""
         self.cancel_pending_user_inputs("session_closed")
         self.cancel_pending_permissions("session_closed")
-        ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
-        await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
-        await self.save_messages()
+        errors: list[BaseException] = []
+        try:
+            ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
+            await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)
+        except BaseException as exc:
+            errors.append(exc)
+        try:
+            await self.save_messages()
+        except BaseException as exc:
+            errors.append(exc)
+
+        plugin_loader = self.plugin_loader
+        self.plugin_loader = None
+        if plugin_loader is not None:
+            try:
+                await plugin_loader.unload_all()
+            except BaseException as exc:
+                errors.append(exc)
+
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Session close failed", errors)
 
     def set_client_event_sink(self, sink: Any | None) -> Any | None:
         """Install a live protocol sink for client-directed events."""
@@ -204,87 +294,72 @@ class Engine:
     # Turn execution
     # ------------------------------------------------------------------
 
-    async def run_turn(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+    async def run_turn(
+        self,
+        user_input: str,
+        *,
+        request_id: str = "",
+    ) -> AsyncIterator[dict[str, Any]]:
+        request_token = self._request_id.set(request_id)
+        turn_started = False
         try:
             async for event in self._run_turn_impl(user_input):
+                if event.get("type") == "turn_started":
+                    turn_started = True
                 yield event
         except asyncio.CancelledError:
             logger.info("Turn %s interrupted by client", self.turn_count)
-            yield {"type": "turn_cancelled", "data": {"turn": self.turn_count, "reason": "client_interrupt"}}
+            yield {
+                "type": "turn_cancelled",
+                "data": {
+                    "turn": self.turn_count,
+                    "reason": "client_interrupt",
+                },
+            }
             raise
         except InteractionDisconnected as exc:
             logger.info("Turn stopped because the client disconnected during an interaction")
         except BaseException as exc:
             logger.exception("Turn failed")
-            failure_ctx = self._make_hook_context(HookStage.ON_STOP_FAILURE, user_input=user_input, stop_reason="error", error=exc)
+            failure_ctx = self._make_hook_context(
+                HookStage.ON_STOP_FAILURE,
+                user_input=user_input,
+                stop_reason="error",
+                error=exc,
+            )
             await self.hook_manager.run(HookStage.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
             ctx = self._make_hook_context(HookStage.ON_ERROR, user_input=user_input, error=exc)
             await self.hook_manager.run(HookStage.ON_ERROR, ctx, short_circuit=False)
-            yield {"type": "error", "data": {"code": type(exc).__name__, "message": str(exc)}}
+            yield {
+                "type": "error",
+                "data": {
+                    "code": "engine_error",
+                    "message": str(exc),
+                    "details": {"exception_type": type(exc).__name__},
+                },
+            }
+            if turn_started:
+                yield {
+                    "type": "turn_finished",
+                    "data": {"turn": self.turn_count},
+                }
         finally:
-            await self.save_messages()
+            try:
+                await self.save_messages()
+            finally:
+                self._request_id.reset(request_token)
 
     async def _run_turn_impl(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
         """
-        accept_ctx = self._make_hook_context(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
-        )
-        accept_result = await self.hook_manager.run(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            accept_ctx,
-            short_circuit=True,
-        )
-        if isinstance(accept_result, dict):
-            if "user_input" in accept_result:
-                user_input = str(accept_result["user_input"])
-            if "event" in accept_result:
-                yield accept_result["event"]
-                if accept_result.get("turn_complete", True):
-                    return
-            elif accept_result.get("turn_complete"):
-                yield {
-                    "type": "error",
-                    "data": {
-                        "code": "user_message_rejected",
-                        "message": "User message was rejected before entering history.",
-                    },
-                }
-                return
-        elif accept_result is not None:
-            yield {
-                "type": "error",
-                "data": {
-                    "code": "user_message_rejected",
-                    "message": "User message was rejected before entering history.",
-                },
-            }
+        turn_start = await self._start_turn(user_input)
+        for event in turn_start.events:
+            yield event
+        if not turn_start.proceed:
             return
-
-        self.turn_count += 1
-
-        self.messages.append(Message(role="user", content=user_input))
-
-        accepted_ctx = self._make_hook_context(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
-        )
-        await self.hook_manager.run(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            accepted_ctx,
-            short_circuit=False,
-        )
-
-        um_ctx = self._make_hook_context(HookStage.ON_USER_MESSAGE, user_input=user_input)
-        await self.hook_manager.run(HookStage.ON_USER_MESSAGE, um_ctx, short_circuit=False)
-
-        ts_ctx = self._make_hook_context(HookStage.ON_TURN_START, user_input=user_input)
-        await self.hook_manager.run(HookStage.ON_TURN_START, ts_ctx, short_circuit=False)
-
-        yield {"type": "turn_started", "data": {"turn": self.turn_count}}
+        user_input = turn_start.user_input
 
         # 4. ReAct loop
         iteration = 0
@@ -293,202 +368,24 @@ class Engine:
         while not turn_complete and iteration < self.max_iterations:
             iteration += 1
 
-            # --- prepare_context equivalent ---
-            bc_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT)
-            short_circuit = await self.hook_manager.run(
-                HookStage.BEFORE_CONTEXT, bc_ctx, short_circuit=True
-            )
-            if short_circuit is not None:
-                result = await self._handle_compaction(short_circuit)
-                if result is not None:
-                    yield result
-                    turn_complete = True
-                    break
-
-            context_kwargs = {
-                "messages": self.messages,
-                "agent_name": getattr(self.config, "agent_name", "XBotv2"),
-                "agent_role": getattr(self.config, "agent_role", ""),
-                "user_name": "User",
-                "user_id": "default-user",
-                "instructions": getattr(
-                    self.config,
-                    "effective_instructions",
-                    getattr(self.config, "instructions", ""),
-                ),
-                "memory": getattr(self.config, "memory", ""),
-                "sandbox_summary": self.sandbox_policy.describe() if self.sandbox_policy else "",
-                "turn_count": self.turn_count,
-            }
-            bcb_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT_BUILD)
-            build_result = await self.hook_manager.run(
-                HookStage.BEFORE_CONTEXT_BUILD,
-                bcb_ctx,
-                short_circuit=True,
-            )
-            if isinstance(build_result, dict):
-                if "messages" in build_result:
-                    self.messages = build_result["messages"]
-                    context_kwargs["messages"] = self.messages
-                if "context_kwargs" in build_result:
-                    context_kwargs.update(build_result["context_kwargs"])
-                if "event" in build_result:
-                    yield build_result["event"]
-                    turn_complete = bool(build_result.get("turn_complete", True))
-                    break
-            elif build_result is not None:
-                yield self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT_BUILD)
-                turn_complete = True
+            context_build = await self._build_turn_context()
+            if context_build.event is not None:
+                yield context_build.event
+            if context_build.turn_complete is not None:
+                turn_complete = context_build.turn_complete
                 break
+            assert context_build.messages is not None
+            context_messages = context_build.messages
 
-            if hasattr(self.context_builder, "build_components"):
-                # Build source-tagged context components and provider messages.
-                context_components = self.context_builder.build_components(
-                    **context_kwargs,
-                )
-                component_ctx = self._make_hook_context(
-                    HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                    context_components=context_components,
-                )
-                component_result = await self.hook_manager.run(
-                    HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                    component_ctx,
-                    short_circuit=False,
-                )
-                if component_ctx.context_components is not None:
-                    context_components = component_ctx.context_components
-
-                context_messages = self.context_builder.messages_from_components(
-                    context_components
-                )
-            else:
-                context_messages = self.context_builder.build(
-                    **context_kwargs,
-                )
-
-            ac_ctx = self._make_hook_context(
-                HookStage.AFTER_CONTEXT,
-                context_messages=context_messages,
-            )
-            context_result = await self.hook_manager.run(
-                HookStage.AFTER_CONTEXT,
-                ac_ctx,
-                short_circuit=True,
-            )
-            if isinstance(context_result, dict):
-                if "context_messages" in context_result:
-                    context_messages = context_result["context_messages"]
-                elif "messages" in context_result:
-                    context_messages = context_result["messages"]
-                if "event" in context_result:
-                    yield context_result["event"]
-                    turn_complete = bool(context_result.get("turn_complete", True))
-                    break
-            elif context_result is not None:
-                yield self._default_hook_rejection_event(HookStage.AFTER_CONTEXT)
-                turn_complete = True
+            model_preparation = await self._prepare_model_request(context_messages)
+            if model_preparation.event is not None:
+                yield model_preparation.event
+            if model_preparation.turn_complete is not None:
+                turn_complete = model_preparation.turn_complete
                 break
-
-            acb_ctx = self._make_hook_context(
-                HookStage.AFTER_CONTEXT_BUILD,
-                context_messages=context_messages,
-            )
-            await self.hook_manager.run(
-                HookStage.AFTER_CONTEXT_BUILD,
-                acb_ctx,
-                short_circuit=False,
-            )
-
-            # --- agent ---
-            ba_ctx = self._make_hook_context(HookStage.BEFORE_AGENT)
-            short_circuit = await self.hook_manager.run(
-                HookStage.BEFORE_AGENT, ba_ctx, short_circuit=True
-            )
-            if short_circuit is not None:
-                if isinstance(short_circuit, dict) and "messages" in short_circuit:
-                    self.messages.extend(short_circuit["messages"])
-                turn_complete = True
-                break
-
-            # Select and bind tools if available.
-            tools = self.tool_registry.get_all()
-            pre_schema_request = {
-                "messages": context_messages,
-                "tools": tools,
-                "llm": self.llm,
-            }
-            pre_schema_ctx = self._make_hook_context(
-                HookStage.BEFORE_TOOL_SCHEMA_BIND,
-                context_messages=context_messages,
-                model_request=pre_schema_request,
-            )
-            pre_schema_result = await self.hook_manager.run(
-                HookStage.BEFORE_TOOL_SCHEMA_BIND,
-                pre_schema_ctx,
-                short_circuit=True,
-            )
-            if isinstance(pre_schema_result, dict):
-                if "tools" in pre_schema_result:
-                    tools = pre_schema_result["tools"]
-                    pre_schema_request["tools"] = tools
-                if "messages" in pre_schema_result:
-                    context_messages = pre_schema_result["messages"]
-                    pre_schema_request["messages"] = context_messages
-                if "event" in pre_schema_result:
-                    yield pre_schema_result["event"]
-                    turn_complete = bool(pre_schema_result.get("turn_complete", True))
-                    break
-            elif pre_schema_result is not None:
-                yield self._default_hook_rejection_event(HookStage.BEFORE_TOOL_SCHEMA_BIND)
-                turn_complete = True
-                break
-
-            llm_with_tools = self._bind_tools_for_provider(tools)
-            model_request = {
-                "messages": context_messages,
-                "tools": tools,
-                "llm": llm_with_tools,
-            }
-            schema_ctx = self._make_hook_context(
-                HookStage.AFTER_TOOL_SCHEMA_BIND,
-                context_messages=context_messages,
-                model_request=model_request,
-            )
-            await self.hook_manager.run(
-                HookStage.AFTER_TOOL_SCHEMA_BIND,
-                schema_ctx,
-                short_circuit=False,
-            )
-
-            request_ctx = self._make_hook_context(
-                HookStage.BEFORE_MODEL_REQUEST,
-                context_messages=context_messages,
-                model_request=model_request,
-            )
-            request_result = await self.hook_manager.run(
-                HookStage.BEFORE_MODEL_REQUEST,
-                request_ctx,
-                short_circuit=True,
-            )
-            if isinstance(request_result, dict):
-                if "messages" in request_result:
-                    model_request["messages"] = request_result["messages"]
-                if "tools" in request_result:
-                    model_request["tools"] = request_result["tools"]
-                    model_request["llm"] = self._bind_tools_for_provider(model_request["tools"])
-                if "llm" in request_result:
-                    model_request["llm"] = request_result["llm"]
-                if "event" in request_result:
-                    yield request_result["event"]
-                    turn_complete = bool(request_result.get("turn_complete", True))
-                    break
-            elif request_result is not None:
-                yield self._default_hook_rejection_event(HookStage.BEFORE_MODEL_REQUEST)
-                turn_complete = True
-                break
-
+            assert model_preparation.request is not None
+            model_request = model_preparation.request
             context_messages = model_request["messages"]
-            tools = model_request["tools"]
             llm_with_tools = model_request["llm"]
             try:
                 response = None
@@ -591,144 +488,476 @@ class Engine:
                 turn_complete = True
                 break
 
-            # --- tools ---
-            bt_ctx = self._make_hook_context(HookStage.BEFORE_TOOLS)
-            short_circuit = await self.hook_manager.run(
-                HookStage.BEFORE_TOOLS, bt_ctx, short_circuit=True
-            )
-            if short_circuit is not None:
-                # Hook denied tool execution
+            batch_result = None
+            async for tool_event in self._run_tool_batch(response):
+                if tool_event.get("type") == "_tool_batch_result":
+                    batch_result = tool_event["data"]["result"]
+                else:
+                    yield tool_event
+            if batch_result is None:
+                raise RuntimeError("Tool batch completed without an outcome")
+            if batch_result.stop_loop:
+                turn_complete = batch_result.turn_complete
                 break
 
-            normalized_calls = list(tool_calls)
-            logger.info(
-                "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
-                self.turn_count,
-                len(normalized_calls),
-                [call.name for call in normalized_calls],
+        yield await self._finish_turn(
+            "completed" if turn_complete else "max_iterations"
+        )
+
+    async def _run_tool_batch(
+        self,
+        response: ModelResponse,
+    ) -> AsyncIterator[dict[str, Any]]:
+        tool_calls = list(response.tool_calls)
+        before_ctx = self._make_hook_context(
+            HookStage.BEFORE_TOOLS,
+            tool_calls=tool_calls,
+            agent_response=response,
+        )
+        before_result = await self.hook_manager.run(
+            HookStage.BEFORE_TOOLS,
+            before_ctx,
+            short_circuit=True,
+        )
+        if before_result is not None:
+            yield self._tool_batch_result_event(
+                _ToolBatchResult(stop_loop=True)
             )
-            parsed_ctx = self._make_hook_context(
-                HookStage.ON_TOOL_CALLS_PARSED,
-                tool_calls=normalized_calls,
-                agent_response=response,
+            return
+
+        logger.info(
+            "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
+            self.turn_count,
+            len(tool_calls),
+            [call.name for call in tool_calls],
+        )
+        parsed_ctx = self._make_hook_context(
+            HookStage.ON_TOOL_CALLS_PARSED,
+            tool_calls=tool_calls,
+            agent_response=response,
+        )
+        await self.hook_manager.run(
+            HookStage.ON_TOOL_CALLS_PARSED,
+            parsed_ctx,
+            short_circuit=False,
+        )
+        yield {
+            "type": "tool_calls_started",
+            "data": {"tool_calls": [call.to_dict() for call in tool_calls]},
+        }
+        tool_names_by_id = {
+            call.id: call.name or "tool" for call in tool_calls
+        }
+
+        from xbotv2.tools.runtime import execute_tools
+
+        tool_messages = await execute_tools(
+            tool_calls,
+            self.tool_registry,
+            sandbox_policy=self.sandbox_policy,
+            permission_system=self.permission_system,
+            hook_manager=self.hook_manager,
+            hook_context_factory=self._make_hook_context,
+            client_interaction_handler=(
+                self._handle_user_input_request
+                if self.client_event_sink is not None
+                else None
+            ),
+            permission_interaction_handler=(
+                self._handle_permission_request
+                if self.client_event_sink is not None
+                else None
+            ),
+            workspace_root=self.workspace_root,
+        )
+
+        after_ctx = self._make_hook_context(
+            HookStage.AFTER_TOOLS,
+            tool_results=tool_messages,
+        )
+        after_result = await self.hook_manager.run(
+            HookStage.AFTER_TOOLS,
+            after_ctx,
+            short_circuit=True,
+        )
+        if isinstance(after_result, dict) and "tool_results" in after_result:
+            tool_messages = after_result["tool_results"]
+
+        logger.info(
+            "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
+            self.turn_count,
+            len(tool_messages),
+            [getattr(message, "tool_call_id", None) for message in tool_messages],
+            [getattr(message, "status", None) for message in tool_messages],
+        )
+        self.messages.extend(tool_messages)
+        # Commit tool responses before exposing them or requesting another model step.
+        await self.save_messages()
+
+        for message in tool_messages:
+            client_events = getattr(message, "additional_kwargs", {}).get(
+                "xbotv2_events",
+                [],
+            )
+            for client_event in client_events:
+                event_ctx = self._make_hook_context(
+                    HookStage.ON_CLIENT_EVENT,
+                    tool_result=message,
+                    client_event=client_event,
+                )
+                await self.hook_manager.run(
+                    HookStage.ON_CLIENT_EVENT,
+                    event_ctx,
+                    short_circuit=False,
+                )
+                yield client_event
+            yield {
+                "type": "tool_result",
+                "data": tool_result_event_data(
+                    message,
+                    tool_names_by_id.get(str(message.tool_call_id), "tool"),
+                ),
+            }
+
+        for message in tool_messages:
+            message_ctx = self._make_hook_context(
+                HookStage.ON_TOOL_MESSAGE,
+                tool_results=[message],
             )
             await self.hook_manager.run(
-                HookStage.ON_TOOL_CALLS_PARSED,
-                parsed_ctx,
+                HookStage.ON_TOOL_MESSAGE,
+                message_ctx,
                 short_circuit=False,
             )
-            yield {
-                "type": "tool_calls_started",
-                "data": {"tool_calls": [call.to_dict() for call in normalized_calls]},
-            }
-            tool_names_by_id = {
-                call.id: call.name or "tool" for call in normalized_calls
-            }
 
-            # Execute tools
-            from xbotv2.tools.runtime import execute_tools
-            tool_messages = await execute_tools(
-                normalized_calls,
-                self.tool_registry,
-                sandbox_policy=self.sandbox_policy,
-                permission_system=self.permission_system,
-                hook_manager=self.hook_manager,
-                hook_context_factory=self._make_hook_context,
-                client_interaction_handler=(
-                    self._handle_user_input_request
-                    if self.client_event_sink is not None
-                    else None
-                ),
-                permission_interaction_handler=(
-                    self._handle_permission_request
-                    if self.client_event_sink is not None
-                    else None
-                ),
-                workspace_root=self.workspace_root,
+        if any(
+            getattr(message, "additional_kwargs", {}).get(
+                "xbotv2_turn_complete"
             )
-
-            # AFTER_TOOLS hooks may redact/cache large outputs before they
-            # enter message history or cross the protocol boundary.
-            at_ctx = self._make_hook_context(HookStage.AFTER_TOOLS, tool_results=tool_messages)
-            tools_result = await self.hook_manager.run(
-                HookStage.AFTER_TOOLS, at_ctx, short_circuit=True
+            for message in tool_messages
+        ):
+            yield self._tool_batch_result_event(
+                _ToolBatchResult(stop_loop=True, turn_complete=True)
             )
-            if isinstance(tools_result, dict) and "tool_results" in tools_result:
-                tool_messages = tools_result["tool_results"]
+            return
 
-            logger.info(
-                "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
-                self.turn_count,
-                len(tool_messages),
-                [getattr(tm, "tool_call_id", None) for tm in tool_messages],
-                [getattr(tm, "status", None) for tm in tool_messages],
-            )
-            self.messages.extend(tool_messages)
-            # Persist immediately after tool messages are committed so
-            # that even if the turn is cancelled later in this
-            # iteration (during tool_result yield or the next LLM
-            # call), the disk is consistent: every assistant message with
-            # tool_calls has its matching tool messages on disk.
-            await self.save_messages()
-
-            # Yield tool results
-            for tm in tool_messages:
-                for client_event in getattr(tm, "additional_kwargs", {}).get("xbotv2_events", []):
-                    event_ctx = self._make_hook_context(
-                        HookStage.ON_CLIENT_EVENT,
-                        tool_result=tm,
-                        client_event=client_event,
-                    )
-                    await self.hook_manager.run(
-                        HookStage.ON_CLIENT_EVENT,
-                        event_ctx,
-                        short_circuit=False,
-                    )
-                    yield client_event
-
-                yield {
-                    "type": "tool_result",
-                    "data": {
-                        "tool_call_id": tm.tool_call_id,
-                        "name": tool_names_by_id.get(str(tm.tool_call_id), "tool"),
-                        "content": tm.content,
-                        "status": getattr(tm, "status", "success"),
-                    },
-                }
-
-            # ON_TOOL_MESSAGE hooks
-            for tm in tool_messages:
-                t_ctx = self._make_hook_context(
-                    HookStage.ON_TOOL_MESSAGE, tool_results=[tm]
-                )
-                await self.hook_manager.run(HookStage.ON_TOOL_MESSAGE, t_ctx, short_circuit=False)
-
-            if any(
-                getattr(tm, "additional_kwargs", {}).get("xbotv2_turn_complete")
-                for tm in tool_messages
-            ):
+        if after_result is not None:
+            if isinstance(after_result, dict):
+                if "event" in after_result:
+                    yield after_result["event"]
+                turn_complete = bool(after_result.get("turn_complete", True))
+            else:
                 turn_complete = True
-                break
+            yield self._tool_batch_result_event(
+                _ToolBatchResult(
+                    stop_loop=turn_complete,
+                    turn_complete=turn_complete,
+                )
+            )
+            return
+        yield self._tool_batch_result_event(_ToolBatchResult())
 
-            if tools_result is not None:
-                if isinstance(tools_result, dict):
-                    if "event" in tools_result:
-                        yield tools_result["event"]
-                    turn_complete = bool(tools_result.get("turn_complete", True))
-                else:
-                    turn_complete = True
-                if turn_complete:
-                    break
+    @staticmethod
+    def _tool_batch_result_event(result: _ToolBatchResult) -> dict[str, Any]:
+        return {"type": "_tool_batch_result", "data": {"result": result}}
 
-        stop_reason = "completed" if turn_complete else "max_iterations"
+    async def _start_turn(self, user_input: str) -> _TurnStartResult:
+        accept_ctx = self._make_hook_context(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        accept_result = await self.hook_manager.run(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            accept_ctx,
+            short_circuit=True,
+        )
+        events: list[dict[str, Any]] = []
+        if isinstance(accept_result, dict):
+            if "user_input" in accept_result:
+                user_input = str(accept_result["user_input"])
+            if "event" in accept_result:
+                events.append(accept_result["event"])
+                if accept_result.get("turn_complete", True):
+                    return _TurnStartResult(user_input, events, False)
+            elif accept_result.get("turn_complete"):
+                events.append(self._user_message_rejected_event())
+                return _TurnStartResult(user_input, events, False)
+        elif accept_result is not None:
+            events.append(self._user_message_rejected_event())
+            return _TurnStartResult(user_input, events, False)
 
-        # 5. ON_TURN_END hook
-        te_ctx = self._make_hook_context(HookStage.ON_TURN_END)
-        await self.hook_manager.run(HookStage.ON_TURN_END, te_ctx, short_circuit=False)
+        self.turn_count += 1
+        if self.session is not None:
+            self.session.turn_count = self.turn_count
+        self.messages.append(Message(role="user", content=user_input))
 
-        stop_ctx = self._make_hook_context(HookStage.ON_STOP, stop_reason=stop_reason)
+        accepted_ctx = self._make_hook_context(
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            accepted_ctx,
+            short_circuit=False,
+        )
+        user_ctx = self._make_hook_context(
+            HookStage.ON_USER_MESSAGE,
+            user_input=user_input,
+        )
+        await self.hook_manager.run(
+            HookStage.ON_USER_MESSAGE,
+            user_ctx,
+            short_circuit=False,
+        )
+        turn_ctx = self._make_hook_context(
+            HookStage.ON_TURN_START,
+            user_input=user_input,
+        )
+        await self.hook_manager.run(
+            HookStage.ON_TURN_START,
+            turn_ctx,
+            short_circuit=False,
+        )
+        events.append({"type": "turn_started", "data": {"turn": self.turn_count}})
+        return _TurnStartResult(user_input, events, True)
+
+    @staticmethod
+    def _user_message_rejected_event() -> dict[str, Any]:
+        return {
+            "type": "error",
+            "data": {
+                "code": "user_message_rejected",
+                "message": "User message was rejected before entering history.",
+            },
+        }
+
+    async def _build_turn_context(self) -> _ContextBuildResult:
+        before_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT)
+        compact_result = await self.hook_manager.run(
+            HookStage.BEFORE_CONTEXT,
+            before_ctx,
+            short_circuit=True,
+        )
+        if compact_result is not None:
+            event = await self._handle_compaction(compact_result)
+            if event is not None:
+                return _ContextBuildResult(event=event, turn_complete=True)
+
+        context_kwargs = {
+            "messages": self.messages,
+            "agent_name": getattr(self.config, "agent_name", "XBotv2"),
+            "agent_role": getattr(self.config, "agent_role", ""),
+            "user_name": "User",
+            "user_id": "default-user",
+            "instructions": getattr(
+                self.config,
+                "effective_instructions",
+                getattr(self.config, "instructions", ""),
+            ),
+            "memory": getattr(self.config, "memory", ""),
+            "sandbox_summary": (
+                self.sandbox_policy.describe() if self.sandbox_policy else ""
+            ),
+            "turn_count": self.turn_count,
+        }
+        build_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT_BUILD)
+        build_result = await self.hook_manager.run(
+            HookStage.BEFORE_CONTEXT_BUILD,
+            build_ctx,
+            short_circuit=True,
+        )
+        if isinstance(build_result, dict):
+            if "messages" in build_result:
+                self.messages = build_result["messages"]
+                context_kwargs["messages"] = self.messages
+            if "context_kwargs" in build_result:
+                context_kwargs.update(build_result["context_kwargs"])
+            if "event" in build_result:
+                return _ContextBuildResult(
+                    event=build_result["event"],
+                    turn_complete=bool(build_result.get("turn_complete", True)),
+                )
+        elif build_result is not None:
+            return _ContextBuildResult(
+                event=self._default_hook_rejection_event(
+                    HookStage.BEFORE_CONTEXT_BUILD
+                ),
+                turn_complete=True,
+            )
+
+        if hasattr(self.context_builder, "build_components"):
+            components = self.context_builder.build_components(**context_kwargs)
+            component_ctx = self._make_hook_context(
+                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+                context_components=components,
+            )
+            await self.hook_manager.run(
+                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+                component_ctx,
+                short_circuit=False,
+            )
+            if component_ctx.context_components is not None:
+                components = component_ctx.context_components
+            context_messages = self.context_builder.messages_from_components(components)
+        else:
+            context_messages = self.context_builder.build(**context_kwargs)
+
+        after_ctx = self._make_hook_context(
+            HookStage.AFTER_CONTEXT,
+            context_messages=context_messages,
+        )
+        after_result = await self.hook_manager.run(
+            HookStage.AFTER_CONTEXT,
+            after_ctx,
+            short_circuit=True,
+        )
+        if isinstance(after_result, dict):
+            if "context_messages" in after_result:
+                context_messages = after_result["context_messages"]
+            elif "messages" in after_result:
+                context_messages = after_result["messages"]
+            if "event" in after_result:
+                return _ContextBuildResult(
+                    event=after_result["event"],
+                    turn_complete=bool(after_result.get("turn_complete", True)),
+                )
+        elif after_result is not None:
+            return _ContextBuildResult(
+                event=self._default_hook_rejection_event(HookStage.AFTER_CONTEXT),
+                turn_complete=True,
+            )
+
+        complete_ctx = self._make_hook_context(
+            HookStage.AFTER_CONTEXT_BUILD,
+            context_messages=context_messages,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_CONTEXT_BUILD,
+            complete_ctx,
+            short_circuit=False,
+        )
+        return _ContextBuildResult(messages=context_messages)
+
+    async def _prepare_model_request(
+        self,
+        context_messages: list[Any],
+    ) -> _ModelRequestResult:
+        before_agent_ctx = self._make_hook_context(HookStage.BEFORE_AGENT)
+        before_agent = await self.hook_manager.run(
+            HookStage.BEFORE_AGENT,
+            before_agent_ctx,
+            short_circuit=True,
+        )
+        if before_agent is not None:
+            if isinstance(before_agent, dict) and "messages" in before_agent:
+                self.messages.extend(before_agent["messages"])
+            return _ModelRequestResult(turn_complete=True)
+
+        tools = self.tool_registry.get_all()
+        pre_schema_request = {
+            "messages": context_messages,
+            "tools": tools,
+            "llm": self.llm,
+        }
+        pre_schema_ctx = self._make_hook_context(
+            HookStage.BEFORE_TOOL_SCHEMA_BIND,
+            context_messages=context_messages,
+            model_request=pre_schema_request,
+        )
+        pre_schema_result = await self.hook_manager.run(
+            HookStage.BEFORE_TOOL_SCHEMA_BIND,
+            pre_schema_ctx,
+            short_circuit=True,
+        )
+        if isinstance(pre_schema_result, dict):
+            if "tools" in pre_schema_result:
+                tools = pre_schema_result["tools"]
+                pre_schema_request["tools"] = tools
+            if "messages" in pre_schema_result:
+                context_messages = pre_schema_result["messages"]
+                pre_schema_request["messages"] = context_messages
+            if "event" in pre_schema_result:
+                return _ModelRequestResult(
+                    event=pre_schema_result["event"],
+                    turn_complete=bool(
+                        pre_schema_result.get("turn_complete", True)
+                    ),
+                )
+        elif pre_schema_result is not None:
+            return _ModelRequestResult(
+                event=self._default_hook_rejection_event(
+                    HookStage.BEFORE_TOOL_SCHEMA_BIND
+                ),
+                turn_complete=True,
+            )
+
+        model_request = {
+            "messages": context_messages,
+            "tools": tools,
+            "llm": self._bind_tools_for_provider(tools),
+        }
+        schema_ctx = self._make_hook_context(
+            HookStage.AFTER_TOOL_SCHEMA_BIND,
+            context_messages=context_messages,
+            model_request=model_request,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_TOOL_SCHEMA_BIND,
+            schema_ctx,
+            short_circuit=False,
+        )
+
+        request_ctx = self._make_hook_context(
+            HookStage.BEFORE_MODEL_REQUEST,
+            context_messages=context_messages,
+            model_request=model_request,
+        )
+        request_result = await self.hook_manager.run(
+            HookStage.BEFORE_MODEL_REQUEST,
+            request_ctx,
+            short_circuit=True,
+        )
+        if isinstance(request_result, dict):
+            if "messages" in request_result:
+                model_request["messages"] = request_result["messages"]
+            if "tools" in request_result:
+                model_request["tools"] = request_result["tools"]
+                model_request["llm"] = self._bind_tools_for_provider(
+                    model_request["tools"]
+                )
+            if "llm" in request_result:
+                model_request["llm"] = request_result["llm"]
+            if "event" in request_result:
+                return _ModelRequestResult(
+                    event=request_result["event"],
+                    turn_complete=bool(request_result.get("turn_complete", True)),
+                )
+        elif request_result is not None:
+            return _ModelRequestResult(
+                event=self._default_hook_rejection_event(
+                    HookStage.BEFORE_MODEL_REQUEST
+                ),
+                turn_complete=True,
+            )
+        return _ModelRequestResult(request=model_request)
+
+    async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
+        turn_ctx = self._make_hook_context(HookStage.ON_TURN_END)
+        await self.hook_manager.run(
+            HookStage.ON_TURN_END,
+            turn_ctx,
+            short_circuit=False,
+        )
+        stop_ctx = self._make_hook_context(
+            HookStage.ON_STOP,
+            stop_reason=stop_reason,
+        )
         try:
-            await self.hook_manager.run(HookStage.ON_STOP, stop_ctx, short_circuit=False)
+            await self.hook_manager.run(
+                HookStage.ON_STOP,
+                stop_ctx,
+                short_circuit=False,
+            )
         except BaseException as exc:
             failure_ctx = self._make_hook_context(
                 HookStage.ON_STOP_FAILURE,
@@ -741,10 +970,8 @@ class Engine:
                 short_circuit=False,
             )
             raise
-
         await self.save_messages()
-
-        yield {"type": "turn_finished", "data": {"turn": self.turn_count}}
+        return {"type": "turn_finished", "data": {"turn": self.turn_count}}
 
     def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
         if not tools:
@@ -791,7 +1018,10 @@ class Engine:
                 if isinstance(chunk, ModelResponse):
                     aggregate = chunk
                     continue
-                logger.warning("_stream_model_response: unexpected chunk type %s", type(chunk).__name__)
+                logger.warning(
+                    "_stream_model_response: unexpected chunk type %s",
+                    type(chunk).__name__,
+                )
 
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")
@@ -802,8 +1032,15 @@ class Engine:
             return self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
 
         compact_reason = str(short_circuit.get("compact_reason", "before_context"))
-        pre_compact_ctx = self._make_hook_context(HookStage.PRE_COMPACT, compact_reason=compact_reason)
-        pre_compact_result = await self.hook_manager.run(HookStage.PRE_COMPACT, pre_compact_ctx, short_circuit=True)
+        pre_compact_ctx = self._make_hook_context(
+            HookStage.PRE_COMPACT,
+            compact_reason=compact_reason,
+        )
+        pre_compact_result = await self.hook_manager.run(
+            HookStage.PRE_COMPACT,
+            pre_compact_ctx,
+            short_circuit=True,
+        )
         if isinstance(pre_compact_result, dict):
             if "messages" in pre_compact_result:
                 short_circuit["messages"] = pre_compact_result["messages"]
@@ -814,8 +1051,14 @@ class Engine:
 
         previous_message_count = len(self.messages)
         self.messages = short_circuit["messages"]
-        post_compact_ctx = self._make_hook_context(HookStage.POST_COMPACT, compact_reason=compact_reason)
-        post_compact_ctx.state.update({"previous_message_count": previous_message_count, "current_message_count": len(self.messages)})
+        post_compact_ctx = self._make_hook_context(
+            HookStage.POST_COMPACT,
+            compact_reason=compact_reason,
+        )
+        post_compact_ctx.state.update({
+            "previous_message_count": previous_message_count,
+            "current_message_count": len(self.messages),
+        })
         await self.hook_manager.run(HookStage.POST_COMPACT, post_compact_ctx, short_circuit=False)
         return None
 
@@ -825,13 +1068,21 @@ class Engine:
 
 
 
-    async def save_messages(self) -> None:
-        """Persist messages after each turn. Runs BEFORE/AFTER_STATE_PERSIST hooks."""
+    async def save_messages(self) -> bool:
+        """Persist changed message history and bracket the write with hooks."""
+        if self._message_snapshot() == self._persisted_messages:
+            return False
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
+        snapshot = self._message_snapshot()
         self.state_store.sync_messages(self.messages)
+        self._persisted_messages = snapshot
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
+        return True
+
+    def _message_snapshot(self) -> list[dict[str, Any]]:
+        return [message_to_dict(message) for message in self.messages]
 
     async def _handle_client_interaction(
         self,
@@ -850,19 +1101,46 @@ class Engine:
                 client_event, timeout_seconds=timeout_seconds, tool_call_id="",
             )
             if sink_result.get("status") == "disconnected":
-                raise InteractionDisconnected(f"Client disconnected while waiting for {sink_result.get('request_id')}")
+                raise InteractionDisconnected(
+                    "Client disconnected while waiting for "
+                    f"{sink_result.get('request_id')}"
+                )
             if on_sink_result:
                 on_sink_result(sink_result)
             return sink_result
         request_id = str((client_event.get("data") or {}).get("request_id") or "")
         wait_timeout = 0 if timeout_seconds is None else timeout_seconds
         result = await waiter.wait(request_id, wait_timeout)
-        return {f: getattr(result, f, "") for f in result_fields} | {"request_id": result.request_id, "status": result.status, "reason": result.reason}
+        return {
+            field: getattr(result, field, "")
+            for field in result_fields
+        } | {
+            "request_id": result.request_id,
+            "status": result.status,
+            "reason": result.reason,
+        }
 
-    async def _handle_user_input_request(self, client_event: dict[str, Any], *, timeout_seconds: float | None = None, tool_call_id: str = "") -> dict[str, Any]:
-        return await self._handle_client_interaction(client_event, self.user_input_waiter, ("answer",), timeout_seconds=timeout_seconds)
+    async def _handle_user_input_request(
+        self,
+        client_event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
+        return await self._handle_client_interaction(
+            client_event,
+            self.user_input_waiter,
+            ("answer",),
+            timeout_seconds=timeout_seconds,
+        )
 
-    async def _handle_permission_request(self, client_event: dict[str, Any], *, timeout_seconds: float | None = None, tool_call_id: str = "") -> dict[str, Any]:
+    async def _handle_permission_request(
+        self,
+        client_event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
         return await self._handle_client_interaction(
             client_event, self.permission_waiter, ("decision", "scope"),
             timeout_seconds=timeout_seconds,
@@ -906,7 +1184,7 @@ class Engine:
         stage: HookStage,
         *,
         user_input: str | None = None,
-        context_components: list[Any] | None = None,
+        context_components: list[ContextComponent] | None = None,
         context_messages: list[Any] | None = None,
         agent_response: Any = None,
         model_request: dict[str, Any] | None = None,
@@ -923,6 +1201,7 @@ class Engine:
     ) -> HookContext:
         return HookContext(
             stage=stage,
+            request_id=self._request_id.get(),
             state={"messages": self.messages},
             config=self.config,
             tools=self.tool_registry,

@@ -2,24 +2,18 @@
 
 ## Test Suite
 
-**378 passed, 2 warnings** (June 2026).
-
 ```bash
-.venv/bin/python -m pytest XBotv2/tests -q
+uv run pytest XBotv2/tests -q
 ```
 
 ## Coverage
 
-Overall coverage: **~79%** (5371 statements).
+Generate current coverage instead of recording a count that drifts with every
+iteration:
 
-Key module coverage:
-- `hooks/manager.py`: 100%
-- `hooks/types.py`: 100%
-- `llm/messages.py`: 100%
-- `core/context.py`: 96%
-- `core/bootstrap.py`: 95%
-- `core/engine.py`: 82%
-- `tools/runtime.py`: 72%
+```bash
+uv run pytest XBotv2/tests --cov=xbotv2 --cov-report=term-missing -q
+```
 
 ## Test Structure
 
@@ -38,12 +32,14 @@ tests/
 │   ├── test_mcp.py          # MCPClient stdio/HTTP, MCPTool, result normalization
 │   ├── test_hooks.py        # HookManager registration, execution
 │   ├── test_permissions.py  # PermissionSystem, rule matching
-│   ├── test_protocol.py     # Protocol frames, provider config
+│   ├── test_protocol.py     # Provider and protocol-adjacent config
+│   ├── test_sse.py          # Shared SSE encoder/decoder
 │   ├── test_tool_registry.py # Namespace register, restrict, filter
 │   ├── test_tool_runtime_cache.py # Tool execution, result cache
 │   ├── test_tool_dispatch_timeout.py # Timeout handling
 │   ├── test_tui_client.py   # TUI state, permission/reasoning rendering
-│   └── test_plugin_loader.py # Plugin discovery, loading, rollback
+│   ├── test_plugin_loader.py # Plugin discovery, loading, rollback
+│   └── test_plugin_store.py  # Plugin state isolation and atomic persistence
 ├── integration/
 │   ├── test_http_transport.py # HTTP/SSE endpoints, session lifecycle, commands
 │   ├── test_tui_interaction.py # TUI slash commands, help, skills, completion
@@ -72,10 +68,31 @@ llm = MockLLM(responses=[{
 - `temp_workspace`: isolated workspace directory
 - `state_store`: CoreStateStore with a session
 - `sandbox_policy`: SandboxPolicy(enabled=False)
+- `tests/fixtures/sse/`: golden HTTP/SSE stream envelopes used by integration
+  tests.
+
+The SSE fixtures cover every `KNOWN_SERVER_EVENT_TYPES` value. The shared codec
+suite covers comments, multi-line data, text event ids, unterminated final
+messages, Unicode, and invalid control-field line breaks.
+
+HTTP integration tests also run real local uvicorn sockets for agent-initiated
+permission and `ask_user` requests. They verify that interaction requests are
+registered before publication, remain answerable while SSE waits, and resume
+the original tool/agent turn after the response endpoint records an answer.
+Protocol tests reject incomplete interaction, error, tool-result, and usage
+payloads. HTTP integration tests assert the complete `ErrorResponse` shape so
+handlers cannot drift into endpoint-specific error dictionaries.
+The SSE suite also requires the typed payload inventory to cover every known
+server event type. Direct turn-stream tests verify that early consumer closure
+cancels and closes the background Engine stream, releases the session lock,
+and does not leave an interaction waiter running.
 
 ## Running Specific Tests
 
 ```bash
+# Core tests, compilation, and diff checks
+python XBotv2/scripts/check_iteration.py
+
 # Core engine tests
 pytest XBotv2/tests/core/test_engine.py -v
 

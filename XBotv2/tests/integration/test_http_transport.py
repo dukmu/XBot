@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import httpx
@@ -30,13 +32,64 @@ from xbotv2.api.paths import RuntimePaths
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
-from xbotv2.protocol.frames import PROTOCOL_VERSION
-from xbotv2.protocol.http_server import create_app, set_llm_override
+from xbotv2.protocol.version import PROTOCOL_VERSION
+from xbotv2.protocol.http_server import (
+    _format_sse,
+    create_app,
+    run_turn_stream,
+    set_llm_override,
+)
+from xbotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
+
+
+@pytest.mark.asyncio
+async def test_closing_turn_stream_cancels_background_turn() -> None:
+    cancelled = asyncio.Event()
+
+    class HangingEngine:
+        def __init__(self) -> None:
+            self.client_event_sink = None
+
+        def set_client_event_sink(self, sink):
+            previous = self.client_event_sink
+            self.client_event_sink = sink
+            return previous
+
+        async def run_turn(self, content: str, *, request_id: str = ""):
+            del content, request_id
+            try:
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    ctx = SimpleNamespace(
+        session_id="disconnect",
+        turn_lock=asyncio.Lock(),
+        turn_task=None,
+        engine=HangingEngine(),
+    )
+    stream = run_turn_stream(ctx, content="wait", request_id="request")
+
+    assert (await anext(stream))["type"] == "turn_started"
+    close_task = asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0.05)
+    try:
+        assert close_task.done()
+        await close_task
+    finally:
+        if not close_task.done():
+            close_task.cancel()
+            await asyncio.gather(close_task, return_exceptions=True)
+
+    assert cancelled.is_set()
+    assert ctx.turn_task is None
+    assert not ctx.turn_lock.locked()
 
 
 def _parse_sse(payload: str) -> list[dict[str, Any]]:
@@ -57,6 +110,34 @@ def _parse_sse(payload: str) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             events.append({"type": "decode_error", "raw": text})
     return events
+
+
+def _load_jsonl_fixture(relative_path: str) -> list[dict[str, Any]]:
+    path = Path(__file__).parents[1] / "fixtures" / relative_path
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_all_server_event_types_have_sse_contract_fixtures() -> None:
+    contracts = _load_jsonl_fixture("sse/server_event_contracts.jsonl")
+
+    assert [event["type"] for event in contracts] == list(KNOWN_SERVER_EVENT_TYPES)
+    for expected in contracts:
+        event = ServerEvent.model_validate(expected)
+        frame = _format_sse(
+            event={"type": event.type, "data": event.data},
+            seq=event.sequence,
+            session_id=event.session_id,
+            thread_id=event.thread_id,
+            request_id=event.request_id,
+        ).decode("utf-8")
+
+        assert f"event: {event.type}\n" in frame
+        assert f"id: {event.sequence}\n" in frame
+        assert _parse_sse(frame) == [expected]
 
 
 @pytest_asyncio.fixture
@@ -332,6 +413,82 @@ async def test_http_permission_response_preserves_scope() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("event_type", "request_id", "answer", "expected_field", "expected_value"),
+    [
+        (
+            "permission_request",
+            "permission:fast",
+            {"decision": "allow", "scope": "once"},
+            "decision",
+            "allow",
+        ),
+        (
+            "user_input_required",
+            "user_input:fast",
+            {"answer": "continue"},
+            "answer",
+            "continue",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_live_interaction_is_pending_before_event_is_published(
+    event_type: str,
+    request_id: str,
+    answer: dict[str, Any],
+    expected_field: str,
+    expected_value: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from xbotv2.core.interactions import InteractionWaiter
+    from xbotv2.protocol.http_server import _live_sink
+
+    permission_waiter = InteractionWaiter()
+    user_input_waiter = InteractionWaiter()
+    waiter = (
+        permission_waiter
+        if event_type == "permission_request"
+        else user_input_waiter
+    )
+    events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    disconnected = asyncio.Event()
+    disconnect_task = asyncio.create_task(disconnected.wait())
+    sink_task = asyncio.create_task(
+        _live_sink(
+            {
+                "type": event_type,
+                "data": {"request_id": request_id},
+            },
+            engine=SimpleNamespace(
+                permission_waiter=permission_waiter,
+                user_input_waiter=user_input_waiter,
+            ),
+            events=events,
+            disconnect_task=disconnect_task,
+        )
+    )
+
+    try:
+        event = await events.get()
+        assert event == {
+            "type": event_type,
+            "data": {"request_id": request_id},
+        }
+        assert waiter.is_pending(request_id)
+
+        waiter.answer(request_id, **answer)
+        result = await sink_task
+        assert result["status"] == "answered"
+        assert result[expected_field] == expected_value
+    finally:
+        disconnected.set()
+        if not disconnect_task.done():
+            disconnect_task.cancel()
+        await asyncio.gather(disconnect_task, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
     from xbotv2.protocol.http_server import _resolve_interaction
@@ -487,9 +644,86 @@ async def test_http_messages_sse_stream_turn_events(
     assert "assistant_message" in types
     assert "turn_finished" in types
     assert "end" in types
+    assert all(event["protocol_version"] == PROTOCOL_VERSION for event in events)
+    assert all(event["session_id"] == "stream1" for event in events)
+    assert all(event["thread_id"] == "t" for event in events)
+    assert all(event["request_id"] == "req-1" for event in events)
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert events == _load_jsonl_fixture("sse/basic_turn_events.jsonl")
 
     assistant = next(e for e in events if e.get("type") == "assistant_message")
     assert assistant["data"]["content"] == "hello from mock"
+
+
+@pytest.mark.asyncio
+async def test_http_message_request_id_reaches_engine_hooks_and_sse(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    from xbotv2.api import HookStage
+
+    open_resp = await client.post(
+        "/sessions",
+        json={"session_id": "request-context", "thread_id": "t"},
+    )
+    assert open_resp.status_code == 200
+    session = await http_app.state.manager.get("request-context")
+    observed = []
+
+    async def record(ctx):
+        observed.append((ctx.stage, ctx.request_id))
+
+    session.engine.hook_manager.register(HookStage.ON_TURN_START, record)
+    session.engine.hook_manager.register(HookStage.AFTER_STATE_PERSIST, record)
+
+    async with client.stream(
+        "POST",
+        "/sessions/request-context/messages",
+        json={"content": "hello", "request_id": "request-http-1"},
+    ) as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    events = _parse_sse(body)
+    assert all(event["request_id"] == "request-http-1" for event in events)
+    assert observed == [
+        (HookStage.ON_TURN_START, "request-http-1"),
+        (HookStage.AFTER_STATE_PERSIST, "request-http-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_generated_request_id_reaches_engine_and_sse(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    from xbotv2.api import HookStage
+
+    open_resp = await client.post(
+        "/sessions",
+        json={"session_id": "generated-request", "thread_id": "t"},
+    )
+    assert open_resp.status_code == 200
+    session = await http_app.state.manager.get("generated-request")
+    observed = []
+
+    async def record(ctx):
+        observed.append(ctx.request_id)
+
+    session.engine.hook_manager.register(HookStage.ON_TURN_START, record)
+
+    async with client.stream(
+        "POST",
+        "/sessions/generated-request/messages",
+        json={"content": "hello"},
+    ) as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    events = _parse_sse(body)
+    request_ids = {event["request_id"] for event in events}
+    assert len(request_ids) == 1
+    generated_id = request_ids.pop()
+    assert generated_id.startswith("req-")
+    assert observed == [generated_id]
 
 
 @pytest.mark.asyncio
@@ -561,7 +795,11 @@ async def test_http_interactions_endpoint_validates_request_id(
         json={"decision": "allow", "scope": "once"},
     )
     assert response.status_code == 400
-    assert response.json()["code"] == "invalid_request"
+    body = response.json()
+    assert set(body) == {"code", "message", "details", "retryable"}
+    assert body["code"] == "invalid_request"
+    assert body["details"]["errors"]
+    assert body["retryable"] is False
 
 
 # ----------------------------------------------------------------------
@@ -722,6 +960,95 @@ async def test_http_interrupt_when_idle_returns_no_op(
     assert body["status"] == "idle"
 
 
+@asynccontextmanager
+async def _real_terminal_session(
+    tmp_path: Path,
+    *,
+    llm: MockLLM,
+    sandbox_enabled: bool,
+    timeout: float = 0.1,
+) -> AsyncIterator[TerminalSession]:
+    """Run one connected TerminalSession against a real local HTTP server."""
+    import socket
+    import threading
+
+    import uvicorn
+
+    data_dir = tmp_path / "data"
+    config_dir = data_dir / "config"
+    config_dir.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (config_dir / "providers.yaml").write_text(
+        "default:\n  provider: openai\n  model: test\n"
+        "  base_url: http://test\n  api_key: test\n",
+        encoding="utf-8",
+    )
+    (config_dir / "user.yaml").write_text(
+        "user_id: test\nuser_name: Tester\nplatform: tui\n"
+        "session_type: interactive\n",
+        encoding="utf-8",
+    )
+    sandbox = "true" if sandbox_enabled else "false"
+    (config_dir / "system.yaml").write_text(
+        "agent_name: TestBot\nagent_role: You are a test bot.\n"
+        "provider: default\nmax_context_tokens: 4096\n"
+        "tools: []\nplugins: {}\nhooks: []\n"
+        f"sandbox:\n  enabled: {sandbox}\n  resources: []\n",
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        provider_name="default",
+        paths=RuntimePaths.from_data_dir(data_dir),
+        workspace_root=str(workspace),
+        no_plugins=True,
+    )
+    set_llm_override(app, llm)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            ws="none",
+        )
+    )
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    session: TerminalSession | None = None
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
+            for _ in range(50):
+                try:
+                    response = await probe.get("/health")
+                    if response.status_code == 200:
+                        break
+                except httpx.RequestError:
+                    await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError("uvicorn server failed to start")
+
+        session = TerminalSession(
+            session_id="default",
+            thread_id="agent",
+            workspace_root=workspace,
+            transport=HttpTransport(base_url, timeout=timeout),
+        )
+        await session.connect()
+        yield session
+    finally:
+        if session is not None:
+            await session.disconnect()
+        server.should_exit = True
+        server_thread.join(timeout=3.0)
+
+
 @pytest.mark.asyncio
 async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
     tmp_path: Path,
@@ -735,37 +1062,8 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
     provider can answer and no ``tool_result`` is emitted.
     """
 
-    import socket
-    import threading
-    import uvicorn
-
-    data_dir = tmp_path / "data"
-    (data_dir / "config").mkdir(parents=True)
     workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True)
-    (workspace / "hello.txt").write_text("hello", encoding="utf-8")
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "system.yaml").write_text(
-        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
-        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
-        "sandbox:\n  enabled: true\n  resources: []\n",
-        encoding="utf-8",
-    )
-
-    app = create_app(
-        provider_name="default",
-        paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=True,
-    )
-    set_llm_override(app, MockLLM(responses=[
+    llm = MockLLM(responses=[
         {
             "content": "listing",
             "tool_calls": [
@@ -773,41 +1071,13 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
             ],
         },
         {"content": "done"},
-    ]))
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app, host="127.0.0.1", port=port, log_level="warning", ws="none"
-        )
-    )
-    server_thread = threading.Thread(target=server.run, daemon=True)
-    server_thread.start()
-
-    try:
-        async with httpx.AsyncClient(
-            base_url=f"http://127.0.0.1:{port}",
-            timeout=5.0,
-        ) as probe:
-            for _ in range(50):
-                try:
-                    response = await probe.get("/health")
-                    if response.status_code == 200:
-                        break
-                except httpx.RequestError:
-                    await asyncio.sleep(0.1)
-            else:
-                raise RuntimeError("uvicorn server failed to start")
-
-        transport = HttpTransport(f"http://127.0.0.1:{port}", timeout=0.1)
-        session = TerminalSession(
-            session_id="default",
-            thread_id="agent",
-            transport=transport,
-        )
-        await session.connect()
+    ])
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=True,
+    ) as session:
+        (workspace / "hello.txt").write_text("hello", encoding="utf-8")
 
         async def approve(_: dict[str, Any]) -> dict[str, str]:
             await asyncio.sleep(0.2)
@@ -820,16 +1090,85 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
                 permission_provider=approve,
             )
         ]
-        await session.disconnect()
-    finally:
-        server.should_exit = True
-        server_thread.join(timeout=3.0)
 
     assert "permission_request" in [event.get("type") for event in events]
     assert any(
         event.get("type") == "tool_result"
         and event.get("data", {}).get("tool_call_id") == "call_list"
         and event.get("data", {}).get("status") == "success"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
+    llm = MockLLM(responses=[
+        {
+            "content": "asking",
+            "tool_calls": [
+                {
+                    "name": "ask_user",
+                    "args": {
+                        "question": "Continue?",
+                        "options": ["continue", "stop"],
+                    },
+                    "id": "call_ask",
+                },
+            ],
+        },
+        {"content": "continued"},
+    ])
+    seen_payloads: list[dict[str, Any]] = []
+    seen_permissions: list[dict[str, Any]] = []
+
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=False,
+    ) as session:
+
+        async def answer(payload: dict[str, Any]) -> str:
+            seen_payloads.append(payload)
+            await asyncio.sleep(0.2)
+            return "continue"
+
+        async def approve(payload: dict[str, Any]) -> dict[str, str]:
+            seen_permissions.append(payload)
+            return {"decision": "allow", "scope": "once"}
+
+        async def collect_events() -> list[dict[str, Any]]:
+            return [
+                event
+                async for event in session.send_message(
+                    "ask before continuing",
+                    input_provider=answer,
+                    permission_provider=approve,
+                )
+            ]
+
+        try:
+            events = await asyncio.wait_for(collect_events(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail(
+                f"ask_user stream did not finish; provider payloads={seen_payloads!r}"
+            )
+
+    assert len(seen_permissions) == 1
+    assert seen_permissions[0]["request_id"] == "permission:call_ask"
+    assert len(seen_payloads) == 1
+    assert seen_payloads[0]["request_id"] == "user_input:call_ask"
+    assert seen_payloads[0]["question"] == "Continue?"
+    assert seen_payloads[0]["options"] == ["continue", "stop"]
+    assert any(event["type"] == "user_input_recorded" for event in events)
+    assert any(
+        event.get("type") == "tool_result"
+        and event.get("data", {}).get("tool_call_id") == "call_ask"
+        and "User answered: continue" in event.get("data", {}).get("content", "")
+        for event in events
+    )
+    assert any(
+        event.get("type") == "assistant_message"
+        and event.get("data", {}).get("content") == "continued"
         for event in events
     )
 

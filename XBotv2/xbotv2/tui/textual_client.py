@@ -574,12 +574,9 @@ class XBotTextualApp(App[None]):
         event_type = str(event.get("type") or "")
         refresh_input = False
         if event_type == "turn_started":
-            self.state.turn_active = True
-            self.state.turn = int(event.get("data", {}).get("turn", self.state.turn))
             self._finalize_activity()
             await self._append_activity()
         elif event_type == "turn_finished":
-            self.state.turn_active = False
             await self._cancel_stream_timer()
             self._finalize_activity()
             refresh_input = True
@@ -587,7 +584,6 @@ class XBotTextualApp(App[None]):
             self._interaction_response_pending = False
             await self._cancel_stream_timer()
             self._finalize_activity()
-            self.state.status = "Interrupted"
             self._refresh_status()
             refresh_input = True
         elif event_type == "usage":
@@ -893,12 +889,11 @@ class XBotTextualApp(App[None]):
         self._refresh_status()
 
     def _update_pending_tool_elapsed(self) -> None:
-        import time as _time
         for tool_call_id, widget in list(self._tool_widgets.items()):
             tool = self.state.tools.get(tool_call_id)
             if tool is None or tool.finished_at > 0:
                 continue
-            elapsed = tool.elapsed(_time.monotonic())
+            elapsed = tool.elapsed(time.monotonic())
             try:
                 meta = widget.query_one(".meta", Static)
             except Exception:
@@ -999,12 +994,11 @@ class XBotTextualApp(App[None]):
         not touched here; ``_sync_tool_permission_choices``
         (async) handles those.
         """
-        import time as _time
         tool = self.state.tools.get(tool_call_id)
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
             return
-        elapsed = tool.elapsed(_time.monotonic())
+        elapsed = tool.elapsed(time.monotonic())
         title = _build_title(tool, elapsed)
         meta = self._query_child_first(widget, ".meta")
         if meta is not None:
@@ -1072,12 +1066,11 @@ class XBotTextualApp(App[None]):
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
             return
-        import time as _time
         tool = self.state.tools.get(tool_call_id)
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
             return
-        elapsed = tool.elapsed(_time.monotonic())
+        elapsed = tool.elapsed(time.monotonic())
         title = _build_title(tool, elapsed)
         meta = self._query_child_first(widget, ".meta")
         if meta is None:

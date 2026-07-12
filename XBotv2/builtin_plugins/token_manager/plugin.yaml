@@ -2,3 +2,17 @@ name: token_manager
 version: "1.0.0"
 description: Token estimation, usage tracking, and budget control
 api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    max_context_tokens:
+      type: integer
+      minimum: 1
+    output_reservation:
+      type: integer
+      minimum: 0
+    soft_limit_ratio:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1
