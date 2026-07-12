@@ -73,9 +73,7 @@ class _ScriptedSession:
             return {"data": {"message": "turn=0 mode=composing"}}
         return {"data": {"message": f"ran {command}"}}
 
-    async def send_message(
-        self, text, *, input_provider=None, permission_provider=None
-    ):
+    async def send_message(self, text):
         self.sent.append(text)
         if self._scripts:
             events = self._scripts.pop(0)
@@ -475,9 +473,7 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         async def disconnect(self) -> None:
             return None
 
-        async def send_message(
-            self, text, *, input_provider=None, permission_provider=None
-        ):
+        async def send_message(self, text):
             self.sent.append(text)
             yield {"type": "turn_started", "data": {"turn": 1}}
             # Block the turn until the test releases it.

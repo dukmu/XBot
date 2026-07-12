@@ -154,6 +154,7 @@ class XBotTextualApp(App[None]):
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
+        self._interaction_response_task: asyncio.Task[None] | None = None
         self._turn_started_at: dict[int, float] = {}
         self._input_history: list[str] = []
         self._history_index: int | None = None
@@ -183,6 +184,7 @@ class XBotTextualApp(App[None]):
         self.run_worker(self._connect, exclusive=True, name="connect")
 
     async def on_unmount(self) -> None:
+        self._cancel_interaction_response()
         if self._connected:
             await self.session.disconnect()
 
@@ -474,27 +476,64 @@ class XBotTextualApp(App[None]):
     async def _collect_response(self, text: str) -> None:
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
-            async for event in self.session.send_message(
-                text,
-                input_provider=self._answer_live_input,
-                permission_provider=self._answer_live_permission,
-            ):
+            async for event in self.session.send_message(text):
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
                 self.state.apply_event(event)
                 await self._handle_stream_event(event)
+                self._start_interaction_response(event)
         except Exception as exc:
             logger.exception("tui.collect_response failed")
             self._record_error(exc)
 
-    async def _answer_live_input(self, payload: dict[str, Any]) -> str:
-        del payload
+    async def _submit_live_input(self, payload: dict[str, Any]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")
-        return await self._answers.get()
+        answer = await self._answers.get()
+        await self.session.submit_user_input(
+            str(payload.get("request_id") or ""),
+            answer,
+        )
 
-    async def _answer_live_permission(self, payload: dict[str, Any]) -> dict[str, str]:
-        del payload
+    async def _submit_live_permission(self, payload: dict[str, Any]) -> None:
         self._set_input_placeholder("Choose an inline approval option, or type a decision")
-        return await self._permission_decisions.get()
+        response = await self._permission_decisions.get()
+        await self.session.respond_permission(
+            str(payload.get("request_id") or ""),
+            str(response.get("decision") or "deny"),
+            scope=str(response.get("scope") or "once"),
+        )
+
+    def _start_interaction_response(self, event: dict[str, Any]) -> None:
+        event_type = str(event.get("type") or "")
+        payload = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if event_type not in {"permission_request", "user_input_required"}:
+            return
+        if self._interaction_response_task is not None:
+            if self._interaction_response_task.done():
+                self._interaction_response_done(self._interaction_response_task)
+            else:
+                raise RuntimeError("Received a second interaction while one is pending")
+        if event_type == "permission_request":
+            response = self._submit_live_permission(payload)
+        else:
+            response = self._submit_live_input(payload)
+        task = asyncio.create_task(response)
+        self._interaction_response_task = task
+        task.add_done_callback(self._interaction_response_done)
+
+    def _interaction_response_done(self, task: asyncio.Task[None]) -> None:
+        if self._interaction_response_task is task:
+            self._interaction_response_task = None
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._record_error(error)
+
+    def _cancel_interaction_response(self) -> None:
+        task = self._interaction_response_task
+        self._interaction_response_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
     def _safe_query_one(self, selector: str, expect_type: type | None = None) -> Any:
         """``query_one`` that returns ``None`` instead of raising when the
@@ -575,10 +614,12 @@ class XBotTextualApp(App[None]):
             self._finalize_activity()
             await self._append_activity()
         elif event_type == "turn_finished":
+            self._cancel_interaction_response()
             await self._cancel_stream_timer()
             self._finalize_activity()
             refresh_input = True
         elif event_type == "turn_cancelled":
+            self._cancel_interaction_response()
             self._interaction_response_pending = False
             await self._cancel_stream_timer()
             self._finalize_activity()
@@ -614,6 +655,8 @@ class XBotTextualApp(App[None]):
         elif event_type in {
             "user_input_recorded", "error",
         }:
+            if event_type == "error":
+                self._cancel_interaction_response()
             self._interaction_response_pending = False
             if event_type == "error":
                 await self._refresh_changed_tool_widgets()

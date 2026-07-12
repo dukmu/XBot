@@ -586,8 +586,7 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del input_provider, permission_provider
+        async def send_message(self, text):
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -651,8 +650,8 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider, permission_provider
+        async def send_message(self, text):
+            del text
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
             yield {
@@ -700,8 +699,8 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider, permission_provider
+        async def send_message(self, text):
+            del text
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "tool_call_delta",
@@ -771,8 +770,8 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider, permission_provider
+        async def send_message(self, text):
+            del text
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message_delta", "data": {"content": "a"}}
             yield {"type": "assistant_message_delta", "data": {"content": "b"}}
@@ -816,7 +815,9 @@ async def test_textual_app_headless_renders_inline_permission_options():
     from xbotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
-        permission_decision = None
+        def __init__(self):
+            self.permission_decision = None
+            self.permission_answered = asyncio.Event()
 
         async def connect(self):
             return None
@@ -824,8 +825,8 @@ async def test_textual_app_headless_renders_inline_permission_options():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del text, input_provider
+        async def send_message(self, text):
+            del text
             yield {"type": "turn_started", "data": {"turn": 1}}
             # Tool must exist before permission can be linked to it
             yield {
@@ -846,19 +847,22 @@ async def test_textual_app_headless_renders_inline_permission_options():
                 "type": "permission_request",
                 "data": payload,
             }
-            parsed = permission_provider(payload)
-            if hasattr(parsed, "__await__"):
-                parsed = await parsed
-            self.permission_decision = parsed
+            await self.permission_answered.wait()
             yield {
                 "type": "permission_response_recorded",
                 "data": {
                     "request_id": "permission:c1",
-                    "decision": parsed["decision"],
-                    "scope": parsed["scope"],
+                    "decision": self.permission_decision["decision"],
+                    "scope": self.permission_decision["scope"],
                 },
             }
             yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def respond_permission(self, request_id, decision, *, scope="once"):
+            assert request_id == "permission:c1"
+            self.permission_decision = {"decision": decision, "scope": scope}
+            self.permission_answered.set()
+            return {"recorded": True}
 
     app = XBotTextualApp(
         session_id="s",
@@ -969,20 +973,21 @@ async def test_textual_app_cancellation_clears_pending_permission_ui():
         app.state.transcript.append(
             TuiTranscriptEntry(kind="tool", key="call-cancel")
         )
-        app.state.apply_event(
-            _frame(
-                "permission_request",
-                {
-                    "request_id": "approval-cancel",
-                    "tool_call": {"id": "call-cancel", "name": "shell"},
-                },
-            )
+        permission_event = _frame(
+            "permission_request",
+            {
+                "request_id": "approval-cancel",
+                "tool_call": {"id": "call-cancel", "name": "shell"},
+            },
         )
+        app.state.apply_event(permission_event)
         await app._render_new_transcript_entries()
         await app._refresh_changed_tool_widgets()
+        app._start_interaction_response(permission_event)
         await pilot.pause()
 
         assert app._active_choice_key == "call-cancel"
+        assert app._interaction_response_task is not None
 
         event = _frame("turn_cancelled", {"turn": 1, "reason": "client_interrupt"})
         app.state.apply_event(event)
@@ -991,6 +996,7 @@ async def test_textual_app_cancellation_clears_pending_permission_ui():
 
         composer = app.query_one("#input")
         assert app._active_choice_key is None
+        assert app._interaction_response_task is None
         assert app.state.pending_permission_payload is None
         assert app.state.tools["call-cancel"].status == "cancelled"
         assert composer.disabled is False
@@ -1003,7 +1009,9 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
     from xbotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
-        answer = None
+        def __init__(self):
+            self.answer = None
+            self.answer_recorded = asyncio.Event()
 
         async def connect(self):
             return None
@@ -1011,8 +1019,8 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del text, permission_provider
+        async def send_message(self, text):
+            del text
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
                 "request_id": "user_input:c1",
@@ -1023,15 +1031,18 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
                 "type": "user_input_required",
                 "data": payload,
             }
-            answer = input_provider(payload)
-            if hasattr(answer, "__await__"):
-                answer = await answer
-            self.answer = answer
+            await self.answer_recorded.wait()
             yield {
                 "type": "user_input_recorded",
                 "data": {"request_id": "user_input:c1", "status": "recorded"},
             }
             yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def submit_user_input(self, request_id, answer):
+            assert request_id == "user_input:c1"
+            self.answer = answer
+            self.answer_recorded.set()
+            return {"recorded": True}
 
     app = XBotTextualApp(
         session_id="s",
@@ -1071,7 +1082,9 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
     from xbotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
-        permission_decision = None
+        def __init__(self):
+            self.permission_decision = None
+            self.permission_answered = asyncio.Event()
 
         async def connect(self):
             return None
@@ -1079,8 +1092,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, input_provider=None, permission_provider=None):
-            del input_provider
+        async def send_message(self, text):
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "assistant_message",
@@ -1100,16 +1112,13 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
                 "tool_call": {"name": "shell", "args": {"command": "df -h"}, "id": "call_shell"},
             }
             yield {"type": "permission_request", "data": payload}
-            parsed = permission_provider(payload)
-            if hasattr(parsed, "__await__"):
-                parsed = await parsed
-            self.permission_decision = parsed
+            await self.permission_answered.wait()
             yield {
                 "type": "permission_response_recorded",
                 "data": {
                     "request_id": "permission:shell",
-                    "decision": parsed["decision"],
-                    "scope": parsed["scope"],
+                    "decision": self.permission_decision["decision"],
+                    "scope": self.permission_decision["scope"],
                 },
             }
             yield {
@@ -1126,6 +1135,12 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
                 "data": {"content": f"当前磁盘使用情况：已执行 df -h。问题是：{text}"},
             }
             yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def respond_permission(self, request_id, decision, *, scope="once"):
+            assert request_id == "permission:shell"
+            self.permission_decision = {"decision": decision, "scope": scope}
+            self.permission_answered.set()
+            return {"recorded": True}
 
     app = XBotTextualApp(
         session_id="s",
@@ -1199,7 +1214,7 @@ def test_permission_decision_parser_supports_scopes():
 
 
 @pytest.mark.asyncio
-async def test_terminal_session_yields_live_interaction_once_without_provider():
+async def test_terminal_session_only_yields_live_interaction_events():
     class FakeTransport:
         async def hello(self, *, session_id, thread_id):
             return {"session_id": session_id, "thread_id": thread_id}
@@ -1225,10 +1240,10 @@ async def test_terminal_session_yields_live_interaction_once_without_provider():
             return _events()
 
         async def send_permission_response(self, **kwargs):
-            raise AssertionError("should not auto-answer without provider")
+            raise AssertionError("TerminalSession must not auto-answer")
 
         async def send_user_input(self, **kwargs):
-            raise AssertionError("should not auto-answer without provider")
+            raise AssertionError("TerminalSession must not auto-answer")
 
         async def shutdown(self, *, session_id):
             return {"status": "closed"}
@@ -1427,7 +1442,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
         async def disconnect(self):
             return None
 
-        async def send_message(self, text, *, input_provider=None, permission_provider=None):
+        async def send_message(self, text):
             self.sent.append(text)
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {

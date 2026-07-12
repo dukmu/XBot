@@ -1079,17 +1079,15 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
     ) as session:
         (workspace / "hello.txt").write_text("hello", encoding="utf-8")
 
-        async def approve(_: dict[str, Any]) -> dict[str, str]:
-            await asyncio.sleep(0.2)
-            return {"decision": "allow", "scope": "once"}
-
-        events = [
-            event
-            async for event in session.send_message(
-                "list workspace",
-                permission_provider=approve,
-            )
-        ]
+        events = []
+        async for event in session.send_message("list workspace"):
+            events.append(event)
+            if event.get("type") == "permission_request":
+                await asyncio.sleep(0.2)
+                await session.respond_permission(
+                    event["data"]["request_id"],
+                    "allow",
+                )
 
     assert "permission_request" in [event.get("type") for event in events]
     assert any(
@@ -1098,6 +1096,100 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         and event.get("data", {}).get("status") == "success"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_real_http_interrupt_while_permission_waits(
+    tmp_path: Path,
+) -> None:
+    llm = MockLLM(responses=[
+        {
+            "content": "listing",
+            "tool_calls": [
+                {"name": "filesystem_list", "args": {"path": "."}, "id": "call_wait"},
+            ],
+        },
+    ])
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=True,
+    ) as session:
+        async def collect_events() -> list[dict[str, Any]]:
+            collected = []
+            async for event in session.send_message("list workspace"):
+                collected.append(event)
+                if event.get("type") == "permission_request":
+                    response = await session.transport.interrupt(
+                        session_id=session.session_id
+                    )
+                    assert response["cancelled"] is True
+            return collected
+
+        events = await asyncio.wait_for(collect_events(), timeout=5.0)
+        request = next(
+            event for event in events if event.get("type") == "permission_request"
+        )
+        with pytest.raises(RuntimeError, match="interaction_no_longer_pending"):
+            await session.respond_permission(
+                request["data"]["request_id"],
+                "allow",
+            )
+
+    event_types = [event.get("type") for event in events]
+    assert "permission_request" in event_types
+    assert "turn_cancelled" in event_types
+    assert "turn_finished" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
+    llm = MockLLM(responses=[
+        {
+            "content": "asking",
+            "tool_calls": [
+                {
+                    "name": "ask_user",
+                    "args": {"question": "Continue?", "options": ["yes", "no"]},
+                    "id": "call_wait",
+                },
+            ],
+        },
+    ])
+
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=False,
+    ) as session:
+        events = []
+        async for event in session.send_message("ask before continuing"):
+            events.append(event)
+            if event.get("type") == "permission_request":
+                await session.respond_permission(
+                    event["data"]["request_id"],
+                    "allow",
+                )
+            elif event.get("type") == "user_input_required":
+                response = await session.transport.interrupt(
+                    session_id=session.session_id
+                )
+                assert response["cancelled"] is True
+
+        request = next(
+            event for event in events if event.get("type") == "user_input_required"
+        )
+        with pytest.raises(RuntimeError, match="interaction_no_longer_pending"):
+            await session.submit_user_input(
+                request["data"]["request_id"],
+                "yes",
+            )
+
+    event_types = [event.get("type") for event in events]
+    assert "user_input_required" in event_types
+    assert "turn_cancelled" in event_types
+    assert "tool_result" not in event_types
+    assert "turn_finished" not in event_types
 
 
 @pytest.mark.asyncio
@@ -1127,24 +1219,24 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
         sandbox_enabled=False,
     ) as session:
 
-        async def answer(payload: dict[str, Any]) -> str:
-            seen_payloads.append(payload)
-            await asyncio.sleep(0.2)
-            return "continue"
-
-        async def approve(payload: dict[str, Any]) -> dict[str, str]:
-            seen_permissions.append(payload)
-            return {"decision": "allow", "scope": "once"}
-
         async def collect_events() -> list[dict[str, Any]]:
-            return [
-                event
-                async for event in session.send_message(
-                    "ask before continuing",
-                    input_provider=answer,
-                    permission_provider=approve,
-                )
-            ]
+            collected = []
+            async for event in session.send_message("ask before continuing"):
+                collected.append(event)
+                if event.get("type") == "permission_request":
+                    seen_permissions.append(event["data"])
+                    await session.respond_permission(
+                        event["data"]["request_id"],
+                        "allow",
+                    )
+                elif event.get("type") == "user_input_required":
+                    seen_payloads.append(event["data"])
+                    await asyncio.sleep(0.2)
+                    await session.submit_user_input(
+                        event["data"]["request_id"],
+                        "continue",
+                    )
+            return collected
 
         try:
             events = await asyncio.wait_for(collect_events(), timeout=5.0)

@@ -148,6 +148,9 @@ requests. Their shared lifecycle is:
 
 Registration happens before publication, so a client may respond immediately
 after receiving the request. Repeated or stale responses return HTTP 410.
+The client must continue consuming the SSE stream while local input is pending;
+it submits the response independently through the interaction endpoint. A turn
+terminal event invalidates any unanswered request.
 Permission responses accept `allow` or `deny` with `once` or `session` scope.
 User-input responses accept an arbitrary JSON-compatible `answer`; the
 request may include suggested string `options` and a timeout.

@@ -43,7 +43,8 @@ Permission requests and user questions must be registered by the server before
 their SSE event becomes visible, resolved through a request-id endpoint, and
 acknowledged on the original stream before the turn continues. A client that
 cannot support an interaction must fail or cancel it explicitly rather than
-leave the engine waiting indefinitely.
+leave the engine waiting indefinitely. Waiting for a local answer must not stop
+the client from consuming terminal events on the SSE stream.
 
 The TUI keeps each pending interaction payload as its state source instead of
 duplicating active flags and request ids. A cancelled or failed turn, and the

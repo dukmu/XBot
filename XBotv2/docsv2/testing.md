@@ -79,6 +79,8 @@ HTTP integration tests also run real local uvicorn sockets for agent-initiated
 permission and `ask_user` requests. They verify that interaction requests are
 registered before publication, remain answerable while SSE waits, and resume
 the original tool/agent turn after the response endpoint records an answer.
+They also interrupt live permission and `ask_user` waits, require the original
+SSE stream to emit `turn_cancelled`, and verify that late responses return 410.
 Protocol tests reject incomplete interaction, error, tool-result, and usage
 payloads. HTTP integration tests assert the complete `ErrorResponse` shape so
 handlers cannot drift into endpoint-specific error dictionaries.

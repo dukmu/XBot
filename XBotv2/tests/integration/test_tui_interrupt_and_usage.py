@@ -49,9 +49,7 @@ class _InterruptibleSession:
     async def disconnect(self) -> None:
         return None
 
-    async def send_message(
-        self, text, *, input_provider=None, permission_provider=None
-    ):
+    async def send_message(self, text):
         self.turn_task = asyncio.current_task()
         self.sent.append(text)
         yield {"type": "turn_started", "data": {"turn": 1}}
@@ -191,9 +189,7 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
         async def disconnect(self):
             return None
 
-        async def send_message(
-            self, text, *, input_provider=None, permission_provider=None
-        ):
+        async def send_message(self, text):
             self.sent.append(text)
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {

@@ -13,28 +13,14 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator
 
 from xbotv2.tui.transport import Transport
 from xbotv2.tui.transport_http import HttpTransport
 
 
-# Aliases for the live-interaction provider callbacks. A provider may be
-# either a coroutine function (called by the TUI's per-prompt queues) or
-# a plain function that returns a value synchronously. The two helpers
-# below let ``send_message`` accept both.
-InputProvider = Callable[[dict[str, Any]], Awaitable[Any] | Any]
-PermissionProvider = Callable[[dict[str, Any]], Awaitable[dict[str, str]] | dict[str, str]]
-
-
 def _new_session_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
-
-
-def _await_maybe(value: Awaitable[Any] | Any) -> Any:
-    if hasattr(value, "__await__"):
-        return value  # type: ignore[return-value]
-    return value
 
 
 class TerminalSession:
@@ -44,9 +30,7 @@ class TerminalSession:
 
         session = TerminalSession(base_url="http://127.0.0.1:4096")
         await session.connect()
-        async for event in session.send_message(
-            "hi", input_provider=..., permission_provider=...
-        ):
+        async for event in session.send_message("hi"):
             ...
         await session.disconnect()
     """
@@ -135,32 +119,12 @@ class TerminalSession:
     async def __aexit__(self, *exc_info: Any) -> None:
         await self.disconnect()
 
-    def send_message(
+    async def send_message(
         self,
         content: str,
-        *,
-        input_provider: InputProvider | None = None,
-        permission_provider: PermissionProvider | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Send one user message and yield every server event.
+        """Send one user message and yield every non-transport SSE event."""
 
-        The yielded events are the SSE payloads shaped as
-        ``{"type": str, "data": dict}``. Live ``permission_request`` and
-        ``user_input_required`` events are intercepted: their payload is
-        passed to the matching provider, the provider's response is sent
-        back to the server via the transport, and the recording events
-        (``permission_response_recorded`` / ``user_input_recorded``) are
-        also yielded as they arrive.
-        """
-
-        return self._send_message_impl(content, input_provider, permission_provider)
-
-    async def _send_message_impl(
-        self,
-        content: str,
-        input_provider: InputProvider | None,
-        permission_provider: PermissionProvider | None,
-    ) -> AsyncIterator[dict[str, Any]]:
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
         stream = self._transport.send_message(
             session_id=self._session_id,
@@ -171,42 +135,6 @@ class TerminalSession:
             event_type = str(event.get("type") or "")
             if event_type == "end":
                 return
-
-            # **Order matters**: yield the event to the TUI FIRST so
-            # ``apply_event`` + ``_handle_stream_event`` can update
-            # the status bar and transcript BEFORE we block on the
-            # user's response.  Otherwise the UI stays frozen on
-            # "Running" while the tools sit in "pending" forever.
-            if event_type == "permission_request":
-                yield event
-                if permission_provider is not None:
-                    payload = event.get("data") or {}
-                    response = _await_maybe(permission_provider(payload))
-                    if hasattr(response, "__await__"):
-                        response = await response  # type: ignore[unreachable]
-                    decision = str(response.get("decision") or "deny")
-                    scope = str(response.get("scope") or "once")
-                    await self._transport.send_permission_response(
-                        session_id=self._session_id,
-                        request_id=str(payload.get("request_id") or ""),
-                        decision=decision,
-                        scope=scope,
-                    )
-                continue
-            if event_type == "user_input_required":
-                yield event
-                if input_provider is not None:
-                    payload = event.get("data") or {}
-                    answer = _await_maybe(input_provider(payload))
-                    if hasattr(answer, "__await__"):
-                        answer = await answer  # type: ignore[unreachable]
-                    await self._transport.send_user_input(
-                        session_id=self._session_id,
-                        request_id=str(payload.get("request_id") or ""),
-                        answer=answer,
-                    )
-                continue
-
             yield event
 
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
