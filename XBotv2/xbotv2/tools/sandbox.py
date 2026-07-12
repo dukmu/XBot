@@ -12,6 +12,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, Iterable, Literal
 
 from xbotv2.tools.sandbox_bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
@@ -83,25 +84,64 @@ class SandboxPolicy:
 
     async def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         spec = self._mount_specs()
-        script = (
-            "import json, sys, pathlib"
-            "; p = pathlib.Path(sys.argv[1])"
-            "; o = int(sys.argv[2])"
-            "; lim = int(sys.argv[3])"
-            "; t = p.read_text('utf-8')"
-            "; lines = t.splitlines()"
-            "; start = max(0, o)"
-            "; end = len(lines) if lim <= 0 else min(len(lines), start + lim)"
-            "; sel = lines[start:end]"
-            "; s = p.stat()"
-            "; r = {"
-            "  'ok':True,'path':str(p),'resolved_path':str(p.resolve()),"
-            "  'kind':'file','size_bytes':s.st_size,'mtime':s.st_mtime,"
-            "  'line_count':len(lines),'offset':start,'limit':lim,"
-            "  'returned_lines':len(sel),'truncated_before':start>0,"
-            "  'truncated_after':end<len(lines),'content':chr(10).join(sel)}"
-            "; sys.stdout.write(json.dumps(r,ensure_ascii=False))"
-        )
+        script = dedent("""
+            import json
+            import pathlib
+            import sys
+
+            path = pathlib.Path(sys.argv[1])
+            offset = int(sys.argv[2])
+            limit = int(sys.argv[3])
+            if not path.exists():
+                result = {
+                    "ok": False,
+                    "error": {"code": "file_not_found", "message": f"File not found: {path}"},
+                    "path": str(path),
+                }
+            elif not path.is_file():
+                result = {
+                    "ok": False,
+                    "error": {"code": "not_a_file", "message": f"Not a file: {path}"},
+                    "path": str(path),
+                }
+            else:
+                try:
+                    text = path.read_text("utf-8")
+                except UnicodeDecodeError:
+                    result = {
+                        "ok": False,
+                        "error": {"code": "not_text", "message": f"File is not valid UTF-8 text: {path}"},
+                        "path": str(path),
+                    }
+                except OSError as exc:
+                    result = {
+                        "ok": False,
+                        "error": {"code": "read_failed", "message": f"Error reading {path}: {exc}"},
+                        "path": str(path),
+                    }
+                else:
+                    lines = text.splitlines()
+                    start = max(0, offset)
+                    end = len(lines) if limit <= 0 else min(len(lines), start + limit)
+                    selected = lines[start:end]
+                    stat = path.stat()
+                    result = {
+                        "ok": True,
+                        "path": str(path),
+                        "resolved_path": str(path.resolve()),
+                        "kind": "file",
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                        "line_count": len(lines),
+                        "offset": start,
+                        "limit": limit,
+                        "returned_lines": len(selected),
+                        "truncated_before": start > 0,
+                        "truncated_after": end < len(lines),
+                        "content": "\\n".join(selected),
+                    }
+            sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        """)
         return await self._backend.run(
             ["python3", "-c", script, str(self.workspace_root / path), str(offset), str(limit)],
             spec,
@@ -110,18 +150,34 @@ class SandboxPolicy:
     async def write_file(self, path: str, content: str) -> str:
         spec = self._mount_specs()
         resolved = str(self.workspace_root / path)
-        script = (
-            "import json, sys, pathlib"
-            "; p = pathlib.Path(sys.argv[1])"
-            "; c = sys.stdin.read()"
-            "; p.parent.mkdir(parents=True, exist_ok=True)"
-            "; p.write_text(c, 'utf-8')"
-            "; s = p.stat()"
-            "; r = {'ok':True,'path':str(p),'bytes_written':len(c.encode('utf-8')),"
-            "  'size_bytes':s.st_size,'mtime':s.st_mtime,"
-            "  'line_count':len(c.splitlines())}"
-            "; sys.stdout.write(json.dumps(r,ensure_ascii=False))"
-        )
+        script = dedent("""
+            import json
+            import pathlib
+            import sys
+
+            path = pathlib.Path(sys.argv[1])
+            content = sys.stdin.read()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, "utf-8")
+                stat = path.stat()
+            except OSError as exc:
+                result = {
+                    "ok": False,
+                    "error": {"code": "write_failed", "message": f"Error writing {path}: {exc}"},
+                    "path": str(path),
+                }
+            else:
+                result = {
+                    "ok": True,
+                    "path": str(path),
+                    "bytes_written": len(content.encode("utf-8")),
+                    "size_bytes": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "line_count": len(content.splitlines()),
+                }
+            sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        """)
         return await self._backend.run(
             ["python3", "-c", script, resolved],
             spec,

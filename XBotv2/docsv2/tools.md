@@ -27,6 +27,11 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
+Filesystem write modes have the same semantics with or without the session
+sandbox. Successful writes retain mode-specific metadata such as `changed` and
+`replacements`; read/write failures retain their structured `data` and `error`
+instead of exposing sandbox process output as an untyped string.
+
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 

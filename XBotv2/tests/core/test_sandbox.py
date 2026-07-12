@@ -129,12 +129,25 @@ class TestBubblewrapCapabilities:
             pytest.skip("bubblewrap is not installed")
 
         (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        readonly_path = tmp_path / ".data" / "readonly.txt"
+        readonly_path.parent.mkdir()
+        readonly_path.write_text("before", encoding="utf-8")
 
         read_data = json.loads(await policy.read_file("sample.txt"))
+        missing_data = json.loads(await policy.read_file("missing.txt"))
+        write_data = json.loads(await policy.write_file("created.txt", "created"))
+        write_error = json.loads(await policy.write_file(str(readonly_path), "after"))
         search_data = json.loads(await policy.search_text("alpha"))
         list_data = json.loads(await policy.list_dir(".", recursive=True))
 
         assert read_data["content"] == "alpha\nbeta"
+        assert missing_data["ok"] is False
+        assert missing_data["error"]["code"] == "file_not_found"
+        assert write_data["ok"] is True
+        assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "created"
+        assert write_error["ok"] is False
+        assert write_error["error"]["code"] == "write_failed"
+        assert readonly_path.read_text(encoding="utf-8") == "before"
         assert search_data["match_count"] == 1
         assert list_data["entry_count"] >= 1
         assert await policy.run_shell("printf sandbox-ok") == "sandbox-ok"

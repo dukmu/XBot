@@ -84,14 +84,26 @@ async def write_file(
     })
 
 
-async def _sandboxed_write(sandbox, path, content, mode, line, start_line, end_line, pattern, replacement):
-    old_text = ""
-    if mode != "overwrite":
-        result_json = await sandbox.read_file(path, offset=0, limit=0)
-        result = _parse_sandbox_result(result_json)
-        if not result.get("ok"):
-            return result_json
-        old_text = result.get("content", "")
+async def _sandboxed_write(
+    sandbox,
+    path,
+    content,
+    mode,
+    line,
+    start_line,
+    end_line,
+    pattern,
+    replacement,
+):
+    read_result = _parse_sandbox_result(
+        await sandbox.read_file(path, offset=0, limit=0)
+    )
+    if read_result.get("ok"):
+        old_text = str(read_result.get("content") or "")
+    elif (read_result.get("error") or {}).get("code") == "file_not_found":
+        old_text = ""
+    else:
+        return _tool_result_from_data(read_result)
     try:
         new_text, edit_meta = _apply_write_mode(
             old_text=old_text, content=content, mode=mode,
@@ -100,7 +112,14 @@ async def _sandboxed_write(sandbox, path, content, mode, line, start_line, end_l
         )
     except ValueError as exc:
         return _json_error("invalid_write", str(exc), path=path, mode=mode)
-    return _tool_result_from_json(await sandbox.write_file(path, new_text))
+    write_result = _parse_sandbox_result(await sandbox.write_file(path, new_text))
+    if write_result.get("ok"):
+        write_result.update(
+            mode=mode,
+            changed=old_text != new_text,
+            **edit_meta,
+        )
+    return _tool_result_from_data(write_result)
 
 
 async def list_files(path: str = ".", recursive: bool = False, max_entries: int = 500, *, sandbox=None) -> ToolResult:
@@ -347,9 +366,15 @@ def _tool_result_from_data(data: dict[str, Any]) -> ToolResult:
     if data.get("ok", True):
         return ToolResult.success(content, data=data)
     error = data.get("error") or {}
-    return ToolResult.failure(
+    result = ToolResult.failure(
         str(error.get("code") or "tool_error"),
         str(error.get("message") or content),
+    )
+    return ToolResult(
+        status=result.status,
+        content=content,
+        data=data,
+        error=result.error,
     )
 
 
@@ -359,13 +384,7 @@ def _json_ok(payload: dict[str, Any]) -> ToolResult:
 
 def _json_error(code: str, message: str, **extra: Any) -> ToolResult:
     data = {"ok": False, "error": {"code": code, "message": message}, **extra}
-    result = ToolResult.failure(code, message)
-    return ToolResult(
-        status=result.status,
-        content=json.dumps(data, ensure_ascii=False),
-        data=data,
-        error=result.error,
-    )
+    return _tool_result_from_data(data)
 
 
 filesystem_read = Tool.from_function(read_file, name="filesystem_read")
