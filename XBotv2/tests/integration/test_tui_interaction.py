@@ -111,11 +111,8 @@ def scripted_session() -> _ScriptedSession:
 @pytest.mark.asyncio
 async def test_completion_popup_appears_on_slash(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -137,11 +134,8 @@ async def test_completion_popup_appears_on_slash(scripted_session) -> None:
 @pytest.mark.asyncio
 async def test_completion_popup_filters_by_prefix(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -164,11 +158,8 @@ async def test_completion_popup_hides_when_text_stops_with_slash_prefix(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -188,11 +179,8 @@ async def test_completion_popup_tab_accepts_highlighted(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -217,11 +205,8 @@ async def test_completion_popup_tab_accepts_highlighted(
 @pytest.mark.asyncio
 async def test_completion_popup_escape_dismisses(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -250,11 +235,8 @@ async def test_completion_popup_escape_dismisses(scripted_session) -> None:
 @pytest.mark.asyncio
 async def test_composer_preserves_chinese_ime_text(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     chinese = "你好中文不丢"
@@ -279,11 +261,8 @@ async def test_help_prints_each_command_on_its_own_line(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -311,11 +290,8 @@ async def test_unknown_slash_command_surfaces_notice_not_message(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -344,11 +320,8 @@ async def test_repeated_composer_submit_does_not_duplicate_submit(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -384,11 +357,8 @@ async def test_tool_widget_title_includes_elapsed_seconds(
     """
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -523,11 +493,8 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
 
     session = SlowSession()
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = session
 
@@ -594,11 +561,8 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
 @pytest.mark.asyncio
 async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="my-session",
         thread_id="my-thread",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -623,11 +587,8 @@ async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
 @pytest.mark.asyncio
 async def test_slash_status_appends_state_notice(scripted_session) -> None:
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
@@ -657,11 +618,8 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
     from xbotv2.tui.command_palette import CommandPalette
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -687,11 +645,8 @@ async def test_palette_fuzzy_filters_to_exit(scripted_session) -> None:
     from xbotv2.tui.command_palette import CommandPalette
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -763,11 +718,8 @@ async def test_assistant_message_body_renders_in_transcript(
     )
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -816,11 +768,8 @@ async def test_help_body_renders_each_command_on_its_own_row(
     import html
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -869,11 +818,8 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
     tool_lines = "\n".join(f"row {i:03d}" for i in range(40))
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -959,8 +905,8 @@ async def test_help_with_command_name_shows_detail(
 ) -> None:
     """Test that /help clear shows detailed help for the clear command."""
     app = XBotTextualApp(
-        data_dir="data", provider_name="mock",
-        session_id="s", thread_id="t", no_plugins=True,
+        session_id="s",
+        thread_id="t",
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
@@ -983,8 +929,8 @@ async def test_help_with_unknown_command_shows_error(
 ) -> None:
     """Test that /help nonexistent shows unknown command notice."""
     app = XBotTextualApp(
-        data_dir="data", provider_name="mock",
-        session_id="s", thread_id="t", no_plugins=True,
+        session_id="s",
+        thread_id="t",
     )
     app.session = scripted_session
     async with app.run_test(headless=True, size=(120, 36)) as pilot:

@@ -15,6 +15,18 @@ from typing import Any, AsyncIterator
 import httpx
 
 from xbotv2.protocol.frames import PROTOCOL_VERSION
+from xbotv2.protocol.models import (
+    CommandListResponse,
+    CommandRequest,
+    CommandResponse,
+    Event,
+    HelloRequest,
+    HelloResponse,
+    InteractionResponseRequest,
+    MessageRequest,
+    OpenSessionRequest,
+    OpenSessionResponse,
+)
 
 from xbotv2.tui.trace import trace_event
 
@@ -52,15 +64,15 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/hello",
-            json={
-                "client_name": "xbotv2-tui",
-                "protocol_version": PROTOCOL_VERSION,
-                "session_id": session_id,
-                "thread_id": thread_id,
-            },
+            json=HelloRequest(
+                client_name="xbotv2-tui",
+                protocol_version=PROTOCOL_VERSION,
+                session_id=session_id,
+                thread_id=thread_id,
+            ).model_dump(),
         )
         _raise_for_status(response)
-        payload = response.json()
+        payload = HelloResponse.model_validate(response.json()).model_dump()
         trace_event(
             "tui.http",
             {"stage": "hello", "status": response.status_code, "payload": payload},
@@ -77,15 +89,15 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/sessions",
-            json={
-                "session_id": session_id,
-                "thread_id": thread_id,
-                "workspace_root": workspace_root,
-                "mode": mode,
-            },
+            json=OpenSessionRequest(
+                session_id=session_id,
+                thread_id=thread_id,
+                workspace_root=workspace_root,
+                mode=mode,
+            ).model_dump(),
         )
         _raise_for_status(response)
-        payload = response.json()
+        payload = OpenSessionResponse.model_validate(response.json()).model_dump()
         trace_event(
             "tui.http",
             {"stage": "open_session", "status": response.status_code, "payload": payload},
@@ -96,7 +108,7 @@ class HttpTransport:
         url = f"/sessions/{session_id}/commands" if session_id else "/commands"
         response = await self._client.get(url)
         _raise_for_status(response)
-        return response.json()
+        return CommandListResponse.model_validate(response.json()).model_dump()
 
     async def run_command(
         self, *, session_id: str, command: str, args: list[str], raw: str,
@@ -104,10 +116,15 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/commands",
-            json={"command": command, "args": args, "raw": raw, "kind": kind},
+            json=CommandRequest(
+                command=command,
+                args=args,
+                raw=raw,
+                kind=kind,
+            ).model_dump(),
         )
         _raise_for_status(response)
-        return response.json()
+        return CommandResponse.model_validate(response.json()).model_dump()
 
     def send_message(
         self,
@@ -118,7 +135,10 @@ class HttpTransport:
     ) -> AsyncIterator[dict[str, Any]]:
         return self._sse_iter(
             f"/sessions/{session_id}/messages",
-            json_body={"content": content, "request_id": request_id},
+            json_body=MessageRequest(
+                content=content,
+                request_id=request_id,
+            ).model_dump(),
             trace_label="messages",
         )
 
@@ -132,7 +152,11 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/interactions/permission-response",
-            json={"request_id": request_id, "decision": decision, "scope": scope},
+            json=InteractionResponseRequest(
+                request_id=request_id,
+                decision=decision,
+                scope=scope,
+            ).model_dump(),
         )
         _raise_for_status(response)
         payload = response.json()
@@ -155,7 +179,10 @@ class HttpTransport:
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/interactions/user-input",
-            json={"request_id": request_id, "answer": answer},
+            json=InteractionResponseRequest(
+                request_id=request_id,
+                answer=answer,
+            ).model_dump(),
         )
         _raise_for_status(response)
         payload = response.json()
@@ -244,7 +271,7 @@ class HttpTransport:
                             "event_type": event.get("type"),
                         },
                     )
-                    yield event
+                    yield Event.model_validate(event).model_dump()
                     if event.get("type") == "end":
                         return
                     event_name = None
@@ -271,7 +298,8 @@ class HttpTransport:
             if data_lines:
                 payload_text = "\n".join(data_lines)
                 try:
-                    yield json.loads(payload_text)
+                    event = Event.model_validate_json(payload_text)
+                    yield event.model_dump()
                 except json.JSONDecodeError:
                     pass
 

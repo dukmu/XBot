@@ -515,23 +515,17 @@ class CursesTuiClient:
 
     def __init__(
         self,
-        data_dir: Path | str = "data",
-        provider_name: str = "default",
         session_id: str | None = None,
         thread_id: str = "agent",
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
-        no_plugins: bool = False,
         server_url: str = "http://127.0.0.1:4096",
     ) -> None:
         self.session = TerminalSession(
-            data_dir=data_dir,
-            provider_name=provider_name,
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=workspace_root,
             session_mode=session_mode,
-            no_plugins=no_plugins,
             base_url=server_url,
         )
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)

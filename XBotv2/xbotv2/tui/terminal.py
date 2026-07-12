@@ -54,21 +54,15 @@ class TerminalSession:
     def __init__(
         self,
         *,
-        data_dir: Path | str = "data",
-        provider_name: str = "default",
         session_id: str | None = None,
         thread_id: str = "agent",
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
-        no_plugins: bool = False,
         transport: Transport | None = None,
         token: str | None = None,
         uds_path: str | None = None,
     ) -> None:
-        self._data_dir = str(data_dir)
-        self._provider_name = provider_name
-        self._no_plugins = no_plugins
         self._session_id = session_id or _new_session_id()
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
@@ -167,7 +161,7 @@ class TerminalSession:
         input_provider: InputProvider | None,
         permission_provider: PermissionProvider | None,
     ) -> AsyncIterator[dict[str, Any]]:
-        request_id = f"tui-{self._session_id}-{id(self)}"
+        request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
         stream = self._transport.send_message(
             session_id=self._session_id,
             content=content,

@@ -205,12 +205,9 @@ def _run_tui(args) -> None:
     from xbotv2.tui.textual_client import TextualTuiClient
 
     client = TextualTuiClient(
-        data_dir=args.data_dir,
-        provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
         base_url=server_url,
         uds_path=uds_path,
     )
@@ -240,12 +237,9 @@ def _run_attach(args, url: str) -> None:
     from xbotv2.tui.textual_client import TextualTuiClient
 
     client = TextualTuiClient(
-        data_dir=args.data_dir,
-        provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
         base_url=url,
     )
     asyncio.run(client.run())
@@ -320,16 +314,13 @@ def _run_terminal(args):
 
 
 def _run_curses(args):
-    """Run the legacy curses TUI over the HTTP server boundary."""
+    """Run the curses TUI over the HTTP server boundary."""
     from xbotv2.tui.client import CursesTuiClient
 
     client = CursesTuiClient(
-        data_dir=args.data_dir,
-        provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
         server_url=f"http://{args.bind}:{args.port}",
     )
     asyncio.run(client.run())

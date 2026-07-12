@@ -99,11 +99,8 @@ async def test_esc_during_running_turn_calls_transport_interrupt() -> None:
     # lands on our ``_InterruptibleSession.interrupt`` recorder.
     session.transport = session
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = session
 
@@ -149,11 +146,8 @@ async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     session = CancellableSession()
     session.transport = session
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = session
 
@@ -231,11 +225,8 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
 
     session = UsageSession()
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
-        no_plugins=True,
     )
     app.session = session
 

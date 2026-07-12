@@ -455,12 +455,6 @@ def test_curses_client_drains_background_events_without_curses():
     assert client.state.messages[-1].content == "live"
 
 
-def test_curses_client_forwards_no_plugin_mode_to_terminal_session():
-    client = CursesTuiClient(no_plugins=True)
-
-    assert client.session._no_plugins is True
-
-
 def test_mode_tui_imports_textual_client_lazily():
     tree = ast.parse(Path("XBotv2/xbotv2/__main__.py").read_text(encoding="utf-8"))
     run_tui = next(
@@ -486,15 +480,15 @@ def test_spawn_server_propagates_log_args(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     args = argparse.Namespace(
-        data_dir="XBotv2/data",
+        data_dir="data",
         provider="deepseek",
         workspace=None,
         mode="tui",
         bind="127.0.0.1",
         port=4096,
-        no_plugins=False,
         log_level="DEBUG",
         log_file="./run.log",
+        no_plugins=False,
     )
 
     xbot_main._spawn_server(args)
@@ -505,12 +499,10 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "./run.log" in captured["cmd"]
 
 
-def test_mode_curses_uses_legacy_curses_client():
+def test_mode_curses_uses_curses_client():
     args = argparse.Namespace(
-        data_dir="data",
         provider="default",
         workspace=None,
-        no_plugins=True,
         bind="127.0.0.1",
         port=4096,
     )
@@ -578,12 +570,9 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
 
@@ -613,12 +602,9 @@ async def test_textual_app_headless_keeps_transcript_non_focusable():
             return None
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
 
@@ -660,12 +646,9 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
 
@@ -735,12 +718,9 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
 
@@ -777,12 +757,9 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
     scheduled_refreshes = 0
@@ -861,12 +838,9 @@ async def test_textual_app_headless_renders_inline_permission_options():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     session = FakeSession()
     app.session = session
@@ -912,12 +886,9 @@ async def test_textual_app_confirming_permission_twice_submits_once():
             return None
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = FakeSession()
 
@@ -988,12 +959,9 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     session = FakeSession()
     app.session = session
@@ -1085,12 +1053,9 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
             yield {"type": "turn_finished", "data": {"turn": 1}}
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     session = FakeSession()
     app.session = session
@@ -1124,12 +1089,9 @@ async def test_textual_composer_history_and_multiline_resize():
     from xbotv2.tui.textual_client import XBotTextualApp
 
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
 
     async with app.run_test(headless=True, size=(80, 24)) as pilot:
@@ -1434,12 +1396,9 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
     session = _ErrorSession()
     app = XBotTextualApp(
-        data_dir="data",
-        provider_name="mock",
         session_id="s",
         thread_id="t",
         workspace_root=".",
-        no_plugins=True,
     )
     app.session = session
 
