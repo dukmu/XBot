@@ -38,6 +38,7 @@ class HookManager:
         if short_circuit is None:
             short_circuit = stage in SHORT_CIRCUIT_STAGES
         ctx.stage = stage
+        ctx.short_circuit_result = None
         errors: list[BaseException] = []
         strict_failure = stage in STRICT_FAILURE_STAGES and not short_circuit
         for hook in self._hooks.get(stage, []):

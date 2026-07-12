@@ -14,7 +14,8 @@ Hook stages have three contracts:
 Lifecycle and persistence stages marked strict run every callback and then raise
 an `ExceptionGroup` containing failures. Other observer failures are logged.
 Guard and transform failures propagate immediately because continuing with a
-partially authorized or partially transformed operation is unsafe.
+partially authorized or partially transformed operation is unsafe. Task
+cancellation always propagates immediately and does not run later callbacks.
 
 Persistence Hooks describe changed-message checkpoints, not calls to a save
 method. `Engine.save_messages()` compares the normalized message payload with
@@ -42,9 +43,10 @@ fail before conversion to provider messages.
 
 The complete current stage enum is exported as `xbotv2.api.HookStage`. Hook
 cleanup must preserve the existing enum values while making their behavior
-clearer. Optimization should happen through typed stage payloads, documented
-return rules, narrower runtime access, and tests for ordering, failure handling,
-and short-circuiting.
+clearer. Optimization should reuse existing fields and types, document return
+rules, narrow runtime access, and test ordering, failure handling, and
+short-circuiting. A new public payload type requires a repeated contract gap
+shared by independent consumers.
 
 Do not mark an existing stage as experimental merely to avoid specifying its
 contract. Do not remove a stage as cleanup before the plugin lifecycle and

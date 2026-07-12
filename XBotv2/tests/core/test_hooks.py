@@ -1,5 +1,6 @@
 """Tests for HookManager and HookStage lifecycle."""
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -149,6 +150,31 @@ class TestHookExecution:
         assert await hook_manager.run(HookStage.BEFORE_TOOL_CALL, hook_context) is decision
 
     @pytest.mark.asyncio
+    async def test_reused_context_clears_previous_short_circuit_result(
+        self,
+        hook_manager,
+        hook_context,
+    ):
+        decision = HookDecision(HookAction.STOP, "stop once")
+
+        async def stop_hook(ctx):
+            return decision
+
+        hook_manager.register(HookStage.BEFORE_AGENT, stop_hook)
+
+        assert await hook_manager.run(HookStage.BEFORE_AGENT, hook_context) is decision
+        assert hook_context.short_circuit_result is decision
+
+        await hook_manager.run(
+            HookStage.ON_SESSION_START,
+            hook_context,
+            short_circuit=False,
+        )
+
+        assert hook_context.stage is HookStage.ON_SESSION_START
+        assert hook_context.short_circuit_result is None
+
+    @pytest.mark.asyncio
     async def test_no_short_circuit_for_lifecycle_hook(self, hook_manager, hook_context):
         """Session/turn/message hooks run ALL callbacks regardless of return."""
         order = []
@@ -189,6 +215,33 @@ class TestHookExecution:
         )
         assert result is None
         assert order == ["fail", "good"]
+
+    @pytest.mark.asyncio
+    async def test_observer_cancellation_propagates_without_running_later_hooks(
+        self,
+        hook_manager,
+        hook_context,
+    ):
+        order = []
+
+        async def cancelled_hook(ctx):
+            order.append("cancelled")
+            raise asyncio.CancelledError()
+
+        async def later_hook(ctx):
+            order.append("later")
+
+        hook_manager.register(HookStage.ON_TURN_START, cancelled_hook)
+        hook_manager.register(HookStage.ON_TURN_START, later_hook)
+
+        with pytest.raises(asyncio.CancelledError):
+            await hook_manager.run(
+                HookStage.ON_TURN_START,
+                hook_context,
+                short_circuit=False,
+            )
+
+        assert order == ["cancelled"]
 
     @pytest.mark.asyncio
     async def test_strict_lifecycle_hook_errors_run_all_then_raise(

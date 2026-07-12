@@ -68,7 +68,8 @@ receive an empty value.
 ## Tightening Rules
 
 - Keep the stage values above intact while improving payload types and tests.
-- Add typed stage payload views before removing broad `HookContext` fields.
+- Reuse existing `HookContext` fields and public types before adding another
+  payload type. Add one only for a repeated gap shared by independent consumers.
 - Do not let plugins reach `HookManager`, `ContextBuilder`, or engine internals.
 - Runtime tool registration from hooks must use `ctx.plugin_runtime` so the
   plugin loader records ownership.
