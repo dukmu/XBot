@@ -37,6 +37,11 @@ data/config/sandbox.yaml
 <workspace_root>/AGENTS.md
 ```
 
+Without `providers.yaml`, the `default` provider name uses the built-in OpenAI
+configuration. Any other name, or a name missing from an existing provider
+file, fails at bootstrap and reports the configured names; provider selection
+never silently falls back to a different model.
+
 ## Core Components
 
 ### Engine (`xbotv2/core/engine.py`)

@@ -190,8 +190,7 @@ test:
         c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
         assert c.api_key == ""
 
-    def test_unknown_provider_returns_builtin_default(self, tmp_path):
-        """Unknown provider_name does not fall back to another configured provider."""
+    def test_unknown_provider_is_rejected(self, tmp_path):
         from xbotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
@@ -202,6 +201,20 @@ default:
   model: fallback-model
 """)
 
-        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "nonexistent_provider")
-        assert c.provider == "openai"
-        assert c.model == "gpt-4"
+        with pytest.raises(
+            ValueError,
+            match="Unknown provider config: nonexistent_provider.*Available providers: default",
+        ):
+            load_provider_config(
+                RuntimePaths.from_data_dir(tmp_path),
+                "nonexistent_provider",
+            )
+
+    def test_named_provider_requires_provider_configuration(self, tmp_path):
+        from xbotv2.config.loader import load_provider_config
+
+        with pytest.raises(
+            ValueError,
+            match="Unknown provider config: minimax.*No providers are configured",
+        ):
+            load_provider_config(RuntimePaths.from_data_dir(tmp_path), "minimax")

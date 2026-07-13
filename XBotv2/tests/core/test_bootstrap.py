@@ -1,6 +1,7 @@
 """Tests for bootstrap with explicit no-plugin or temporary-plugin modes."""
 
 import json
+import sys
 
 import pytest
 from xbotv2.api.paths import RuntimePaths
@@ -25,6 +26,51 @@ class TestBootstrapBasics:
         )
         assert engine is not None
         assert engine.turn_count == 0
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejects_unknown_provider(self, temp_data_dir):
+        with pytest.raises(ValueError, match="Unknown provider config: typo"):
+            await bootstrap(
+                paths=RuntimePaths.from_data_dir(temp_data_dir),
+                provider_name="typo",
+                session_id="unknown-provider",
+                plugin_dirs=[],
+                llm_override=MockLLM(responses=[]),
+            )
+
+    def test_cli_reports_unknown_provider_without_traceback(
+        self,
+        temp_data_dir,
+        monkeypatch,
+        capsys,
+    ):
+        from xbotv2.__main__ import main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "xbotv2",
+                "--mode",
+                "once",
+                "--data-dir",
+                str(temp_data_dir),
+                "--provider",
+                "typo",
+                "prompt",
+            ],
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        captured = capsys.readouterr()
+        assert exc_info.value.code == 2
+        assert captured.out == ""
+        assert captured.err == (
+            "Error: Unknown provider config: typo. No providers are configured.\n"
+        )
+        assert "Traceback" not in captured.err
 
     @pytest.mark.asyncio
     async def test_session_init_failure_unloads_runtime_plugin_resources(

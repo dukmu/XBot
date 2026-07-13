@@ -121,6 +121,17 @@ def main():
         # `python main.py attach http://...` style: first arg looks like a URL
         return _run_attach(args, args.prompt)
 
+    if not (args.mode == "tui" and args.server):
+        from xbotv2.config.loader import load_provider_config
+
+        try:
+            load_provider_config(
+                RuntimePaths.from_data_dir(args.data_dir),
+                args.provider,
+            )
+        except ValueError as exc:
+            parser.exit(2, f"Error: {exc}\n")
+
     if args.mode == "server":
         _run_server(args)
     elif args.mode == "tui":

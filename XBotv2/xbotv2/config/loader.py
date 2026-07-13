@@ -67,6 +67,10 @@ def load_provider_config(paths: RuntimePaths, provider_name: str = "default") ->
     """
     all_data = load_yaml(paths.providers_config)
     if not all_data:
+        if provider_name != "default":
+            raise ValueError(
+                f"Unknown provider config: {provider_name}. No providers are configured."
+            )
         return ProviderConfig()
 
     providers = all_data.get("providers") if isinstance(all_data.get("providers"), dict) else all_data
@@ -74,8 +78,11 @@ def load_provider_config(paths: RuntimePaths, provider_name: str = "default") ->
     if selected_name == "default" and isinstance(all_data.get("default"), str):
         selected_name = str(all_data["default"])
     section = providers.get(selected_name) if isinstance(providers, dict) else None
-    if not section:
-        return ProviderConfig()
+    if section is None:
+        available = ", ".join(sorted(str(name) for name in providers))
+        raise ValueError(
+            f"Unknown provider config: {provider_name}. Available providers: {available or '(none)'}."
+        )
 
     section = _expand_env_in_dict(section)
     api_key_env = section.pop("api_key_env", None)
@@ -116,4 +123,3 @@ def load_system_config(paths: RuntimePaths, workspace_root: Path | str) -> Syste
     if memory_path.exists():
         data["memory"] = memory_path.read_text(encoding="utf-8")
     return SystemConfig(**data)
-
