@@ -223,7 +223,9 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 **Tools:**
 - `skill` (namespace `plugin:skills:skill`): load a skill by name
 - Each model-invocable skill is registered as a tool (namespace
-  `skills:<scope>:<name>`) with its SKILL.md description in the provider schema
+  `skills:<scope>:<name>`) with its SKILL.md description in the provider schema.
+  Generic, dedicated, and explicit `/skill-name` invocation all preprocess and
+  activate the same per-turn skill state.
 
 **Features:**
 - Repeated initialization on the same loaded plugin is idempotent; partial

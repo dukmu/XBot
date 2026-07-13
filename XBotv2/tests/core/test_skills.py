@@ -179,7 +179,14 @@ Body
         entry = registry.get("skills:project:test-skill")
         assert entry is not None
         assert entry.tool.description == "A test skill for integration testing"
+        assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
+
+        content = await entry.tool.ainvoke({})
+
+        assert "test skill body" in content.lower()
+        assert plugin.diagnostics()["active_skills"] == 1
+        assert plugin._permission_scope.check("ask_user") == "deny"
 
     @pytest.mark.asyncio
     async def test_manual_only_skill_requires_explicit_user_invocation(
@@ -265,6 +272,85 @@ Body
         assert allowed is None
         assert denied.action is HookAction.DENY
         assert "not permitted" in denied.reason
+
+    @pytest.mark.asyncio
+    async def test_skill_restrictions_run_before_core_permissions(
+        self,
+        state_store,
+        temp_workspace,
+    ):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import HookStage, PluginManifest, Tool
+        from xbotv2.core.context import ContextBuilder
+        from xbotv2.core.engine import Engine
+        from xbotv2.hooks.manager import HookManager
+        from xbotv2.llm.mock import MockLLM
+        from xbotv2.tools.permissions import PermissionSystem
+        from xbotv2.tools.registry import ToolRegistry
+        from xbotv2.tools.sandbox import SandboxPolicy
+
+        invoked = []
+
+        def echo(message: str) -> str:
+            invoked.append(("echo", message))
+            return message
+
+        def runner(command: str) -> str:
+            invoked.append(("runner", command))
+            return command
+
+        registry = ToolRegistry()
+        registry.register(Tool.from_function(echo), sandbox_mode="host")
+        registry.register(Tool.from_function(runner), sandbox_mode="host")
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._active_skills.add("restricted")
+        plugin._permission_scope.add(allowed=["echo", "runner(git *)"])
+        hooks = HookManager()
+        hooks.register(HookStage.BEFORE_TOOL_CALL, plugin._on_before_tool)
+        permissions = PermissionSystem(default_decision="allow")
+        permissions.add_rule("deny", {"tool": "echo"})
+        llm = MockLLM(responses=[
+            {
+                "content": "try both",
+                "tool_calls": [
+                    {
+                        "id": "allowed_by_skill",
+                        "name": "echo",
+                        "args": {"message": "hi"},
+                    },
+                    {
+                        "id": "denied_by_skill",
+                        "name": "runner",
+                        "args": {"command": "rm build"},
+                    },
+                ],
+            },
+            {"content": "done"},
+        ])
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hooks,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(
+                enabled=False,
+                workspace_root=str(temp_workspace),
+            ),
+            permission_system=permissions,
+            config=None,
+        )
+
+        _ = [event async for event in engine.run_turn("test restrictions")]
+
+        results = {
+            message.tool_call_id: message
+            for message in engine.messages
+            if message.role == "tool"
+        }
+        assert invoked == []
+        assert "Permission denied" in results["allowed_by_skill"].content
+        assert "not permitted by active skill" in results["denied_by_skill"].content
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_rolls_back_partial_registration(

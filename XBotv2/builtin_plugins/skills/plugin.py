@@ -57,12 +57,7 @@ class SkillsPlugin(PluginBase):
             content = await load_skill(
                 name, skill_registry=self._registry, sandbox=sandbox
             )
-            if skill.allowed_tools or skill.disallowed_tools:
-                self._permission_scope.add(
-                    allowed=skill.allowed_tools,
-                    disallowed=skill.disallowed_tools,
-                )
-            self._active_skills.add(name)
+            self._activate_skill(skill)
             return content
 
         tool = Tool.from_function(_load_skill, name="skill")
@@ -88,7 +83,7 @@ class SkillsPlugin(PluginBase):
                 registered_name = ctx.plugin_runtime.register_tool(
                     self._skill_as_tool(skill),
                     options=ToolRegistrationOptions(
-                        sandbox_mode="host",
+                        sandbox_mode="sandboxed",
                         namespace=f"skills:{skill.scope}",
                     ),
                 )
@@ -99,13 +94,28 @@ class SkillsPlugin(PluginBase):
             raise
         self._initialized = True
 
-    @staticmethod
-    def _skill_as_tool(skill: Skill) -> Tool:
-        def invoke() -> str:
-            return skill.content
+    def _skill_as_tool(self, skill: Skill) -> Tool:
+        async def invoke(*, sandbox=None) -> str:
+            content = await load_skill(
+                skill.name,
+                skill_registry=self._registry,
+                sandbox=sandbox,
+            )
+            self._activate_skill(skill)
+            return content
 
         invoke.__doc__ = skill.description
         return Tool.from_function(invoke, name=skill.name)
+
+    def _activate_skill(self, skill: Skill) -> None:
+        if skill.name in self._active_skills:
+            return
+        if skill.allowed_tools or skill.disallowed_tools:
+            self._permission_scope.add(
+                allowed=skill.allowed_tools,
+                disallowed=skill.disallowed_tools,
+            )
+        self._active_skills.add(skill.name)
 
     def _rollback_skill_tools(self, runtime: RuntimePluginContext) -> None:
         for registered_name in reversed(self._skill_tools):
@@ -130,9 +140,7 @@ class SkillsPlugin(PluginBase):
         expanded = f"## {skill_name}\n\n{content}"
         if instructions:
             expanded += f"\n\n## Instructions\n{instructions}"
-        if skill.allowed_tools or skill.disallowed_tools:
-            self._permission_scope.add(allowed=skill.allowed_tools, disallowed=skill.disallowed_tools)
-        self._active_skills.add(skill_name)
+        self._activate_skill(skill)
         return {"user_input": expanded}
 
     async def _on_after_context(self, ctx: HookContext) -> None:
