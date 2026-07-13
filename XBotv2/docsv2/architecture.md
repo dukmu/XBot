@@ -143,6 +143,8 @@ Connects through the official MCP SDK using stdio or Streamable HTTP.
 - Preserves MCP input schemas and adapts call data/errors to `ToolResult`
 - Keeps optional server and client features capability-gated; XBot advertises
   them only when the corresponding Agent bridge is installed.
+- Exposes resources, prompts, and completion through one stable bridge tool per
+  negotiated feature instead of dynamically registering every remote item.
 
 ## Namespace Protocol
 

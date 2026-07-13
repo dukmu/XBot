@@ -311,10 +311,12 @@ is preserved as the public `Tool.parameters` schema. Successful calls retain
 the raw MCP result in `ToolResult.data`; MCP `isError` becomes a structured
 `mcp_tool_error`.
 
-Tool registration remains the first Agent-facing integration. Resource,
-prompt, and bidirectional client capabilities are negotiated by the SDK but
-must only be advertised to a server when the corresponding XBot bridge is
-installed.
+Negotiated server capabilities are Agent-facing without per-item registration:
+each server may add stable `protocol_resources`, `protocol_prompts`, and
+`protocol_complete` tools. They query the live MCP session, preserve structured
+results, and expose subscription operations only when the server advertises
+them. Bidirectional client capabilities are advertised only when the
+corresponding XBot callback is installed.
 
 **Configuration** (in `system.yaml` plugins section):
 ```yaml

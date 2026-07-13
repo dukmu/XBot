@@ -248,6 +248,7 @@ def _mcp_plugin(servers):
     plugin = MCPPlugin(PluginManifest(name="mcp", version="1"), store=None)
     plugin._config = {"servers": servers}
     plugin._client.connect_and_list = AsyncMock()
+    plugin._client.server_capabilities = lambda _server: {"tools": {}}
     plugin._client.disconnect = AsyncMock(return_value=True)
     plugin._client.disconnect_all = AsyncMock()
     return plugin
@@ -318,6 +319,59 @@ async def test_session_close_removes_tools_and_allows_reinitialization():
     await plugin._on_session_init(ctx)
     assert registry.registered(registered_name)
     assert plugin._client.connect_and_list.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_negotiated_server_features_register_agent_bridges():
+    plugin = _mcp_plugin({"server": {}})
+    plugin._client.connect_and_list.return_value = []
+    plugin._client.server_capabilities = lambda _server: {
+        "resources": {}, "prompts": {}, "completions": {},
+    }
+    plugin._client.read_resource = AsyncMock(return_value={
+        "contents": [{"uri": "memo://one", "text": "memo"}],
+    })
+    plugin._client.get_prompt = AsyncMock(return_value={
+        "messages": [{"role": "user", "content": {"type": "text", "text": "review"}}],
+    })
+    plugin._client.complete = AsyncMock(return_value={
+        "completion": {"values": ["one"]},
+    })
+    runtime, registry, owned_names = _mcp_runtime()
+
+    await plugin._on_session_init(SimpleNamespace(plugin_runtime=runtime))
+
+    assert plugin._server_status["server"] == {
+        "status": "ready", "tools": 0, "bridges": 3,
+    }
+    assert len(owned_names) == 3
+    resource = registry.get("mcp:server:mcp__server__protocol_resources")
+    prompt = registry.get("mcp:server:mcp__server__protocol_prompts")
+    completion = registry.get("mcp:server:mcp__server__protocol_complete")
+    assert resource is not None and prompt is not None and completion is not None
+    assert resource.tool.parameters["properties"]["operation"]["enum"] == [
+        "list", "read",
+    ]
+
+    read_result = await resource.tool.ainvoke({
+        "operation": "read", "uri": "memo://one",
+    })
+    prompt_result = await prompt.tool.ainvoke({
+        "operation": "get", "name": "review", "arguments": {"scope": "diff"},
+    })
+    completion_result = await completion.tool.ainvoke({
+        "reference_type": "prompt",
+        "reference": "review",
+        "argument": {"name": "scope", "value": "d"},
+    })
+
+    assert read_result.data["contents"][0]["text"] == "memo"
+    assert prompt_result.data["messages"][0]["content"]["text"] == "review"
+    assert completion_result.data["completion"]["values"] == ["one"]
+    plugin._client.read_resource.assert_awaited_once_with("server", "memo://one")
+    plugin._client.get_prompt.assert_awaited_once_with(
+        "server", "review", {"scope": "diff"},
+    )
 
 
 class TestMCPToolWrapper:
