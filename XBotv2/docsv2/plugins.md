@@ -267,6 +267,9 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `disable-model-invocation: true` keeps a skill out of the model tool list and
   blocks the generic `skill` tool from loading it; explicit `/skill-name`
   invocation remains available. The value must be a YAML boolean.
+- Generic and dedicated skill tools return `ToolResult`. Successful loads
+  expose the skill name and scope in `data`; unknown and manual-only requests
+  use stable structured errors instead of successful `Error:` text.
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 

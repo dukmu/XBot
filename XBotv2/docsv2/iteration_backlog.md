@@ -123,8 +123,8 @@ ambiguity before large implementation changes.
 - Command discovery exposes registered-name metadata without changing existing
   string selectors.
 - Align documented execution metadata with dispatcher behavior.
-- Normalize `ToolResult.data`, errors, artifacts, and client events across
-  built-in tools.
+- Built-in tools return `ToolResult`; structured data, errors, artifacts, and
+  client events retain their fields through runtime conversion.
 - Typed `ToolResult.data`, `error`, and `artifacts` now survive runtime
   conversion and appear on `tool_result` events.
 - Large tool results use session-relative `artifacts/` paths through a

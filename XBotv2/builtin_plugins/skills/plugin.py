@@ -18,6 +18,7 @@ from xbotv2.api import (
     RuntimePluginContext,
     Tool,
     ToolRegistrationOptions,
+    ToolResult,
 )
 
 from .permission_scope import SkillPermissionScope
@@ -48,17 +49,26 @@ class SkillsPlugin(PluginBase):
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
 
-        async def _load_skill(name: str, *, sandbox=None) -> str:
+        async def _load_skill(name: str, *, sandbox=None) -> ToolResult:
             skill = self._registry.load_skill(name)
             if skill is None:
-                return f"Error: skill '{name}' not found"
+                return ToolResult.failure(
+                    "skill_not_found",
+                    f"Skill '{name}' not found",
+                )
             if skill.disable_model_invocation:
-                return f"Error: skill '{name}' requires explicit /{name} invocation"
+                return ToolResult.failure(
+                    "skill_requires_explicit_invocation",
+                    f"Skill '{name}' requires explicit /{name} invocation",
+                )
             content = await load_skill(
                 name, skill_registry=self._registry, sandbox=sandbox
             )
             self._activate_skill(skill)
-            return content
+            return ToolResult.success(
+                content,
+                data={"name": skill.name, "scope": skill.scope},
+            )
 
         tool = Tool.from_function(_load_skill, name="skill")
         ctx.register_tool(
@@ -95,14 +105,17 @@ class SkillsPlugin(PluginBase):
         self._initialized = True
 
     def _skill_as_tool(self, skill: Skill) -> Tool:
-        async def invoke(*, sandbox=None) -> str:
+        async def invoke(*, sandbox=None) -> ToolResult:
             content = await load_skill(
                 skill.name,
                 skill_registry=self._registry,
                 sandbox=sandbox,
             )
             self._activate_skill(skill)
-            return content
+            return ToolResult.success(
+                content,
+                data={"name": skill.name, "scope": skill.scope},
+            )
 
         invoke.__doc__ = skill.description
         return Tool.from_function(invoke, name=skill.name)

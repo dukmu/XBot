@@ -194,9 +194,11 @@ Body
         assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
 
-        content = await entry.tool.ainvoke({})
+        result = await entry.tool.ainvoke({})
 
-        assert "test skill body" in content.lower()
+        assert result.status == "success"
+        assert "test skill body" in result.content.lower()
+        assert result.data == {"name": "test-skill", "scope": "project"}
         assert plugin.diagnostics()["active_skills"] == 1
         assert plugin._permission_scope.check("ask_user") == "deny"
 
@@ -226,16 +228,89 @@ Body
         plugin.setup(setup)
 
         model_result = await setup.skill_tool.ainvoke({"name": "manual-only"})
+        missing_result = await setup.skill_tool.ainvoke({"name": "missing"})
         manual_result = await plugin._on_before_user_message(
             SimpleNamespace(user_input="/manual-only focus", sandbox=None)
         )
 
-        assert model_result == (
-            "Error: skill 'manual-only' requires explicit /manual-only invocation"
+        assert model_result.status == "error"
+        assert model_result.error.code == "skill_requires_explicit_invocation"
+        assert model_result.content == (
+            "Skill 'manual-only' requires explicit /manual-only invocation"
         )
+        assert missing_result.status == "error"
+        assert missing_result.error.code == "skill_not_found"
         assert manual_result["user_input"].startswith("## manual-only")
         assert "Manual skill content." in manual_result["user_input"]
         assert "## Instructions\nfocus" in manual_result["user_input"]
+
+    @pytest.mark.asyncio
+    async def test_skill_tool_error_survives_engine_events(
+        self,
+        skill_workspace,
+        state_store,
+        temp_workspace,
+    ):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import PluginManifest
+        from xbotv2.core.context import ContextBuilder
+        from xbotv2.core.engine import Engine
+        from xbotv2.hooks.manager import HookManager
+        from xbotv2.llm.mock import MockLLM
+        from xbotv2.tools.permissions import PermissionSystem
+        from xbotv2.tools.registry import ToolRegistry
+        from xbotv2.tools.sandbox import SandboxPolicy
+
+        class SetupContext:
+            def __init__(self, registry):
+                self.registry = registry
+
+            def register_hook(self, stage, callback):
+                pass
+
+            def register_tool(self, tool, options=None):
+                return self.registry.register(
+                    tool,
+                    namespace=options.namespace,
+                    sandbox_mode=options.sandbox_mode,
+                )
+
+        registry = ToolRegistry()
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._registry._scan_global = lambda: None
+        plugin._registry.discover(skill_workspace)
+        plugin.setup(SetupContext(registry))
+        engine = Engine(
+            llm=MockLLM(responses=[
+                {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "manual",
+                        "name": "skill",
+                        "args": {"name": "manual-only"},
+                    }],
+                },
+                {"content": "done"},
+            ]),
+            tool_registry=registry,
+            hook_manager=HookManager(),
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(
+                enabled=False,
+                workspace_root=str(temp_workspace),
+            ),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [event async for event in engine.run_turn("load manual skill")]
+        tool_event = next(event for event in events if event["type"] == "tool_result")
+
+        assert tool_event["data"]["status"] == "error"
+        assert tool_event["data"]["error"]["code"] == (
+            "skill_requires_explicit_invocation"
+        )
 
     @pytest.mark.asyncio
     async def test_active_skill_context_order_is_stable(self):
