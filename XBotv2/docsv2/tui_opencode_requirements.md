@@ -115,6 +115,10 @@ The transcript renders a flat chronological stream:
 There is no nested scroll region inside tool/message bodies. Long content stays
 in the main transcript flow.
 
+Streaming tool indexes are local to one model response. Final
+`assistant_message` and `tool_calls_started` events close that mapping so a
+later tool batch in the same turn cannot reuse an earlier tool entry.
+
 ## Live Interactions
 
 ### Permission And Sandbox

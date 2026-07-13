@@ -149,6 +149,7 @@ class TuiState:
                 # the user the model is acting.
                 self._streaming_assistant_index = None
             self._apply_tool_calls(tool_calls)
+            self._streaming_tool_ids.clear()
         elif event_type == "assistant_message_delta":
             content = str(data.get("content") or "")
             reasoning = str(data.get("reasoning") or "")
@@ -157,6 +158,7 @@ class TuiState:
             self._apply_tool_call_delta(data.get("tool_calls"))
         elif event_type == "tool_calls_started":
             self._apply_tool_calls(data.get("tool_calls"))
+            self._streaming_tool_ids.clear()
         elif event_type == "tool_result":
             tool = self._tool(
                 str(data.get("tool_call_id") or "tool"),

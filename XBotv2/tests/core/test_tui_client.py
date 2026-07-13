@@ -242,6 +242,60 @@ def test_tui_state_renames_provisional_streaming_tool_id():
     assert [(entry.kind, entry.key) for entry in state.transcript] == [("tool", "call_shell")]
 
 
+def test_tui_state_keeps_sequential_tool_batches_distinct():
+    state = TuiState()
+    first_call = {
+        "id": "call_1",
+        "name": "create_goal",
+        "args": {"objective": "first"},
+        "index": 0,
+    }
+    second_call = {
+        "id": "call_2",
+        "name": "inspect_goal",
+        "args": {},
+        "index": 0,
+    }
+    events = [
+        _frame("turn_started", {"turn": 1}),
+        _frame("tool_call_delta", {"tool_calls": [{
+            "tool_call_id": "call_1", "name": "create_goal",
+            "args_delta": '{"objective": "first"}', "index": 0,
+        }]}),
+        _frame("assistant_message", {"tool_calls": [first_call]}),
+        _frame("tool_calls_started", {"tool_calls": [first_call]}),
+        _frame("tool_result", {
+            "tool_call_id": "call_1", "name": "create_goal", "content": "created",
+        }),
+        _frame("tool_call_delta", {"tool_calls": [{
+            "tool_call_id": "tool_0", "name": "inspect_goal",
+            "args_delta": "{}", "index": 0,
+        }]}),
+        _frame("tool_call_delta", {"tool_calls": [{
+            "tool_call_id": "call_2", "replaces_tool_call_id": "tool_0",
+            "name": "inspect_goal", "index": 0,
+        }]}),
+        _frame("assistant_message", {"tool_calls": [second_call]}),
+        _frame("tool_calls_started", {"tool_calls": [second_call]}),
+        _frame("tool_result", {
+            "tool_call_id": "call_2", "name": "inspect_goal", "content": "inspected",
+        }),
+    ]
+
+    for event in events:
+        state.apply_event(event)
+
+    assert list(state.tools) == ["call_1", "call_2"]
+    assert state.tools["call_1"].args_preview == '{"objective": "first"}'
+    assert state.tools["call_1"].summary == "created"
+    assert state.tools["call_2"].name == "inspect_goal"
+    assert state.tools["call_2"].summary == "inspected"
+    assert [(entry.kind, entry.key) for entry in state.transcript] == [
+        ("tool", "call_1"),
+        ("tool", "call_2"),
+    ]
+
+
 def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
     state = TuiState()
 
