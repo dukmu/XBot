@@ -63,9 +63,17 @@ class ToolRegistrationOptions:
 
 
 class PromptFragmentDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     stage: PromptFragmentStage
-    file: str | None = None
-    handler: str | None = None
+    file: str | None = Field(default=None, min_length=1)
+    handler: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "PromptFragmentDeclaration":
+        if (self.file is None) == (self.handler is None):
+            raise ValueError("prompt fragment requires exactly one of file or handler")
+        return self
 
 
 class PluginManifest(BaseModel):

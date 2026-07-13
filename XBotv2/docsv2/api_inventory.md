@@ -80,6 +80,8 @@ manifest is parsed, and configured values are validated before plugin import.
 Hook declarations accept every current `HookStage` value and reject unknown
 stages during manifest parsing. Tool declarations apply the same early
 validation to `host` and `sandboxed` execution modes.
+Prompt fragment declarations require exactly one non-empty `file` or `handler`;
+their stage remains limited to the complete `PromptFragmentStage` inventory.
 `PluginStore` mutations persist immediately with atomic replacement; reads are
 fresh snapshots and unload does not erase plugin state.
 Command discovery exposes `registered_name` and `namespace` metadata while

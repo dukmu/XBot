@@ -130,6 +130,32 @@ def test_plugin_manifest_rejects_legacy_dag_suffix_stage():
         )
 
 
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        {"stage": "system_instructions"},
+        {
+            "stage": "system_instructions",
+            "file": "prompt.md",
+            "handler": "sample:render",
+        },
+        {"stage": "system_instructions", "file": ""},
+        {
+            "stage": "system_instructions",
+            "handler": "sample:render",
+            "unknown": True,
+        },
+    ],
+)
+def test_plugin_manifest_requires_one_prompt_fragment_source(fragment):
+    with pytest.raises(ValidationError):
+        PluginManifest(
+            name="sample",
+            version="1",
+            prompt_fragments=[fragment],
+        )
+
+
 def test_wire_models_reject_unknown_fields():
     with pytest.raises(ValidationError):
         HelloRequest.model_validate({"protocol_version": PROTOCOL_VERSION, "unknown": True})

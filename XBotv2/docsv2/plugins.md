@@ -129,6 +129,7 @@ The setup transaction should record every resource for rollback and unload.
 
 Prompt fragments use the public `PromptFragmentStage` values, in render order:
 `system_prefix`, `system_instructions`, `system_rules`, and `context_suffix`.
+Each manifest declaration provides exactly one non-empty `file` or `handler`.
 The suffix stage renders after message history and before the core current-state
 text. Unknown stages are rejected during manifest validation; Python plugins
 using `ctx.add_prompt_fragment()` receive the same validation from the context
