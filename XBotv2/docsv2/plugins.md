@@ -237,6 +237,9 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
   restrict calls and never bypass core permission policy. Parameter patterns
   currently use the real `shell(command)` form, for example
   `shell(git *)`; compatibility aliases such as `Bash` are not provided.
+  Patterns must be non-empty strings with balanced parameter parentheses;
+  malformed permission metadata causes the skill to be ignored during
+  discovery, and scope updates are atomic.
 - `disable-model-invocation: true` keeps a skill out of the model tool list and
   blocks the generic `skill` tool from loading it; explicit `/skill-name`
   invocation remains available. The value must be a YAML boolean.

@@ -141,7 +141,46 @@ ambiguity before large implementation changes.
 - Keep token manager as the template for policy/observation plugins.
 - Keep each built-in plugin documented as an example of the lifecycle model.
 
-## 7. Documentation As Implementation
+## 7. Built-in Workflow Plugins
+
+Implement these as public-API consumers and reference plugins, in this order:
+
+### Compact
+
+- Support an explicit compact request and automatic invocation before a model
+  request crosses its configured context threshold.
+- Compact only a completed history prefix. Preserve system/plugin context,
+  recent messages, unresolved tool calls, and the current user request.
+- Persist the compacted history so resume and restart do not reconstruct a
+  different context.
+- On cancellation or summarization failure, keep the original history intact
+  and expose the failure through the existing turn/protocol behavior.
+- Reuse the existing model-request, persistence, usage, and client-event
+  contracts before proposing another Hook stage or core-only plugin access.
+
+### Todo List
+
+- Provide explicit tools to list, create, update, and remove session-scoped
+  todo items with stable identifiers and a small documented status set.
+- Persist mutations immediately through `PluginStore`; session resume must
+  return the same ordered list.
+- Keep todo mutations explicit and tool-driven. Do not infer hidden state from
+  assistant prose or duplicate goal ownership.
+
+### Goal
+
+- Provide explicit tools to create, inspect, update, complete, and abandon the
+  active session goal.
+- Persist the goal and expose only a concise active-goal context fragment;
+  completed or abandoned goals must not remain active after resume.
+- Keep the goal as the durable objective and use todo items only for concrete
+  work tracking. Define automatic continuation separately before adding it.
+
+Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
+structured tool-result tests, public API boundary tests, and current
+documentation before it becomes a shipped default.
+
+## 8. Documentation As Implementation
 
 - Keep examples runnable against current CLI and protocol behavior.
 - Link each architecture claim to a typed model, test, or concrete file.

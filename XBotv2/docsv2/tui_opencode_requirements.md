@@ -2,7 +2,7 @@
 
 Status: Stage 2 runtime and TUI command model.
 
-Last reviewed: 2026-06-06
+Last reviewed: 2026-07-13
 
 ## Goals
 
@@ -207,10 +207,11 @@ Primary tests:
 .venv/bin/python -m pytest XBotv2/tests/integration/test_http_transport.py
 ```
 
-Full Stage 2 baseline:
+Full runtime and TUI regression suite:
 
-```text
-370 passed, 2 warnings
+```bash
+.venv/bin/python -m pytest XBotv2/tests/core XBotv2/tests/integration
 ```
 
-The warnings are third-party `websockets` deprecations from uvicorn.
+The command result is the current baseline; do not preserve an old test count
+as a completion claim when the suite changes.

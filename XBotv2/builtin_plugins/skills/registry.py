@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from .permission_scope import validate_tool_patterns
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _DISCOVERY_PATHS = [
@@ -117,6 +119,13 @@ class SkillRegistry:
         disallowed = fm.get("disallowed-tools") or fm.get("disallowed_tools") or []
         if isinstance(disallowed, str):
             disallowed = [t.strip() for t in disallowed.split(",") if t.strip()]
+        if not isinstance(allowed, list) or not isinstance(disallowed, list):
+            return None
+        try:
+            validate_tool_patterns(allowed)
+            validate_tool_patterns(disallowed)
+        except ValueError:
+            return None
         disable_model_invocation = fm.get(
             "disable-model-invocation",
             fm.get("disable_model_invocation", False),

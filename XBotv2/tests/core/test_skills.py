@@ -63,6 +63,17 @@ disable-model-invocation: "true"
 Invalid flag content.
 """)
 
+    invalid_permissions_dir = ws / ".agents" / "skills" / "invalid-permissions"
+    invalid_permissions_dir.mkdir(parents=True)
+    (invalid_permissions_dir / "SKILL.md").write_text("""---
+name: invalid-permissions
+description: Invalid permission pattern
+allowed-tools:
+  - shell(git *
+---
+Invalid permission content.
+""")
+
     return ws
 
 
@@ -78,6 +89,7 @@ class TestSkillRegistry:
         assert "agents-skill" in names
         assert "invalid-skill" not in names
         assert "invalid-flag" not in names
+        assert "invalid-permissions" not in names
 
     def test_skill_parses_frontmatter(self, skill_workspace):
         from builtin_plugins.skills.registry import SkillRegistry
@@ -486,4 +498,14 @@ class TestSkillPermissionScope:
         scope.add(allowed=["shell"])
         assert scope.check("shell") == "allow"
         scope.clear()
+        assert scope.check("shell") is None
+
+    def test_invalid_update_does_not_leave_partial_rules(self):
+        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+
+        scope = SkillPermissionScope()
+
+        with pytest.raises(ValueError, match="invalid tool permission pattern"):
+            scope.add(allowed=["shell", "filesystem_read("])
+
         assert scope.check("shell") is None

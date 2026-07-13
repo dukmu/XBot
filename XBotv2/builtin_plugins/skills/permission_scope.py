@@ -16,10 +16,10 @@ class SkillPermissionScope:
         allowed: list[str] | None = None,
         disallowed: list[str] | None = None,
     ) -> None:
-        for p in allowed or []:
-            self._allowed.append(_compile_pattern(p))
-        for p in disallowed or []:
-            self._disallowed.append(_compile_pattern(p))
+        allowed_patterns = [_compile_pattern(p) for p in allowed or []]
+        disallowed_patterns = [_compile_pattern(p) for p in disallowed or []]
+        self._allowed.extend(allowed_patterns)
+        self._disallowed.extend(disallowed_patterns)
 
     def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str | None:
         targets = [tool_name]
@@ -43,18 +43,34 @@ class SkillPermissionScope:
 
 
 def _compile_pattern(pattern: str) -> re.Pattern[str]:
+    if not isinstance(pattern, str):
+        raise ValueError("tool permission patterns must be strings")
     text = pattern.strip()
     if not text:
-        return re.compile("^$")
+        raise ValueError("tool permission patterns must not be empty")
     # "shell(git *)" matches the shell tool's command argument.
     if "(" in text:
-        base = re.escape(text.split("(")[0])
-        inner = text[text.index("(") + 1:text.rindex(")")].strip()
+        base, inner = text.split("(", 1)
+        if (
+            not base
+            or not text.endswith(")")
+            or text.count("(") != text.count(")")
+        ):
+            raise ValueError(f"invalid tool permission pattern: {pattern!r}")
+        base = re.escape(base)
+        inner = inner[:-1].strip()
         inner_re = _wildcard_to_regex(inner)
         return re.compile(f"^{base}\\({inner_re}\\)$")
-    # "Bash" or "mcp__*" → match tool name only
+    if ")" in text:
+        raise ValueError(f"invalid tool permission pattern: {pattern!r}")
+    # "shell" or "mcp__*" matches the canonical tool name only.
     name_re = _wildcard_to_regex(text)
     return re.compile(f"^{name_re}$")
+
+
+def validate_tool_patterns(patterns: list[str]) -> None:
+    for pattern in patterns:
+        _compile_pattern(pattern)
 
 
 def _wildcard_to_regex(pattern: str) -> str:
