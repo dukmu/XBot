@@ -35,11 +35,14 @@ from httpx import ASGITransport
 from xbotv2.llm.mock import MockLLM
 from xbotv2.protocol.version import PROTOCOL_VERSION
 from xbotv2.protocol.http_server import (
-    SessionContext,
     _format_sse,
     create_app,
-    run_turn_stream,
     set_llm_override,
+)
+from xbotv2.core.session import (
+    SessionRuntime,
+    _live_sink,
+    run_turn_stream,
 )
 from xbotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from xbotv2.tui.terminal import TerminalSession
@@ -69,7 +72,7 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
     engine = Engine()
     task = asyncio.create_task(hanging_turn())
     await asyncio.sleep(0)
-    ctx = SessionContext(
+    ctx = SessionRuntime(
         session_id="closing",
         thread_id="agent",
         provider_name="mock",
@@ -611,8 +614,6 @@ async def test_live_interaction_is_pending_before_event_is_published(
     from types import SimpleNamespace
 
     from xbotv2.core.interactions import InteractionWaiter
-    from xbotv2.protocol.http_server import _live_sink
-
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
     waiter = (

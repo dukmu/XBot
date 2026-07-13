@@ -97,7 +97,7 @@ from the hook does not bypass core permission policy.
 data/sessions/<sid>/state/
 ├── messages.jsonl          # append normally; atomic rewrite after history mutation
 ├── plugin_states/          # per-plugin YAML files
-└── artifacts/              # cached large tool outputs
+└── artifacts/              # cached large tool outputs and provider context
 ```
 
 `CoreStateStore` (`persistence/store.py`):
@@ -107,6 +107,11 @@ data/sessions/<sid>/state/
 - `_max_msg_id` cached to avoid O(n) scan
 
 No `events.jsonl`, `state.yaml`, or materializer.
+
+`SessionRuntime` (`core/session.py`) owns live-only turn, Mailbox, interaction,
+and event-stream state. It is shared by HTTP and once mode, while resume still
+reconstructs only persisted Engine and plugin state. Mailbox queues and pending
+interaction waiters are never replayed.
 
 ## Context Builder (`core/context.py`)
 

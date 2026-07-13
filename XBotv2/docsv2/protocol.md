@@ -47,7 +47,7 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 | GET | `/sessions/{id}/events` | Receive server-initiated turn events |
 | POST | `/sessions/{id}/interrupt` | Cancel running turn |
 | GET | `/sessions/{id}/commands` | List available commands (includes skills/tools) |
-| POST | `/sessions/{id}/commands` | Execute server/skill/tool command |
+| POST | `/sessions/{id}/commands` | Execute a server-owned command |
 | POST | `/sessions/{id}/interactions/permission-response` | Submit permission decision |
 | POST | `/sessions/{id}/interactions/user-input` | Submit user input answer |
 | POST | `/sessions/{id}/shutdown` | Close session |
@@ -63,7 +63,9 @@ Session history commands use the same command endpoint:
 
 The Goal plugin registers one `goal` Tool. Session command discovery exposes it
 as `/goal` through the same ToolRegistry inventory used for skills and MCP.
-There is no Goal-specific protocol handler or second command schema.
+Submitting `/goal ...` is still a normal Agent turn: the model invokes the
+registered Tool through the ordinary tool runtime. There is no Goal-specific
+protocol handler, argument parser, or second execution path.
 
 `CommandResult.history` is normally `null`. `clear` and `undo` set it to the
 resulting display history so clients can rebuild their transcript from the same
@@ -106,10 +108,11 @@ Each server command is one registry entry containing both discovery metadata
 and its async handler. The dispatcher normalizes the name and performs one
 lookup; extending the registry does not require a second parsing branch.
 
-Session command discovery includes server commands and registered tools. Tool,
-skill, and MCP command execution is being aligned with the tool system contract;
-until then, slash command discovery should not be treated as a separate tool
-invocation protocol.
+Session command discovery includes server commands and registered tools. Only
+`kind: server` entries execute through the command endpoint. Tool, Skill, and
+MCP slash entries enter the Agent as user input; the Agent then invokes their
+existing ToolRegistry entry through the normal permission, sandbox, and Hook
+pipeline. Discovery is not a second tool invocation protocol.
 
 ## Stream Events
 

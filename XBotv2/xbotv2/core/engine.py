@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from xbotv2.core.content_cache import bound_context_messages
 from xbotv2.core.interactions import (
     InteractionDisconnected,
     InteractionResult,
@@ -1026,6 +1027,9 @@ class Engine:
                 ),
                 turn_complete=True,
             )
+        model_request["messages"] = bound_context_messages(
+            model_request["messages"], self.state_store
+        )
         return _ModelRequestResult(request=model_request)
 
     async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:

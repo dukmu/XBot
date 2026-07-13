@@ -53,30 +53,23 @@ ambiguity before large implementation changes.
   Provider-request tests and a real Minimax TUI process restart verify this
   separately from the deliberately unsupported in-flight interaction recovery.
 
-### Unified Command Execution
+### Command Discovery And Dispatch
 
-- Make the server the authoritative command registry. Command discovery must
-  return the command name, namespace/kind, description, argument schema,
-  examples, and stable registered name needed for execution.
+- Keep the server authoritative for command discovery. Session discovery
+  combines server commands with the existing ToolRegistry inventory and
+  exposes stable registered names and namespaces without copying Tool schemas
+  into a second protocol contract.
 - Keep client-only commands local: the client may intercept commands such as
   exit or visual transcript clearing, but it must query all server capabilities
   instead of maintaining a parallel server-command inventory.
-- Execute server, plugin tool, Skill, and MCP commands through the server's
-  registered namespace and argument parsing contract. Do not turn these slash
-  commands back into ordinary user messages for the Agent to interpret.
-- Define one schema-driven textual argument format, including quoting, named
-  parameters, JSON values, validation errors, and help rendering. Do not add a
-  parser branch per command or infer arbitrary tool arguments by position.
-- Route execution through the same registered capability used by model tool
-  calls so permissions, sandboxing, Hooks, structured results, and persistence
-  have one implementation. Direct user commands may define an explicit policy
-  boundary, but must not bypass it accidentally.
-- Keep Goal free of protocol-specific command adapters. Its registered Tool is
-  already present in shared command discovery; complete generic Tool command
-  execution without restoring a Goal-only parser or handler.
-- Add contract tests proving discovery and execution for one core server
-  command, one built-in plugin tool, one Skill, and one MCP tool, plus client
-  interception of one client-only command and schema validation failures.
+- Execute only server-owned operational commands through the command endpoint.
+  Tool, Skill, and MCP slash entries remain normal Agent turns and use the
+  already registered capability; do not add a protocol parser or parallel Tool
+  execution path.
+- Keep Goal free of protocol-specific adapters. `/goal` is discovered from its
+  registered Tool and reaches that Tool through the normal Agent runtime.
+- Add contract tests proving server-command execution, Tool/Skill/MCP discovery,
+  Agent-mediated Tool invocation, and client interception of a local command.
 
 ## 3. Hook Contract Tightening
 

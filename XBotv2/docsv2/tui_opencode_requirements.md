@@ -68,6 +68,8 @@ Slash dispatch rules:
 
 - local commands execute locally
 - registered server commands call `POST /sessions/{sid}/commands`
+- discovered Tool, Skill, and MCP commands are sent as normal user messages;
+  the Agent invokes their registered tool when appropriate
 - unknown slash commands render a local notice
 - normal text is sent as a user message
 

@@ -60,6 +60,7 @@ class GoalPlugin(PluginBase):
                         "action": {
                             "type": "string",
                             "enum": sorted(_ACTIONS),
+                            "default": "get",
                             "description": "Goal state transition to perform.",
                         },
                         "objective": {
@@ -82,7 +83,6 @@ class GoalPlugin(PluginBase):
                             ),
                         },
                     },
-                    "required": ["action"],
                     "additionalProperties": False,
                 },
             ),
@@ -94,7 +94,7 @@ class GoalPlugin(PluginBase):
 
     async def goal(
         self,
-        action: str,
+        action: str = "get",
         objective: str | None = None,
         summary: str | None = None,
         token_budget: int | None = None,

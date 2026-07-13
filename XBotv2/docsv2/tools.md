@@ -42,6 +42,16 @@ other relative paths remain workspace-relative. It is intentionally not a
 general virtual filesystem. Policy updates preserve the mount, and cached-result
 metadata survives restoration.
 
+Provider-bound context uses the same 12,000-character boundary for message
+content, string values inside historical ToolCall arguments, and assistant
+reasoning content. Oversized values are stored under
+`session/artifacts/context/`; only a beginning/ending preview, digest, size, and
+session-relative `cache_path` are sent to the provider. This projection does
+not mutate persisted messages, so resume retains the exact original input.
+History compaction remains responsible for semantic summaries across many
+messages; context caching is deterministic externalization, not a second model
+summarizer.
+
 Filesystem write modes have the same semantics with or without the session
 sandbox. Successful writes retain mode-specific metadata such as `changed` and
 `replacements`; read/write failures retain their structured `data` and `error`

@@ -172,7 +172,11 @@ Command discovery exposes `registered_name`; non-core names use
 
 ### HTTP/SSE (`xbotv2/protocol/http_server.py`)
 
-FastAPI app with SSE streaming. SessionManager with per-session context.
+FastAPI app with SSE streaming. `SessionManager` owns one core `SessionRuntime`
+per live session. `SessionRuntime` owns the Engine, runtime-only Mailbox, turn
+task, interaction sink, and event stream; HTTP only maps that lifecycle to wire
+requests. Once mode uses the same runtime so immediate Goal continuations are
+not lost after the first model turn.
 Wire DTOs are owned by `protocol/models.py`; `api/` contains no transport types.
 The HTTP bridge owns the Engine async stream and closes it when the SSE
 consumer completes or disconnects.
@@ -194,8 +198,9 @@ turn coroutines are connection-owned and are never restored.
 
 `CommandSpec` with `kind` field (`client`, `server`, `skill`, `tool`, `mcp`).
 TUI fetches commands from `GET /sessions/{id}/commands` which enumerates
-ToolRegistry entries. `/help [name]` shows detailed help. All non-client
-commands go through unified server command path.
+ToolRegistry entries. `/help [name]` shows detailed help. Server commands use
+the command endpoint; Tool, Skill, and MCP entries remain Agent turns and rely
+on their existing ToolRegistry registration for execution.
 
 ## Persistence
 
@@ -203,7 +208,7 @@ commands go through unified server command path.
 data/sessions/<sid>/state/
 ├── messages.jsonl          # XBot-owned Message objects, append-only
 ├── plugin_states/          # per-plugin YAML state
-└── artifacts/              # cached tool outputs
+└── artifacts/              # cached tool outputs and provider context
 ```
 
 No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` appends new

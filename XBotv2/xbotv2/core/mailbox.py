@@ -86,6 +86,17 @@ class SessionMailbox:
             self._condition.notify_all()
             return dropped
 
+    async def discard(self, message_id: str, reason: str) -> bool:
+        async with self._condition:
+            for queue in (self._user, self._general):
+                for item in queue:
+                    if item.id != message_id:
+                        continue
+                    queue.remove(item)
+                    self._audit("dropped", item, reason=reason)
+                    return True
+            return False
+
     def delivered(self, item: MailboxMessage) -> None:
         self._audit("delivered", item)
 

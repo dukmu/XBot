@@ -392,6 +392,7 @@ async def _terminal_loop(args):
 def _run_once(args):
     """Run a single prompt and exit."""
     from xbotv2.core.bootstrap import bootstrap
+    from xbotv2.core.session import SessionRuntime
 
     if not args.prompt:
         print("Error: --mode once requires a prompt argument")
@@ -407,8 +408,17 @@ def _run_once(args):
             plugin_dirs=[] if args.no_plugins else None,
         )
         await engine.start_session()
+        runtime = SessionRuntime(
+            session_id=engine.state_store.session_id,
+            thread_id=engine.state_store.thread_id,
+            provider_name=args.provider,
+            paths=engine.paths,
+            workspace_root=str(_workspace_root(args)),
+            no_plugins=args.no_plugins,
+            engine=engine,
+        )
 
-        async for event in engine.run_turn(args.prompt):
+        async for event in runtime.stream_message(args.prompt, "once"):
             etype = event.get("type", "")
             data = event.get("data", {})
 
@@ -431,7 +441,7 @@ def _run_once(args):
             elif etype == "error":
                 print(f"\nError: {data.get('message', 'unknown')}")
 
-        await engine.close_session()
+        await runtime.close()
 
     asyncio.run(single_shot())
 
