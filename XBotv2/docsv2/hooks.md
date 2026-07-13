@@ -38,6 +38,10 @@ model Hooks, or emit assistant stream events. Errors and cancellation propagate
 to the calling Hook. A Hook must finish auxiliary work before returning a
 history replacement, so failed work cannot partially compact persisted state.
 
+`request_user_input(question, ...)` is the same live interaction capability used
+by the built-in `ask_user` tool. Plugins may use it for protocol callbacks such
+as MCP elicitation; it does not create a second waiter or persistence path.
+
 Model-request stages expose `ctx.model_request` for inspection. Use the
 documented stage return dictionary when replacing messages, tools, or the LLM.
 

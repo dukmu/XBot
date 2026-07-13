@@ -73,6 +73,7 @@ def test_public_api_exports_core_extension_types():
         request_id="request-1",
     ).request_id == "request-1"
     assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
+    assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
 
 
 def test_tool_registration_options_validate_values():

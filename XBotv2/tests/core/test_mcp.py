@@ -217,6 +217,69 @@ def test_invalid_mcp_tool_schema_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(tmp_path):
+    from builtin_plugins.mcp.callbacks import client_callbacks
+    from mcp import types
+    from xbotv2.api import HookContext, HookStage, ModelResponse, SessionInfo
+
+    requested = []
+
+    async def invoke_model(messages):
+        assert [(message.role, message.content) for message in messages] == [
+            ("system", "Be concise"),
+            ("user", "Summarize"),
+        ]
+        return ModelResponse(content="Done")
+
+    async def request_user_input(question, **kwargs):
+        requested.append((question, kwargs))
+        return {"status": "answered", "answer": "focused"}
+
+    callbacks = client_callbacks(HookContext(
+        stage=HookStage.ON_SESSION_INIT,
+        invoke_model=invoke_model,
+        request_user_input=request_user_input,
+        session=SessionInfo(
+            session_id="s",
+            thread_id="t",
+            workspace_root=str(tmp_path),
+            provider="minimax",
+        ),
+    ))
+
+    sample = await callbacks["sampling_callback"](
+        None,
+        types.CreateMessageRequestParams(
+            systemPrompt="Be concise",
+            messages=[types.SamplingMessage(
+                role="user",
+                content=types.TextContent(type="text", text="Summarize"),
+            )],
+            maxTokens=100,
+        ),
+    )
+    roots = await callbacks["list_roots_callback"](None)
+    elicited = await callbacks["elicitation_callback"](
+        None,
+        types.ElicitRequestFormParams(
+            message="Choose focus",
+            requestedSchema={
+                "type": "object",
+                "properties": {"focus": {"type": "string"}},
+                "required": ["focus"],
+            },
+        ),
+    )
+
+    assert sample.content.text == "Done"
+    assert sample.model == "minimax"
+    assert str(roots.roots[0].uri) == tmp_path.resolve().as_uri()
+    assert elicited.action == "accept"
+    assert elicited.content == {"focus": "focused"}
+    assert requested == [("Choose focus", {"source": "mcp_elicitation"})]
+
+
+@pytest.mark.asyncio
 async def test_mcp_plugin_unload_disconnects_external_resources():
     from builtin_plugins.mcp.plugin import MCPPlugin
     from xbotv2.api import PluginManifest

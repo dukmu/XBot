@@ -55,6 +55,9 @@ hooks use an empty value because they are not owned by one message request.
 Engine-created contexts also expose `invoke_model(messages)` for one unbound
 auxiliary provider call. It returns `ModelResponse` without recursively running
 model Hooks or exposing the provider implementation.
+`request_user_input(question, ...)` uses the active C/S interaction channel and
+returns the structured live response. It is connection-owned: disconnect
+cancels the turn, and resume never restores the pending request.
 Persistence Hook contexts are emitted only for a changed normalized message
 snapshot; repeated save attempts with no state change do not emit them.
 `PromptFragmentStage` contains `system_prefix`, `system_instructions`,

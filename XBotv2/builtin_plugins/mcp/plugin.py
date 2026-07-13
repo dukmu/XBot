@@ -19,6 +19,7 @@ from xbotv2.api import (
 )
 
 from .client import MCPClient
+from .callbacks import client_callbacks
 from .tool import MCPTool
 
 import logging
@@ -64,7 +65,11 @@ class MCPPlugin(PluginBase):
                 self._server_status[server_name] = {"status": "disabled"}
                 continue
             try:
-                tools = await self._client.connect_and_list(server_name, server_cfg)
+                tools = await self._client.connect_and_list(
+                    server_name,
+                    server_cfg,
+                    callbacks=client_callbacks(ctx),
+                )
                 registered_names = self._register_server_tools(
                     ctx.plugin_runtime,
                     server_name,

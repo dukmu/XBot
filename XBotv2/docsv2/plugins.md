@@ -318,6 +318,13 @@ results, and expose subscription operations only when the server advertises
 them. Bidirectional client capabilities are advertised only when the
 corresponding XBot callback is installed.
 
+MCP client requests reuse public runtime capabilities: roots contain only the
+current workspace, sampling uses the unbound current provider, server logs enter
+the XBot log, and form/URL elicitation uses the existing live
+`user_input_required` C/S flow. Elicitation is connection-owned and is cancelled
+on disconnect. Non-text sampling and sampling tool execution return protocol
+errors instead of silently losing content.
+
 **Configuration** (in `system.yaml` plugins section):
 ```yaml
 plugins:

@@ -23,7 +23,7 @@ receive an empty value.
 
 | Stage | Category | Short | Strict | Payload | Return | Caller |
 |---|---|---:|---:|---|---|---|
-| `on_session_init` | observer | no | yes | `session`, `config`, `tools`, `sandbox`, `plugin_store`, `plugin_runtime` | ignored | bootstrap after plugin setup |
+| `on_session_init` | observer | no | yes | `session`, `config`, `tools`, `sandbox`, `plugin_store`, `plugin_runtime`, `invoke_model`, `request_user_input` | ignored | bootstrap after plugin setup |
 | `on_session_start` | observer | no | no | `session`, `config` | ignored | new engine session |
 | `on_session_resume` | observer | no | no | `session`, persisted `state` | ignored | resumed engine session |
 | `on_session_close` | observer | no | yes | `session`, pending interactions already cancelled | ignored | engine close |

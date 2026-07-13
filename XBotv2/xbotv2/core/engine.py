@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -1199,6 +1200,30 @@ class Engine:
             timeout_seconds=timeout_seconds,
         )
 
+    async def _request_user_input(
+        self,
+        question: str,
+        *,
+        options: list[str] | None = None,
+        timeout_seconds: float | None = None,
+        source: str = "plugin",
+    ) -> dict[str, Any]:
+        request_id = f"user_input:{source}:{uuid.uuid4().hex}"
+        return await self._handle_user_input_request(
+            {
+                "type": "user_input_required",
+                "data": {
+                    "request_id": request_id,
+                    "source": source,
+                    "question": question,
+                    "options": options or [],
+                    "timeout_seconds": timeout_seconds,
+                    "resume_supported": False,
+                },
+            },
+            timeout_seconds=timeout_seconds,
+        )
+
     async def _handle_permission_request(
         self,
         client_event: dict[str, Any],
@@ -1273,6 +1298,7 @@ class Engine:
             sandbox=self.sandbox_policy,
             plugin_store=None,
             invoke_model=self._invoke_model,
+            request_user_input=self._request_user_input,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,

@@ -102,6 +102,7 @@ class HookContext:
     plugin_store: Any | None = None
     plugin_runtime: Any | None = None
     invoke_model: Callable[[list[Message]], Awaitable[ModelResponse]] | None = None
+    request_user_input: Callable[..., Awaitable[dict[str, Any]]] | None = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo("", ""))
     emit: Callable[[Any], None] = field(default=lambda _: None)
     user_input: str | None = None

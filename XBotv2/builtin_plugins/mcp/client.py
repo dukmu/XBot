@@ -46,6 +46,8 @@ class MCPClient:
         self,
         name: str,
         cfg: dict[str, Any],
+        *,
+        callbacks: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if name in self._transports:
             raise MCPConnectionError(f"MCP server '{name}' is already connected")
@@ -55,7 +57,12 @@ class MCPClient:
             read, write = await self._open_transport(stack, cfg)
             timeout = timedelta(seconds=float(cfg.get("timeout", 30)))
             session = await stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=timeout)
+                ClientSession(
+                    read,
+                    write,
+                    read_timeout_seconds=timeout,
+                    **(callbacks or {}),
+                )
             )
             initialize_result = await session.initialize()
             connection = _Connection(stack, session, initialize_result)
