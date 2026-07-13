@@ -101,6 +101,19 @@ def scripted_session() -> _ScriptedSession:
     return _ScriptedSession()
 
 
+@pytest.mark.asyncio
+async def test_header_uses_product_title(scripted_session) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        screenshot = app.export_screenshot(title="xbotv2-header")
+
+    assert "XBotv2" in screenshot
+    assert "XBotTextualApp" not in screenshot
+
+
 # ----------------------------------------------------------------------
 # Slash completion popup
 # ----------------------------------------------------------------------

@@ -163,6 +163,9 @@ status becomes `Interrupted` and the active-turn indicator clears.
 
 ## Status And Usage
 
+The application header uses the product name `XBotv2`; internal client class
+names are not user-visible.
+
 The status bar shows:
 
 - connection/session state

@@ -94,6 +94,7 @@ class TextualTuiClient:
 class XBotTextualApp(App[None]):
     """OpenCode-style full-screen TUI backed by XBotv2 protocol frames."""
 
+    TITLE = "XBotv2"
     # Disable Textual's built-in command palette (default ctrl+p) so
     # our custom ``CommandPalette`` (slash-command only) owns the
     # binding. Per design doc §2.3.1: OpenCode's ``command_list`` is
