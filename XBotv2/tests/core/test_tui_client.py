@@ -1158,7 +1158,61 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         assert input_widget.disabled is False
         assert input_widget.display is True
 
+        assert app._choice_results["0"] == "继续"
+        assert [notice.kind for notice in app.state.notices] == [
+            "user_input_required",
+            "user_input_recorded",
+        ]
+        assert [message.content for message in app.state.messages] == ["ask"]
+
     assert session.answer == "继续"
+
+
+@pytest.mark.asyncio
+async def test_textual_app_records_typed_answer_without_queued_notice():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.answer = None
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def submit_user_input(self, request_id, answer):
+            assert request_id == "user_input:c1"
+            self.answer = answer
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        event = {
+            "type": "user_input_required",
+            "data": {"request_id": "user_input:c1", "question": "Codename?"},
+        }
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        app._start_interaction_response(event)
+
+        composer = app.query_one("#input")
+        composer.load_text("NOVA")
+        await app.submit_composer()
+        await pilot.pause()
+
+        assert session.answer == "NOVA"
+        assert [notice.kind for notice in app.state.notices] == [
+            "user_input_required",
+        ]
+        assert app.state.messages == []
 
 
 @pytest.mark.asyncio

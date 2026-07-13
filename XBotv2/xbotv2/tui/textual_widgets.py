@@ -236,8 +236,6 @@ def notice_title(kind: str) -> str:
         "permission_denied": "denied",
         "user_input_recorded": "answer",
         "permission_response_recorded": "approval",
-        "Approval queued": "approval queued",
-        "Answer queued": "answer queued",
         "Not connected": "not connected",
     }.get(kind, kind)
 

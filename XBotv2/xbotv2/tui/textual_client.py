@@ -235,16 +235,11 @@ class XBotTextualApp(App[None]):
             self._remember_input(text)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {text}")
-            await self._append_local_notice("Answer queued", text)
             return
         if route == "permission":
             parsed = _parse_permission_decision(text)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
-            await self._append_local_notice(
-                "Approval queued",
-                f"{parsed['decision']} ({parsed['scope']})",
-            )
             return
         if not self._connected:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
@@ -823,7 +818,6 @@ class XBotTextualApp(App[None]):
                     break
         else:
             self._answers.put_nowait(str(choice.payload["answer"]))
-            await self._append_local_notice("Answer queued", choice.label)
         self._refresh_input_mode()
         return True
 
