@@ -23,6 +23,8 @@ class CompactPlugin(PluginBase):
         super().__init__(manifest, store)
         self._automatic = True
         self._trigger_chars = 80_000
+        self._output_reservation = 4_096
+        self._trigger_ratio = 0.8
         self._keep_recent_turns = 4
         self._summary_max_chars = 8_000
         self._manual_requested = False
@@ -33,6 +35,8 @@ class CompactPlugin(PluginBase):
     async def on_load(self, config: dict[str, Any]) -> None:
         self._automatic = bool(config.get("automatic", True))
         self._trigger_chars = int(config.get("trigger_chars", 80_000))
+        self._output_reservation = int(config.get("output_reservation", 4_096))
+        self._trigger_ratio = float(config.get("trigger_ratio", 0.8))
         self._keep_recent_turns = int(config.get("keep_recent_turns", 4))
         self._summary_max_chars = int(config.get("summary_max_chars", 8_000))
 
@@ -65,10 +69,20 @@ class CompactPlugin(PluginBase):
         messages = list(ctx.state.get("messages") or [])
         manual = self._manual_requested
         turn = ctx.session.turn_count
+        provider_input = _latest_provider_input_tokens(messages)
+        max_context = int(getattr(ctx.config, "max_context_tokens", 32_000))
+        token_trigger = int(
+            max(1, max_context - self._output_reservation) * self._trigger_ratio
+        )
+        threshold_reached = (
+            provider_input >= token_trigger
+            if provider_input is not None
+            else _history_chars(messages) >= self._trigger_chars
+        )
         automatic = (
             self._automatic
             and turn != self._last_auto_turn
-            and _history_chars(messages) >= self._trigger_chars
+            and threshold_reached
         )
         if not manual and not automatic:
             return None
@@ -109,6 +123,8 @@ class CompactPlugin(PluginBase):
             "status": "ready",
             "automatic": self._automatic,
             "trigger_chars": self._trigger_chars,
+            "output_reservation": self._output_reservation,
+            "trigger_ratio": self._trigger_ratio,
             "keep_recent_turns": self._keep_recent_turns,
             "compactions": self._compactions,
             "last_reason": self._last_reason,
@@ -122,6 +138,15 @@ def _history_chars(messages: list[Message]) -> int:
         for call in message.tool_calls or []:
             total += len(call.name) + len(str(call.args))
     return total
+
+
+def _latest_provider_input_tokens(messages: list[Message]) -> int | None:
+    for message in reversed(messages):
+        usage = message.usage_metadata or {}
+        if "input_tokens" in usage:
+            value = int(usage.get("input_tokens") or 0)
+            return value if value > 0 else None
+    return None
 
 
 def _compact_prefix_end(messages: list[Message], keep_recent_turns: int) -> int:

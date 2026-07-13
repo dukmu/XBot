@@ -8,7 +8,10 @@ owns history replacement and persistence.
 
 - The model-visible `compact` tool requests compaction before the next model
   call. Its result is a structured `ToolResult`.
-- Automatic compaction runs when persisted history reaches `trigger_chars`.
+- Automatic compaction uses the latest provider-reported `input_tokens` for the
+  current history. It triggers at `trigger_ratio` of `max_context_tokens` after
+  reserving `output_reservation` tokens. `trigger_chars` is used only when the
+  provider has not reported input usage.
 - The split occurs at a user-message boundary, preserving the configured number
   of recent complete turns together with their tool calls and results.
 - The auxiliary model receives no tools and must return summary text only.
@@ -18,17 +21,18 @@ owns history replacement and persistence.
 - A failed or cancelled summary call returns no replacement. The original
   history remains intact and normal turn error behavior reports the failure.
 
-The trigger is intentionally a character count, not a tokenizer-accurate token
-claim. It counts message content and tool-call names and arguments. A later
-token-budget integration should replace this only when one shared estimator has
-a documented provider-neutral contract.
+Provider input usage is authoritative because cumulative usage measures cost,
+not current context size. The fallback character count includes message content
+and tool-call names and arguments; it makes no tokenizer-accuracy claim.
 
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `automatic` | `true` | Enable threshold-triggered compaction. |
-| `trigger_chars` | `80000` | History character threshold. |
+| `trigger_chars` | `80000` | Fallback threshold when provider usage is unavailable. |
+| `output_reservation` | `4096` | Context tokens reserved for model output. |
+| `trigger_ratio` | `0.8` | Fraction of the remaining input budget that triggers compaction. |
 | `keep_recent_turns` | `4` | Complete recent user turns preserved verbatim. |
 | `summary_max_chars` | `8000` | Maximum persisted summary length. |
 

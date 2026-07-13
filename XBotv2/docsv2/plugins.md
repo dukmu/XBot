@@ -204,8 +204,9 @@ config_schema:
 ### CompactPlugin (`builtin_plugins/compact/`)
 
 Compacts a completed history prefix through the public `BEFORE_CONTEXT`
-contract. The `compact` tool requests a manual compaction; a character threshold
-can trigger it automatically. Recent complete user turns remain verbatim, the
+contract. The `compact` tool requests a manual compaction; current provider input
+usage triggers it automatically, with a character fallback when usage is absent.
+Recent complete user turns remain verbatim, the
 auxiliary model call has no tools, and only a successful summary is returned as
 a message replacement. Engine persistence then atomically rewrites history, so
 resume observes the same summary and recent tail. See

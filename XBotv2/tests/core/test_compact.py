@@ -137,6 +137,85 @@ async def test_automatic_compaction_runs_once_per_turn():
 
 
 @pytest.mark.asyncio
+async def test_automatic_compaction_uses_latest_provider_context_usage():
+    plugin = make_plugin()
+    await plugin.on_load({
+        "trigger_chars": 1000,
+        "output_reservation": 100,
+        "trigger_ratio": 0.8,
+        "keep_recent_turns": 1,
+    })
+    original = history(3, content="x" * 300)
+    original[-1].usage_metadata = {"input_tokens": 700}
+    calls = 0
+
+    async def invoke_model(_messages):
+        nonlocal calls
+        calls += 1
+        return ModelResponse(content="summary")
+
+    ctx = HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        config=SimpleNamespace(max_context_tokens=1000),
+        session=SimpleNamespace(turn_count=4),
+        invoke_model=invoke_model,
+    )
+
+    assert await plugin._on_before_context(ctx) is None
+    assert calls == 0
+
+    original[-1].usage_metadata = {"input_tokens": 720}
+    result = await plugin._on_before_context(ctx)
+
+    assert result["compact_reason"] == "automatic"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_character_threshold_is_only_used_without_provider_usage():
+    plugin = make_plugin()
+    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
+    original = history(3, content="x" * 300)
+
+    async def invoke_model(_messages):
+        return ModelResponse(content="summary")
+
+    ctx = HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        session=SimpleNamespace(turn_count=4),
+        invoke_model=invoke_model,
+    )
+
+    result = await plugin._on_before_context(ctx)
+
+    assert result["compact_reason"] == "automatic"
+
+
+@pytest.mark.asyncio
+async def test_zero_provider_usage_uses_character_fallback():
+    plugin = make_plugin()
+    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
+    original = history(3, content="x" * 300)
+    original[-1].usage_metadata = {"input_tokens": 0, "output_tokens": 10}
+
+    async def invoke_model(_messages):
+        return ModelResponse(content="summary")
+
+    result = await plugin._on_before_context(
+        HookContext(
+            stage=HookStage.BEFORE_CONTEXT,
+            state={"messages": original},
+            session=SimpleNamespace(turn_count=4),
+            invoke_model=invoke_model,
+        )
+    )
+
+    assert result["compact_reason"] == "automatic"
+
+
+@pytest.mark.asyncio
 async def test_failed_summary_leaves_history_untouched():
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})

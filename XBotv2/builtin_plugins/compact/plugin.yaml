@@ -11,6 +11,13 @@ config_schema:
     trigger_chars:
       type: integer
       minimum: 1000
+    output_reservation:
+      type: integer
+      minimum: 0
+    trigger_ratio:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1
     keep_recent_turns:
       type: integer
       minimum: 1
