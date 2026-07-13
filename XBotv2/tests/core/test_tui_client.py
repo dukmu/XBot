@@ -210,7 +210,7 @@ def test_tui_state_renames_provisional_streaming_tool_id():
     assert [(entry.kind, entry.key) for entry in state.transcript] == [("tool", "call_shell")]
 
 
-def test_tui_state_turn_finished_preserves_waiting_for_user():
+def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
     state = TuiState()
 
     state.apply_event(_frame("turn_started", {"turn": 1}))
@@ -219,14 +219,15 @@ def test_tui_state_turn_finished_preserves_waiting_for_user():
     )
     state.apply_event(_frame("turn_finished", {"turn": 1}))
 
-    assert state.status == "Waiting for user"
+    assert state.status == "Ready"
+    assert state.pending_user_input_payload is None
     assert state.notices[-1].kind == "user_input_required"
     rendered = "\n".join(state.lines(width=80, height=8))
     assert "Question> Proceed?" in rendered
     assert "Options:" not in rendered
 
 
-def test_tui_state_turn_finished_preserves_permission_states():
+def test_tui_state_turn_finished_clears_pending_but_preserves_denial_status():
     state = TuiState()
 
     state.apply_event(_frame("turn_started", {"turn": 1}))
@@ -237,8 +238,10 @@ def test_tui_state_turn_finished_preserves_permission_states():
     )
     state.apply_event(_frame("turn_finished", {"turn": 1}))
 
-    assert state.status == "Approval required"
-    assert state.tools["call_req"].permission_pending is True
+    assert state.status == "Ready"
+    assert state.pending_permission_payload is None
+    assert state.tools["call_req"].permission_pending is False
+    assert state.tools["call_req"].status == "cancelled"
 
     state.apply_event(_frame("turn_started", {"turn": 2}))
     state.apply_event(
@@ -999,6 +1002,55 @@ async def test_textual_app_cancellation_clears_pending_permission_ui():
         assert app._interaction_response_task is None
         assert app.state.pending_permission_payload is None
         assert app.state.tools["call-cancel"].status == "cancelled"
+        assert composer.disabled is False
+        assert composer.display is True
+
+
+@pytest.mark.asyncio
+async def test_textual_app_turn_finished_clears_pending_user_input_ui():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(_frame("turn_started", {"turn": 1}))
+        input_event = _frame(
+            "user_input_required",
+            {
+                "request_id": "question-finished",
+                "question": "Continue?",
+                "options": ["yes", "no"],
+            },
+        )
+        app.state.apply_event(input_event)
+        await app._render_new_transcript_entries()
+        app._start_interaction_response(input_event)
+        app._interaction_response_pending = True
+        await pilot.pause()
+
+        assert app._active_choice_key == "0"
+        assert app._interaction_response_task is not None
+
+        event = _frame("turn_finished", {"turn": 1})
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        await pilot.pause()
+
+        composer = app.query_one("#input")
+        assert app._active_choice_key is None
+        assert app._interaction_response_task is None
+        assert app._interaction_response_pending is False
+        assert app.state.pending_user_input_payload is None
+        assert app.state.status == "Ready"
         assert composer.disabled is False
         assert composer.display is True
 

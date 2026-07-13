@@ -532,6 +532,7 @@ class XBotTextualApp(App[None]):
     def _cancel_interaction_response(self) -> None:
         task = self._interaction_response_task
         self._interaction_response_task = None
+        self._interaction_response_pending = False
         if task is not None and not task.done():
             task.cancel()
 
@@ -615,12 +616,14 @@ class XBotTextualApp(App[None]):
             await self._append_activity()
         elif event_type == "turn_finished":
             self._cancel_interaction_response()
+            self._resolve_active_choice("request ended")
             await self._cancel_stream_timer()
             self._finalize_activity()
+            await self._refresh_changed_tool_widgets()
             refresh_input = True
         elif event_type == "turn_cancelled":
             self._cancel_interaction_response()
-            self._interaction_response_pending = False
+            self._resolve_active_choice("request cancelled")
             await self._cancel_stream_timer()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
@@ -657,6 +660,7 @@ class XBotTextualApp(App[None]):
         }:
             if event_type == "error":
                 self._cancel_interaction_response()
+                self._resolve_active_choice("request failed")
             self._interaction_response_pending = False
             if event_type == "error":
                 await self._refresh_changed_tool_widgets()

@@ -126,6 +126,7 @@ class TuiState:
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self._clear_pending_interactions(tool_status="cancelled")
             self._refresh_status()
         elif event_type == "turn_cancelled":
             self.turn = int(data.get("turn") or self.turn or 0)

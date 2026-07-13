@@ -47,8 +47,9 @@ leave the engine waiting indefinitely. Waiting for a local answer must not stop
 the client from consuming terminal events on the SSE stream.
 
 The TUI keeps each pending interaction payload as its state source instead of
-duplicating active flags and request ids. A cancelled or failed turn, and the
-start of a new turn, clears unresolved client interaction state so later input
+duplicating active flags and request ids. Every terminal turn event, including
+normal completion, clears unresolved payloads, response tasks, and choices; the
+start of a new turn also clears stale protocol state. Later input therefore
 cannot be routed to an expired request.
 
 An accepted turn has a closed lifecycle. Once `turn_started` is visible, the
