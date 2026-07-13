@@ -299,6 +299,7 @@ def _register_routes(app: FastAPI) -> None:
             agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
             workspace_root=ctx.workspace_root,
             provider=ctx.provider_name,
+            history=_display_history(ctx.engine.messages),
         )
 
     @app.get("/commands")
@@ -530,6 +531,24 @@ def _new_session_id() -> str:
 
 def _event_to_payload(event: dict[str, Any]) -> dict[str, Any]:
     return {"type": event.get("type", ""), "data": event.get("data", {})}
+
+
+def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
+    history = []
+    for message in messages:
+        role = str(getattr(message, "role", ""))
+        if role not in {"user", "assistant", "tool"}:
+            continue
+        history.append({
+            "role": role,
+            "content": str(getattr(message, "content", "") or ""),
+            "tool_calls": [
+                call.to_dict() for call in (getattr(message, "tool_calls", None) or [])
+            ],
+            "tool_call_id": str(getattr(message, "tool_call_id", "") or ""),
+            "status": str(getattr(message, "status", "") or ""),
+        })
+    return history
 
 def _tool_commands(reg: Any) -> list[dict[str, Any]]:
     result = []

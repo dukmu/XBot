@@ -225,6 +225,33 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_http_resume_returns_display_history(client: httpx.AsyncClient) -> None:
+    opened = await client.post(
+        "/sessions", json={"session_id": "resume-history", "thread_id": "t1"}
+    )
+    assert opened.status_code == 200
+
+    turn = await client.post(
+        "/sessions/resume-history/messages",
+        json={"content": "remember this"},
+    )
+    assert turn.status_code == 200
+    assert "turn_finished" in turn.text
+
+    resumed = await client.post(
+        "/sessions",
+        json={"session_id": "resume-history", "thread_id": "t1", "mode": "resume"},
+    )
+
+    assert resumed.status_code == 200
+    history = resumed.json()["history"]
+    assert [(item["role"], item["content"]) for item in history] == [
+        ("user", "remember this"),
+        ("assistant", "hello from mock"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_http_open_session_without_id_creates_generated_session(
     client: httpx.AsyncClient,
 ) -> None:

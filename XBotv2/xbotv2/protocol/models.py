@@ -41,6 +41,14 @@ class OpenSessionRequest(WireModel):
     mode: Literal["new", "resume"] = "new"
 
 
+class SessionHistoryItem(WireModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_call_id: str = ""
+    status: str = ""
+
+
 class OpenSessionResponse(WireModel):
     session_id: str
     thread_id: str
@@ -48,6 +56,7 @@ class OpenSessionResponse(WireModel):
     agent_name: str
     workspace_root: str
     provider: str
+    history: list[SessionHistoryItem] = Field(default_factory=list)
 
 
 class CommandRequest(WireModel):
@@ -340,6 +349,7 @@ __all__ = [
     "PermissionResponseRequest",
     "ServerEvent",
     "ServerEventType",
+    "SessionHistoryItem",
     "SessionMode",
     "ToolCallData",
     "ToolCallDeltaData",

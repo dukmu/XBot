@@ -206,6 +206,7 @@ def _run_tui(args) -> None:
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
+        session_mode="resume" if getattr(args, "session", None) else "new",
         base_url=server_url,
         uds_path=uds_path,
     )
@@ -238,6 +239,7 @@ def _run_attach(args, url: str) -> None:
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
+        session_mode="resume" if getattr(args, "session", None) else "new",
         base_url=url,
     )
     asyncio.run(client.run())

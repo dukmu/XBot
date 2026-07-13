@@ -82,7 +82,9 @@ use `ServerEvent`, the shared SSE codec, and fixtures covering every current
 event type. Every current `KNOWN_SERVER_EVENT_TYPES` member has a typed payload
 DTO and is validated when a `ServerEvent` is constructed or decoded;
 `TYPED_SERVER_EVENT_TYPES` makes that coverage testable. HTTP failures are
-serialized through `ErrorResponse`.
+serialized through `ErrorResponse`. Session open responses expose only typed,
+display-safe `SessionHistoryItem` values; extension-facing `Message` remains
+the richer in-process representation.
 
 ## Current Gaps To Improve
 

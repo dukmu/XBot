@@ -89,6 +89,38 @@ def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
     assert len(state.transcript) == 1  # tool entry only
 
 
+def test_tui_state_restores_resumed_message_and_tool_history():
+    state = TuiState()
+
+    state.restore_history([
+        {"role": "user", "content": "read it"},
+        {
+            "role": "assistant",
+            "content": "reading",
+            "tool_calls": [
+                {"id": "call_1", "name": "filesystem_read", "args": {"path": "a.txt"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "contents",
+            "tool_call_id": "call_1",
+            "status": "success",
+        },
+        {"role": "assistant", "content": "done"},
+    ])
+
+    assert state.turn == 1
+    assert [(message.role, message.content) for message in state.messages] == [
+        ("user", "read it"),
+        ("assistant", "reading"),
+        ("assistant", "done"),
+    ]
+    assert state.tools["call_1"].name == "filesystem_read"
+    assert state.tools["call_1"].status == "success"
+    assert state.tools["call_1"].summary == "contents"
+
+
 def test_tui_state_appends_assistant_deltas_to_one_message():
     state = TuiState()
 
@@ -1317,6 +1349,33 @@ async def test_terminal_session_only_yields_live_interaction_events():
         "user_input_required",
         "turn_finished",
     ]
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_passes_explicit_resume_mode():
+    opened = {}
+
+    class FakeTransport:
+        async def hello(self, *, session_id, thread_id):
+            return {"session_id": session_id, "thread_id": thread_id}
+
+        async def open_session(self, **payload):
+            opened.update(payload)
+            return {"session_id": payload["session_id"], "history": []}
+
+        async def close(self):
+            return None
+
+    session = TerminalSession(
+        transport=FakeTransport(),
+        session_id="existing",
+        session_mode="resume",
+    )
+
+    response = await session.connect()
+
+    assert opened["mode"] == "resume"
+    assert response["history"] == []
 
 
 @pytest.mark.asyncio

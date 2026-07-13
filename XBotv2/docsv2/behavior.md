@@ -59,6 +59,11 @@ the UI to clear running state without hiding the diagnostic. The SSE `end`
 sentinel belongs to transport framing and is consumed before TUI state
 reduction.
 
+Persisted message history must also remain closed. If a client interrupt,
+disconnect, or process restart leaves a trailing assistant tool call without a
+tool response, the engine appends an error tool result before persisting or
+resuming. Session recovery never replays a permission decision or user answer.
+
 ## Hook Direction
 
 Hook optimization means making the existing stages easier to reason about. The

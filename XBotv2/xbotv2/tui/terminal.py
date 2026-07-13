@@ -66,11 +66,11 @@ class TerminalSession:
     def transport(self) -> Transport:
         return self._transport
 
-    async def connect(self) -> None:
+    async def connect(self) -> dict[str, Any] | None:
         """Perform hello + open_session."""
 
         if self._connected:
-            return
+            return None
         hello = await self._transport.hello(
             session_id=self._session_id,
             thread_id=self._thread_id,
@@ -79,13 +79,14 @@ class TerminalSession:
         server_thread = str(hello.get("thread_id") or self._thread_id)
         self._session_id = server_session
         self._thread_id = server_thread
-        await self._transport.open_session(
+        session = await self._transport.open_session(
             session_id=self._session_id,
             thread_id=self._thread_id,
             workspace_root=self._workspace_root,
             mode=self._session_mode,
         )
         self._connected = True
+        return session
 
     async def list_commands(self) -> dict[str, Any]:
         return await self._transport.list_commands(self._session_id)

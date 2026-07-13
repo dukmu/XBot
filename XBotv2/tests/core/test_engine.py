@@ -1551,6 +1551,70 @@ class TestEngineHooks:
         assert state["pending_interactions"] == []
 
     @pytest.mark.asyncio
+    async def test_disconnect_during_ask_user_closes_tool_call_history(
+        self, state_store, temp_workspace
+    ):
+        llm = MockLLM(responses=[{
+            "content": "ask",
+            "tool_calls": [
+                {"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}
+            ],
+        }])
+        registry = ToolRegistry()
+        registry.register(request_input, sandbox_mode="host")
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        async def disconnected(*_args, **_kwargs):
+            return {
+                "request_id": "user_input:c1",
+                "status": "disconnected",
+                "reason": "client_disconnected",
+            }
+
+        engine.set_client_event_sink(disconnected)
+
+        events = [event async for event in engine.run_turn("ask")]
+
+        assert events[-1] == {
+            "type": "turn_cancelled",
+            "data": {"turn": 1, "reason": "client_disconnected"},
+        }
+        persisted = state_store.read_messages()
+        assert persisted[-1].role == "tool"
+        assert persisted[-1].tool_call_id == "c1"
+        assert persisted[-1].status == "error"
+        assert "client_disconnected" in persisted[-1].content
+
+    @pytest.mark.asyncio
+    async def test_session_resume_repairs_trailing_unanswered_tool_call(
+        self, state_store, temp_workspace
+    ):
+        state_store.sync_messages([
+            Message(role="user", content="run it"),
+            Message(
+                role="assistant",
+                content="running",
+                tool_calls=[ToolCall(id="c1", name="echo", args={"message": "hi"})],
+            ),
+        ])
+        llm = MockLLM(responses=[{"content": "continued"}])
+        engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
+
+        await engine.start_session()
+
+        assert engine.messages[-1].role == "tool"
+        assert engine.messages[-1].tool_call_id == "c1"
+        assert engine.messages[-1].status == "error"
+        assert "session_restarted" in engine.messages[-1].content
+        assert state_store.read_messages()[-1].tool_call_id == "c1"
+
+        _ = [event async for event in engine.run_turn("continue")]
+
+        model_history = llm.get_call_messages(0)
+        assert any("session_restarted" in str(message.content) for message in model_history)
+        assert any(message.content == "continue" for message in model_history)
+
+    @pytest.mark.asyncio
     async def test_client_event_hook_observes_interaction_events(self, state_store, temp_workspace):
         """Client event hooks observe send-message and ask-user events."""
         llm = MockLLM(responses=[

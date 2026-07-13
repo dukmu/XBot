@@ -233,6 +233,31 @@ class TuiState:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
+    def restore_history(self, history: list[dict[str, Any]]) -> None:
+        """Rebuild the visible transcript from a resumed session."""
+        for item in history:
+            role = str(item.get("role") or "")
+            if role == "user":
+                self.append_message("user", str(item.get("content") or ""))
+                self.turn += 1
+            elif role == "assistant":
+                self.apply_event({
+                    "type": "assistant_message",
+                    "data": {
+                        "content": str(item.get("content") or ""),
+                        "tool_calls": item.get("tool_calls") or [],
+                    },
+                })
+            elif role == "tool":
+                self.apply_event({
+                    "type": "tool_result",
+                    "data": {
+                        "tool_call_id": str(item.get("tool_call_id") or "tool"),
+                        "content": str(item.get("content") or ""),
+                        "status": str(item.get("status") or "completed"),
+                    },
+                })
+
     def append_assistant_delta(self, content: str, reasoning: str = "") -> None:
         if not content and not reasoning:
             return

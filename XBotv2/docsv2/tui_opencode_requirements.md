@@ -41,6 +41,9 @@ Startup sequence:
 - Omitted session id generates a new timestamp id.
 - Explicit `mode="resume"` requires existing state and fails with 404 when
   missing.
+- Supplying TUI `--session` selects resume mode. Omitting it selects new mode.
+- Resume rebuilds the visible transcript from the typed display history in the
+  open-session response before accepting another message.
 - The TUI passes `workspace_root` to the server. The server may host sessions
   from multiple workspace roots in one process.
 - The TUI displays runtime session/provider/workspace status from server command
@@ -91,6 +94,9 @@ Required behavior:
   answer queue instead of starting a new user turn.
 - During `permission_request`, typed approval shortcuts are routed to the
   permission response queue.
+- Exiting during a blocking interaction cancels that turn. A later session
+  resume displays the cancelled tool result and can start a new turn; the old
+  interaction request itself cannot be answered after reconnect.
 
 ## Transcript Rendering
 

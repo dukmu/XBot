@@ -210,12 +210,14 @@ class Engine:
         if self.state_store.has_existing_session():
             self.messages = self.state_store.read_messages()
             self._persisted_messages = self._message_snapshot()
+            self._close_interrupted_tool_calls("session_restarted")
             self.turn_count = max(
                 sum(1 for m in self.messages if m.role == "user"), 0
             )
             self.session.turn_count = self.turn_count
             ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
             await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
+            await self.save_messages()
         else:
             ctx = self._make_hook_context(HookStage.ON_SESSION_START)
             await self.hook_manager.run(HookStage.ON_SESSION_START, ctx, short_circuit=False)
@@ -224,6 +226,7 @@ class Engine:
         """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
         self.messages = self.state_store.read_messages()
         self._persisted_messages = self._message_snapshot()
+        self._close_interrupted_tool_calls("session_restarted")
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
         )
@@ -236,6 +239,7 @@ class Engine:
         )
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
+        await self.save_messages()
 
     async def close_session(self) -> None:
         """Close hooks, persist messages, and release plugin resources."""
@@ -309,6 +313,7 @@ class Engine:
                 yield event
         except asyncio.CancelledError:
             logger.info("Turn %s interrupted by client", self.turn_count)
+            self._close_interrupted_tool_calls("client_interrupt")
             yield {
                 "type": "turn_cancelled",
                 "data": {
@@ -317,8 +322,16 @@ class Engine:
                 },
             }
             raise
-        except InteractionDisconnected as exc:
+        except InteractionDisconnected:
             logger.info("Turn stopped because the client disconnected during an interaction")
+            self._close_interrupted_tool_calls("client_disconnected")
+            yield {
+                "type": "turn_cancelled",
+                "data": {
+                    "turn": self.turn_count,
+                    "reason": "client_disconnected",
+                },
+            }
         except BaseException as exc:
             logger.exception("Turn failed")
             failure_ctx = self._make_hook_context(
@@ -1083,6 +1096,40 @@ class Engine:
 
     def _message_snapshot(self) -> list[dict[str, Any]]:
         return [message_to_dict(message) for message in self.messages]
+
+    def _close_interrupted_tool_calls(self, reason: str) -> None:
+        """Append error results for an interrupted trailing tool batch."""
+        assistant_index = next(
+            (
+                index
+                for index in range(len(self.messages) - 1, -1, -1)
+                if self.messages[index].role == "assistant"
+                and self.messages[index].tool_calls
+            ),
+            None,
+        )
+        if assistant_index is None:
+            return
+
+        tail = self.messages[assistant_index + 1:]
+        if any(message.role != "tool" for message in tail):
+            return
+        answered = {
+            message.tool_call_id for message in tail if message.tool_call_id
+        }
+        missing = [
+            call for call in self.messages[assistant_index].tool_calls
+            if call.id not in answered
+        ]
+        self.messages.extend(
+            Message(
+                role="tool",
+                content=f"Tool call did not complete: {reason}.",
+                tool_call_id=call.id,
+                status="error",
+            )
+            for call in missing
+        )
 
     async def _handle_client_interaction(
         self,

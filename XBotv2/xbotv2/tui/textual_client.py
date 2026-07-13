@@ -192,7 +192,11 @@ class XBotTextualApp(App[None]):
         try:
             self.state.status = "Connecting"
             self._refresh_all()
-            await self.session.connect()
+            session = await self.session.connect()
+            history = session.get("history") if isinstance(session, dict) else None
+            if isinstance(history, list):
+                self.state.restore_history(history)
+                await self._render_new_transcript_entries()
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []

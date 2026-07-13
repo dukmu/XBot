@@ -28,6 +28,12 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 - `resume`: reconnect to existing session state on disk
 - `new` with an existing explicit id returns HTTP 409; `resume` with a missing
   id returns HTTP 404. The server never changes modes implicitly.
+- The CLI treats an explicit TUI `--session` as `resume`; omitting it creates a
+  new generated session. Programmatic clients continue to send the mode
+  explicitly.
+- `OpenSessionResponse.history` contains display-safe user, assistant, and tool
+  messages as typed `SessionHistoryItem` values. It excludes system messages
+  and private provider metadata.
 
 ### Endpoints
 
@@ -194,9 +200,11 @@ behavior list rather than a closed enum.
 
 Interaction recovery after an SSE disconnect is not supported in the current
 protocol. Request events therefore carry `resume_supported: false`; disconnect
-cancels the live wait and stops the affected turn. A future recoverable model
-must define ownership, expiry, replay, and exactly-once response behavior before
-changing this flag.
+cancels the live wait and stops the affected turn. The engine appends error
+tool results for calls left unanswered by that interruption, so the persisted
+message sequence remains valid when the session is later resumed. A future
+recoverable interaction model must define ownership, expiry, replay, and
+exactly-once response behavior before changing this flag.
 
 The HTTP turn bridge owns and explicitly closes the Engine async stream on
 normal completion, interrupt, and disconnect.
