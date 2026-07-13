@@ -52,6 +52,9 @@ type-only import inside XBotv2 itself.
 `HookContext.request_id` carries the current message/turn correlation id for
 turn-scoped hooks, including error and persistence hooks. Session lifecycle
 hooks use an empty value because they are not owned by one message request.
+Engine-created contexts also expose `invoke_model(messages)` for one unbound
+auxiliary provider call. It returns `ModelResponse` without recursively running
+model Hooks or exposing the provider implementation.
 Persistence Hook contexts are emitted only for a changed normalized message
 snapshot; repeated save attempts with no state change do not emit them.
 `PromptFragmentStage` contains `system_prefix`, `system_instructions`,

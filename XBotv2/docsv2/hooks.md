@@ -31,6 +31,13 @@ session lifecycle contexts use an empty value. Plugins register
 callbacks through `PluginSetupContext`; they do not receive the hook manager,
 tool registry, context builder, or engine implementation.
 
+Engine-created contexts expose `invoke_model(messages)` for auxiliary work such
+as conversation summarization. It performs one unbound provider call and
+returns the public `ModelResponse`; it does not bind tools, recursively run
+model Hooks, or emit assistant stream events. Errors and cancellation propagate
+to the calling Hook. A Hook must finish auxiliary work before returning a
+history replacement, so failed work cannot partially compact persisted state.
+
 Model-request stages expose `ctx.model_request` for inspection. Use the
 documented stage return dictionary when replacing messages, tools, or the LLM.
 

@@ -1501,6 +1501,48 @@ class TestEngineHooks:
         assert engine.messages[0].content == "compacted"
 
     @pytest.mark.asyncio
+    async def test_hook_can_make_unbound_auxiliary_model_call(
+        self, state_store, temp_workspace
+    ):
+        llm = MockLLM(responses=[
+            {"content": "summary", "usage_metadata": {"input_tokens": 3}},
+            {"content": "answer"},
+        ])
+        summaries = []
+
+        async def before_context(ctx):
+            response = await ctx.invoke_model([
+                Message(role="user", content="summarize history")
+            ])
+            summaries.append(response)
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_CONTEXT, before_context)
+        engine = Engine(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(
+                enabled=False,
+                workspace_root=str(temp_workspace),
+            ),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=None,
+        )
+
+        events = [event async for event in engine.run_turn("question")]
+
+        assert summaries[0].content == "summary"
+        assert summaries[0].usage_metadata == {"input_tokens": 3}
+        assert llm.get_call_messages(0)[0].content == "summarize history"
+        assert llm.get_call_messages(1)[-2].content == "question"
+        assert next(
+            event for event in events if event["type"] == "assistant_message"
+        )["data"]["content"] == "answer"
+
+    @pytest.mark.asyncio
     async def test_tool_client_event_does_not_stop_turn(self, state_store, temp_workspace):
         """send-message style tools emit client events and continue the loop."""
         llm = MockLLM(responses=[

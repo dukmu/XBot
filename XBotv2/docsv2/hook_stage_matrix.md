@@ -33,7 +33,7 @@ receive an empty value.
 | `on_stop_failure` | observer | no | no | `stop_reason`, `error`, optional `user_input` | ignored | turn failure path |
 | `before_user_message_accept` | transform | caller | no | `user_input` | `{user_input}`, `{event, turn_complete}`, or rejection | before message enters history |
 | `after_user_message_accept` | observer | no | no | `user_input` | ignored | after user message append |
-| `before_context` | transform | default | no | `state.messages`, `session` | compaction dict or event dict | before context preparation |
+| `before_context` | transform | default | no | `state.messages`, `session`, `invoke_model` | compaction dict or event dict | before context preparation |
 | `pre_compact` | transform | default | no | `compact_reason`, `state.messages` | `{messages}`, `{compact_reason}`, or rejection | before history replacement |
 | `post_compact` | observer | no | no | `compact_reason`, message count state | ignored | after history replacement |
 | `before_context_build` | transform | default | no | `state.messages`, context build inputs | `{messages}`, `{context_kwargs}`, or event dict | before context builder |

@@ -1040,6 +1040,24 @@ class Engine:
             raise RuntimeError("LLM stream produced no chunks")
         yield {"type": "_model_response", "data": {"response": aggregate}}
 
+    async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
+        """Run one unbound auxiliary model call for a Hook."""
+        aggregate: ModelResponse | None = None
+        async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
+            async for chunk in self.llm.astream(messages):
+                if isinstance(chunk, ModelChunk):
+                    aggregate = merge_xbot_chunk(aggregate, chunk)
+                elif isinstance(chunk, ModelResponse):
+                    aggregate = chunk
+                else:
+                    logger.warning(
+                        "_invoke_model: unexpected chunk type %s",
+                        type(chunk).__name__,
+                    )
+        if aggregate is None:
+            raise RuntimeError("LLM stream produced no chunks")
+        return aggregate
+
     async def _handle_compaction(self, short_circuit: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(short_circuit, dict) or "messages" not in short_circuit:
             return self._default_hook_rejection_event(HookStage.BEFORE_CONTEXT)
@@ -1254,6 +1272,7 @@ class Engine:
             tools=self.tool_registry,
             sandbox=self.sandbox_policy,
             plugin_store=None,
+            invoke_model=self._invoke_model,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,

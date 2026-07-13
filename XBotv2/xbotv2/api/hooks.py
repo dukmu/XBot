@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from xbotv2.api.context import ContextComponent
+from xbotv2.api.messages import Message, ModelResponse
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.tools import ToolCall
 
@@ -100,6 +101,7 @@ class HookContext:
     sandbox: Any | None = None
     plugin_store: Any | None = None
     plugin_runtime: Any | None = None
+    invoke_model: Callable[[list[Message]], Awaitable[ModelResponse]] | None = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo("", ""))
     emit: Callable[[Any], None] = field(default=lambda _: None)
     user_input: str | None = None
