@@ -375,6 +375,20 @@ async def test_http_policy_commands_update_session_overrides(
         "/sessions/policy/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
     )
+    ctx = await http_app.state.manager.get("policy")
+    cached_path = (
+        http_app.state.paths.session("policy").artifacts_dir
+        / "tool_results"
+        / "cached.txt"
+    )
+    cached_path.parent.mkdir(parents=True)
+    cached_path.write_text("cached after policy reload", encoding="utf-8")
+    filesystem_entry = ctx.engine.tool_registry.get("filesystem_read")
+    assert filesystem_entry is not None
+    cached_result = await filesystem_entry.tool.ainvoke(
+        {"path": "artifacts/tool_results/cached.txt"},
+        sandbox=ctx.engine.sandbox_policy,
+    )
     status_response = await client.post(
         "/sessions/policy/commands",
         json={"command": "permission", "args": ["status"]},
@@ -383,6 +397,8 @@ async def test_http_policy_commands_update_session_overrides(
     assert permission_response.status_code == 200
     assert sandbox_response.status_code == 200
     assert status_response.status_code == 200
+    assert cached_result.status == "success"
+    assert "cached after policy reload" in cached_result.content
     assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
     state_root = http_app.state.paths.session("policy").state_dir
     events_path = state_root / "events.jsonl"

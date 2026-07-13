@@ -120,8 +120,8 @@ ambiguity before large implementation changes.
   command discovery.
 - Provider-visible tool names are unique across namespaces, because model tool
   calls do not carry registry namespaces.
-- Surface registered-name metadata through command discovery and diagnostics without
-  breaking existing string selectors.
+- Command discovery exposes registered-name metadata without changing existing
+  string selectors.
 - Align documented execution metadata with dispatcher behavior.
 - Normalize `ToolResult.data`, errors, artifacts, and client events across
   built-in tools.

@@ -237,6 +237,7 @@ def _reload_live_policies(ctx: Any) -> None:
         sandbox,
         data_root=ctx.paths.data_dir,
         workspace_root=Path(ctx.workspace_root),
+        read_mounts=ctx.engine.sandbox_policy.read_mounts,
     )
     ctx.engine.sandbox_policy = sandbox_policy
 

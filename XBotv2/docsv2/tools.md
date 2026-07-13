@@ -38,7 +38,8 @@ the current session state, such as `artifacts/tool_results/<file>`. That path is
 readable through `filesystem_read`; callers should use `offset` and `limit` to
 inspect only the required lines. A read-only virtual mount maps the current
 session's `artifacts/` prefix to its backing store; other relative paths remain
-workspace-relative. Cached-result metadata survives restoration.
+workspace-relative. Policy updates preserve these mounts, and cached-result
+metadata survives restoration.
 
 Filesystem write modes have the same semantics with or without the session
 sandbox. Successful writes retain mode-specific metadata such as `changed` and
