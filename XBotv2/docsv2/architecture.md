@@ -133,13 +133,16 @@ Discovers SKILL.md files (agentskills.io standard) from:
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 
-Connects to MCP servers via stdio (subprocess JSON-RPC) and HTTP transports.
+Connects through the official MCP SDK using stdio or Streamable HTTP.
+- The SDK owns lifecycle negotiation, pagination, cancellation, progress, and
+  server notifications.
 - Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
 - Eager connection at bootstrap with per-server diagnostics. Optional failures
   mark the plugin degraded; servers configured with `required: true` fail startup.
-- Performs the required initialize/initialized handshake before tool discovery
+- Performs the required initialize/initialized handshake before discovery
 - Preserves MCP input schemas and adapts call data/errors to `ToolResult`
-- Supports MCP tools only; HTTP is request/response JSON-RPC, not Streamable HTTP
+- Keeps optional server and client features capability-gated; XBot advertises
+  them only when the corresponding Agent bridge is installed.
 
 ## Namespace Protocol
 

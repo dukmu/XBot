@@ -1,8 +1,5 @@
 """Integration tests for MCPPlugin — client, stdio transport, tool wrapping."""
 
-import asyncio
-import json
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
@@ -17,13 +14,6 @@ def _tool_definition(name, **values):
         **values,
     }
 
-
-def _initialize_result(version="2024-11-05"):
-    return {
-        "protocolVersion": version,
-        "capabilities": {"tools": {}},
-        "serverInfo": {"name": "test", "version": "1"},
-    }
 
 _EVERYTHING_SERVER = """\
 import sys, json
@@ -41,7 +31,7 @@ for line in sys.stdin:
     method = req.get("method", "")
     rid = req.get("id", 0)
     if method == "initialize":
-        respond(rid, {"protocolVersion":"2024-11-05","serverInfo":{"name":"test","version":"1.0"},"capabilities":{"tools":{}}})
+        respond(rid, {"protocolVersion":"2024-11-05","serverInfo":{"name":"test","version":"1.0"},"capabilities":{"tools":{},"resources":{"subscribe":True},"prompts":{},"completions":{},"logging":{}}})
     elif method == "notifications/initialized":
         continue
     elif method == "tools/list":
@@ -60,6 +50,21 @@ for line in sys.stdin:
             respond(rid, {"content":[{"type":"text","text":str(args.get("a",0)+args.get("b",0))}]})
         else:
             respond(rid, {"content":[{"type":"text","text":"unknown"}],"isError":True})
+    elif method == "resources/list":
+        respond(rid, {"resources":[{"uri":"memo://one","name":"Memo","mimeType":"text/plain"}]})
+    elif method == "resources/templates/list":
+        respond(rid, {"resourceTemplates":[{"uriTemplate":"memo://{name}","name":"Memo template"}]})
+    elif method == "resources/read":
+        uri = req.get("params", {}).get("uri", "")
+        respond(rid, {"contents":[{"uri":uri,"mimeType":"text/plain","text":"memo content"}]})
+    elif method in {"resources/subscribe", "resources/unsubscribe", "logging/setLevel", "ping"}:
+        respond(rid, {})
+    elif method == "prompts/list":
+        respond(rid, {"prompts":[{"name":"review","description":"Review code","arguments":[]}]})
+    elif method == "prompts/get":
+        respond(rid, {"description":"Review code","messages":[{"role":"user","content":{"type":"text","text":"Review this"}}]})
+    elif method == "completion/complete":
+        respond(rid, {"completion":{"values":["one","two"],"total":2,"hasMore":False}})
     else:
         respond(rid, {})
 """
@@ -127,7 +132,7 @@ class TestMCPStdioTransport:
         from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
 
         client = MCPClient()
-        with pytest.raises((MCPConnectionError, ConnectionResetError, OSError)):
+        with pytest.raises(MCPConnectionError, match="initialization failed"):
             await client.connect_and_list("test", {
                 "type": "local",
                 "command": ["python3", "-c", "exit(1)"],
@@ -166,135 +171,49 @@ class TestMCPStdioTransport:
         await client.disconnect_all()
 
     @pytest.mark.asyncio
-    async def test_invalid_tool_list_disconnects_before_commit(self):
-        from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
-
-        client = MCPClient()
-        transport = AsyncMock()
-        transport.call.side_effect = [
-            _initialize_result(),
-            {"tools": [{"description": "no name"}]},
-        ]
-        client._create_transport = lambda config: transport
-
-        with pytest.raises(MCPConnectionError, match="non-empty string name"):
-            await client.connect_and_list("invalid", {})
-
-        transport.disconnect.assert_awaited_once()
-        assert client._transports == {}
-
-    @pytest.mark.asyncio
-    async def test_invalid_input_schema_disconnects_before_commit(self):
-        from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
-
-        client = MCPClient()
-        transport = AsyncMock()
-        transport.call.side_effect = [
-            _initialize_result(),
-            {
-                "tools": [
-                    _tool_definition(
-                        "invalid",
-                        inputSchema={"type": "object", "required": "not-a-list"},
-                    )
-                ]
-            },
-        ]
-        client._create_transport = lambda config: transport
-
-        with pytest.raises(MCPConnectionError, match="invalid inputSchema"):
-            await client.connect_and_list("invalid", {})
-
-        transport.disconnect.assert_awaited_once()
-        assert client._transports == {}
-
-    @pytest.mark.asyncio
-    async def test_connect_performs_required_handshake_before_tool_discovery(self):
+    async def test_server_features_use_negotiated_protocol(self, echo_server_script):
         from builtin_plugins.mcp.client import MCPClient
 
         client = MCPClient()
-        transport = AsyncMock()
-        transport.call.side_effect = [
-            _initialize_result(),
-            {"tools": [_tool_definition("echo")]},
-        ]
-        client._create_transport = lambda config: transport
+        await client.connect_and_list("test", {
+            "type": "local",
+            "command": ["python3", str(echo_server_script)],
+        })
 
-        tools = await client.connect_and_list("server", {})
-
-        assert tools == [_tool_definition("echo")]
-        assert transport.call.await_args_list == [
-            call(
-                "initialize",
-                {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "xbotv2", "version": "2"},
-                },
-            ),
-            call("tools/list", {}),
-        ]
-        transport.notify.assert_awaited_once_with("notifications/initialized", {})
-
-    @pytest.mark.asyncio
-    async def test_unsupported_protocol_version_disconnects_before_commit(self):
-        from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
-
-        client = MCPClient()
-        transport = AsyncMock()
-        transport.call.return_value = _initialize_result("unsupported")
-        client._create_transport = lambda config: transport
-
-        with pytest.raises(MCPConnectionError, match="unsupported protocol version"):
-            await client.connect_and_list("server", {})
-
-        transport.notify.assert_not_awaited()
-        transport.disconnect.assert_awaited_once()
-        assert client._transports == {}
-
-
-class TestMCPHttpTransport:
-    @pytest.mark.asyncio
-    async def test_call_and_notification_use_json_rpc_envelopes(self):
-        import httpx
-
-        from builtin_plugins.mcp.client import HttpTransport
-
-        requests = []
-
-        def handler(request):
-            body = json.loads(request.content)
-            requests.append(body)
-            if "id" not in body:
-                return httpx.Response(202)
-            return httpx.Response(
-                200,
-                json={"jsonrpc": "2.0", "id": body["id"], "result": {"ok": True}},
-            )
-
-        transport = HttpTransport("https://mcp.test")
-        transport._client = httpx.AsyncClient(
-            base_url="https://mcp.test",
-            transport=httpx.MockTransport(handler),
+        assert set(client.server_capabilities("test")) >= {
+            "tools", "resources", "prompts", "completions", "logging",
+        }
+        resources = await client.list_resources("test")
+        assert resources["resources"][0]["uri"] == "memo://one"
+        assert resources["resourceTemplates"][0]["uriTemplate"] == "memo://{name}"
+        read = await client.read_resource("test", "memo://one")
+        assert read["contents"][0]["text"] == "memo content"
+        prompts = await client.list_prompts("test")
+        assert prompts[0]["name"] == "review"
+        prompt = await client.get_prompt("test", "review")
+        assert prompt["messages"][0]["content"]["text"] == "Review this"
+        completion = await client.complete(
+            "test",
+            {"type": "ref/prompt", "name": "review"},
+            {"name": "topic", "value": "o"},
         )
+        assert completion["completion"]["values"] == ["one", "two"]
+        assert await client.subscribe_resource("test", "memo://one") == {}
+        assert await client.unsubscribe_resource("test", "memo://one") == {}
+        assert await client.set_logging_level("test", "info") == {}
+        assert await client.ping("test") == {}
 
-        assert await transport.call("test/call", {"value": 1}) == {"ok": True}
-        await transport.notify("notifications/test", {})
+        await client.disconnect_all()
 
-        assert requests == [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "test/call",
-                "params": {"value": 1},
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "notifications/test",
-                "params": {},
-            },
-        ]
-        await transport.disconnect()
+
+def test_invalid_mcp_tool_schema_is_rejected():
+    from builtin_plugins.mcp.client import MCPConnectionError, _validate_tool_list
+
+    with pytest.raises(MCPConnectionError, match="invalid inputSchema"):
+        _validate_tool_list({"tools": [_tool_definition(
+            "invalid",
+            inputSchema={"type": "object", "required": "not-a-list"},
+        )]})
 
 
 @pytest.mark.asyncio

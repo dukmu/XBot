@@ -297,25 +297,24 @@ reconnect and register a fresh tool set. `on_unload` remains a final cleanup
 path for bootstrap failures and abnormal shutdown.
 
 **Transport types:**
-- `local` (stdio): subprocess with newline-delimited JSON-RPC. Requests are
-  serialized so response ids cannot be consumed by the wrong caller; server
-  notifications received while awaiting a response are skipped.
-- `remote` (HTTP): one JSON-RPC request/response per HTTP POST.
+- `local` (stdio): official MCP SDK stdio transport.
+- `remote` (HTTP): official MCP SDK Streamable HTTP transport, including
+  negotiated protocol headers, JSON/SSE responses, session termination, and
+  server notifications.
 
-Both transports perform `initialize` using protocol version `2024-11-05`, send
-`notifications/initialized`, and only then request `tools/list`. A mismatched
-protocol version, invalid initialize response, invalid tool schema, or failed
-registration aborts that server transaction. MCP `inputSchema` is preserved as
-the public `Tool.parameters` schema. Successful calls retain the raw MCP result
-in `ToolResult.data`; MCP `isError` becomes a structured `mcp_tool_error`.
+The maintained SDK owns JSON-RPC, lifecycle negotiation, pagination, transport
+sessions, cancellation, progress, and notifications. The XBot client exposes
+the negotiated tools, resources, resource templates, prompts, completions,
+subscriptions, logging level, and ping primitives. Invalid tool schemas or
+failed XBot registration still abort that server transaction. MCP `inputSchema`
+is preserved as the public `Tool.parameters` schema. Successful calls retain
+the raw MCP result in `ToolResult.data`; MCP `isError` becomes a structured
+`mcp_tool_error`.
 
-This built-in is deliberately a tools client, not a complete MCP SDK. It does
-not currently implement resources, prompts, roots, sampling, server requests,
-or subscription notifications. The HTTP transport is a JSON-RPC POST endpoint;
-it does not claim Streamable HTTP session or SSE support. Add those capabilities
-as a coherent transport implementation, preferably through a maintained MCP
-SDK, rather than extending the current client with isolated compatibility
-branches.
+Tool registration remains the first Agent-facing integration. Resource,
+prompt, and bidirectional client capabilities are negotiated by the SDK but
+must only be advertised to a server when the corresponding XBot bridge is
+installed.
 
 **Configuration** (in `system.yaml` plugins section):
 ```yaml

@@ -1,23 +1,23 @@
-"""MCPClient — JSON-RPC 2.0 over stdio and HTTP for Model Context Protocol.
-
-Supports:
-- tools/list: discover tools from a server
-- tools/call: invoke a tool and return results
-"""
+"""MCP client backed by the official Model Context Protocol SDK."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
+import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
+from mcp import ClientSession, StdioServerParameters, types
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
+from pydantic import AnyUrl
 
 logger = logging.getLogger("xbotv2.mcp")
-MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
 class MCPConnectionError(RuntimeError):
@@ -31,32 +31,46 @@ class MCPCallResult:
     data: dict[str, Any]
 
 
+@dataclass(slots=True)
+class _Connection:
+    stack: AsyncExitStack
+    session: ClientSession
+    initialize_result: types.InitializeResult
+
+
 class MCPClient:
     def __init__(self) -> None:
-        self._transports: dict[str, MCPTransport] = {}
+        self._transports: dict[str, _Connection] = {}
 
-    async def connect_and_list(self, name: str, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    async def connect_and_list(
+        self,
+        name: str,
+        cfg: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         if name in self._transports:
             raise MCPConnectionError(f"MCP server '{name}' is already connected")
-        transport = self._create_transport(cfg)
+
+        stack = AsyncExitStack()
         try:
-            await transport.connect()
-            initialize_result = await transport.call(
-                "initialize",
-                {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "xbotv2", "version": "2"},
-                },
+            read, write = await self._open_transport(stack, cfg)
+            timeout = timedelta(seconds=float(cfg.get("timeout", 30)))
+            session = await stack.enter_async_context(
+                ClientSession(read, write, read_timeout_seconds=timeout)
             )
-            _validate_initialize_result(initialize_result)
-            await transport.notify("notifications/initialized", {})
-            result = await transport.call("tools/list", {})
-            tools = _validate_tool_list(result)
-        except BaseException:
-            await transport.disconnect()
+            initialize_result = await session.initialize()
+            connection = _Connection(stack, session, initialize_result)
+            tools = await self._list_tools(connection)
+        except BaseException as exc:
+            await stack.aclose()
+            if isinstance(exc, MCPConnectionError):
+                raise
+            if isinstance(exc, Exception):
+                raise MCPConnectionError(
+                    f"MCP server '{name}' initialization failed: {exc}"
+                ) from exc
             raise
-        self._transports[name] = transport
+
+        self._transports[name] = connection
         return tools
 
     async def call_tool(
@@ -65,227 +79,148 @@ class MCPClient:
         tool: str,
         arguments: dict[str, Any],
     ) -> MCPCallResult:
-        transport = self._transports.get(server)
-        if transport is None:
-            raise MCPConnectionError(f"MCP server '{server}' not connected")
-        result = await transport.call("tools/call", {"name": tool, "arguments": arguments})
+        result = await self._connection(server).session.call_tool(tool, arguments)
+        data = _dump(result)
         return MCPCallResult(
-            content=_normalize_mcp_result(result),
-            is_error=bool(result.get("isError", False)),
-            data=result,
+            content=_normalize_mcp_result(data),
+            is_error=bool(result.isError),
+            data=data,
         )
+
+    def server_capabilities(self, server: str) -> dict[str, Any]:
+        return _dump(self._connection(server).initialize_result.capabilities)
+
+    async def list_resources(self, server: str) -> dict[str, Any]:
+        session = self._connection(server).session
+        resources = await _collect_pages(session.list_resources, "resources")
+        templates = await _collect_pages(
+            session.list_resource_templates,
+            "resourceTemplates",
+        )
+        return {"resources": resources, "resourceTemplates": templates}
+
+    async def read_resource(self, server: str, uri: str) -> dict[str, Any]:
+        result = await self._connection(server).session.read_resource(AnyUrl(uri))
+        return _dump(result)
+
+    async def subscribe_resource(self, server: str, uri: str) -> dict[str, Any]:
+        result = await self._connection(server).session.subscribe_resource(AnyUrl(uri))
+        return _dump(result)
+
+    async def unsubscribe_resource(self, server: str, uri: str) -> dict[str, Any]:
+        result = await self._connection(server).session.unsubscribe_resource(AnyUrl(uri))
+        return _dump(result)
+
+    async def list_prompts(self, server: str) -> list[dict[str, Any]]:
+        return await _collect_pages(
+            self._connection(server).session.list_prompts,
+            "prompts",
+        )
+
+    async def get_prompt(
+        self,
+        server: str,
+        name: str,
+        arguments: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        result = await self._connection(server).session.get_prompt(name, arguments)
+        return _dump(result)
+
+    async def complete(
+        self,
+        server: str,
+        reference: dict[str, Any],
+        argument: dict[str, str],
+        context_arguments: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if reference.get("type") == "ref/resource":
+            ref = types.ResourceTemplateReference.model_validate(reference)
+        else:
+            ref = types.PromptReference.model_validate(reference)
+        result = await self._connection(server).session.complete(
+            ref,
+            argument,
+            context_arguments,
+        )
+        return _dump(result)
+
+    async def set_logging_level(self, server: str, level: str) -> dict[str, Any]:
+        result = await self._connection(server).session.set_logging_level(level)  # type: ignore[arg-type]
+        return _dump(result)
+
+    async def ping(self, server: str) -> dict[str, Any]:
+        return _dump(await self._connection(server).session.send_ping())
 
     async def disconnect_all(self) -> None:
         for name in list(self._transports):
             await self.disconnect(name)
 
     async def disconnect(self, name: str) -> bool:
-        transport = self._transports.pop(name, None)
-        if transport is None:
+        connection = self._transports.pop(name, None)
+        if connection is None:
             return False
         try:
-            await transport.disconnect()
+            await connection.stack.aclose()
         except Exception:
             logger.warning("MCP disconnect failed for %s", name, exc_info=True)
         return True
 
-    def _create_transport(self, cfg: dict[str, Any]) -> MCPTransport:
-        transport_type = cfg.get("type", "local")
-        if transport_type == "remote":
-            return HttpTransport(cfg["url"], cfg.get("headers", {}))
-        return StdioTransport(cfg.get("command", []), cfg.get("env", {}))
+    async def _open_transport(
+        self,
+        stack: AsyncExitStack,
+        cfg: dict[str, Any],
+    ) -> tuple[Any, Any]:
+        if cfg.get("type", "local") == "remote":
+            client = await stack.enter_async_context(httpx.AsyncClient(
+                headers=dict(cfg.get("headers") or {}),
+                timeout=float(cfg.get("timeout", 30)),
+            ))
+            read, write, _ = await stack.enter_async_context(
+                streamable_http_client(
+                    str(cfg["url"]),
+                    http_client=client,
+                    terminate_on_close=bool(cfg.get("terminate_on_close", True)),
+                )
+            )
+            return read, write
 
-
-class MCPTransport:
-    async def connect(self) -> None: ...
-    async def disconnect(self) -> None: ...
-    async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]: ...
-    async def notify(self, method: str, params: dict[str, Any]) -> None: ...
-
-
-class StdioTransport(MCPTransport):
-    def __init__(self, command: list[str], env: dict[str, str] | None = None) -> None:
+        command = list(cfg.get("command") or [])
         if not command:
             raise MCPConnectionError("MCP stdio transport requires a command")
-        self._command = command
-        self._env = env or {}
-        self._proc: asyncio.subprocess.Process | None = None
-        self._request_id = 0
-        self._io_lock = asyncio.Lock()
-
-    async def connect(self) -> None:
-        import os
-        proc_env = os.environ.copy()
-        proc_env.update(self._env)
-        try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *self._command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-            )
-        except (OSError, FileNotFoundError) as exc:
-            raise MCPConnectionError(
-                f"MCP stdio failed to start {self._command!r}: {exc}"
-            ) from exc
-
-    async def disconnect(self) -> None:
-        proc = self._proc
-        self._proc = None
-        if proc is None:
-            return
-        if proc.stdin is not None:
-            proc.stdin.close()
-            try:
-                await proc.stdin.wait_closed()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-        if proc.returncode is None:
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=0.2)
-            except asyncio.TimeoutError:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-
-    async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if self._proc is None:
-            raise MCPConnectionError("MCP stdio transport not connected")
-        return await self._send_json_rpc(method, params)
-
-    async def notify(self, method: str, params: dict[str, Any]) -> None:
-        if self._proc is None:
-            raise MCPConnectionError("MCP stdio transport not connected")
-        notification = {"jsonrpc": "2.0", "method": method, "params": params}
-        async with self._io_lock:
-            await self._write_message(notification)
-
-    async def _send_json_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        async with self._io_lock:
-            self._request_id += 1
-            request_id = self._request_id
-            await self._write_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": method,
-                    "params": params,
-                }
-            )
-            return await self._read_response(request_id, method)
-
-    async def _write_message(self, message: dict[str, Any]) -> None:
-        payload = json.dumps(message) + "\n"
-        self._proc.stdin.write(payload.encode("utf-8"))  # type: ignore[union-attr]
-        await self._proc.stdin.drain()  # type: ignore[union-attr]
-
-    async def _read_response(self, request_id: int, method: str) -> dict[str, Any]:
-        while True:
-            try:
-                line = await asyncio.wait_for(
-                    self._proc.stdout.readline(),  # type: ignore[union-attr]
-                    timeout=30,
-                )
-            except asyncio.TimeoutError as exc:
-                raise MCPConnectionError(f"MCP call '{method}' timed out") from exc
-            if not line:
-                raise MCPConnectionError(
-                    f"MCP server closed connection during '{method}'"
-                )
-            try:
-                response = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise MCPConnectionError(f"MCP invalid JSON response: {exc}") from exc
-            if not isinstance(response, dict):
-                raise MCPConnectionError("MCP JSON-RPC response must be an object")
-            _validate_json_rpc_version(response)
-            if "id" not in response:
-                continue
-            if response["id"] != request_id:
-                raise MCPConnectionError(
-                    f"MCP response id {response['id']!r} does not match request {request_id}"
-                )
-            if "error" in response:
-                err = response["error"]
-                if not isinstance(err, dict):
-                    raise MCPConnectionError(f"MCP error: {err}")
-                raise MCPConnectionError(
-                    f"MCP error {err.get('code', '')}: "
-                    f"{err.get('message', 'unknown')}"
-                )
-            result = response.get("result", {})
-            if not isinstance(result, dict):
-                raise MCPConnectionError("MCP JSON-RPC result must be an object")
-            return result
-
-
-class HttpTransport(MCPTransport):
-    def __init__(self, url: str, headers: dict[str, str] | None = None) -> None:
-        self._url = url.rstrip("/")
-        self._headers = headers or {}
-        self._request_id = 0
-
-    async def connect(self) -> None:
-        import httpx
-
-        self._client = httpx.AsyncClient(
-            base_url=self._url,
-            headers=self._headers,
-            timeout=30.0,
+        params = StdioServerParameters(
+            command=command[0],
+            args=command[1:],
+            env=dict(cfg.get("env") or {}) or None,
+            cwd=cfg.get("cwd"),
         )
+        return await stack.enter_async_context(stdio_client(params))
 
-    async def disconnect(self) -> None:
-        if hasattr(self, "_client"):
-            await self._client.aclose()
+    async def _list_tools(self, connection: _Connection) -> list[dict[str, Any]]:
+        if connection.initialize_result.capabilities.tools is None:
+            return []
+        tools = await _collect_pages(connection.session.list_tools, "tools")
+        return _validate_tool_list({"tools": tools})
 
-    async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        self._request_id += 1
-        request_id = self._request_id
-        body = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params,
-        }
-        data = await self._post(body)
-        if data.get("id") != request_id:
-            raise MCPConnectionError("MCP HTTP response id does not match request")
-        if "error" in data:
-            err = data["error"]
-            if not isinstance(err, dict):
-                raise MCPConnectionError(f"MCP error: {err}")
-            raise MCPConnectionError(
-                f"MCP error {err.get('code', '')}: "
-                f"{err.get('message', 'unknown')}"
-            )
-        result = data.get("result", {})
-        if not isinstance(result, dict):
-            raise MCPConnectionError("MCP JSON-RPC result must be an object")
-        return result
+    def _connection(self, server: str) -> _Connection:
+        connection = self._transports.get(server)
+        if connection is None:
+            raise MCPConnectionError(f"MCP server '{server}' not connected")
+        return connection
 
-    async def notify(self, method: str, params: dict[str, Any]) -> None:
-        await self._post({"jsonrpc": "2.0", "method": method, "params": params})
 
-    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        import httpx
+async def _collect_pages(method: Any, field: str) -> list[dict[str, Any]]:
+    cursor = None
+    values: list[dict[str, Any]] = []
+    while True:
+        result = await method(cursor=cursor)
+        values.extend(_dump(item) for item in getattr(result, field))
+        cursor = result.nextCursor
+        if not cursor:
+            return values
 
-        try:
-            resp = await self._client.post("/", json=body)
-            resp.raise_for_status()
-            if not resp.content:
-                return {}
-            data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
-            raise MCPConnectionError(f"MCP HTTP call failed: {exc}") from exc
-        if not isinstance(data, dict):
-            raise MCPConnectionError("MCP HTTP JSON-RPC response must be an object")
-        if data:
-            _validate_json_rpc_version(data)
-        return data
+
+def _dump(value: Any) -> dict[str, Any]:
+    return value.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _normalize_mcp_result(result: dict[str, Any]) -> str:
@@ -302,11 +237,7 @@ def _normalize_mcp_result(result: dict[str, Any]) -> str:
             texts.append(f"[image: {block.get('mimeType', 'unknown')}]")
         elif block.get("type") == "resource":
             resource = block.get("resource")
-            uri = (
-                resource.get("uri", "")
-                if isinstance(resource, dict)
-                else block.get("uri", "")
-            )
+            uri = resource.get("uri", "") if isinstance(resource, dict) else ""
             texts.append(f"[resource: {uri}]")
         else:
             texts.append(json.dumps(block, ensure_ascii=False))
@@ -320,11 +251,7 @@ def _validate_tool_list(result: Any) -> list[dict[str, Any]]:
     if not isinstance(tools, list):
         raise MCPConnectionError("MCP tools/list 'tools' must be a list")
     for index, tool in enumerate(tools):
-        if (
-            not isinstance(tool, dict)
-            or not isinstance(tool.get("name"), str)
-            or not tool["name"]
-        ):
+        if not isinstance(tool, dict) or not tool.get("name"):
             raise MCPConnectionError(
                 f"MCP tools/list entry {index} must have a non-empty string name"
             )
@@ -340,22 +267,3 @@ def _validate_tool_list(result: Any) -> list[dict[str, Any]]:
                 f"MCP tools/list entry {index} has invalid inputSchema: {exc.message}"
             ) from exc
     return tools
-
-
-def _validate_initialize_result(result: Any) -> None:
-    if not isinstance(result, dict):
-        raise MCPConnectionError("MCP initialize result must be an object")
-    version = result.get("protocolVersion")
-    if version != MCP_PROTOCOL_VERSION:
-        raise MCPConnectionError(
-            f"MCP server selected unsupported protocol version {version!r}"
-        )
-    if not isinstance(result.get("capabilities"), dict):
-        raise MCPConnectionError("MCP initialize result must contain capabilities")
-    if not isinstance(result.get("serverInfo"), dict):
-        raise MCPConnectionError("MCP initialize result must contain serverInfo")
-
-
-def _validate_json_rpc_version(message: dict[str, Any]) -> None:
-    if message.get("jsonrpc") != "2.0":
-        raise MCPConnectionError("MCP message must declare JSON-RPC 2.0")

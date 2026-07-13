@@ -34,6 +34,13 @@ config_schema:
             type: object
             additionalProperties:
               type: string
+          cwd:
+            type: string
+          timeout:
+            type: number
+            exclusiveMinimum: 0
+          terminate_on_close:
+            type: boolean
         oneOf:
           - properties:
               type:
