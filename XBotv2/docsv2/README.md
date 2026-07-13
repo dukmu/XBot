@@ -13,6 +13,7 @@ This directory describes the current XBotv2 implementation.
 - [Hook stage matrix](hook_stage_matrix.md)
 - [Plugin system](plugins.md)
 - [Built-in tools](tools.md)
+- [Compact plugin](compact.md)
 - [Token manager plugin](token_manager.md)
 - [Testing](testing.md)
 

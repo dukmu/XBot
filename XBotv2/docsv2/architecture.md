@@ -95,6 +95,14 @@ replaced with tuple key.
 
 ## Plugin System
 
+### CompactPlugin (`builtin_plugins/compact/`)
+
+Uses the public `BEFORE_CONTEXT` compaction result and the controlled
+`HookContext.invoke_model()` capability to summarize a completed history
+prefix. It supports a model-visible request tool and a configurable automatic
+character threshold. Core remains responsible for Hook bracketing and atomic
+history persistence.
+
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io standard) from:

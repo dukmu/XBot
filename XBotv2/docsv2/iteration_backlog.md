@@ -147,16 +147,15 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Compact
 
-- Support an explicit compact request and automatic invocation before a model
-  request crosses its configured context threshold.
-- Compact only a completed history prefix. Preserve system/plugin context,
-  recent messages, unresolved tool calls, and the current user request.
-- Persist the compacted history so resume and restart do not reconstruct a
-  different context.
-- On cancellation or summarization failure, keep the original history intact
-  and expose the failure through the existing turn/protocol behavior.
-- Reuse the existing model-request, persistence, usage, and client-event
-  contracts before proposing another Hook stage or core-only plugin access.
+- The initial plugin supports a model-visible request tool and automatic
+  character-threshold invocation through `BEFORE_CONTEXT`.
+- It compacts only before a user-message boundary and preserves recent complete
+  turns, including tool calls, results, and the current request.
+- Engine-owned atomic persistence makes resume reconstruct the same summary and
+  recent tail. Failed auxiliary calls leave the original history intact.
+- Automatic compaction has been verified with a real provider. A shared
+  token-budget trigger remains; do not duplicate provider tokenizers inside
+  the plugin or add another Hook stage.
 
 ### Todo List
 

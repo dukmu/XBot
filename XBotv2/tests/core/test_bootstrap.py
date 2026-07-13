@@ -254,6 +254,7 @@ class NormalClosePlugin(PluginBase):
 
         assert "send_message" in engine.tool_registry.names()
         assert "ask_user" in engine.tool_registry.names()
+        assert "plugin:compact:*" in engine.config.tools
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):

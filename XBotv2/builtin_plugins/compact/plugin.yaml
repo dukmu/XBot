@@ -1,0 +1,19 @@
+name: compact
+version: "1.0.0"
+description: Manual and automatic conversation history compaction
+api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    automatic:
+      type: boolean
+    trigger_chars:
+      type: integer
+      minimum: 1000
+    keep_recent_turns:
+      type: integer
+      minimum: 1
+    summary_max_chars:
+      type: integer
+      minimum: 500

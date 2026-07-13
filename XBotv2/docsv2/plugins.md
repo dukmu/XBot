@@ -200,6 +200,16 @@ config_schema:
 
 ## Built-in Plugins
 
+### CompactPlugin (`builtin_plugins/compact/`)
+
+Compacts a completed history prefix through the public `BEFORE_CONTEXT`
+contract. The `compact` tool requests a manual compaction; a character threshold
+can trigger it automatically. Recent complete user turns remain verbatim, the
+auxiliary model call has no tools, and only a successful summary is returned as
+a message replacement. Engine persistence then atomically rewrites history, so
+resume observes the same summary and recent tail. See
+[Compact plugin](compact.md).
+
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io format) and registers them as tools.
@@ -339,6 +349,8 @@ cannot express, first verify that the gap is shared rather than plugin-local.
 Shared gaps belong in the public API; plugin-local concerns stay inside the
 plugin instead of receiving special runtime access or a new public wrapper.
 
+- Compact demonstrates an auxiliary model call, transform Hook, structured
+  request tool, and core-owned atomic persistence.
 - Skills demonstrates setup tools, lifecycle hooks, runtime-discovered tools,
   per-turn state, diagnostics, and unload reset.
 - MCP demonstrates external client ownership, degraded diagnostics, dynamic

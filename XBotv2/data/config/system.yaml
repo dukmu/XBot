@@ -7,6 +7,7 @@ tools:
   - filesystem
   - send_message
   - ask_user
+  - plugin:compact:*
   - plugin:skills:*
   - skills:*:*
   - mcp:*:*
