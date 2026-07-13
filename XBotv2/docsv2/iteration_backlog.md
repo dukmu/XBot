@@ -50,6 +50,9 @@ ambiguity before large implementation changes.
 - Design reconnectable interactions only after request ownership, expiry,
   replay, and exactly-once response semantics are specified. The current
   protocol explicitly advertises `resume_supported: false`.
+- Restore persisted message history into model context after a process restart.
+  The TUI currently renders the old transcript, but a real-provider request in
+  the resumed session did not receive that history.
 
 ## 3. Hook Contract Tightening
 
@@ -124,6 +127,8 @@ ambiguity before large implementation changes.
   built-in tools.
 - Typed `ToolResult.data`, `error`, and `artifacts` now survive runtime
   conversion and appear on `tool_result` events.
+- Large tool results use session-relative `artifacts/` paths through a
+  read-only virtual mount. Keep logical paths independent of backing locations.
 - Unimplemented `execution_mode` and `lock_fields` registration metadata were
   removed. Define batch scheduling, stable output ordering, Hook concurrency,
   live-interaction serialization, and lock semantics before adding a parallel

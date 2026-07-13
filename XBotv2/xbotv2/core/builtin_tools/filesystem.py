@@ -21,7 +21,7 @@ async def read_file(path: str, offset: int = 0, limit: int = 2000, *, sandbox=No
     if sandbox is not None and sandbox.enabled:
         return _tool_result_from_json(await sandbox.read_file(path, offset=offset, limit=limit))
 
-    p = Path(path)
+    p = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
     if not p.exists():
         return _json_error("file_not_found", f"File not found: {path}", path=path)
     if not p.is_file():

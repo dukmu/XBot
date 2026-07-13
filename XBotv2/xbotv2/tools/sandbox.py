@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from xbotv2.tools.sandbox_bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
@@ -40,6 +40,7 @@ class SandboxPolicy:
         *,
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
+        read_mounts: Mapping[str, Path | str] | None = None,
         enabled: bool = True,
         network: bool = True,
         external_read: str = "readonly",
@@ -50,6 +51,10 @@ class SandboxPolicy:
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
+        self.read_mounts = {
+            name: Path(root).resolve()
+            for name, root in (read_mounts or {}).items()
+        }
         self._network = network
         self.external_read = external_read
         self.external_write = external_write
@@ -84,6 +89,7 @@ class SandboxPolicy:
 
     async def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         spec = self._mount_specs()
+        resolved = self.resolve_read_path(path)
         script = dedent("""
             import json
             import pathlib
@@ -143,7 +149,7 @@ class SandboxPolicy:
             sys.stdout.write(json.dumps(result, ensure_ascii=False))
         """)
         return await self._backend.run(
-            ["python3", "-c", script, str(self.workspace_root / path), str(offset), str(limit)],
+            ["python3", "-c", script, str(resolved), str(offset), str(limit)],
             spec,
         )
 
@@ -281,6 +287,16 @@ class SandboxPolicy:
     def resolve_resource_path(self, path: str) -> str:
         p = Path(path)
         return str(p.resolve() if p.is_absolute() else (self.data_root / p).resolve())
+
+    def resolve_read_path(self, path: str) -> Path:
+        p = Path(path)
+        if p.is_absolute():
+            return p.resolve()
+        if p.parts and (root := self.read_mounts.get(p.parts[0])) is not None:
+            resolved = (root / Path(*p.parts[1:])).resolve()
+            if resolved.is_relative_to(root):
+                return resolved
+        return (self.workspace_root / p).resolve()
 
     def describe(self) -> str:
         if self.enabled:

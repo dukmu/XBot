@@ -94,6 +94,23 @@ class TestResourcePathResolution:
         resolved = policy.resolve_resource_path("skills/test.md")
         assert str(temp_workspace / "data" / "skills" / "test.md") in resolved
 
+    def test_artifact_read_path_is_limited_to_current_session(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        session_root = tmp_path / "data" / "sessions" / "s" / "state"
+        workspace.mkdir()
+        policy = SandboxPolicy(
+            workspace_root=workspace,
+            data_root=tmp_path / "data",
+            read_mounts={"artifacts": session_root / "artifacts"},
+        )
+
+        assert policy.resolve_read_path("artifacts/tool_results/cached.txt") == (
+            session_root / "artifacts" / "tool_results" / "cached.txt"
+        ).resolve()
+        assert policy.resolve_read_path("artifacts/../plugin_states/secret.yaml") == (
+            workspace / "artifacts" / "../plugin_states" / "secret.yaml"
+        ).resolve()
+
 
 class TestBubblewrapBuildArgs:
     def test_network_true_uses_share_net(self, temp_workspace):
@@ -120,10 +137,12 @@ class TestBubblewrapBuildArgs:
 class TestBubblewrapCapabilities:
     @pytest.mark.asyncio
     async def test_real_file_and_shell_capabilities(self, tmp_path):
+        session_root = tmp_path / ".data" / "sessions" / "s" / "state"
         policy = SandboxPolicy(
             enabled=True,
             workspace_root=tmp_path,
             data_root=tmp_path / ".data",
+            read_mounts={"artifacts": session_root / "artifacts"},
         )
         if not policy.backend_available:
             pytest.skip("bubblewrap is not installed")
@@ -132,10 +151,16 @@ class TestBubblewrapCapabilities:
         readonly_path = tmp_path / ".data" / "readonly.txt"
         readonly_path.parent.mkdir()
         readonly_path.write_text("before", encoding="utf-8")
+        cached_path = session_root / "artifacts" / "tool_results" / "cached.txt"
+        cached_path.parent.mkdir(parents=True)
+        cached_path.write_text("cached", encoding="utf-8")
 
         read_data = json.loads(await policy.read_file("sample.txt"))
         readonly_data = json.loads(
             await policy.read_file(str(readonly_path), offset=0, limit=1)
+        )
+        cached_data = json.loads(
+            await policy.read_file("artifacts/tool_results/cached.txt")
         )
         missing_data = json.loads(await policy.read_file("missing.txt"))
         write_data = json.loads(await policy.write_file("created.txt", "created"))
@@ -146,6 +171,7 @@ class TestBubblewrapCapabilities:
         assert read_data["content"] == "alpha\nbeta"
         assert readonly_data["content"] == "before"
         assert readonly_data["returned_lines"] == 1
+        assert cached_data["content"] == "cached"
         assert missing_data["ok"] is False
         assert missing_data["error"]["code"] == "file_not_found"
         assert write_data["ok"] is True

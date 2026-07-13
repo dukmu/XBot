@@ -160,6 +160,7 @@ async def bootstrap(
         agent_config.sandbox,
         data_root=paths.data_dir,
         workspace_root=workspace_root,
+        read_mounts={"artifacts": state_store.artifacts_dir},
     )
     permissions = PermissionSystem(agent_config.permissions)
 

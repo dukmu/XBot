@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from langchain_core.tools import tool as langchain_tool
 
-from xbotv2.core.builtin_tools.filesystem import filesystem_write
+from xbotv2.core.builtin_tools.filesystem import filesystem_read, filesystem_write
 from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
@@ -72,6 +72,38 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
 
     assert results[0].status == "success"
     assert (temp_workspace / "out.txt").read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_cached_result_path_resolves_from_session_state_when_sandbox_disabled(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    session_root = tmp_path / "data" / "sessions" / "s" / "state"
+    cached = session_root / "artifacts" / "tool_results" / "cached.txt"
+    workspace.mkdir()
+    cached.parent.mkdir(parents=True)
+    cached.write_text("cached content", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(filesystem_read, sandbox_mode="sandboxed")
+    sandbox = SandboxPolicy(
+        enabled=False,
+        data_root=tmp_path / "data",
+        workspace_root=workspace,
+        read_mounts={"artifacts": session_root / "artifacts"},
+    )
+
+    results = await execute_tools(
+        [ToolCall("c1", "filesystem_read", {
+            "path": "artifacts/tool_results/cached.txt",
+        })],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "success"
+    assert "cached content" in results[0].content
 
 
 @pytest.mark.asyncio
@@ -436,6 +468,9 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert "x" * 100 not in tool_message.content
     assert tool_message.artifact["kind"] == "cached_tool_result"
     assert tool_message.artifact["tool_call_id"] == "call_large"
+    assert tool_message.artifact["cache_path"].startswith("artifacts/tool_results/")
+    assert not Path(tool_message.artifact["cache_path"]).is_absolute()
+    assert str(state_store.root) not in tool_message.content
 
     cache_files = list((Path(state_store.artifacts_dir) / "tool_results").glob("*.txt"))
     assert len(cache_files) == 1

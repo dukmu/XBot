@@ -42,10 +42,11 @@ def make_tool_result_cache_hook(
             name = _safe_name(tool_call_id)
             path = cache_dir / f"{name}-{digest}.txt"
             path.write_text(content, encoding="utf-8")
+            cache_path = path.relative_to(Path(state_store.root))
 
             replacement = _format_cached_result(
                 content=content,
-                cache_path=path,
+                cache_path=cache_path,
                 max_inline_chars=max_inline_chars,
                 preview_chars=preview_chars,
             )
@@ -53,7 +54,7 @@ def make_tool_result_cache_hook(
             artifact = {
                 "kind": "cached_tool_result",
                 "tool_call_id": tool_call_id,
-                "cache_path": str(path),
+                "cache_path": str(cache_path),
                 "original_chars": len(content),
                 "inline_chars": len(replacement),
                 "sha256": digest,
@@ -96,4 +97,3 @@ def _format_cached_result(
 
 def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)[:80] or "tool"
-

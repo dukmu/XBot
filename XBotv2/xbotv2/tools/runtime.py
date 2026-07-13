@@ -455,15 +455,14 @@ async def _execute_one_tool(
                 return
 
     try:
-        use_sandbox = (
+        use_sandbox_policy = (
             entry.sandbox_mode == "sandboxed"
             and sandbox_policy is not None
-            and sandbox_policy.enabled
         )
         result = await _invoke_tool(
             tool,
             args,
-            sandbox=sandbox_policy if use_sandbox else None,
+            sandbox=sandbox_policy if use_sandbox_policy else None,
         )
 
         if _is_user_input_wait_result(result):
