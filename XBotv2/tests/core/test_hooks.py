@@ -350,12 +350,13 @@ class TestAllStages:
     def test_all_stages_exist(self):
         """Verify all HookStage values."""
         stages = list(HookStage)
-        assert len(stages) == 41
+        assert len(stages) == 43
         stage_values = {s.value for s in stages}
 
         expected = {
             "on_session_init", "on_session_start", "on_session_resume", "on_session_close",
             "on_turn_start", "on_turn_end", "on_stop", "on_stop_failure",
+            "before_mailbox_delivery", "after_mailbox_delivery",
             "before_user_message_accept", "after_user_message_accept",
             "before_context", "pre_compact", "post_compact",
             "before_context_build", "after_context",

@@ -34,6 +34,7 @@ class SetupContext:
         return f"plugin:goal:{tool.name}"
 
 
+
 def make_plugin(state_store) -> GoalPlugin:
     return GoalPlugin(
         PluginManifest(name="goal", version="1"),
@@ -51,19 +52,23 @@ def setup_plugin(state_store) -> tuple[GoalPlugin, SetupContext]:
 def test_goal_registers_one_state_machine_tool_and_context_hook(state_store):
     plugin, setup = setup_plugin(state_store)
 
-    assert list(setup.hooks) == [HookStage.AFTER_CONTEXT_COMPONENTS_BUILD]
+    assert list(setup.hooks) == [
+        HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        HookStage.ON_TURN_END,
+        HookStage.BEFORE_MAILBOX_DELIVERY,
+    ]
     assert list(setup.tools) == ["goal"]
     tool = setup.tools["goal"]
     assert tool.parameters["properties"]["action"]["enum"] == [
-        "block", "clear", "complete", "create", "get", "resume", "update",
+        "block", "clear", "complete", "create", "get", "pause", "resume", "update",
     ]
     assert tool.parameters["additionalProperties"] is False
     assert setup.options["goal"].namespace == "plugin:goal"
     assert plugin.diagnostics() == {
         "status": "ready",
         "scope": "session",
-        "goal_statuses": ["active", "blocked", "complete"],
-        "automatic_continuation": False,
+        "goal_statuses": ["active", "blocked", "complete", "paused"],
+        "automatic_continuation": True,
     }
 
 
@@ -110,26 +115,6 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
 
 
 @pytest.mark.asyncio
-async def test_goal_command_surface_delegates_to_same_state_machine(state_store):
-    plugin = make_plugin(state_store)
-
-    created = await plugin.handle_command([
-        "create", "--token-budget", "1200", "ship", "goal",
-    ])
-    viewed = await plugin.handle_command([])
-    completed = await plugin.handle_command(["complete", "tests", "passed"])
-    resumed = await plugin.handle_command(["resume"])
-    updated = await plugin.handle_command(["update", "ship", "goal", "v2"])
-
-    assert created.data["goal"]["objective"] == "ship goal"
-    assert created.data["goal"]["token_budget"] == 1200
-    assert viewed.data == created.data
-    assert completed.data["goal"]["summary"] == "tests passed"
-    assert resumed.data["goal"]["status"] == "active"
-    assert updated.data["goal"]["objective"] == "ship goal v2"
-
-
-@pytest.mark.asyncio
 async def test_goal_rejects_invalid_transitions_without_mutating_state(state_store):
     plugin = make_plugin(state_store)
     await plugin.goal("create", objective="keep this objective")
@@ -149,6 +134,54 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
     assert bad_budget.error.code == "invalid_token_budget"
     assert update_budget.error.code == "invalid_arguments"
     assert await plugin.store.all() == before
+
+
+@pytest.mark.asyncio
+async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
+    plugin = make_plugin(state_store)
+    await plugin.goal("create", objective="iterate until complete")
+    queued = []
+
+    async def enqueue(message):
+        queued.append(message)
+
+    turn_end = HookContext(
+        stage=HookStage.ON_TURN_END,
+        session=SimpleNamespace(),
+        stop_reason="completed",
+        enqueue_mailbox=enqueue,
+    )
+    await plugin._on_turn_end(turn_end)
+    await plugin._on_turn_end(turn_end)
+
+    assert len(queued) == 1
+    assert queued[0]["source"] == "goal"
+    assert queued[0]["event"] == "continue"
+
+    await plugin._on_mailbox_delivery(HookContext(
+        stage=HookStage.BEFORE_MAILBOX_DELIVERY,
+        session=SimpleNamespace(),
+        mailbox_message=SimpleNamespace(kind="general", message=queued[0]),
+    ))
+    await plugin._on_turn_end(turn_end)
+    assert len(queued) == 2
+
+
+@pytest.mark.asyncio
+async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
+    plugin = make_plugin(state_store)
+    await plugin.goal("create", objective="pause on escape")
+    queued = []
+
+    await plugin._on_turn_end(HookContext(
+        stage=HookStage.ON_TURN_END,
+        session=SimpleNamespace(),
+        stop_reason="client_interrupt",
+        enqueue_mailbox=queued.append,
+    ))
+
+    assert queued == []
+    assert (await plugin.goal("get")).data["goal"]["status"] == "paused"
 
 
 @pytest.mark.asyncio

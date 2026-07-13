@@ -19,6 +19,8 @@ class HookStage(enum.Enum):
     ON_SESSION_CLOSE = "on_session_close"
     ON_TURN_START = "on_turn_start"
     ON_TURN_END = "on_turn_end"
+    BEFORE_MAILBOX_DELIVERY = "before_mailbox_delivery"
+    AFTER_MAILBOX_DELIVERY = "after_mailbox_delivery"
     ON_STOP = "on_stop"
     ON_STOP_FAILURE = "on_stop_failure"
     BEFORE_USER_MESSAGE_ACCEPT = "before_user_message_accept"
@@ -103,6 +105,7 @@ class HookContext:
     plugin_runtime: Any | None = None
     invoke_model: Callable[[list[Message]], Awaitable[ModelResponse]] | None = None
     request_user_input: Callable[..., Awaitable[dict[str, Any]]] | None = None
+    enqueue_mailbox: Callable[[str | dict[str, Any]], Awaitable[Any]] | None = None
     session: SessionInfo = field(default_factory=lambda: SessionInfo("", ""))
     emit: Callable[[Any], None] = field(default=lambda _: None)
     user_input: str | None = None
@@ -122,6 +125,7 @@ class HookContext:
     error: Exception | None = None
     short_circuit_result: Any | None = None
     request_id: str = ""
+    mailbox_message: Any | None = None
 
 HookFn = Callable[[HookContext], Any]
 

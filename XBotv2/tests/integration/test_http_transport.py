@@ -29,6 +29,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.hooks import HookStage
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
@@ -983,8 +984,16 @@ class _GatedMockLLM(MockLLM):
     first and tear the turn down before the LLM is unblocked.
     """
 
-    def __init__(self, release: asyncio.Event, **kwargs):
-        super().__init__(responses=[{"content": "late reply"}], **kwargs)
+    def __init__(
+        self,
+        release: asyncio.Event,
+        responses: list[dict[str, Any]] | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            responses=responses or [{"content": "late reply"}],
+            **kwargs,
+        )
         object.__setattr__(self, "_gated_release", release)
         object.__setattr__(self, "_gated_calls", 0)
 
@@ -1006,6 +1015,152 @@ class _GatedMockLLM(MockLLM):
         await self._gated_release.wait()  # type: ignore[has-type]
         async for chunk in super().astream(messages, **kwargs):
             yield chunk
+
+
+@pytest.mark.asyncio
+async def test_session_mailbox_queues_user_messages_and_delivers_in_order(
+    http_app,
+) -> None:
+    release = asyncio.Event()
+    llm = _GatedMockLLM(
+        release,
+        responses=[{"content": "first reply"}, {"content": "second reply"}],
+    )
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="mailbox-order",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    delivered: list[tuple[str, str]] = []
+
+    async def observe(hook_ctx):
+        delivered.append((hook_ctx.stage.value, hook_ctx.mailbox_message.id))
+
+    ctx.engine.hook_manager.register(HookStage.BEFORE_MAILBOX_DELIVERY, observe)
+    ctx.engine.hook_manager.register(HookStage.AFTER_MAILBOX_DELIVERY, observe)
+
+    first, first_events, first_queued, _ = await ctx.enqueue_user_message(
+        "first", "req-1"
+    )
+    assert first_queued is False
+    assert (await first_events.get())["type"] == "turn_started"
+
+    second, second_events, second_queued, position = await ctx.enqueue_user_message(
+        "second", "req-2"
+    )
+    assert second_queued is True
+    assert position == 1
+
+    release.set()
+
+    async def collect(events):
+        result = []
+        while True:
+            event = await events.get()
+            if event is None:
+                return result
+            result.append(event)
+
+    first_result, second_result = await asyncio.gather(
+        collect(first_events),
+        collect(second_events),
+    )
+
+    assert [event["data"]["content"] for event in first_result if event["type"] == "assistant_message"] == ["first reply"]
+    assert [event["data"]["content"] for event in second_result if event["type"] == "assistant_message"] == ["second reply"]
+    assert [message.content for message in ctx.engine.messages if message.role == "user"] == [
+        "first", "second",
+    ]
+    assert delivered == [
+        ("before_mailbox_delivery", first.id),
+        ("after_mailbox_delivery", first.id),
+        ("before_mailbox_delivery", second.id),
+        ("after_mailbox_delivery", second.id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_general_message_uses_session_event_stream(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "background result"}])
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="general-events",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    events = ctx.attach_event_stream()
+
+    item = await ctx.enqueue_general({
+        "source": "task",
+        "event": "completed",
+        "content": "A background command completed.",
+        "data": {"task_id": "task-1"},
+    })
+
+    received = []
+    while True:
+        event = await asyncio.wait_for(events.get(), timeout=1)
+        received.append(event)
+        if event and event["type"] == "turn_finished":
+            break
+
+    assert [event["type"] for event in received if event] == [
+        "turn_started", "assistant_message_delta", "assistant_message",
+        "turn_finished",
+    ]
+    assert next(
+        event for event in received if event and event["type"] == "assistant_message"
+    )["data"]["content"] == "background result"
+    assert [
+        message.role for message in ctx.engine.messages
+    ] == ["system", "assistant"]
+    assert "background command completed" in ctx.engine.messages[0].content.lower()
+    assert item.kind == "general"
+
+
+@pytest.mark.asyncio
+async def test_session_close_drops_mailbox_and_resume_starts_empty(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "unused"}])
+    ctx = await http_app.state.manager.open_session(
+        session_id="mailbox-resume",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    await ctx.enqueue_general("do not replay")
+    assert ctx.mailbox.size == 1
+
+    await http_app.state.manager.close_session(
+        "mailbox-resume", reason="client_disconnected"
+    )
+    resumed = await http_app.state.manager.open_session(
+        session_id="mailbox-resume",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        mode="resume",
+        no_plugins=True,
+        llm_override=llm,
+    )
+
+    assert resumed.mailbox.size == 0
+    records = [
+        json.loads(line)
+        for line in resumed.paths.session("mailbox-resume").mailbox_log.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert records[-1]["event"] == "dropped"
+    assert records[-1]["reason"] == "client_disconnected"
 
 
 @pytest.mark.asyncio
@@ -1484,10 +1639,37 @@ async def test_http_server_commands_include_kind(
 
 
 @pytest.mark.asyncio
-async def test_http_goal_command_uses_one_persistent_state_machine(
+async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
+    set_llm_override(skills_app, MockLLM(responses=[
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "goal-create",
+                "name": "goal",
+                "args": {
+                    "action": "create",
+                    "objective": "ship the API",
+                    "token_budget": 2000,
+                },
+            }],
+        },
+        {"content": "Goal started."},
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "goal-complete",
+                "name": "goal",
+                "args": {
+                    "action": "complete",
+                    "summary": "API tests passed",
+                },
+            }],
+        },
+        {"content": "Goal complete: API tests passed."},
+    ]))
     await skills_client.post(
         "/sessions", json={"session_id": "goal-state", "thread_id": "t"}
     )
@@ -1496,34 +1678,31 @@ async def test_http_goal_command_uses_one_persistent_state_machine(
         item for item in commands.json()["commands"] if item["name"] == "goal"
     ]
     assert len(goal_commands) == 1
-    assert goal_commands[0]["kind"] == "server"
+    assert goal_commands[0]["kind"] == "tool"
 
-    created = await skills_client.post(
-        "/sessions/goal-state/commands",
-        json={
-            "command": "goal",
-            "args": ["create", "--token-budget", "2000", "ship", "the", "API"],
-        },
+    response = await skills_client.post(
+        "/sessions/goal-state/messages",
+        json={"content": "/goal create --token-budget 2000 ship the API"},
     )
-    completed = await skills_client.post(
-        "/sessions/goal-state/commands",
-        json={"command": "goal", "args": ["complete", "API", "tests", "passed"]},
-    )
-    resumed = await skills_client.post(
-        "/sessions/goal-state/commands",
-        json={"command": "goal", "args": ["resume"]},
-    )
+    events = _parse_sse(response.text)
 
-    assert created.json()["data"]["data"]["goal"]["token_budget"] == 2000
-    assert completed.json()["data"]["data"]["goal"] == {
+    assert [
+        event["data"]["content"]
+        for event in events
+        if event["type"] == "assistant_message" and event["data"]["content"]
+    ] == ["Goal started.", "Goal complete: API tests passed."]
+    ctx = await skills_app.state.manager.get("goal-state")
+    goal_plugin = next(
+        plugin
+        for plugin in ctx.engine.plugin_loader.loaded_plugins
+        if plugin.manifest.name == "goal"
+    )
+    assert (await goal_plugin.goal("get")).data["goal"] == {
         "objective": "ship the API",
         "status": "complete",
         "summary": "API tests passed",
         "token_budget": 2000,
     }
-    assert resumed.json()["data"]["data"]["goal"]["status"] == "active"
-
-    ctx = await skills_app.state.manager.get("goal-state")
     assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "allow"
     await skills_client.post(
         "/sessions/goal-state/commands",
@@ -1531,11 +1710,6 @@ async def test_http_goal_command_uses_one_persistent_state_machine(
     )
     assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "deny"
 
-    cleared = await skills_client.post(
-        "/sessions/goal-state/commands",
-        json={"command": "goal", "args": ["clear"]},
-    )
-    assert cleared.json()["data"]["data"] == {"goal": None}
 
 
 @pytest.mark.asyncio

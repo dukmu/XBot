@@ -15,9 +15,10 @@ Architecture constraint: Engine NEVER imports from builtin_plugins.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +28,7 @@ from xbotv2.core.interactions import (
     InteractionResult,
     InteractionWaiter,
 )
+from xbotv2.core.mailbox import MailboxMessage
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
@@ -190,10 +192,17 @@ class Engine:
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
+        self.enqueue_mailbox: (
+            Callable[[str | dict[str, Any]], Awaitable[Any]] | None
+        ) = None
         self.paths = state_store.paths.runtime
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
+        )
+        self._mailbox_message: ContextVar[MailboxMessage | None] = ContextVar(
+            f"xbotv2_mailbox_message_{id(self)}",
+            default=None,
         )
 
     # ------------------------------------------------------------------
@@ -312,17 +321,39 @@ class Engine:
         user_input: str,
         *,
         request_id: str = "",
+        mailbox_message: MailboxMessage | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
+        mailbox_token = self._mailbox_message.set(mailbox_message)
         turn_started = False
+        turn_ended = False
         try:
-            async for event in self._run_turn_impl(user_input):
+            async for event in self._run_turn_impl(
+                user_input,
+                input_kind=(
+                    mailbox_message.kind
+                    if mailbox_message is not None
+                    else "user_message"
+                ),
+            ):
                 if event.get("type") == "turn_started":
                     turn_started = True
+                elif event.get("type") in {"turn_finished", "turn_cancelled"}:
+                    turn_ended = True
                 yield event
         except asyncio.CancelledError:
             logger.info("Turn %s interrupted by client", self.turn_count)
             self._close_interrupted_tool_calls("client_interrupt")
+            if not turn_ended:
+                turn_ctx = self._make_hook_context(
+                    HookStage.ON_TURN_END,
+                    stop_reason="client_interrupt",
+                )
+                await self.hook_manager.run(
+                    HookStage.ON_TURN_END,
+                    turn_ctx,
+                    short_circuit=False,
+                )
             yield {
                 "type": "turn_cancelled",
                 "data": {
@@ -370,13 +401,19 @@ class Engine:
                 await self.save_messages()
             finally:
                 self._request_id.reset(request_token)
+                self._mailbox_message.reset(mailbox_token)
 
-    async def _run_turn_impl(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+    async def _run_turn_impl(
+        self,
+        user_input: str,
+        *,
+        input_kind: str = "user_message",
+    ) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
         """
-        turn_start = await self._start_turn(user_input)
+        turn_start = await self._start_turn(user_input, input_kind=input_kind)
         for event in turn_start.events:
             yield event
         if not turn_start.proceed:
@@ -683,7 +720,35 @@ class Engine:
     def _tool_batch_result_event(result: _ToolBatchResult) -> dict[str, Any]:
         return {"type": "_tool_batch_result", "data": {"result": result}}
 
-    async def _start_turn(self, user_input: str) -> _TurnStartResult:
+    async def _start_turn(
+        self,
+        user_input: str,
+        *,
+        input_kind: str = "user_message",
+    ) -> _TurnStartResult:
+        if input_kind == "general":
+            self.turn_count += 1
+            if self.session is not None:
+                self.session.turn_count = self.turn_count
+            self.messages.append(Message(
+                role="system",
+                content=user_input,
+                additional_kwargs={"xbotv2_source": "mailbox"},
+            ))
+            turn_ctx = self._make_hook_context(
+                HookStage.ON_TURN_START,
+                user_input=user_input,
+            )
+            await self.hook_manager.run(
+                HookStage.ON_TURN_START,
+                turn_ctx,
+                short_circuit=False,
+            )
+            return _TurnStartResult(
+                user_input,
+                [{"type": "turn_started", "data": {"turn": self.turn_count}}],
+                True,
+            )
         accept_ctx = self._make_hook_context(
             HookStage.BEFORE_USER_MESSAGE_ACCEPT,
             user_input=user_input,
@@ -964,7 +1029,10 @@ class Engine:
         return _ModelRequestResult(request=model_request)
 
     async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
-        turn_ctx = self._make_hook_context(HookStage.ON_TURN_END)
+        turn_ctx = self._make_hook_context(
+            HookStage.ON_TURN_END,
+            stop_reason=stop_reason,
+        )
         await self.hook_manager.run(
             HookStage.ON_TURN_END,
             turn_ctx,
@@ -1296,6 +1364,7 @@ class Engine:
         permission_decision: str | None = None,
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
+        mailbox_message: MailboxMessage | None = None,
     ) -> HookContext:
         return HookContext(
             stage=stage,
@@ -1307,6 +1376,7 @@ class Engine:
             plugin_store=None,
             invoke_model=self._invoke_model,
             request_user_input=self._request_user_input,
+            enqueue_mailbox=self.enqueue_mailbox,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,
@@ -1329,6 +1399,35 @@ class Engine:
             permission_decision=permission_decision,
             client_event=client_event,
             error=error,
+            mailbox_message=(
+                mailbox_message
+                if mailbox_message is not None
+                else self._mailbox_message.get()
+            ),
+        )
+
+    async def run_mailbox_hook(
+        self,
+        stage: HookStage,
+        message: MailboxMessage,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        ctx = self._make_hook_context(
+            stage,
+            mailbox_message=message,
+            error=error,
+        )
+        await self.hook_manager.run(stage, ctx, short_circuit=False)
+
+    @staticmethod
+    def mailbox_content(message: MailboxMessage) -> str:
+        if isinstance(message.message, str):
+            return message.message
+        return "Mailbox message:\n" + json.dumps(
+            message.message,
+            ensure_ascii=False,
+            sort_keys=True,
         )
 
     @staticmethod

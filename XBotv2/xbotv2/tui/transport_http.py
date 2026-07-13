@@ -143,6 +143,16 @@ class HttpTransport:
             trace_label="messages",
         )
 
+    def session_events(
+        self,
+        *,
+        session_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        return self._sse_iter(
+            f"/sessions/{session_id}/events",
+            trace_label="session_events",
+        )
+
     async def send_permission_response(
         self,
         *,
@@ -220,7 +230,7 @@ class HttpTransport:
         self,
         path: str,
         *,
-        json_body: dict[str, Any],
+        json_body: dict[str, Any] | None = None,
         trace_label: str,
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate one SSE stream from the server.
@@ -235,7 +245,7 @@ class HttpTransport:
             {"stage": f"{trace_label}.request", "url": path, "body": json_body},
         )
         async with self._client.stream(
-            "POST",
+            "POST" if json_body is not None else "GET",
             path,
             json=json_body,
             timeout=httpx.Timeout(self._timeout, read=None),

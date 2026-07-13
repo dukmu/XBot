@@ -138,6 +138,15 @@ class TerminalSession:
                 return
             yield event
 
+    async def session_events(self) -> AsyncIterator[dict[str, Any]]:
+        """Yield turns initiated by runtime general messages."""
+
+        async for event in self._transport.session_events(
+            session_id=self._session_id,
+        ):
+            if str(event.get("type") or "") != "end":
+                yield event
+
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
         return await self._transport.send_user_input(
             session_id=self._session_id,

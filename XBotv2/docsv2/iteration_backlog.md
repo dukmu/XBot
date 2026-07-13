@@ -71,10 +71,9 @@ ambiguity before large implementation changes.
   calls so permissions, sandboxing, Hooks, structured results, and persistence
   have one implementation. Direct user commands may define an explicit policy
   boundary, but must not bypass it accidentally.
-- Remove the current Goal-specific `_goal_command` core adapter after generic
-  plugin command execution exists. Goal must use `/sessions/{id}/commands` like
-  every other server capability; no plugin-specific URI or transport method is
-  allowed.
+- Keep Goal free of protocol-specific command adapters. Its registered Tool is
+  already present in shared command discovery; complete generic Tool command
+  execution without restoring a Goal-only parser or handler.
 - Add contract tests proving discovery and execution for one core server
   command, one built-in plugin tool, one Skill, and one MCP tool, plus client
   interception of one client-only command and schema validation failures.

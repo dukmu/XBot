@@ -9,23 +9,39 @@ from xbotv2.api import (
     HookContext,
     HookStage,
     PluginBase,
+    PluginManifest,
     PluginSetupContext,
+    PluginStore,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
 )
 
 
-_ACTIONS = {"get", "create", "update", "complete", "block", "resume", "clear"}
+_ACTIONS = {
+    "get", "create", "update", "complete", "block", "pause", "resume", "clear",
+}
 _MAX_TEXT_CHARS = 2_000
-_STATUSES = {"active", "complete", "blocked"}
+_STATUSES = {"active", "complete", "blocked", "paused"}
 
 
 class GoalPlugin(PluginBase):
+    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
+        super().__init__(manifest, store)
+        self._continuation_pending = False
+
+    async def on_unload(self) -> None:
+        self._continuation_pending = False
+
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(
             HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
             self._add_goal_context,
+        )
+        ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
+        ctx.register_hook(
+            HookStage.BEFORE_MAILBOX_DELIVERY,
+            self._on_mailbox_delivery,
         )
         ctx.register_tool(
             Tool(
@@ -35,7 +51,7 @@ class GoalPlugin(PluginBase):
                     "get to inspect it, update to record objective or progress, "
                     "complete with an execution summary only when all work is "
                     "finished, block with a blocking summary, resume to reactivate "
-                    "it, or clear to remove it."
+                    "it, pause it, or clear to remove it."
                 ),
                 function=self.goal,
                 parameters={
@@ -108,49 +124,13 @@ class GoalPlugin(PluginBase):
             if any(value is not None for value in (objective, summary, token_budget)):
                 return _unexpected_arguments(action)
             return await self._resume()
+        if action == "pause":
+            if any(value is not None for value in (objective, summary, token_budget)):
+                return _unexpected_arguments(action)
+            return await self._pause()
         if any(value is not None for value in (objective, summary, token_budget)):
             return _unexpected_arguments(action)
         return await self._clear()
-
-    async def handle_command(self, args: list[str]) -> ToolResult:
-        """Parse the compact `/goal` command surface into state transitions."""
-        if not args:
-            return await self.goal("get")
-        action = args[0].lower()
-        if action not in _ACTIONS:
-            return await self.goal("create", objective=" ".join(args))
-        rest = args[1:]
-        if action == "create":
-            token_budget = None
-            if rest and rest[0] == "--token-budget":
-                if len(rest) < 2:
-                    return ToolResult.failure(
-                        "invalid_token_budget",
-                        "Goal token budget must be a positive integer",
-                    )
-                try:
-                    token_budget = int(rest[1])
-                except ValueError:
-                    return ToolResult.failure(
-                        "invalid_token_budget",
-                        "Goal token budget must be a positive integer",
-                    )
-                rest = rest[2:]
-            return await self.goal(
-                action,
-                objective=" ".join(rest),
-                token_budget=token_budget,
-            )
-        if action == "update":
-            return await self.goal(action, objective=" ".join(rest))
-        if action in {"complete", "block"}:
-            return await self.goal(action, summary=" ".join(rest))
-        if rest:
-            return ToolResult.failure(
-                "invalid_arguments",
-                f"Usage: /goal {action}",
-            )
-        return await self.goal(action)
 
     async def _get(self) -> ToolResult:
         goal = await self._read_goal()
@@ -242,6 +222,14 @@ class GoalPlugin(PluginBase):
         await self.store.set("goal", goal)
         return ToolResult.success("Resumed the goal.", data={"goal": goal})
 
+    async def _pause(self) -> ToolResult:
+        goal = await self._active_goal()
+        if goal is None:
+            return _no_active_goal()
+        goal["status"] = "paused"
+        await self.store.set("goal", goal)
+        return ToolResult.success("Paused the goal.", data={"goal": goal})
+
     async def _clear(self) -> ToolResult:
         goal = await self._read_goal()
         if goal is None:
@@ -283,12 +271,46 @@ class GoalPlugin(PluginBase):
             ),
         ]
 
+    async def _on_turn_end(self, ctx: HookContext) -> None:
+        if ctx.stop_reason == "client_interrupt":
+            goal = await self._active_goal()
+            if goal is None:
+                return
+            goal["status"] = "paused"
+            await self.store.set("goal", goal)
+            return
+        await self.start(ctx.enqueue_mailbox)
+
+    async def start(self, enqueue_mailbox) -> None:
+        """Schedule the next active-goal turn if one is not already pending."""
+        goal = await self._active_goal()
+        if goal is None or self._continuation_pending or enqueue_mailbox is None:
+            return
+        self._continuation_pending = True
+        await enqueue_mailbox({
+            "source": "goal",
+            "event": "continue",
+            "content": "Continue progressing the active session goal.",
+            "data": {"objective": goal["objective"]},
+        })
+
+    async def _on_mailbox_delivery(self, ctx: HookContext) -> None:
+        item = ctx.mailbox_message
+        message = getattr(item, "message", None)
+        if (
+            getattr(item, "kind", None) == "general"
+            and isinstance(message, dict)
+            and message.get("source") == "goal"
+            and message.get("event") == "continue"
+        ):
+            self._continuation_pending = False
+
     def diagnostics(self) -> dict[str, Any]:
         return {
             "status": "ready",
             "scope": "session",
             "goal_statuses": sorted(_STATUSES),
-            "automatic_continuation": False,
+            "automatic_continuation": True,
         }
 
 
@@ -353,10 +375,14 @@ def _goal_context(goal: dict[str, Any]) -> str:
             "This goal is complete. Do not restart or continue its work unless it is "
             "explicitly resumed. Give the human a concise final summary of the result."
         )
-    else:
+    elif goal["status"] == "blocked":
         lines.append(
             "This goal is blocked. Do not continue it until its blocker changes and "
             "it is explicitly resumed."
+        )
+    else:
+        lines.append(
+            "This goal is paused. Do not continue it until it is explicitly resumed."
         )
     return "\n\n".join(lines)
 

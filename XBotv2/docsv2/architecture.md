@@ -74,9 +74,16 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
 
 ### Hooks (`xbotv2/hooks/`)
 
-41 `HookStage` values cover session, turn, tool, context, and compaction
+43 `HookStage` values cover session, turn, mailbox, tool, context, and compaction
 lifecycle. Guard control flow uses explicit `HookDecision`; critical lifecycle
 stages aggregate failures with `ExceptionGroup`.
+
+### Runtime Mailbox (`xbotv2/core/mailbox.py`)
+
+Buffers `user_message` and `general` inputs while a session is alive. A session
+worker turns one message at a time into an Engine turn; user input has priority
+over runtime notifications. Queue contents are destroyed on disconnect and are
+not restored from the append-only diagnostic log.
 
 ### LLM Provider (`xbotv2/llm/`)
 
@@ -112,11 +119,10 @@ or duplicate goal ownership.
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
-Persists one session objective and exposes one `goal` state-machine tool plus
-the deterministic `/goal` command. Active, complete, and blocked states become
-non-persisted public `ContextComponent` values; terminal context retains the
-execution summary and prevents repeated work. It does not own todo steps or
-automatic turns.
+Persists one session objective and exposes one `goal` state-machine Tool, which
+the shared ToolRegistry inventory discovers as `/goal`. Active goals schedule their next turn through
+the Core mailbox until completed, blocked, or paused. Terminal context retains
+the execution summary and prevents repeated work. It does not own todo steps.
 
 ### SkillsPlugin (`builtin_plugins/skills/`)
 

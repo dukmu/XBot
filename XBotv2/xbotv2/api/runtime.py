@@ -16,7 +16,6 @@ class SessionInfo:
     turn_count: int = 0
     event_count: int = 0
     status: str = "active"
-    mailbox_pending: int = 0
 
 
 __all__ = ["RuntimePaths", "SessionInfo", "SessionPaths"]

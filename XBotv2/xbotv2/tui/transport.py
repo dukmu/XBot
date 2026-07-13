@@ -63,6 +63,13 @@ class Transport(Protocol):
         they're done.
         """
 
+    def session_events(
+        self,
+        *,
+        session_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield server-initiated events for the active session."""
+
     async def send_permission_response(
         self,
         *,

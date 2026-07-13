@@ -38,7 +38,7 @@ from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
 from xbotv2.tui.session_config import TuiSessionConfig
 from xbotv2.tui.textual_theme import TEXTUAL_TUI_CSS
-from xbotv2.tui.textual_state import queue_user_message, route_submitted_text
+from xbotv2.tui.textual_state import route_submitted_text
 from xbotv2.tui.trace import trace_event
 from xbotv2.tui.textual_widgets import (
     ComposerTextArea,
@@ -137,9 +137,9 @@ class XBotTextualApp(App[None]):
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-        self._outbound_messages: asyncio.Queue[str] = asyncio.Queue()
         self._connected = False
-        self._turn_worker_running = False
+        self._active_turn_requests = 0
+        self._request_sequence = 0
         self._rendered_transcript_entries = 0
         self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
@@ -208,6 +208,12 @@ class XBotTextualApp(App[None]):
             self._connected = True
             self.state.status = "Ready"
             self._refresh_all()
+            if hasattr(self.session, "session_events"):
+                self.run_worker(
+                    self._collect_session_events,
+                    exclusive=False,
+                    name="session_events",
+                )
         except Exception as exc:
             self._record_error(exc)
 
@@ -247,11 +253,16 @@ class XBotTextualApp(App[None]):
             return
 
         self._remember_input(text)
-        queue_user_message(self.state, self._outbound_messages, text)
+        self.state.append_message("user", text)
+        await self._render_new_transcript_entries()
+        self._active_turn_requests += 1
+        self._request_sequence += 1
         self._refresh_all()
-        if not self._turn_worker_running:
-            self._turn_worker_running = True
-            self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
+        self.run_worker(
+            self._collect_queued_message(text),
+            exclusive=False,
+            name=f"turn-{self._request_sequence}",
+        )
 
     def action_clear_input(self) -> None:
         """ESC handler: interrupt the running turn or clear the composer.
@@ -262,7 +273,7 @@ class XBotTextualApp(App[None]):
         like the old behaviour.
         """
 
-        if self.state.turn_active or self._turn_worker_running:
+        if self.state.turn_active or self._active_turn_requests:
             self.action_interrupt_turn()
             return
         self.query_one("#input", ComposerTextArea).load_text("")
@@ -275,7 +286,7 @@ class XBotTextualApp(App[None]):
         Textual's action system does not auto-await coroutine
         actions. We schedule the actual HTTP round-trip on a
         worker. The worker is ``exclusive=False`` so the in-flight
-        ``_drain_message_queue`` keeps running. We bind to a unique
+        message streams keep running. We bind to a unique
         worker name so re-pressing ESC does not stack workers.
         """
 
@@ -448,7 +459,7 @@ class XBotTextualApp(App[None]):
                 f"mode={self._current_tui_mode().value} "
                 f"status={self.state.status} "
                 f"turn={self.state.turn} "
-                f"queued={self._outbound_messages.qsize()} "
+                f"queued={self._queued_request_count()} "
                 f"req={usage['requests']} "
                 f"in={usage['input_tokens']} "
                 f"out={usage['output_tokens']} "
@@ -456,27 +467,24 @@ class XBotTextualApp(App[None]):
             ),
         )
 
-    async def _drain_message_queue(self) -> None:
+    async def _collect_queued_message(self, text: str) -> None:
         try:
-            while not self._outbound_messages.empty():
-                if not self.is_mounted:
-                    return
-                text = await self._outbound_messages.get()
-                self.state.append_message("user", text)
-                try:
-                    await self._render_new_transcript_entries()
-                    await self._collect_response(text)
-                except Exception as exc:  # noqa: BLE001
-                    # App may be tearing down (headless test exit);
-                    # swallow so the worker can exit cleanly.
-                    if not self.is_mounted:
-                        return
-                    self._record_error(exc)
+            await self._collect_response(text)
         finally:
-            self._turn_worker_running = False
-            if self.is_mounted and not self._outbound_messages.empty():
-                self._turn_worker_running = True
-                self.run_worker(self._drain_message_queue, exclusive=True, name="turn")
+            self._active_turn_requests = max(0, self._active_turn_requests - 1)
+            self._refresh_all()
+
+    async def _collect_session_events(self) -> None:
+        try:
+            async for event in self.session.session_events():
+                self.state.apply_event(event)
+                await self._handle_stream_event(event)
+                self._start_interaction_response(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self.is_mounted:
+                self._record_error(exc)
 
     async def _collect_response(self, text: str) -> None:
         try:
@@ -599,7 +607,7 @@ class XBotTextualApp(App[None]):
             panel = self.query_one("#status_bar", Static)
         except Exception:  # noqa: BLE001 — defensive; widget may be unmounting
             return
-        queue_depth = self._outbound_messages.qsize()
+        queue_depth = self._queued_request_count()
         usage = self.state.usage
         panel.update(
             status_renderable(
@@ -764,7 +772,7 @@ class XBotTextualApp(App[None]):
             # messages get queued (see submit_composer). Surface the
             # queue depth so the user knows their input will be picked
             # up after the current turn ends.
-            depth = self._outbound_messages.qsize()
+            depth = self._queued_request_count()
             if depth > 0:
                 hint.update(
                     f"Queueing: {depth} pending — type more or wait"
@@ -777,6 +785,9 @@ class XBotTextualApp(App[None]):
             self._set_input_placeholder("Message XBotv2")
         if self.focused is None:
             composer.focus()
+
+    def _queued_request_count(self) -> int:
+        return max(0, self._active_turn_requests - int(self.state.turn_active))
 
     def _set_input_placeholder(self, text: str) -> None:
         if not self.is_mounted:

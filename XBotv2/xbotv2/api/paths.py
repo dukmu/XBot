@@ -106,5 +106,9 @@ class SessionPaths:
     def artifacts_dir(self) -> Path:
         return self.state_dir / "artifacts"
 
+    @property
+    def mailbox_log(self) -> Path:
+        return self.root / "logs" / "mailbox.jsonl"
+
 
 __all__ = ["RuntimePaths", "SessionPaths"]

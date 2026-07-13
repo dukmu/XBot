@@ -127,6 +127,7 @@ ServerEventType = Literal[
     "client_message",
     "end",
     "error",
+    "message_queued",
     "permission_denied",
     "permission_request",
     "permission_response_recorded",
@@ -204,6 +205,11 @@ class ClientMessageData(WireModel):
     tool_call_id: str = Field(min_length=1)
 
 
+class MessageQueuedData(WireModel):
+    message_id: str = Field(min_length=1)
+    position: int = Field(ge=1)
+
+
 class ToolCallData(WireModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -264,6 +270,7 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "client_message": ClientMessageData,
     "end": EndData,
     "error": ErrorEventData,
+    "message_queued": MessageQueuedData,
     "permission_denied": PermissionDeniedData,
     "permission_request": PermissionRequestData,
     "permission_response_recorded": InteractionRecordedData,

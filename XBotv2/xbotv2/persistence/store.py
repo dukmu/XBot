@@ -231,7 +231,6 @@ class CoreStateStore:
             "event_count": 0,
             "message_count": self.message_count(),
             "status": "active",
-            "mailbox_pending": 0,
             "pending_interactions": [],
             "permission_overrides": {},
             "sandbox_overrides": {},

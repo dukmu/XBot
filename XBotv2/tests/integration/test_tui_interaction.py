@@ -537,7 +537,7 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
             f"hint did not mention queueing; got {hint_text!r}"
         )
 
-        # Status bar should report queued:2.
+        # Status bar should report the two follow-up requests.
         status = app.query_one("#status_bar", TStatic)
         status_text = (
             status.visual.plain
@@ -546,17 +546,20 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         )
         assert "queued:2" in status_text, f"status: {status_text!r}"
 
-        # The worker is blocked; only "first" has been sent to the
-        # server. "second" and "third" are sitting in the queue.
-        assert session.sent == ["first"]
-        assert app._outbound_messages.qsize() == 2
+        # All requests are submitted immediately. The real server owns
+        # ordering through its per-session mailbox.
+        for _ in range(20):
+            await pilot.pause()
+            if len(session.sent) == 3:
+                break
+        assert session.sent == ["first", "second", "third"]
 
         # Release the worker; it should drain the queue in order.
         session.release.set()
         # Give the worker a few ticks to finish.
         for _ in range(20):
             await pilot.pause()
-            if len(session.sent) == 3 and app._outbound_messages.empty():
+            if app._active_turn_requests == 0:
                 break
 
     assert session.sent == ["first", "second", "third"]

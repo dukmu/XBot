@@ -44,6 +44,7 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 | POST | `/hello` | Client handshake |
 | POST | `/sessions` | Open session (new/resume) |
 | POST | `/sessions/{id}/messages` | Send message, receive SSE stream |
+| GET | `/sessions/{id}/events` | Receive server-initiated turn events |
 | POST | `/sessions/{id}/interrupt` | Cancel running turn |
 | GET | `/sessions/{id}/commands` | List available commands (includes skills/tools) |
 | POST | `/sessions/{id}/commands` | Execute server/skill/tool command |
@@ -60,15 +61,31 @@ Session history commands use the same command endpoint:
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
   session id without copying a live turn or interaction.
 
-The Goal plugin also exposes a deterministic `/goal` server command. `/goal`
-inspects, plain text creates, and the `complete`, `block`, `resume`, and `clear`
-actions transition the same state machine exposed to the model as the `goal`
-tool. Goal mutations are rejected while a turn is active.
+The Goal plugin registers one `goal` Tool. Session command discovery exposes it
+as `/goal` through the same ToolRegistry inventory used for skills and MCP.
+There is no Goal-specific protocol handler or second command schema.
 
 `CommandResult.history` is normally `null`. `clear` and `undo` set it to the
 resulting display history so clients can rebuild their transcript from the same
 state the next provider request will use. Command-specific values such as
 `removed_turns` remain in `CommandResult.data`.
+
+## Runtime Mailbox
+
+Each connected session owns an in-memory mailbox. `user_message` and `general`
+are its only message kinds. User messages have priority, and FIFO order is
+preserved within each kind. A message submitted while another turn is active
+receives `message_queued`; the server, rather than the TUI, controls delivery.
+
+`general` messages carry source and metadata inside their payload and become
+system input when the session is idle. They cover Goal continuation and future
+runtime notifications without pretending to be human messages. Their output
+continues on the originating message stream when possible, otherwise on
+`GET /sessions/{id}/events`.
+
+The mailbox is not persistent state. Closing or losing the client connection
+drops queued messages, and `resume` starts with an empty mailbox. The append-only
+`logs/mailbox.jsonl` file is diagnostic evidence only and is never replayed.
 
 ## Command System
 
@@ -138,6 +155,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `turn_started` | `{turn}` |
 | `turn_finished` | `{turn}` |
 | `turn_cancelled` | `{turn, reason}` |
+| `message_queued` | `{message_id, position}` |
 | `assistant_message_delta` | `{content}` or `{reasoning}` |
 | `assistant_message` | `{content, tool_calls}` |
 | `tool_call_delta` | `{tool_calls: [{tool_call_id, id, name, args_delta, args, index, replaces_tool_call_id?}]}` |

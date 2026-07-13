@@ -38,6 +38,8 @@ from xbotv2.protocol.models import (
 )
 from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.hooks import HookStage
+from xbotv2.core.mailbox import MailboxMessage, SessionMailbox
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
 from xbotv2.protocol.version import PROTOCOL_VERSION
@@ -72,6 +74,78 @@ class SessionContext:
     sandbox_overrides: dict[str, str] = field(default_factory=dict)
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
+    mailbox: SessionMailbox = field(init=False)
+    mailbox_responses: dict[
+        str, asyncio.Queue[dict[str, Any] | None]
+    ] = field(default_factory=dict)
+    mailbox_worker: asyncio.Task | None = None
+    mailbox_output: asyncio.Queue[dict[str, Any] | None] | None = None
+    session_events: asyncio.Queue[dict[str, Any] | None] | None = None
+    close_reason: str = "session_closed"
+
+    def __post_init__(self) -> None:
+        self.mailbox = SessionMailbox(
+            self.paths.session(self.session_id).mailbox_log
+        )
+        self.engine.enqueue_mailbox = self.enqueue_general
+
+    async def enqueue_user_message(
+        self,
+        content: str,
+        request_id: str,
+    ) -> tuple[MailboxMessage, asyncio.Queue[dict[str, Any] | None], bool, int]:
+        queued = self.turn_lock.locked() or self.mailbox.size > 0
+        position = self.mailbox.size + 1
+        item = MailboxMessage.create(
+            "user_message",
+            content,
+            request_id=request_id,
+        )
+        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self.mailbox_responses[item.id] = events
+        await self.mailbox.put(item)
+        self.ensure_mailbox_worker()
+        return item, events, queued, position
+
+    async def enqueue_general(self, message: str | dict[str, Any]) -> MailboxMessage:
+        item = MailboxMessage.create("general", message)
+        await self.mailbox.put(item)
+        self.ensure_mailbox_worker()
+        return item
+
+    def ensure_mailbox_worker(self) -> None:
+        if (
+            self.mailbox.next_kind == "general"
+            and self.mailbox_output is None
+            and self.session_events is None
+        ):
+            return
+        if self.mailbox_worker is None or self.mailbox_worker.done():
+            self.mailbox_worker = asyncio.create_task(
+                _run_mailbox(self),
+                name=f"xbotv2-mailbox-{self.session_id}",
+            )
+            self.mailbox_worker.add_done_callback(self._mailbox_worker_done)
+
+    def _mailbox_worker_done(self, task: asyncio.Task) -> None:
+        if self.mailbox_worker is task:
+            self.mailbox_worker = None
+        if self.mailbox.size:
+            self.ensure_mailbox_worker()
+
+    def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
+        if self.session_events is not None:
+            raise SessionBusy("session event stream is already connected")
+        self.session_events = asyncio.Queue()
+        self.ensure_mailbox_worker()
+        return self.session_events
+
+    def detach_event_stream(
+        self,
+        events: asyncio.Queue[dict[str, Any] | None],
+    ) -> None:
+        if self.session_events is events:
+            self.session_events = None
 
     def request_interrupt(self) -> bool:
         task = self.turn_task
@@ -80,16 +154,28 @@ class SessionContext:
         task.cancel()
         return True
 
-    async def close(self) -> None:
+    async def close(self, reason: str = "session_closed") -> None:
+        self.close_reason = reason
+        await self.mailbox.close(reason)
+        worker = self.mailbox_worker
+        if worker is not None and not worker.done() and worker is not asyncio.current_task():
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        self.mailbox_worker = None
         task = self.turn_task
-        if (
-            task is not None
-            and not task.done()
-            and task is not asyncio.current_task()
-        ):
+        if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.turn_task = None
+        for events in self.mailbox_responses.values():
+            await events.put(None)
+        self.mailbox_responses.clear()
+        if self.mailbox_output is not None:
+            await self.mailbox_output.put(None)
+            self.mailbox_output = None
+        if self.session_events is not None:
+            await self.session_events.put(None)
+            self.session_events = None
         try:
             await self.engine.close_session()
         except Exception:
@@ -174,6 +260,7 @@ class SessionManager:
         session_id: str,
         *,
         expected: SessionContext | None = None,
+        reason: str = "session_closed",
     ) -> None:
         async with self._lock:
             ctx = self._sessions.get(session_id)
@@ -181,7 +268,7 @@ class SessionManager:
                 return
             ctx = self._sessions.pop(session_id, None)
         if ctx is not None:
-            await ctx.close()
+            await ctx.close(reason)
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -380,11 +467,29 @@ def _register_routes(app: FastAPI) -> None:
 
             try:
                 try:
-                    async for event in run_turn_stream(
-                        ctx,
-                        content=content,
-                        request_id=client_request_id,
-                    ):
+                    item, events, queued, position = await ctx.enqueue_user_message(
+                        content,
+                        client_request_id,
+                    )
+                    if queued:
+                        seq += 1
+                        yield _format_sse(
+                            event={
+                                "type": "message_queued",
+                                "data": {
+                                    "message_id": item.id,
+                                    "position": position,
+                                },
+                            },
+                            seq=seq,
+                            session_id=ctx.session_id,
+                            thread_id=ctx.thread_id,
+                            request_id=client_request_id,
+                        )
+                    while True:
+                        event = await events.get()
+                        if event is None:
+                            break
                         seq += 1
                         yield _format_sse(
                             event=event,
@@ -393,21 +498,6 @@ def _register_routes(app: FastAPI) -> None:
                             thread_id=ctx.thread_id,
                             request_id=client_request_id,
                         )
-                except SessionBusy as exc:
-                    seq += 1
-                    yield _format_sse(
-                        event={
-                            "type": "error",
-                            "data": {
-                                "code": "engine_busy",
-                                "message": str(exc),
-                            },
-                        },
-                        seq=seq,
-                        session_id=ctx.session_id,
-                        thread_id=ctx.thread_id,
-                        request_id=client_request_id,
-                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("SSE stream errored for %s", session_id)
                     seq += 1
@@ -432,11 +522,66 @@ def _register_routes(app: FastAPI) -> None:
                 logger.info("SSE stream cancelled for session %s", session_id)
             finally:
                 if disconnected:
-                    await manager.close_session(session_id, expected=ctx)
+                    await manager.close_session(
+                        session_id,
+                        expected=ctx,
+                        reason="client_disconnected",
+                    )
                 else:
                     final = emit_end()
                     if final:
                         yield final
+
+        return StreamingResponse(
+            sse_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/sessions/{session_id}/events")
+    async def session_events(session_id: str) -> Response:
+        try:
+            ctx = await manager.get(session_id)
+            events = ctx.attach_event_stream()
+        except SessionNotFound as exc:
+            raise HttpServerError(
+                "session_not_found", str(exc), status=404
+            ) from exc
+        except SessionBusy as exc:
+            raise HttpServerError(
+                "event_stream_connected", str(exc), status=409
+            ) from exc
+
+        async def sse_stream() -> AsyncIterator[bytes]:
+            seq = 0
+            disconnected = False
+            request_id = f"events-{uuid.uuid4().hex}"
+            try:
+                while True:
+                    event = await events.get()
+                    if event is None:
+                        return
+                    seq += 1
+                    yield _format_sse(
+                        event=event,
+                        seq=seq,
+                        session_id=ctx.session_id,
+                        thread_id=ctx.thread_id,
+                        request_id=request_id,
+                    )
+            except asyncio.CancelledError:
+                disconnected = True
+            finally:
+                ctx.detach_event_stream(events)
+                if disconnected:
+                    await manager.close_session(
+                        session_id,
+                        expected=ctx,
+                        reason="client_disconnected",
+                    )
 
         return StreamingResponse(
             sse_stream(),
@@ -673,8 +818,17 @@ async def _pump_turn(
     events: asyncio.Queue[dict[str, Any] | None],
     content: str,
     request_id: str,
+    mailbox_message: MailboxMessage | None = None,
 ) -> None:
-    turn_stream = ctx.engine.run_turn(content, request_id=request_id)
+    turn_stream = (
+        ctx.engine.run_turn(
+            content,
+            request_id=request_id,
+            mailbox_message=mailbox_message,
+        )
+        if mailbox_message is not None
+        else ctx.engine.run_turn(content, request_id=request_id)
+    )
     try:
         async for event in turn_stream:
             await events.put(_event_to_payload(event))
@@ -705,6 +859,7 @@ async def run_turn_stream(
     *,
     content: str,
     request_id: str = "",
+    mailbox_message: MailboxMessage | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if ctx.turn_lock.locked():
         raise SessionBusy(ctx.session_id)
@@ -714,7 +869,7 @@ async def run_turn_stream(
         disconnected = asyncio.Event()
         stream_completed = False
         pump_task = asyncio.create_task(
-            _pump_turn(ctx, events, content, request_id)
+            _pump_turn(ctx, events, content, request_id, mailbox_message)
         )
         ctx.turn_task = pump_task
         try:
@@ -737,6 +892,68 @@ async def run_turn_stream(
                 logger.exception("pump_task ended with error for session %s", ctx.session_id)
             finally:
                 ctx.turn_task = None
+
+
+async def _run_mailbox(ctx: SessionContext) -> None:
+    while True:
+        item = await ctx.mailbox.get()
+        if item is None:
+            return
+        target = (
+            ctx.mailbox_responses.pop(item.id, None)
+            if item.kind == "user_message"
+            else ctx.mailbox_output or ctx.session_events
+        )
+        if item.kind == "user_message":
+            ctx.mailbox_output = target
+        error: Exception | None = None
+        try:
+            await ctx.engine.run_mailbox_hook(
+                HookStage.BEFORE_MAILBOX_DELIVERY,
+                item,
+            )
+            content = (
+                str(item.message)
+                if item.kind == "user_message"
+                else ctx.engine.mailbox_content(item)
+            )
+            async for event in run_turn_stream(
+                ctx,
+                content=content,
+                request_id=item.request_id,
+                mailbox_message=item,
+            ):
+                if target is not None:
+                    await target.put(event)
+            ctx.mailbox.delivered(item)
+        except asyncio.CancelledError:
+            ctx.mailbox.dropped(item, ctx.close_reason)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+            ctx.mailbox.failed(item, exc)
+            if target is not None:
+                await target.put({
+                    "type": "error",
+                    "data": {
+                        "code": "mailbox_delivery_failed",
+                        "message": str(exc),
+                        "details": {"exception_type": type(exc).__name__},
+                    },
+                })
+        finally:
+            await ctx.engine.run_mailbox_hook(
+                HookStage.AFTER_MAILBOX_DELIVERY,
+                item,
+                error=error,
+            )
+
+        if ctx.mailbox.next_kind != "general":
+            if target is not None:
+                await target.put(None)
+            ctx.mailbox_output = None
+        if ctx.mailbox.next_kind is None:
+            return
 
 
 async def _resolve_interaction(

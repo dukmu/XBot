@@ -28,7 +28,9 @@ receive an empty value.
 | `on_session_resume` | observer | no | no | `session`, persisted `state` | ignored | resumed engine session |
 | `on_session_close` | observer | no | yes | `session`, pending interactions already cancelled | ignored | engine close |
 | `on_turn_start` | observer | no | no | `session` with current `turn_count`, `user_input` | ignored | start of accepted user turn |
-| `on_turn_end` | observer | no | no | `session`, final turn state | ignored | before stop hooks |
+| `on_turn_end` | observer | no | no | `session`, final turn state, `stop_reason` | ignored | before stop hooks |
+| `before_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session` | ignored | session worker before one queued input becomes a turn |
+| `after_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session`, optional `error` | ignored | session worker after turn delivery or failure |
 | `on_stop` | observer | no | yes | `stop_reason` | ignored | normal turn stop |
 | `on_stop_failure` | observer | no | no | `stop_reason`, `error`, optional `user_input` | ignored | turn failure path |
 | `before_user_message_accept` | transform | caller | no | `user_input` | `{user_input}`, `{event, turn_complete}`, or rejection | before message enters history |

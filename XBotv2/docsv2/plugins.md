@@ -222,9 +222,10 @@ errors without changing stored state. See [TodoList plugin](todolist.md).
 ### GoalPlugin (`builtin_plugins/goal/`)
 
 Maintains one durable session objective through a single `goal` state-machine
-tool and deterministic `/goal` command. Active, complete, and blocked states all
-append concise public context; terminal context prevents completed work from
-being repeated and remains until resume, replacement, or clear. See
+Tool, discovered as `/goal` through the shared registry. Active goals continue through Core
+mailbox turns; ESC pauses them and `/goal resume` reactivates them. Active,
+paused, complete, and blocked states append concise public context; terminal
+context prevents repeated work and remains until resume, replacement, or clear. See
 [Goal plugin](goal.md).
 
 ### SkillsPlugin (`builtin_plugins/skills/`)

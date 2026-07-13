@@ -115,7 +115,6 @@ class ContextBuilder:
         sandbox_summary: str = "",
         system_notice: str = "",
         turn_count: int = 0,
-        mailbox_pending: int = 0,
         active_subagents: int = 0,
     ) -> list[Message]:
         """Build the complete message list for an LLM call."""
@@ -130,7 +129,6 @@ class ContextBuilder:
             sandbox_summary=sandbox_summary,
             system_notice=system_notice,
             turn_count=turn_count,
-            mailbox_pending=mailbox_pending,
             active_subagents=active_subagents,
         ))
 
@@ -147,7 +145,6 @@ class ContextBuilder:
         sandbox_summary: str = "",
         system_notice: str = "",
         turn_count: int = 0,
-        mailbox_pending: int = 0,
         active_subagents: int = 0,
     ) -> list[ContextComponent]:
         """Build source-tagged context components in provider render order."""
@@ -181,7 +178,7 @@ class ContextBuilder:
         components.append(ContextComponent(
             role="system",
             source="runtime_rules",
-            content=self._build_rules(mailbox_pending),
+            content=self._build_rules(),
         ))
 
         for plugin_name, text in self._fragments["system_rules"].items():
@@ -211,7 +208,6 @@ class ContextBuilder:
 
         current_state = self._build_current_state(
             turn_count=turn_count,
-            mailbox_pending=mailbox_pending,
             active_subagents=active_subagents,
             user_name=user_name,
             user_id=user_id,
@@ -292,7 +288,7 @@ class ContextBuilder:
         return result
 
     @staticmethod
-    def _build_rules(mailbox_pending: int) -> str:
+    def _build_rules() -> str:
         """Build the runtime rules section."""
         rules = [
             "## Runtime Rules",
@@ -302,17 +298,11 @@ class ContextBuilder:
             "- If a tool fails, explain the error and suggest alternatives.",
             "- Be concise but complete.",
         ]
-        if mailbox_pending > 0:
-            rules.append(
-                f"- You have {mailbox_pending} pending mailbox message(s). "
-                f"Use mailbox_read to check them."
-            )
         return "\n".join(rules)
 
     @staticmethod
     def _build_current_state(
         turn_count: int,
-        mailbox_pending: int,
         active_subagents: int,
         user_name: str,
         user_id: str,
@@ -324,8 +314,6 @@ class ContextBuilder:
             f"User: {user_name} ({user_id})",
             f"Turn: {turn_count + 1}",
         ]
-        if mailbox_pending > 0:
-            lines.append(f"Pending mailbox: {mailbox_pending}")
         if active_subagents > 0:
             lines.append(f"Active subagents: {active_subagents}")
         return "\n".join(lines)

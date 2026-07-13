@@ -193,6 +193,7 @@ def test_server_event_type_inventory_covers_current_stream_events():
         "client_message",
         "end",
         "error",
+        "message_queued",
         "permission_denied",
         "permission_request",
         "permission_response_recorded",
