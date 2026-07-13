@@ -1484,6 +1484,61 @@ async def test_http_server_commands_include_kind(
 
 
 @pytest.mark.asyncio
+async def test_http_goal_command_uses_one_persistent_state_machine(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    await skills_client.post(
+        "/sessions", json={"session_id": "goal-state", "thread_id": "t"}
+    )
+    commands = await skills_client.get("/sessions/goal-state/commands")
+    goal_commands = [
+        item for item in commands.json()["commands"] if item["name"] == "goal"
+    ]
+    assert len(goal_commands) == 1
+    assert goal_commands[0]["kind"] == "server"
+
+    created = await skills_client.post(
+        "/sessions/goal-state/commands",
+        json={
+            "command": "goal",
+            "args": ["create", "--token-budget", "2000", "ship", "the", "API"],
+        },
+    )
+    completed = await skills_client.post(
+        "/sessions/goal-state/commands",
+        json={"command": "goal", "args": ["complete", "API", "tests", "passed"]},
+    )
+    resumed = await skills_client.post(
+        "/sessions/goal-state/commands",
+        json={"command": "goal", "args": ["resume"]},
+    )
+
+    assert created.json()["data"]["data"]["goal"]["token_budget"] == 2000
+    assert completed.json()["data"]["data"]["goal"] == {
+        "objective": "ship the API",
+        "status": "complete",
+        "summary": "API tests passed",
+        "token_budget": 2000,
+    }
+    assert resumed.json()["data"]["data"]["goal"]["status"] == "active"
+
+    ctx = await skills_app.state.manager.get("goal-state")
+    assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "allow"
+    await skills_client.post(
+        "/sessions/goal-state/commands",
+        json={"command": "permission", "args": ["set", "goal", "deny"]},
+    )
+    assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "deny"
+
+    cleared = await skills_client.post(
+        "/sessions/goal-state/commands",
+        json={"command": "goal", "args": ["clear"]},
+    )
+    assert cleared.json()["data"]["data"] == {"goal": None}
+
+
+@pytest.mark.asyncio
 async def test_http_sandbox_set_persists_to_policy_yaml(
     client: httpx.AsyncClient,
     http_app,

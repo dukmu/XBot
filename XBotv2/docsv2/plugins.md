@@ -221,10 +221,11 @@ errors without changing stored state. See [TodoList plugin](todolist.md).
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
-Maintains one durable session objective through explicit create, inspect,
-update, complete, and abandon tools. Only the active state appends a concise
-public `ContextComponent`; terminal states remain inspectable but do not enter
-future model context. See [Goal plugin](goal.md).
+Maintains one durable session objective through a single `goal` state-machine
+tool and deterministic `/goal` command. Active, complete, and blocked states all
+append concise public context; terminal context prevents completed work from
+being repeated and remains until resume, replacement, or clear. See
+[Goal plugin](goal.md).
 
 ### SkillsPlugin (`builtin_plugins/skills/`)
 

@@ -53,6 +53,32 @@ ambiguity before large implementation changes.
   Provider-request tests and a real Minimax TUI process restart verify this
   separately from the deliberately unsupported in-flight interaction recovery.
 
+### Unified Command Execution
+
+- Make the server the authoritative command registry. Command discovery must
+  return the command name, namespace/kind, description, argument schema,
+  examples, and stable registered name needed for execution.
+- Keep client-only commands local: the client may intercept commands such as
+  exit or visual transcript clearing, but it must query all server capabilities
+  instead of maintaining a parallel server-command inventory.
+- Execute server, plugin tool, Skill, and MCP commands through the server's
+  registered namespace and argument parsing contract. Do not turn these slash
+  commands back into ordinary user messages for the Agent to interpret.
+- Define one schema-driven textual argument format, including quoting, named
+  parameters, JSON values, validation errors, and help rendering. Do not add a
+  parser branch per command or infer arbitrary tool arguments by position.
+- Route execution through the same registered capability used by model tool
+  calls so permissions, sandboxing, Hooks, structured results, and persistence
+  have one implementation. Direct user commands may define an explicit policy
+  boundary, but must not bypass it accidentally.
+- Remove the current Goal-specific `_goal_command` core adapter after generic
+  plugin command execution exists. Goal must use `/sessions/{id}/commands` like
+  every other server capability; no plugin-specific URI or transport method is
+  allowed.
+- Add contract tests proving discovery and execution for one core server
+  command, one built-in plugin tool, one Skill, and one MCP tool, plus client
+  interception of one client-only command and schema validation failures.
+
 ## 3. Hook Contract Tightening
 
 - Preserve the existing `HookStage` enum values.
@@ -134,6 +160,14 @@ ambiguity before large implementation changes.
   live-interaction serialization, and lock semantics before adding a parallel
   API.
 - Keep the core built-in tool set small and dependable.
+- Add a configured maximum number of model/tool rounds per user turn. Repeated
+  invalid tool calls must terminate with a structured error instead of allowing
+  an unbounded provider retry loop. Cover the limit with persistence and final
+  turn-event tests.
+- Maintain a provider-compatibility matrix for tool JSON Schema features.
+  Minimax's Anthropic-compatible endpoint did not reliably preserve arguments
+  with a `oneOf`/`const` Goal schema, so built-ins must not depend on advanced
+  schema keywords until real-provider contract tests pass.
 
 ## 6. Built-in Plugin Templates
 
@@ -174,13 +208,17 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Goal
 
-- The initial plugin provides explicit create, inspect, update, complete, and
-  abandon tools for one durable session objective.
-- Only an active goal appends a concise non-persisted `ContextComponent`;
-  completed and abandoned goals remain inspectable without entering context.
+- One `goal` state-machine tool and `/goal` command own create, inspect, update,
+  complete, block, resume, and clear transitions for one durable objective.
+- Active, complete, and blocked goals append concise non-persisted context;
+  completion retains its execution summary and explicitly prevents repetition.
 - Todo items remain concrete work tracking, and automatic continuation remains
-  explicitly out of scope. Real-provider tool selection, permission interaction,
-  restart recovery, active context injection, and terminal removal are verified.
+  explicitly out of scope. Real-provider tool selection, internal permission
+  baseline, restart recovery, context injection, and terminal retention are
+  verified.
+- Connect an explicitly requested Goal `token_budget` to provider-reported
+  usage. `/goal` must distinguish declared, used, and remaining tokens before
+  any automatic pause or budget-exhaustion behavior is claimed.
 
 Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
 structured tool-result tests, public API boundary tests, and current

@@ -35,7 +35,8 @@ class ServerCommand:
 def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     result = [command.to_dict() for command in COMMANDS.values()]
     if extra:
-        result.extend(extra)
+        registered = set(COMMANDS)
+        result.extend(item for item in extra if item.get("name") not in registered)
     return result
 
 
@@ -133,6 +134,34 @@ async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         "fork",
         f"Forked session {ctx.session_id} to {session_id}.",
         data={"session_id": session_id, "source_session_id": ctx.session_id},
+    )
+
+
+async def _goal_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    action = args[0].lower() if args else "get"
+    if ctx.turn_lock.locked() and action != "get":
+        return _result(
+            "goal",
+            "Cannot change the goal while a turn is active.",
+            status="error",
+        )
+    loader = getattr(ctx.engine, "plugin_loader", None)
+    plugin = next(
+        (
+            item
+            for item in getattr(loader, "loaded_plugins", [])
+            if item.manifest.name == "goal"
+        ),
+        None,
+    )
+    if plugin is None or not hasattr(plugin, "handle_command"):
+        return _result("goal", "Goal plugin is not available.", status="error")
+    result = await plugin.handle_command(args)
+    return _result(
+        "goal",
+        result.content,
+        status="ok" if result.status == "success" else "error",
+        data=result.data,
     )
 
 
@@ -450,6 +479,24 @@ COMMANDS: dict[str, ServerCommand] = {
             handler=_undo_command,
             examples=["/undo", "/undo 2"],
             parameters={"count": "Number of turns to remove; defaults to 1."},
+        ),
+        ServerCommand(
+            name="goal",
+            slash="/goal",
+            description="Inspect or transition the persistent session goal.",
+            handler=_goal_command,
+            examples=[
+                "/goal",
+                "/goal <objective>",
+                "/goal complete <execution-summary>",
+                "/goal block <blocking-summary>",
+                "/goal resume",
+                "/goal clear",
+            ],
+            parameters={
+                "action": "create, update, complete, block, resume, or clear",
+                "text": "Objective or execution summary required by the action",
+            },
         ),
     )
 }

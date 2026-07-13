@@ -112,10 +112,11 @@ or duplicate goal ownership.
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
-Persists one session objective and exposes it through five explicit tools.
-Only an active goal becomes a non-persisted public `ContextComponent` during
-context assembly; completed and abandoned goals remain inspectable without
-entering later model context. It does not own todo steps or automatic turns.
+Persists one session objective and exposes one `goal` state-machine tool plus
+the deterministic `/goal` command. Active, complete, and blocked states become
+non-persisted public `ContextComponent` values; terminal context retains the
+execution summary and prevents repeated work. It does not own todo steps or
+automatic turns.
 
 ### SkillsPlugin (`builtin_plugins/skills/`)
 

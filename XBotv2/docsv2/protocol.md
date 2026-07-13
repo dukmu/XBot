@@ -60,6 +60,11 @@ Session history commands use the same command endpoint:
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
   session id without copying a live turn or interaction.
 
+The Goal plugin also exposes a deterministic `/goal` server command. `/goal`
+inspects, plain text creates, and the `complete`, `block`, `resume`, and `clear`
+actions transition the same state machine exposed to the model as the `goal`
+tool. Goal mutations are rejected while a turn is active.
+
 `CommandResult.history` is normally `null`. `clear` and `undo` set it to the
 resulting display history so clients can rebuild their transcript from the same
 state the next provider request will use. Command-specific values such as

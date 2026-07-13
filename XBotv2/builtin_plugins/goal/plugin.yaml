@@ -1,6 +1,6 @@
 name: goal
 version: "1.0.0"
-description: Durable active session goal tools and context
+description: Persistent session goal state machine and context
 api_version: "1"
 config_schema:
   type: object
