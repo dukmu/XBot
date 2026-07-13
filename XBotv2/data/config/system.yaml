@@ -9,6 +9,7 @@ tools:
   - ask_user
   - plugin:compact:*
   - plugin:todolist:*
+  - plugin:goal:*
   - plugin:skills:*
   - skills:*:*
   - mcp:*:*

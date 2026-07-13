@@ -110,6 +110,13 @@ the ordered items and next stable identifier, so every successful mutation is
 one immediate persisted write. It does not infer state from conversation text
 or duplicate goal ownership.
 
+### GoalPlugin (`builtin_plugins/goal/`)
+
+Persists one session objective and exposes it through five explicit tools.
+Only an active goal becomes a non-persisted public `ContextComponent` during
+context assembly; completed and abandoned goals remain inspectable without
+entering later model context. It does not own todo steps or automatic turns.
+
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io standard) from:

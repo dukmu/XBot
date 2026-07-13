@@ -1,0 +1,7 @@
+name: goal
+version: "1.0.0"
+description: Durable active session goal tools and context
+api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false

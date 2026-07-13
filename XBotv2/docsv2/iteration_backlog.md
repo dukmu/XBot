@@ -169,12 +169,13 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Goal
 
-- Provide explicit tools to create, inspect, update, complete, and abandon the
-  active session goal.
-- Persist the goal and expose only a concise active-goal context fragment;
-  completed or abandoned goals must not remain active after resume.
-- Keep the goal as the durable objective and use todo items only for concrete
-  work tracking. Define automatic continuation separately before adding it.
+- The initial plugin provides explicit create, inspect, update, complete, and
+  abandon tools for one durable session objective.
+- Only an active goal appends a concise non-persisted `ContextComponent`;
+  completed and abandoned goals remain inspectable without entering context.
+- Todo items remain concrete work tracking, and automatic continuation remains
+  explicitly out of scope. Real-provider tool selection, permission interaction,
+  restart recovery, active context injection, and terminal removal are verified.
 
 Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
 structured tool-result tests, public API boundary tests, and current

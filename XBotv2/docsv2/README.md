@@ -15,6 +15,7 @@ This directory describes the current XBotv2 implementation.
 - [Built-in tools](tools.md)
 - [Compact plugin](compact.md)
 - [TodoList plugin](todolist.md)
+- [Goal plugin](goal.md)
 - [Token manager plugin](token_manager.md)
 - [Testing](testing.md)
 
