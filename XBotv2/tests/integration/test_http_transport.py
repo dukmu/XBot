@@ -34,6 +34,7 @@ from httpx import ASGITransport
 from xbotv2.llm.mock import MockLLM
 from xbotv2.protocol.version import PROTOCOL_VERSION
 from xbotv2.protocol.http_server import (
+    SessionContext,
     _format_sse,
     create_app,
     run_turn_stream,
@@ -45,6 +46,44 @@ from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
+
+
+@pytest.mark.asyncio
+async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) -> None:
+    turn_cancelled = asyncio.Event()
+
+    async def hanging_turn() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            turn_cancelled.set()
+
+    class Engine:
+        def __init__(self) -> None:
+            self.closed_after_turn = False
+
+        async def close_session(self) -> None:
+            self.closed_after_turn = turn_cancelled.is_set()
+
+    engine = Engine()
+    task = asyncio.create_task(hanging_turn())
+    await asyncio.sleep(0)
+    ctx = SessionContext(
+        session_id="closing",
+        thread_id="agent",
+        provider_name="mock",
+        paths=RuntimePaths.from_data_dir(tmp_path),
+        workspace_root=str(tmp_path),
+        no_plugins=True,
+        engine=engine,
+        turn_task=task,
+    )
+
+    await ctx.close()
+
+    assert task.cancelled()
+    assert ctx.turn_task is None
+    assert engine.closed_after_turn is True
 
 
 @pytest.mark.asyncio
@@ -237,6 +276,8 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     )
     assert turn.status_code == 200
     assert "turn_finished" in turn.text
+    manager = client._transport.app.state.manager
+    original = await manager.get("resume-history")
 
     resumed = await client.post(
         "/sessions",
@@ -244,6 +285,9 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     )
 
     assert resumed.status_code == 200
+    replacement = await manager.get("resume-history")
+    assert replacement is not original
+    assert replacement.engine is not original.engine
     history = resumed.json()["history"]
     assert [(item["role"], item["content"]) for item in history] == [
         ("user", "remember this"),

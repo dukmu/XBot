@@ -81,6 +81,15 @@ class SessionContext:
         return True
 
     async def close(self) -> None:
+        task = self.turn_task
+        if (
+            task is not None
+            and not task.done()
+            and task is not asyncio.current_task()
+        ):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.turn_task = None
         try:
             await self.engine.close_session()
         except Exception:
@@ -129,8 +138,10 @@ class SessionManager:
             existing = self._sessions.get(session_id)
             if existing is not None:
                 if mode == "resume":
-                    return existing
-                raise SessionExists(session_id)
+                    self._sessions.pop(session_id)
+                    await existing.close()
+                else:
+                    raise SessionExists(session_id)
             session_paths = self.paths.session(session_id)
             if mode == "resume" and not session_paths.state_dir.exists():
                 raise SessionNotFound(session_id)
@@ -158,8 +169,16 @@ class SessionManager:
             self._sessions[session_id] = ctx
             return ctx
 
-    async def close_session(self, session_id: str) -> None:
+    async def close_session(
+        self,
+        session_id: str,
+        *,
+        expected: SessionContext | None = None,
+    ) -> None:
         async with self._lock:
+            ctx = self._sessions.get(session_id)
+            if expected is not None and ctx is not expected:
+                return
             ctx = self._sessions.pop(session_id, None)
         if ctx is not None:
             await ctx.close()
@@ -344,6 +363,7 @@ def _register_routes(app: FastAPI) -> None:
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
             end_emitted = False
+            disconnected = False
 
             def emit_end() -> bytes:
                 nonlocal end_emitted
@@ -408,13 +428,15 @@ def _register_routes(app: FastAPI) -> None:
                         request_id=client_request_id,
                     )
             except asyncio.CancelledError:
-                # TUI pressed ESC, or the HTTP client disconnected mid-turn.
-                # Let the end marker flush so the client can close cleanly.
+                disconnected = True
                 logger.info("SSE stream cancelled for session %s", session_id)
             finally:
-                final = emit_end()
-                if final:
-                    yield final
+                if disconnected:
+                    await manager.close_session(session_id, expected=ctx)
+                else:
+                    final = emit_end()
+                    if final:
+                        yield final
 
         return StreamingResponse(
             sse_stream(),

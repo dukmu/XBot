@@ -174,7 +174,9 @@ remote HTTP connection.
 ### Session Resume
 
 Session creation uses explicit `new` and `resume` modes. The server does not
-silently change the requested mode.
+silently change the requested mode. Resume closes any in-memory runtime with the
+same session id and rebuilds from persisted history; pending interactions and
+turn coroutines are connection-owned and are never restored.
 
 ## Unified Command System
 
