@@ -334,6 +334,33 @@ class TestEnginePersistence:
         assert engine2.turn_count == 2
 
     @pytest.mark.asyncio
+    async def test_restored_messages_are_sent_to_the_model(
+        self, temp_data_dir, temp_workspace
+    ):
+        store = CoreStateStore.create(
+            RuntimePaths.from_data_dir(temp_data_dir).session("s1"),
+            thread_id="t1",
+            workspace_root="/workspace",
+            provider="p",
+        )
+        first_llm = MockLLM(responses=[{"content": "remembered answer"}])
+        engine1 = make_engine(first_llm, ToolRegistry(), store, temp_workspace)
+        await engine1.start_session()
+        _ = [event async for event in engine1.run_turn("remembered question")]
+        await engine1.close_session()
+
+        resumed_llm = MockLLM(responses=[{"content": "resumed"}])
+        engine2 = make_engine(resumed_llm, ToolRegistry(), store, temp_workspace)
+        await engine2.start_session()
+        _ = [event async for event in engine2.run_turn("what came before?")]
+
+        request = resumed_llm.get_call_messages(0)
+        history = [(message.role, message.content) for message in request]
+        assert ("user", "remembered question") in history
+        assert ("assistant", "remembered answer") in history
+        assert ("user", "what came before?") in history
+
+    @pytest.mark.asyncio
     async def test_engine_save_preserves_existing_message_ids(self, temp_data_dir, temp_workspace):
         """Repeated turn saves do not churn ids for unchanged history messages."""
         store = CoreStateStore.create(

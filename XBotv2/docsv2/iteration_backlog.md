@@ -50,9 +50,9 @@ ambiguity before large implementation changes.
 - Design reconnectable interactions only after request ownership, expiry,
   replay, and exactly-once response semantics are specified. The current
   protocol explicitly advertises `resume_supported: false`.
-- Restore persisted message history into model context after a process restart.
-  The TUI currently renders the old transcript, but a real-provider request in
-  the resumed session did not receive that history.
+- Persisted message history is restored into subsequent provider requests.
+  Provider-request tests and a real Minimax TUI process restart verify this
+  separately from reconnecting an in-flight interaction.
 
 ## 3. Hook Contract Tightening
 
