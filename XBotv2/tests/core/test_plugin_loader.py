@@ -181,6 +181,31 @@ class TestPluginManifest:
                 config_schema={"type": "not-a-json-schema-type"},
             )
 
+    def test_manifest_accepts_every_hook_stage(self):
+        for stage in HookStage:
+            manifest = PluginManifest(
+                name="hooks",
+                version="1",
+                hooks=[{"stage": stage.value, "handler": "hooks:run"}],
+            )
+            assert manifest.hooks[0].stage == stage.value
+
+    def test_manifest_rejects_unknown_hook_stage(self):
+        with pytest.raises(ValidationError, match="unknown_stage"):
+            PluginManifest(
+                name="hooks",
+                version="1",
+                hooks=[{"stage": "unknown_stage", "handler": "hooks:run"}],
+            )
+
+    def test_manifest_rejects_unknown_tool_sandbox_mode(self):
+        with pytest.raises(ValidationError, match="privileged"):
+            PluginManifest(
+                name="tools",
+                version="1",
+                tools=[{"handler": "tools:run", "sandbox_mode": "privileged"}],
+            )
+
     @pytest.mark.parametrize("name", ["../escape", "/absolute", ".hidden", "name/child"])
     def test_manifest_rejects_unsafe_plugin_names(self, name):
         with pytest.raises(ValidationError):

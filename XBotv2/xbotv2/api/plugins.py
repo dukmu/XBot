@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
@@ -31,15 +31,23 @@ class PluginConfigError(ValueError):
 
 
 class HookDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     stage: str
     handler: str
+
+    @field_validator("stage")
+    @classmethod
+    def _validate_stage(cls, value: str) -> str:
+        HookStage(value)
+        return value
 
 
 class ToolDeclaration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     handler: str
-    sandbox_mode: str = "host"
+    sandbox_mode: Literal["host", "sandboxed"] = "host"
 
 
 @dataclass(frozen=True, slots=True)

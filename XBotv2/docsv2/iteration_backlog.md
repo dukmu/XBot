@@ -122,7 +122,8 @@ ambiguity before large implementation changes.
   calls do not carry registry namespaces.
 - Command discovery exposes registered-name metadata without changing existing
   string selectors.
-- Align documented execution metadata with dispatcher behavior.
+- Manifest and runtime registration accept only execution metadata enforced by
+  the dispatcher; Hook declarations accept exactly the current stage inventory.
 - Built-in tools return `ToolResult`; structured data, errors, artifacts, and
   client events retain their fields through runtime conversion.
 - Typed `ToolResult.data`, `error`, and `artifacts` now survive runtime

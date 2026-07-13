@@ -77,6 +77,9 @@ bootstrap failures after loading trigger reverse plugin unload, including
 runtime tools created by `ON_SESSION_INIT` hooks.
 `PluginManifest.config_schema` is checked as Draft 2020-12 JSON Schema when the
 manifest is parsed, and configured values are validated before plugin import.
+Hook declarations accept every current `HookStage` value and reject unknown
+stages during manifest parsing. Tool declarations apply the same early
+validation to `host` and `sandboxed` execution modes.
 `PluginStore` mutations persist immediately with atomic replacement; reads are
 fresh snapshots and unload does not erase plugin state.
 Command discovery exposes `registered_name` and `namespace` metadata while
