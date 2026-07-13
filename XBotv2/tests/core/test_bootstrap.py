@@ -2,6 +2,7 @@
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 from xbotv2.api.paths import RuntimePaths
@@ -232,6 +233,27 @@ class NormalClosePlugin(PluginBase):
         assert "send_message" in tool_names
         assert "ask_user" in tool_names
         assert "ask" not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_shipped_tool_filter_keeps_client_interaction_tools(
+        self,
+        temp_data_dir,
+    ):
+        shipped = Path("XBotv2/data/config/system.yaml")
+        (temp_data_dir / "config" / "system.yaml").write_text(
+            shipped.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="default-tools",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert "send_message" in engine.tool_registry.names()
+        assert "ask_user" in engine.tool_registry.names()
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):

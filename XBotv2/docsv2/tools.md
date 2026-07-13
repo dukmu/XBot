@@ -13,6 +13,10 @@ Core registers these tools without plugins:
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
 
+`SystemConfig.tools` may narrow this registry after plugin initialization. The
+shipped configuration keeps both client-interaction tools visible so an agent
+can send progress and ask for missing information without a custom tool list.
+
 Tools return `ToolResult`. It separates model-visible text from structured data,
 errors, artifacts, and client events. The dispatcher honors each registry
 entry's `sandbox_mode`; host tools are never injected with a sandbox backend.

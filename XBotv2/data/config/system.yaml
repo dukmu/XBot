@@ -5,6 +5,8 @@ max_context_tokens: 32000
 tools:
   - shell
   - filesystem
+  - send_message
+  - ask_user
   - plugin:skills:*
   - skills:*:*
   - mcp:*:*
@@ -21,4 +23,3 @@ instructions: |
   6. Use shell commands for system operations, filesystem tools for file I/O.
   7. Long results may be truncated and return a preview; avoid reading large cached content directly.
    8. For large files, first clarify their size and avoid fully loading them.
-
