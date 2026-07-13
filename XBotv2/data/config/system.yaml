@@ -21,5 +21,5 @@ instructions: |
   4. If a tool fails, explain the error and suggest an alternative.
   5. Ask the user for clarification when the request is ambiguous.
   6. Use shell commands for system operations, filesystem tools for file I/O.
-  7. Long results may be truncated and return a preview; avoid reading large cached content directly.
-   8. For large files, first clarify their size and avoid fully loading them.
+  7. Long results may return a preview and cache_path; inspect only needed lines with filesystem_read offset and limit.
+  8. For large files, first clarify their size and avoid fully loading them.

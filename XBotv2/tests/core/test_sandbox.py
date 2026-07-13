@@ -134,6 +134,9 @@ class TestBubblewrapCapabilities:
         readonly_path.write_text("before", encoding="utf-8")
 
         read_data = json.loads(await policy.read_file("sample.txt"))
+        readonly_data = json.loads(
+            await policy.read_file(str(readonly_path), offset=0, limit=1)
+        )
         missing_data = json.loads(await policy.read_file("missing.txt"))
         write_data = json.loads(await policy.write_file("created.txt", "created"))
         write_error = json.loads(await policy.write_file(str(readonly_path), "after"))
@@ -141,6 +144,8 @@ class TestBubblewrapCapabilities:
         list_data = json.loads(await policy.list_dir(".", recursive=True))
 
         assert read_data["content"] == "alpha\nbeta"
+        assert readonly_data["content"] == "before"
+        assert readonly_data["returned_lines"] == 1
         assert missing_data["ok"] is False
         assert missing_data["error"]["code"] == "file_not_found"
         assert write_data["ok"] is True

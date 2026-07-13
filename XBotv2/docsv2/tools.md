@@ -31,6 +31,13 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
+Tool results larger than 12,000 characters are stored under the session's
+`state/artifacts/tool_results` directory before history persistence and SSE
+emission. The model receives a bounded preview plus an absolute `cache_path`.
+That path is readable through `filesystem_read`; callers should use `offset`
+and `limit` to inspect only the required lines. Session data remains read-only
+to sandboxed tools, and cached-result metadata survives session restoration.
+
 Filesystem write modes have the same semantics with or without the session
 sandbox. Successful writes retain mode-specific metadata such as `changed` and
 `replacements`; read/write failures retain their structured `data` and `error`
