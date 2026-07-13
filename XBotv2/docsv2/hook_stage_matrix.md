@@ -55,7 +55,7 @@ receive an empty value.
 | `on_tool_calls_parsed` | observer | no | no | `tool_calls`, `agent_response` | ignored | before tool batch starts |
 | `on_permission_request` | observer | no | no | `tool_call`, `permission_decision`, `error` | ignored | permission ask path |
 | `on_permission_denied` | observer | no | no | `tool_call`, `permission_decision`, `error` | ignored | permission denial path |
-| `before_tool_call` | guard | default | no | `tool_call` | `HookDecision`, `{tool_call}`, `{args}`, `{tool_result}`, or `{deny_reason}` | before one tool call |
+| `before_tool_call` | guard | default | no | `tool_call` | `HookDecision`, `{tool_call}`, `{args}`, `{tool_result}`, or `{deny_reason}` | before final registration and permission checks for one tool call |
 | `after_tool_call` | observer | no | no | `tool_call`, `tool_result`, optional `error` | ignored | after one tool call |
 | `on_tool_call_failure` | observer | no | no | `tool_call`, `tool_result`, `error` | ignored | tool exception path |
 | `post_tool_batch` | observer | no | no | `tool_calls`, `tool_results` | ignored | after tool runtime batch |
@@ -78,6 +78,9 @@ receive an empty value.
   a new checkpoint.
 - Model-request Hooks inspect `model_request`; transform stages use their
   documented return dictionary rather than mutating it in place.
+- `BEFORE_TOOL_CALL` can narrow, reject, or transform a call, but cannot grant
+  permission. Core permission policy checks the final transformed call before
+  the tool is invoked.
 - When a built-in plugin needs new data, first reuse an existing public field.
   Extend the API only when the same missing contract affects multiple
   independent consumers, then cover it in this matrix.

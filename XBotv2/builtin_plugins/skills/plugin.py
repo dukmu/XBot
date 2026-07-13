@@ -157,11 +157,11 @@ class SkillsPlugin(PluginBase):
         tool_name = ctx.tool_call.name if ctx.tool_call else ""
         if not tool_name:
             return
-        decision = self._permission_scope.check(tool_name)
+        decision = self._permission_scope.check(tool_name, ctx.tool_call.args)
         if decision == "deny":
             return HookDecision(
                 HookAction.DENY,
-                f"Tool '{tool_name}' disallowed by active skill",
+                f"Tool '{tool_name}' not permitted by active skill",
             )
         return None
 

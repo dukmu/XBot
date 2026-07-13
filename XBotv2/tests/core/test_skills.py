@@ -20,8 +20,8 @@ def skill_workspace(tmp_path):
     (skill_dir / "SKILL.md").write_text("""---
 name: test-skill
 description: A test skill for integration testing
-allowed-tools: Bash(git *)
-disallowed-tools: AskUserQuestion
+allowed-tools: shell(git *)
+disallowed-tools: ask_user
 ---
 # Test Skill
 
@@ -89,7 +89,7 @@ class TestSkillRegistry:
         assert skill.name == "test-skill"
         assert skill.description == "A test skill for integration testing"
         assert "git" in str(skill.allowed_tools)
-        assert "AskUserQuestion" in str(skill.disallowed_tools)
+        assert "ask_user" in str(skill.disallowed_tools)
         assert "test skill body" in skill.content.lower()
 
         manual = reg.load_skill("manual-only")
@@ -235,6 +235,38 @@ Body
         assert content.index("### alpha") < content.index("### zeta")
 
     @pytest.mark.asyncio
+    async def test_active_skill_checks_tool_call_arguments(self):
+        from builtin_plugins.skills.plugin import SkillsPlugin
+        from xbotv2.api import (
+            HookAction,
+            HookContext,
+            HookStage,
+            PluginManifest,
+            ToolCall,
+        )
+
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin._active_skills.add("git-workflow")
+        plugin._permission_scope.add(allowed=["shell(git *)"])
+
+        allowed = await plugin._on_before_tool(
+            HookContext(
+                stage=HookStage.BEFORE_TOOL_CALL,
+                tool_call=ToolCall("call_1", "shell", {"command": "git status"}),
+            )
+        )
+        denied = await plugin._on_before_tool(
+            HookContext(
+                stage=HookStage.BEFORE_TOOL_CALL,
+                tool_call=ToolCall("call_2", "shell", {"command": "rm -rf build"}),
+            )
+        )
+
+        assert allowed is None
+        assert denied.action is HookAction.DENY
+        assert "not permitted" in denied.reason
+
+    @pytest.mark.asyncio
     async def test_plugin_session_init_rolls_back_partial_registration(
         self, skill_workspace
     ):
@@ -340,23 +372,32 @@ class TestSkillPermissionScope:
         from builtin_plugins.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
-        scope.add(allowed=["Bash(git *)"])
-        assert scope.check("Bash") is None  # Bash without args doesn't match
-        scope.add(allowed=["Bash"])
-        assert scope.check("Bash") == "allow"
+        scope.add(allowed=["shell(git *)"])
+        assert scope.check("shell", {"command": "git status"}) == "allow"
+        assert scope.check("shell", {"command": "rm -rf build"}) == "deny"
+        assert scope.check("read_file", {"path": "README.md"}) == "deny"
 
     def test_disallowed_overrides_allowed(self):
         from builtin_plugins.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
-        scope.add(allowed=["Bash"], disallowed=["Bash"])
-        assert scope.check("Bash") == "deny"
+        scope.add(allowed=["shell"], disallowed=["shell(git push *)"])
+        assert scope.check("shell", {"command": "git status"}) == "allow"
+        assert scope.check("shell", {"command": "git push origin main"}) == "deny"
+
+    def test_disallowed_tools_do_not_create_an_allowlist(self):
+        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+
+        scope = SkillPermissionScope()
+        scope.add(disallowed=["shell(git push *)"])
+        assert scope.check("shell", {"command": "git status"}) is None
+        assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_clear_resets(self):
         from builtin_plugins.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
-        scope.add(allowed=["Bash"])
-        assert scope.check("Bash") == "allow"
+        scope.add(allowed=["shell"])
+        assert scope.check("shell") == "allow"
         scope.clear()
-        assert scope.check("Bash") is None
+        assert scope.check("shell") is None

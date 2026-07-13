@@ -30,9 +30,10 @@ async def execute_tools(
 
     Pipeline:
     1. Extract tool calls from the last assistant message.
-    2. Run before_tools hooks (sandbox/permission checks).
-    3. Execute approved tools.
-    4. Return tool messages.
+    2. Run per-call hooks and apply transformations.
+    3. Check core permissions for the final call.
+    4. Execute approved tools with their registered sandbox mode.
+    5. Return tool messages.
 
     Args:
         tool_calls: Calls produced by the model adapter.
@@ -67,33 +68,11 @@ async def execute_tools(
             observed_tool_calls.append(call)
             continue
 
-        if permission_system:
-            decision = permission_system.check(tool_name, call.args)
-            if decision == "deny":
-                reason = f"Permission denied for tool: {tool_name}"
-                events = [_permission_client_event(HookStage.ON_PERMISSION_DENIED, call, decision, reason)]
-                await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_DENIED, call, decision, reason)
-                await _emit_tool_denied(hook_manager, hook_context_factory, call, reason)
-                results.append(_error_message(call, reason, events=events))
-                observed_tool_calls.append(call)
-                continue
-            if decision == "ask":
-                reason = f"Permission approval required for tool: {tool_name}. No live permission handler is available, so this call fails closed."
-                events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
-                await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
-                response = await _resolve_live_permission(events[0], permission_interaction_handler, call)
-                if response.get("decision") != "allow":
-                    final_reason = _permission_denial_reason(response, reason)
-                    await _emit_tool_denied(hook_manager, hook_context_factory, call, final_reason)
-                    results.append(_error_message(call, final_reason, events=events))
-                    observed_tool_calls.append(call)
-                    continue
-
         await _execute_one_tool(
             call, entry, registry,
-            sandbox_policy,
+            sandbox_policy, permission_system,
             hook_manager, hook_context_factory,
-            client_interaction_handler,
+            client_interaction_handler, permission_interaction_handler,
             workspace_root,
             results, observed_tool_calls,
         )
@@ -371,9 +350,9 @@ def _error_message(call: ToolCall, reason: str, events: list[dict[str, Any]] | N
 
 async def _execute_one_tool(
     call: ToolCall, entry: Any, registry: Any,
-    sandbox_policy: Any,
+    sandbox_policy: Any, permission_system: Any,
     hook_manager: Any, hook_context_factory: Any,
-    client_interaction_handler: Any,
+    client_interaction_handler: Any, permission_interaction_handler: Any,
     workspace_root: str | None,
     results: list[Message], observed_tool_calls: list[ToolCall],
 ) -> None:
@@ -451,6 +430,29 @@ async def _execute_one_tool(
         results.append(msg)
         await _emit_tool_denied(hook_manager, hook_context_factory, observed_call, str(msg.content))
         return
+
+    call = ToolCall(tool_id, tool_name, args)
+    if permission_system:
+        decision = permission_system.check(tool_name, args)
+        if decision == "deny":
+            reason = f"Permission denied for tool: {tool_name}"
+            events = [_permission_client_event(HookStage.ON_PERMISSION_DENIED, call, decision, reason)]
+            await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_DENIED, call, decision, reason)
+            await _emit_tool_denied(hook_manager, hook_context_factory, call, reason)
+            results.append(_error_message(call, reason, events=events))
+            observed_tool_calls.append(call)
+            return
+        if decision == "ask":
+            reason = f"Permission approval required for tool: {tool_name}. No live permission handler is available, so this call fails closed."
+            events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
+            await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
+            response = await _resolve_live_permission(events[0], permission_interaction_handler, call)
+            if response.get("decision") != "allow":
+                final_reason = _permission_denial_reason(response, reason)
+                await _emit_tool_denied(hook_manager, hook_context_factory, call, final_reason)
+                results.append(_error_message(call, final_reason, events=events))
+                observed_tool_calls.append(call)
+                return
 
     try:
         use_sandbox = (

@@ -99,7 +99,8 @@ Discovers SKILL.md files (agentskills.io standard) from:
 - Registers discovered skills as ToolRegistry entries (namespace `skills:<scope>:<name>`)
 - BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
 - Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
-- allowed-tools / disallowed-tools frontmatter support
+- active-skill `allowed-tools` / `disallowed-tools` restrictions, applied before
+  the authoritative core permission check
 - `disable-model-invocation: true` for skills available only through explicit
   `/skill-name` user invocation
 

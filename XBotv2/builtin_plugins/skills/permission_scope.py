@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 class SkillPermissionScope:
@@ -20,13 +21,20 @@ class SkillPermissionScope:
         for p in disallowed or []:
             self._disallowed.append(_compile_pattern(p))
 
-    def check(self, tool_name: str) -> str | None:
+    def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str | None:
+        targets = [tool_name]
+        command = (args or {}).get("command")
+        if isinstance(command, str):
+            targets.append(f"{tool_name}({command})")
+
         for pattern in reversed(self._disallowed):
-            if pattern.search(tool_name):
+            if any(pattern.search(target) for target in targets):
                 return "deny"
         for pattern in reversed(self._allowed):
-            if pattern.search(tool_name):
+            if any(pattern.search(target) for target in targets):
                 return "allow"
+        if self._allowed:
+            return "deny"
         return None
 
     def clear(self) -> None:
@@ -38,7 +46,7 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
     text = pattern.strip()
     if not text:
         return re.compile("^$")
-    # "Bash(git *)" → match tool name + params
+    # "shell(git *)" matches the shell tool's command argument.
     if "(" in text:
         base = re.escape(text.split("(")[0])
         inner = text[text.index("(") + 1:text.rindex(")")].strip()

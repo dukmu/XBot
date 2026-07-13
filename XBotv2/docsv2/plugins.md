@@ -217,7 +217,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
 - `AFTER_CONTEXT`: inject active skill content into context
 - `ON_TURN_END`: clear active skills and permission scopes
-- `BEFORE_TOOL_CALL`: apply allowed-tools/disallowed-tools overrides
+- `BEFORE_TOOL_CALL`: enforce active-skill tool restrictions before core
+  permission checks
 
 **Tools:**
 - `skill` (namespace `plugin:skills:skill`): load a skill by name
@@ -229,7 +230,11 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
   dynamic registration failure rolls back that discovery attempt.
 - Shell injection: `` !`command` `` placeholders run only through the enabled
   session sandbox. There is no host subprocess fallback.
-- allowed-tools / disallowed-tools frontmatter fields
+- `allowed-tools` is an additional allowlist while the skill is active;
+  unmatched calls are denied. `disallowed-tools` takes precedence. These fields
+  restrict calls and never bypass core permission policy. Parameter patterns
+  currently use the real `shell(command)` form, for example
+  `shell(git *)`; compatibility aliases such as `Bash` are not provided.
 - `disable-model-invocation: true` keeps a skill out of the model tool list and
   blocks the generic `skill` tool from loading it; explicit `/skill-name`
   invocation remains available. The value must be a YAML boolean.

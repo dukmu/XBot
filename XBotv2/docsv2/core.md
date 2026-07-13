@@ -87,8 +87,9 @@ path extraction/checking.
 ### Permissions (`tools/permissions.py`)
 
 Tri-state: deny → allow → ask → default. Regex pattern matching on
-tool names and parameters. `BEFORE_TOOL_CALL` hook can override with
-`{"deny_reason": "..."}` or return `None` to allow.
+tool names and parameters. `BEFORE_TOOL_CALL` may reject or transform a call;
+the permission system then checks the final tool name and arguments. Continuing
+from the hook does not bypass core permission policy.
 
 ## Persistence
 

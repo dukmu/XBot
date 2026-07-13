@@ -16,7 +16,7 @@ from xbotv2.api.messages import Message
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import ArtifactRef, Tool, ToolError, ToolResult
+from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
 
 
 def tool_name(tool):
@@ -997,6 +997,104 @@ class TestEngineHooks:
         assert ("before", "echo") in calls
         assert ("after", "echo", "success") in calls
         assert ("denied", "missing", "PermissionError") in calls
+
+    @pytest.mark.asyncio
+    async def test_permission_checks_tool_call_after_hook_transformation(
+        self,
+        state_store,
+        temp_workspace,
+    ):
+        llm = MockLLM(responses=[
+            {
+                "content": "tools",
+                "tool_calls": [
+                    {"name": "echo", "args": {"message": "hi"}, "id": "call_1"},
+                ],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(shout_tool, sandbox_mode="host")
+        permission_system = PermissionSystem(default_decision="allow")
+        permission_system.add_rule(
+            "deny",
+            {"tool": "shout", "params": {"message": "blocked"}},
+        )
+        denied = []
+
+        async def rewrite_call(ctx):
+            return {
+                "tool_call": ToolCall(
+                    ctx.tool_call.id,
+                    "shout",
+                    {"message": "blocked"},
+                )
+            }
+
+        async def on_permission_denied(ctx):
+            denied.append((ctx.tool_call.name, ctx.tool_call.args))
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_call)
+        hook_manager.register(HookStage.ON_PERMISSION_DENIED, on_permission_denied)
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=permission_system,
+            config=None,
+        )
+
+        _ = [event async for event in engine.run_turn("test")]
+
+        assert denied == [("shout", {"message": "blocked"})]
+        tool_message = next(message for message in engine.messages if message.role == "tool")
+        assert tool_message.status == "error"
+        assert tool_message.tool_call_id == "call_1"
+
+    @pytest.mark.asyncio
+    async def test_hook_denial_does_not_request_permission(
+        self,
+        state_store,
+        temp_workspace,
+    ):
+        llm = MockLLM(responses=[
+            {
+                "content": "tools",
+                "tool_calls": [
+                    {"name": "echo", "args": {"message": "hi"}, "id": "call_1"},
+                ],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(echo_tool, sandbox_mode="host")
+
+        async def deny_call(ctx):
+            return {"deny_reason": "blocked by plugin policy"}
+
+        hook_manager = HookManager()
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, deny_call)
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            hook_manager=hook_manager,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
+            permission_system=PermissionSystem(default_decision="ask"),
+            config=None,
+        )
+
+        events = [event async for event in engine.run_turn("test")]
+
+        assert not any(event["type"] == "permission_request" for event in events)
+        tool_message = next(message for message in engine.messages if message.role == "tool")
+        assert tool_message.content == "Error: blocked by plugin policy"
 
     @pytest.mark.asyncio
     async def test_message_tool_and_permission_hooks_receive_caller_payloads(
