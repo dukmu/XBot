@@ -8,6 +8,7 @@ tools:
   - send_message
   - ask_user
   - plugin:compact:*
+  - plugin:todolist:*
   - plugin:skills:*
   - skills:*:*
   - mcp:*:*

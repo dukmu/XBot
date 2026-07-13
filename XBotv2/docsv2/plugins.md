@@ -210,6 +210,13 @@ a message replacement. Engine persistence then atomically rewrites history, so
 resume observes the same summary and recent tail. See
 [Compact plugin](compact.md).
 
+### TodolistPlugin (`builtin_plugins/todolist/`)
+
+Provides explicit list, create, update, and remove tools backed by one
+immediately persisted `PluginStore` value. Items retain creation order and
+stable identifiers across session resume. Invalid mutations return structured
+errors without changing stored state. See [TodoList plugin](todolist.md).
+
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io format) and registers them as tools.

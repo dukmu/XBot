@@ -159,12 +159,13 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Todo List
 
-- Provide explicit tools to list, create, update, and remove session-scoped
-  todo items with stable identifiers and a small documented status set.
-- Persist mutations immediately through `PluginStore`; session resume must
-  return the same ordered list.
-- Keep todo mutations explicit and tool-driven. Do not infer hidden state from
-  assistant prose or duplicate goal ownership.
+- The initial plugin provides explicit list, create, update, and remove tools
+  for ordered session-scoped items with stable identifiers.
+- A single `PluginStore` value makes each mutation one immediate persisted
+  write; resume retains the list and next identifier.
+- Mutations remain tool-driven and use only `pending`, `in_progress`, and
+  `completed`. Real-provider tool selection, permission interaction, and
+  post-restart restoration have been verified.
 
 ### Goal
 

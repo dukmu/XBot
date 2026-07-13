@@ -103,6 +103,13 @@ prefix. It supports a model-visible request tool and a configurable automatic
 character threshold. Core remains responsible for Hook bracketing and atomic
 history persistence.
 
+### TodolistPlugin (`builtin_plugins/todolist/`)
+
+Provides four explicit session-scoped todo tools. One `PluginStore` value holds
+the ordered items and next stable identifier, so every successful mutation is
+one immediate persisted write. It does not infer state from conversation text
+or duplicate goal ownership.
+
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io standard) from:
