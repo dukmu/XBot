@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Iterable, Literal
 
 from xbotv2.tools.sandbox_bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
@@ -40,7 +40,7 @@ class SandboxPolicy:
         *,
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
-        read_mounts: Mapping[str, Path | str] | None = None,
+        session_root: Path | str | None = None,
         enabled: bool = True,
         network: bool = True,
         external_read: str = "readonly",
@@ -51,10 +51,9 @@ class SandboxPolicy:
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
-        self.read_mounts = {
-            name: Path(root).resolve()
-            for name, root in (read_mounts or {}).items()
-        }
+        self.session_root = (
+            Path(session_root).resolve() if session_root is not None else None
+        )
         self._network = network
         self.external_read = external_read
         self.external_write = external_write
@@ -192,6 +191,7 @@ class SandboxPolicy:
 
     async def list_dir(self, path: str = ".", recursive: bool = False, max_entries: int = 500) -> str:
         spec = self._mount_specs()
+        resolved = self.resolve_read_path(path)
         script = (
             "import json, sys, pathlib"
             "; p = pathlib.Path(sys.argv[1])"
@@ -212,7 +212,7 @@ class SandboxPolicy:
         )
         return await self._backend.run(
             ["python3", "-c", script,
-             str(self.workspace_root / path),
+             str(resolved),
              "1" if recursive else "0",
              str(max_entries)],
             spec,
@@ -226,6 +226,7 @@ class SandboxPolicy:
         max_results: int = 200,
     ) -> str:
         spec = self._mount_specs()
+        resolved = self.resolve_read_path(path)
         script = (
             "import fnmatch,json,pathlib,re,sys"
             "; root=pathlib.Path(sys.argv[1])"
@@ -251,7 +252,7 @@ class SandboxPolicy:
         return await self._backend.run(
             [
                 "python3", "-c", script,
-                str(self.workspace_root / path), pattern, glob or "", str(max_results),
+                str(resolved), pattern, glob or "", str(max_results),
             ],
             spec,
         )
@@ -292,9 +293,9 @@ class SandboxPolicy:
         p = Path(path)
         if p.is_absolute():
             return p.resolve()
-        if p.parts and (root := self.read_mounts.get(p.parts[0])) is not None:
-            resolved = (root / Path(*p.parts[1:])).resolve()
-            if resolved.is_relative_to(root):
+        if p.parts and p.parts[0] == "session" and self.session_root is not None:
+            resolved = (self.session_root / Path(*p.parts[1:])).resolve()
+            if resolved.is_relative_to(self.session_root):
                 return resolved
         return (self.workspace_root / p).resolve()
 

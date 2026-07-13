@@ -386,7 +386,7 @@ async def test_http_policy_commands_update_session_overrides(
     filesystem_entry = ctx.engine.tool_registry.get("filesystem_read")
     assert filesystem_entry is not None
     cached_result = await filesystem_entry.tool.ainvoke(
-        {"path": "artifacts/tool_results/cached.txt"},
+        {"path": "session/artifacts/tool_results/cached.txt"},
         sandbox=ctx.engine.sandbox_policy,
     )
     status_response = await client.post(

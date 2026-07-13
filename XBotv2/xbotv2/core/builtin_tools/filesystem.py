@@ -128,7 +128,7 @@ async def list_files(path: str = ".", recursive: bool = False, max_entries: int 
         return _tool_result_from_json(
             await sandbox.list_dir(path, recursive=recursive, max_entries=max_entries)
         )
-    p = Path(path)
+    p = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
     if not p.exists():
         return _json_error("path_not_found", f"Path not found: {path}", path=path)
     if not p.is_dir():
@@ -163,7 +163,7 @@ async def search_text(
         return _tool_result_from_json(
             await sandbox.search_text(pattern, path, glob, max_results)
         )
-    root = Path(path)
+    root = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
     if not root.is_dir():
         return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
     try:
@@ -222,7 +222,7 @@ async def find_files(
 
         matches = [candidate for candidate in paths if fnmatch.fnmatch(candidate, pattern)]
     else:
-        root = Path(path)
+        root = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
         if not root.is_dir():
             return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
         matches = sorted(

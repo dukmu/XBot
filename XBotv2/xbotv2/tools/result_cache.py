@@ -42,7 +42,7 @@ def make_tool_result_cache_hook(
             name = _safe_name(tool_call_id)
             path = cache_dir / f"{name}-{digest}.txt"
             path.write_text(content, encoding="utf-8")
-            cache_path = path.relative_to(Path(state_store.root))
+            cache_path = Path("session") / path.relative_to(Path(state_store.root))
 
             replacement = _format_cached_result(
                 content=content,

@@ -94,21 +94,21 @@ class TestResourcePathResolution:
         resolved = policy.resolve_resource_path("skills/test.md")
         assert str(temp_workspace / "data" / "skills" / "test.md") in resolved
 
-    def test_artifact_read_path_is_limited_to_current_session(self, tmp_path):
+    def test_session_read_path_is_limited_to_current_session(self, tmp_path):
         workspace = tmp_path / "workspace"
         session_root = tmp_path / "data" / "sessions" / "s" / "state"
         workspace.mkdir()
         policy = SandboxPolicy(
             workspace_root=workspace,
             data_root=tmp_path / "data",
-            read_mounts={"artifacts": session_root / "artifacts"},
+            session_root=session_root,
         )
 
-        assert policy.resolve_read_path("artifacts/tool_results/cached.txt") == (
+        assert policy.resolve_read_path("session/artifacts/tool_results/cached.txt") == (
             session_root / "artifacts" / "tool_results" / "cached.txt"
         ).resolve()
-        assert policy.resolve_read_path("artifacts/../plugin_states/secret.yaml") == (
-            workspace / "artifacts" / "../plugin_states" / "secret.yaml"
+        assert policy.resolve_read_path("session/../outside.txt") == (
+            workspace / "session" / "../outside.txt"
         ).resolve()
 
 
@@ -142,7 +142,7 @@ class TestBubblewrapCapabilities:
             enabled=True,
             workspace_root=tmp_path,
             data_root=tmp_path / ".data",
-            read_mounts={"artifacts": session_root / "artifacts"},
+            session_root=session_root,
         )
         if not policy.backend_available:
             pytest.skip("bubblewrap is not installed")
@@ -160,7 +160,13 @@ class TestBubblewrapCapabilities:
             await policy.read_file(str(readonly_path), offset=0, limit=1)
         )
         cached_data = json.loads(
-            await policy.read_file("artifacts/tool_results/cached.txt")
+            await policy.read_file("session/artifacts/tool_results/cached.txt")
+        )
+        cached_list = json.loads(
+            await policy.list_dir("session/artifacts", recursive=True)
+        )
+        cached_search = json.loads(
+            await policy.search_text("cached", "session/artifacts")
         )
         missing_data = json.loads(await policy.read_file("missing.txt"))
         write_data = json.loads(await policy.write_file("created.txt", "created"))
@@ -172,6 +178,8 @@ class TestBubblewrapCapabilities:
         assert readonly_data["content"] == "before"
         assert readonly_data["returned_lines"] == 1
         assert cached_data["content"] == "cached"
+        assert cached_list["entries"][0]["relative_path"] == "tool_results"
+        assert cached_search["matches"] == ["tool_results/cached.txt:1:cached"]
         assert missing_data["ok"] is False
         assert missing_data["error"]["code"] == "file_not_found"
         assert write_data["ok"] is True

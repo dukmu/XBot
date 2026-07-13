@@ -34,11 +34,12 @@ templates should return `ToolResult` directly.
 Tool results larger than 12,000 characters are stored under the session's
 `state/artifacts/tool_results` directory before history persistence and SSE
 emission. The model receives a bounded preview plus a `cache_path` relative to
-the current session state, such as `artifacts/tool_results/<file>`. That path is
-readable through `filesystem_read`; callers should use `offset` and `limit` to
-inspect only the required lines. A read-only virtual mount maps the current
-session's `artifacts/` prefix to its backing store; other relative paths remain
-workspace-relative. Policy updates preserve these mounts, and cached-result
+the current session state, such as `session/artifacts/tool_results/<file>`. That
+path is readable through the filesystem read, list, search, and find tools;
+callers should use `offset` and `limit` to inspect only the required lines. The
+single read-only `session/` namespace maps the current session state directory;
+other relative paths remain workspace-relative. It is intentionally not a
+general virtual filesystem. Policy updates preserve the mount, and cached-result
 metadata survives restoration.
 
 Filesystem write modes have the same semantics with or without the session

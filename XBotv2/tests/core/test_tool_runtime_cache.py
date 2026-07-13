@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 from langchain_core.tools import tool as langchain_tool
 
-from xbotv2.core.builtin_tools.filesystem import filesystem_read, filesystem_write
+from xbotv2.core.builtin_tools.filesystem import (
+    filesystem_find,
+    filesystem_list,
+    filesystem_read,
+    filesystem_search,
+    filesystem_write,
+)
 from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
@@ -90,12 +96,12 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
         enabled=False,
         data_root=tmp_path / "data",
         workspace_root=workspace,
-        read_mounts={"artifacts": session_root / "artifacts"},
+        session_root=session_root,
     )
 
     results = await execute_tools(
         [ToolCall("c1", "filesystem_read", {
-            "path": "artifacts/tool_results/cached.txt",
+            "path": "session/artifacts/tool_results/cached.txt",
         })],
         registry,
         sandbox_policy=sandbox,
@@ -104,6 +110,44 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
 
     assert results[0].status == "success"
     assert "cached content" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_session_namespace_supports_read_only_discovery_when_sandbox_disabled(tmp_path):
+    workspace = tmp_path / "workspace"
+    session_root = tmp_path / "data" / "sessions" / "s" / "state"
+    cached = session_root / "artifacts" / "tool_results" / "cached.txt"
+    workspace.mkdir()
+    cached.parent.mkdir(parents=True)
+    cached.write_text("cached content", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        enabled=False,
+        workspace_root=workspace,
+        session_root=session_root,
+    )
+    registry = ToolRegistry()
+    for tool in (filesystem_list, filesystem_search, filesystem_find):
+        registry.register(tool, sandbox_mode="sandboxed")
+
+    results = await execute_tools(
+        [
+            ToolCall("list", "filesystem_list", {"path": "session/artifacts"}),
+            ToolCall("search", "search_text", {
+                "path": "session/artifacts", "pattern": "cached",
+            }),
+            ToolCall("find", "find_files", {
+                "path": "session/artifacts", "pattern": "*.txt",
+            }),
+        ],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert all(result.status == "success" for result in results)
+    assert "tool_results" in results[0].content
+    assert "tool_results/cached.txt:1:cached content" in results[1].content
+    assert "tool_results/cached.txt" in results[2].content
 
 
 @pytest.mark.asyncio
@@ -468,7 +512,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert "x" * 100 not in tool_message.content
     assert tool_message.artifact["kind"] == "cached_tool_result"
     assert tool_message.artifact["tool_call_id"] == "call_large"
-    assert tool_message.artifact["cache_path"].startswith("artifacts/tool_results/")
+    assert tool_message.artifact["cache_path"].startswith("session/artifacts/tool_results/")
     assert not Path(tool_message.artifact["cache_path"]).is_absolute()
     assert str(state_store.root) not in tool_message.content
 
