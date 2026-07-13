@@ -13,11 +13,75 @@ import pytest
 import xbotv2.__main__ as xbot_main
 from xbotv2.tui.client import TuiState, TuiTool, TuiTranscriptEntry, _parse_permission_decision, _repair_mojibake
 from xbotv2.tui.terminal import TerminalSession
+from xbotv2.tui.command import CommandSpec
 from xbotv2.tui.textual_state import (
     queue_user_message,
     render_transcript_entry,
     route_submitted_text,
 )
+
+
+@pytest.mark.asyncio
+async def test_clear_dispatch_distinguishes_client_and_server_commands():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        _cmd_clear = AsyncMock()
+        _run_server_command = AsyncMock()
+
+    handler = Handler()
+    await XBotTextualApp._handle_slash_command(handler, CommandSpec(
+        name="clear", kind="client", description="clear", raw="/clear",
+    ))
+    handler._cmd_clear.assert_awaited_once()
+    handler._run_server_command.assert_not_awaited()
+
+    handler._cmd_clear.reset_mock()
+    await XBotTextualApp._handle_slash_command(handler, CommandSpec(
+        name="clear", kind="server", description="clear history", raw="/clear",
+    ))
+    handler._cmd_clear.assert_not_awaited()
+    handler._run_server_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_server_command_replaces_tui_history_from_protocol_field():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    history = [{"role": "user", "content": "kept"}]
+
+    class Handler:
+        _connected = True
+        session = type("Session", (), {"run_command": AsyncMock(return_value={
+            "type": "command_result",
+            "data": {
+                "command": "undo",
+                "status": "ok",
+                "message": "Removed 1 conversation turn.",
+                "data": {"removed_turns": 1},
+                "history": history,
+            },
+        })})()
+        state = TuiState()
+        _cmd_clear = AsyncMock()
+        _render_new_transcript_entries = AsyncMock()
+        _append_local_notice = AsyncMock()
+
+        def _record_error(self, error):
+            raise AssertionError(error)
+
+    handler = Handler()
+    await XBotTextualApp._run_server_command(handler, CommandSpec(
+        name="undo", kind="server", description="undo", raw="/undo",
+    ))
+
+    handler._cmd_clear.assert_awaited_once()
+    assert [(message.role, message.content) for message in handler.state.messages] == [
+        ("user", "kept"),
+    ]
+    handler._append_local_notice.assert_awaited_once_with(
+        "/undo", "Removed 1 conversation turn."
+    )
 
 
 def test_tui_state_applies_protocol_events_and_renders_lines():

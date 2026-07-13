@@ -244,3 +244,30 @@ def test_parse_slash_command_preserves_args_for_skill() -> None:
     assert spec.name == "git-release"
     assert spec.kind == "skill"
     assert spec.args == "Create v2.1.0"
+
+
+@pytest.mark.asyncio
+async def test_server_command_registry_owns_metadata_and_dispatch(monkeypatch) -> None:
+    from xbotv2.protocol.commands import COMMANDS, ServerCommand, execute_command
+
+    async def handler(ctx, args):
+        return {
+            "type": "command_result",
+            "data": {
+                "command": "sample",
+                "status": "ok",
+                "message": f"{ctx}:{','.join(args)}",
+                "data": None,
+            },
+        }
+
+    monkeypatch.setitem(COMMANDS, "sample", ServerCommand(
+        name="sample",
+        slash="/sample",
+        description="Sample extension command.",
+        handler=handler,
+    ))
+
+    result = await execute_command("context", "sample", ["a", "b"])
+
+    assert result["data"]["message"] == "context:a,b"

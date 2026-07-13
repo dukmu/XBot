@@ -86,6 +86,7 @@ class CommandResult(WireModel):
     status: Literal["ok", "error"]
     message: str
     data: Any = None
+    history: list[SessionHistoryItem] | None = None
 
 
 class CommandResponse(WireModel):

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import secrets
+import shutil
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+CommandHandler = Callable[[Any, list[str]], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -12,6 +17,7 @@ class ServerCommand:
     name: str
     slash: str
     description: str
+    handler: CommandHandler
     examples: list[str] = field(default_factory=list)
     parameters: dict[str, str] = field(default_factory=dict)
 
@@ -26,34 +32,6 @@ class ServerCommand:
         }
 
 
-COMMANDS: dict[str, ServerCommand] = {
-    "status": ServerCommand(
-        name="status",
-        slash="/status",
-        description="Show server and current session status.",
-        examples=["/status"],
-    ),
-    "provider": ServerCommand(
-        name="provider",
-        slash="/provider",
-        description="List or switch provider configuration.",
-        examples=["/provider list", "/provider status", "/provider use deepseek"],
-    ),
-    "permission": ServerCommand(
-        name="permission",
-        slash="/permission",
-        description="Inspect or update session permission policy.",
-        examples=["/permission status", "/permission set shell allow"],
-    ),
-    "sandbox": ServerCommand(
-        name="sandbox",
-        slash="/sandbox",
-        description="Inspect session sandbox policy.",
-        examples=["/sandbox status"],
-    ),
-}
-
-
 def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     result = [command.to_dict() for command in COMMANDS.values()]
     if extra:
@@ -61,25 +39,123 @@ def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str
     return result
 
 
-def execute_command(ctx: Any, command: str, args: list[str], *, kind: str = "server") -> dict[str, Any]:
+async def execute_command(
+    ctx: Any,
+    command: str,
+    args: list[str],
+    *,
+    kind: str = "server",
+) -> dict[str, Any]:
     command = command.lower().strip().removeprefix("/")
     if kind == "skill":
-        return _result(command, f"Skill '{command}' available. Use /{command} [instructions] to invoke.",
-                       status="ok")
+        return _result(
+            command,
+            f"Skill '{command}' available. Use /{command} [instructions] to invoke.",
+        )
     if kind in ("tool", "mcp"):
         return _result(command, f"Tool '{command}' available.", data={"tool": command})
-    if command == "status":
-        return _result("status", _status_message(ctx), data=_status_data(ctx))
-    if command == "provider":
-        return _provider_command(ctx, args)
-    if command == "permission":
-        return _policy_command(ctx, "permission", args)
-    if command == "sandbox":
-        return _policy_command(ctx, "sandbox", args)
-    return _result(command, f"Unknown server command: /{command}", status="error")
+    registered = COMMANDS.get(command)
+    if registered is None:
+        return _result(command, f"Unknown server command: /{command}", status="error")
+    return await registered.handler(ctx, args)
 
 
-def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    if ctx.turn_lock.locked():
+        return _result(
+            "clear",
+            "Cannot rewrite history while a turn is active.",
+            status="error",
+        )
+    if args:
+        return _result("clear", "Usage: /clear", status="error")
+    removed_turns = sum(
+        message.role == "user" for message in ctx.engine.messages
+    )
+    await ctx.engine.replace_history([])
+    return _result(
+        "clear",
+        f"Cleared {removed_turns} conversation turns.",
+        data={"removed_turns": removed_turns},
+        history=[],
+    )
+
+
+async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    if ctx.turn_lock.locked():
+        return _result(
+            "undo",
+            "Cannot rewrite history while a turn is active.",
+            status="error",
+        )
+    if len(args) > 1:
+        return _result("undo", "Usage: /undo [count]", status="error")
+    try:
+        count = int(args[0]) if args else 1
+    except ValueError:
+        return _result("undo", "Undo count must be a positive integer.", status="error")
+    messages = list(ctx.engine.messages)
+    user_indexes = [
+        index for index, message in enumerate(messages) if message.role == "user"
+    ]
+    if count < 1:
+        return _result("undo", "Undo count must be a positive integer.", status="error")
+    if count > len(user_indexes):
+        return _result(
+            "undo",
+            f"Cannot undo {count} turns; session has {len(user_indexes)}.",
+            status="error",
+        )
+    kept = messages[:user_indexes[-count]]
+    await ctx.engine.replace_history(kept)
+    return _result(
+        "undo",
+        f"Removed {count} conversation turn{'s' if count != 1 else ''}.",
+        data={"removed_turns": count},
+        history=_display_history(kept),
+    )
+
+
+async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    if args:
+        return _result("fork", "Usage: /fork", status="error")
+    if ctx.turn_lock.locked():
+        return _result("fork", "Cannot fork while a turn is active.", status="error")
+    await ctx.engine.save_messages()
+    session_id = _new_fork_id()
+    while ctx.paths.session(session_id).root.exists():
+        session_id = _new_fork_id()
+    source = ctx.paths.session(ctx.session_id).root
+    target = ctx.paths.session(session_id).root
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    return _result(
+        "fork",
+        f"Forked session {ctx.session_id} to {session_id}.",
+        data={"session_id": session_id, "source_session_id": ctx.session_id},
+    )
+
+
+def _new_fork_id() -> str:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{secrets.token_hex(2)}"
+
+
+def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": message.role,
+            "content": str(message.content or ""),
+            "tool_calls": [call.to_dict() for call in message.tool_calls or []],
+            "tool_call_id": message.tool_call_id,
+            "status": message.status,
+        }
+        for message in messages
+        if message.role in {"user", "assistant", "tool"}
+    ]
+
+
+async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     action = args[0] if args else "status"
     if action == "status":
         return _result("provider", f"Provider: {ctx.provider_name}", data={"provider": ctx.provider_name})
@@ -150,6 +226,20 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
         _reload_live_policies(ctx)
         return _result(name, f"{name} session overrides reset.")
     return _result(name, f"Usage: /{name} status | set <key> <value> | reset", status="error")
+
+
+async def _permission_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    return _policy_command(ctx, "permission", args)
+
+
+async def _sandbox_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    return _policy_command(ctx, "sandbox", args)
+
+
+async def _status_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    if args:
+        return _result("status", "Usage: /status", status="error")
+    return _result("status", _status_message(ctx), data=_status_data(ctx))
 
 
 def _status_data(ctx: Any) -> dict[str, Any]:
@@ -284,7 +374,14 @@ def _status_message(ctx: Any) -> str:
     )
 
 
-def _result(command: str, message: str, *, status: str = "ok", data: Any = None) -> dict[str, Any]:
+def _result(
+    command: str,
+    message: str,
+    *,
+    status: str = "ok",
+    data: Any = None,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "type": "command_result",
         "data": {
@@ -292,5 +389,67 @@ def _result(command: str, message: str, *, status: str = "ok", data: Any = None)
             "status": status,
             "message": message,
             "data": data,
+            "history": history,
         },
     }
+
+
+COMMANDS: dict[str, ServerCommand] = {
+    command.name: command
+    for command in (
+        ServerCommand(
+            name="status",
+            slash="/status",
+            description="Show server and current session status.",
+            handler=_status_command,
+            examples=["/status"],
+        ),
+        ServerCommand(
+            name="provider",
+            slash="/provider",
+            description="List or switch provider configuration.",
+            handler=_provider_command,
+            examples=[
+                "/provider list",
+                "/provider status",
+                "/provider use deepseek",
+            ],
+        ),
+        ServerCommand(
+            name="permission",
+            slash="/permission",
+            description="Inspect or update session permission policy.",
+            handler=_permission_command,
+            examples=["/permission status", "/permission set shell allow"],
+        ),
+        ServerCommand(
+            name="sandbox",
+            slash="/sandbox",
+            description="Inspect session sandbox policy.",
+            handler=_sandbox_command,
+            examples=["/sandbox status"],
+        ),
+        ServerCommand(
+            name="fork",
+            slash="/fork",
+            description="Fork persisted session state into a new session.",
+            handler=_fork_command,
+            examples=["/fork"],
+        ),
+        ServerCommand(
+            name="clear",
+            slash="/clear",
+            description="Clear conversation history while preserving session state.",
+            handler=_clear_command,
+            examples=["/clear"],
+        ),
+        ServerCommand(
+            name="undo",
+            slash="/undo",
+            description="Remove the most recent complete conversation turns.",
+            handler=_undo_command,
+            examples=["/undo", "/undo 2"],
+            parameters={"count": "Number of turns to remove; defaults to 1."},
+        ),
+    )
+}

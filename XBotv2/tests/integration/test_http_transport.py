@@ -363,7 +363,9 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     commands_response = await client.get("/commands")
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
-    assert {"status", "provider", "permission", "sandbox"}.issubset(names)
+    assert {
+        "status", "provider", "permission", "sandbox", "fork", "clear", "undo",
+    }.issubset(names)
 
     open_response = await client.post(
         "/sessions", json={"session_id": "cmds", "thread_id": "t"}
@@ -382,6 +384,84 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     messages_path = state_root / "messages.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
     assert "command_result" not in messages
+
+
+@pytest.mark.asyncio
+async def test_history_commands_undo_fork_and_clear_persist_atomically(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    set_llm_override(http_app, MockLLM(responses=[
+        {"content": "first answer"},
+        {"content": "second answer"},
+    ]))
+    await client.post("/sessions", json={"session_id": "history", "thread_id": "t"})
+    await client.post("/sessions/history/messages", json={"content": "first"})
+    await client.post("/sessions/history/messages", json={"content": "second"})
+
+    undone = await client.post(
+        "/sessions/history/commands",
+        json={"command": "undo", "args": ["1"]},
+    )
+
+    assert undone.status_code == 200
+    assert undone.json()["data"]["history"] == [
+        {
+            "role": "user", "content": "first", "tool_calls": [],
+            "tool_call_id": "", "status": "",
+        },
+        {
+            "role": "assistant", "content": "first answer", "tool_calls": [],
+            "tool_call_id": "", "status": "",
+        },
+    ]
+    ctx = await http_app.state.manager.get("history")
+    assert [message.content for message in ctx.engine.messages] == [
+        "first", "first answer",
+    ]
+
+    source = http_app.state.paths.session("history")
+    (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
+    (source.artifacts_dir / "cached.txt").write_text("cached")
+    source.policy_file.write_text("permissions: {}\n")
+    forked = await client.post(
+        "/sessions/history/commands",
+        json={"command": "fork", "args": []},
+    )
+    fork_id = forked.json()["data"]["data"]["session_id"]
+    fork_paths = http_app.state.paths.session(fork_id)
+
+    assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
+    assert (fork_paths.artifacts_dir / "cached.txt").read_text() == "cached"
+    assert fork_paths.policy_file.read_text() == "permissions: {}\n"
+    resumed = await client.post(
+        "/sessions",
+        json={"session_id": fork_id, "thread_id": "t", "mode": "resume"},
+    )
+    assert [item["content"] for item in resumed.json()["history"]] == [
+        "first", "first answer",
+    ]
+
+    cleared = await client.post(
+        "/sessions/history/commands",
+        json={"command": "clear", "args": []},
+    )
+    assert cleared.json()["data"]["data"] == {"removed_turns": 1}
+    assert cleared.json()["data"]["history"] == []
+    assert ctx.engine.messages == []
+    assert ctx.engine.state_store.read_messages() == []
+
+
+@pytest.mark.asyncio
+async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClient) -> None:
+    await client.post("/sessions", json={"session_id": "undo-errors", "thread_id": "t"})
+
+    for count in ("0", "two", "2"):
+        response = await client.post(
+            "/sessions/undo-errors/commands",
+            json={"command": "undo", "args": [count]},
+        )
+        assert response.json()["data"]["status"] == "error"
 
 
 @pytest.mark.asyncio

@@ -270,6 +270,14 @@ class Engine:
         if errors:
             raise BaseExceptionGroup("Session close failed", errors)
 
+    async def replace_history(self, messages: list[Message]) -> None:
+        """Replace persisted conversation history at an idle command boundary."""
+        self.messages = list(messages)
+        self.turn_count = sum(1 for message in self.messages if message.role == "user")
+        if self.session is not None:
+            self.session.turn_count = self.turn_count
+        await self.save_messages()
+
     def set_client_event_sink(self, sink: Any | None) -> Any | None:
         """Install a live protocol sink for client-directed events."""
         previous = self.client_event_sink

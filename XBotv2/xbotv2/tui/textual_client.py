@@ -337,7 +337,7 @@ class XBotTextualApp(App[None]):
         if spec.name == "exit":
             self.exit()
             return
-        if spec.name == "clear":
+        if spec.name == "clear" and spec.kind == "client":
             await self._cmd_clear()
             return
         if spec.name == "help":
@@ -365,6 +365,11 @@ class XBotTextualApp(App[None]):
             return
         data = result.get("data") if isinstance(result, dict) else {}
         message = str(data.get("message") or result)
+        history = data.get("history")
+        if isinstance(history, list):
+            await self._cmd_clear()
+            self.state.restore_history(history)
+            await self._render_new_transcript_entries()
         await self._append_local_notice(f"/{spec.name}", message)
 
     async def _cmd_clear(self) -> None:

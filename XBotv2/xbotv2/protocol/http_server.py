@@ -346,7 +346,7 @@ def _register_routes(app: FastAPI) -> None:
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
         return CommandResponse.model_validate(
-            execute_command(ctx, command, args, kind=payload.kind)
+            await execute_command(ctx, command, args, kind=payload.kind)
         )
 
     @app.post("/sessions/{session_id}/messages")

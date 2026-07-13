@@ -51,6 +51,20 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 | POST | `/sessions/{id}/interactions/user-input` | Submit user input answer |
 | POST | `/sessions/{id}/shutdown` | Close session |
 
+Session history commands use the same command endpoint:
+
+- `/undo [count]` removes complete user turns from the persisted tail; `count`
+  defaults to one.
+- `/clear` removes all message history while preserving the session id, policy,
+  artifacts, and plugin state.
+- `/fork` copies persisted state, artifacts, plugin state, and policy to a new
+  session id without copying a live turn or interaction.
+
+`CommandResult.history` is normally `null`. `clear` and `undo` set it to the
+resulting display history so clients can rebuild their transcript from the same
+state the next provider request will use. Command-specific values such as
+`removed_turns` remain in `CommandResult.data`.
+
 ## Command System
 
 `GET /sessions/{id}/commands` returns unified command list with `kind` field:
@@ -65,6 +79,10 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 ```
 
 Kinds: `client` (local TUI only), `server`, `skill`, `tool`, `mcp`.
+
+Each server command is one registry entry containing both discovery metadata
+and its async handler. The dispatcher normalizes the name and performs one
+lookup; extending the registry does not require a second parsing branch.
 
 Session command discovery includes server commands and registered tools. Tool,
 skill, and MCP command execution is being aligned with the tool system contract;
