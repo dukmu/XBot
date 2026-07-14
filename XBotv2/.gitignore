@@ -1,0 +1,4 @@
+# Ignore runtime session data but keep config files
+data/
+!data/config/
+!data/config/*.yaml

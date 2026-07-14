@@ -1,0 +1,52 @@
+name: mcp
+version: "1.0.0"
+description: Model Context Protocol tool integration (local + remote servers)
+api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    servers:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties: false
+        properties:
+          type:
+            enum: [local, remote]
+          enabled:
+            type: boolean
+          required:
+            type: boolean
+          command:
+            type: array
+            minItems: 1
+            items:
+              type: string
+          env:
+            type: object
+            additionalProperties:
+              type: string
+          url:
+            type: string
+            minLength: 1
+          headers:
+            type: object
+            additionalProperties:
+              type: string
+          cwd:
+            type: string
+          timeout:
+            type: number
+            exclusiveMinimum: 0
+          terminate_on_close:
+            type: boolean
+        oneOf:
+          - properties:
+              type:
+                const: local
+            required: [command]
+          - properties:
+              type:
+                const: remote
+            required: [type, url]

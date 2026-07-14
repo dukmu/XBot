@@ -1,0 +1,85 @@
+"""Core live-session lifecycle tests independent of HTTP."""
+
+import asyncio
+
+import pytest
+
+from xbotv2.api.paths import RuntimePaths
+from xbotv2.core.session import SessionRuntime
+
+
+class FakeEngine:
+    def __init__(self) -> None:
+        self.enqueue_mailbox = None
+        self.client_event_sink = None
+        self.closed = False
+
+    def set_client_event_sink(self, sink):
+        previous = self.client_event_sink
+        self.client_event_sink = sink
+        return previous
+
+    async def run_mailbox_hook(self, stage, message, error=None):
+        del stage, message, error
+
+    @staticmethod
+    def mailbox_content(item):
+        return str(item.message)
+
+    async def run_turn(self, content, *, request_id="", mailbox_message=None):
+        del content, request_id
+        yield {"type": "turn_started", "data": {"turn": 1}}
+        if mailbox_message.kind == "user_message":
+            await self.enqueue_mailbox({"source": "test", "event": "continue"})
+            reply = "first"
+        else:
+            reply = "continued"
+        yield {"type": "assistant_message", "data": {"content": reply}}
+        yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    async def close_session(self):
+        self.closed = True
+
+
+def runtime(tmp_path) -> SessionRuntime:
+    return SessionRuntime(
+        session_id="session",
+        thread_id="agent",
+        provider_name="mock",
+        paths=RuntimePaths.from_data_dir(tmp_path),
+        workspace_root=str(tmp_path),
+        no_plugins=True,
+        engine=FakeEngine(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_message_drains_immediate_general_continuation(tmp_path):
+    session = runtime(tmp_path)
+
+    events = [event async for event in session.stream_message("start", "request")]
+
+    assert [
+        event["data"]["content"]
+        for event in events
+        if event["type"] == "assistant_message"
+    ] == ["first", "continued"]
+    await session.close()
+    assert session.engine.closed is True
+
+
+@pytest.mark.asyncio
+async def test_closing_queued_request_discards_only_that_message(tmp_path):
+    session = runtime(tmp_path)
+    session.turn_lock = asyncio.Lock()
+    await session.turn_lock.acquire()
+    stream = session.stream_message("queued", "request")
+
+    queued = await anext(stream)
+    await stream.aclose()
+    session.turn_lock.release()
+
+    assert queued["type"] == "message_queued"
+    assert session.mailbox.size == 0
+    assert session.engine.closed is False
+    await session.close()

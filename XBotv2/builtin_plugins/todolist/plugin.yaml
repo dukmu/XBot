@@ -1,0 +1,7 @@
+name: todolist
+version: "1.0.0"
+description: Session-scoped todo list tools
+api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false

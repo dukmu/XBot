@@ -1,0 +1,346 @@
+"""Persistent message store.
+
+Manages:
+- messages.jsonl: append-only message history
+- plugin_states/: opaque per-plugin state files (core never interprets)
+- artifacts/: cached large tool outputs
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from xbotv2.api.messages import Message
+from xbotv2.api.paths import SessionPaths
+from xbotv2.api.tools import ToolCall
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def message_to_dict(msg: Message) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "role": msg.role,
+        "content": msg.content,
+        "status": msg.status,
+    }
+    if msg.name:
+        d["name"] = msg.name
+    if msg.tool_calls:
+        d["tool_calls"] = [call.to_dict() for call in msg.tool_calls]
+    if msg.tool_call_id:
+        d["tool_call_id"] = msg.tool_call_id
+    if msg.additional_kwargs:
+        d["additional_kwargs"] = _json_safe({
+            k: v for k, v in msg.additional_kwargs.items()
+            if not str(k).startswith("xbotv2_")
+        })
+    if msg.response_metadata:
+        d["response_metadata"] = _json_safe(msg.response_metadata)
+    if msg.usage_metadata:
+        d["usage_metadata"] = _json_safe(msg.usage_metadata)
+    if msg.artifact is not None:
+        d["artifact"] = _json_safe(msg.artifact)
+    return d
+
+
+def dict_to_message(d: dict[str, Any]) -> Message:
+    return Message(
+        role=d.get("role", "assistant"),
+        content=d.get("content", ""),
+        status=d.get("status", ""),
+        tool_calls=[ToolCall.from_dict(call) for call in d.get("tool_calls") or []],
+        tool_call_id=d.get("tool_call_id", ""),
+        name=d.get("name", ""),
+        additional_kwargs=dict(d.get("additional_kwargs") or {}),
+        response_metadata=dict(d.get("response_metadata") or {}),
+        usage_metadata=dict(d.get("usage_metadata") or {}),
+        artifact=d.get("artifact"),
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        return str(value)
+
+
+class CoreStateStore:
+
+    SCHEMA_VERSION = 2
+
+    def __init__(
+        self,
+        paths: SessionPaths,
+        *,
+        thread_id: str,
+        workspace_root: str,
+        provider: str,
+    ) -> None:
+        self.paths = paths
+        self.root = paths.state_dir
+        self.session_id = paths.session_id
+        self.thread_id = thread_id
+        self.workspace_root = workspace_root
+        self.provider = provider
+
+        self.messages_path = paths.messages_file
+        self.plugin_states_dir = paths.plugin_states_dir
+        self.artifacts_dir = paths.artifacts_dir
+        self._max_msg_id = 0
+
+    @classmethod
+    def create(
+        cls,
+        paths: SessionPaths,
+        *,
+        thread_id: str,
+        workspace_root: str,
+        provider: str,
+    ) -> "CoreStateStore":
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        paths.plugin_states_dir.mkdir(exist_ok=True)
+        paths.artifacts_dir.mkdir(exist_ok=True)
+
+        store = cls(
+            paths=paths,
+            thread_id=thread_id,
+            workspace_root=workspace_root,
+            provider=provider,
+        )
+        if not store.messages_path.exists():
+            store.messages_path.touch()
+        return store
+
+    def append_message(self, msg: Message) -> dict[str, Any]:
+        d = message_to_dict(msg)
+        d["msg_id"] = self._next_message_id()
+        d["ts"] = now_iso()
+        with open(self.messages_path, "a") as f:
+            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return d
+
+    def append_messages(self, messages: list[Message]) -> int:
+        if not messages:
+            return 0
+        with open(self.messages_path, "a", encoding="utf-8") as stream:
+            for msg in messages:
+                d = message_to_dict(msg)
+                d["msg_id"] = self._next_message_id()
+                d["ts"] = now_iso()
+                stream.write(json.dumps(d, ensure_ascii=False) + "\n")
+        return len(messages)
+
+    def sync_messages(self, messages: list[Message]) -> int:
+        """Persist current history, appending in the normal case.
+
+        A rewrite is only needed when existing messages changed or disappeared,
+        which occurs during context compaction or explicit truncation.
+        """
+        previous = list(_iter_jsonl(self.messages_path))
+        serialized = [message_to_dict(message) for message in messages]
+        previous_payloads = [
+            {k: v for k, v in entry.items() if k not in {"msg_id", "ts"}}
+            for entry in previous
+        ]
+        if serialized[:len(previous_payloads)] == previous_payloads:
+            self.append_messages(messages[len(previous_payloads):])
+            return len(messages)
+
+        previous_by_key: dict[str, list[dict[str, Any]]] = {}
+        for entry in previous:
+            key = _message_identity_key(entry)
+            previous_by_key.setdefault(key, []).append(entry)
+
+        rewritten: list[dict[str, Any]] = []
+        next_id = max((entry.get("msg_id", 0) for entry in previous), default=0) + 1
+        for msg in messages:
+            d = message_to_dict(msg)
+            key = _message_identity_key(d)
+            matches = previous_by_key.get(key) or []
+            if matches:
+                old = matches.pop(0)
+                d["msg_id"] = old.get("msg_id", next_id)
+                d["ts"] = old.get("ts", now_iso())
+            else:
+                d["msg_id"] = next_id
+                d["ts"] = now_iso()
+                next_id += 1
+            rewritten.append(d)
+
+        self._atomic_write(rewritten)
+        self._max_msg_id = max((entry["msg_id"] for entry in rewritten), default=0)
+        return len(rewritten)
+
+    def read_messages(self) -> list[Message]:
+        raw = list(_iter_jsonl(self.messages_path))
+        return [dict_to_message(d) for d in raw]
+
+    def message_count(self) -> int:
+        if not self.messages_path.exists():
+            return 0
+        return sum(1 for _ in _iter_jsonl(self.messages_path))
+
+    def truncate_messages(self, keep_last: int = 0) -> int:
+        if not self.messages_path.exists() or keep_last <= 0:
+            if self.messages_path.exists():
+                removed = self.message_count()
+                self.messages_path.unlink()
+                return removed
+            return 0
+
+        all_msgs = list(_iter_jsonl(self.messages_path))
+        if len(all_msgs) <= keep_last:
+            return 0
+
+        removed = len(all_msgs) - keep_last
+        kept = all_msgs[-keep_last:]
+        self._atomic_write(kept)
+        self._max_msg_id = max((entry.get("msg_id", 0) for entry in kept), default=0)
+        return removed
+
+    def clear_messages(self) -> None:
+        if self.messages_path.exists():
+            self.messages_path.unlink()
+
+    def has_existing_session(self) -> bool:
+        return self.messages_path.exists() and self.message_count() > 0
+
+    def read_state(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "workspace_root": self.workspace_root,
+            "provider": self.provider,
+            "turn_count": 0,
+            "event_count": 0,
+            "message_count": self.message_count(),
+            "status": "active",
+            "pending_interactions": [],
+            "permission_overrides": {},
+            "sandbox_overrides": {},
+            "workspace": {},
+            "plugin_states": self._read_all_plugin_states(),
+            "artifacts_root": str(self.artifacts_dir),
+        }
+
+    def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
+        path = self._plugin_state_path(plugin_name)
+        if path.exists():
+            with open(path, encoding="utf-8") as stream:
+                state = yaml.safe_load(stream)
+            if state is None:
+                return {}
+            if not isinstance(state, dict):
+                raise ValueError(
+                    f"Plugin state for {plugin_name!r} must contain a mapping"
+                )
+            return state
+        return {}
+
+    def set_plugin_state(self, plugin_name: str, data: dict[str, Any]) -> None:
+        self.plugin_states_dir.mkdir(parents=True, exist_ok=True)
+        path = self._plugin_state_path(plugin_name)
+        _atomic_write_yaml(path, data)
+
+    def delete_plugin_state(self, plugin_name: str) -> None:
+        path = self._plugin_state_path(plugin_name)
+        if path.exists():
+            path.unlink()
+
+    def _plugin_state_path(self, plugin_name: str) -> Path:
+        if (
+            not plugin_name
+            or plugin_name in {".", ".."}
+            or Path(plugin_name).name != plugin_name
+        ):
+            raise ValueError(f"Invalid plugin state name: {plugin_name!r}")
+        return self.plugin_states_dir / f"{plugin_name}.yaml"
+
+    def _next_message_id(self) -> int:
+        if self._max_msg_id == 0 and self.messages_path.exists():
+            for d in _iter_jsonl(self.messages_path):
+                mid = d.get("msg_id", 0)
+                if mid > self._max_msg_id:
+                    self._max_msg_id = mid
+        self._max_msg_id += 1
+        return self._max_msg_id
+
+    def _read_all_plugin_states(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if not self.plugin_states_dir.exists():
+            return result
+        for path in sorted(self.plugin_states_dir.iterdir()):
+            if path.suffix == ".yaml":
+                name = path.stem
+                result[name] = self.get_plugin_state(name)
+        return result
+
+    def _atomic_write(self, entries: list[dict[str, Any]]) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(
+            prefix="messages-", suffix=".jsonl.tmp", dir=self.root
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                for entry in entries:
+                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_name, self.messages_path)
+        except BaseException:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+            raise
+
+
+def _message_identity_key(d: dict[str, Any]) -> str:
+    payload = {k: v for k, v in d.items() if k not in {"msg_id", "ts"}}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _iter_jsonl(path: Path):
+    if not path.exists():
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f"{path.stem}-",
+        suffix=".yaml.tmp",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
