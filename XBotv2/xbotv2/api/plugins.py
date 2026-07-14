@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from xbotv2.api.commands import Command
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
 from xbotv2.api.tools import Tool
@@ -56,6 +57,7 @@ class ToolRegistrationOptions:
 
     sandbox_mode: Literal["host", "sandboxed"] = "host"
     namespace: str | None = None
+    model_visible: bool = True
 
     def __post_init__(self) -> None:
         if self.sandbox_mode not in {"host", "sandboxed"}:
@@ -137,6 +139,8 @@ class RuntimePluginContext(Protocol):
         options: ToolRegistrationOptions | None = None,
     ) -> str: ...
     def unregister_tool(self, registered_name: str) -> bool: ...
+    def register_command(self, command: Command) -> str: ...
+    def unregister_command(self, name: str) -> bool: ...
 
 
 class PluginSetupContext(Protocol):
@@ -148,6 +152,7 @@ class PluginSetupContext(Protocol):
         tool: Tool,
         options: ToolRegistrationOptions | None = None,
     ) -> str: ...
+    def register_command(self, command: Command) -> str: ...
     def add_prompt_fragment(self, stage: PromptFragmentStage, text: str) -> None: ...
 
 

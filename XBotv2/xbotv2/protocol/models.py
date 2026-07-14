@@ -63,18 +63,17 @@ class CommandRequest(WireModel):
     command: str = ""
     args: list[str] | None = None
     raw: str = ""
-    kind: Literal["server", "tool", "skill", "mcp"] = "server"
+    kind: Literal["server", "prompt"] = "server"
 
 
 class CommandInfo(WireModel):
     name: str
     slash: str
-    kind: Literal["client", "server", "tool", "skill", "mcp"]
+    kind: Literal["client", "server", "prompt"]
     description: str
+    usage: str = ""
     examples: list[str] = Field(default_factory=list)
-    parameters: dict[str, str] = Field(default_factory=dict)
-    registered_name: str = ""
-    namespace: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommandListResponse(WireModel):

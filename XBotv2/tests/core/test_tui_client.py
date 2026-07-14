@@ -27,21 +27,21 @@ async def test_clear_dispatch_distinguishes_client_and_server_commands():
 
     class Handler:
         _cmd_clear = AsyncMock()
-        _run_server_command = AsyncMock()
+        _dispatch_remote_command = AsyncMock()
 
     handler = Handler()
     await XBotTextualApp._handle_slash_command(handler, CommandSpec(
-        name="clear", kind="client", description="clear", raw="/clear",
+        name="clear-screen", kind="client", description="clear", raw="/clear-screen",
     ))
     handler._cmd_clear.assert_awaited_once()
-    handler._run_server_command.assert_not_awaited()
+    handler._dispatch_remote_command.assert_not_awaited()
 
     handler._cmd_clear.reset_mock()
     await XBotTextualApp._handle_slash_command(handler, CommandSpec(
         name="clear", kind="server", description="clear history", raw="/clear",
     ))
     handler._cmd_clear.assert_not_awaited()
-    handler._run_server_command.assert_awaited_once()
+    handler._dispatch_remote_command.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_server_command_replaces_tui_history_from_protocol_field():
             raise AssertionError(error)
 
     handler = Handler()
-    await XBotTextualApp._run_server_command(handler, CommandSpec(
+    await XBotTextualApp._dispatch_remote_command(handler, CommandSpec(
         name="undo", kind="server", description="undo", raw="/undo",
     ))
 
@@ -603,7 +603,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
                     return None
 
                 def json(self_inner):
-                    return {"server_name": "xbotv2", "protocol_version": "xbotv2.v1"}
+                    return {"server_name": "xbotv2", "protocol_version": "xbotv2.v2"}
 
             return Resp()
 

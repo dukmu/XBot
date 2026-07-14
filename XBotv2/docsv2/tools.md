@@ -68,7 +68,7 @@ turn; answering the question does not bypass tool authorization.
 Registered tools use one canonical string name:
 
 - builtin core tools keep bare keys such as `shell`;
-- plugin setup tools use keys such as `plugin:skills:skill`;
+- plugin setup tools use keys such as `plugin:goal:goal`;
 - discovered skills use keys such as `skills:global:find-skills`;
 - MCP tools use keys such as `mcp:github:mcp__github__search`.
 
@@ -77,9 +77,13 @@ Canonical names and provider-visible tool names are unique.
 of duplication before changing the registry. Explicit replacement is not part
 of the registration contract; callers must unregister the current owner first.
 
-Command discovery includes the canonical `registered_name` and registration
-`namespace` for tool, skill, and MCP commands. The existing `name` and `slash`
-fields remain display and invocation values.
+Tools are Agent-facing structured capabilities. They are not server commands or
+prompt expansions, and Tool registration has no command metadata. A plugin may
+register a separate human command that reuses its private business methods, but
+the command dispatcher never constructs or executes a Tool call.
+
+`model_visible=False` removes a Tool from provider schemas and model execution
+lookup. It does not create a hidden command surface.
 
 The dispatcher executes a tool batch sequentially. Registration exposes no
 parallel or lock metadata because the runtime has no corresponding guarantee.

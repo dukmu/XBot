@@ -5,8 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from xbotv2.api import (
+    Command,
+    CommandResult,
     ContextComponent,
+    HookAction,
     HookContext,
+    HookDecision,
     HookStage,
     PluginBase,
     PluginManifest,
@@ -18,11 +22,9 @@ from xbotv2.api import (
 )
 
 
-_ACTIONS = {
-    "get", "create", "update", "complete", "block", "pause", "resume", "clear",
-}
 _MAX_TEXT_CHARS = 2_000
 _STATUSES = {"active", "complete", "blocked", "paused"}
+_GOAL_TOOLS = {"create_goal", "get_goal", "update_goal"}
 
 
 class GoalPlugin(PluginBase):
@@ -39,50 +41,46 @@ class GoalPlugin(PluginBase):
             self._add_goal_context,
         )
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
+        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_goal)
         ctx.register_hook(
             HookStage.BEFORE_MAILBOX_DELIVERY,
             self._on_mailbox_delivery,
         )
         ctx.register_tool(
+            Tool.from_function(self.create_goal, name="create_goal"),
+            options=ToolRegistrationOptions(
+                sandbox_mode="host",
+                namespace="plugin:goal",
+            ),
+        )
+        ctx.register_tool(
+            Tool.from_function(self.get_goal, name="get_goal"),
+            options=ToolRegistrationOptions(
+                sandbox_mode="host",
+                namespace="plugin:goal",
+            ),
+        )
+        ctx.register_tool(
             Tool(
-                name="goal",
+                name="update_goal",
                 description=(
-                    "Manage the persistent session goal. Use create to start one, "
-                    "get to inspect it, update to record objective or progress, "
-                    "complete with an execution summary only when all work is "
-                    "finished, block with a blocking summary, resume to reactivate "
-                    "it, pause it, or clear to remove it."
+                    "Finish the active goal. Use complete only when all required "
+                    "work is done, or blocked when progress cannot continue."
                 ),
-                function=self.goal,
+                function=self.update_goal,
                 parameters={
                     "type": "object",
                     "properties": {
-                        "action": {
+                        "status": {
                             "type": "string",
-                            "enum": sorted(_ACTIONS),
-                            "default": "get",
-                            "description": "Goal state transition to perform.",
-                        },
-                        "objective": {
-                            "type": "string",
-                            "description": "Required by create; optional for update only.",
+                            "enum": ["complete", "blocked"],
                         },
                         "summary": {
                             "type": "string",
-                            "description": (
-                                "Progress for create/update; required execution or "
-                                "blocking summary for complete/block."
-                            ),
-                        },
-                        "token_budget": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": (
-                                "Create only, and only when the user explicitly "
-                                "requests a token budget."
-                            ),
+                            "description": "Execution or blocking summary.",
                         },
                     },
+                    "required": ["status", "summary"],
                     "additionalProperties": False,
                 },
             ),
@@ -91,46 +89,69 @@ class GoalPlugin(PluginBase):
                 namespace="plugin:goal",
             ),
         )
+        ctx.register_command(Command(
+            name="goal",
+            description="Set or manage the persistent session goal.",
+            handler=self._goal_command,
+            usage=(
+                "/goal | /goal [--token-budget <tokens>] <objective> | "
+                "/goal pause|resume|clear|complete <summary>|block <summary>"
+            ),
+            examples=(
+                "/goal Stabilize the C/S API",
+                "/goal pause",
+                "/goal complete Implementation, tests, and docs are complete",
+            ),
+        ))
 
-    async def goal(
+    async def create_goal(
         self,
-        action: str = "get",
-        objective: str | None = None,
-        summary: str | None = None,
+        objective: str,
         token_budget: int | None = None,
     ) -> ToolResult:
-        """Read or transition the persistent session goal."""
-        action = action.strip().lower()
-        if action not in _ACTIONS:
+        """Create a persistent goal only when the human explicitly requests one."""
+        return await self._create(objective, None, token_budget)
+
+    async def get_goal(self) -> ToolResult:
+        """Inspect the current persistent goal."""
+        return await self._get()
+
+    async def update_goal(self, status: str, summary: str) -> ToolResult:
+        """Mark the active goal complete or blocked with a final summary."""
+        if status not in {"complete", "blocked"}:
             return ToolResult.failure(
-                "invalid_action",
-                f"Goal action must be one of: {', '.join(sorted(_ACTIONS))}",
+                "invalid_status",
+                "Goal status must be complete or blocked",
             )
+        return await self._finish(
+            "block" if status == "blocked" else "complete",
+            summary,
+        )
+
+    async def _allow_goal(self, ctx: HookContext):
+        if ctx.tool_call is not None and ctx.tool_call.name in _GOAL_TOOLS:
+            return HookDecision(
+                HookAction.ALLOW,
+                "Goal state operations are pre-approved by the Goal plugin",
+            )
+
+    async def _goal_command(self, ctx: Any, raw_args: str) -> CommandResult:
+        action, value, token_budget = _parse_goal_command(raw_args)
         if action == "get":
-            if any(value is not None for value in (objective, summary, token_budget)):
-                return _unexpected_arguments(action)
-            return await self._get()
-        if action == "create":
-            return await self._create(objective, summary, token_budget)
-        if action == "update":
-            if token_budget is not None:
-                return _unexpected_arguments(action)
-            return await self._update(objective, summary)
-        if action in {"complete", "block"}:
-            if objective is not None or token_budget is not None:
-                return _unexpected_arguments(action)
-            return await self._finish(action, summary)
-        if action == "resume":
-            if any(value is not None for value in (objective, summary, token_budget)):
-                return _unexpected_arguments(action)
-            return await self._resume()
-        if action == "pause":
-            if any(value is not None for value in (objective, summary, token_budget)):
-                return _unexpected_arguments(action)
-            return await self._pause()
-        if any(value is not None for value in (objective, summary, token_budget)):
-            return _unexpected_arguments(action)
-        return await self._clear()
+            result = await self._get()
+        elif action == "set":
+            result = await self._set(value, token_budget)
+        elif action == "pause":
+            result = await self._pause()
+        elif action == "resume":
+            result = await self._resume()
+        elif action == "clear":
+            result = await self._clear()
+        else:
+            result = await self._finish(action, value)
+        if result.status == "success" and action in {"set", "resume"}:
+            await self.start(ctx.enqueue_general)
+        return _command_result(result)
 
     async def _get(self) -> ToolResult:
         goal = await self._read_goal()
@@ -171,30 +192,27 @@ class GoalPlugin(PluginBase):
         await self.store.set("goal", goal)
         return ToolResult.success("Created the active goal.", data={"goal": goal})
 
-    async def _update(
+    async def _set(
         self,
         objective: str | None,
-        summary: str | None,
+        token_budget: int | None,
     ) -> ToolResult:
-        if objective is None and summary is None:
+        error = _text_error("objective", objective)
+        if error is not None:
+            return error
+        if token_budget is not None and token_budget < 1:
             return ToolResult.failure(
-                "invalid_update",
-                "Goal update requires an objective or progress summary",
+                "invalid_token_budget",
+                "Goal token budget must be a positive integer",
             )
-        for field, value in (("objective", objective), ("summary", summary)):
-            if value is not None:
-                error = _text_error(field, value)
-                if error is not None:
-                    return error
-        goal = await self._active_goal()
-        if goal is None:
-            return _no_active_goal()
-        if objective is not None:
-            goal["objective"] = objective.strip()
-        if summary is not None:
-            goal["summary"] = summary.strip()
+        goal = {
+            "objective": objective.strip(),
+            "status": "active",
+            "summary": "",
+            "token_budget": token_budget,
+        }
         await self.store.set("goal", goal)
-        return ToolResult.success("Updated the active goal.", data={"goal": goal})
+        return ToolResult.success("Set the active goal.", data={"goal": goal})
 
     async def _finish(self, action: str, summary: str | None) -> ToolResult:
         error = _text_error("summary", summary)
@@ -365,9 +383,9 @@ def _goal_context(goal: dict[str, Any]) -> str:
         lines.append(f"Execution summary: {goal['summary']}")
     if goal["status"] == "active":
         lines.append(
-            "Persist with this objective. Call goal action=complete with a concise "
-            "execution summary only after all required work is finished; use "
-            "action=block only when progress cannot continue. After the transition, "
+            "Persist with this objective. Call update_goal with status=complete and "
+            "a concise execution summary only after all required work is finished; "
+            "use status=blocked only when progress cannot continue. After the transition, "
             "give the human a concise final summary."
         )
     elif goal["status"] == "complete":
@@ -391,8 +409,37 @@ def _no_active_goal() -> ToolResult:
     return ToolResult.failure("no_active_goal", "No active goal exists")
 
 
-def _unexpected_arguments(action: str) -> ToolResult:
-    return ToolResult.failure(
-        "invalid_arguments",
-        f"Goal action {action!r} received unsupported arguments",
+def _parse_goal_command(raw_args: str) -> tuple[str, str | None, int | None]:
+    text = raw_args.strip()
+    if not text or text in {"get", "status"}:
+        return "get", None, None
+    if text in {"pause", "resume", "clear"}:
+        return text, None, None
+    for action in ("complete", "block"):
+        if text == action:
+            return action, None, None
+        prefix = f"{action} "
+        if text.startswith(prefix):
+            return action, text[len(prefix):].strip(), None
+
+    token_budget = None
+    if text.startswith("--token-budget"):
+        budget_text, separator, objective = text.removeprefix(
+            "--token-budget"
+        ).strip().partition(" ")
+        if not separator:
+            return "set", "", 0
+        try:
+            token_budget = int(budget_text)
+        except ValueError:
+            token_budget = 0
+        text = objective.strip()
+    return "set", text, token_budget
+
+
+def _command_result(result: ToolResult) -> CommandResult:
+    return CommandResult(
+        message=result.content,
+        status="ok" if result.status == "success" else "error",
+        data=result.data,
     )

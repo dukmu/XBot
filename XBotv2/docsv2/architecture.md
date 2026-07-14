@@ -119,24 +119,29 @@ or duplicate goal ownership.
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
-Persists one session objective and exposes one `goal` state-machine Tool, which
-the shared ToolRegistry inventory discovers as `/goal`. Active goals schedule their next turn through
-the Core mailbox until completed, blocked, or paused. Terminal context retains
-the execution summary and prevents repeated work. It does not own todo steps.
+Persists one session objective. Humans manage it through `/goal`; the Agent uses
+`create_goal`, `get_goal`, and `update_goal`. Both surfaces reuse plugin-owned
+state transitions but have separate dispatch paths. Active goals schedule their
+next turn through the Core mailbox until completed, blocked, or paused. Goal
+preapproves its basic Agent Tools through `BEFORE_TOOL_CALL`; Core contains no
+Goal-specific permission or command logic. It does not own todo steps.
 
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
 Discovers SKILL.md files (agentskills.io standard) from:
 `.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global `~/.`).
 
-- Registers `skill` via the stable `Tool` API (namespace `plugin:skills:skill`)
-- Registers discovered skills as ToolRegistry entries (namespace `skills:<scope>:<name>`)
+- Registers each discovered skill once through the stable `Tool` API
+  (namespace `skills:<scope>:<name>`)
 - BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
 - Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
-- active-skill `allowed-tools` / `disallowed-tools` restrictions, applied before
-  the authoritative core permission check
+- standard `allowed-tools` preapproval and namespaced
+  `xbotv2-disallowed-tools` restrictions, applied before the authoritative core
+  permission check
 - `disable-model-invocation: true` for skills available only through explicit
   `/skill-name` user invocation
+- `user-invocable: false` for model-only skills and a bounded provider metadata
+  budget for Skill descriptions
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 
@@ -153,20 +158,12 @@ Connects through the official MCP SDK using stdio or Streamable HTTP.
 - Exposes resources, prompts, and completion through one stable bridge tool per
   negotiated feature instead of dynamically registering every remote item.
 
-## Namespace Protocol
+## Namespaces And Commands
 
-Tools use canonical registered names:
-
-| Source | Name | Example | Slash |
-|---|---|---|---|
-| `builtin` | `core` | `shell` | `/shell` |
-| `plugin` | plugin name | `plugin:skills:skill` | `/skill` |
-| `skills` | scope/path | `skills:global:find-skills` | `/find-skills` |
-| `mcp` | server name | `mcp:github:search` | `/search` |
-
-The callable name is the slash command display name and may be ambiguous.
-Command discovery exposes `registered_name`; non-core names use
-`source:owner:name`, while built-in core names remain bare.
+Tool registry identities remain namespaced internally (`plugin:`, `skills:`,
+and `mcp:`) while provider-visible Tool names stay unique. Slash commands use a
+separate human-facing registry and are discovered by command name, usage, kind,
+and description. A Tool namespace is never interpreted as a slash-command path.
 
 ## Transport
 
@@ -196,11 +193,12 @@ turn coroutines are connection-owned and are never restored.
 
 ## Unified Command System
 
-`CommandSpec` with `kind` field (`client`, `server`, `skill`, `tool`, `mcp`).
-TUI fetches commands from `GET /sessions/{id}/commands` which enumerates
-ToolRegistry entries. `/help [name]` shows detailed help. Server commands use
-the command endpoint; Tool, Skill, and MCP entries remain Agent turns and rely
-on their existing ToolRegistry registration for execution.
+Command metadata uses `client`, `server`, and `prompt` kinds. The TUI owns
+client commands, fetches the session command catalog from the server, executes
+server commands through the command endpoint, and submits prompt expansions
+through the message endpoint. Plugins register human commands and Agent Tools
+as separate capabilities that may reuse private business methods. Ordinary
+model and MCP Tools do not become slash commands.
 
 ## Persistence
 

@@ -221,12 +221,11 @@ errors without changing stored state. See [TodoList plugin](todolist.md).
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
-Maintains one durable session objective through a single `goal` state-machine
-Tool, discovered as `/goal` through the shared registry. Active goals continue through Core
-mailbox turns; ESC pauses them and `/goal resume` reactivates them. Active,
-paused, complete, and blocked states append concise public context; terminal
-context prevents repeated work and remains until resume, replacement, or clear. See
-[Goal plugin](goal.md).
+Maintains one durable session objective. `/goal` is the human control surface;
+`create_goal`, `get_goal`, and `update_goal` are Agent Tools. Active goals
+continue through Core mailbox turns; ESC pauses them and `/goal resume`
+reactivates them. Terminal context remains until resume, replacement, or clear.
+See [Goal plugin](goal.md).
 
 ### SkillsPlugin (`builtin_plugins/skills/`)
 
@@ -248,32 +247,35 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `BEFORE_TOOL_CALL`: enforce active-skill tool restrictions before core
   permission checks
 
-**Tools:**
-- `skill` (namespace `plugin:skills:skill`): load a skill by name
-- Each model-invocable skill is registered as a tool (namespace
-  `skills:<scope>:<name>`) with its SKILL.md description in the provider schema.
-  Generic, dedicated, and explicit `/skill-name` invocation all preprocess and
-  activate the same per-turn skill state.
+**Tools and prompt commands:**
+- A model-invocable skill is registered as a namespaced Tool with its SKILL.md
+  description in the provider schema.
+- A user-invocable skill is separately registered as a prompt command.
+  `/skill-name` is expanded before it enters history and never executes the
+  skill Tool. There is no generic `skill` Tool.
 
 **Features:**
 - Repeated initialization on the same loaded plugin is idempotent; partial
   dynamic registration failure rolls back that discovery attempt.
 - Shell injection: `` !`command` `` placeholders run only through the enabled
   session sandbox. There is no host subprocess fallback.
-- `allowed-tools` is an additional allowlist while the skill is active;
-  unmatched calls are denied. `disallowed-tools` takes precedence. These fields
-  restrict calls and never bypass core permission policy. Parameter patterns
-  currently use the real `shell(command)` form, for example
+- Standard `allowed-tools` entries preapprove matching calls that would
+  otherwise ask. Unmatched calls continue through normal core permission
+  policy, and a core `deny` remains authoritative. XBot-specific negative rules
+  use the namespaced `xbotv2-disallowed-tools` field rather than assigning new
+  semantics to a foreign `disallowed-tools` key. Parameter patterns use the real
+  `shell(command)` form, for example
   `shell(git *)`; compatibility aliases such as `Bash` are not provided.
   Patterns must be non-empty strings with balanced parameter parentheses;
   malformed permission metadata causes the skill to be ignored during
   discovery, and scope updates are atomic.
-- `disable-model-invocation: true` keeps a skill out of the model tool list and
-  blocks the generic `skill` tool from loading it; explicit `/skill-name`
-  invocation remains available. The value must be a YAML boolean.
-- Generic and dedicated skill tools return `ToolResult`. Successful loads
-  expose the skill name and scope in `data`; unknown and manual-only requests
-  use stable structured errors instead of successful `Error:` text.
+- `disable-model-invocation: true` keeps a skill out of the model tool list;
+  explicit invocation remains available unless `user-invocable: false`. Both
+  values must be YAML booleans.
+- Provider-visible Skill name and description metadata is capped at two percent
+  of the configured context window (estimated at four characters per token),
+  with an absolute 8,000-character ceiling. Non-Skill Tool schemas are never
+  removed by this budget.
 
 ### MCPPlugin (`builtin_plugins/mcp/`)
 
@@ -350,14 +352,15 @@ contract and remaining behavior gaps.
 
 ## Tool Namespace Convention
 
-Tools use one canonical registered name:
+Tools use one canonical registered name. These are Tool identities, not slash
+commands:
 
-| Source | Name | Key | Slash |
-|---|---|---|---|
-| `builtin` | `core` | `shell` | `/shell` |
-| `plugin` | plugin-name | `plugin:skills:skill` | `/skill` |
-| `skills` | scope | `skills:global:find-skills` | `/find-skills` |
-| `mcp` | server-name | `mcp:github:mcp__github__search` | `/mcp__github__search` |
+| Source | Name | Key |
+|---|---|---|
+| `builtin` | `core` | `shell` |
+| `plugin` | plugin-name | `plugin:goal:create_goal` |
+| `skills` | scope | `skills:global:find-skills` |
+| `mcp` | server-name | `mcp:github:mcp__github__search` |
 
 Plugins should register tools through setup or another recorded plugin
 capability:

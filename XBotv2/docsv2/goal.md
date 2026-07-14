@@ -13,51 +13,61 @@ A session has at most one Goal record:
 | `objective` | Required objective, limited to 2,000 characters. |
 | `status` | `active`, `paused`, `complete`, or `blocked`. |
 | `summary` | Completion or blocking summary, retained across resume. |
-| `token_budget` | Optional positive budget supplied when the Goal is created. |
+| `token_budget` | Optional positive budget supplied when the Goal is set. |
 
-`token_budget` is currently persisted and returned as declared metadata. Usage
-and remaining-budget enforcement require provider usage accounting and are not
-implemented by this plugin yet.
+Token-budget accounting is not implemented yet. The value is persisted metadata,
+not a claim that execution will stop at the declared limit.
 
-Completion does not delete the Goal. The objective and execution summary remain
-available until `clear` or replacement by a new Goal. `resume` changes a
-complete or blocked Goal back to active without discarding its prior summary.
+Completion and blocking retain the Goal and summary until the human clears or
+replaces it. Resume changes a terminal or paused Goal back to active.
 
-## Tool
+## Human Command
 
-The model sees one `goal` tool instead of separate lifecycle tools. Its `action`
-is one of `get`, `create`, `update`, `complete`, `block`, `resume`, or `clear`.
-`create` requires `objective` and may set an initial progress `summary`.
-`update` changes `objective`, progress `summary`, or both. `complete` and
-`block` require a final `summary`. `pause` stops automatic continuation without
-discarding state. Only `create` accepts `token_budget`.
+`/goal` is a human-facing server command with compact, task-oriented syntax:
 
-Goal is an internal session-state tool and is allowed by the runtime baseline.
-An explicit deny rule still takes precedence.
+```text
+/goal
+/goal Stabilize the C/S API
+/goal --token-budget 8000 Stabilize the C/S API
+/goal pause
+/goal resume
+/goal complete Implementation, tests, and docs are complete
+/goal block Waiting for human review
+/goal clear
+```
 
-## Command Discovery
+The command handler belongs to the plugin and calls the same private state
+transitions as its Tools. It does not construct a Tool call, enter Tool
+permissions, or append a Tool message to model history. Setting or resuming an
+active Goal schedules its next mailbox turn.
 
-The registered Tool is exposed as `/goal` by the shared ToolRegistry command
-inventory. Goal does not register a second command handler or duplicate its
-schema in the protocol layer.
+## Agent Tools
 
-## Context And Persistence
+The model receives structured Tools suited to JSON-schema invocation:
 
-Every successful transition is immediately persisted through `PluginStore`.
-The current Goal is rebuilt as a non-persisted `ContextComponent` during
+- `create_goal(objective, token_budget?)`
+- `get_goal()`
+- `update_goal(status, summary)`, where status is `complete` or `blocked`
+
+Pause, resume, clear, and objective replacement remain human controls. The
+plugin returns `HookDecision.ALLOW` for its three basic state Tools, avoiding an
+`ask` prompt. An explicit core permission denial still wins.
+
+After `update_goal`, the normal Agent loop continues so the model can summarize
+the result to the human. The Tool result and terminal Goal context remain
+available during that final model call.
+
+## Continuation And Persistence
+
+Every successful transition persists immediately through `PluginStore`. The
+current Goal is rebuilt as a non-persisted `ContextComponent` during
 `AFTER_CONTEXT_COMPONENTS_BUILD`.
 
-Active context tells the model to persist until the objective is genuinely
-finished and to include a concise execution summary when completing or
-blocking. Complete context remains visible so the provider can give the human a
-final summary after reading the tool result, while explicitly prohibiting it
-from restarting the finished work. This avoids the previous failure where
-completion removed the context during the same tool loop and the provider
-restarted the original request.
+At `ON_TURN_END`, an active Goal places at most one runtime-only `general`
+message in the Core mailbox. Delivery clears the pending marker before the next
+turn. ESC pauses the Goal and schedules no successor. `/goal resume` activates
+it and schedules continuation again. Mailbox entries are not restored by
+session resume.
 
-Goal does not infer objectives from ordinary conversation or create TodoList
-items. While active, `ON_TURN_END` places one `general` continuation in the Core
-mailbox. Delivery clears the pending marker before the next turn, so one turn
-can schedule at most one successor. ESC records `paused` and schedules no
-successor; `/goal resume` makes the Goal active and starts continuation again.
-Mailbox entries are runtime-only and are not recreated by session resume.
+Goal does not infer objectives from ordinary conversation and does not create
+TodoList items.

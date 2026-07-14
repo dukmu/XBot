@@ -37,6 +37,7 @@ class SetupContext:
         self.hooks = {}
         self.tool = None
         self.options = None
+        self.commands = {}
 
     def register_hook(self, stage, callback):
         self.hooks[stage] = callback
@@ -45,6 +46,10 @@ class SetupContext:
         self.tool = tool
         self.options = options
         return "plugin:compact:compact"
+
+    def register_command(self, command):
+        self.commands[command.name] = command
+        return command.name
 
 
 def history(turns: int, *, content: str = "message") -> list[Message]:

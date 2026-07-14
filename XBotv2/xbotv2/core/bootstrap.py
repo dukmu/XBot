@@ -162,10 +162,6 @@ async def bootstrap(
         workspace_root=workspace_root,
         session_root=state_store.root,
     )
-    agent_config.permissions = merge_permission_config(
-        agent_config.permissions,
-        {"allow": [{"tool": "goal"}]},
-    )
     permissions = PermissionSystem(agent_config.permissions)
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate

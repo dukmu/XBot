@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -348,7 +349,7 @@ class XBotTextualApp(App[None]):
         if spec.name == "exit":
             self.exit()
             return
-        if spec.name == "clear" and spec.kind == "client":
+        if spec.name == "clear-screen" and spec.kind == "client":
             await self._cmd_clear()
             return
         if spec.name == "help":
@@ -357,18 +358,22 @@ class XBotTextualApp(App[None]):
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
-        await self._run_server_command(spec)
+        await self._dispatch_remote_command(spec)
 
-    async def _run_server_command(self, spec: CommandSpec) -> None:
+    async def _dispatch_remote_command(self, spec: CommandSpec) -> None:
         if not self._connected:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
-        if spec.kind not in ("server",):
+        if spec.kind == "prompt":
             self.state.append_message("user", spec.raw)
             await self._render_new_transcript_entries()
             await self._collect_response(spec.raw)
             return
-        parts = [part for part in spec.args.split() if part]
+        try:
+            parts = shlex.split(spec.args)
+        except ValueError as exc:
+            await self._append_local_notice(f"/{spec.name}", str(exc))
+            return
         try:
             result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
         except Exception as exc:
@@ -417,11 +422,19 @@ class XBotTextualApp(App[None]):
             ]
             if spec.parameters:
                 lines.append("Parameters:")
-                for param, desc in spec.parameters.items():
-                    lines.append(f"  {param}: {desc}")
+                parameters = spec.parameters
+                if parameters.get("type") == "object":
+                    parameters = parameters.get("properties", {})
+                for param, details in parameters.items():
+                    description = (
+                        details.get("description", details.get("type", ""))
+                        if isinstance(details, dict)
+                        else details
+                    )
+                    lines.append(f"  {param}: {description}")
                 lines.append("")
-            if spec.raw:
-                lines.append(f"Usage: {spec.raw} [args]")
+            if spec.usage or spec.raw:
+                lines.append(f"Usage: {spec.usage or spec.raw}")
             await self._append_local_notice("Help", "\n".join(lines))
             return
         body = "Slash commands:\n" + "\n".join(known_command_labels())

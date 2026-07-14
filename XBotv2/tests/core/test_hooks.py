@@ -104,12 +104,12 @@ class TestHookExecution:
 
     @pytest.mark.asyncio
     async def test_short_circuit_loop_hook(self, hook_manager, hook_context):
-        """Loop hooks short-circuit on first truthy return."""
+        """Loop hooks short-circuit on the first valid result."""
         order = []
 
         async def hook1(ctx):
             order.append(1)
-            return "short_circuit"
+            return HookDecision(HookAction.STOP, "test")
 
         async def hook2(ctx):
             order.append(2)  # Should NOT run
@@ -118,7 +118,7 @@ class TestHookExecution:
         hook_manager.register(HookStage.BEFORE_AGENT, hook2)
 
         result = await hook_manager.run(HookStage.BEFORE_AGENT, hook_context)
-        assert result == "short_circuit"
+        assert result == HookDecision(HookAction.STOP, "test")
         assert order == [1]  # hook2 never ran
 
     @pytest.mark.asyncio
@@ -150,6 +150,28 @@ class TestHookExecution:
         assert await hook_manager.run(HookStage.BEFORE_TOOL_CALL, hook_context) is decision
 
     @pytest.mark.asyncio
+    async def test_allow_does_not_skip_later_tool_guards(
+        self, hook_manager, hook_context
+    ):
+        order = []
+
+        async def allow_hook(ctx):
+            order.append("allow")
+            return HookDecision(HookAction.ALLOW)
+
+        denied = HookDecision(HookAction.DENY, "later policy")
+
+        async def deny_hook(ctx):
+            order.append("deny")
+            return denied
+
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, allow_hook)
+        hook_manager.register(HookStage.BEFORE_TOOL_CALL, deny_hook)
+
+        assert await hook_manager.run(HookStage.BEFORE_TOOL_CALL, hook_context) is denied
+        assert order == ["allow", "deny"]
+
+    @pytest.mark.asyncio
     async def test_reused_context_clears_previous_short_circuit_result(
         self,
         hook_manager,
@@ -175,23 +197,40 @@ class TestHookExecution:
         assert hook_context.short_circuit_result is None
 
     @pytest.mark.asyncio
-    async def test_no_short_circuit_for_lifecycle_hook(self, hook_manager, hook_context):
-        """Session/turn/message hooks run ALL callbacks regardless of return."""
-        order = []
-
-        async def hook1(ctx):
-            order.append(1)
+    async def test_observer_rejects_non_none_return(self, hook_manager, hook_context):
+        async def invalid_hook(ctx):
             return "ignored"
 
-        async def hook2(ctx):
-            order.append(2)
+        hook_manager.register(HookStage.ON_SESSION_START, invalid_hook)
 
-        hook_manager.register(HookStage.ON_SESSION_START, hook1)
-        hook_manager.register(HookStage.ON_SESSION_START, hook2)
+        with pytest.raises(TypeError, match="must return None"):
+            await hook_manager.run(
+                HookStage.ON_SESSION_START, hook_context, short_circuit=False
+            )
 
-        hook_context.stage = HookStage.ON_SESSION_START
-        await hook_manager.run(HookStage.ON_SESSION_START, hook_context, short_circuit=False)
-        assert order == [1, 2]
+    @pytest.mark.asyncio
+    async def test_short_circuit_rejects_unknown_result_keys(
+        self, hook_manager, hook_context
+    ):
+        async def invalid_hook(ctx):
+            return {"typo": True}
+
+        hook_manager.register(HookStage.BEFORE_AGENT, invalid_hook)
+
+        with pytest.raises(TypeError, match="unsupported keys: typo"):
+            await hook_manager.run(HookStage.BEFORE_AGENT, hook_context)
+
+    @pytest.mark.asyncio
+    async def test_allow_is_only_valid_for_tool_guard(
+        self, hook_manager, hook_context
+    ):
+        async def invalid_hook(ctx):
+            return HookDecision(HookAction.ALLOW)
+
+        hook_manager.register(HookStage.BEFORE_AGENT, invalid_hook)
+
+        with pytest.raises(TypeError, match="only valid at before_tool_call"):
+            await hook_manager.run(HookStage.BEFORE_AGENT, hook_context)
 
     @pytest.mark.asyncio
     async def test_hook_error_in_lifecycle_does_not_stop_others(self, hook_manager, hook_context):

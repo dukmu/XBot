@@ -167,15 +167,12 @@ class TestQuery:
             "skills:global:tool_b",
         ]
 
-    def test_command_discovery_exposes_tool_identity(self, tool_registry):
-        from xbotv2.protocol.http_server import _tool_commands
+    def test_model_hidden_tool_requires_explicit_lookup(self, tool_registry):
+        tool_registry.register(tool_a, model_visible=False)
 
-        tool_registry.register(tool_a, namespace="skills:global")
-
-        command = _tool_commands(tool_registry)[0]
-
-        assert command["registered_name"] == "skills:global:tool_a"
-        assert command["namespace"] == "skills:global"
+        assert tool_registry.get("tool_a") is None
+        assert tool_registry.get_registered("tool_a") is not None
+        assert tool_registry.get_all() == []
 
     def test_get_all(self, tool_registry):
         """Get all tool instances."""

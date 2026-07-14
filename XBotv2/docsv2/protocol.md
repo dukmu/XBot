@@ -46,7 +46,7 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 | POST | `/sessions/{id}/messages` | Send message, receive SSE stream |
 | GET | `/sessions/{id}/events` | Receive server-initiated turn events |
 | POST | `/sessions/{id}/interrupt` | Cancel running turn |
-| GET | `/sessions/{id}/commands` | List available commands (includes skills/tools) |
+| GET | `/sessions/{id}/commands` | List server commands and prompt expansions |
 | POST | `/sessions/{id}/commands` | Execute a server-owned command |
 | POST | `/sessions/{id}/interactions/permission-response` | Submit permission decision |
 | POST | `/sessions/{id}/interactions/user-input` | Submit user input answer |
@@ -61,11 +61,10 @@ Session history commands use the same command endpoint:
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
   session id without copying a live turn or interaction.
 
-The Goal plugin registers one `goal` Tool. Session command discovery exposes it
-as `/goal` through the same ToolRegistry inventory used for skills and MCP.
-Submitting `/goal ...` is still a normal Agent turn: the model invokes the
-registered Tool through the ordinary tool runtime. There is no Goal-specific
-protocol handler, argument parser, or second execution path.
+The Goal plugin separately registers the human `/goal` command and the Agent
+Tools `create_goal`, `get_goal`, and `update_goal`. The command endpoint invokes
+the plugin's command handler directly; it never translates slash text into a
+Tool call.
 
 `CommandResult.history` is normally `null`. `clear` and `undo` set it to the
 resulting display history so clients can rebuild their transcript from the same
@@ -96,23 +95,24 @@ drops queued messages, and `resume` starts with an empty mailbox. The append-onl
 ```json
 [
   {"name": "status", "kind": "server", "description": "Server status"},
-  {"name": "shell", "kind": "tool", "description": "Execute shell"},
-  {"name": "find-skills", "kind": "skill", "description": "Find skills"},
-  {"name": "search", "kind": "mcp", "description": "MCP search"}
+  {"name": "goal", "kind": "server", "description": "Manage the session goal"},
+  {"name": "find-skills", "kind": "prompt", "description": "Find skills"}
 ]
 ```
 
-Kinds: `client` (local TUI only), `server`, `skill`, `tool`, `mcp`.
+Kinds: `client` (local TUI only), `server`, and `prompt`.
 
-Each server command is one registry entry containing both discovery metadata
-and its async handler. The dispatcher normalizes the name and performs one
-lookup; extending the registry does not require a second parsing branch.
+Each server command registry entry contains human-facing discovery metadata and
+an async handler that receives the unparsed argument text. Human syntax belongs
+to that command's domain; the protocol does not derive a CLI from JSON Schema.
+Server commands execute deterministically outside model history, Tool
+permissions, sandboxing, Tool Hooks, and Tool result caching.
 
-Session command discovery includes server commands and registered tools. Only
-`kind: server` entries execute through the command endpoint. Tool, Skill, and
-MCP slash entries enter the Agent as user input; the Agent then invokes their
-existing ToolRegistry entry through the normal permission, sandbox, and Hook
-pipeline. Discovery is not a second tool invocation protocol.
+A `prompt` entry has metadata but no command handler. The client submits its
+original slash text through the message endpoint, where the owning plugin
+expands it before the accepted user message enters history. Agent Tools keep
+structured JSON-schema inputs and use the Tool runtime. Ordinary Tools and MCP
+Tools are not slash commands and are not returned by command discovery.
 
 ## Stream Events
 
@@ -120,7 +120,7 @@ Every SSE `data:` payload is a `ServerEvent` envelope:
 
 ```json
 {
-  "protocol_version": "xbotv2.v1",
+  "protocol_version": "xbotv2.v2",
   "session_id": "session-1",
   "thread_id": "agent",
   "request_id": "client-request-1",

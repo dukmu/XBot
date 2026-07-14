@@ -174,6 +174,21 @@ def provider_tool_schema(tool: Any) -> Any:
     return tool
 
 
+def tool_parameters_schema(tool: Any) -> dict[str, Any]:
+    """Return one JSON Schema for XBot and compatible external tools."""
+    if isinstance(tool, Tool):
+        return tool.parameters
+    args_schema = getattr(tool, "args_schema", None)
+    if hasattr(args_schema, "model_json_schema"):
+        return args_schema.model_json_schema()
+    if isinstance(args_schema, dict):
+        return args_schema
+    properties = getattr(tool, "args", None)
+    if isinstance(properties, dict):
+        return {"type": "object", "properties": properties}
+    return {"type": "object", "properties": {}}
+
+
 def _parameters_schema(signature: inspect.Signature) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -219,5 +234,6 @@ __all__ = [
     "ToolCallDelta",
     "ToolError",
     "ToolResult",
+    "tool_parameters_schema",
     "provider_tool_schema",
 ]

@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from xbotv2.api import (
+    Command,
+    CommandResult,
+    HookAction,
     HookContext,
+    HookDecision,
     HookStage,
     Message,
     PluginBase,
@@ -48,6 +52,7 @@ class CompactPlugin(PluginBase):
 
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.BEFORE_CONTEXT, self._on_before_context)
+        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
             """Request conversation compaction before the next model call."""
@@ -64,6 +69,33 @@ class CompactPlugin(PluginBase):
                 namespace="plugin:compact",
             ),
         )
+        ctx.register_command(Command(
+            name="compact",
+            description="Compact conversation history before the next model call.",
+            handler=self._compact_command,
+            usage="/compact",
+            examples=("/compact",),
+        ))
+
+    async def _compact_command(self, _ctx: Any, raw_args: str) -> CommandResult:
+        if raw_args.strip():
+            return CommandResult(
+                "Usage: /compact",
+                status="error",
+                data={"requested": False},
+            )
+        self._manual_requested = True
+        return CommandResult(
+            "Conversation compaction requested.",
+            data={"requested": True},
+        )
+
+    async def _allow_compact(self, ctx: HookContext):
+        if ctx.tool_call is not None and ctx.tool_call.name == "compact":
+            return HookDecision(
+                HookAction.ALLOW,
+                "Compaction requests are pre-approved by the Compact plugin",
+            )
 
     async def _on_before_context(self, ctx: HookContext):
         messages = list(ctx.state.get("messages") or [])

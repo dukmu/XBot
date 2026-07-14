@@ -5,11 +5,17 @@ Hooks are synchronous-in-order asynchronous callbacks registered through
 
 Hook stages have three contracts:
 
-- **Observer** stages ignore return values and run every callback.
+- **Observer** stages must return `None` and run every callback.
 - **Transform** stages return a documented dictionary such as
   `{"context_messages": messages}`.
 - **Guard** stages return `HookDecision`. `CONTINUE` runs the next guard;
-  `DENY` or `STOP` ends the stage with an explicit reason.
+  `DENY` or `STOP` ends the stage with an explicit reason. `ALLOW` is valid only
+  at `BEFORE_TOOL_CALL`: it records preapproval but still runs later guards, so
+  a later Hook or the core permission policy can deny the call.
+
+Transform dictionaries are validated against the documented keys for their
+stage. Arbitrary values, empty dictionaries, unknown keys, and control-flow
+decisions from observer stages are contract errors.
 
 Lifecycle and persistence stages marked strict run every callback and then raise
 an `ExceptionGroup` containing failures. Other observer failures are logged.
@@ -47,9 +53,9 @@ documented stage return dictionary when replacing messages, tools, or the LLM.
 
 `AFTER_CONTEXT_COMPONENTS_BUILD` exposes
 `ctx.context_components: list[ContextComponent]`. Each component is immutable
-and records its role, content, source, and prompt stage. Observer return values
-remain ignored, but the Hook may replace `ctx.context_components` with a new
-list. Every entry must be a public `ContextComponent`; invalid replacements
+and records its role, content, source, and prompt stage. Observer Hooks return
+`None`, but the Hook may replace `ctx.context_components` with a new list. Every
+entry must be a public `ContextComponent`; invalid replacements
 fail before conversion to provider messages.
 
 The complete current stage enum is exported as `xbotv2.api.HookStage`. Hook

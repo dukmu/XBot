@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -286,8 +287,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/sessions/{session_id}/commands")
     async def session_commands(session_id: str) -> CommandListResponse:
         ctx = await manager.get(session_id)
+        loader = ctx.engine.plugin_loader
         return CommandListResponse(
-            commands=list_commands(extra=_tool_commands(ctx.engine.tool_registry))
+            commands=list_commands(extra=loader.commands if loader is not None else ())
         )
 
     @app.post("/sessions/{session_id}/commands")
@@ -297,15 +299,40 @@ def _register_routes(app: FastAPI) -> None:
         command = payload.command.strip().removeprefix("/")
         args = payload.args
         if args is None:
-            parts = raw.split()
+            try:
+                parts = shlex.split(raw)
+            except ValueError as exc:
+                raise HttpServerError(
+                    "invalid_request",
+                    f"Invalid command syntax: {exc}",
+                    status=400,
+                ) from exc
             if not command and parts:
                 command = parts[0].removeprefix("/")
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
-        return CommandResponse.model_validate(
-            await execute_command(ctx, command, args, kind=payload.kind)
-        )
+        raw_args = raw.strip()
+        if raw_args.startswith("/"):
+            _, _, raw_args = raw_args.partition(" ")
+        elif not raw_args:
+            raw_args = " ".join(args)
+        try:
+            result = await execute_command(
+                ctx,
+                command,
+                args,
+                kind=payload.kind,
+                raw_args=raw_args,
+            )
+        except SessionBusy as exc:
+            raise HttpServerError(
+                "session_busy",
+                str(exc),
+                status=409,
+                retryable=True,
+            ) from exc
+        return CommandResponse.model_validate(result)
 
     @app.post("/sessions/{session_id}/messages")
     async def post_message(session_id: str, payload: MessageRequest) -> Response:
@@ -564,34 +591,6 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
             "status": str(getattr(message, "status", "") or ""),
         })
     return history
-
-def _tool_commands(reg: Any) -> list[dict[str, Any]]:
-    result = []
-    for entry in reg.registered_entries():
-        ns = entry.namespace
-        kind = _ns_kind(ns)
-        display = entry.tool.name
-        desc = getattr(entry.tool, "description", "") or display
-        result.append(
-            {
-                "name": display,
-                "slash": f"/{display}",
-                "kind": kind,
-                "description": desc,
-                "registered_name": entry.registered_name,
-                "namespace": ns,
-            }
-        )
-    return result
-
-
-def _ns_kind(ns: str) -> str:
-    if ns.startswith("skills:"):
-        return "skill"
-    if ns.startswith("mcp:"):
-        return "mcp"
-    return "tool"
-
 
 async def _resolve_interaction(
     *,

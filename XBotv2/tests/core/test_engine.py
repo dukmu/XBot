@@ -561,10 +561,10 @@ class TestEngineHooks:
             HookStage.BEFORE_MODEL_REQUEST,
         ],
     )
-    async def test_unstructured_guard_short_circuit_emits_error(
+    async def test_invalid_transform_return_emits_contract_error(
         self, state_store, temp_workspace, stage
     ):
-        """Guard hooks cannot accidentally short-circuit and still call the provider."""
+        """Invalid transform returns fail before the provider is called."""
         llm = MockLLM(responses=[{"content": "Should not be called"}])
         registry = ToolRegistry()
 
@@ -592,8 +592,9 @@ class TestEngineHooks:
             "error",
             "turn_finished",
         ]
-        assert events[1]["data"]["code"] == "hook_short_circuit_rejected"
-        assert events[1]["data"]["stage"] == stage.value
+        assert events[1]["data"]["code"] == "engine_error"
+        assert events[1]["data"]["details"]["exception_type"] == "TypeError"
+        assert stage.value in events[1]["data"]["message"]
         assert llm.call_count == 0
 
     @pytest.mark.asyncio
@@ -632,10 +633,10 @@ class TestEngineHooks:
         assert engine.messages[0].content == "rewritten"
 
     @pytest.mark.asyncio
-    async def test_user_message_accept_short_circuit_emits_error(
+    async def test_user_message_accept_invalid_return_emits_contract_error(
         self, state_store, temp_workspace
     ):
-        """Input-intake hooks cannot silently leave protocol clients waiting."""
+        """Invalid intake Hook returns are reported without accepting input."""
         llm = MockLLM(responses=[{"content": "should not run"}])
         registry = ToolRegistry()
 
@@ -658,15 +659,11 @@ class TestEngineHooks:
 
         events = [e async for e in engine.run_turn("blocked")]
 
-        assert events == [
-            {
-                "type": "error",
-                "data": {
-                    "code": "user_message_rejected",
-                    "message": "User message was rejected before entering history.",
-                },
-            }
-        ]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert events[0]["data"]["code"] == "engine_error"
+        assert events[0]["data"]["details"]["exception_type"] == "TypeError"
+        assert "before_user_message_accept" in events[0]["data"]["message"]
         assert engine.turn_count == 0
         assert engine.messages == []
         assert llm.call_count == 0
@@ -1784,7 +1781,6 @@ class TestEngineHooks:
         _ = [e async for e in engine.run_turn("need approval")]
 
         assert observed == ["permission_request"]
-
 
 class TestEngineState:
     """Engine state tracking."""

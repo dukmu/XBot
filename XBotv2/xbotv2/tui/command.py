@@ -1,18 +1,11 @@
-"""Slash command registry for the TUI composer.
-
-Unified command system: client commands, server commands, skill invocations,
-and tool/MPC tool invocations all share the same CommandSpec format.
-
-Type tags shown in completion:
-  [client cmd] [server cmd] [skill] [tool] [mcp]
-"""
+"""Client command registry and server-provided command completions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
-CommandKind = Literal["client", "server", "skill", "tool", "mcp"]
+CommandKind = Literal["client", "server", "prompt"]
 
 
 @dataclass(frozen=True)
@@ -20,11 +13,12 @@ class CommandSpec:
     name: str
     kind: CommandKind
     description: str
+    usage: str = ""
     args: str = ""
     raw: str = ""
     display_label: str = ""
     short_label: str = ""
-    parameters: dict[str, str] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.short_label:
@@ -37,27 +31,25 @@ class CommandSpec:
 _KIND_TAGS: dict[CommandKind, str] = {
     "client": "client cmd",
     "server": "server cmd",
-    "skill": "skill",
-    "tool": "tool",
-    "mcp": "mcp",
+    "prompt": "prompt",
 }
 
-_ALIASES: dict[str, str] = {
+_CLIENT_ALIASES: dict[str, str] = {
     "/exit": "exit", "/quit": "exit", "/q": "exit",
-    "/clear": "clear", "/help": "help",
+    "/clear-screen": "clear-screen", "/cls": "clear-screen", "/help": "help",
 }
 
-_COMMANDS: dict[str, CommandSpec] = {
+_CLIENT_COMMANDS: dict[str, CommandSpec] = {
     "exit": CommandSpec(
         name="exit", kind="client",
         description="退出 TUI，不保存",
         raw="/exit",
         parameters={"--force": "不保存直接退出"},
     ),
-    "clear": CommandSpec(
-        name="clear", kind="client",
+    "clear-screen": CommandSpec(
+        name="clear-screen", kind="client",
         description="清除事件流（session/thread 保留）",
-        raw="/clear",
+        raw="/clear-screen",
     ),
     "help": CommandSpec(
         name="help", kind="client",
@@ -67,39 +59,31 @@ _COMMANDS: dict[str, CommandSpec] = {
     ),
 }
 
-_SEARCH_ORDER: list[str] = ["help", "clear", "exit"]
+_CLIENT_SEARCH_ORDER = ("help", "clear-screen", "exit")
+_ALIASES = dict(_CLIENT_ALIASES)
+_COMMANDS = dict(_CLIENT_COMMANDS)
+_SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)
 
 
 def register_server_commands(commands: list[dict]) -> None:
+    global _ALIASES, _COMMANDS, _SEARCH_ORDER
+    _ALIASES = dict(_CLIENT_ALIASES)
+    _COMMANDS = dict(_CLIENT_COMMANDS)
+    _SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)
     for item in commands:
         name = str(item.get("name") or "").strip().removeprefix("/")
-        if not name:
+        if not name or name in _CLIENT_COMMANDS:
             continue
         kind = item.get("kind", "server")
         slash = item.get("slash", f"/{name}")
+        if slash.lower() in _CLIENT_ALIASES:
+            continue
         _ALIASES[slash.lower()] = name
         _COMMANDS[name] = CommandSpec(
             name=name,
             kind=kind,  # type: ignore[arg-type]
             description=str(item.get("description") or f"server command: {name}"),
-            raw=slash,
-            parameters=item.get("parameters") or {},
-        )
-        if name not in _SEARCH_ORDER:
-            _SEARCH_ORDER.insert(max(0, len(_SEARCH_ORDER) - 1), name)
-
-
-def register_dynamic_commands(items: list[dict], kind: CommandKind) -> None:
-    for item in items:
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        slash = f"/{name}"
-        _ALIASES[slash.lower()] = name
-        _COMMANDS[name] = CommandSpec(
-            name=name,
-            kind=kind,
-            description=str(item.get("description") or name),
+            usage=str(item.get("usage") or slash),
             raw=slash,
             parameters=item.get("parameters") or {},
         )
@@ -123,6 +107,7 @@ def parse_slash_command(text: str) -> CommandSpec | None:
     base = _COMMANDS[canonical]
     return CommandSpec(
         name=base.name, kind=base.kind, description=base.description,
+        usage=base.usage,
         args=tail.strip(), raw=stripped,
         display_label=base.display_label, short_label=base.short_label,
         parameters=base.parameters,

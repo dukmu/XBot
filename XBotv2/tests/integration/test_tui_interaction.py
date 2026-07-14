@@ -159,9 +159,9 @@ async def test_completion_popup_filters_by_prefix(scripted_session) -> None:
         await pilot.pause()
 
         names = [m.name for m in popup.matches]
-        assert "clear" in names
+        assert "clear-screen" in names
         assert popup.current_match() is not None
-        assert popup.current_match().name in {"clear"}
+        assert popup.current_match().name in {"clear-screen"}
 
 
 @pytest.mark.asyncio
@@ -199,7 +199,7 @@ async def test_completion_popup_tab_accepts_highlighted(
         popup = app.query_one(CompletionPopup)
         composer = app.query_one("#input")
 
-        # Type "/c" — completion popup appears, /clear is the first match.
+        # Type "/c" — completion popup appears, /clear-screen is first.
         composer.load_text("/c")
         app._refresh_completion_popup(composer.text)
         await pilot.pause()
@@ -208,7 +208,7 @@ async def test_completion_popup_tab_accepts_highlighted(
         app._accept_completion(popup.current_match())
         await pilot.pause()
 
-        assert composer.text == "/clear"
+        assert composer.text == "/clear-screen"
         # The popup should still be visible (the prefix is still a slash).
         assert popup.visible is True
 
@@ -453,10 +453,10 @@ def test_search_commands_returns_help_first() -> None:
 
 
 def test_parse_slash_command_round_trip() -> None:
-    spec = parse_slash_command("/clear")
+    spec = parse_slash_command("/clear-screen")
     assert spec is not None
-    assert spec.name == "clear"
-    assert spec.raw == "/clear"
+    assert spec.name == "clear-screen"
+    assert spec.raw == "/clear-screen"
 
 
 # ----------------------------------------------------------------------
@@ -566,7 +566,7 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
 
 
 # ----------------------------------------------------------------------
-# /clear and /status
+# /clear-screen and /status
 # ----------------------------------------------------------------------
 
 
@@ -583,7 +583,7 @@ async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
         app.state.append_message("user", "first")
         app.state.notices.append(_make_notice("client_message", "hello"))
         composer = app.query_one("#input")
-        composer.load_text("/clear")
+        composer.load_text("/clear-screen")
         await app.submit_composer()
         await pilot.pause()
 
@@ -592,7 +592,7 @@ async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
     # session_id/thread_id preserved.
     assert app.state.session_id == "my-session"
     assert app.state.thread_id == "my-thread"
-    # No server traffic for /clear.
+    # No server traffic for /clear-screen.
     assert scripted_session.sent == []
 
 
@@ -802,7 +802,7 @@ async def test_help_body_renders_each_command_on_its_own_row(
         help_notices = [n for n in app.state.notices if n.kind == "Help"]
         assert len(help_notices) == 1
         body = help_notices[0].text
-        for command in ("help [client cmd]", "clear [client cmd]", "status [server cmd]", "exit [client cmd]"):
+        for command in ("help [client cmd]", "clear-screen [client cmd]", "status [server cmd]", "exit [client cmd]"):
             assert command in body, f"command {command} not found in: {body!r}"
 
 
@@ -924,7 +924,7 @@ async def test_help_with_command_name_shows_detail(
     async with app.run_test(headless=True, size=(120, 36)) as pilot:
         await pilot.pause()
         composer = app.query_one("#input")
-        composer.load_text("/help clear")
+        composer.load_text("/help clear-screen")
         await app.submit_composer()
         await pilot.pause()
 
@@ -958,34 +958,32 @@ async def test_help_with_unknown_command_shows_error(
 
 
 @pytest.mark.asyncio
-async def test_skill_is_parsed_with_correct_kind(
+async def test_prompt_command_is_parsed_with_correct_kind(
     scripted_session,
 ) -> None:
-    """Test that register_dynamic_commands makes skill parseable as skill kind."""
-    from xbotv2.tui.command import register_dynamic_commands, parse_slash_command
+    from xbotv2.tui.command import register_server_commands, parse_slash_command
 
-    register_dynamic_commands([
-        {"name": "git-release", "description": "Create releases"},
-    ], "skill")
+    register_server_commands([
+        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
+    ])
 
     spec = parse_slash_command("/git-release v2.0")
     assert spec is not None
-    assert spec.kind == "skill"
+    assert spec.kind == "prompt"
     assert spec.name == "git-release"
     assert spec.args == "v2.0"
 
 
 @pytest.mark.asyncio
-async def test_command_search_includes_skill_type(
+async def test_command_search_includes_prompt_type(
     scripted_session,
 ) -> None:
-    """Test that skills appear in search with [skill] tag."""
-    from xbotv2.tui.command import register_dynamic_commands, search_commands
+    from xbotv2.tui.command import register_server_commands, search_commands
 
-    register_dynamic_commands([
-        {"name": "git-release", "description": "Create releases"},
-    ], "skill")
+    register_server_commands([
+        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
+    ])
 
     results = search_commands("/git")
-    assert any(s.kind == "skill" for s in results)
-    assert any("skill" in s.short_label for s in results)
+    assert any(s.kind == "prompt" for s in results)
+    assert any("prompt" in s.short_label for s in results)

@@ -9,6 +9,8 @@ from pydantic import ValidationError
 import xbotv2.api as public_api
 
 from xbotv2.api import (
+    Command,
+    CommandResult,
     ContextComponent,
     HookAction,
     HookContext,
@@ -60,11 +62,15 @@ def test_public_api_exports_core_extension_types():
     assert ToolResult.success("ok").status == "success"
     assert HookDecision(HookAction.DENY, "policy").reason == "policy"
     assert Tool is not None
+    assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
+    assert CommandResult("done").status == "ok"
     assert RuntimePaths is not None
     assert RuntimePluginContext is not None
     assert PromptFragmentStage is not None
     assert hasattr(RuntimePluginContext, "register_tool")
     assert hasattr(RuntimePluginContext, "unregister_tool")
+    assert hasattr(RuntimePluginContext, "register_command")
+    assert hasattr(RuntimePluginContext, "unregister_command")
     assert SessionPaths is not None
     error = PluginConfigError("sample", ("limits", 0), "invalid")
     assert error.path == ("limits", 0)
@@ -90,6 +96,29 @@ def test_tool_registration_options_validate_values():
 
     with pytest.raises(TypeError, match="execution_mode"):
         ToolRegistrationOptions(execution_mode="parallel")
+
+
+def test_command_contract_separates_server_handlers_from_prompt_metadata():
+    async def handler(_ctx, _raw_args):
+        return CommandResult("ok")
+
+    assert Command(
+        name="server-command",
+        description="Server command",
+        handler=handler,
+    ).kind == "server"
+    assert Command(
+        name="prompt-command",
+        description="Prompt command",
+        kind="prompt",
+    ).handler is None
+
+    with pytest.raises(ValueError, match="requires a handler"):
+        Command(name="missing", description="Missing")
+    with pytest.raises(ValueError, match="must not define a handler"):
+        Command(name="prompt", description="Prompt", kind="prompt", handler=handler)
+    with pytest.raises(ValueError, match="lowercase"):
+        Command(name="/Invalid", description="Invalid", handler=handler)
 
 
 def test_plugin_manifest_rejects_unimplemented_tool_scheduling_metadata():

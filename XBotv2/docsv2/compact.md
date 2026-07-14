@@ -46,6 +46,8 @@ file to the plugin. `HookContext.invoke_model()` supplies one unbound auxiliary
 call, and the plugin returns the existing `BEFORE_CONTEXT` compaction result.
 Auxiliary calls do not recursively run model Hooks or stream assistant deltas.
 
-The tool can be invoked by the agent when the user requests compaction. Tool
-entries shown by command discovery remain descriptive; the current generic
-tool-command endpoint does not execute arbitrary tools directly.
+The agent Tool and human `/compact` command are separate registrations owned by
+the same plugin. Both set the plugin's manual-request flag, but only the Agent
+path enters Tool Hooks and permissions. The plugin preapproves its Tool request
+at `BEFORE_TOOL_CALL`. Compaction runs at the next normal `BEFORE_CONTEXT`
+boundary.

@@ -24,6 +24,7 @@ class SetupContext:
         self.hooks = {}
         self.tools = {}
         self.options = {}
+        self.commands = {}
 
     def register_hook(self, stage, callback):
         self.hooks[stage] = callback
@@ -32,6 +33,10 @@ class SetupContext:
         self.tools[tool.name] = tool
         self.options[tool.name] = options
         return f"plugin:goal:{tool.name}"
+
+    def register_command(self, command):
+        self.commands[command.name] = command
+        return command.name
 
 
 
@@ -49,21 +54,24 @@ def setup_plugin(state_store) -> tuple[GoalPlugin, SetupContext]:
     return plugin, setup
 
 
-def test_goal_registers_one_state_machine_tool_and_context_hook(state_store):
+def test_goal_registers_human_command_and_agent_tools(state_store):
     plugin, setup = setup_plugin(state_store)
 
     assert list(setup.hooks) == [
         HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
         HookStage.ON_TURN_END,
+        HookStage.BEFORE_TOOL_CALL,
         HookStage.BEFORE_MAILBOX_DELIVERY,
     ]
-    assert list(setup.tools) == ["goal"]
-    tool = setup.tools["goal"]
-    assert tool.parameters["properties"]["action"]["enum"] == [
-        "block", "clear", "complete", "create", "get", "pause", "resume", "update",
+    assert list(setup.tools) == ["create_goal", "get_goal", "update_goal"]
+    assert setup.tools["update_goal"].parameters["properties"]["status"]["enum"] == [
+        "complete", "blocked",
     ]
-    assert tool.parameters["additionalProperties"] is False
-    assert setup.options["goal"].namespace == "plugin:goal"
+    assert all(
+        setup.options[name].namespace == "plugin:goal" for name in setup.tools
+    )
+    assert list(setup.commands) == ["goal"]
+    assert setup.commands["goal"].kind == "server"
     assert plugin.diagnostics() == {
         "status": "ready",
         "scope": "session",
@@ -75,71 +83,75 @@ def test_goal_registers_one_state_machine_tool_and_context_hook(state_store):
 @pytest.mark.asyncio
 async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
+    queued = []
 
-    empty = await plugin.goal("get")
-    created = await plugin.goal("create", objective="stabilize the API", token_budget=8000)
-    duplicate = await plugin.goal("create", objective="replace implicitly")
-    updated = await plugin.goal(
-        "update",
-        objective="document the API",
-        summary="Implementation complete; documentation remains.",
-    )
-    missing_summary = await plugin.goal("complete")
-    completed = await plugin.goal("complete", summary="Documented and tested the API.")
-    inspected = await plugin.goal("get")
-    resumed = await plugin.goal("resume")
-    blocked = await plugin.goal("block", summary="Waiting for human review.")
-    viewed_blocked = await plugin.goal("get")
-    cleared = await plugin.goal("clear")
+    async def enqueue(message):
+        queued.append(message)
+
+    ctx = SimpleNamespace(enqueue_general=enqueue)
+
+    empty = await plugin.get_goal()
+    created = await plugin.create_goal("stabilize the API", token_budget=8000)
+    duplicate = await plugin.create_goal("replace implicitly")
+    updated = await plugin._goal_command(ctx, "document the API")
+    missing_summary = await plugin.update_goal("complete", "")
+    completed = await plugin.update_goal("complete", "Documented and tested the API.")
+    inspected = await plugin.get_goal()
+    resumed = await plugin._goal_command(ctx, "resume")
+    blocked = await plugin.update_goal("blocked", "Waiting for human review.")
+    viewed_blocked = await plugin.get_goal()
+    cleared = await plugin._goal_command(ctx, "clear")
 
     assert empty.data == {"goal": None}
     assert created.data["goal"]["token_budget"] == 8000
     assert duplicate.error.code == "goal_exists"
     assert updated.data["goal"]["objective"] == "document the API"
-    assert updated.data["goal"]["summary"] == (
-        "Implementation complete; documentation remains."
-    )
+    assert updated.data["goal"]["summary"] == ""
     assert missing_summary.error.code == "invalid_summary"
     assert completed.data["goal"] == {
         "objective": "document the API",
         "status": "complete",
         "summary": "Documented and tested the API.",
-        "token_budget": 8000,
+        "token_budget": None,
     }
     assert inspected.data == completed.data
     assert resumed.data["goal"]["status"] == "active"
     assert blocked.data["goal"]["status"] == "blocked"
     assert viewed_blocked.data == blocked.data
     assert cleared.data == {"goal": None}
-    assert (await plugin.goal("get")).data == {"goal": None}
+    assert (await plugin.get_goal()).data == {"goal": None}
 
 
 @pytest.mark.asyncio
 async def test_goal_rejects_invalid_transitions_without_mutating_state(state_store):
     plugin = make_plugin(state_store)
-    await plugin.goal("create", objective="keep this objective")
+    await plugin.create_goal("keep this objective")
     before = await plugin.store.all()
 
-    invalid_action = await plugin.goal("restart")
-    blank_update = await plugin.goal("update", objective=" ")
-    missing_update = await plugin.goal("update")
-    long_summary = await plugin.goal("complete", summary="x" * 2_001)
-    bad_budget = await plugin.goal("create", objective="another", token_budget=0)
-    update_budget = await plugin.goal("update", token_budget=4096)
+    invalid_status = await plugin.update_goal("paused", "not allowed")
+    blank_create = await plugin.create_goal(" ")
+    missing_summary = await plugin.update_goal("complete", "")
+    long_summary = await plugin.update_goal("complete", "x" * 2_001)
+    bad_budget = await plugin.create_goal("another", token_budget=0)
+    bad_command_budget = await plugin._goal_command(
+        SimpleNamespace(enqueue_general=None),
+        "--token-budget nope another objective",
+    )
 
-    assert invalid_action.error.code == "invalid_action"
-    assert blank_update.error.code == "invalid_objective"
-    assert missing_update.error.code == "invalid_update"
+    assert invalid_status.error.code == "invalid_status"
+    assert blank_create.error.code == "invalid_objective"
+    assert missing_summary.error.code == "invalid_summary"
     assert long_summary.error.code == "summary_too_long"
     assert bad_budget.error.code == "invalid_token_budget"
-    assert update_budget.error.code == "invalid_arguments"
+    assert bad_command_budget.status == "error"
+    assert "positive integer" in bad_command_budget.message
     assert await plugin.store.all() == before
 
 
 @pytest.mark.asyncio
 async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     plugin = make_plugin(state_store)
-    await plugin.goal("create", objective="iterate until complete")
+    await plugin.create_goal("iterate until complete")
     queued = []
 
     async def enqueue(message):
@@ -170,7 +182,7 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
 @pytest.mark.asyncio
 async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
     plugin = make_plugin(state_store)
-    await plugin.goal("create", objective="pause on escape")
+    await plugin.create_goal("pause on escape")
     queued = []
 
     await plugin._on_turn_end(HookContext(
@@ -181,15 +193,15 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
     ))
 
     assert queued == []
-    assert (await plugin.goal("get")).data["goal"]["status"] == "paused"
+    assert (await plugin.get_goal()).data["goal"]["status"] == "paused"
 
 
 @pytest.mark.asyncio
 async def test_complete_goal_remains_in_context_for_final_summary(state_store):
     plugin = make_plugin(state_store)
     components = [ContextComponent(role="system", source="system_prefix", content="base")]
-    await plugin.goal("create", objective="output two greetings")
-    await plugin.goal("complete", summary="Output both requested greetings.")
+    await plugin.create_goal("output two greetings")
+    await plugin.update_goal("complete", "Output both requested greetings.")
     ctx = HookContext(
         stage=HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
         session=SimpleNamespace(),
@@ -208,8 +220,8 @@ async def test_complete_goal_remains_in_context_for_final_summary(state_store):
 @pytest.mark.asyncio
 async def test_goal_survives_state_store_recreation(state_store):
     plugin = make_plugin(state_store)
-    await plugin.goal("create", objective="survive restart")
-    await plugin.goal("complete", summary="Restart behavior verified.")
+    await plugin.create_goal("survive restart")
+    await plugin.update_goal("complete", "Restart behavior verified.")
 
     restored_store = CoreStateStore(
         paths=state_store.paths,
@@ -219,7 +231,7 @@ async def test_goal_survives_state_store_recreation(state_store):
     )
     restored = make_plugin(restored_store)
 
-    assert (await restored.goal("get")).data["goal"] == {
+    assert (await restored.get_goal()).data["goal"] == {
         "objective": "survive restart",
         "status": "complete",
         "summary": "Restart behavior verified.",
@@ -234,7 +246,7 @@ async def test_goal_rejects_invalid_persisted_state(state_store):
     await plugin.store.set("goal", invalid)
 
     with pytest.raises(ValueError, match="Goal state is invalid"):
-        await plugin.goal("get")
+        await plugin.get_goal()
 
     assert await plugin.store.get("goal") == invalid
 
@@ -263,9 +275,7 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
 
     loaded = await loader.load()
     assert isinstance(loaded[0], GoalPlugin)
-    await registry.get("goal").tool.ainvoke({
-        "action": "create", "objective": "retain me",
-    })
+    await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
 
     assert await loader.unload("goal") is True
     assert registry.registered_names() == []
@@ -279,7 +289,7 @@ async def test_engine_sees_completed_goal_after_tool_call(
     temp_workspace,
 ):
     plugin, setup = setup_plugin(state_store)
-    await plugin.goal("create", objective="finish this turn")
+    await plugin.create_goal("finish this turn")
     hooks = HookManager()
     hooks.register(
         HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
@@ -287,7 +297,7 @@ async def test_engine_sees_completed_goal_after_tool_call(
     )
     registry = ToolRegistry()
     registry.register(
-        setup.tools["goal"],
+        setup.tools["update_goal"],
         sandbox_mode="host",
         namespace="plugin:goal",
     )
@@ -296,8 +306,8 @@ async def test_engine_sees_completed_goal_after_tool_call(
             "content": "Finished the requested work.",
             "tool_calls": [{
                 "id": "goal-call-1",
-                "name": "goal",
-                "args": {"action": "complete", "summary": "All work passed."},
+                "name": "update_goal",
+                "args": {"status": "complete", "summary": "All work passed."},
             }],
         },
         {"content": "The goal is complete; all required work passed."},

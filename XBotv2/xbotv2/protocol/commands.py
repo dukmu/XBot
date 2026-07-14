@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from xbotv2.api.commands import Command
+
 CommandHandler = Callable[[Any, list[str]], Awaitable[dict[str, Any]]]
 
 
@@ -27,16 +29,20 @@ class ServerCommand:
             "slash": self.slash,
             "kind": "server",
             "description": self.description,
+            "usage": self.slash,
             "examples": self.examples,
             "parameters": self.parameters,
         }
 
 
-def list_commands(*, extra: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def list_commands(*, extra: tuple[Command, ...] = ()) -> list[dict[str, Any]]:
     result = [command.to_dict() for command in COMMANDS.values()]
-    if extra:
-        registered = set(COMMANDS)
-        result.extend(item for item in extra if item.get("name") not in registered)
+    registered = set(COMMANDS)
+    result.extend(
+        _plugin_command_dict(command)
+        for command in extra
+        if command.name not in registered
+    )
     return result
 
 
@@ -46,19 +52,43 @@ async def execute_command(
     args: list[str],
     *,
     kind: str = "server",
+    raw_args: str = "",
 ) -> dict[str, Any]:
     command = command.lower().strip().removeprefix("/")
-    if kind == "skill":
+    registered = COMMANDS.get(command)
+    if registered is not None:
+        return await registered.handler(ctx, args)
+    if kind == "prompt":
         return _result(
             command,
-            f"Skill '{command}' available. Use /{command} [instructions] to invoke.",
+            "Prompt expansions must be submitted through the message endpoint.",
+            status="error",
         )
-    if kind in ("tool", "mcp"):
-        return _result(command, f"Tool '{command}' available.", data={"tool": command})
-    registered = COMMANDS.get(command)
-    if registered is None:
+    loader = getattr(ctx.engine, "plugin_loader", None)
+    extension = loader.get_command(command) if loader is not None else None
+    if extension is None or extension.kind != "server":
         return _result(command, f"Unknown server command: /{command}", status="error")
-    return await registered.handler(ctx, args)
+    assert extension.handler is not None
+    result = await extension.handler(ctx, raw_args)
+    return _result(
+        command,
+        result.message,
+        status=result.status,
+        data=result.data,
+        history=result.history,
+    )
+
+
+def _plugin_command_dict(command: Command) -> dict[str, Any]:
+    return {
+        "name": command.name,
+        "slash": f"/{command.name}",
+        "kind": command.kind,
+        "description": command.description,
+        "usage": command.usage or f"/{command.name}",
+        "examples": list(command.examples),
+        "parameters": command.parameters,
+    }
 
 
 async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:

@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from xbotv2.api.plugins import PluginBase, PluginConfigError, PluginManifest
-from xbotv2.api import Tool, ToolRegistrationOptions
+from xbotv2.api import Command, CommandResult, Tool, ToolRegistrationOptions
 from xbotv2.plugin.loader import (
     LoadedPluginRecord,
     PluginLoader,
@@ -374,6 +374,33 @@ class TestPluginSetupContext:
         assert entry is not None
         assert entry.sandbox_mode == "sandboxed"
         assert entry.namespace == "plugin:sample"
+
+    def test_command_registration_uses_separate_owned_registry(self):
+        setup = _PluginSetupContext(
+            plugin_name="sample",
+            hooks=HookManager(),
+            tools=ToolRegistry(),
+            context=ContextBuilder(),
+        )
+
+        async def handler(_ctx, _raw_args):
+            return CommandResult("ok")
+
+        name = setup.register_command(Command(
+            name="sample",
+            description="Sample command",
+            handler=handler,
+        ))
+
+        assert name == "sample"
+        assert setup.commands["sample"].handler is handler
+        assert setup.command_names == ["sample"]
+        assert setup.tools.registered_names() == []
+
+        setup.rollback()
+
+        assert setup.commands == {}
+        assert setup.command_names == ["sample"]
 
     def test_register_tool_collision_does_not_replace_existing_owner(self):
         tools = ToolRegistry()

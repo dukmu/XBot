@@ -33,8 +33,6 @@ class SkillPermissionScope:
         for pattern in reversed(self._allowed):
             if any(pattern.search(target) for target in targets):
                 return "allow"
-        if self._allowed:
-            return "deny"
         return None
 
     def clear(self) -> None:

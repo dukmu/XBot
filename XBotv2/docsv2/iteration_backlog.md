@@ -56,20 +56,19 @@ ambiguity before large implementation changes.
 ### Command Discovery And Dispatch
 
 - Keep the server authoritative for command discovery. Session discovery
-  combines server commands with the existing ToolRegistry inventory and
-  exposes stable registered names and namespaces without copying Tool schemas
-  into a second protocol contract.
+  combines built-in and plugin-owned human commands without exposing the Tool
+  registry as a command inventory.
 - Keep client-only commands local: the client may intercept commands such as
   exit or visual transcript clearing, but it must query all server capabilities
   instead of maintaining a parallel server-command inventory.
-- Execute only server-owned operational commands through the command endpoint.
-  Tool, Skill, and MCP slash entries remain normal Agent turns and use the
-  already registered capability; do not add a protocol parser or parallel Tool
-  execution path.
-- Keep Goal free of protocol-specific adapters. `/goal` is discovered from its
-  registered Tool and reaches that Tool through the normal Agent runtime.
-- Add contract tests proving server-command execution, Tool/Skill/MCP discovery,
-  Agent-mediated Tool invocation, and client interception of a local command.
+- Execute only explicit server commands through the command endpoint. Prompt
+  commands expand deterministically before an Agent turn. Ordinary model Tools
+  and MCP Tools are not slash-command entries.
+- Keep Goal free of protocol-specific adapters. `/goal` is a plugin-owned human
+  command; its Agent Tools use the normal Tool guard and result pipeline.
+- Add contract tests proving server-command execution, prompt expansion,
+  exclusion of ordinary Tool/MCP registrations, and client interception of a
+  local command.
 
 ## 3. Hook Contract Tightening
 
@@ -200,14 +199,14 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Goal
 
-- One `goal` state-machine tool and `/goal` command own create, inspect, update,
-  complete, block, resume, and clear transitions for one durable objective.
+- `/goal` owns human lifecycle control. Agent-facing `create_goal`, `get_goal`,
+  and `update_goal` use structured schemas and the normal Tool runtime.
 - Active, complete, and blocked goals append concise non-persisted context;
   completion retains its execution summary and explicitly prevents repetition.
-- Todo items remain concrete work tracking, and automatic continuation remains
-  explicitly out of scope. Real-provider tool selection, internal permission
-  baseline, restart recovery, context injection, and terminal retention are
-  verified.
+- Todo items remain concrete work tracking. Active Goal continuation uses the
+  runtime-only Core mailbox; ESC pauses it and resume does not restore queued
+  mailbox items. Real-provider tool selection, internal permission baseline,
+  restart recovery, context injection, and terminal retention are verified.
 - Connect an explicitly requested Goal `token_budget` to provider-reported
   usage. `/goal` must distinguish declared, used, and remaining tokens before
   any automatic pause or budget-exhaustion behavior is claimed.

@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from xbotv2.core.context import ContextBuilder
+from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
@@ -32,6 +33,7 @@ class LoadedPluginRecord:
     plugin: Any
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
+    command_names: list[str] = field(default_factory=list)
     fragment_stages: list[str] = field(default_factory=list)
 
 
@@ -42,6 +44,8 @@ class _RuntimePluginContext:
     plugin_name: str
     tools: ToolRegistry
     tool_names: list[str]
+    commands: dict[str, Command] = field(default_factory=dict)
+    command_names: list[str] = field(default_factory=list)
 
     def register_tool(
         self,
@@ -63,6 +67,17 @@ class _RuntimePluginContext:
         self.tool_names.remove(registered_name)
         return self.tools.unregister(registered_name)
 
+    def register_command(self, command: Command) -> str:
+        return _register_plugin_command(
+            command, self.commands, self.command_names
+        )
+
+    def unregister_command(self, name: str) -> bool:
+        if name not in self.command_names:
+            return False
+        self.command_names.remove(name)
+        return self.commands.pop(name, None) is not None
+
 
 @dataclass
 class _PluginSetupContext:
@@ -72,8 +87,10 @@ class _PluginSetupContext:
     hooks: HookManager
     tools: ToolRegistry
     context: ContextBuilder
+    commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
+    command_names: list[str] = field(default_factory=list)
     fragment_stages: list[str] = field(default_factory=list)
 
     def register_hook(self, stage: HookStage, callback: Any) -> None:
@@ -83,6 +100,8 @@ class _PluginSetupContext:
                 plugin_name=self.plugin_name,
                 tools=self.tools,
                 tool_names=self.tool_names,
+                commands=self.commands,
+                command_names=self.command_names,
             )
             try:
                 result = callback(ctx)
@@ -113,11 +132,18 @@ class _PluginSetupContext:
         if stage not in self.fragment_stages:
             self.fragment_stages.append(stage)
 
+    def register_command(self, command: Command) -> str:
+        return _register_plugin_command(
+            command, self.commands, self.command_names
+        )
+
     def rollback(self) -> None:
         for stage, callback in reversed(self.hook_refs):
             self.hooks.unregister(stage, callback)
         for tool_name in reversed(self.tool_names):
             self.tools.unregister(tool_name)
+        for command_name in reversed(self.command_names):
+            self.commands.pop(command_name, None)
         for stage in reversed(self.fragment_stages):
             self.context.unregister_fragment(stage, self.plugin_name)
 
@@ -142,11 +168,19 @@ class PluginLoader:
         self.context_builder = context_builder
         self.plugin_configs = plugin_configs or {}
         self._records: dict[str, LoadedPluginRecord] = {}
+        self._commands: dict[str, Command] = {}
         self._import_paths: list[str] = []
 
     @property
     def loaded_plugins(self) -> list[Any]:
         return [record.plugin for record in self._records.values()]
+
+    @property
+    def commands(self) -> tuple[Command, ...]:
+        return tuple(self._commands.values())
+
+    def get_command(self, name: str) -> Command | None:
+        return self._commands.get(name)
 
     def diagnostics(self) -> list[dict[str, Any]]:
         """Return serializable plugin health without exposing plugin objects."""
@@ -231,6 +265,8 @@ class PluginLoader:
             self.hook_manager.unregister(stage, fn)
         for tool_name in reversed(record.tool_names):
             self.tool_registry.unregister(tool_name)
+        for command_name in reversed(record.command_names):
+            self._commands.pop(command_name, None)
         for stage in record.fragment_stages:
             self.context_builder.unregister_fragment(stage, plugin_name)
         if not self._records:
@@ -262,6 +298,7 @@ class PluginLoader:
             hooks=self.hook_manager,
             tools=self.tool_registry,
             context=self.context_builder,
+            commands=self._commands,
         )
         try:
             plugin.setup(setup)
@@ -269,6 +306,7 @@ class PluginLoader:
                 plugin=plugin,
                 hook_refs=setup.hook_refs,
                 tool_names=setup.tool_names,
+                command_names=setup.command_names,
                 fragment_stages=setup.fragment_stages,
             )
         except BaseException:
@@ -385,9 +423,22 @@ def _register_plugin_tool(
         tool,
         sandbox_mode=registration.sandbox_mode,
         namespace=registration.namespace,
+        model_visible=registration.model_visible,
     )
     tool_names.append(registered_name)
     return registered_name
+
+
+def _register_plugin_command(
+    command: Command,
+    commands: dict[str, Command],
+    command_names: list[str],
+) -> str:
+    if command.name in commands:
+        raise ValueError(f"Command {command.name!r} is already registered")
+    commands[command.name] = command
+    command_names.append(command.name)
+    return command.name
 
 
 def _module_belongs_to_path(module: Any, plugin_dir: Path) -> bool:

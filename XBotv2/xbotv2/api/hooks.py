@@ -59,6 +59,7 @@ class HookStage(enum.Enum):
 
 
 SHORT_CIRCUIT_STAGES = frozenset({
+    HookStage.BEFORE_USER_MESSAGE_ACCEPT,
     HookStage.BEFORE_CONTEXT,
     HookStage.PRE_COMPACT,
     HookStage.BEFORE_CONTEXT_BUILD,
@@ -72,6 +73,7 @@ SHORT_CIRCUIT_STAGES = frozenset({
     HookStage.AFTER_TOOLS,
 })
 
+
 STRICT_FAILURE_STAGES = frozenset({
     HookStage.ON_SESSION_INIT,
     HookStage.ON_SESSION_CLOSE,
@@ -83,6 +85,7 @@ STRICT_FAILURE_STAGES = frozenset({
 
 class HookAction(str, enum.Enum):
     CONTINUE = "continue"
+    ALLOW = "allow"
     DENY = "deny"
     STOP = "stop"
 

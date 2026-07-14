@@ -22,6 +22,8 @@ type-only import inside XBotv2 itself.
 |---|---|---|
 | `ArtifactRef` | dataclass | Tool-produced artifact metadata. |
 | `ClientEvent` | dataclass | Client-facing event emitted by tools. |
+| `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
+| `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
 | `ContextComponent` | dataclass | Immutable, source-tagged context fragment exposed to Hooks. |
 | `HookAction` | enum | Hook control-flow action. |
 | `HookContext` | dataclass | Stage-specific hook payload envelope. |
@@ -69,10 +71,9 @@ replace the list with another list of public components. Invalid entries fail
 before provider-message conversion.
 Model-request Hooks inspect `HookContext.model_request`. Transform Hooks use
 their documented stage-specific return dictionaries for replacements.
-`PluginSetupContext` owns transactional setup registrations, while
-`RuntimePluginContext.register_tool()` records dynamic tools into the same
-unload record. `unregister_tool(registered_name)` can remove only a tool in
-that plugin's ownership record and removes the matching unload record entry.
+`PluginSetupContext` owns transactional setup registrations, while runtime
+Tool and Command registrations join the same unload record. Runtime unregister
+operations can remove only resources owned by that plugin.
 Duplicate canonical names or provider-visible tool names are rejected before
 registry mutation.
 Entered `on_load` callbacks receive best-effort `on_unload` after failure, and
@@ -87,9 +88,9 @@ Prompt fragment declarations require exactly one non-empty `file` or `handler`;
 their stage remains limited to the complete `PromptFragmentStage` inventory.
 `PluginStore` mutations persist immediately with atomic replacement; reads are
 fresh snapshots and unload does not erase plugin state.
-Command discovery exposes `registered_name` and `namespace` metadata while
-retaining existing display names and slash invocation values. HTTP/SSE streams
-use `ServerEvent`, the shared SSE codec, and fixtures covering every current
+Command discovery exposes human syntax and descriptions. It does not expose
+Tool registry identities because commands and Tools have separate dispatch
+paths. HTTP/SSE streams use `ServerEvent`, the shared SSE codec, and fixtures covering every current
 event type. Every current `KNOWN_SERVER_EVENT_TYPES` member has a typed payload
 DTO and is validated when a `ServerEvent` is constructed or decoded;
 `TYPED_SERVER_EVENT_TYPES` makes that coverage testable. HTTP failures are

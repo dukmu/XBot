@@ -37,6 +37,7 @@ class Skill:
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
     disable_model_invocation: bool = False
+    user_invocable: bool = True
     scope: str = "project"
 
 
@@ -107,7 +108,7 @@ class SkillRegistry:
         if name != path.parent.name:
             return None
 
-        description = str(fm.get("description") or "").strip()[:1024]
+        description = str(fm.get("description") or "").strip()[:1536]
         if not description:
             return None
 
@@ -116,7 +117,7 @@ class SkillRegistry:
         allowed = fm.get("allowed-tools") or fm.get("allowed_tools") or []
         if isinstance(allowed, str):
             allowed = [t.strip() for t in allowed.split(",") if t.strip()]
-        disallowed = fm.get("disallowed-tools") or fm.get("disallowed_tools") or []
+        disallowed = fm.get("xbotv2-disallowed-tools") or []
         if isinstance(disallowed, str):
             disallowed = [t.strip() for t in disallowed.split(",") if t.strip()]
         if not isinstance(allowed, list) or not isinstance(disallowed, list):
@@ -132,6 +133,9 @@ class SkillRegistry:
         )
         if not isinstance(disable_model_invocation, bool):
             return None
+        user_invocable = fm.get("user-invocable", True)
+        if not isinstance(user_invocable, bool):
+            return None
 
         return Skill(
             name=name,
@@ -142,6 +146,7 @@ class SkillRegistry:
             allowed_tools=list(allowed),
             disallowed_tools=list(disallowed),
             disable_model_invocation=disable_model_invocation,
+            user_invocable=user_invocable,
             scope=scope,
         )
 

@@ -56,7 +56,7 @@ async def execute_tools(
 
     for call in tool_calls:
         tool_name = call.name
-        entry = registry.get(tool_name) if registry else None
+        entry = registry.get(tool_name) if registry is not None else None
         logger.info(
             "tool.guard start id=%s name=%s args_keys=%s",
             call.id, tool_name, sorted(call.args),
@@ -371,6 +371,7 @@ async def _execute_one_tool(
         tool_call=ToolCall(tool_id, tool_name, args),
         short_circuit=True,
     )
+    hook_allowed = False
     if isinstance(before_result, dict):
         if "tool_call" in before_result:
             call = before_result["tool_call"]
@@ -408,7 +409,9 @@ async def _execute_one_tool(
             await _emit_tool_denied(hook_manager, hook_context_factory, observed_call, str(before_result["deny_reason"]))
             return
     elif isinstance(before_result, HookDecision):
-        if before_result.action is HookAction.DENY:
+        if before_result.action is HookAction.ALLOW:
+            hook_allowed = True
+        elif before_result.action is HookAction.DENY:
             reason = before_result.reason or f"Tool call denied by hook: {tool_name}"
             observed_call = ToolCall(tool_id, tool_name, args)
             msg = _error_message(observed_call, reason)
@@ -442,7 +445,7 @@ async def _execute_one_tool(
             results.append(_error_message(call, reason, events=events))
             observed_tool_calls.append(call)
             return
-        if decision == "ask":
+        if decision == "ask" and not hook_allowed:
             reason = f"Permission approval required for tool: {tool_name}. No live permission handler is available, so this call fails closed."
             events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
             await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
@@ -558,7 +561,12 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
 _TOOL_DISPATCH_TIMEOUT_SECONDS = 60.0
 
 
-async def _invoke_tool(tool: Any, args: dict[str, Any], *, sandbox: Any = None) -> Any:
+async def _invoke_tool(
+    tool: Any,
+    args: dict[str, Any],
+    *,
+    sandbox: Any = None,
+) -> Any:
     """Invoke any registered tool without blocking the event loop."""
     if hasattr(tool, "ainvoke"):
         call = tool.ainvoke(args, **({"sandbox": sandbox} if sandbox else {}))

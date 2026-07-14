@@ -19,14 +19,13 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 RegisteredSandboxMode = Literal["sandboxed", "host"]
-
-
 @dataclass
 class ToolEntry:
     tool: Any
     registered_name: str
     sandbox_mode: RegisteredSandboxMode = "host"
     namespace: str = "builtin"
+    model_visible: bool = True
 
 
 class ToolRegistry:
@@ -40,6 +39,7 @@ class ToolRegistry:
         *,
         sandbox_mode: RegisteredSandboxMode = "host",
         namespace: str | None = None,
+        model_visible: bool = True,
     ) -> str:
         name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
         ns = namespace or "builtin"
@@ -63,6 +63,7 @@ class ToolRegistry:
             registered_name=full_name,
             sandbox_mode=sandbox_mode,
             namespace=ns,
+            model_visible=model_visible,
         )
         return full_name
 
@@ -75,19 +76,44 @@ class ToolRegistry:
         return True
 
     def get(self, name: str) -> ToolEntry | None:
-        if name in self._entries and self._is_enabled(name):
+        if (
+            name in self._entries
+            and self._entries[name].model_visible
+            and self._is_enabled(name)
+        ):
             return self._entries[name]
         # Fallback: match by tool display name.
         for full_name, entry in self._entries.items():
-            if getattr(entry.tool, "name", "") == name and self._is_enabled(full_name):
+            if (
+                entry.model_visible
+                and getattr(entry.tool, "name", "") == name
+                and self._is_enabled(full_name)
+            ):
                 return entry
         return None
+
+    def get_registered(self, name: str) -> ToolEntry | None:
+        """Resolve an entry without applying model-visible tool restrictions."""
+        if name in self._entries:
+            return self._entries[name]
+        return next(
+            (
+                entry
+                for entry in self._entries.values()
+                if getattr(entry.tool, "name", "") == name
+            ),
+            None,
+        )
 
     def registered(self, name: str) -> bool:
         return name in self._entries and (self._enabled_names is None or name in self._enabled_names)
 
     def get_all(self) -> list[Any]:
-        return [e.tool for name, e in self._entries.items() if self._is_enabled(name)]
+        return [
+            entry.tool
+            for name, entry in self._entries.items()
+            if entry.model_visible and self._is_enabled(name)
+        ]
 
     def names(self) -> list[str]:
         return [name for name in self._entries if self._is_enabled(name)]

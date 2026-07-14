@@ -288,6 +288,75 @@ class Engine:
             self.session.turn_count = self.turn_count
         await self.save_messages()
 
+    async def _prepare_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        agent_response: ModelResponse | None = None,
+    ) -> bool:
+        before_ctx = self._make_hook_context(
+            HookStage.BEFORE_TOOLS,
+            tool_calls=tool_calls,
+            agent_response=agent_response,
+        )
+        before_result = await self.hook_manager.run(
+            HookStage.BEFORE_TOOLS,
+            before_ctx,
+            short_circuit=True,
+        )
+        if before_result is not None:
+            return False
+
+        parsed_ctx = self._make_hook_context(
+            HookStage.ON_TOOL_CALLS_PARSED,
+            tool_calls=tool_calls,
+            agent_response=agent_response,
+        )
+        await self.hook_manager.run(
+            HookStage.ON_TOOL_CALLS_PARSED,
+            parsed_ctx,
+            short_circuit=False,
+        )
+        return True
+
+    async def _execute_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+    ) -> list[Message]:
+        from xbotv2.tools.runtime import execute_tools
+
+        results = await execute_tools(
+            tool_calls,
+            self.tool_registry,
+            sandbox_policy=self.sandbox_policy,
+            permission_system=self.permission_system,
+            hook_manager=self.hook_manager,
+            hook_context_factory=self._make_hook_context,
+            client_interaction_handler=(
+                self._handle_user_input_request
+                if self.client_event_sink is not None
+                else None
+            ),
+            permission_interaction_handler=(
+                self._handle_permission_request
+                if self.client_event_sink is not None
+                else None
+            ),
+            workspace_root=self.workspace_root,
+        )
+        after_ctx = self._make_hook_context(
+            HookStage.AFTER_TOOLS,
+            tool_results=results,
+        )
+        after_result = await self.hook_manager.run(
+            HookStage.AFTER_TOOLS,
+            after_ctx,
+            short_circuit=True,
+        )
+        if isinstance(after_result, dict) and "tool_results" in after_result:
+            results = list(after_result["tool_results"])
+        return results
+
     def set_client_event_sink(self, sink: Any | None) -> Any | None:
         """Install a live protocol sink for client-directed events."""
         previous = self.client_event_sink
@@ -569,17 +638,10 @@ class Engine:
         response: ModelResponse,
     ) -> AsyncIterator[dict[str, Any]]:
         tool_calls = list(response.tool_calls)
-        before_ctx = self._make_hook_context(
-            HookStage.BEFORE_TOOLS,
-            tool_calls=tool_calls,
+        if not await self._prepare_tool_calls(
+            tool_calls,
             agent_response=response,
-        )
-        before_result = await self.hook_manager.run(
-            HookStage.BEFORE_TOOLS,
-            before_ctx,
-            short_circuit=True,
-        )
-        if before_result is not None:
+        ):
             yield self._tool_batch_result_event(
                 _ToolBatchResult(stop_loop=True)
             )
@@ -591,16 +653,6 @@ class Engine:
             len(tool_calls),
             [call.name for call in tool_calls],
         )
-        parsed_ctx = self._make_hook_context(
-            HookStage.ON_TOOL_CALLS_PARSED,
-            tool_calls=tool_calls,
-            agent_response=response,
-        )
-        await self.hook_manager.run(
-            HookStage.ON_TOOL_CALLS_PARSED,
-            parsed_ctx,
-            short_circuit=False,
-        )
         yield {
             "type": "tool_calls_started",
             "data": {"tool_calls": [call.to_dict() for call in tool_calls]},
@@ -609,39 +661,7 @@ class Engine:
             call.id: call.name or "tool" for call in tool_calls
         }
 
-        from xbotv2.tools.runtime import execute_tools
-
-        tool_messages = await execute_tools(
-            tool_calls,
-            self.tool_registry,
-            sandbox_policy=self.sandbox_policy,
-            permission_system=self.permission_system,
-            hook_manager=self.hook_manager,
-            hook_context_factory=self._make_hook_context,
-            client_interaction_handler=(
-                self._handle_user_input_request
-                if self.client_event_sink is not None
-                else None
-            ),
-            permission_interaction_handler=(
-                self._handle_permission_request
-                if self.client_event_sink is not None
-                else None
-            ),
-            workspace_root=self.workspace_root,
-        )
-
-        after_ctx = self._make_hook_context(
-            HookStage.AFTER_TOOLS,
-            tool_results=tool_messages,
-        )
-        after_result = await self.hook_manager.run(
-            HookStage.AFTER_TOOLS,
-            after_ctx,
-            short_circuit=True,
-        )
-        if isinstance(after_result, dict) and "tool_results" in after_result:
-            tool_messages = after_result["tool_results"]
+        tool_messages = await self._execute_tool_calls(tool_calls)
 
         logger.info(
             "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
@@ -701,20 +721,6 @@ class Engine:
             )
             return
 
-        if after_result is not None:
-            if isinstance(after_result, dict):
-                if "event" in after_result:
-                    yield after_result["event"]
-                turn_complete = bool(after_result.get("turn_complete", True))
-            else:
-                turn_complete = True
-            yield self._tool_batch_result_event(
-                _ToolBatchResult(
-                    stop_loop=turn_complete,
-                    turn_complete=turn_complete,
-                )
-            )
-            return
         yield self._tool_batch_result_event(_ToolBatchResult())
 
     @staticmethod

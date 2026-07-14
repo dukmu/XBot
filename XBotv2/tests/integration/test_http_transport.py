@@ -1648,23 +1648,10 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         {
             "content": "",
             "tool_calls": [{
-                "id": "goal-create",
-                "name": "goal",
-                "args": {
-                    "action": "create",
-                    "objective": "ship the API",
-                    "token_budget": 2000,
-                },
-            }],
-        },
-        {"content": "Goal started."},
-        {
-            "content": "",
-            "tool_calls": [{
                 "id": "goal-complete",
-                "name": "goal",
+                "name": "update_goal",
                 "args": {
-                    "action": "complete",
+                    "status": "complete",
                     "summary": "API tests passed",
                 },
             }],
@@ -1679,37 +1666,151 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         item for item in commands.json()["commands"] if item["name"] == "goal"
     ]
     assert len(goal_commands) == 1
-    assert goal_commands[0]["kind"] == "tool"
+    assert goal_commands[0]["kind"] == "server"
+    assert goal_commands[0]["usage"].startswith("/goal")
+    assert not any(
+        item["name"] in {"create_goal", "get_goal", "update_goal", "shell"}
+        for item in commands.json()["commands"]
+    )
+
+    ctx = await skills_app.state.manager.get("goal-state")
+    session_events = ctx.attach_event_stream()
 
     response = await skills_client.post(
-        "/sessions/goal-state/messages",
-        json={"content": "/goal create --token-budget 2000 ship the API"},
+        "/sessions/goal-state/commands",
+        json={
+            "command": "goal",
+            "raw": "/goal --token-budget 2000 ship the API",
+        },
     )
-    events = _parse_sse(response.text)
+    assert response.json()["data"]["message"] == "Set the active goal."
+    events = []
+    while True:
+        event = await asyncio.wait_for(session_events.get(), timeout=2)
+        assert event is not None
+        events.append(event)
+        if event["type"] == "turn_finished":
+            break
+    ctx.detach_event_stream(session_events)
 
     assert [
         event["data"]["content"]
         for event in events
         if event["type"] == "assistant_message" and event["data"]["content"]
-    ] == ["Goal started.", "Goal complete: API tests passed."]
-    ctx = await skills_app.state.manager.get("goal-state")
+    ] == ["Goal complete: API tests passed."]
+    for _ in range(20):
+        if not ctx.turn_lock.locked():
+            break
+        await asyncio.sleep(0)
     goal_plugin = next(
         plugin
         for plugin in ctx.engine.plugin_loader.loaded_plugins
         if plugin.manifest.name == "goal"
     )
-    assert (await goal_plugin.goal("get")).data["goal"] == {
+    assert (await goal_plugin.get_goal()).data["goal"] == {
         "objective": "ship the API",
         "status": "complete",
         "summary": "API tests passed",
         "token_budget": 2000,
     }
-    assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "allow"
-    await skills_client.post(
+    get_response = await skills_client.post(
         "/sessions/goal-state/commands",
-        json={"command": "permission", "args": ["set", "goal", "deny"]},
+        json={"command": "goal", "raw": "/goal"},
     )
-    assert ctx.engine.permission_system.check("goal", {"action": "get"}) == "deny"
+    assert get_response.json()["data"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_http_goal_command_remains_available_during_active_turn(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    await skills_client.post(
+        "/sessions", json={"session_id": "busy-command", "thread_id": "t"}
+    )
+    ctx = await skills_app.state.manager.get("busy-command")
+    await ctx.turn_lock.acquire()
+    try:
+        response = await skills_client.post(
+            "/sessions/busy-command/commands",
+            json={"command": "goal", "raw": "/goal"},
+        )
+    finally:
+        ctx.turn_lock.release()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_http_command_rejects_invalid_quoting(
+    skills_client: httpx.AsyncClient,
+) -> None:
+    await skills_client.post(
+        "/sessions", json={"session_id": "invalid-command", "thread_id": "t"}
+    )
+
+    response = await skills_client.post(
+        "/sessions/invalid-command/commands",
+        json={"raw": "/goal 'unterminated"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_http_skill_prompt_is_expanded_before_model_input(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "skill-workspace"
+    skill_dir = workspace / ".agents" / "skills" / "xbot-test-prompt"
+    skill_dir.mkdir(parents=True)
+    (workspace / ".git").mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: xbot-test-prompt
+description: Expand a deterministic test prompt
+allowed-tools:
+  - shell(git *)
+---
+Follow this test instruction: $ARGUMENTS
+""",
+        encoding="utf-8",
+    )
+    llm = MockLLM(responses=[{"content": "expanded"}])
+    set_llm_override(skills_app, llm)
+    await skills_client.post(
+        "/sessions",
+        json={
+            "session_id": "skill-prompt",
+            "thread_id": "t",
+            "workspace_root": str(workspace),
+        },
+    )
+
+    commands = (
+        await skills_client.get("/sessions/skill-prompt/commands")
+    ).json()["commands"]
+    command = next(item for item in commands if item["name"] == "xbot-test-prompt")
+    assert command["kind"] == "prompt"
+
+    response = await skills_client.post(
+        "/sessions/skill-prompt/messages",
+        json={"content": "/xbot-test-prompt verify boundaries"},
+    )
+    assert response.status_code == 200
+    contents = [
+        str(getattr(message, "content", ""))
+        for message in llm.get_call_messages(0)
+    ]
+    assert any(
+        "Follow this test instruction: verify boundaries" in content
+        for content in contents
+    )
+    assert all("/xbot-test-prompt" not in content for content in contents)
 
 
 

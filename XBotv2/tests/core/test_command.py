@@ -34,7 +34,7 @@ def restore_command_registry(monkeypatch):
 
 def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
     results = search_commands("")
-    assert [spec.name for spec in results] == ["help", "clear", "exit"]
+    assert [spec.name for spec in results] == ["help", "clear-screen", "exit"]
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
@@ -44,7 +44,7 @@ def test_search_commands_whitespace_only_query_returns_all() -> None:
 def test_search_commands_slash_prefix_filters_by_name() -> None:
     results = search_commands("/c")
     names = [spec.name for spec in results]
-    assert names[0] == "clear"
+    assert names[0] == "clear-screen"
     assert "help" in names
 
 
@@ -71,7 +71,7 @@ def test_search_commands_falls_back_to_substring() -> None:
     results = search_commands("/h")
     names = [spec.name for spec in results]
     assert "help" in names
-    assert "clear" in names
+    assert "clear-screen" in names
 
 
 def test_search_commands_deduplicates_results() -> None:
@@ -89,6 +89,28 @@ def test_register_server_commands_adds_dynamic_completion() -> None:
     assert parse_slash_command("/status").name == "status"
 
 
+def test_register_server_commands_replaces_previous_server_catalog() -> None:
+    register_server_commands([
+        {"name": "old", "slash": "/old", "description": "old command"}
+    ])
+    register_server_commands([
+        {"name": "new", "slash": "/new", "description": "new command"}
+    ])
+
+    assert parse_slash_command("/old").name == "unknown"
+    assert parse_slash_command("/new").name == "new"
+
+
+def test_server_catalog_cannot_override_client_commands() -> None:
+    register_server_commands([
+        {"name": "help", "slash": "/help", "description": "remote help"},
+        {"name": "remote", "slash": "/q", "description": "remote alias"},
+    ])
+
+    assert parse_slash_command("/help").kind == "client"
+    assert parse_slash_command("/q").name == "exit"
+
+
 # ----------------------------------------------------------------------
 # Fuzzy palette search
 # ----------------------------------------------------------------------
@@ -101,7 +123,7 @@ def test_search_commands_palette_query_finds_help() -> None:
 
 def test_search_commands_palette_query_word_match() -> None:
     results = search_commands("clear 事件")
-    assert [spec.name for spec in results] == ["clear"]
+    assert [spec.name for spec in results] == ["clear-screen"]
 
 
 def test_search_commands_palette_query_no_match() -> None:
@@ -143,34 +165,20 @@ def test_server_command_has_kind_server() -> None:
     assert spec.parameters["--env"] == "target environment"
 
 
-def test_register_dynamic_commands_skill_kind() -> None:
-    from xbotv2.tui.command import register_dynamic_commands
-
-    register_dynamic_commands([
-        {"name": "git-release", "description": "Create releases"},
-        {"name": "code-review", "description": "Review code"},
-    ], "skill")
+def test_register_prompt_commands() -> None:
+    register_server_commands([
+        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
+        {"name": "code-review", "description": "Review code", "kind": "prompt"},
+    ])
 
     spec = parse_slash_command("/git-release")
     assert spec is not None
-    assert spec.kind == "skill"
+    assert spec.kind == "prompt"
     assert spec.description == "Create releases"
 
     spec2 = parse_slash_command("/code-review")
     assert spec2 is not None
-    assert spec2.kind == "skill"
-
-
-def test_register_dynamic_commands_mcp_kind() -> None:
-    from xbotv2.tui.command import register_dynamic_commands
-
-    register_dynamic_commands([
-        {"name": "mcp__github__search", "description": "Search GitHub"},
-    ], "mcp")
-
-    spec = parse_slash_command("/mcp__github__search")
-    assert spec is not None
-    assert spec.kind == "mcp"
+    assert spec2.kind == "prompt"
 
 
 # ----------------------------------------------------------------------
@@ -215,16 +223,14 @@ def test_complete_command_with_alias_returns_canonical() -> None:
 
 
 def test_complete_command_skill_alias_exists() -> None:
-    from xbotv2.tui.command import register_dynamic_commands
-
-    register_dynamic_commands([
-        {"name": "git-release", "description": "Create releases"},
-    ], "skill")
+    register_server_commands([
+        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
+    ])
 
     spec = complete_command("/git-release")
     assert spec is not None
     assert spec.name == "git-release"
-    assert spec.kind == "skill"
+    assert spec.kind == "prompt"
 
 
 # ----------------------------------------------------------------------
@@ -233,16 +239,14 @@ def test_complete_command_skill_alias_exists() -> None:
 
 
 def test_parse_slash_command_preserves_args_for_skill() -> None:
-    from xbotv2.tui.command import register_dynamic_commands
-
-    register_dynamic_commands([
-        {"name": "git-release", "description": "Create releases"},
-    ], "skill")
+    register_server_commands([
+        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
+    ])
 
     spec = parse_slash_command("/git-release Create v2.1.0")
     assert spec is not None
     assert spec.name == "git-release"
-    assert spec.kind == "skill"
+    assert spec.kind == "prompt"
     assert spec.args == "Create v2.1.0"
 
 
