@@ -1,8 +1,7 @@
 # XBotv2
 
-XBotv2 is the active implementation in this repository: a readable,
-plugin-extensible client/server agent runtime. The top-level `xbot/` package is
-the legacy implementation and is not part of the XBotv2 runtime dependency set.
+XBotv2 is the implementation in this repository: a readable,
+plugin-extensible client/server agent runtime.
 
 ## Run
 
@@ -22,4 +21,3 @@ Architecture and extension documentation starts at
 
 Third-party integrations must import extension types from `xbotv2.api`.
 Other modules are implementation details.
-
