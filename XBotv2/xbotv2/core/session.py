@@ -413,8 +413,8 @@ async def _run_mailbox(runtime: SessionRuntime) -> None:
             )
 
         if runtime.mailbox.next_kind != "general":
-            if target is not None:
-                await target.put(None)
+            if runtime.mailbox_output is not None:
+                await runtime.mailbox_output.put(None)
             runtime.mailbox_output = None
         if runtime.mailbox.next_kind is None:
             return

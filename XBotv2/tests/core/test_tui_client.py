@@ -688,6 +688,42 @@ def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
     assert second.plain == "助手\n收到：中文正常显示"
 
 
+@pytest.mark.asyncio
+async def test_textual_tool_refresh_treats_source_as_plain_text():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        tool = TuiTool(
+            tool_call_id="source",
+            name="filesystem_read",
+            args={"path": "context_cache.py"},
+            args_finalized=True,
+        )
+        app.state.tools[tool.tool_call_id] = tool
+        app.state.transcript.append(
+            TuiTranscriptEntry(kind="tool", key=tool.tool_call_id)
+        )
+        await app._render_new_transcript_entries()
+
+        tool.result = "calls: list[ToolCall]\nreturn [call for call in calls]"
+        app.state._changed_tool_ids.add(tool.tool_call_id)
+        await app._refresh_changed_tool_widgets()
+
+        body = app.query_one(".tool .body")
+        assert "list[ToolCall]" in body.content.plain
+
+
 def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
     from xbotv2.tui.trace import trace_event
 

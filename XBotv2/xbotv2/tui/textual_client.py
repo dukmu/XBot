@@ -1253,7 +1253,7 @@ class XBotTextualApp(App[None]):
         detail = tool_detail(tool)
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(detail)
+            body.update(render_text(detail))
         elif detail:
             widget.mount(
                 tool_detail_widget(
@@ -1339,7 +1339,7 @@ class XBotTextualApp(App[None]):
         detail = tool_detail(tool)
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(detail)
+            body.update(render_text(detail))
         elif detail:
             await widget.mount(
                 tool_detail_widget(

@@ -89,7 +89,9 @@ receives `message_queued`; the server, rather than the TUI, controls delivery.
 system input when the session is idle. They cover Goal continuation and future
 runtime notifications without pretending to be human messages. Their output
 continues on the originating message stream when possible, otherwise on
-`GET /sessions/{id}/events`.
+`GET /sessions/{id}/events`. The session event stream remains open across
+separate `general` turns and closes only when the client disconnects or the
+session ends.
 
 The mailbox is not persistent state. Closing or losing the client connection
 drops queued messages, and `resume` starts with an empty mailbox. The append-only

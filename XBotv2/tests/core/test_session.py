@@ -69,6 +69,34 @@ async def test_stream_message_drains_immediate_general_continuation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_session_event_stream_stays_open_between_general_turns(tmp_path):
+    session = runtime(tmp_path)
+    events = session.attach_event_stream()
+
+    async def collect_turn():
+        received = []
+        while True:
+            event = await asyncio.wait_for(events.get(), timeout=1)
+            assert event is not None
+            received.append(event)
+            if event["type"] == "turn_finished":
+                return received
+
+    await session.enqueue_general("first")
+    first = await collect_turn()
+    await asyncio.sleep(0)
+    await session.enqueue_general("second")
+    second = await collect_turn()
+
+    assert [
+        event["data"]["content"]
+        for event in [*first, *second]
+        if event["type"] == "assistant_message"
+    ] == ["continued", "continued"]
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_closing_queued_request_discards_only_that_message(tmp_path):
     session = runtime(tmp_path)
     session.turn_lock = asyncio.Lock()

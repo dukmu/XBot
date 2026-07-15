@@ -149,6 +149,8 @@ class TestConfigLoading:
         ):
             assert permissions.check(tool_name, {}) == "allow"
 
-        assert permissions.check("shell", {"command": "echo risky"}) == "ask"
-        assert permissions.check("shell", {"command": "date"}) == "ask"
+        assert permissions.check("filesystem_read", {"path": "README.md"}) == "allow"
+        assert permissions.check("filesystem_list", {"path": "."}) == "allow"
+        assert permissions.check("filesystem_write", {"path": "notes.md"}) == "ask"
+        assert permissions.check("shell", {"command": "echo allowed"}) == "allow"
         assert permissions.check("unknown_tool", {}) == "ask"
