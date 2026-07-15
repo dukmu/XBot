@@ -224,3 +224,34 @@ documentation before it becomes a shipped default.
   domain-neutral `context_suffix`. `PromptFragmentStage` now enumerates all
   supported values, manifests validate them before setup, and the old name is
   rejected rather than retained as a permanent alias.
+
+## 9. TUI Semantic Views
+
+- Keep Textual while it satisfies measurable input, rendering, and performance
+  requirements. The HTTP/SSE transport remains the replacement boundary if a
+  second client is evaluated later.
+- Replace log-like presentation incrementally with semantic controls. Reasoning
+  and tool details now collapse while their summary and live status remain
+  visible. Full arguments, results, structured errors, data, and artifacts stay
+  available inside Details. Client-owned `/thinking` and `/details` commands
+  control current and future blocks without entering Agent history.
+- Render assistant Markdown and fenced code consistently during streaming and
+  resume while keeping user, reasoning, and tool payloads literal.
+- Keep the bottom status line driven by open-session metadata and usage events.
+  It now prioritizes run state, queue depth, token usage, current context
+  remaining, workspace, model, and provider, with session identifiers shown
+  only on wide terminals. Plan progress still requires authoritative runtime
+  data.
+- Background shell tasks now expose stable IDs and lifecycle snapshots through
+  `task_updated`; the TUI updates a collapsible Tasks control in place. Future
+  subagent views still wait for authoritative core lifecycle events and must
+  not parse display text.
+- Queued follow-ups now render ordered summaries beside Tasks in one runtime
+  band. Their display lifecycle reuses the existing client request map while
+  delivery ordering remains owned by the Core mailbox.
+- Narrow-terminal, long-transcript, semantic-control, and task-panel rendering
+  have headless screenshot or layout coverage. Visual polish remains secondary
+  to interaction behavior.
+- Consider a parallel TypeScript/Ink prototype only after a reproducible
+  Textual limitation or an independent Node client distribution requirement is
+  documented. Do not replace the working client with an unverified rewrite.

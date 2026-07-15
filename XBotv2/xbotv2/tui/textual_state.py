@@ -73,8 +73,8 @@ def render_transcript_entry(state: TuiState, entry: object) -> Text | None:
             text.append(f"args: {tool.args_streaming}…\n", style="dim")
         if tool.permission_pending:
             text.append("  waiting for approval…\n", style="dim italic")
-        if tool.summary:
-            text.append(f"result: {tool.summary}")
+        if tool.result:
+            text.append(f"result: {tool.result}")
         return text
     if kind == "notice":
         try:

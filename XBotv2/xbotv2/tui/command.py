@@ -37,29 +37,44 @@ _KIND_TAGS: dict[CommandKind, str] = {
 _CLIENT_ALIASES: dict[str, str] = {
     "/exit": "exit", "/quit": "exit", "/q": "exit",
     "/clear-screen": "clear-screen", "/cls": "clear-screen", "/help": "help",
+    "/thinking": "thinking", "/details": "details",
 }
 
 _CLIENT_COMMANDS: dict[str, CommandSpec] = {
     "exit": CommandSpec(
         name="exit", kind="client",
-        description="退出 TUI，不保存",
+        description="Quit the TUI",
         raw="/exit",
-        parameters={"--force": "不保存直接退出"},
     ),
     "clear-screen": CommandSpec(
         name="clear-screen", kind="client",
-        description="清除事件流（session/thread 保留）",
+        description="Clear the visible transcript without changing the session",
         raw="/clear-screen",
     ),
     "help": CommandSpec(
         name="help", kind="client",
-        description="显示帮助信息。用法: /help [command-name]",
+        description="Show commands or detailed help for one command",
+        usage="/help [command-name]",
         raw="/help",
-        parameters={"[command-name]": "要查看详情的命令名（可选）"},
+        parameters={"[command-name]": "Optional command name"},
+    ),
+    "thinking": CommandSpec(
+        name="thinking",
+        kind="client",
+        description="Expand or collapse model reasoning",
+        usage="/thinking [on|off|toggle]",
+        raw="/thinking",
+    ),
+    "details": CommandSpec(
+        name="details",
+        kind="client",
+        description="Expand or collapse tool execution details",
+        usage="/details [on|off|toggle]",
+        raw="/details",
     ),
 }
 
-_CLIENT_SEARCH_ORDER = ("help", "clear-screen", "exit")
+_CLIENT_SEARCH_ORDER = ("help", "clear-screen", "thinking", "details", "exit")
 _ALIASES = dict(_CLIENT_ALIASES)
 _COMMANDS = dict(_CLIENT_COMMANDS)
 _SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)

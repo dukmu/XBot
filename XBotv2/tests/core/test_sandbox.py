@@ -1,12 +1,20 @@
 """Tests for SandboxPolicy with BubblewrapBackend."""
 
+from io import BytesIO
+
 import json
 from pathlib import Path
 
 import pytest
 
 from xbotv2.tools.sandbox import SandboxPolicy, SandboxResourceRule
-from xbotv2.tools.sandbox_bwrap import _build_args
+from xbotv2.tools.sandbox_bwrap import _build_args, _read_output
+
+
+def test_bubblewrap_output_limit_is_explicit() -> None:
+    result = _read_output(BytesIO(b"x" * 11), 10)
+
+    assert result == "xxxxxxxxxx\n[output truncated at 10 bytes]"
 
 
 class TestSandboxResourceRule:

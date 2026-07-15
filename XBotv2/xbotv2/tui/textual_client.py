@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from rich.text import Text
+from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
-from textual.widgets import Header, Static, TextArea
+from textual.widgets import Collapsible, Static, TextArea
 
 from xbotv2.tui.client import (
     TuiNotice,
@@ -49,11 +50,16 @@ from xbotv2.tui.textual_widgets import (
     entry_widget,
     message_widget,
     notice_title,
+    queue_renderable,
+    render_message,
     render_reasoning,
     render_text,
+    reasoning_widget,
     spinner,
     status_renderable,
+    tasks_renderable,
     tool_detail,
+    tool_detail_widget,
     tool_widget,
 )
 
@@ -139,8 +145,8 @@ class XBotTextualApp(App[None]):
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
         self._connected = False
-        self._active_turn_requests = 0
         self._request_sequence = 0
+        self._pending_messages: dict[int, str] = {}
         self._rendered_transcript_entries = 0
         self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
@@ -162,12 +168,25 @@ class XBotTextualApp(App[None]):
         self._history_index: int | None = None
         self._spinner_index = 0
         self._activity_timer = None
+        self._reasoning_expanded = False
+        self._tool_details_expanded = False
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Static(id="status_bar", markup=False)
         yield TranscriptScroll(id="transcript")
         yield CompletionPopup(id="completion_popup")
+        with Horizontal(id="runtime_panels"):
+            yield Collapsible(
+                Static(id="task_list"),
+                title="Tasks",
+                collapsed=False,
+                id="task_panel",
+            )
+            yield Collapsible(
+                Static(id="queue_list"),
+                title="Queue",
+                collapsed=False,
+                id="queue_panel",
+            )
         with Vertical(id="composer"):
             yield Static(id="composer_hint")
             yield ComposerTextArea(
@@ -178,6 +197,7 @@ class XBotTextualApp(App[None]):
                 compact=True,
                 placeholder="Message XBotv2",
             )
+        yield Static(id="status_bar", markup=False)
 
     async def on_mount(self) -> None:
         self.query_one("#input", ComposerTextArea).focus()
@@ -190,11 +210,33 @@ class XBotTextualApp(App[None]):
         if self._connected:
             await self.session.disconnect()
 
+    @on(Collapsible.Toggled)
+    def _restore_composer_focus(self, event: Collapsible.Toggled) -> None:
+        if not event.collapsible.display:
+            return
+        composer = self._safe_query_one("#input", ComposerTextArea)
+        if composer is not None and not composer.disabled:
+            self.call_after_refresh(composer.focus)
+
     async def _connect(self) -> None:
         try:
             self.state.status = "Connecting"
             self._refresh_all()
             session = await self.session.connect()
+            if isinstance(session, dict):
+                self.state.session_id = str(
+                    session.get("session_id") or self.state.session_id
+                )
+                self.state.thread_id = str(
+                    session.get("thread_id") or self.state.thread_id
+                )
+                self.state.agent_name = str(
+                    session.get("agent_name") or self.state.agent_name
+                )
+                self.state.workspace_root = str(session.get("workspace_root") or "")
+                self.state.provider = str(session.get("provider") or "")
+                self.state.model = str(session.get("model") or "")
+                self.state.context_window = int(session.get("context_window") or 0)
             history = session.get("history") if isinstance(session, dict) else None
             if isinstance(history, list):
                 self.state.restore_history(history)
@@ -256,13 +298,14 @@ class XBotTextualApp(App[None]):
         self._remember_input(text)
         self.state.append_message("user", text)
         await self._render_new_transcript_entries()
-        self._active_turn_requests += 1
         self._request_sequence += 1
+        sequence = self._request_sequence
+        self._pending_messages[sequence] = text
         self._refresh_all()
         self.run_worker(
-            self._collect_queued_message(text),
+            self._collect_queued_message(sequence, text),
             exclusive=False,
-            name=f"turn-{self._request_sequence}",
+            name=f"turn-{sequence}",
         )
 
     def action_clear_input(self) -> None:
@@ -274,7 +317,7 @@ class XBotTextualApp(App[None]):
         like the old behaviour.
         """
 
-        if self.state.turn_active or self._active_turn_requests:
+        if self.state.turn_active or self._pending_messages:
             self.action_interrupt_turn()
             return
         self.query_one("#input", ComposerTextArea).load_text("")
@@ -355,6 +398,12 @@ class XBotTextualApp(App[None]):
         if spec.name == "help":
             await self._cmd_help(spec.args.strip() if spec.args else None)
             return
+        if spec.name == "thinking":
+            await self._cmd_toggle_blocks("thinking", spec.args)
+            return
+        if spec.name == "details":
+            await self._cmd_toggle_blocks("details", spec.args)
+            return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
@@ -380,6 +429,24 @@ class XBotTextualApp(App[None]):
             self._record_error(exc)
             return
         data = result.get("data") if isinstance(result, dict) else {}
+        if isinstance(data, dict):
+            command_data = data.get("data")
+            metadata = command_data if isinstance(command_data, dict) else data
+            metadata_changed = False
+            if metadata.get("provider"):
+                self.state.provider = str(metadata["provider"])
+                metadata_changed = True
+            if metadata.get("model"):
+                self.state.model = str(metadata["model"])
+                metadata_changed = True
+            if "context_window" in metadata:
+                self.state.context_window = int(metadata["context_window"] or 0)
+                metadata_changed = True
+            if metadata.get("workspace_root"):
+                self.state.workspace_root = str(metadata["workspace_root"])
+                metadata_changed = True
+            if metadata_changed:
+                self._refresh_status()
         message = str(data.get("message") or result)
         history = data.get("history")
         if isinstance(history, list):
@@ -440,6 +507,31 @@ class XBotTextualApp(App[None]):
         body = "Slash commands:\n" + "\n".join(known_command_labels())
         await self._append_local_notice("Help", body)
 
+    async def _cmd_toggle_blocks(self, kind: str, argument: str) -> None:
+        value = argument.strip().lower() or "toggle"
+        if value not in {"on", "off", "toggle"}:
+            await self._append_local_notice(
+                f"/{kind}", f"Usage: /{kind} [on|off|toggle]"
+            )
+            return
+        if kind == "thinking":
+            current = self._reasoning_expanded
+            selector = ".reasoning-block"
+        else:
+            current = self._tool_details_expanded
+            selector = ".tool-details"
+        expanded = not current if value == "toggle" else value == "on"
+        if kind == "thinking":
+            self._reasoning_expanded = expanded
+        else:
+            self._tool_details_expanded = expanded
+        for block in self.query(selector):
+            if isinstance(block, Collapsible):
+                block.collapsed = not expanded
+        await self._append_local_notice(
+            f"/{kind}", "Expanded" if expanded else "Collapsed"
+        )
+
     def _get_completion_popup(self):
         try:
             return self.query_one("#completion_popup", CompletionPopup)
@@ -480,11 +572,11 @@ class XBotTextualApp(App[None]):
             ),
         )
 
-    async def _collect_queued_message(self, text: str) -> None:
+    async def _collect_queued_message(self, sequence: int, text: str) -> None:
         try:
             await self._collect_response(text)
         finally:
-            self._active_turn_requests = max(0, self._active_turn_requests - 1)
+            self._pending_messages.pop(sequence, None)
             self._refresh_all()
 
     async def _collect_session_events(self) -> None:
@@ -611,6 +703,7 @@ class XBotTextualApp(App[None]):
         if not self.is_mounted:
             return
         self._refresh_status()
+        self._refresh_queue_panel()
         self._refresh_input_mode()
 
     def _refresh_status(self) -> None:
@@ -627,12 +720,74 @@ class XBotTextualApp(App[None]):
                 status=self.state.status,
                 session_id=self.state.session_id,
                 thread_id=self.state.thread_id,
-                agent_name=self.state.agent_name,
+                workspace_root=self.state.workspace_root,
+                provider=self.state.provider,
+                model=self.state.model,
+                context_window=self.state.context_window,
+                context_input_tokens=self.state.context_input_tokens,
                 activity=self._activity_status(),
                 queue_depth=queue_depth,
                 usage=usage,
+                width=panel.size.width or self.size.width,
             )
         )
+
+    def _refresh_task_panel(self) -> None:
+        panel = self._safe_query_one("#task_panel", Collapsible)
+        body = self._safe_query_one("#task_list", Static)
+        if panel is None or body is None:
+            return
+        tasks = list(self.state.tasks.values())
+        panel.display = bool(tasks)
+        self._refresh_runtime_panels()
+        if not tasks:
+            return
+        running = sum(
+            task.status in {"pending", "running"} for task in tasks
+        )
+        panel.title = f"Tasks ({running} running)" if running else "Tasks"
+        active = [
+            task for task in tasks if task.status in {"pending", "running"}
+        ]
+        terminal = [
+            task for task in tasks
+            if task.status not in {"pending", "running"}
+        ]
+        visible = active[:5]
+        if len(visible) < 5:
+            visible += terminal[-(5 - len(visible)):]
+        body.update(
+            tasks_renderable(
+                visible,
+                width=body.size.width or self.size.width,
+            )
+        )
+
+    def _refresh_queue_panel(self) -> None:
+        panel = self._safe_query_one("#queue_panel", Collapsible)
+        body = self._safe_query_one("#queue_list", Static)
+        if panel is None or body is None:
+            return
+        messages = self._queued_messages()
+        panel.display = bool(messages)
+        self._refresh_runtime_panels()
+        if not messages:
+            return
+        panel.title = f"Queue ({len(messages)})"
+        body.update(
+            queue_renderable(
+                messages,
+                width=body.size.width or self.size.width,
+            )
+        )
+
+    def _refresh_runtime_panels(self) -> None:
+        container = self._safe_query_one("#runtime_panels", Horizontal)
+        task_panel = self._safe_query_one("#task_panel", Collapsible)
+        queue_panel = self._safe_query_one("#queue_panel", Collapsible)
+        if container is not None and task_panel is not None and queue_panel is not None:
+            container.display = task_panel.display or queue_panel.display
+            container.set_class(self.size.height < 24, "compact")
 
     async def _handle_stream_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -660,6 +815,7 @@ class XBotTextualApp(App[None]):
         elif event_type == "assistant_message_delta":
             if self._stream_timer is None:
                 self._stream_timer = asyncio.create_task(self._stream_tick())
+            self._refresh_status()
             return  # timer handles all rendering
         elif event_type == "assistant_message":
             await self._cancel_stream_timer()
@@ -670,6 +826,8 @@ class XBotTextualApp(App[None]):
             await self._refresh_changed_tool_widgets()
         elif event_type == "tool_result":
             await self._refresh_changed_tool_widgets()
+        elif event_type == "task_updated":
+            self._refresh_task_panel()
         elif event_type == "permission_request":
             await self._refresh_changed_tool_widgets()
             refresh_input = True
@@ -800,7 +958,11 @@ class XBotTextualApp(App[None]):
             composer.focus()
 
     def _queued_request_count(self) -> int:
-        return max(0, self._active_turn_requests - int(self.state.turn_active))
+        return len(self._queued_messages())
+
+    def _queued_messages(self) -> list[str]:
+        messages = list(self._pending_messages.values())
+        return messages[1:]
 
     def _set_input_placeholder(self, text: str) -> None:
         if not self.is_mounted:
@@ -932,6 +1094,15 @@ class XBotTextualApp(App[None]):
             composer.load_text(self._input_history[self._history_index])
         self._resize_composer()
 
+    def scroll_transcript_page(self, *, down: bool) -> None:
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is None:
+            return
+        if down:
+            stream.scroll_page_down(animate=False)
+        else:
+            stream.scroll_page_up(animate=False)
+
     def _remember_input(self, text: str) -> None:
         if not text:
             return
@@ -959,6 +1130,7 @@ class XBotTextualApp(App[None]):
         # the next event. Helps the user answer "why is this tool
         # still pending" without watching the activity spinner.
         self._update_pending_tool_elapsed()
+        self._refresh_task_panel()
         self._refresh_status()
 
     def _update_pending_tool_elapsed(self) -> None:
@@ -966,14 +1138,11 @@ class XBotTextualApp(App[None]):
             tool = self.state.tools.get(tool_call_id)
             if tool is None or tool.finished_at > 0:
                 continue
-            elapsed = tool.elapsed(time.monotonic())
             try:
                 meta = widget.query_one(".meta", Static)
             except Exception:
                 continue
-            meta.update(
-                f"tool  {tool.name}  {tool.status}  {elapsed:.1f}s…"
-            )
+            meta.update(_build_title(tool, tool.elapsed(time.monotonic())))
 
     def _update_activity(self) -> None:
         if not self.state.turn_active:
@@ -1021,7 +1190,11 @@ class XBotTextualApp(App[None]):
             existing = self._message_widgets.get(int(key))
             if existing is not None:
                 return existing
-            widget = message_widget(self.state, message)
+            widget = message_widget(
+                self.state,
+                message,
+                reasoning_expanded=self._reasoning_expanded,
+            )
             self._message_widgets[int(key)] = widget
             return widget
         if kind == "tool":
@@ -1041,7 +1214,7 @@ class XBotTextualApp(App[None]):
                 except Exception:  # noqa: BLE001
                     pass
                 return existing
-            widget = tool_widget(tool)
+            widget = tool_widget(tool, details_expanded=self._tool_details_expanded)
             self._tool_widgets[widget_id] = widget
             return widget
         if kind == "notice":
@@ -1081,7 +1254,11 @@ class XBotTextualApp(App[None]):
         if body is not None:
             body.update(detail)
         elif detail:
-            widget.mount(Static(render_text(detail), classes="body"))
+            widget.mount(
+                tool_detail_widget(
+                    detail, expanded=self._tool_details_expanded
+                )
+            )
 
     async def _refresh_changed_tool_widgets(self) -> None:
         for old_id, new_id in self.state._tool_id_renames.items():
@@ -1107,9 +1284,10 @@ class XBotTextualApp(App[None]):
             widget = self._message_widgets.get(index)
         if widget is None:
             return
-        await self._apply_streaming_message_widget(widget, message)
         stream = self._safe_query_one("#transcript", VerticalScroll)
-        if stream is not None:
+        follow_output = stream is not None and stream.is_vertical_scroll_end
+        await self._apply_streaming_message_widget(widget, message)
+        if stream is not None and follow_output:
             stream.scroll_end(animate=False)
 
     async def _apply_streaming_message_widget(
@@ -1127,14 +1305,22 @@ class XBotTextualApp(App[None]):
             if reasoning is not None:
                 reasoning.update(render_reasoning(message.reasoning))
             else:
-                await widget.mount(
-                    Static(render_reasoning(message.reasoning), classes="reasoning")
+                block = reasoning_widget(
+                    render_reasoning(message.reasoning),
+                    expanded=self._reasoning_expanded,
                 )
+                body = self._query_child_first(widget, ".body")
+                await widget.mount(block, before=body)
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(render_text(message.content))
+            body.update(render_message(message.content, role=message.role))
         elif message.content:
-            await widget.mount(Static(render_text(message.content), classes="body"))
+            await widget.mount(
+                Static(
+                    render_message(message.content, role=message.role),
+                    classes="body",
+                )
+            )
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
         if not tool_call_id:
@@ -1154,7 +1340,11 @@ class XBotTextualApp(App[None]):
         if body is not None:
             body.update(detail)
         elif detail:
-            await widget.mount(Static(render_text(detail), classes="body"))
+            await widget.mount(
+                tool_detail_widget(
+                    detail, expanded=self._tool_details_expanded
+                )
+            )
         # Permission choices are mounted / removed inside the tool
         # widget so the user can approve / deny a tool call inline
         # without a separate notice entry in the transcript.
@@ -1166,7 +1356,10 @@ class XBotTextualApp(App[None]):
         key = tool.tool_call_id
         # Remove any existing choice widget from this tool entry
         for child in list(widget.children):
-            if isinstance(child, Static) and "choice" in (child.classes or ""):
+            classes = child.classes or ""
+            if isinstance(child, Static) and (
+                "choice" in classes or "permission-context" in classes
+            ):
                 await child.remove()
         for ck in list(self._choice_payloads.keys()):
             if ck == key:
@@ -1196,7 +1389,12 @@ class XBotTextualApp(App[None]):
             markup=False,
         )
         self._choice_widgets[key] = choice_widget
-        await widget.mount(choice_widget)
+        context_widget = Static(
+            tool.permission_reason or f"{tool.name} requires approval",
+            classes="permission-context",
+            markup=False,
+        )
+        await widget.mount(context_widget, choice_widget)
         self.call_after_refresh(self._refresh_input_mode)
 
     def _query_child_first(self, widget: Any, selector: str) -> Any | None:

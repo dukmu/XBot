@@ -82,9 +82,19 @@ class SandboxPolicy:
     # Sandbox capabilities (system I/O isolated via bwrap)
     # ------------------------------------------------------------------
 
-    async def run_shell(self, command: str, cwd: str | None = None) -> str:
+    async def run_shell(
+        self,
+        command: str,
+        cwd: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         spec = self._mount_specs()
-        return await self._backend.run(["/bin/sh", "-lc", command], spec, cwd=cwd)
+        return await self._backend.run(
+            ["/bin/sh", "-lc", command],
+            spec,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         spec = self._mount_specs()

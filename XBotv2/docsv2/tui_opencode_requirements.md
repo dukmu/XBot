@@ -54,8 +54,11 @@ Startup sequence:
 Local commands:
 
 - `/exit` (`/quit`, `/q`): quit the TUI
-- `/clear`: clear visible transcript state without changing the server session
+- `/clear-screen` (`/cls`): clear the visible transcript without changing the
+  server session; server-owned `/clear` clears persisted session history
 - `/help`: render all known local and server command labels
+- `/thinking [on|off|toggle]`: control current and future reasoning blocks
+- `/details [on|off|toggle]`: control current and future tool detail blocks
 
 Server commands discovered from `GET /commands`:
 
@@ -88,10 +91,17 @@ Required behavior:
 - `Enter` submits text.
 - multiline editing remains supported by Textual text-area behavior.
 - `/` prefix opens completion popup.
+- `Ctrl+P` opens the searchable local/server command palette; long discovered
+  command lists scroll with the keyboard selection kept visible.
 - `Tab` accepts the highlighted completion.
 - `Escape` clears input when idle and interrupts the active turn when running.
+- `PageUp` and `PageDown` scroll the main transcript while the composer keeps
+  keyboard focus.
 - Submitted text appears immediately in the transcript before server response.
 - Submissions during an active turn are queued and drained FIFO.
+- Queued follow-ups are visible in a compact Queue control above the composer.
+  It shows ordered message summaries and disappears when the requests begin or
+  finish; the server mailbox remains authoritative for delivery.
 - During `user_input_required`, typed text is routed to the live interaction
   answer queue instead of starting a new user turn.
 - During `permission_request`, typed approval shortcuts are routed to the
@@ -117,9 +127,37 @@ The transcript renders a flat chronological stream:
 There is no nested scroll region inside tool/message bodies. Long content stays
 in the main transcript flow.
 
+Assistant bodies render Markdown, including fenced code blocks, with the same
+renderer used for live deltas and resumed history. User input, reasoning, tool
+arguments, and tool results remain literal text so their exact payload is not
+reinterpreted as presentation markup.
+
+Reasoning and tool details are semantic controls rather than permanently
+expanded log text:
+
+- the assistant answer, tool name, key argument summary, status, and elapsed
+  time remain visible
+- reasoning is grouped under a collapsed `Thought` control
+- complete tool arguments and results are grouped under a collapsed `Details`
+  control; the header may expose one concise primary argument such as a
+  command, path, query, or objective
+- structured tool `data`, `error`, and `artifacts` remain available inside
+  `Details`; only the compact summary is shortened
+- streaming deltas update the existing control and preserve its expanded state
+- `/thinking` and `/details` apply to existing and subsequently created controls
+- clicking a control returns focus to the composer so the next keystroke is not
+  lost
+
+These controls use Textual's native `Collapsible`; they do not introduce a
+second transcript model or alter the wire protocol.
+
 Streaming tool indexes are local to one model response. Final
 `assistant_message` and `tool_calls_started` events close that mapping so a
 later tool batch in the same turn cannot reuse an earlier tool entry.
+
+Streaming follows the transcript only while the user is already at the bottom.
+When the user scrolls up, hidden reasoning or visible content updates must not
+pull the viewport away from the inspected history.
 
 ## Live Interactions
 
@@ -172,16 +210,32 @@ status becomes `Interrupted` and the active-turn indicator clears.
 The application header uses the product name `XBotv2`; internal client class
 names are not user-visible.
 
-The status bar shows:
+The single-line status bar is the final screen row below the composer. It shows,
+priority order:
 
-- connection/session state
-- current mode
-- queued message count
-- provider/session identifiers when available
+- connection or run state and active-turn elapsed time; reasoning deltas show
+  `Thinking`, while visible output and tool execution show `Running`
+- queued message count when non-zero
 - realtime token usage from `usage` events
+- remaining context percentage, using the latest provider-reported input token
+  count and the runtime `context_window`
+- workspace, model, and provider from `OpenSessionResponse`
+- session/thread identifiers only when the terminal is wide enough
+
+Narrow terminals keep run state and token usage, then omit lower-priority
+metadata. Context remaining is not derived from cumulative output: it compares
+the latest request input against the configured runtime window and stays hidden
+until the provider reports usage.
 
 Usage updates must render before `turn_finished`; tests assert live status-bar
 updates during a blocked turn.
+
+The interaction model is informed by Codex's configurable status line and
+OpenCode's reasoning/tool detail controls, but XBotv2 keeps a smaller fixed
+surface until configuration has a concrete user requirement:
+
+- <https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/status_line_setup.rs>
+- <https://opencode.ai/docs/tui/>
 
 ## Transport Boundary
 
@@ -193,6 +247,24 @@ Textual app -> TerminalSession -> Transport -> HTTP server -> Engine
 ```
 
 Boundary tests enforce this for TUI modules.
+
+## Runtime Object Views
+
+Background shell processes are displayed in a compact, collapsible Tasks
+control with stable identifiers, status, elapsed time, command summary, and a
+bounded result preview. `task_updated` replaces the existing snapshot in place
+instead of appending transcript rows. The control keeps at most five task rows
+visible while `/tasks` exposes the complete live-session list.
+
+The lifecycle comes from the session-owned task manager through the existing
+protocol envelope; the TUI does not infer it from tool text or mailbox
+messages. Future subagents need the same authoritative IDs and lifecycle before
+they receive a dynamic view.
+
+Tasks and queued follow-ups share one runtime band so they do not consume
+independent vertical regions on short terminals. At less than 24 rows the band
+keeps its titles and first summaries within four rows; status and composer never
+overlap it.
 
 ## Trace And Diagnostics
 

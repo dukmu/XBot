@@ -1,4 +1,6 @@
 allow:
+- tool: list_tasks
+- tool: stop_task
 - tool: shell
   params:
     command: ls\ \-l\ /home/shefrin/repo/XBot/docs

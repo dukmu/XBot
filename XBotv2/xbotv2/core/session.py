@@ -48,6 +48,24 @@ class SessionRuntime:
             self.paths.session(self.session_id).mailbox_log
         )
         self.engine.enqueue_mailbox = self.enqueue_general
+        background_tasks = getattr(self.engine, "background_tasks", None)
+        if background_tasks is not None:
+            background_tasks.on_update = self._publish_task_update
+            background_tasks.on_complete = self._enqueue_task_completion
+
+    async def _publish_task_update(self, task: dict[str, Any]) -> None:
+        if self.session_events is not None:
+            await self.session_events.put({"type": "task_updated", "data": task})
+
+    async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
+        await self.enqueue_general({
+            "event": "background_task_finished",
+            "content": (
+                f"Background task {task['task_id']} {task['status']}: "
+                f"{task['command']}"
+            ),
+            "data": task,
+        })
 
     async def enqueue_user_message(
         self,
@@ -148,6 +166,9 @@ class SessionRuntime:
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
+        background_tasks = getattr(self.engine, "background_tasks", None)
+        if background_tasks is not None:
+            await background_tasks.close()
         await self.mailbox.close(reason)
         worker = self.mailbox_worker
         if worker is not None and not worker.done() and worker is not asyncio.current_task():
@@ -337,6 +358,7 @@ async def run_turn_stream(
                 pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
             runtime.turn_task = None
+    runtime.ensure_mailbox_worker()
 
 
 async def _run_mailbox(runtime: SessionRuntime) -> None:

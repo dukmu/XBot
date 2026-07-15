@@ -102,16 +102,167 @@ def scripted_session() -> _ScriptedSession:
 
 
 @pytest.mark.asyncio
-async def test_header_uses_product_title(scripted_session) -> None:
+async def test_status_bar_uses_product_title(scripted_session) -> None:
     app = XBotTextualApp(session_id="s", thread_id="t")
     app.session = scripted_session
 
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         await pilot.pause()
-        screenshot = app.export_screenshot(title="xbotv2-header")
+        screenshot = app.export_screenshot(title="xbotv2-status")
 
     assert "XBotv2" in screenshot
     assert "XBotTextualApp" not in screenshot
+
+
+@pytest.mark.asyncio
+async def test_status_bar_is_below_composer_and_keeps_tokens_on_narrow_screen(
+    scripted_session,
+) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+
+    async with app.run_test(headless=True, size=(48, 20)) as pilot:
+        await pilot.pause()
+        import time
+
+        app.state.status = "Approval required"
+        app.state.turn = 123
+        app.state.turn_active = True
+        app._turn_started_at[123] = time.monotonic() - 1234.5
+        app._pending_messages = {
+            1: "active",
+            2: "queued second",
+            3: "queued third",
+        }
+        app.state.usage.update(
+            {"input_tokens": 1200, "output_tokens": 345, "total_tokens": 1545}
+        )
+        app._refresh_status()
+        await pilot.pause()
+
+        status = app.query_one("#status_bar")
+        composer = app.query_one("#composer")
+        assert composer.region.bottom == status.region.y
+        assert status.region.bottom == app.size.height
+        assert "Approval" in status.visual.plain
+        assert "queued:2" in status.visual.plain
+        assert "tokens:1.5k" in status.visual.plain
+
+
+@pytest.mark.parametrize(
+    ("width", "status"),
+    [(20, "Interrupting..."), (32, "An arbitrary long server status")],
+)
+def test_status_bar_preserves_queue_and_tokens_for_any_status(
+    width: int,
+    status: str,
+) -> None:
+    from xbotv2.tui.textual_widgets import status_renderable
+
+    rendered = status_renderable(
+        status=status,
+        session_id="session",
+        thread_id="agent",
+        workspace_root="/workspace/XBot",
+        provider="minimax",
+        model="Minimax-M3",
+        context_window=32_000,
+        context_input_tokens=8_000,
+        activity="turn:123 1234.5s",
+        queue_depth=2,
+        usage={
+            "requests": 1,
+            "input_tokens": 1200,
+            "output_tokens": 345,
+            "total_tokens": 1545,
+        },
+        width=width,
+    ).plain
+
+    assert len(rendered) <= width
+    assert ("q:2" if width < 32 else "queued:2") in rendered
+    assert ("t:1.5k" if width < 32 else "tokens:1.5k") in rendered
+
+
+@pytest.mark.asyncio
+async def test_status_bar_uses_open_session_metadata() -> None:
+    class MetadataSession(_ScriptedSession):
+        async def connect(self):
+            return {
+                "session_id": "server-session",
+                "thread_id": "agent",
+                "agent_name": "BuildBot",
+                "workspace_root": "/workspace/XBot",
+                "provider": "minimax",
+                "model": "Minimax-M3",
+                "context_window": 32000,
+                "history": [],
+            }
+
+    app = XBotTextualApp(session_id="client-session", thread_id="agent")
+    app.session = MetadataSession()
+
+    async with app.run_test(headless=True, size=(120, 24)) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+            if app._connected:
+                break
+
+        status = app.query_one("#status_bar")
+        assert app.state.session_id == "server-session"
+        assert app.state.workspace_root == "/workspace/XBot"
+        assert app.state.provider == "minimax"
+        assert app.state.model == "Minimax-M3"
+        assert app.state.context_window == 32000
+        assert "model:Minimax-M3" in status.visual.plain
+        assert "ctx:" not in status.visual.plain
+        app.state.apply_event({
+            "type": "usage",
+            "data": {
+                "input_tokens": 8000,
+                "output_tokens": 100,
+                "total_tokens": 8100,
+                "requests": 1,
+            },
+        })
+        app._refresh_status()
+        await pilot.pause()
+        assert "ctx:75%" in status.visual.plain
+        assert "cwd:XBot" in status.visual.plain
+        assert "provider:minimax" in status.visual.plain
+
+
+@pytest.mark.asyncio
+async def test_resumed_assistant_history_uses_markdown_rendering() -> None:
+    from rich.markdown import Markdown
+    from rich.text import Text
+    from textual.widgets import Static
+
+    class HistorySession(_ScriptedSession):
+        async def connect(self):
+            return {
+                "session_id": "resumed",
+                "thread_id": "agent",
+                "agent_name": "XBotv2",
+                "workspace_root": "/workspace/XBot",
+                "provider": "minimax",
+                "history": [
+                    {"role": "user", "content": "**literal input**"},
+                    {"role": "assistant", "content": "## Answer\n\n- item"},
+                ],
+            }
+
+    app = XBotTextualApp(session_id="resumed", thread_id="agent")
+    app.session = HistorySession()
+
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        for _ in range(10):
+            await pilot.pause()
+            if app._connected:
+                break
+
+        assert isinstance(app.query_one(".user .body", Static).content, Text)
+        assert isinstance(app.query_one(".assistant .body", Static).content, Markdown)
 
 
 # ----------------------------------------------------------------------
@@ -137,7 +288,7 @@ async def test_completion_popup_appears_on_slash(scripted_session) -> None:
         await pilot.pause()
 
         assert popup.visible is True
-        assert len(popup.matches) == 4
+        assert len(popup.matches) == 6
         # First match should be /help (stable search order).
         assert popup.matches[0].name == "help"
 
@@ -236,6 +387,60 @@ async def test_completion_popup_escape_dismisses(scripted_session) -> None:
         assert popup.visible is False
         # Composer text is preserved on dismiss.
         assert composer.text == "/h"
+
+
+@pytest.mark.asyncio
+async def test_narrow_completion_tasks_status_and_composer_do_not_overlap(
+    scripted_session,
+) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+
+    async with app.run_test(headless=True, size=(40, 18)) as pilot:
+        await pilot.pause()
+        event = {
+            "type": "task_updated",
+            "data": {
+                "task_id": "task-1",
+                "command": "sleep 30",
+                "cwd": "/workspace",
+                "status": "running",
+                "created_at": 1.0,
+                "started_at": 1.0,
+                "finished_at": 0.0,
+                "output": "",
+                "error": "",
+            },
+        }
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        app._pending_messages = {
+            1: "active",
+            2: "queued follow-up",
+        }
+        app._refresh_all()
+        composer = app.query_one("#input")
+        composer.load_text("/")
+        app._refresh_completion_popup(composer.text)
+        await pilot.pause()
+
+        popup = app.query_one(CompletionPopup)
+        runtime_panels = app.query_one("#runtime_panels")
+        tasks = app.query_one("#task_panel")
+        queue = app.query_one("#queue_panel")
+        queue_list = app.query_one("#queue_list")
+        status = app.query_one("#status_bar")
+        composer_region = app.query_one("#composer").region
+
+        assert popup.region.bottom <= runtime_panels.region.y
+        assert tasks.region.y == queue.region.y
+        assert runtime_panels.region.bottom <= composer_region.y
+        assert composer_region.bottom <= status.region.y
+        assert "queued follow-up" in queue_list.visual.plain
+        assert status.region.bottom <= app.size.height, (
+            f"popup={popup.region} runtime={runtime_panels.region} "
+            f"status={status.region} composer={composer_region} screen={app.size}"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -401,6 +606,11 @@ async def test_tool_widget_title_includes_elapsed_seconds(
                 if t.startswith("tool"):
                     metas.append(t)
         assert len(metas) == 1, f"expected one tool meta; got {metas!r}"
+        assert "  ls  " in metas[0]
+        assert '{"command"' not in metas[0]
+        app._update_pending_tool_elapsed()
+        await pilot.pause()
+        assert "  ls  " in app.query_one(".tool .meta").visual.plain
         # Pending entry shows the live "Ns…" suffix.
         assert "s…" in metas[0], f"missing live elapsed: {metas[0]!r}"
 
@@ -545,6 +755,13 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
             else ""
         )
         assert "queued:2" in status_text, f"status: {status_text!r}"
+        queue_panel = app.query_one("#queue_panel")
+        queue_list = app.query_one("#queue_list", TStatic)
+        assert queue_panel.display is True
+        assert queue_panel.title == "Queue (2)"
+        assert "second" in queue_list.visual.plain
+        assert "third" in queue_list.visual.plain
+        assert "first" not in queue_list.visual.plain
 
         # All requests are submitted immediately. The real server owns
         # ordering through its per-session mailbox.
@@ -559,8 +776,10 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         # Give the worker a few ticks to finish.
         for _ in range(20):
             await pilot.pause()
-            if app._active_turn_requests == 0:
+            if not app._pending_messages:
                 break
+
+        assert queue_panel.display is False
 
     assert session.sent == ["first", "second", "third"]
 
@@ -643,13 +862,75 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         assert isinstance(palette, CommandPalette)
         # The palette's input should be auto-focused.
         assert app.focused is not None
-        # All four commands are visible (empty query).
+        # All client and discovered server commands are visible.
         from xbotv2.tui.command import search_commands
-        assert len(search_commands("")) == 4
+        assert len(search_commands("")) == 6
 
         await pilot.press("escape")
         await pilot.pause()
         assert app.screen is not palette
+
+
+@pytest.mark.asyncio
+async def test_command_palette_stays_inside_narrow_screen(scripted_session) -> None:
+    from textual.containers import Container
+    from xbotv2.tui.command_palette import CommandPalette
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(32, 16)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+
+        palette = app.screen
+        assert isinstance(palette, CommandPalette)
+        container = palette.query_one(Container)
+        assert container.region.x >= 0
+        assert container.region.y >= 0
+        assert container.region.right <= app.size.width
+        assert container.region.bottom <= app.size.height
+
+
+@pytest.mark.asyncio
+async def test_command_palette_scrolls_to_long_server_command_list() -> None:
+    from xbotv2.tui.command_palette import CommandPalette
+
+    class ManyCommandsSession(_ScriptedSession):
+        async def list_commands(self):
+            return {
+                "commands": [
+                    {
+                        "name": f"command-{index:02d}",
+                        "slash": f"/command-{index:02d}",
+                        "description": f"server command {index:02d}",
+                    }
+                    for index in range(24)
+                ]
+            }
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = ManyCommandsSession()
+    async with app.run_test(headless=True, size=(60, 20)) as pilot:
+        for _ in range(5):
+            await pilot.pause()
+            if app._connected:
+                break
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+
+        palette = app.screen
+        assert isinstance(palette, CommandPalette)
+        for _ in range(18):
+            await pilot.press("down")
+        await pilot.pause()
+
+        listing = palette.query_one("#palette-list")
+        active = palette.query_one(".palette-row.active")
+        assert palette._selected == 18
+        assert listing.scroll_y > 0
+        assert active.region.y >= listing.content_region.y
+        assert active.region.bottom <= listing.content_region.bottom
 
 
 @pytest.mark.asyncio
@@ -769,6 +1050,234 @@ async def test_assistant_message_body_renders_in_transcript(
 
 
 @pytest.mark.asyncio
+async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"content": "Visible answer"}}
+        )
+        await app._render_new_transcript_entries()
+
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "First thought"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        assert block.collapsed is True
+        await pilot.click(block.query_one("CollapsibleTitle"))
+        await pilot.pause()
+        assert block.collapsed is False
+
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": " and more"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+
+        assert block.collapsed is False
+        assert "First thought and more" in str(
+            block.query_one(".reasoning", Static).content
+        )
+        composer = app.query_one("#input")
+        assert app.focused is composer
+        await pilot.press("n", "e", "x", "t", "enter")
+        for _ in range(5):
+            await pilot.pause()
+            if scripted_session.sent:
+                break
+        assert scripted_session.sent == ["next"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_markdown_survives_streaming_updates(scripted_session) -> None:
+    from rich.markdown import Markdown
+    from textual.widgets import Static
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {
+                "type": "assistant_message_delta",
+                "data": {"content": "## Result\n\n```python\nprint('ok')"},
+            }
+        )
+        await app._render_new_transcript_entries()
+        body = app.query_one(".assistant .body", Static)
+        assert isinstance(body.content, Markdown)
+
+        app.state.apply_event(
+            {
+                "type": "assistant_message_delta",
+                "data": {"content": "\n```"},
+            }
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+
+        assert isinstance(body.content, Markdown)
+        screenshot = app.export_screenshot(title="assistant-markdown")
+        assert "Result" in screenshot
+        assert "print" in screenshot
+
+
+@pytest.mark.asyncio
+async def test_collapsed_reasoning_does_not_pull_scrolled_history_to_bottom(
+    scripted_session,
+) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(80, 20)) as pilot:
+        await pilot.pause()
+        for index in range(20):
+            app.state.append_message(
+                "assistant", f"history {index}\nline two\nline three"
+            )
+        app.state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "first"}}
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        stream = app.query_one("#transcript")
+        stream.scroll_end(animate=False)
+        await pilot.pause()
+        await pilot.press("pageup")
+        await pilot.pause()
+        scrolled_position = stream.scroll_y
+        assert not stream.is_vertical_scroll_end
+
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": " more"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+
+        assert stream.scroll_y == scrolled_position
+
+
+@pytest.mark.asyncio
+async def test_tool_details_are_collapsible_and_update_in_place(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {
+                "type": "assistant_message",
+                "data": {
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "name": "shell", "args": {"command": "pwd"}}
+                    ],
+                },
+            }
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".tool-details", Collapsible)
+        assert block.collapsed is True
+        await pilot.click(block.query_one("CollapsibleTitle"))
+        await pilot.pause()
+
+        app.state.apply_event(
+            {
+                "type": "tool_result",
+                "data": {
+                    "tool_call_id": "c1",
+                    "name": "shell",
+                    "status": "success",
+                    "content": "/workspace",
+                },
+            }
+        )
+        await app._refresh_tool_widget("c1")
+        await pilot.pause()
+
+        assert block.collapsed is False
+        assert "/workspace" in str(block.query_one(".body", Static).content)
+
+
+@pytest.mark.asyncio
+async def test_thinking_and_details_commands_control_current_and_future_blocks(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "first"}}
+        )
+        app.state.apply_event(
+            {
+                "type": "assistant_message",
+                "data": {
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "name": "shell", "args": {"command": "pwd"}}
+                    ],
+                },
+            }
+        )
+        await app._render_new_transcript_entries()
+
+        composer = app.query_one("#input")
+        composer.load_text("/thinking on")
+        await app.submit_composer()
+        composer.load_text("/details on")
+        await app.submit_composer()
+        await pilot.pause()
+
+        assert all(
+            not block.collapsed
+            for block in app.query(".reasoning-block, .tool-details")
+            if isinstance(block, Collapsible)
+        )
+
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "second"}}
+        )
+        app.state.apply_event(
+            {
+                "type": "tool_calls_started",
+                "data": {
+                    "tool_calls": [
+                        {"id": "c2", "name": "read_file", "args": {"path": "README.md"}}
+                    ]
+                },
+            }
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        assert len(app.query(".reasoning-block")) == 2
+        assert len(app.query(".tool-details")) == 2
+        assert all(
+            not block.collapsed
+            for block in app.query(".reasoning-block, .tool-details")
+            if isinstance(block, Collapsible)
+        )
+
+
+@pytest.mark.asyncio
 async def test_help_body_renders_each_command_on_its_own_row(
     scripted_session,
 ) -> None:
@@ -859,10 +1368,9 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
         assert msgs and msgs[-1].content == long_lines
         tools = list(app.state.tools.values())
         assert tools
-        # ``tool.summary`` may keep newlines after the
-        # ``_preview`` fix; the per-line shortening still applies.
         assert "line" not in tools[-1].summary  # tool result, not assistant
         assert "row 000" in tools[-1].summary
+        assert "row 039" in tools[-1].result
 
         # 2. Each entry is laid out as title + full body; we walk
         #    the DOM and assert there is no inner scrollbar widget
@@ -896,14 +1404,35 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
         body_texts = []
         for w in transcript.children:
             body_texts.extend(_collect_bodies(w))
+        from rich.markdown import Markdown
+
         joined = "\n".join(
-            b.visual.plain if b.visual is not None and hasattr(b.visual, "plain") else ""
+            b.content.markup
+            if isinstance(b.content, Markdown)
+            else (
+                b.visual.plain
+                if b.visual is not None and hasattr(b.visual, "plain")
+                else ""
+            )
             for b in body_texts
         )
         for line in (long_lines.splitlines()[0],
                      long_lines.splitlines()[10],
                      long_lines.splitlines()[-1]):
             assert line in joined, f"missing line {line!r} in body DOM"
+        assert "row 039" in joined
+
+        transcript.scroll_end(animate=False)
+        await pilot.pause()
+        bottom = transcript.scroll_y
+        assert bottom > 0
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert transcript.scroll_y < bottom
+        previous = transcript.scroll_y
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert transcript.scroll_y > previous
 
 
 # ------------------------------------------------------------------

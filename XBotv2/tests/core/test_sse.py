@@ -183,6 +183,10 @@ def test_server_event_rejects_incomplete_interaction_payloads(
             {"name": "shell", "content": "ok", "status": "success"},
         ),
         (
+            "task_updated",
+            {"task_id": "task-1", "status": "running"},
+        ),
+        (
             "usage",
             {
                 "input_tokens": -1,

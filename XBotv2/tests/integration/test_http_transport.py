@@ -30,6 +30,7 @@ import pytest
 import pytest_asyncio
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
+from xbotv2.api.messages import Message
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
@@ -265,6 +266,8 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
     assert body["status"] == "ready"
     assert body["agent_name"]
     assert body["session_id"] == "s1"
+    assert body["model"] == "test"
+    assert body["context_window"] == 4096
 
 
 @pytest.mark.asyncio
@@ -282,6 +285,20 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     assert "turn_finished" in turn.text
     manager = client._transport.app.state.manager
     original = await manager.get("resume-history")
+    original.engine.messages.append(Message(
+        role="tool",
+        content="cached result",
+        tool_call_id="call-1",
+        status="error",
+        additional_kwargs={
+            "xbotv2_data": {"cache": "tool-results/call-1.txt"},
+            "xbotv2_error": {"code": "failed", "message": "bad input"},
+        },
+        artifact=[
+            {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
+        ],
+    ))
+    await original.engine.save_messages()
 
     resumed = await client.post(
         "/sessions",
@@ -296,7 +313,12 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     assert [(item["role"], item["content"]) for item in history] == [
         ("user", "remember this"),
         ("assistant", "hello from mock"),
+        ("tool", "cached result"),
     ]
+    tool = history[-1]
+    assert tool["data"] == {"cache": "tool-results/call-1.txt"}
+    assert tool["error"]["code"] == "failed"
+    assert tool["artifacts"][0]["name"] == "report.txt"
 
 
 @pytest.mark.asyncio
@@ -413,10 +435,12 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
         {
             "role": "user", "content": "first", "tool_calls": [],
             "tool_call_id": "", "status": "",
+            "data": None, "error": None, "artifacts": [],
         },
         {
             "role": "assistant", "content": "first answer", "tool_calls": [],
             "tool_call_id": "", "status": "",
+            "data": None, "error": None, "artifacts": [],
         },
     ]
     ctx = await http_app.state.manager.get("history")
@@ -1124,6 +1148,53 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     ] == ["system", "assistant"]
     assert "background command completed" in ctx.engine.messages[0].content.lower()
     assert item.kind == "general"
+
+
+@pytest.mark.asyncio
+async def test_background_task_updates_and_completion_use_session_stream(
+    http_app, monkeypatch
+) -> None:
+    async def run(*args, **kwargs):
+        await asyncio.sleep(0)
+        return "task output"
+
+    monkeypatch.setattr(
+        "xbotv2.core.background_tasks.run_shell_command", run
+    )
+    llm = MockLLM(responses=[{"content": "task acknowledged"}])
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="background-events",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    events = ctx.attach_event_stream()
+
+    await ctx.engine.background_tasks.start_task("printf result")
+
+    received = []
+    while True:
+        event = await asyncio.wait_for(events.get(), timeout=1)
+        received.append(event)
+        if event and event["type"] == "turn_finished":
+            break
+
+    task_events = [
+        event for event in received
+        if event and event["type"] == "task_updated"
+    ]
+    assert [event["data"]["status"] for event in task_events] == [
+        "pending", "running", "completed",
+    ]
+    assert any(
+        event and event["type"] == "assistant_message"
+        and event["data"]["content"] == "task acknowledged"
+        for event in received
+    )
+    assert "background task task-1 completed" in ctx.engine.messages[0].content.lower()
 
 
 @pytest.mark.asyncio

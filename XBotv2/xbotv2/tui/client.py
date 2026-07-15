@@ -28,11 +28,16 @@ class TuiTranscriptEntry:
 class TuiTool:
     tool_call_id: str
     name: str
+    args: dict[str, Any] = field(default_factory=dict)
     args_preview: str = ""
     args_streaming: str = ""
     args_finalized: bool = False
     status: str = "pending"
     summary: str = ""
+    result: str = ""
+    data: Any = None
+    error: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Wall-clock seconds between ``tool_calls_started`` and
     # ``tool_result``. Set when the result arrives. While pending,
     # the value is the live elapsed (see ``elapsed()``).
@@ -58,6 +63,25 @@ class TuiTool:
         return max(0.0, end - self.started_at)
 
 
+@dataclass(slots=True)
+class TuiTask:
+    task_id: str
+    command: str
+    cwd: str = ""
+    status: str = "pending"
+    created_at: float = 0.0
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    output: str = ""
+    error: str = ""
+
+    def elapsed(self, now: float | None = None) -> float:
+        if self.started_at <= 0:
+            return 0.0
+        end = self.finished_at or now or time.time()
+        return max(0.0, end - self.started_at)
+
+
 @dataclass
 class TuiNotice:
     kind: str
@@ -71,6 +95,11 @@ class TuiState:
     session_id: str = "default"
     thread_id: str = "agent"
     agent_name: str = "XBotv2"
+    workspace_root: str = ""
+    provider: str = ""
+    model: str = ""
+    context_window: int = 0
+    context_input_tokens: int = 0
     status: str = "Disconnected"
     usage: dict[str, int] = field(default_factory=lambda: {
         "input_tokens": 0,
@@ -86,6 +115,7 @@ class TuiState:
     })
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
+    tasks: dict[str, TuiTask] = field(default_factory=dict)
     notices: list[TuiNotice] = field(default_factory=list)
     transcript: list[TuiTranscriptEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -153,10 +183,16 @@ class TuiState:
         elif event_type == "assistant_message_delta":
             content = str(data.get("content") or "")
             reasoning = str(data.get("reasoning") or "")
+            if self.turn_active:
+                self.status = "Thinking" if reasoning and not content else "Running"
             self.append_assistant_delta(content, reasoning)
         elif event_type == "tool_call_delta":
+            if self.turn_active:
+                self.status = "Running"
             self._apply_tool_call_delta(data.get("tool_calls"))
         elif event_type == "tool_calls_started":
+            if self.turn_active:
+                self.status = "Running"
             self._apply_tool_calls(data.get("tool_calls"))
             self._streaming_tool_ids.clear()
         elif event_type == "tool_result":
@@ -165,13 +201,36 @@ class TuiState:
                 name=str(data.get("name") or "tool"),
             )
             tool.status = str(data.get("status") or "completed")
-            tool.summary = _preview(data.get("content") or data.get("summary") or "")
+            content = data.get("content") or data.get("summary") or ""
+            tool.result = format_value(content)
+            tool.summary = _preview(content)
+            tool.data = data.get("data")
+            tool.error = data.get("error") if isinstance(data.get("error"), dict) else None
+            artifacts = data.get("artifacts")
+            tool.artifacts = [
+                dict(artifact) for artifact in artifacts or []
+                if isinstance(artifact, dict)
+            ]
             # Mark the wall-clock end of this tool call so the
             # transcript can show "shell success  0.4s" (per user
             # request: per-tool latency in the entry title).
             tool.finished_at = time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
             self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "task_updated":
+            task_id = str(data.get("task_id") or "")
+            if task_id:
+                self.tasks[task_id] = TuiTask(
+                    task_id=task_id,
+                    command=str(data.get("command") or ""),
+                    cwd=str(data.get("cwd") or ""),
+                    status=str(data.get("status") or "pending"),
+                    created_at=float(data.get("created_at") or 0),
+                    started_at=float(data.get("started_at") or 0),
+                    finished_at=float(data.get("finished_at") or 0),
+                    output=str(data.get("output") or ""),
+                    error=str(data.get("error") or ""),
+                )
         elif event_type == "usage":
             self._apply_usage(data)
         elif event_type == "status":
@@ -257,6 +316,9 @@ class TuiState:
                         "tool_call_id": str(item.get("tool_call_id") or "tool"),
                         "content": str(item.get("content") or ""),
                         "status": str(item.get("status") or "completed"),
+                        "data": item.get("data"),
+                        "error": item.get("error"),
+                        "artifacts": item.get("artifacts") or [],
                     },
                 })
 
@@ -393,6 +455,8 @@ class TuiState:
             # raw partial JSON string.
             final_args = raw_tool.get("args") or raw_tool.get("arguments")
             if final_args:
+                if isinstance(final_args, dict):
+                    tool.args = dict(final_args)
                 tool.args_preview = _preview(final_args)
                 tool.args_finalized = True
             tool.status = "pending"
@@ -451,6 +515,9 @@ class TuiState:
         delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
         if not isinstance(usage, dict):
             return
+        current = delta if isinstance(delta, dict) else usage
+        if "input_tokens" in current:
+            self.context_input_tokens = int(current.get("input_tokens") or 0)
         for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
             val = int(usage.get(key) or 0)
             if key in usage:
@@ -497,6 +564,8 @@ class TuiState:
             old_tool.tool_call_id = new_id
             self.tools[new_id] = old_tool
         else:
+            if not existing.args:
+                existing.args = old_tool.args
             if not existing.args_preview:
                 existing.args_preview = old_tool.args_preview
             if not existing.args_streaming:
@@ -516,23 +585,29 @@ class TuiState:
 def _preview(value: Any, *, width: int = 120) -> str:
     """Render a short, single-line-friendly preview of ``value``.
 
-    Newlines are preserved (so multi-line tool results stay
-    multi-line in the TUI body) and each line is independently
-    shortened to ``width`` characters. This is what the design doc
-    §5.3 calls for: the body of a tool entry shows ``args`` and
-    ``result`` as plain text, fully expanded.
+    Newlines are preserved and each line is independently shortened. Tool
+    details may be collapsed by the frontend, but their content remains
+    available without changing the protocol value.
     """
 
-    if isinstance(value, str):
-        text = value
-    else:
-        try:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except TypeError:
-            text = str(value)
+    text = format_value(value)
     return "\n".join(
         shorten(line, width=width, placeholder="...") for line in text.splitlines() or [""]
     )
+
+
+def format_value(value: Any, *, indent: int | None = None) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=indent,
+        )
+    except TypeError:
+        return str(value)
 
 
 def _repair_mojibake(text: str) -> str:

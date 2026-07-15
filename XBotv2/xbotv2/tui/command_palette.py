@@ -1,22 +1,4 @@
-"""Command palette screen (Ctrl+P style fuzzy search).
-
-A full-screen modal overlay that lets the user fuzzy-search every
-registered slash command and invoke it. Mirrors OpenCode's
-``command_list`` bind (``ctrl+p``) per the design doc §10.2.3, but
-limited to the four v1 slash commands.
-
-Behavior:
-
-- ``Ctrl+P`` pushes this screen on the app.
-- The search input is auto-focused.
-- As the user types, the candidate list below the input is filtered
-  via :func:`search_commands`.
-- ``Up``/``Down`` move the selection within the candidates.
-- ``Enter`` invokes the selected command (the same code path as
-  submitting the command in the composer).
-- ``Escape`` pops the screen.
-- Empty query shows the full command list (stable order).
-"""
+"""Searchable palette for client and server slash commands."""
 
 from __future__ import annotations
 
@@ -24,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical
+from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -74,6 +56,11 @@ class CommandPalette(ModalScreen[None]):
         color: #8b95a7;
         text-style: italic;
     }
+    CommandPalette #palette-list {
+        height: auto;
+        max-height: 10;
+        scrollbar-size: 1 1;
+    }
     """
 
     BINDINGS = [
@@ -91,7 +78,7 @@ class CommandPalette(ModalScreen[None]):
                 placeholder="Type to search slash commands…",
                 id="palette-input",
             )
-            with Vertical(id="palette-list"):
+            with VerticalScroll(id="palette-list"):
                 yield Static("loading…", id="palette-empty", classes="palette-empty")
 
     def on_mount(self) -> None:
@@ -105,13 +92,7 @@ class CommandPalette(ModalScreen[None]):
         del event
         self._invoke_selected()
 
-    # ------------------------------------------------------------------
-    # Key handling for Up/Down navigation
-    # ------------------------------------------------------------------
-
     def on_key(self, event) -> None:  # type: ignore[no-untyped-def]
-        # Up/Down move the selection; everything else falls through to
-        # the default Input behavior.
         if event.key == "down":
             event.stop()
             event.prevent_default()
@@ -132,8 +113,7 @@ class CommandPalette(ModalScreen[None]):
         if self._selected >= len(self._matches):
             self._selected = 0
 
-        container = self.query_one("#palette-list", Vertical)
-        # Drop existing children.
+        container = self.query_one("#palette-list", VerticalScroll)
         for child in list(container.children):
             child.remove()
         if not self._matches:
@@ -148,10 +128,15 @@ class CommandPalette(ModalScreen[None]):
             container.mount(Static(f"  {label}", classes=classes))
 
     def _reapply_active(self) -> None:
-        container = self.query_one("#palette-list", Vertical)
+        container = self.query_one("#palette-list", VerticalScroll)
         for index, child in enumerate(container.children):
             classes = "palette-row active" if index == self._selected else "palette-row"
             child.set_classes(classes)
+        if container.children:
+            container.children[self._selected].scroll_visible(
+                animate=False,
+                immediate=True,
+            )
 
     def _invoke_selected(self) -> None:
         if not self._matches:
@@ -159,11 +144,7 @@ class CommandPalette(ModalScreen[None]):
             return
         spec = self._matches[self._selected]
         self.dismiss()
-        # Route through the host app so the same code path as a typed
-        # slash command is exercised (including the trace event).
         app: "XBotTextualApp" = self.app  # type: ignore[assignment]
-        # We are still inside the input-submitted handler, so defer
-        # the actual invocation to the next event loop tick.
         app.call_after_refresh(app._handle_slash_command, spec)
 
     def action_dismiss(self) -> None:

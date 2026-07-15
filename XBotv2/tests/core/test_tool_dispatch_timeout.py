@@ -44,10 +44,12 @@ async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
     registry.register(Tool.from_function(slow), sandbox_mode="host")
     monkeypatch.setattr(runtime, "_TOOL_DISPATCH_TIMEOUT_SECONDS", 0.05)
 
+    started = time.monotonic()
     results = await execute_tools(
         [ToolCall("call_1", "slow", {})],
         registry,
     )
 
+    assert time.monotonic() - started < 0.2
     assert results[0].status == "error"
     assert "Error executing slow" in results[0].content

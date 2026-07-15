@@ -232,6 +232,8 @@ class NormalClosePlugin(PluginBase):
         assert "filesystem_list" in tool_names
         assert "send_message" in tool_names
         assert "ask_user" in tool_names
+        assert "list_tasks" in tool_names
+        assert "stop_task" in tool_names
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
@@ -254,6 +256,8 @@ class NormalClosePlugin(PluginBase):
 
         assert "send_message" in engine.tool_registry.names()
         assert "ask_user" in engine.tool_registry.names()
+        assert "list_tasks" in engine.tool_registry.names()
+        assert "stop_task" in engine.tool_registry.names()
         assert "plugin:compact:*" in engine.config.tools
         assert "plugin:todolist:*" in engine.config.tools
         assert "plugin:goal:*" in engine.config.tools

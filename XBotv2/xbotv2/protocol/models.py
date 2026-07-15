@@ -47,6 +47,9 @@ class SessionHistoryItem(WireModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     tool_call_id: str = ""
     status: str = ""
+    data: Any = None
+    error: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class OpenSessionResponse(WireModel):
@@ -56,6 +59,8 @@ class OpenSessionResponse(WireModel):
     agent_name: str
     workspace_root: str
     provider: str
+    model: str = ""
+    context_window: int = Field(default=0, ge=0)
     history: list[SessionHistoryItem] = Field(default_factory=list)
 
 
@@ -133,6 +138,7 @@ ServerEventType = Literal[
     "tool_call_delta",
     "tool_calls_started",
     "tool_result",
+    "task_updated",
     "turn_cancelled",
     "turn_finished",
     "turn_started",
@@ -244,6 +250,18 @@ class ToolResultData(WireModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TaskUpdatedData(WireModel):
+    task_id: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    cwd: str
+    status: Literal["pending", "running", "completed", "failed", "stopped"]
+    created_at: float = Field(ge=0)
+    started_at: float = Field(ge=0)
+    finished_at: float = Field(ge=0)
+    output: str = ""
+    error: str = ""
+
+
 class UsageData(WireModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
@@ -276,6 +294,7 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "tool_call_delta": ToolCallDeltaData,
     "tool_calls_started": ToolCallsStartedData,
     "tool_result": ToolResultData,
+    "task_updated": TaskUpdatedData,
     "turn_cancelled": TurnCancelledData,
     "turn_finished": TurnData,
     "turn_started": TurnData,
@@ -358,6 +377,7 @@ __all__ = [
     "ServerEventType",
     "SessionHistoryItem",
     "SessionMode",
+    "TaskUpdatedData",
     "ToolCallData",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",

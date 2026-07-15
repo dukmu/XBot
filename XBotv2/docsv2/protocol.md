@@ -34,7 +34,12 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
   explicitly.
 - `OpenSessionResponse.history` contains display-safe user, assistant, and tool
   messages as typed `SessionHistoryItem` values. It excludes system messages
-  and private provider metadata.
+  and private provider metadata. Tool history retains structured `data`,
+  `error`, and `artifacts` so resumed clients render the same Details content
+  as the live event stream.
+- `OpenSessionResponse.model` and `context_window` describe the active provider
+  model and the configured runtime context budget. `/provider use` updates the
+  model reported by subsequent status commands.
 
 ### Endpoints
 
@@ -60,6 +65,8 @@ Session history commands use the same command endpoint:
   artifacts, and plugin state.
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
   session id without copying a live turn or interaction.
+- `/tasks [ps]` lists live background shell tasks. `/task stop <id>` and
+  `/task stopall` control them without sending command text to the model.
 
 The Goal plugin separately registers the human `/goal` command and the Agent
 Tools `create_goal`, `get_goal`, and `update_goal`. The command endpoint invokes
@@ -164,6 +171,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `tool_call_delta` | `{tool_calls: [{tool_call_id, id, name, args_delta, args, index, replaces_tool_call_id?}]}` |
 | `tool_calls_started` | `{tool_calls: [{id, name, args, type}]}` |
 | `tool_result` | `{tool_call_id, name, content, status, data?, error?, artifacts?}` |
+| `task_updated` | `{task_id, command, cwd, status, created_at, started_at, finished_at, output, error}` |
 | `client_message` | `{message, level, source, tool_call_id}` |
 | `permission_denied` | `{request_id, reason, tool_call, decision}` |
 | `permission_request` | `{request_id, source, reason, tool_call, decision, resume_supported}` |

@@ -248,11 +248,11 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
         )
         # The status bar must show the live token counts *before*
         # turn_finished arrives.
-        assert "in:100" in status_text, (
+        assert "100 in" in status_text, (
             f"status bar missing live input tokens: {status_text!r}"
         )
-        assert "out:25" in status_text
-        assert "total:125" in status_text
+        assert "25 out" in status_text
+        assert "tokens:125" in status_text
 
         # The activity row also reflects the live usage.
         activity = app._activity_text(final=False)

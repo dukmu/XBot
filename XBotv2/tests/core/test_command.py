@@ -6,7 +6,11 @@ drives the composer completion popup and the command palette.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+
+from xbotv2.api.tools import ToolResult
 
 from xbotv2.tui.command import (
     CommandSpec,
@@ -34,11 +38,17 @@ def restore_command_registry(monkeypatch):
 
 def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
     results = search_commands("")
-    assert [spec.name for spec in results] == ["help", "clear-screen", "exit"]
+    assert [spec.name for spec in results] == [
+        "help",
+        "clear-screen",
+        "thinking",
+        "details",
+        "exit",
+    ]
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(search_commands("   ")) == 3
+    assert len(search_commands("   ")) == 5
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
@@ -77,7 +87,7 @@ def test_search_commands_falls_back_to_substring() -> None:
 def test_search_commands_deduplicates_results() -> None:
     results = search_commands("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 3
+    assert len(names) == len(set(names)) == 5
 
 
 def test_register_server_commands_adds_dynamic_completion() -> None:
@@ -122,7 +132,7 @@ def test_search_commands_palette_query_finds_help() -> None:
 
 
 def test_search_commands_palette_query_word_match() -> None:
-    results = search_commands("clear 事件")
+    results = search_commands("clear transcript")
     assert [spec.name for spec in results] == ["clear-screen"]
 
 
@@ -131,7 +141,7 @@ def test_search_commands_palette_query_no_match() -> None:
 
 
 def test_search_commands_palette_query_returns_only_matching() -> None:
-    results = search_commands("退")
+    results = search_commands("quit")
     assert [spec.name for spec in results] == ["exit"]
 
 
@@ -150,8 +160,8 @@ def test_command_spec_has_kind() -> None:
     spec = parse_slash_command("/help")
     assert spec is not None
     assert spec.kind == "client"
-    assert spec.description == "显示帮助信息。用法: /help [command-name]"
-    assert spec.parameters["[command-name]"] == "要查看详情的命令名（可选）"
+    assert spec.description == "Show commands or detailed help for one command"
+    assert spec.parameters["[command-name]"] == "Optional command name"
 
 
 def test_server_command_has_kind_server() -> None:
@@ -275,3 +285,37 @@ async def test_server_command_registry_owns_metadata_and_dispatch(monkeypatch) -
     result = await execute_command("context", "sample", ["a", "b"])
 
     assert result["data"]["message"] == "context:a,b"
+
+
+@pytest.mark.asyncio
+async def test_task_commands_reuse_session_task_manager() -> None:
+    class Tasks:
+        def snapshots(self):
+            return [{
+                "task_id": "task-1",
+                "status": "running",
+                "command": "sleep 30",
+            }]
+
+        async def stop_task(self, task_id):
+            return ToolResult.success(
+                f"Stopped {task_id}",
+                data={"task_id": task_id, "status": "stopped"},
+            )
+
+        async def stop_all(self):
+            return [{"task_id": "task-1", "status": "stopped"}]
+
+    from xbotv2.protocol.commands import execute_command
+
+    ctx = SimpleNamespace(
+        engine=SimpleNamespace(background_tasks=Tasks()),
+    )
+
+    listed = await execute_command(ctx, "tasks", ["ps"])
+    stopped = await execute_command(ctx, "task", ["stop", "task-1"])
+    stopped_all = await execute_command(ctx, "task", ["stopall"])
+
+    assert listed["data"]["data"]["tasks"][0]["task_id"] == "task-1"
+    assert stopped["data"]["data"]["status"] == "stopped"
+    assert stopped_all["data"]["message"] == "Stopped 1 background task(s)."

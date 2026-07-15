@@ -229,6 +229,7 @@ def test_server_event_type_inventory_covers_current_stream_events():
         "tool_call_delta",
         "tool_calls_started",
         "tool_result",
+        "task_updated",
         "turn_cancelled",
         "turn_finished",
         "turn_started",

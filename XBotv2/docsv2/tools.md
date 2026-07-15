@@ -4,7 +4,7 @@ Core registers these tools without plugins:
 
 | Tool | Execution | Purpose |
 |---|---|---|
-| `shell` | sandboxed, sequential | Run a command |
+| `shell` | session runtime | Run a foreground command or start one with `background=true` |
 | `filesystem_read` | sandboxed, sequential | Read UTF-8 text with metadata |
 | `filesystem_write` | sandboxed, sequential | Write, patch, or replace text |
 | `filesystem_list` | sandboxed, sequential | List directory entries |
@@ -12,6 +12,19 @@ Core registers these tools without plugins:
 | `find_files` | sandboxed, sequential | Find files by glob |
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
+| `list_tasks` | session runtime | List tasks or read one full result |
+| `stop_task` | session runtime | Stop one background task |
+
+Background tasks are runtime-only and end with the live session. They emit
+bounded previews through `task_updated`; `list_tasks(task_id)` returns the
+captured output through the normal ToolResult cache boundary. Shell capture is
+bounded at 100,000 bytes and marks truncation explicitly. Task completion enters
+the runtime mailbox as a general message, so the Agent can react while the
+client is connected without polling.
+
+`shell(background=true)` uses the same canonical Tool name, command arguments,
+Hooks, and permission rules as foreground shell execution. Background mode is
+not a permission alias or a second execution path around `shell` policy.
 
 `SystemConfig.tools` may narrow this registry after plugin initialization. The
 shipped configuration keeps both client-interaction tools visible so an agent
@@ -89,3 +102,8 @@ The dispatcher executes a tool batch sequentially. Registration exposes no
 parallel or lock metadata because the runtime has no corresponding guarantee.
 Any future parallel scheduler must define ordering, Hook concurrency,
 interaction serialization, and lock-key behavior before adding public options.
+
+Synchronous tool functions run through `asyncio.to_thread` and do not block
+streaming. A timed-out Python function cannot be killed inside its worker
+thread and may finish later. Cancellable long-lived work should use background
+shell tasks, whose process groups are owned and stopped by the live session.

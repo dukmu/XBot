@@ -1,7 +1,9 @@
 """Core ReAct loop engine.
 
-The engine runs a 3-node ReAct loop and contains NO references to
-plan, task, dag, skill, compact, memory, summary, or subagent concepts.
+The engine runs a 3-node ReAct loop and contains no planning, DAG, skill,
+compaction, memory, summary, or subagent concepts. A session-owned background
+shell manager is attached only for tool access and lifecycle cleanup; it does
+not participate in ReAct state.
 
 Without plugins, the engine implements:
     prepare_context → agent → tools → repeat (ReAct loop)
@@ -173,6 +175,9 @@ class Engine:
         workspace_root: str | None = None,
         max_iterations: int = 50,
         plugin_loader: Any | None = None,
+        background_tasks: Any | None = None,
+        model: str = "",
+        context_window: int = 0,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -185,6 +190,11 @@ class Engine:
         self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
         self.plugin_loader = plugin_loader
+        self.background_tasks = background_tasks
+        self.model = model
+        self.context_window = context_window or int(
+            getattr(config, "max_context_tokens", 0) or 0
+        )
 
         self.messages: list[Message] = []
         self._persisted_messages: list[dict[str, Any]] = []
@@ -257,6 +267,11 @@ class Engine:
         self.cancel_pending_user_inputs("session_closed")
         self.cancel_pending_permissions("session_closed")
         errors: list[BaseException] = []
+        if self.background_tasks is not None:
+            try:
+                await self.background_tasks.close()
+            except BaseException as exc:
+                errors.append(exc)
         try:
             ctx = self._make_hook_context(HookStage.ON_SESSION_CLOSE)
             await self.hook_manager.run(HookStage.ON_SESSION_CLOSE, ctx, short_circuit=False)

@@ -96,6 +96,8 @@ class TestMessageSerialization:
             name="filesystem_read",
             additional_kwargs={
                 "visible": "kept",
+                "xbotv2_data": {"count": 1},
+                "xbotv2_error": {"code": "failed"},
                 "xbotv2_events": [{"type": "client_message", "data": {}}],
                 "xbotv2_turn_complete": True,
             },
@@ -105,7 +107,11 @@ class TestMessageSerialization:
         restored = dict_to_message(d)
         assert restored.role == "tool"
         assert restored.name == "filesystem_read"
-        assert restored.additional_kwargs == {"visible": "kept"}
+        assert restored.additional_kwargs == {
+            "visible": "kept",
+            "xbotv2_data": {"count": 1},
+            "xbotv2_error": {"code": "failed"},
+        }
         assert restored.response_metadata == {"duration_ms": 5}
 
     def test_system_message_roundtrip(self):

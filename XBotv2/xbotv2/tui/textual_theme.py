@@ -17,6 +17,49 @@ Screen {
     color: #d6dae2;
 }
 
+#runtime_panels {
+    display: none;
+    width: 1fr;
+    height: auto;
+    max-height: 9;
+    background: #171a21;
+}
+
+#runtime_panels.compact {
+    max-height: 4;
+}
+
+#runtime_panels.compact > #task_panel,
+#runtime_panels.compact > #queue_panel {
+    max-height: 4;
+}
+
+#task_panel, #queue_panel {
+    display: none;
+    width: 1fr;
+    height: auto;
+    max-height: 9;
+    padding: 0 1;
+    border-top: solid #2d3440;
+    background: #171a21;
+}
+
+#task_panel CollapsibleTitle, #queue_panel CollapsibleTitle {
+    height: 1;
+    padding: 0;
+    color: #8b95a7;
+}
+
+#task_list {
+    height: auto;
+    padding: 0 1;
+}
+
+#queue_list {
+    height: auto;
+    padding: 0 1;
+}
+
 #transcript {
     height: 1fr;
     padding: 1 2 0 2;
@@ -43,6 +86,28 @@ Screen {
     height: auto;
     color: #d6dae2;
     padding: 0 0 0 2;
+}
+
+.reasoning-block, .tool-details {
+    width: 1fr;
+    height: auto;
+    padding: 0 0 0 1;
+    padding-bottom: 0;
+    border-top: none;
+    background: transparent;
+}
+
+.reasoning-block CollapsibleTitle, .tool-details CollapsibleTitle {
+    height: 1;
+    padding: 0 1;
+    color: #8b95a7;
+}
+
+.reasoning-block .reasoning {
+    width: 1fr;
+    height: auto;
+    padding: 0 0 0 1;
+    color: #8b95a7;
 }
 
 .user .meta {
@@ -83,8 +148,13 @@ Screen {
     color: #8b95a7;
 }
 
+.permission-context {
+    height: auto;
+    padding: 0 0 0 2;
+    color: #e0af68;
+}
+
 #composer {
-    dock: bottom;
     height: auto;
     padding: 0 1 1 1;
     background: #0f1115;

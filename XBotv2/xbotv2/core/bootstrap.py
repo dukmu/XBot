@@ -34,6 +34,7 @@ from xbotv2.config.policy import (
 )
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.context import ContextBuilder
+from xbotv2.core.background_tasks import BackgroundTaskManager
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
@@ -51,14 +52,12 @@ from xbotv2.tools.sandbox import SandboxPolicy
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
 from xbotv2.core.builtin_tools.interaction import INTERACTION_TOOLS
-from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
-    (SHELL_TOOLS[0], "sandboxed"),
     (FILESYSTEM_TOOLS[0], "sandboxed"),  # filesystem_read
     (FILESYSTEM_TOOLS[1], "sandboxed"),  # filesystem_write
     (FILESYSTEM_TOOLS[2], "sandboxed"),  # filesystem_list
@@ -163,6 +162,12 @@ async def bootstrap(
         session_root=state_store.root,
     )
     permissions = PermissionSystem(agent_config.permissions)
+    background_tasks = BackgroundTaskManager(
+        workspace_root=str(workspace_root),
+        sandbox=sandbox,
+    )
+    for tool in background_tasks.tools:
+        tool_registry.register(tool, sandbox_mode="host")
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # No-plugin mode used by isolated core tests and pure-core embeddings.
@@ -227,6 +232,9 @@ async def bootstrap(
             workspace_root=str(workspace_root),
             config=agent_config,
             plugin_loader=plugin_loader,
+            background_tasks=background_tasks,
+            model=provider_config.model,
+            context_window=agent_config.max_context_tokens,
         )
         return engine
     except BaseException as bootstrap_error:

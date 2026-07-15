@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, get_args, get_origin
+from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -120,6 +120,10 @@ class Tool:
     @classmethod
     def from_function(cls, function: Callable[..., Any], *, name: str | None = None) -> "Tool":
         signature = inspect.signature(function)
+        try:
+            type_hints = get_type_hints(function)
+        except (NameError, TypeError):
+            type_hints = {}
         injected = tuple(
             parameter_name
             for parameter_name, parameter in signature.parameters.items()
@@ -130,7 +134,7 @@ class Tool:
             name=name or function.__name__,
             description=(inspect.getdoc(function) or "").strip(),
             function=function,
-            parameters=_parameters_schema(signature),
+            parameters=_parameters_schema(signature, type_hints),
             injected_parameters=injected,
         )
 
@@ -189,7 +193,10 @@ def tool_parameters_schema(tool: Any) -> dict[str, Any]:
     return {"type": "object", "properties": {}}
 
 
-def _parameters_schema(signature: inspect.Signature) -> dict[str, Any]:
+def _parameters_schema(
+    signature: inspect.Signature,
+    type_hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, parameter in signature.parameters.items():
@@ -197,7 +204,8 @@ def _parameters_schema(signature: inspect.Signature) -> dict[str, Any]:
             continue
         if parameter.kind == parameter.KEYWORD_ONLY and parameter.default is not inspect.Parameter.empty:
             continue
-        properties[name] = _annotation_schema(parameter.annotation)
+        annotation = (type_hints or {}).get(name, parameter.annotation)
+        properties[name] = _annotation_schema(annotation)
         if parameter.default is inspect.Parameter.empty:
             required.append(name)
     schema: dict[str, Any] = {"type": "object", "properties": properties}

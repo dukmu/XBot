@@ -21,6 +21,8 @@ from xbotv2.api.messages import Message
 from xbotv2.api.paths import SessionPaths
 from xbotv2.api.tools import ToolCall
 
+_PERSISTED_XBOT_KWARGS = {"xbotv2_data", "xbotv2_error"}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -41,7 +43,7 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
     if msg.additional_kwargs:
         d["additional_kwargs"] = _json_safe({
             k: v for k, v in msg.additional_kwargs.items()
-            if not str(k).startswith("xbotv2_")
+            if not str(k).startswith("xbotv2_") or k in _PERSISTED_XBOT_KWARGS
         })
     if msg.response_metadata:
         d["response_metadata"] = _json_safe(msg.response_metadata)

@@ -4,6 +4,8 @@ provider: default
 max_context_tokens: 32000
 tools:
   - shell
+  - list_tasks
+  - stop_task
   - filesystem
   - send_message
   - ask_user

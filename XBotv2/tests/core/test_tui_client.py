@@ -7,7 +7,7 @@ import html
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import xbotv2.__main__ as xbot_main
@@ -84,6 +84,46 @@ async def test_server_command_replaces_tui_history_from_protocol_field():
     )
 
 
+@pytest.mark.asyncio
+async def test_server_command_refreshes_status_metadata() -> None:
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        _connected = True
+        session = type("Session", (), {"run_command": AsyncMock(return_value={
+            "type": "command_result",
+            "data": {
+                "command": "provider",
+                "status": "ok",
+                "message": "Provider switched.",
+                "data": {"provider": "minimax", "workspace_root": "/repo"},
+                "history": None,
+            },
+        })})()
+        state = TuiState(provider="old", workspace_root="/old")
+        _append_local_notice = AsyncMock()
+        _refresh_status = Mock()
+
+        def _record_error(self, error):
+            raise AssertionError(error)
+
+    handler = Handler()
+    await XBotTextualApp._dispatch_remote_command(
+        handler,
+        CommandSpec(
+            name="provider",
+            kind="server",
+            description="switch provider",
+            args="use minimax",
+            raw="/provider use minimax",
+        ),
+    )
+
+    assert handler.state.provider == "minimax"
+    assert handler.state.workspace_root == "/repo"
+    handler._refresh_status.assert_called_once_with()
+
+
 def test_tui_state_applies_protocol_events_and_renders_lines():
     state = TuiState()
     frames = [
@@ -135,6 +175,37 @@ def test_tui_state_applies_usage_totals():
     }
 
 
+def test_tool_details_preserve_full_structured_result():
+    from xbotv2.tui.textual_widgets import tool_detail
+
+    state = TuiState()
+    content = "x" * 500
+    state.apply_event({
+        "type": "tool_result",
+        "data": {
+            "tool_call_id": "call-1",
+            "name": "example",
+            "status": "error",
+            "content": content,
+            "data": {"count": 2},
+            "error": {"code": "failed", "message": "bad input"},
+            "artifacts": [
+                {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
+            ],
+        },
+    })
+
+    tool = state.tools["call-1"]
+    detail = tool_detail(tool)
+
+    assert len(tool.summary) < len(content)
+    assert tool.result == content
+    assert content in detail
+    assert '"count": 2' in detail
+    assert '"code": "failed"' in detail
+    assert "report.txt" in detail
+
+
 def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
     state = TuiState()
 
@@ -170,6 +241,11 @@ def test_tui_state_restores_resumed_message_and_tool_history():
             "content": "contents",
             "tool_call_id": "call_1",
             "status": "success",
+            "data": {"bytes": 8},
+            "error": {"code": "warning", "message": "partial"},
+            "artifacts": [
+                {"id": "artifact-1", "name": "a.txt", "media_type": "text/plain"}
+            ],
         },
         {"role": "assistant", "content": "done"},
     ])
@@ -183,6 +259,9 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert state.tools["call_1"].name == "filesystem_read"
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "contents"
+    assert state.tools["call_1"].data == {"bytes": 8}
+    assert state.tools["call_1"].error["code"] == "warning"
+    assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -195,6 +274,21 @@ def test_tui_state_appends_assistant_deltas_to_one_message():
 
     assert [(m.role, m.content) for m in state.messages] == [("assistant", "Hello")]
     assert [entry.kind for entry in state.transcript] == ["message"]
+
+
+def test_tui_state_distinguishes_thinking_from_visible_output() -> None:
+    state = TuiState()
+    state.apply_event({"type": "turn_started", "data": {"turn": 1}})
+
+    state.apply_event(
+        {"type": "assistant_message_delta", "data": {"reasoning": "checking"}}
+    )
+    assert state.status == "Thinking"
+
+    state.apply_event(
+        {"type": "assistant_message_delta", "data": {"content": "answer"}}
+    )
+    assert state.status == "Running"
 
 
 def test_repair_mojibake_restores_chinese_text():
@@ -266,6 +360,7 @@ def test_tui_state_finalizes_tool_args_on_tool_calls_started():
     # tool_calls_started carries the final parsed dict; args_preview
     # becomes the clean dict repr and args_finalized is True.
     assert state.tools["call_1"].args_finalized is True
+    assert state.tools["call_1"].args == {"command": "df -h"}
     assert state.tools["call_1"].args_preview == '{"command": "df -h"}'
 
 
@@ -834,7 +929,7 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         await app.submit_composer()
         await pilot.pause()
         status = app.query_one("#status_bar").content
-        assert "usage req:1 in:12 out:8 total:20" in str(status)
+        assert "tokens:20 (12 in / 8 out)" in str(status)
 
 
 @pytest.mark.asyncio
@@ -1036,6 +1131,7 @@ async def test_textual_app_headless_renders_inline_permission_options():
         # Choice key is the tool_call_id, not a numeric notice index
         assert app._active_choice_key == "c1"
         assert "Allow" in str(app._choice_widgets["c1"].content)
+        assert "Approval: shell" in app.query_one(".permission-context").content
         assert input_widget.disabled is True
         assert input_widget.display is False
         assert app.focused is None
@@ -1418,6 +1514,13 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
         for _ in range(3):
             await pilot.pause()
         rendered = html.unescape(app.export_screenshot(title="xbotv2-tui-replay")).replace("\xa0", " ")
+        assert "Filesystem" not in rendered
+        details = app.query_one(".tool-details")
+        await pilot.click(details.query_one("CollapsibleTitle"))
+        await pilot.pause()
+        expanded = html.unescape(
+            app.export_screenshot(title="xbotv2-tui-replay-expanded")
+        ).replace("\xa0", " ")
 
     assert session.permission_decision == {"decision": "allow", "scope": "session"}
     assert [(message.role, message.content.strip()) for message in app.state.messages] == [
@@ -1426,7 +1529,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
     ]
     assert rendered.count("当前磁盘用了多少") >= 2
     assert "当前磁盘使用情况" in rendered
-    assert "Filesystem" in rendered
+    assert "Filesystem" in expanded
 
 
 @pytest.mark.asyncio
@@ -1434,11 +1537,22 @@ async def test_textual_composer_history_and_multiline_resize():
     from textual.events import Key
     from xbotv2.tui.textual_client import XBotTextualApp
 
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
     app = XBotTextualApp(
         session_id="s",
         thread_id="t",
         workspace_root=".",
     )
+    app.session = FakeSession()
 
     async with app.run_test(headless=True, size=(80, 24)) as pilot:
         await pilot.pause()
@@ -1878,6 +1992,7 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
     assert state.turn_usage["output_tokens"] == 13   # 5 + 8
     assert state.turn_usage["total_tokens"] == 43    # 15 + 28
     assert state.turn_usage["requests"] == 2
+    assert state.context_input_tokens == 20
 
 
 def test_apply_usage_with_delta_still_works():
@@ -1900,6 +2015,26 @@ def test_apply_usage_with_delta_still_works():
 
     assert state.usage["input_tokens"] == 100
     assert state.turn_usage["input_tokens"] == 100
+
+
+def test_usage_delta_without_input_tokens_keeps_context_usage():
+    state = TuiState(context_input_tokens=120)
+
+    state.apply_event(
+        {
+            "type": "usage",
+            "data": {
+                "delta": {"output_tokens": 3, "total_tokens": 3},
+                "total": {
+                    "input_tokens": 120,
+                    "output_tokens": 3,
+                    "total_tokens": 123,
+                },
+            },
+        }
+    )
+
+    assert state.context_input_tokens == 120
 
 
 # ----------------------------------------------------------------------
@@ -1948,3 +2083,146 @@ def test_assistant_message_with_content_does_not_insert_thinking():
     messages = [m.content for m in state.messages]
     assert "Let me check the workspace first." in messages
     assert "Thinking…" not in messages
+
+
+def test_task_updates_replace_one_authoritative_tui_snapshot():
+    state = TuiState()
+    base = {
+        "task_id": "task-1",
+        "command": "sleep 1",
+        "cwd": "/workspace",
+        "created_at": 1.0,
+        "started_at": 1.0,
+        "finished_at": 0.0,
+        "output": "",
+        "error": "",
+    }
+
+    state.apply_event({"type": "task_updated", "data": {**base, "status": "running"}})
+    state.apply_event({
+        "type": "task_updated",
+        "data": {
+            **base,
+            "status": "completed",
+            "finished_at": 2.0,
+            "output": "done",
+        },
+    })
+
+    assert list(state.tasks) == ["task-1"]
+    assert state.tasks["task-1"].status == "completed"
+    assert state.tasks["task-1"].output == "done"
+
+
+@pytest.mark.asyncio
+async def test_textual_task_panel_updates_in_place():
+    from textual.widgets import Collapsible, Static
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        session_id = "s"
+        thread_id = "t"
+
+        async def connect(self):
+            return {
+                "session_id": "s",
+                "thread_id": "t",
+                "agent_name": "XBotv2",
+                "workspace_root": "/workspace",
+                "provider": "mock",
+                "history": [],
+            }
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    event = {
+        "type": "task_updated",
+        "data": {
+            "task_id": "task-1",
+            "command": "sleep 30",
+            "cwd": "/workspace",
+            "status": "running",
+            "created_at": 1.0,
+            "started_at": 1.0,
+            "finished_at": 0.0,
+            "output": "",
+            "error": "",
+        },
+    }
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        await pilot.pause()
+        panel = app.query_one("#task_panel", Collapsible)
+        body = app.query_one("#task_list", Static)
+
+        assert panel.display is True
+        assert panel.title == "Tasks (1 running)"
+        assert "task-1" in body.render().plain
+
+
+@pytest.mark.asyncio
+async def test_narrow_task_panel_does_not_overlap_status_or_composer():
+    from textual.widgets import Collapsible
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        session_id = "s"
+        thread_id = "t"
+
+        async def connect(self):
+            return {
+                "session_id": "s",
+                "thread_id": "t",
+                "agent_name": "XBotv2",
+                "workspace_root": "/workspace",
+                "provider": "mock",
+                "history": [],
+            }
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def disconnect(self):
+            return None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(40, 18)) as pilot:
+        await pilot.pause()
+        for index in range(6):
+            event = {
+                "type": "task_updated",
+                "data": {
+                    "task_id": f"task-{index}",
+                    "command": "long command argument " * 10,
+                    "cwd": "/workspace",
+                    "status": "running" if index == 0 else "completed",
+                    "created_at": 1.0,
+                    "started_at": 1.0,
+                    "finished_at": 0.0 if index == 0 else 2.0,
+                    "output": "long output " * 20,
+                    "error": "",
+                },
+            }
+            app.state.apply_event(event)
+            await app._handle_stream_event(event)
+        await pilot.pause()
+
+        tasks = app.query_one("#task_panel", Collapsible)
+        status = app.query_one("#status_bar")
+        composer = app.query_one("#composer")
+
+        assert tasks.region.height <= 9
+        assert tasks.region.bottom <= composer.region.y
+        assert composer.region.bottom == status.region.y
+        assert status.region.bottom == app.size.height

@@ -167,6 +167,52 @@ async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     )
 
 
+def _background_tasks(ctx: Any) -> Any | None:
+    return getattr(ctx.engine, "background_tasks", None)
+
+
+async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    if args not in ([], ["ps"]):
+        return _result("tasks", "Usage: /tasks [ps]", status="error")
+    manager = _background_tasks(ctx)
+    if manager is None:
+        return _result("tasks", "Background tasks are unavailable.", status="error")
+    tasks = manager.snapshots()
+    if not tasks:
+        return _result("tasks", "No background tasks.", data={"tasks": []})
+    lines = [
+        f"{task['task_id']}  {task['status']}  {task['command']}"
+        for task in tasks
+    ]
+    return _result("tasks", "\n".join(lines), data={"tasks": tasks})
+
+
+async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    manager = _background_tasks(ctx)
+    if manager is None:
+        return _result("task", "Background tasks are unavailable.", status="error")
+    if len(args) == 2 and args[0] == "stop":
+        result = await manager.stop_task(args[1])
+        return _result(
+            "task",
+            str(result.content),
+            status="ok" if result.status == "success" else "error",
+            data=result.data,
+        )
+    if args == ["stopall"]:
+        stopped = await manager.stop_all()
+        return _result(
+            "task",
+            f"Stopped {len(stopped)} background task(s).",
+            data={"tasks": stopped},
+        )
+    return _result(
+        "task",
+        "Usage: /task stop <id> | /task stopall",
+        status="error",
+    )
+
+
 def _new_fork_id() -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{secrets.token_hex(2)}"
@@ -189,7 +235,12 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
 async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     action = args[0] if args else "status"
     if action == "status":
-        return _result("provider", f"Provider: {ctx.provider_name}", data={"provider": ctx.provider_name})
+        model = str(getattr(ctx.engine, "model", ""))
+        return _result(
+            "provider",
+            f"Provider: {ctx.provider_name}" + (f" ({model})" if model else ""),
+            data={"provider": ctx.provider_name, "model": model},
+        )
     if action == "list":
         from xbotv2.config.loader import load_provider_names
 
@@ -214,12 +265,17 @@ async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
             return _result("provider", f"Unknown provider: {provider_name}", status="error")
         provider_config = load_provider_config(ctx.paths, provider_name)
         ctx.engine.llm = create_llm(provider_config)
+        ctx.engine.model = provider_config.model
         ctx.provider_name = provider_name
         if hasattr(ctx.engine.config, "provider"):
             ctx.engine.config.provider = provider_name
         if hasattr(ctx.engine.state_store, "provider"):
             ctx.engine.state_store.provider = provider_name
-        return _result("provider", f"Provider switched to {provider_name} for this session.", data={"provider": provider_name})
+        return _result(
+            "provider",
+            f"Provider switched to {provider_name} ({provider_config.model}) for this session.",
+            data={"provider": provider_name, "model": provider_config.model},
+        )
     return _result("provider", "Usage: /provider status | list | use <name>", status="error")
 
 
@@ -280,6 +336,8 @@ def _status_data(ctx: Any) -> dict[str, Any]:
         "thread_id": ctx.thread_id,
         "workspace_root": ctx.workspace_root,
         "provider": ctx.provider_name,
+        "model": str(getattr(ctx.engine, "model", "")),
+        "context_window": int(getattr(ctx.engine, "context_window", 0)),
         "turn_active": ctx.turn_lock.locked(),
         "plugins": loader.diagnostics() if loader is not None else [],
     }
@@ -481,6 +539,21 @@ COMMANDS: dict[str, ServerCommand] = {
             handler=_undo_command,
             examples=["/undo", "/undo 2"],
             parameters={"count": "Number of turns to remove; defaults to 1."},
+        ),
+        ServerCommand(
+            name="tasks",
+            slash="/tasks [ps]",
+            description="List background shell tasks.",
+            handler=_tasks_command,
+            examples=["/tasks", "/tasks ps"],
+        ),
+        ServerCommand(
+            name="task",
+            slash="/task stop <id> | /task stopall",
+            description="Stop background shell tasks.",
+            handler=_task_command,
+            examples=["/task stop task-1", "/task stopall"],
+            parameters={"action": "stop <id> or stopall"},
         ),
     )
 }

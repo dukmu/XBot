@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import BinaryIO, Iterable, Literal
 
 
 @dataclass(frozen=True)
@@ -31,37 +34,26 @@ class BubblewrapBackend:
     network: bool = True
     max_output_chars: int = 100_000
 
-    async def create_process(
+    def process_args(
         self,
         payload: list[str],
         mount_specs: Iterable[SandboxMountSpec],
         cwd: str | None = None,
-    ):
+    ) -> list[str]:
         bwrap = shutil.which("bwrap")
         if not bwrap:
             raise RuntimeError("Sandbox enabled but bubblewrap (bwrap) is not installed")
 
-        args = [bwrap, *_build_args(mount_specs, self.network, cwd or str(self.workspace_root)), "--", *payload]
-        return await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-    async def communicate(self, proc, stdin: str | None = None) -> tuple[str, str]:
-        if stdin is None and proc.stdin is not None:
-            proc.stdin.close()
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(stdin.encode("utf-8") if stdin is not None else None),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise RuntimeError(f"Sandbox command timed out after {self.timeout_seconds}s") from None
-        return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+        return [
+            bwrap,
+            *_build_args(
+                mount_specs,
+                self.network,
+                cwd or str(self.workspace_root),
+            ),
+            "--",
+            *payload,
+        ]
 
     async def run(
         self,
@@ -69,13 +61,87 @@ class BubblewrapBackend:
         mount_specs: Iterable[SandboxMountSpec],
         cwd: str | None = None,
         stdin: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
-        proc = await self.create_process(payload, mount_specs, cwd=cwd)
-        stdout, stderr = await self.communicate(proc, stdin=stdin)
+        with (
+            tempfile.TemporaryFile() as stdin_file,
+            tempfile.TemporaryFile() as stdout_file,
+            tempfile.TemporaryFile() as stderr_file,
+        ):
+            if stdin is not None:
+                stdin_file.write(stdin.encode("utf-8"))
+                stdin_file.seek(0)
+            proc = subprocess.Popen(
+                self.process_args(payload, mount_specs, cwd),
+                stdin=stdin_file,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=os.name == "posix",
+            )
+            effective_timeout = (
+                self.timeout_seconds if timeout_seconds is None else timeout_seconds
+            )
+            try:
+                await _wait_process(proc, effective_timeout)
+            except TimeoutError:
+                _kill_process_group(proc)
+                await _wait_process(proc, None)
+                raise RuntimeError(
+                    f"Sandbox command timed out after {effective_timeout}s"
+                ) from None
+            except BaseException:
+                if proc.poll() is None:
+                    _kill_process_group(proc)
+                await _wait_process(proc, None)
+                raise
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = _read_output(
+                stdout_file,
+                self.max_output_chars,
+            )
+            stderr = _read_output(
+                stderr_file,
+                self.max_output_chars,
+            )
         if proc.returncode:
             detail = stderr.strip() or stdout.strip() or "no error output"
             raise RuntimeError(f"Sandbox command failed with exit code {proc.returncode}: {detail}")
         return stdout
+
+
+async def _wait_process(
+    proc: subprocess.Popen[bytes], timeout_seconds: float | None
+) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = (
+        loop.time() + timeout_seconds
+        if timeout_seconds is not None and timeout_seconds > 0
+        else None
+    )
+    while proc.poll() is None:
+        if deadline is not None and loop.time() >= deadline:
+            raise TimeoutError
+        await asyncio.sleep(0.05)
+
+
+def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _read_output(file: BinaryIO, limit: int) -> str:
+    raw = file.read(limit + 1)
+    truncated = len(raw) > limit
+    text = raw[:limit].decode("utf-8", errors="replace")
+    if truncated:
+        text += f"\n[output truncated at {limit} bytes]"
+    return text
 
 
 def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str) -> list[str]:

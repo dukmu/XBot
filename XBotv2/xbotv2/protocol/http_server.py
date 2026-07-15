@@ -277,6 +277,8 @@ def _register_routes(app: FastAPI) -> None:
             agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
             workspace_root=ctx.workspace_root,
             provider=ctx.provider_name,
+            model=str(getattr(ctx.engine, "model", "")),
+            context_window=int(getattr(ctx.engine, "context_window", 0)),
             history=_display_history(ctx.engine.messages),
         )
 
@@ -581,7 +583,14 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
         role = str(getattr(message, "role", ""))
         if role not in {"user", "assistant", "tool"}:
             continue
-        history.append({
+        additional = getattr(message, "additional_kwargs", {}) or {}
+        artifacts = []
+        for artifact in getattr(message, "artifact", None) or []:
+            if hasattr(artifact, "to_dict"):
+                artifacts.append(artifact.to_dict())
+            elif isinstance(artifact, dict):
+                artifacts.append(dict(artifact))
+        item = {
             "role": role,
             "content": str(getattr(message, "content", "") or ""),
             "tool_calls": [
@@ -589,7 +598,14 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
             ],
             "tool_call_id": str(getattr(message, "tool_call_id", "") or ""),
             "status": str(getattr(message, "status", "") or ""),
-        })
+        }
+        if role == "tool":
+            item.update({
+                "data": additional.get("xbotv2_data"),
+                "error": additional.get("xbotv2_error"),
+                "artifacts": artifacts,
+            })
+        history.append(item)
     return history
 
 async def _resolve_interaction(

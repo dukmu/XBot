@@ -1,22 +1,4 @@
-"""Slash-command completion popup for the composer.
-
-Mounted directly above the composer in the XBotTextualApp layout. The
-popup shows a small list of candidate slash commands whenever the
-composer text starts with ``/``; the user can accept the highlighted
-suggestion with ``Tab`` and dismiss the popup with ``Escape``.
-
-The popup is intentionally minimal:
-
-- A ``Container`` (Vertical) holding one ``Static`` per candidate row.
-  This avoids ``rich.text.Text`` and its ``get_height`` quirks in
-  Textual's layout pipeline — each row is a plain ``Static`` with
-  a class for the highlighted state.
-- The popup never receives keyboard focus; the composer keeps focus
-  and ``Tab`` is intercepted at the ``ComposerTextArea`` level. This
-  preserves the doc §3 invariant: "整个 TUI 同一时刻只有一个键盘焦点区".
-- When the composer text does not start with ``/``, the popup hides
-  via the ``active`` CSS class (display: none).
-"""
+"""Non-focusable slash-command completion above the composer."""
 
 from __future__ import annotations
 
@@ -62,7 +44,6 @@ class CompletionPopup(Vertical):
         self._matches: list[CommandSpec] = []
         self._selected: int = 0
         self._visible: bool = False
-        # Per-row Static widgets, kept in sync with self._matches.
         self._row_widgets: list[Static] = []
 
     @property
@@ -98,7 +79,6 @@ class CompletionPopup(Vertical):
             self._rebuild_rows()
             return
 
-        # Clamp the selection to the new match set.
         self._matches = matches
         if self._selected >= len(matches):
             self._selected = len(matches) - 1
@@ -109,7 +89,6 @@ class CompletionPopup(Vertical):
     def _rebuild_rows(self) -> None:
         """Re-mount the row widgets to match self._matches."""
 
-        # Drop existing rows.
         for widget in list(self._row_widgets):
             widget.remove()
         self._row_widgets = []
