@@ -73,9 +73,15 @@ instead of exposing sandbox process output as an untyped string.
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 
+A session-scoped approval for `filesystem_write` records only its Tool name and
+operated `path`. File content is neither persisted in the permission rule nor
+used to distinguish later writes to the same path; a different path requires a
+separate decision.
+
 The shipped permission policy pre-approves internal state tools, client
-interaction tools, and workspace filesystem tools. Shell commands, discovered
-Skills, MCP tools, and unknown tools remain subject to explicit policy. The
+interaction tools, shell, and read-only workspace filesystem tools.
+`filesystem_write`, discovered Skills, MCP tools, and unknown tools remain
+subject to explicit policy. The
 sandbox implicitly mounts only the workspace (read-write), the current session
 state (read-only, exposed through relative `session/...` cache paths), and the
 minimal system files required to execute commands. Other paths require an

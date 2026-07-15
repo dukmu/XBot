@@ -227,7 +227,7 @@ async def test_status_bar_uses_open_session_metadata() -> None:
         })
         app._refresh_status()
         await pilot.pause()
-        assert "ctx:75%" in status.visual.plain
+        assert "ctx-free:75%" in status.visual.plain
         assert "cwd:XBot" in status.visual.plain
         assert "provider:minimax" in status.visual.plain
 

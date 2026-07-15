@@ -237,6 +237,15 @@ class XBotTextualApp(App[None]):
                 self.state.provider = str(session.get("provider") or "")
                 self.state.model = str(session.get("model") or "")
                 self.state.context_window = int(session.get("context_window") or 0)
+                usage = session.get("usage")
+                if isinstance(usage, dict):
+                    for key in self.state.usage:
+                        self.state.usage[key] = int(usage.get(key) or 0)
+                    self.state.context_input_tokens = int(
+                        usage.get("context_tokens")
+                        or usage.get("input_tokens")
+                        or 0
+                    )
             history = session.get("history") if isinstance(session, dict) else None
             if isinstance(history, list):
                 self.state.restore_history(history)
@@ -273,7 +282,11 @@ class XBotTextualApp(App[None]):
         if not text:
             return
         if is_slash_command(text):
-            await self._handle_slash_command(parse_slash_command(text))
+            spec = parse_slash_command(text)
+            if spec is not None and spec.kind == "server":
+                self.state.append_message("user", text)
+                await self._render_new_transcript_entries()
+            await self._handle_slash_command(spec)
             return
         route = route_submitted_text(
             self.state,

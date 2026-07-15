@@ -52,6 +52,14 @@ class SessionHistoryItem(WireModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class UsageData(WireModel):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    requests: int = Field(default=1, ge=0)
+    context_tokens: int = Field(default=0, ge=0)
+
+
 class OpenSessionResponse(WireModel):
     session_id: str
     thread_id: str
@@ -61,6 +69,14 @@ class OpenSessionResponse(WireModel):
     provider: str
     model: str = ""
     context_window: int = Field(default=0, ge=0)
+    usage: UsageData = Field(
+        default_factory=lambda: UsageData(
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            requests=0,
+        )
+    )
     history: list[SessionHistoryItem] = Field(default_factory=list)
 
 
@@ -260,13 +276,6 @@ class TaskUpdatedData(WireModel):
     finished_at: float = Field(ge=0)
     output: str = ""
     error: str = ""
-
-
-class UsageData(WireModel):
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
-    requests: int = Field(default=1, ge=1)
 
 
 class TurnData(WireModel):

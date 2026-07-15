@@ -528,17 +528,23 @@ class TuiState:
             self._changed_tool_ids.add(tool_call_id)
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
-        usage = data.get("total") if isinstance(data.get("total"), dict) else data
+        has_total = isinstance(data.get("total"), dict)
+        usage = data.get("total") if has_total else data
         delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
         if not isinstance(usage, dict):
             return
         current = delta if isinstance(delta, dict) else usage
-        if "input_tokens" in current:
-            self.context_input_tokens = int(current.get("input_tokens") or 0)
+        if "context_tokens" in current or "input_tokens" in current:
+            self.context_input_tokens = int(
+                current.get("context_tokens") or current.get("input_tokens") or 0
+            )
         for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
             val = int(usage.get(key) or 0)
             if key in usage:
-                self.usage[key] = val
+                if has_total:
+                    self.usage[key] = val
+                else:
+                    self.usage[key] += val
             # When no ``delta`` sub-key exists, treat the flat data
             # itself as the delta — the engine sends one ``usage``
             # event per LLM call, and each event carries the current

@@ -63,7 +63,7 @@ def status_renderable(
         remaining = round(
             100 * max(0, context_window - context_input_tokens) / context_window
         )
-        required.append((f"ctx:{remaining}%", "cyan"))
+        required.append((f"ctx-free:{remaining}%", "cyan"))
     status_width = width - _segments_width(required) - 2
     segments = [(_clip_label(status, status_width), style), *required]
 

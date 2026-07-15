@@ -2,8 +2,44 @@
 
 import pytest
 
+from xbotv2.api import Message
 from xbotv2.api.tools import ToolCall
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.protocol.http_server import _session_usage
+
+
+def test_session_usage_sums_model_calls_and_keeps_latest_context_size():
+    messages = [
+        Message(
+            role="assistant",
+            content="first",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+                "context_tokens": 120,
+            },
+        ),
+        Message(role="tool", content="ignored", tool_call_id="call-1"),
+        Message(
+            role="assistant",
+            content="second",
+            usage_metadata={
+                "input_tokens": 200,
+                "output_tokens": 20,
+                "total_tokens": 220,
+                "context_tokens": 260,
+            },
+        ),
+    ]
+
+    assert _session_usage(messages) == {
+        "input_tokens": 300,
+        "output_tokens": 30,
+        "total_tokens": 330,
+        "requests": 2,
+        "context_tokens": 260,
+    }
 
 
 class TestProviderConfig:

@@ -279,6 +279,7 @@ def _register_routes(app: FastAPI) -> None:
             provider=ctx.provider_name,
             model=str(getattr(ctx.engine, "model", "")),
             context_window=int(getattr(ctx.engine, "context_window", 0)),
+            usage=_session_usage(ctx.engine.messages),
             history=_display_history(ctx.engine.messages),
         )
 
@@ -607,6 +608,34 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
             })
         history.append(item)
     return history
+
+
+def _session_usage(messages: list[Any]) -> dict[str, int]:
+    total = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+        "context_tokens": 0,
+    }
+    for message in messages:
+        usage = getattr(message, "usage_metadata", None)
+        if not isinstance(usage, dict) or not usage:
+            continue
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        if not input_tokens and not output_tokens:
+            continue
+        total["input_tokens"] += input_tokens
+        total["output_tokens"] += output_tokens
+        total["total_tokens"] += int(
+            usage.get("total_tokens") or input_tokens + output_tokens
+        )
+        total["requests"] += int(usage.get("requests") or 1)
+        total["context_tokens"] = int(
+            usage.get("context_tokens") or input_tokens
+        )
+    return total
 
 async def _resolve_interaction(
     *,

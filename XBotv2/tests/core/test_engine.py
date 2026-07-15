@@ -168,6 +168,7 @@ class TestEngineBasics:
                     "output_tokens": 7,
                     "total_tokens": 18,
                     "requests": 1,
+                    "context_tokens": 11,
                 },
             }
         ]

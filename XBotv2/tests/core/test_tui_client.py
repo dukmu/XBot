@@ -943,6 +943,76 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_restores_session_usage_and_displays_server_command():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.commands = []
+
+        async def connect(self):
+            return {
+                "session_id": "s",
+                "thread_id": "t",
+                "agent_name": "XBotv2",
+                "context_window": 32_000,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "total_tokens": 120,
+                    "requests": 2,
+                    "context_tokens": 8_000,
+                },
+                "history": [],
+            }
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {
+                "commands": [{
+                    "name": "goal",
+                    "slash": "/goal",
+                    "kind": "server",
+                    "description": "Set the active goal",
+                    "usage": "/goal <objective>",
+                    "examples": [],
+                    "parameters": {},
+                }]
+            }
+
+        async def run_command(self, name, args, raw, *, kind):
+            self.commands.append((name, args, raw, kind))
+            return {"data": {"message": "Goal started"}}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("/goal audit repo")
+        await app.submit_composer()
+        await pilot.pause()
+
+    assert app.state.usage == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "requests": 2,
+    }
+    assert app.state.context_input_tokens == 8_000
+    assert [(message.role, message.content) for message in app.state.messages] == [
+        ("user", "/goal audit repo")
+    ]
+    assert session.commands == [
+        ("goal", ["audit", "repo"], "/goal audit repo", "server")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_textual_app_headless_keeps_transcript_non_focusable():
     from xbotv2.tui.textual_client import XBotTextualApp
 
@@ -2212,6 +2282,12 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
     assert state.turn_usage["total_tokens"] == 43    # 15 + 28
     assert state.turn_usage["requests"] == 2
     assert state.context_input_tokens == 20
+    assert state.usage == {
+        "input_tokens": 30,
+        "output_tokens": 13,
+        "total_tokens": 43,
+        "requests": 2,
+    }
 
 
 def test_apply_usage_with_delta_still_works():
@@ -2254,6 +2330,23 @@ def test_usage_delta_without_input_tokens_keeps_context_usage():
     )
 
     assert state.context_input_tokens == 120
+
+
+def test_usage_prefers_effective_context_tokens():
+    state = TuiState(context_input_tokens=1)
+
+    state.apply_event({
+        "type": "usage",
+        "data": {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "total_tokens": 12,
+            "requests": 1,
+            "context_tokens": 800,
+        },
+    })
+
+    assert state.context_input_tokens == 800
 
 
 # ----------------------------------------------------------------------

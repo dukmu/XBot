@@ -216,9 +216,10 @@ priority order:
 - connection or run state and active-turn elapsed time; reasoning deltas show
   `Thinking`, while visible output and tool execution show `Running`
 - queued message count when non-zero
-- realtime token usage from `usage` events
-- remaining context percentage, using the latest provider-reported input token
-  count and the runtime `context_window`
+- cumulative session token usage restored by `OpenSessionResponse` and updated
+  from per-call `usage` events; the active-turn row remains turn-local
+- `ctx-free` percentage, using the latest provider-reported effective context
+  token count and the runtime `context_window`
 - workspace, model, and provider from `OpenSessionResponse`
 - session/thread identifiers only when the terminal is wide enough
 
@@ -226,6 +227,10 @@ Narrow terminals keep run state and token usage, then omit lower-priority
 metadata. Context remaining is not derived from cumulative output: it compares
 the latest request input against the configured runtime window and stays hidden
 until the provider reports usage.
+
+Server slash commands are displayed as local user transcript entries so the
+operator can see what was executed. They remain command traffic and are not
+added to model conversation history.
 
 Usage updates must render before `turn_finished`; tests assert live status-bar
 updates during a blocked turn.

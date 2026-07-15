@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from xbotv2.api import (
@@ -21,6 +22,8 @@ from xbotv2.api import (
     ToolResult,
 )
 
+logger = logging.getLogger("xbotv2.compact")
+
 
 class CompactPlugin(PluginBase):
     def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
@@ -32,7 +35,6 @@ class CompactPlugin(PluginBase):
         self._keep_recent_turns = 4
         self._summary_max_chars = 8_000
         self._manual_requested = False
-        self._last_auto_turn = -1
         self._compactions = 0
         self._last_reason = ""
 
@@ -46,7 +48,6 @@ class CompactPlugin(PluginBase):
 
     async def on_unload(self) -> None:
         self._manual_requested = False
-        self._last_auto_turn = -1
         self._compactions = 0
         self._last_reason = ""
 
@@ -106,16 +107,11 @@ class CompactPlugin(PluginBase):
         token_trigger = int(
             max(1, max_context - self._output_reservation) * self._trigger_ratio
         )
+        history_chars = _history_chars(messages)
         threshold_reached = (
-            provider_input >= token_trigger
-            if provider_input is not None
-            else _history_chars(messages) >= self._trigger_chars
-        )
-        automatic = (
-            self._automatic
-            and turn != self._last_auto_turn
-            and threshold_reached
-        )
+            provider_input is not None and provider_input >= token_trigger
+        ) or history_chars >= self._trigger_chars
+        automatic = self._automatic and threshold_reached
         if not manual and not automatic:
             return None
 
@@ -128,6 +124,13 @@ class CompactPlugin(PluginBase):
 
         reason = "manual" if manual else "automatic"
         self._manual_requested = False
+        logger.info(
+            "compaction started reason=%s turn=%d messages=%d history_chars=%d",
+            reason,
+            turn,
+            len(messages),
+            history_chars,
+        )
         response = await ctx.invoke_model(
             _summary_request(messages[:split], self._summary_max_chars)
         )
@@ -142,9 +145,15 @@ class CompactPlugin(PluginBase):
             role="system",
             content=f"## Conversation Summary\n\n{summary}",
         )
-        self._last_auto_turn = turn
         self._compactions += 1
         self._last_reason = reason
+        logger.info(
+            "compaction completed reason=%s turn=%d messages_before=%d messages_after=%d",
+            reason,
+            turn,
+            len(messages),
+            1 + len(messages[split:]),
+        )
         return {
             "messages": [compacted, *messages[split:]],
             "compact_reason": reason,
@@ -175,19 +184,31 @@ def _history_chars(messages: list[Message]) -> int:
 def _latest_provider_input_tokens(messages: list[Message]) -> int | None:
     for message in reversed(messages):
         usage = message.usage_metadata or {}
-        if "input_tokens" in usage:
-            value = int(usage.get("input_tokens") or 0)
+        if "context_tokens" in usage or "input_tokens" in usage:
+            value = int(
+                usage.get("context_tokens") or usage.get("input_tokens") or 0
+            )
             return value if value > 0 else None
     return None
 
 
 def _compact_prefix_end(messages: list[Message], keep_recent_turns: int) -> int:
-    user_indexes = [
-        index for index, message in enumerate(messages) if message.role == "user"
+    input_indexes = [
+        index
+        for index, message in enumerate(messages)
+        if message.role in {"user", "system"}
     ]
-    if len(user_indexes) <= keep_recent_turns:
-        return 0
-    return user_indexes[-keep_recent_turns]
+    if len(input_indexes) > keep_recent_turns:
+        return input_indexes[-keep_recent_turns]
+
+    assistant_indexes = [
+        index
+        for index, message in enumerate(messages)
+        if message.role == "assistant"
+    ]
+    if len(assistant_indexes) > keep_recent_turns:
+        return assistant_indexes[-keep_recent_turns]
+    return 0
 
 
 def _summary_request(messages: list[Message], max_chars: int) -> list[Message]:

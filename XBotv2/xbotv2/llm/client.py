@@ -412,6 +412,7 @@ def openai_usage(usage: Any) -> dict[str, Any]:
         "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
         "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
         "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        "context_tokens": getattr(usage, "prompt_tokens", 0) or 0,
     }
     # DeepSeek disk cache: cached tokens are discounted
     hit = getattr(usage, "prompt_cache_hit_tokens", None) or getattr(usage, "cache_read_input_tokens", None)
@@ -473,8 +474,18 @@ def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
 def anthropic_usage(usage: Any) -> dict[str, Any]:
     if usage is None:
         return {}
-    return {
-        "input_tokens": getattr(usage, "input_tokens", 0) or 0,
-        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
-        "total_tokens": (getattr(usage, "input_tokens", 0) or 0) + (getattr(usage, "output_tokens", 0) or 0),
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    result = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "context_tokens": input_tokens + cache_read + cache_creation,
     }
+    if cache_read:
+        result["cache_read_input_tokens"] = cache_read
+    if cache_creation:
+        result["cache_creation_input_tokens"] = cache_creation
+    return result

@@ -6,6 +6,8 @@ import pytest
 import yaml
 
 from xbotv2.tools.permissions import PermissionSystem, PermissionRule
+from xbotv2.api import ToolCall
+from xbotv2.config.policy import _permission_rule_for_tool_call
 
 
 class TestPermissionRule:
@@ -87,6 +89,27 @@ class TestPermissionSystemBasics:
         )
         assert permission_system.check("filesystem_read", {}) == "allow"
         assert permission_system.check("filesystem_write", {}) == permission_system.default_decision
+
+    def test_filesystem_write_session_rule_records_only_path(self):
+        rule = _permission_rule_for_tool_call(ToolCall(
+            "call-1",
+            "filesystem_write",
+            {"path": "notes.md", "content": "large private document"},
+        ))
+
+        assert rule == {
+            "tool": "filesystem_write",
+            "params": {"path": "notes\\.md"},
+        }
+        permissions = PermissionSystem({"allow": [rule]})
+        assert permissions.check(
+            "filesystem_write",
+            {"path": "notes.md", "content": "different content"},
+        ) == "allow"
+        assert permissions.check(
+            "filesystem_write",
+            {"path": "other.md", "content": "large private document"},
+        ) == "ask"
 
 
 class TestConfigLoading:

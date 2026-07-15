@@ -40,6 +40,9 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 - `OpenSessionResponse.model` and `context_window` describe the active provider
   model and the configured runtime context budget. `/provider use` updates the
   model reported by subsequent status commands.
+- `OpenSessionResponse.usage` restores cumulative session token totals and the
+  latest provider-reported `context_tokens`. Live `usage` events are per-model-
+  call deltas; clients add them to the restored totals.
 
 ### Endpoints
 
@@ -180,7 +183,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `permission_response_recorded` | `{request_id, status, decision, scope, answer, pending_interactions}` |
 | `user_input_required` | `{request_id, source, tool_call_id, question, options, timeout_seconds, resume_supported}` |
 | `user_input_recorded` | `{request_id, status, decision, scope, answer, pending_interactions}` |
-| `usage` | `{input_tokens, output_tokens, total_tokens, requests}` |
+| `usage` | `{input_tokens, output_tokens, total_tokens, requests, context_tokens}` |
 | `error` | `{code, message, details?, retryable?, stage?}` |
 | `end` | `{status}` |
 

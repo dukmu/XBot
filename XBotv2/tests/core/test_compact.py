@@ -111,7 +111,7 @@ async def test_manual_tool_requests_compaction_below_threshold():
 
 
 @pytest.mark.asyncio
-async def test_automatic_compaction_runs_once_per_turn():
+async def test_automatic_compaction_can_run_again_after_history_grows():
     plugin = make_plugin()
     await plugin.on_load({
         "trigger_chars": 1000,
@@ -134,18 +134,28 @@ async def test_automatic_compaction_runs_once_per_turn():
     )
 
     first = await plugin._on_before_context(ctx)
+    ctx.state["messages"] = first["messages"]
     second = await plugin._on_before_context(ctx)
 
     assert first["compact_reason"] == "automatic"
     assert second is None
     assert calls == 1
 
+    ctx.state["messages"] = [
+        *first["messages"],
+        *history(3, content="y" * 300),
+    ]
+    third = await plugin._on_before_context(ctx)
+
+    assert third["compact_reason"] == "automatic"
+    assert calls == 2
+
 
 @pytest.mark.asyncio
 async def test_automatic_compaction_uses_latest_provider_context_usage():
     plugin = make_plugin()
     await plugin.on_load({
-        "trigger_chars": 1000,
+        "trigger_chars": 10_000,
         "output_reservation": 100,
         "trigger_ratio": 0.8,
         "keep_recent_turns": 1,
@@ -199,6 +209,55 @@ async def test_character_threshold_is_only_used_without_provider_usage():
 
 
 @pytest.mark.asyncio
+async def test_character_threshold_overrides_underreported_provider_usage():
+    plugin = make_plugin()
+    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
+    original = history(3, content="x" * 300)
+    original[-1].usage_metadata = {"input_tokens": 10}
+
+    async def invoke_model(_messages):
+        return ModelResponse(content="summary")
+
+    result = await plugin._on_before_context(HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        session=SimpleNamespace(turn_count=1),
+        invoke_model=invoke_model,
+    ))
+
+    assert result["compact_reason"] == "automatic"
+
+
+@pytest.mark.asyncio
+async def test_long_mailbox_turn_compacts_without_user_messages():
+    plugin = make_plugin()
+    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 2})
+    original = [Message(role="system", content="Mailbox message: continue goal")]
+    for index in range(6):
+        original.extend([
+            Message(role="assistant", content=f"step {index} " + "x" * 200),
+            Message(role="tool", content="result " + "x" * 200),
+        ])
+
+    async def invoke_model(messages):
+        assert messages[1].role == "system"
+        return ModelResponse(content="Earlier goal progress")
+
+    result = await plugin._on_before_context(HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        session=SimpleNamespace(turn_count=1),
+        invoke_model=invoke_model,
+    ))
+
+    assert result["compact_reason"] == "automatic"
+    assert result["messages"][0].content.startswith("## Conversation Summary")
+    assert [message.role for message in result["messages"][1:]] == [
+        "assistant", "tool", "assistant", "tool",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_zero_provider_usage_uses_character_fallback():
     plugin = make_plugin()
     await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
@@ -249,14 +308,12 @@ async def test_failed_summary_leaves_history_untouched():
 async def test_unload_resets_plugin_owned_state():
     plugin = make_plugin()
     plugin._manual_requested = True
-    plugin._last_auto_turn = 3
     plugin._compactions = 2
     plugin._last_reason = "automatic"
 
     await plugin.on_unload()
 
     assert plugin._manual_requested is False
-    assert plugin._last_auto_turn == -1
     assert plugin.diagnostics()["compactions"] == 0
     assert plugin.diagnostics()["last_reason"] == ""
 

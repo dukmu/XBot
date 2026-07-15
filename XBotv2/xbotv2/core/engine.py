@@ -1469,4 +1469,7 @@ class Engine:
             "output_tokens": output_tokens,
             "total_tokens": int(usage_dict.get("total_tokens") or input_tokens + output_tokens),
             "requests": int(usage_dict.get("requests") or 1),
+            "context_tokens": int(
+                usage_dict.get("context_tokens") or input_tokens
+            ),
         }

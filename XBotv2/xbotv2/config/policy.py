@@ -176,9 +176,12 @@ def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
     if not tool_name:
         return {}
     rule: dict[str, Any] = {"tool": re.escape(tool_name)}
+    args = tool_call.args
+    if tool_name == "filesystem_write":
+        args = {"path": args.get("path")} if isinstance(args.get("path"), str) else {}
     params = {
         key: re.escape(str(value))
-        for key, value in sorted(tool_call.args.items())
+        for key, value in sorted(args.items())
         if isinstance(value, (str, int, float, bool))
     }
     if params:

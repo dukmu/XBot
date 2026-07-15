@@ -2,6 +2,7 @@
 
 from xbotv2.llm.client import (
     _strip_reasoning_headers,
+    anthropic_usage,
     provider_messages,
 )
 from xbotv2.api.messages import Message
@@ -48,3 +49,21 @@ def test_provider_messages_strips_reasoning_header_on_replay():
     # tool_calls and content must still be preserved.
     assert out[0]["tool_calls"][0]["function"]["name"] == "shell"
     assert out[0]["content"] == ""
+
+
+def test_anthropic_usage_preserves_cache_context_tokens():
+    usage = type("Usage", (), {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 700,
+        "cache_creation_input_tokens": 50,
+    })()
+
+    assert anthropic_usage(usage) == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "context_tokens": 850,
+        "cache_read_input_tokens": 700,
+        "cache_creation_input_tokens": 50,
+    }
