@@ -54,14 +54,15 @@ plugin returns `HookDecision.ALLOW` for its three basic state Tools, avoiding an
 `ask` prompt. An explicit core permission denial still wins.
 
 After `update_goal`, the normal Agent loop continues so the model can summarize
-the result to the human. The Tool result and terminal Goal context remain
-available during that final model call.
+the result to the human. The Tool result contains the terminal state and summary
+needed for that final model call.
 
 ## Continuation And Persistence
 
-Every successful transition persists immediately through `PluginStore`. The
-current Goal is rebuilt as a non-persisted `ContextComponent` during
-`AFTER_CONTEXT_COMPONENTS_BUILD`.
+Every successful transition persists immediately through `PluginStore`. An
+active Goal is rebuilt as a non-persisted `ContextComponent` during
+`AFTER_CONTEXT_COMPONENTS_BUILD`. Terminal and paused Goals remain available to
+the command and Tools, but are not injected into unrelated model calls.
 
 At `ON_TURN_END`, an active Goal places at most one runtime-only `general`
 message in the Core mailbox. Delivery clears the pending marker before the next

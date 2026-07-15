@@ -197,10 +197,20 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
 
 
 @pytest.mark.asyncio
-async def test_complete_goal_remains_in_context_for_final_summary(state_store):
+async def test_complete_goal_is_not_injected_into_later_context(state_store):
     plugin = make_plugin(state_store)
     components = [ContextComponent(role="system", source="system_prefix", content="base")]
     await plugin.create_goal("output two greetings")
+    active_ctx = HookContext(
+        stage=HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        session=SimpleNamespace(),
+        context_components=components,
+    )
+
+    await plugin._add_goal_context(active_ctx)
+
+    assert "## Session Goal" in active_ctx.context_components[-1].content
+
     await plugin.update_goal("complete", "Output both requested greetings.")
     ctx = HookContext(
         stage=HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
@@ -210,11 +220,7 @@ async def test_complete_goal_remains_in_context_for_final_summary(state_store):
 
     await plugin._add_goal_context(ctx)
 
-    content = ctx.context_components[-1].content
-    assert "Status: complete" in content
-    assert "Execution summary: Output both requested greetings." in content
-    assert "Do not restart or continue its work" in content
-    assert "concise final summary" in content
+    assert ctx.context_components == components
 
 
 @pytest.mark.asyncio
@@ -284,7 +290,7 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
 
 
 @pytest.mark.asyncio
-async def test_engine_sees_completed_goal_after_tool_call(
+async def test_engine_summarizes_completed_goal_without_persistent_context(
     state_store,
     temp_workspace,
 ):
@@ -311,6 +317,7 @@ async def test_engine_sees_completed_goal_after_tool_call(
             }],
         },
         {"content": "The goal is complete; all required work passed."},
+        {"content": "Starting the unrelated request."},
     ])
     engine = Engine(
         llm=llm,
@@ -328,7 +335,13 @@ async def test_engine_sees_completed_goal_after_tool_call(
     second_context = [message.content for message in llm.get_call_messages(1)]
     tool_event = next(event for event in events if event["type"] == "tool_result")
 
-    assert any("Status: complete" in text for text in second_context)
-    assert any("Do not restart or continue its work" in text for text in second_context)
+    assert not any("## Session Goal" in text for text in second_context)
+    assert any("Goal completed." in text for text in second_context)
     assert tool_event["data"]["data"]["goal"]["summary"] == "All work passed."
     assert llm.call_count == 2
+
+    _ = [event async for event in engine.run_turn("start an unrelated request")]
+    third_context = [message.content for message in llm.get_call_messages(2)]
+
+    assert any("start an unrelated request" in text for text in third_context)
+    assert not any("## Session Goal" in text for text in third_context)

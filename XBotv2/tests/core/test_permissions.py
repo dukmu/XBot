@@ -1,6 +1,9 @@
 """Tests for PermissionSystem."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from xbotv2.tools.permissions import PermissionSystem, PermissionRule
 
@@ -123,3 +126,29 @@ class TestConfigLoading:
         assert len(ps._deny_rules) == 0
         assert len(ps._allow_rules) == 0
         assert len(ps._ask_rules) == 0
+
+    def test_shipped_policy_allows_internal_and_interaction_tools(self):
+        config = yaml.safe_load(
+            Path("XBotv2/data/config/permissions.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        permissions = PermissionSystem(config=config)
+
+        for tool_name in (
+            "send_message",
+            "ask_user",
+            "search_text",
+            "find_files",
+            "list_tasks",
+            "stop_task",
+            "list_todos",
+            "create_todo",
+            "update_todo",
+            "remove_todo",
+        ):
+            assert permissions.check(tool_name, {}) == "allow"
+
+        assert permissions.check("shell", {"command": "echo risky"}) == "ask"
+        assert permissions.check("shell", {"command": "date"}) == "ask"
+        assert permissions.check("unknown_tool", {}) == "ask"

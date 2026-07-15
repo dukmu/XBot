@@ -242,12 +242,21 @@ class TuiState:
             self._refresh_status()
             tool_call = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else {}
             tool_id = str(tool_call.get("id") or "")
-            if tool_id and tool_id in self.tools:
-                tool = self.tools[tool_id]
+            if tool_id:
+                tool = self._tool(
+                    tool_id,
+                    name=str(tool_call.get("name") or "tool"),
+                )
+                args = tool_call.get("args")
+                if isinstance(args, dict):
+                    tool.args = dict(args)
+                    tool.args_preview = _preview(args)
+                    tool.args_finalized = True
                 tool.permission_pending = True
                 tool.permission_request_id = str(data.get("request_id") or "")
                 tool.permission_reason = str(data.get("reason") or "")
                 tool.status = "pending approval"
+                self._ensure_tool_transcript(tool_id)
                 self._changed_tool_ids.add(tool_id)
         elif event_type == "permission_denied":
             self.status = "Permission denied"
@@ -442,7 +451,11 @@ class TuiState:
             if raw_id:
                 tool_call_id = str(raw_id)
                 previous_id = self._streaming_tool_ids.get(stream_index)
-                if previous_id and previous_id != tool_call_id:
+                if (
+                    previous_id
+                    and previous_id != tool_call_id
+                    and _is_provisional_tool_id(previous_id)
+                ):
                     self._rename_tool(previous_id, tool_call_id)
                 self._streaming_tool_ids[stream_index] = tool_call_id
             else:
@@ -483,7 +496,11 @@ class TuiState:
                     or self._streaming_tool_ids.get(stream_index)
                     or ""
                 )
-                if previous_id and previous_id != tool_call_id:
+                if (
+                    previous_id
+                    and previous_id != tool_call_id
+                    and _is_provisional_tool_id(previous_id)
+                ):
                     self._rename_tool(previous_id, tool_call_id)
                 self._streaming_tool_ids[stream_index] = tool_call_id
             else:
@@ -580,6 +597,10 @@ class TuiState:
             self._tool_transcript_keys.add(new_id)
         self._tool_id_renames[old_id] = new_id
         self._changed_tool_ids.update({old_id, new_id})
+
+
+def _is_provisional_tool_id(tool_call_id: str) -> bool:
+    return tool_call_id.startswith("tool_")
 
 
 def _preview(value: Any, *, width: int = 120) -> str:

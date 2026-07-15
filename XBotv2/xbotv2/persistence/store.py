@@ -321,7 +321,7 @@ def _message_identity_key(d: dict[str, Any]) -> str:
 def _iter_jsonl(path: Path):
     if not path.exists():
         return
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -336,7 +336,7 @@ def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False)
+            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False, encoding="utf-8", allow_unicode=True)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_name, path)

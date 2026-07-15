@@ -584,7 +584,7 @@ class XBotTextualApp(App[None]):
             async for event in self.session.session_events():
                 self.state.apply_event(event)
                 await self._handle_stream_event(event)
-                self._start_interaction_response(event)
+                await self._start_interaction_response(event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -598,7 +598,7 @@ class XBotTextualApp(App[None]):
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
                 self.state.apply_event(event)
                 await self._handle_stream_event(event)
-                self._start_interaction_response(event)
+                await self._start_interaction_response(event)
         except Exception as exc:
             logger.exception("tui.collect_response failed")
             self._record_error(exc)
@@ -620,16 +620,16 @@ class XBotTextualApp(App[None]):
             scope=str(response.get("scope") or "once"),
         )
 
-    def _start_interaction_response(self, event: dict[str, Any]) -> None:
+    async def _start_interaction_response(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
         payload = event.get("data") if isinstance(event.get("data"), dict) else {}
         if event_type not in {"permission_request", "user_input_required"}:
             return
         if self._interaction_response_task is not None:
-            if self._interaction_response_task.done():
-                self._interaction_response_done(self._interaction_response_task)
-            else:
-                raise RuntimeError("Received a second interaction while one is pending")
+            await asyncio.gather(
+                self._interaction_response_task,
+                return_exceptions=True,
+            )
         if event_type == "permission_request":
             response = self._submit_live_permission(payload)
         else:
@@ -829,6 +829,7 @@ class XBotTextualApp(App[None]):
         elif event_type == "task_updated":
             self._refresh_task_panel()
         elif event_type == "permission_request":
+            await self._render_new_transcript_entries()
             await self._refresh_changed_tool_widgets()
             refresh_input = True
         elif event_type == "permission_denied":

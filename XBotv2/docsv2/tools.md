@@ -73,6 +73,16 @@ instead of exposing sandbox process output as an untyped string.
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 
+The shipped permission policy pre-approves internal state tools, client
+interaction tools, and workspace filesystem tools. Shell commands, discovered
+Skills, MCP tools, and unknown tools remain subject to explicit policy. The
+sandbox implicitly mounts only the workspace (read-write), the current session
+state (read-only, exposed through relative `session/...` cache paths), and the
+minimal system files required to execute commands. Other paths require an
+explicit sandbox `resources` entry; the complete data directory is not added as
+a separate mount. Keep the runtime data directory outside the workspace when
+session-to-session filesystem isolation is required.
+
 `ask_user` is itself a tool call, so a restrictive permission policy may emit
 and resolve `permission_request` before the tool emits
 `user_input_required`. Clients must support both interactions on the same SSE

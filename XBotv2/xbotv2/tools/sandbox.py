@@ -65,7 +65,10 @@ class SandboxPolicy:
             self._load_config(config)
         self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
         self._rules.append(SandboxResourceRule(path=str(self.workspace_root), access="readwrite"))
-        self._rules.append(SandboxResourceRule(path=str(self.data_root), access="readonly"))
+        if self.session_root is not None:
+            self._rules.append(
+                SandboxResourceRule(path=str(self.session_root), access="readonly")
+            )
 
     @property
     def network(self) -> bool:
@@ -359,9 +362,13 @@ class SandboxPolicy:
             if field in config:
                 setattr(self, field, str(config[field]))
         if "resources" in config:
-            self._rules = [r for r in self._rules if r.path not in {
-                str(self.workspace_root), str(self.data_root),
-            }]
+            implicit_paths = {str(self.workspace_root)}
+            if self.session_root is not None:
+                implicit_paths.add(str(self.session_root))
+            self._rules = [
+                rule for rule in self._rules
+                if rule.path in implicit_paths
+            ]
             for rule_data in config["resources"]:
                 path = _expand_path_placeholders(
                     str(rule_data.get("path", "")),
@@ -384,7 +391,11 @@ class SandboxPolicy:
         rules = [
             {"path": r.path, "access": r.access}
             for r in self._rules
-            if r.path not in {str(self.workspace_root), str(self.data_root)}
+            if r.path != str(self.workspace_root)
+            and (
+                self.session_root is None
+                or r.path != str(self.session_root)
+            )
         ]
         if rules:
             d["resources"] = rules

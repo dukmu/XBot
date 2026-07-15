@@ -401,6 +401,49 @@ def test_tui_state_renames_provisional_streaming_tool_id():
     assert [(entry.kind, entry.key) for entry in state.transcript] == [("tool", "call_shell")]
 
 
+def test_tui_state_keeps_minimax_parallel_ids_with_shared_stream_index():
+    state = TuiState()
+    calls = [
+        {"id": "call_date", "name": "shell", "args": {"command": "date"}},
+        {"id": "call_pwd", "name": "shell", "args": {"command": "pwd"}},
+        {"id": "call_list", "name": "filesystem_list", "args": {"path": "output"}},
+    ]
+    deltas = [
+        {
+            "tool_call_id": call["id"],
+            "name": call["name"],
+            "args_delta": call["args"],
+            "index": 0,
+            **(
+                {"replaces_tool_call_id": calls[index - 1]["id"]}
+                if index
+                else {}
+            ),
+        }
+        for index, call in enumerate(calls)
+    ]
+
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    for delta in deltas:
+        state.apply_event(_frame("tool_call_delta", {"tool_calls": [delta]}))
+    state.apply_event(_frame("assistant_message", {"content": "", "tool_calls": calls}))
+    state.apply_event(_frame("tool_calls_started", {"tool_calls": calls}))
+    state.apply_event(_frame("permission_request", {
+        "request_id": "permission:call_date",
+        "reason": "Approval: shell",
+        "tool_call": calls[0],
+    }))
+
+    assert list(state.tools) == ["call_date", "call_pwd", "call_list"]
+    assert [entry.key for entry in state.transcript if entry.kind == "tool"] == [
+        "call_date",
+        "call_pwd",
+        "call_list",
+    ]
+    assert state.tools["call_date"].permission_pending is True
+    assert state.tools["call_pwd"].permission_pending is False
+
+
 def test_tui_state_keeps_sequential_tool_batches_distinct():
     state = TuiState()
     first_call = {
@@ -834,6 +877,9 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
         async def disconnect(self):
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
@@ -1199,6 +1245,103 @@ async def test_textual_app_confirming_permission_twice_submits_once():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_starts_next_permission_after_previous_response():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.responses = []
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def respond_permission(self, request_id, decision, *, scope="once"):
+            self.responses.append((request_id, decision, scope))
+            if request_id == "permission:first":
+                self.first_started.set()
+                await self.release_first.wait()
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    session = FakeSession()
+    app.session = session
+    first = {
+        "type": "permission_request",
+        "data": {
+            "request_id": "permission:first",
+            "tool_call": {"id": "first", "name": "shell"},
+        },
+    }
+    second = {
+        "type": "permission_request",
+        "data": {
+            "request_id": "permission:second",
+            "tool_call": {"id": "second", "name": "shell"},
+        },
+    }
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.tools = {
+            "first": TuiTool(tool_call_id="first", name="shell"),
+            "second": TuiTool(tool_call_id="second", name="shell"),
+        }
+        app.state.transcript = [
+            TuiTranscriptEntry(kind="tool", key="first"),
+            TuiTranscriptEntry(kind="tool", key="second"),
+        ]
+        await app._render_new_transcript_entries()
+        app.state.apply_event(first)
+        await app._handle_stream_event(first)
+        await app._start_interaction_response(first)
+        assert app._active_choice_key == "first"
+        assert await app.confirm_active_choice() is True
+        await asyncio.wait_for(session.first_started.wait(), timeout=1)
+
+        recorded = {
+            "type": "permission_response_recorded",
+            "data": {
+                "request_id": "permission:first",
+                "decision": "allow",
+                "scope": "once",
+            },
+        }
+        app.state.apply_event(recorded)
+        await app._handle_stream_event(recorded)
+        app.state.apply_event(second)
+        await app._handle_stream_event(second)
+        start_second = asyncio.create_task(
+            app._start_interaction_response(second)
+        )
+        await asyncio.sleep(0)
+        assert not start_second.done()
+        assert app._active_choice_key == "second"
+        assert "second" in app._choice_widgets
+        assert "first" not in app._choice_widgets
+
+        session.release_first.set()
+        await asyncio.wait_for(start_second, timeout=1)
+        app._active_choice_index = 1
+        assert await app.confirm_active_choice() is True
+        for _ in range(10):
+            if len(session.responses) == 2:
+                break
+            await pilot.pause()
+
+    assert session.responses == [
+        ("permission:first", "allow", "once"),
+        ("permission:second", "deny", "once"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_textual_app_cancellation_clears_pending_permission_ui():
     from xbotv2.tui.textual_client import XBotTextualApp
 
@@ -1232,7 +1375,7 @@ async def test_textual_app_cancellation_clears_pending_permission_ui():
         app.state.apply_event(permission_event)
         await app._render_new_transcript_entries()
         await app._refresh_changed_tool_widgets()
-        app._start_interaction_response(permission_event)
+        await app._start_interaction_response(permission_event)
         await pilot.pause()
 
         assert app._active_choice_key == "call-cancel"
@@ -1279,7 +1422,7 @@ async def test_textual_app_turn_finished_clears_pending_user_input_ui():
         )
         app.state.apply_event(input_event)
         await app._render_new_transcript_entries()
-        app._start_interaction_response(input_event)
+        await app._start_interaction_response(input_event)
         app._interaction_response_pending = True
         await pilot.pause()
 
@@ -1415,7 +1558,7 @@ async def test_textual_app_records_typed_answer_without_queued_notice():
         }
         app.state.apply_event(event)
         await app._handle_stream_event(event)
-        app._start_interaction_response(event)
+        await app._start_interaction_response(event)
 
         composer = app.query_one("#input")
         composer.load_text("NOVA")
@@ -1924,9 +2067,6 @@ def test_apply_event_permission_request_sets_status_to_approval_required():
     """A permission request becomes the active payload and updates its tool."""
 
     state = TuiState()
-    # Pre-create the tool so the request_id can be linked
-    state.tools["call_1"] = TuiTool(tool_call_id="call_1", name="shell")
-    state._changed_tool_ids.clear()
 
     state.apply_event(
         {
@@ -1948,9 +2088,52 @@ def test_apply_event_permission_request_sets_status_to_approval_required():
     assert tool.permission_request_id == "perm:call_1"
     assert tool.status == "pending approval"
     assert "call_1" in state._changed_tool_ids
+    assert state.transcript == [
+        TuiTranscriptEntry(kind="tool", key="call_1")
+    ]
     # No separate notice entry is created
     notice_entries = [e for e in state.transcript if e.kind == "notice"]
     assert len(notice_entries) == 0
+
+
+@pytest.mark.asyncio
+async def test_permission_before_tool_event_still_renders_inline_choices():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    event = {
+        "type": "permission_request",
+        "data": {
+            "request_id": "permission:early",
+            "reason": "Approval: shell",
+            "tool_call": {
+                "id": "early",
+                "name": "shell",
+                "args": {"command": "date"},
+            },
+        },
+    }
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(event)
+        await app._handle_stream_event(event)
+        await pilot.pause()
+
+        assert app._active_choice_key == "early"
+        assert "Allow once" in app._choice_widgets["early"].visual.plain
+        assert app.state.tools["early"].args == {"command": "date"}
 
 
 # ----------------------------------------------------------------------

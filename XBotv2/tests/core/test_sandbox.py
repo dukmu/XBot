@@ -145,23 +145,29 @@ class TestBubblewrapBuildArgs:
 class TestBubblewrapCapabilities:
     @pytest.mark.asyncio
     async def test_real_file_and_shell_capabilities(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
         session_root = tmp_path / ".data" / "sessions" / "s" / "state"
-        policy = SandboxPolicy(
-            enabled=True,
-            workspace_root=tmp_path,
-            data_root=tmp_path / ".data",
-            session_root=session_root,
-        )
-        if not policy.backend_available:
-            pytest.skip("bubblewrap is not installed")
-
-        (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        (workspace / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
         readonly_path = tmp_path / ".data" / "readonly.txt"
         readonly_path.parent.mkdir()
         readonly_path.write_text("before", encoding="utf-8")
         cached_path = session_root / "artifacts" / "tool_results" / "cached.txt"
         cached_path.parent.mkdir(parents=True)
         cached_path.write_text("cached", encoding="utf-8")
+        policy = SandboxPolicy(
+            config={
+                "resources": [
+                    {"path": str(readonly_path), "access": "readonly"},
+                ],
+            },
+            enabled=True,
+            workspace_root=workspace,
+            data_root=tmp_path / ".data",
+            session_root=session_root,
+        )
+        if not policy.backend_available:
+            pytest.skip("bubblewrap is not installed")
 
         read_data = json.loads(await policy.read_file("sample.txt"))
         readonly_data = json.loads(
@@ -191,7 +197,7 @@ class TestBubblewrapCapabilities:
         assert missing_data["ok"] is False
         assert missing_data["error"]["code"] == "file_not_found"
         assert write_data["ok"] is True
-        assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "created"
+        assert (workspace / "created.txt").read_text(encoding="utf-8") == "created"
         assert write_error["ok"] is False
         assert write_error["error"]["code"] == "write_failed"
         assert readonly_path.read_text(encoding="utf-8") == "before"
@@ -281,15 +287,18 @@ class TestSandboxPolicySerialisation:
         assert policy.network is False
 
     def test_to_dict_excludes_implicit_workspace_data_rules(self, temp_workspace):
+        session_root = temp_workspace / ".data" / "sessions" / "s" / "state"
         policy = SandboxPolicy(
             config={
                 "resources": [{"path": "/dev/null", "access": "readonly"}],
             },
             workspace_root=str(temp_workspace),
+            session_root=session_root,
         )
         d = policy.to_dict()
         paths = [r["path"] for r in d.get("resources", [])]
         assert str(temp_workspace) not in paths
+        assert str(session_root) not in paths
 
     def test_external_read_default_values(self, temp_workspace):
         policy = SandboxPolicy(workspace_root=str(temp_workspace))

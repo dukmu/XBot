@@ -1,24 +1,14 @@
 allow:
 - tool: list_tasks
 - tool: stop_task
-- tool: shell
-  params:
-    command: ls\ \-l\ /home/shefrin/repo/XBot/docs
-- tool: shell
-  params:
-    command: df\ \-h
-- tool: shell
-  params:
-    command: date
+- tool: (?:send_message|ask_user)
+- tool: (?:search_text|find_files)
+- tool: (?:list_todos|create_todo|update_todo|remove_todo)
 - tool: filesystem_.*
-ask:
 - tool: shell
+ask:
+- tool: filesystem_write
 deny:
 - tool: .*
   params:
     command: rm -rf /.*
-permissions:
-  allow:
-  - tool: shell
-    params:
-      command: which\ python3\ \&\&\ python3\ \-\-version

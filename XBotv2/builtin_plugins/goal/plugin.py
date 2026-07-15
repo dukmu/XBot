@@ -275,7 +275,7 @@ class GoalPlugin(PluginBase):
         }
 
     async def _add_goal_context(self, ctx: HookContext) -> None:
-        goal = await self._read_goal()
+        goal = await self._active_goal()
         if goal is None or ctx.context_components is None:
             return
         ctx.context_components = [
@@ -381,27 +381,12 @@ def _goal_context(goal: dict[str, Any]) -> str:
         lines.append(f"Token budget: {goal['token_budget']}")
     if goal["summary"]:
         lines.append(f"Execution summary: {goal['summary']}")
-    if goal["status"] == "active":
-        lines.append(
-            "Persist with this objective. Call update_goal with status=complete and "
-            "a concise execution summary only after all required work is finished; "
-            "use status=blocked only when progress cannot continue. After the transition, "
-            "give the human a concise final summary."
-        )
-    elif goal["status"] == "complete":
-        lines.append(
-            "This goal is complete. Do not restart or continue its work unless it is "
-            "explicitly resumed. Give the human a concise final summary of the result."
-        )
-    elif goal["status"] == "blocked":
-        lines.append(
-            "This goal is blocked. Do not continue it until its blocker changes and "
-            "it is explicitly resumed."
-        )
-    else:
-        lines.append(
-            "This goal is paused. Do not continue it until it is explicitly resumed."
-        )
+    lines.append(
+        "Persist with this objective. Call update_goal with status=complete and "
+        "a concise execution summary only after all required work is finished; "
+        "use status=blocked only when progress cannot continue. After the transition, "
+        "give the human a concise final summary."
+    )
     return "\n\n".join(lines)
 
 
