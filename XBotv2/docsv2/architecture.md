@@ -34,7 +34,8 @@ data/config/system.yaml
 data/config/providers.yaml
 data/config/permissions.yaml
 data/config/sandbox.yaml
-<workspace_root>/AGENTS.md
+<workspace_root>/AGENTS.md       # loaded once by workspace_instructions plugin
+<workspace_root>/.xbot/*.yaml    # startup-only workspace overlays
 ```
 
 Without `providers.yaml`, the `default` provider name uses the built-in OpenAI
@@ -209,10 +210,13 @@ model and MCP Tools do not become slash commands.
 ## Persistence
 
 ```
-data/sessions/<sid>/state/
-├── messages.jsonl          # append-only Messages and history operations
-├── plugin_states/          # per-plugin YAML state
-└── artifacts/              # cached tool outputs and provider context
+data/sessions/<sid>/
+├── policy.yaml             # policy shared by threads in the session
+└── threads/<thread-id>/state/
+    ├── messages.jsonl      # append-only Messages and history operations
+    ├── usage.yaml          # thread-local provider usage
+    ├── plugin_states/      # thread-local per-plugin YAML state
+    └── artifacts/          # cached tool outputs and provider context
 ```
 
 No `events.jsonl` or `state.yaml`. `CoreStateStore` appends normal Messages,

@@ -45,7 +45,7 @@ class SessionRuntime:
 
     def __post_init__(self) -> None:
         self.mailbox = SessionMailbox(
-            self.paths.session(self.session_id).mailbox_log
+            self.paths.session(self.session_id).thread(self.thread_id).mailbox_log
         )
         self.engine.enqueue_mailbox = self.enqueue_general
         background_tasks = getattr(self.engine, "background_tasks", None)

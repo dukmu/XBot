@@ -5,6 +5,7 @@ package are implementation details and may change without a compatibility shim.
 """
 
 from xbotv2.api.context import ContextComponent, PromptFragmentStage
+from xbotv2.api.agents import AgentDefinition, AgentMode
 from xbotv2.api.commands import Command, CommandResult
 from xbotv2.api.plugins import (
     PluginBase,
@@ -15,7 +16,7 @@ from xbotv2.api.plugins import (
     RuntimePluginContext,
     ToolRegistrationOptions,
 )
-from xbotv2.api.paths import RuntimePaths, SessionPaths
+from xbotv2.api.paths import RuntimePaths, SessionPaths, ThreadPaths
 from xbotv2.api.tools import (
     ArtifactRef,
     ClientEvent,
@@ -37,6 +38,8 @@ from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 
 __all__ = [
     "ArtifactRef",
+    "AgentDefinition",
+    "AgentMode",
     "ClientEvent",
     "Command",
     "CommandResult",
@@ -59,6 +62,7 @@ __all__ = [
     "RuntimePaths",
     "SessionInfo",
     "SessionPaths",
+    "ThreadPaths",
     "ToolCall",
     "ToolCallDelta",
     "ToolError",

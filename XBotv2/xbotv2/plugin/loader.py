@@ -12,6 +12,8 @@ from typing import Any
 import yaml
 
 from xbotv2.core.context import ContextBuilder
+from xbotv2.core.agents import AgentRegistry
+from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
@@ -35,6 +37,7 @@ class LoadedPluginRecord:
     tool_names: list[str] = field(default_factory=list)
     command_names: list[str] = field(default_factory=list)
     fragment_stages: list[str] = field(default_factory=list)
+    agent_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -87,11 +90,19 @@ class _PluginSetupContext:
     hooks: HookManager
     tools: ToolRegistry
     context: ContextBuilder
+    agents: AgentRegistry = field(default_factory=AgentRegistry)
+    workspace_root: Path = field(default_factory=Path.cwd)
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
     command_names: list[str] = field(default_factory=list)
     fragment_stages: list[str] = field(default_factory=list)
+    agent_names: list[str] = field(default_factory=list)
+
+    def register_agent(self, definition: AgentDefinition) -> str:
+        name = self.agents.register(definition, owner=self.plugin_name)
+        self.agent_names.append(name)
+        return name
 
     def register_hook(self, stage: HookStage, callback: Any) -> None:
         async def plugin_hook(ctx: Any) -> Any:
@@ -146,6 +157,8 @@ class _PluginSetupContext:
             self.commands.pop(command_name, None)
         for stage in reversed(self.fragment_stages):
             self.context.unregister_fragment(stage, self.plugin_name)
+        for agent_name in reversed(self.agent_names):
+            self.agents.unregister(agent_name, owner=self.plugin_name)
 
 
 class PluginLoader:
@@ -159,6 +172,9 @@ class PluginLoader:
         hook_manager: HookManager,
         tool_registry: ToolRegistry,
         context_builder: ContextBuilder,
+        agent_registry: AgentRegistry | None = None,
+        workspace_root: Path | str | None = None,
+        disabled_plugins: set[str] | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs
@@ -166,6 +182,9 @@ class PluginLoader:
         self.hook_manager = hook_manager
         self.tool_registry = tool_registry
         self.context_builder = context_builder
+        self.agent_registry = agent_registry or AgentRegistry()
+        self.workspace_root = Path(workspace_root or state_store.workspace_root)
+        self.disabled_plugins = disabled_plugins or set()
         self.plugin_configs = plugin_configs or {}
         self._records: dict[str, LoadedPluginRecord] = {}
         self._commands: dict[str, Command] = {}
@@ -211,6 +230,8 @@ class PluginLoader:
                 with open(manifest_path) as f:
                     data = yaml.safe_load(f) or {}
                 manifest = PluginManifest(**data)
+                if manifest.name in self.disabled_plugins:
+                    continue
                 manifest.plugin_dir = candidate
                 manifests.append((manifest, candidate))
         return manifests
@@ -269,6 +290,8 @@ class PluginLoader:
             self._commands.pop(command_name, None)
         for stage in record.fragment_stages:
             self.context_builder.unregister_fragment(stage, plugin_name)
+        for agent_name in reversed(record.agent_names):
+            self.agent_registry.unregister(agent_name, owner=plugin_name)
         if not self._records:
             self._release_import_paths()
         if unload_error is not None:
@@ -298,6 +321,8 @@ class PluginLoader:
             hooks=self.hook_manager,
             tools=self.tool_registry,
             context=self.context_builder,
+            agents=self.agent_registry,
+            workspace_root=self.workspace_root,
             commands=self._commands,
         )
         try:
@@ -308,6 +333,7 @@ class PluginLoader:
                 tool_names=setup.tool_names,
                 command_names=setup.command_names,
                 fragment_stages=setup.fragment_stages,
+                agent_names=setup.agent_names,
             )
         except BaseException:
             setup.rollback()

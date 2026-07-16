@@ -11,7 +11,14 @@ import yaml
 from pydantic import ValidationError
 
 from xbotv2.api.plugins import PluginBase, PluginConfigError, PluginManifest
-from xbotv2.api import Command, CommandResult, Tool, ToolRegistrationOptions
+from xbotv2.api import (
+    AgentDefinition,
+    Command,
+    CommandResult,
+    Tool,
+    ToolRegistrationOptions,
+)
+from xbotv2.core.agents import AgentRegistry
 from xbotv2.plugin.loader import (
     LoadedPluginRecord,
     PluginLoader,
@@ -52,6 +59,24 @@ def _setup_plugin(plugin):
     )
     plugin.setup(setup)
     return context
+
+
+def test_setup_context_rolls_back_registered_agents():
+    agents = AgentRegistry()
+    setup = _PluginSetupContext(
+        plugin_name="agents",
+        hooks=HookManager(),
+        tools=ToolRegistry(),
+        context=ContextBuilder(),
+        agents=agents,
+    )
+    setup.register_agent(
+        AgentDefinition(name="reviewer", description="Review code")
+    )
+
+    setup.rollback()
+
+    assert agents.get("reviewer") is None
 
 
 # ------------------------------------------------------------------
@@ -751,7 +776,7 @@ class BrokenPlugin(PluginBase):
         (plugin_dir / "__init__.py").write_text(
             """
 import asyncio
-from xbotv2.api import HookStage, PluginBase, Tool
+from xbotv2.api import AgentDefinition, HookStage, PluginBase, Tool
 
 def dynamic_tool() -> str:
     return "ok"
@@ -763,6 +788,7 @@ class CancelledPlugin(PluginBase):
     def setup(self, ctx):
         ctx.register_hook(HookStage.ON_TURN_START, on_turn_start)
         ctx.register_tool(Tool.from_function(dynamic_tool))
+        ctx.register_agent(AgentDefinition(name="partial", description="Partial agent"))
         ctx.add_prompt_fragment("system_instructions", "partial")
         raise asyncio.CancelledError()
 
@@ -798,6 +824,7 @@ class CancelledPlugin(PluginBase):
         assert hooks._hooks.get(HookStage.ON_TURN_START, []) == []
         assert "plugin:cancelled:dynamic_tool" not in tools.registered_names()
         assert context.get_fragment("system_instructions", "cancelled") is None
+        assert loader.agent_registry.get("partial") is None
         assert state_store.get_plugin_state("cancelled") == {"cleaned": True}
         assert loader.loaded_plugins == []
         assert loader._records == {}

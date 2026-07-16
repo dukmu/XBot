@@ -1,13 +1,13 @@
 """Bootstrap the complete XBotv2 runtime from configuration.
 
 Sequence:
-1. Load configuration (system.yaml, providers.yaml, user.yaml, AGENTS.md)
+1. Load global configuration and startup-only workspace overlays
 2. Create CoreStateStore
 3. Create empty HookManager, ToolRegistry, ContextBuilder
 4. Register core base tools
 5. Create SandboxPolicy + PermissionSystem
 6. Discover and load plugins
-7. Register plugin hooks, tools, prompt fragments
+7. Register plugin hooks, tools, prompt fragments, and Agent definitions
 8. Create LLM client
 9. Run ON_SESSION_INIT hooks
 10. Return fully-wired Engine
@@ -20,6 +20,7 @@ By default, plugins are discovered from the built-in plugin directory. Passing
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import re
 import secrets
 from datetime import datetime
@@ -34,6 +35,7 @@ from xbotv2.config.policy import (
 )
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.context import ContextBuilder
+from xbotv2.core.agents import AgentRegistry
 from xbotv2.core.background_tasks import BackgroundTaskManager
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
@@ -107,7 +109,8 @@ async def bootstrap(
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    agent_config = load_system_config(paths, workspace_root)
+    startup_config = load_system_config(paths, workspace_root)
+    agent_config = startup_config.model_copy(deep=True)
     provider_name = provider_name or agent_config.provider
     provider_config = load_provider_config(paths, provider_name)
     load_user_context(paths)
@@ -141,6 +144,7 @@ async def bootstrap(
     hook_manager = HookManager()
     tool_registry = ToolRegistry()
     context_builder = ContextBuilder()
+    agent_registry = AgentRegistry()
     hook_manager.register(
         HookStage.AFTER_TOOLS,
         make_tool_result_cache_hook(state_store),
@@ -171,7 +175,10 @@ async def bootstrap(
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # No-plugin mode used by isolated core tests and pure-core embeddings.
-    resolved_plugin_dirs = _resolve_plugin_dirs(plugin_dirs)
+    resolved_plugin_dirs = _resolve_plugin_dirs(
+        plugin_dirs,
+        workspace_plugin_dirs=agent_config.plugin_paths,
+    )
     plugin_loader: PluginLoader | None = None
 
     if resolved_plugin_dirs:
@@ -182,6 +189,9 @@ async def bootstrap(
             context_builder,
             state_store,
             _plugin_configs,
+            agent_registry,
+            workspace_root,
+            set(agent_config.disabled_plugins),
         )
 
     try:
@@ -233,6 +243,8 @@ async def bootstrap(
             config=agent_config,
             plugin_loader=plugin_loader,
             background_tasks=background_tasks,
+            agent_registry=agent_registry,
+            startup_config=startup_config,
             model=provider_config.model,
             context_window=agent_config.max_context_tokens,
         )
@@ -268,6 +280,7 @@ def _resolve_plugin_dirs(
     plugin_dirs: list[Path | str] | None,
     *,
     builtin_plugins_dir: Path | None = None,
+    workspace_plugin_dirs: list[Path | str] | None = None,
 ) -> list[Path]:
     """Resolve plugin scan directories.
 
@@ -282,7 +295,9 @@ def _resolve_plugin_dirs(
         if builtin_plugins_dir is not None
         else Path(__file__).parent.parent.parent / "builtin_plugins"
     )
-    return [builtin_dir] if builtin_dir.exists() else []
+    resolved = [builtin_dir] if builtin_dir.exists() else []
+    resolved.extend(Path(path) for path in workspace_plugin_dirs or [])
+    return resolved
 
 
 async def _load_plugins(
@@ -292,6 +307,9 @@ async def _load_plugins(
     context_builder: ContextBuilder,
     state_store: CoreStateStore,
     plugin_configs: dict[str, dict[str, Any]],
+    agent_registry: AgentRegistry,
+    workspace_root: Path,
+    disabled_plugins: set[str],
 ) -> PluginLoader:
     """Discover, load, and wire plugins."""
     loader = PluginLoader(
@@ -301,26 +319,51 @@ async def _load_plugins(
         tool_registry=tool_registry,
         context_builder=context_builder,
         plugin_configs=plugin_configs,
+        agent_registry=agent_registry,
+        workspace_root=workspace_root,
+        disabled_plugins=disabled_plugins,
     )
     await loader.load()
     return loader
 
 
 def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> None:
-    """Register hooks declared directly in the system config."""
+    """Register trusted standalone hooks declared for startup."""
     for decl in getattr(agent_config, "hooks", []) or []:
-        hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl.target))
+        hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl))
 
 
-def _resolve_hook_target(target: str) -> Any:
-    """Resolve ``module:function`` hook targets from system config."""
-    if ":" not in target:
-        raise ValueError(f"Invalid hook target {target!r}; expected 'module:function'")
-    module_path, attr_name = target.split(":", 1)
-    if not module_path or not attr_name:
-        raise ValueError(f"Invalid hook target {target!r}; expected 'module:function'")
-    module = importlib.import_module(module_path)
+def _resolve_hook_target(declaration: Any) -> Any:
+    """Resolve a module or workspace script target without changing sys.path."""
+    source, attr_name = declaration.target.split(":", 1)
+    if source.endswith(".py") or "/" in source or "\\" in source:
+        base_dir = getattr(declaration, "base_dir", None)
+        if base_dir is None:
+            raise ValueError(
+                f"Relative hook script {source!r} requires a workspace hooks file"
+            )
+        path = (Path(base_dir) / source).resolve()
+        try:
+            path.relative_to(Path(base_dir).resolve())
+        except ValueError as exc:
+            raise ValueError("Hook script paths must stay inside .xbot") from exc
+        if not path.is_file():
+            raise FileNotFoundError(f"Hook script not found: {path}")
+        spec = importlib.util.spec_from_file_location(
+            f"xbotv2_workspace_hook_{abs(hash(path))}", path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load hook script: {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    else:
+        module = importlib.import_module(source)
     try:
-        return getattr(module, attr_name)
+        callback = getattr(module, attr_name)
     except AttributeError as exc:
-        raise ImportError(f"Hook target {target!r} does not exist") from exc
+        raise ImportError(
+            f"Hook target {declaration.target!r} does not exist"
+        ) from exc
+    if not callable(callback):
+        raise TypeError(f"Hook target {declaration.target!r} is not callable")
+    return callback

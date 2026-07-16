@@ -124,7 +124,12 @@ class ExamplePlugin(PluginBase):
 
 Manifest-only plugins declare hooks, tools, and prompt fragments in
 `plugin.yaml`. Python plugins override `setup(ctx)` and use
-`ctx.register_hook`, `ctx.register_tool`, and `ctx.add_prompt_fragment`.
+`ctx.register_hook`, `ctx.register_tool`, `ctx.register_agent`, and
+`ctx.add_prompt_fragment`.
+
+Agent definitions follow the same ownership rules as other setup resources:
+names are unique, setup failure rolls them back, and unload unregisters them.
+Core owns Agent execution; a plugin registers definitions, not a separate loop.
 The setup transaction should record every resource for rollback and unload.
 
 Prompt fragments use the public `PromptFragmentStage` values, in render order:

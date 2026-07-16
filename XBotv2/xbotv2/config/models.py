@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from xbotv2.api.hooks import HookStage
 
 
 class UserContext(BaseModel):
@@ -31,12 +35,38 @@ class ProviderConfig(BaseModel):
 class HookConfig(BaseModel):
     """A system-configured hook."""
 
+    model_config = ConfigDict(extra="forbid")
+
     stage: str
     target: str  # "module:function"
+    base_dir: Path | None = Field(default=None, exclude=True)
+
+    @field_validator("stage")
+    @classmethod
+    def _validate_stage(cls, value: str) -> str:
+        HookStage(value)
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, value: str) -> str:
+        source, separator, handler = value.partition(":")
+        if not separator or not source or not handler:
+            raise ValueError("target must use source:handler syntax")
+        return value
+
+
+class WorkspacePluginConfig(BaseModel):
+    """One plugin entry in workspace .xbot/plugins.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class SystemConfig(BaseModel):
-    """Runtime configuration from config/system.yaml plus AGENTS.md."""
+    """Runtime configuration after startup-only workspace overlays."""
 
     agent_name: str = Field(default="XBotv2")
     agent_role: str = Field(default="AI coding assistant")
@@ -46,6 +76,8 @@ class SystemConfig(BaseModel):
     tools: list[str] = Field(default_factory=list)
     hooks: list[HookConfig] = Field(default_factory=list)
     plugins: dict[str, dict] = Field(default_factory=dict)
+    plugin_paths: list[str] = Field(default_factory=list)
+    disabled_plugins: list[str] = Field(default_factory=list)
     system_template: str = Field(default="")
     instructions: str = Field(default="")
     memory: str = Field(default="")

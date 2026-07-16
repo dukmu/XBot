@@ -393,7 +393,9 @@ def _reload_live_policies(ctx: Any) -> None:
     from xbotv2.tools.permissions import PermissionSystem
     from xbotv2.tools.sandbox import SandboxPolicy
 
-    base_config = load_system_config(ctx.paths, Path(ctx.workspace_root))
+    base_config = getattr(ctx.engine, "startup_config", None)
+    if base_config is None:
+        base_config = load_system_config(ctx.paths, Path(ctx.workspace_root))
     session_policy = load_session_policy(ctx.paths, ctx.session_id)
     permissions = merge_permission_config(
         base_config.permissions,

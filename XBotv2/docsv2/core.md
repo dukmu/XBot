@@ -94,9 +94,10 @@ from the hook does not bypass core permission policy.
 ## Persistence
 
 ```
-data/sessions/<sid>/state/
+data/sessions/<sid>/threads/<thread-id>/state/
 ├── messages.jsonl          # append-only messages and history operations
-├── plugin_states/          # per-plugin YAML files
+├── usage.yaml              # provider usage for this thread
+├── plugin_states/          # per-plugin YAML files for this thread
 └── artifacts/              # cached large tool outputs and provider context
 ```
 

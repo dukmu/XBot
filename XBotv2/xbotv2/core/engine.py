@@ -188,6 +188,8 @@ class Engine:
         max_iterations: int = 50,
         plugin_loader: Any | None = None,
         background_tasks: Any | None = None,
+        agent_registry: Any | None = None,
+        startup_config: Any | None = None,
         model: str = "",
         context_window: int = 0,
     ) -> None:
@@ -203,6 +205,8 @@ class Engine:
         self.max_iterations = max_iterations
         self.plugin_loader = plugin_loader
         self.background_tasks = background_tasks
+        self.agent_registry = agent_registry
+        self.startup_config = startup_config or config
         self.model = model
         self.context_window = context_window or int(
             getattr(config, "max_context_tokens", 0) or 0

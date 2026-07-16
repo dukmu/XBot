@@ -77,7 +77,7 @@ class RuntimePaths:
 
 @dataclass(frozen=True, slots=True)
 class SessionPaths:
-    """All core-owned paths for one session."""
+    """Core-owned paths shared by every thread in one session."""
 
     runtime: RuntimePaths
     session_id: str
@@ -89,6 +89,42 @@ class SessionPaths:
     @property
     def policy_file(self) -> Path:
         return self.root / "policy.yaml"
+
+    @property
+    def threads_dir(self) -> Path:
+        return self.root / "threads"
+
+    def thread(self, thread_id: str, *, legacy: bool = False) -> ThreadPaths:
+        return ThreadPaths(self, _identifier("thread_id", thread_id), legacy)
+
+    def has_thread(self, thread_id: str) -> bool:
+        thread = self.thread(thread_id)
+        return thread.state_dir.exists() or (
+            thread_id == "agent" and (self.root / "state").exists()
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadPaths:
+    """Mutable state owned by one thread within a session."""
+
+    session: SessionPaths
+    thread_id: str
+    legacy: bool = False
+
+    @property
+    def runtime(self) -> RuntimePaths:
+        return self.session.runtime
+
+    @property
+    def session_id(self) -> str:
+        return self.session.session_id
+
+    @property
+    def root(self) -> Path:
+        if self.legacy:
+            return self.session.root
+        return self.session.threads_dir / self.thread_id
 
     @property
     def state_dir(self) -> Path:
@@ -115,4 +151,4 @@ class SessionPaths:
         return self.root / "logs" / "mailbox.jsonl"
 
 
-__all__ = ["RuntimePaths", "SessionPaths"]
+__all__ = ["RuntimePaths", "SessionPaths", "ThreadPaths"]

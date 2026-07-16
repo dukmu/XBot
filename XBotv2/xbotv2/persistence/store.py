@@ -18,7 +18,7 @@ from typing import Any
 import yaml
 
 from xbotv2.api.messages import Message
-from xbotv2.api.paths import SessionPaths
+from xbotv2.api.paths import SessionPaths, ThreadPaths
 from xbotv2.api.tools import ToolCall
 
 _PERSISTED_XBOT_KWARGS = {"xbotv2_data", "xbotv2_error"}
@@ -81,22 +81,34 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
+def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
+    current = paths.thread(thread_id)
+    legacy = (
+        thread_id == "agent"
+        and (paths.root / "state").exists()
+        and not current.state_dir.exists()
+    )
+    return paths.thread(thread_id, legacy=legacy)
+
+
 class CoreStateStore:
 
     SCHEMA_VERSION = 3
 
     def __init__(
         self,
-        paths: SessionPaths,
+        paths: SessionPaths | ThreadPaths,
         *,
         thread_id: str,
         workspace_root: str,
         provider: str,
     ) -> None:
+        if isinstance(paths, SessionPaths):
+            paths = _thread_paths(paths, thread_id)
         self.paths = paths
         self.root = paths.state_dir
         self.session_id = paths.session_id
-        self.thread_id = thread_id
+        self.thread_id = paths.thread_id
         self.workspace_root = workspace_root
         self.provider = provider
 
@@ -115,12 +127,13 @@ class CoreStateStore:
         workspace_root: str,
         provider: str,
     ) -> "CoreStateStore":
-        paths.state_dir.mkdir(parents=True, exist_ok=True)
-        paths.plugin_states_dir.mkdir(exist_ok=True)
-        paths.artifacts_dir.mkdir(exist_ok=True)
+        thread_paths = _thread_paths(paths, thread_id)
+        thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
+        thread_paths.plugin_states_dir.mkdir(exist_ok=True)
+        thread_paths.artifacts_dir.mkdir(exist_ok=True)
 
         store = cls(
-            paths=paths,
+            paths=thread_paths,
             thread_id=thread_id,
             workspace_root=workspace_root,
             provider=provider,

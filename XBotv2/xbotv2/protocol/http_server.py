@@ -101,9 +101,9 @@ class SessionManager:
                 else:
                     raise SessionExists(session_id)
             session_paths = self.paths.session(session_id)
-            if mode == "resume" and not session_paths.state_dir.exists():
+            if mode == "resume" and not session_paths.has_thread(thread_id):
                 raise SessionNotFound(session_id)
-            if mode == "new" and session_paths.state_dir.exists():
+            if mode == "new" and session_paths.root.exists():
                 raise SessionExists(session_id)
             engine = await bootstrap(
                 paths=self.paths,

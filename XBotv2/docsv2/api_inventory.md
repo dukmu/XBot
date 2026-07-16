@@ -21,6 +21,8 @@ type-only import inside XBotv2 itself.
 | Symbol | Kind | Purpose |
 |---|---|---|
 | `ArtifactRef` | dataclass | Tool-produced artifact metadata. |
+| `AgentDefinition` | dataclass | Plugin-registered primary or subagent definition. |
+| `AgentMode` | type alias | Supported primary/subagent visibility modes. |
 | `ClientEvent` | dataclass | Client-facing event emitted by tools. |
 | `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
 | `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
@@ -43,6 +45,7 @@ type-only import inside XBotv2 itself.
 | `RuntimePaths` | dataclass | Server process filesystem layout. |
 | `SessionInfo` | dataclass | Session identity and status metadata. |
 | `SessionPaths` | dataclass | Per-session filesystem layout. |
+| `ThreadPaths` | dataclass | Per-thread mutable state layout within a session. |
 | `ToolCall` | dataclass | Parsed tool call request. |
 | `ToolCallDelta` | dataclass | Streaming tool call fragment. |
 | `ToolError` | dataclass | Structured tool failure. |
@@ -71,7 +74,8 @@ replace the list with another list of public components. Invalid entries fail
 before provider-message conversion.
 Model-request Hooks inspect `HookContext.model_request`. Transform Hooks use
 their documented stage-specific return dictionaries for replacements.
-`PluginSetupContext` owns transactional setup registrations, while runtime
+`PluginSetupContext` owns transactional setup registrations, including Agent
+definitions, while runtime
 Tool and Command registrations join the same unload record. Runtime unregister
 operations can remove only resources owned by that plugin.
 Duplicate canonical names or provider-visible tool names are rejected before

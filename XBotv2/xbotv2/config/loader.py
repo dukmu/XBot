@@ -9,7 +9,14 @@ from typing import Any
 
 import yaml
 
-from xbotv2.config.models import ProviderConfig, SystemConfig, UserContext
+from xbotv2.config.models import (
+    HookConfig,
+    ProviderConfig,
+    SystemConfig,
+    UserContext,
+    WorkspacePluginConfig,
+)
+from xbotv2.config.policy import merge_permission_config, merge_sandbox_config
 from xbotv2.api.paths import RuntimePaths
 
 
@@ -103,7 +110,7 @@ def load_provider_names(paths: RuntimePaths) -> tuple[str, list[str]]:
 
 
 def load_system_config(paths: RuntimePaths, workspace_root: Path | str) -> SystemConfig:
-    """Load global configuration and workspace instructions."""
+    """Load global configuration and startup-only workspace overlays."""
     data = load_yaml(paths.system_config)
     permissions = load_yaml(paths.permissions_config)
     sandbox = load_yaml(paths.sandbox_config)
@@ -111,15 +118,107 @@ def load_system_config(paths: RuntimePaths, workspace_root: Path | str) -> Syste
         data["permissions"] = permissions
     if sandbox:
         data["sandbox"] = sandbox
-    workspace = Path(workspace_root)
-    agents_path = workspace / "AGENTS.md"
-    if agents_path.exists():
-        agents_text = agents_path.read_text(encoding="utf-8")
-        existing = str(data.get("instructions") or "")
-        data["instructions"] = "\n\n".join(
-            part for part in (existing, agents_text) if part.strip()
-        )
+    workspace = Path(workspace_root).resolve()
+    _apply_workspace_overlays(data, workspace)
     memory_path = paths.memory_file
     if memory_path.exists():
         data["memory"] = memory_path.read_text(encoding="utf-8")
     return SystemConfig(**data)
+
+
+def _apply_workspace_overlays(data: dict[str, Any], workspace: Path) -> None:
+    config_dir = workspace / ".xbot"
+
+    policy_path = config_dir / "policy.yaml"
+    policy = load_yaml(policy_path)
+    if policy_path.exists():
+        _require_mapping(policy, ".xbot/policy.yaml")
+    if policy:
+        unknown = set(policy) - {"permissions", "sandbox"}
+        if unknown:
+            raise ValueError(
+                f"Unknown .xbot/policy.yaml keys: {', '.join(sorted(unknown))}"
+            )
+        workspace_permissions = policy.get("permissions")
+        workspace_sandbox = policy.get("sandbox")
+        _require_optional_mapping(
+            workspace_permissions, ".xbot/policy.yaml permissions"
+        )
+        _require_optional_mapping(workspace_sandbox, ".xbot/policy.yaml sandbox")
+        data["permissions"] = merge_permission_config(
+            data.get("permissions"), workspace_permissions
+        )
+        data["sandbox"] = merge_sandbox_config(
+            data.get("sandbox"), workspace_sandbox
+        )
+
+    plugins_path = config_dir / "plugins.yaml"
+    plugins_doc = load_yaml(plugins_path)
+    if plugins_path.exists():
+        _require_mapping(plugins_doc, ".xbot/plugins.yaml")
+    if plugins_doc:
+        unknown = set(plugins_doc) - {"paths", "plugins"}
+        if unknown:
+            raise ValueError(
+                f"Unknown .xbot/plugins.yaml keys: {', '.join(sorted(unknown))}"
+            )
+        plugin_paths = plugins_doc.get("paths") or []
+        if not isinstance(plugin_paths, list):
+            raise ValueError(".xbot/plugins.yaml paths must be a list")
+        data["plugin_paths"] = [
+            str(_workspace_path(workspace, value)) for value in plugin_paths
+        ]
+        configured = dict(data.get("plugins") or {})
+        disabled: list[str] = []
+        entries = plugins_doc.get("plugins") or {}
+        if not isinstance(entries, dict):
+            raise ValueError(".xbot/plugins.yaml plugins must be a mapping")
+        for name, raw in entries.items():
+            entry = WorkspacePluginConfig.model_validate(
+                {} if raw is None else raw
+            )
+            if entry.enabled:
+                configured[str(name)] = entry.config
+            else:
+                configured.pop(str(name), None)
+                disabled.append(str(name))
+        data["plugins"] = configured
+        data["disabled_plugins"] = disabled
+
+    hooks_path = config_dir / "hooks.yaml"
+    if hooks_path.exists():
+        hooks_doc = load_yaml(hooks_path)
+        _require_mapping(hooks_doc, ".xbot/hooks.yaml")
+        if set(hooks_doc) - {"hooks"}:
+            raise ValueError(".xbot/hooks.yaml only supports the hooks key")
+        hooks = hooks_doc.get("hooks") or []
+        if not isinstance(hooks, list):
+            raise ValueError(".xbot/hooks.yaml hooks must be a list")
+        declarations = [
+            HookConfig.model_validate(item).model_copy(
+                update={"base_dir": config_dir}
+            )
+            for item in hooks
+        ]
+        data["hooks"] = declarations
+
+
+def _workspace_path(workspace: Path, value: Any) -> Path:
+    path = (workspace / str(value)).resolve()
+    try:
+        path.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("Workspace plugin paths must stay inside the workspace") from exc
+    if not path.is_dir():
+        raise ValueError(f"Workspace plugin path is not a directory: {path}")
+    return path
+
+
+def _require_mapping(value: Any, source: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{source} must contain a mapping")
+
+
+def _require_optional_mapping(value: Any, source: str) -> None:
+    if value is not None:
+        _require_mapping(value, source)

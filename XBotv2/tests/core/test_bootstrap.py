@@ -398,6 +398,36 @@ hooks:
             )
 
     @pytest.mark.asyncio
+    async def test_workspace_hook_script_loads_relative_to_xbot_directory(
+        self, temp_data_dir, temp_workspace
+    ):
+        config_dir = temp_workspace / ".xbot"
+        (config_dir / "hooks").mkdir(parents=True)
+        (config_dir / "hooks" / "rewrite.py").write_text(
+            "async def rewrite(ctx):\n"
+            "    return {'user_input': ctx.user_input + ' from workspace'}\n",
+            encoding="utf-8",
+        )
+        (config_dir / "hooks.yaml").write_text(
+            "hooks:\n"
+            "  - stage: before_user_message_accept\n"
+            "    target: hooks/rewrite.py:rewrite\n",
+            encoding="utf-8",
+        )
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[{"content": "ok"}]),
+        )
+
+        _ = [event async for event in engine.run_turn("hello")]
+
+        assert engine.messages[0].content == "hello from workspace"
+
+    @pytest.mark.asyncio
     async def test_bootstrap_passes_external_plugin_configs(
         self, temp_data_dir, tmp_path, monkeypatch
     ):
@@ -469,7 +499,7 @@ class ConfiguredPlugin(PluginBase):
 
     @pytest.mark.asyncio
     async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
-        """Workspace AGENTS.md is merged into provider-facing context."""
+        """The default workspace plugin injects AGENTS.md exactly once."""
         (temp_workspace / "AGENTS.md").write_text(
             "Workspace instruction: prefer concise answers.",
             encoding="utf-8",
@@ -480,7 +510,6 @@ class ConfiguredPlugin(PluginBase):
             session_id="test-session",
             thread_id="test-thread",
             workspace_root=temp_workspace,
-            plugin_dirs=[],
             llm_override=llm,
         )
 
@@ -488,6 +517,31 @@ class ConfiguredPlugin(PluginBase):
 
         prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
         assert "Workspace instruction: prefer concise answers." in prompt
+        assert prompt.count("Workspace instruction: prefer concise answers.") == 1
+
+    @pytest.mark.asyncio
+    async def test_workspace_can_disable_agents_md_plugin(
+        self, temp_data_dir, temp_workspace
+    ):
+        (temp_workspace / "AGENTS.md").write_text("must not appear", encoding="utf-8")
+        (temp_workspace / ".xbot").mkdir()
+        (temp_workspace / ".xbot" / "plugins.yaml").write_text(
+            "plugins:\n  workspace_instructions:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[{"content": "ok"}])
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="test-session",
+            thread_id="test-thread",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+
+        _ = [event async for event in engine.run_turn("hello")]
+
+        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
+        assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
@@ -532,7 +586,14 @@ class ConfiguredPlugin(PluginBase):
         state = engine.state_store.read_state()
         assert state["session_id"] != "default"
         assert "-" in state["session_id"]
-        assert (temp_data_dir / "sessions" / state["session_id"] / "state").exists()
+        assert (
+            temp_data_dir
+            / "sessions"
+            / state["session_id"]
+            / "threads"
+            / "test-thread"
+            / "state"
+        ).exists()
 
     @pytest.mark.asyncio
     async def test_system_json_policy_files_are_ignored(self, temp_data_dir):

@@ -12,6 +12,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from xbotv2.api.commands import Command
+from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
 from xbotv2.api.tools import Tool
@@ -146,6 +147,9 @@ class RuntimePluginContext(Protocol):
 class PluginSetupContext(Protocol):
     """Capabilities available while a plugin registers extensions."""
 
+    workspace_root: Path
+
+    def register_agent(self, definition: AgentDefinition) -> str: ...
     def register_hook(self, stage: HookStage, callback: Any) -> None: ...
     def register_tool(
         self,

@@ -406,7 +406,7 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     body = result_response.json()
     assert body["type"] == "command_result"
     assert body["data"]["data"]["session_id"] == "cmds"
-    state_root = http_app.state.paths.session("cmds").state_dir
+    state_root = http_app.state.paths.session("cmds").thread("t").state_dir
     messages_path = state_root / "messages.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
     assert "command_result" not in messages
@@ -448,7 +448,8 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
         "first", "first answer",
     ]
 
-    source = http_app.state.paths.session("history")
+    source_session = http_app.state.paths.session("history")
+    source = source_session.thread("t")
     source_records = [
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
@@ -457,17 +458,18 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     assert source_records[-1]["record_type"] == "history_undo"
     (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
     (source.artifacts_dir / "cached.txt").write_text("cached")
-    source.policy_file.write_text("permissions: {}\n")
+    source_session.policy_file.write_text("permissions: {}\n")
     forked = await client.post(
         "/sessions/history/commands",
         json={"command": "fork", "args": []},
     )
     fork_id = forked.json()["data"]["data"]["session_id"]
-    fork_paths = http_app.state.paths.session(fork_id)
+    fork_session = http_app.state.paths.session(fork_id)
+    fork_paths = fork_session.thread("t")
 
     assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
     assert (fork_paths.artifacts_dir / "cached.txt").read_text() == "cached"
-    assert fork_paths.policy_file.read_text() == "permissions: {}\n"
+    assert fork_session.policy_file.read_text() == "permissions: {}\n"
     assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
     resumed = await client.post(
         "/sessions",
@@ -542,7 +544,7 @@ async def test_http_policy_commands_update_session_overrides(
     )
     ctx = await http_app.state.manager.get("policy")
     cached_path = (
-        http_app.state.paths.session("policy").artifacts_dir
+        http_app.state.paths.session("policy").thread("t").artifacts_dir
         / "tool_results"
         / "cached.txt"
     )
@@ -565,7 +567,7 @@ async def test_http_policy_commands_update_session_overrides(
     assert cached_result.status == "success"
     assert "cached after policy reload" in cached_result.content
     assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
-    state_root = http_app.state.paths.session("policy").state_dir
+    state_root = http_app.state.paths.session("policy").thread("t").state_dir
     events_path = state_root / "events.jsonl"
     events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
     assert "permission_override_set" not in events
@@ -1247,7 +1249,7 @@ async def test_session_close_drops_mailbox_and_resume_starts_empty(http_app) -> 
     assert resumed.mailbox.size == 0
     records = [
         json.loads(line)
-        for line in resumed.paths.session("mailbox-resume").mailbox_log.read_text(
+        for line in resumed.paths.session("mailbox-resume").thread("t").mailbox_log.read_text(
             encoding="utf-8"
         ).splitlines()
     ]
