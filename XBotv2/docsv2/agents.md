@@ -17,8 +17,9 @@ ctx.register_agent(AgentDefinition(
 
 `mode` is `primary`, `subagent`, or `all`. An omitted provider inherits the
 calling agent's configured provider. An omitted tool filter inherits the
-resolved tool set. Permissions use the existing XBot permission schema and
-canonical tool names.
+resolved tool set. Child permissions are still bounded by the caller and the
+workspace policy. Subagent runtimes do not load the `agents` plugin, so they
+cannot create nested subagents.
 
 ## Thread Ownership
 
@@ -45,9 +46,10 @@ use the thread layout.
 
 ## Workspace Definitions
 
-The built-in `agents` plugin loads `.xbot/agents/*.md` at startup. The filename
-is the Agent name, YAML frontmatter contains the definition, and the Markdown
-body is its prompt:
+The built-in `agents` plugin loads `data/.agents/*.md`, then
+`<workspace>/.agents/*.md` at startup. The filename is the Agent name; a
+workspace definition replaces a same-named built-in definition. YAML
+frontmatter contains configuration and the Markdown body is the Agent prompt:
 
 ```markdown
 ---
@@ -56,22 +58,35 @@ mode: subagent
 tools:
   - filesystem_read
   - search_text
-permissions:
-  deny:
-    - tool: filesystem_write
+permission:
+  filesystem_write: deny
 ---
 Report findings first and cite the relevant files.
 ```
 
-Unknown fields fail startup. XBot uses `provider`, `permissions`, and canonical
-Tool names rather than translating provider- or client-specific aliases.
+Unknown fields fail startup. Accepted behavioral fields are `description`,
+`mode`, `provider`, `model`, `temperature`, `max_output_tokens`,
+`context_window`, `max_iterations` (or OpenCode's `steps`), `tools`,
+`permission`, and `hidden`. `tools` may be an XBot selector list or an
+OpenCode-style boolean mapping. The legacy `permissions` spelling remains
+accepted with XBot's grouped rule schema. Standard `permission` keys are
+canonical XBot tool names or wildcard patterns; XBot does not guess aliases such
+as `bash` or `edit`. A `model` value may use `provider/model-id`. Credentials,
+provider URLs, plugin configuration, sandbox roots, and Hook paths do not belong
+in Agent Markdown.
+
+`AGENTS.md` remains a standard workspace instruction file. It is injected once
+for primary agents and subagents and is never parsed as an Agent definition.
 
 Select a `primary` or `all` definition with `xbotv2 --agent <name>`. The HTTP
 session-open request exposes the same optional `agent` field. The selected name
-is written to `thread.yaml`, so resume restores the same Primary Agent without
-requiring the client to send it again. `/agent [list|status]` reports the active
-and registered definitions; changing the Agent requires a new thread rather
-than mixing two Primary prompts into one history.
+and resolved definition are written to `thread.yaml`, so resume keeps the same
+prompt, model settings, and tool policy even if the source Markdown later
+changes. `/agent list` reports available definitions and `/agent use <name>`
+switches the active Primary Agent for subsequent turns. The session, thread,
+history, plugin state, and usage remain unchanged; prompt, model settings,
+tools, and permissions are replaced together and the new resolved definition
+becomes the thread's resume state. Switching is rejected while a turn is active.
 
 ## Execution
 
@@ -92,3 +107,10 @@ A blocking child shares the parent turn's live interaction sink, so its
 A background child may use that sink only while the originating turn remains
 connected; later interactive requests fail closed instead of waiting without a
 client owner.
+
+The shipped `Explorer` definition has `mode: all` and exposes only read, list,
+search, and `ask_user` tools. It can be selected as a primary Agent or delegated
+to as a subagent; it cannot see filesystem writes, Shell, or subagent dispatch.
+The shipped `default` definition is selected for a new primary thread when the
+client does not choose an Agent. Explicit selection, resume metadata, and child
+Agent definitions take precedence.

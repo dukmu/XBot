@@ -66,6 +66,23 @@ def test_search_commands_slash_prefix_st_returns_status() -> None:
     assert results[0].name == "status"
 
 
+def test_server_command_alias_ignores_usage_parameters() -> None:
+    register_server_commands([
+        {
+            "name": "agent",
+            "slash": "/agent [list|status|use <name>]",
+            "description": "switch Agent",
+        }
+    ])
+
+    spec = parse_slash_command("/agent list")
+
+    assert spec is not None
+    assert spec.name == "agent"
+    assert spec.kind == "server"
+    assert spec.args == "list"
+
+
 def test_search_commands_slash_prefix_no_match_returns_empty() -> None:
     assert search_commands("/xyz") == []
 

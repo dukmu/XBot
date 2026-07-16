@@ -1,4 +1,6 @@
 # Ignore runtime session data but keep config files
-data/
+data/*
 !data/config/
 !data/config/*.yaml
+!data/.agents/
+!data/.agents/*.md

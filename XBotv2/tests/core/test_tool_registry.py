@@ -142,6 +142,17 @@ class TestFiltering:
         tool_registry.restrict(["missing"])
         assert tool_registry.names() == []
 
+    def test_exclude_removes_selectors_from_current_tools(self, tool_registry):
+        tool_registry.register(filesystem_read)
+        tool_registry.register(filesystem_write)
+        tool_registry.register(tool_a)
+
+        assert set(tool_registry.exclude(["filesystem_write"])) == {
+            "filesystem_read",
+            "tool_a",
+        }
+        assert tool_registry.get("filesystem_write") is None
+
 
 class TestQuery:
     """Query methods."""

@@ -73,6 +73,8 @@ Session history commands use the same command endpoint:
   artifacts, and plugin state.
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
   session id without copying a live turn or interaction.
+- `/agent list` discovers Primary Agents and `/agent use <name>` changes the
+  active Agent for subsequent turns without replacing the thread or history.
 - `/tasks [ps]` lists live background shell and subagent tasks. `/task stop <id>` and
   `/task stopall` control them without sending command text to the model.
 

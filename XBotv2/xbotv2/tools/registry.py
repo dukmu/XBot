@@ -140,6 +140,16 @@ class ToolRegistry:
         self._enabled_names = expanded
         return self.names()
 
+    def exclude(self, tool_names: list[str]) -> list[str]:
+        """Hide tools matching selectors from the currently enabled set."""
+        disabled = {
+            name
+            for selector in tool_names
+            for name in self._expand_selector(selector)
+        }
+        self._enabled_names = set(self.names()) - disabled
+        return self.names()
+
     def __len__(self) -> int:
         return len(self.names())
 

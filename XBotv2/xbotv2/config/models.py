@@ -73,7 +73,6 @@ class SystemConfig(BaseModel):
     system_prompt: str = Field(default="You are a helpful AI assistant.")
     provider: str = Field(default="default")
     max_context_tokens: int = Field(default=32000)
-    max_subagent_depth: int = Field(default=3, ge=1)
     max_concurrent_subagents: int = Field(default=4, ge=1)
     tools: list[str] = Field(default_factory=list)
     hooks: list[HookConfig] = Field(default_factory=list)

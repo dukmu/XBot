@@ -450,6 +450,9 @@ class XBotTextualApp(App[None]):
             command_data = data.get("data")
             metadata = command_data if isinstance(command_data, dict) else data
             metadata_changed = False
+            if metadata.get("agent_name"):
+                self.state.agent_name = str(metadata["agent_name"])
+                metadata_changed = True
             if metadata.get("provider"):
                 self.state.provider = str(metadata["provider"])
                 metadata_changed = True

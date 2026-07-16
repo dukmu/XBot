@@ -275,7 +275,7 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
     http_app, tmp_path: Path
 ) -> None:
     workspace = tmp_path / "agent-workspace"
-    agents_dir = workspace / ".xbot" / "agents"
+    agents_dir = workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "builder.md").write_text(
         "---\n"
@@ -323,6 +323,112 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
     assert catalog.json()["data"]["data"]["agents"][0]["name"] == "builder"
     assert resumed.status_code == 200
     assert resumed.json()["agent_name"] == "builder"
+
+
+@pytest.mark.asyncio
+async def test_http_switches_primary_agent_without_replacing_thread_history(
+    http_app, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "switch-agent-workspace"
+    agents_dir = workspace / ".agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "builder.md").write_text(
+        "---\ndescription: Build changes\nmode: primary\ntools: []\n---\nBuild.",
+        encoding="utf-8",
+    )
+    (agents_dir / "Explorer.md").write_text(
+        "---\n"
+        "description: Read-only exploration\n"
+        "mode: all\n"
+        "model: default/explorer-model\n"
+        "context_window: 64000\n"
+        "tools:\n  - filesystem_read\n  - filesystem_list\n"
+        "permission:\n  filesystem_write: deny\n  shell: deny\n"
+        "---\nExplore only.",
+        encoding="utf-8",
+    )
+    (agents_dir / "worker.md").write_text(
+        "---\ndescription: Child only\nmode: subagent\n---\nWork.",
+        encoding="utf-8",
+    )
+    app = create_app(
+        paths=http_app.state.paths,
+        workspace_root=str(workspace),
+        no_plugins=False,
+        llm_override=MockLLM(responses=[{"content": "existing answer"}]),
+    )
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        await ac.post(
+            "/sessions",
+            json={
+                "session_id": "switch-primary",
+                "thread_id": "main",
+                "agent": "builder",
+            },
+        )
+        await ac.post(
+            "/sessions/switch-primary/messages",
+            json={"content": "keep this history"},
+        )
+        switched = await ac.post(
+            "/sessions/switch-primary/commands",
+            json={"command": "agent", "args": ["use", "Explorer"]},
+        )
+        ctx = await app.state.manager.get("switch-primary")
+
+        assert switched.status_code == 200
+        assert switched.json()["data"]["data"]["agent_name"] == "Explorer"
+        assert switched.json()["data"]["data"]["model"] == "explorer-model"
+        assert switched.json()["data"]["data"]["context_window"] == 64000
+        assert ctx.session_id == "switch-primary"
+        assert ctx.thread_id == "main"
+        assert [message.content for message in ctx.engine.messages] == [
+            "keep this history",
+            "existing answer",
+        ]
+        assert ctx.engine.tool_registry.get("filesystem_read") is not None
+        assert ctx.engine.tool_registry.get("filesystem_write") is None
+        assert ctx.engine.model == "explorer-model"
+        assert ctx.engine.context_window == 64000
+        assert ctx.engine.state_store.read_thread_metadata()["agent"] == "Explorer"
+
+        child_only = await ac.post(
+            "/sessions/switch-primary/commands",
+            json={"command": "agent", "args": ["use", "worker"]},
+        )
+        assert child_only.json()["data"]["status"] == "error"
+        assert ctx.engine.config.agent_name == "Explorer"
+
+        await ctx.turn_lock.acquire()
+        try:
+            busy = await ac.post(
+                "/sessions/switch-primary/commands",
+                json={"command": "agent", "args": ["use", "builder"]},
+            )
+        finally:
+            ctx.turn_lock.release()
+        assert busy.json()["data"]["status"] == "error"
+        assert ctx.engine.config.agent_name == "Explorer"
+
+        resumed = await ac.post(
+            "/sessions",
+            json={
+                "session_id": "switch-primary",
+                "thread_id": "main",
+                "mode": "resume",
+            },
+        )
+
+    assert resumed.status_code == 200
+    assert resumed.json()["agent_name"] == "Explorer"
+    assert resumed.json()["model"] == "explorer-model"
+    assert resumed.json()["context_window"] == 64000
+    assert [item["content"] for item in resumed.json()["history"]] == [
+        "keep this history",
+        "existing answer",
+    ]
 
 
 @pytest.mark.asyncio
@@ -445,7 +551,8 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
     assert {
-        "status", "provider", "permission", "sandbox", "fork", "clear", "undo",
+        "status", "provider", "permission", "sandbox", "fork", "agent",
+        "clear", "undo",
     }.issubset(names)
 
     open_response = await client.post(

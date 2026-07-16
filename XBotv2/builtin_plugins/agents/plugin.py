@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +10,6 @@ import yaml
 
 from xbotv2.api import (
     AgentDefinition,
-    Command,
-    CommandResult,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
     PluginBase,
     PluginSetupContext,
     Tool,
@@ -23,7 +18,21 @@ from xbotv2.api import (
 )
 
 _FRONTMATTER = "---"
-_FIELDS = {"description", "mode", "provider", "permissions", "tools", "hidden"}
+_FIELDS = {
+    "description",
+    "mode",
+    "provider",
+    "model",
+    "temperature",
+    "max_output_tokens",
+    "context_window",
+    "max_iterations",
+    "steps",
+    "permission",
+    "permissions",
+    "tools",
+    "hidden",
+}
 
 
 class AgentsPlugin(PluginBase):
@@ -37,7 +46,15 @@ class AgentsPlugin(PluginBase):
         self._timeout_seconds = float(config.get("timeout_seconds", 600.0))
 
     def setup(self, ctx: PluginSetupContext) -> None:
-        for definition in _load_definitions(ctx.workspace_root / ".xbot" / "agents"):
+        definitions = {
+            definition.name: definition
+            for definition in _load_definitions(ctx.data_root / ".agents")
+        }
+        definitions.update({
+            definition.name: definition
+            for definition in _load_definitions(ctx.workspace_root / ".agents")
+        })
+        for definition in definitions.values():
             ctx.register_agent(definition)
         if ctx.agent_runtime is None:
             return
@@ -97,59 +114,6 @@ class AgentsPlugin(PluginBase):
                     namespace="plugin:agents",
                 ),
             )
-        ctx.register_command(Command(
-            name="agent",
-            description="Show the active Agent and registered Agent definitions.",
-            handler=self._agent_command,
-            usage="/agent [list|status]",
-            examples=("/agent", "/agent list"),
-        ))
-        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_task)
-
-    async def _agent_command(self, ctx: Any, raw_args: str) -> CommandResult:
-        action = raw_args.strip() or "status"
-        if action not in {"list", "status"}:
-            return CommandResult("Usage: /agent [list|status]", status="error")
-        definitions = self._definitions(ctx)
-        active = str(getattr(ctx.engine.config, "agent_name", "XBotv2"))
-        lines = [f"Active Agent: {active}"]
-        lines.extend(
-            f"{definition.name}  {definition.mode}  {definition.description}"
-            for definition in definitions
-            if not definition.hidden
-        )
-        return CommandResult(
-            "\n".join(lines),
-            data={
-                "active": active,
-                "agents": [
-                    {
-                        "name": definition.name,
-                        "mode": definition.mode,
-                        "description": definition.description,
-                        "hidden": definition.hidden,
-                    }
-                    for definition in definitions
-                ],
-            },
-        )
-
-    @staticmethod
-    def _definitions(ctx: Any) -> tuple[AgentDefinition, ...]:
-        runtime = getattr(ctx.engine, "subagents", None)
-        return runtime.definitions() if runtime is not None else ()
-
-    async def _allow_task(self, ctx: HookContext) -> HookDecision | None:
-        if ctx.tool_call is not None and ctx.tool_call.name in {
-            "task", "list_agent_tasks", "stop_agent_task"
-        }:
-            return HookDecision(
-                HookAction.ALLOW,
-                "Subagent dispatch is controlled by child tool permissions",
-            )
-        return None
-
-
 def _load_definitions(directory: Path) -> list[AgentDefinition]:
     if not directory.is_dir():
         return []
@@ -172,19 +136,117 @@ def _load_definition(path: Path) -> AgentDefinition:
             f"Unknown Agent fields in {path}: {', '.join(sorted(unknown))}"
         )
     prompt = text[marker + len(_FRONTMATTER) + 2:].strip()
-    tools = metadata.get("tools")
-    if tools is not None and not isinstance(tools, list):
-        raise ValueError(f"Agent tools must be a list: {path}")
-    permissions = metadata.get("permissions") or {}
-    if not isinstance(permissions, dict):
-        raise ValueError(f"Agent permissions must be a mapping: {path}")
+    tools, disabled_tools, tool_permissions = _parse_tools(
+        metadata.get("tools"), path
+    )
+    if "permission" in metadata and "permissions" in metadata:
+        raise ValueError(f"Use either permission or permissions, not both: {path}")
+    permissions = _parse_permissions(
+        metadata.get("permission", metadata.get("permissions")), path
+    )
+    for decision, rules in tool_permissions.items():
+        permissions.setdefault(decision, []).extend(rules)
+    provider, model = _parse_model(metadata, path)
     return AgentDefinition(
         name=path.stem,
         description=str(metadata.get("description") or ""),
-        mode=str(metadata.get("mode") or "subagent"),
+        mode=str(metadata.get("mode") or "all"),
         prompt=prompt,
-        provider=(str(metadata["provider"]) if metadata.get("provider") else None),
+        provider=provider,
+        model=model,
+        temperature=_optional_float(metadata, "temperature"),
+        max_output_tokens=_optional_int(metadata, "max_output_tokens"),
+        context_window=_optional_int(metadata, "context_window"),
+        max_iterations=_optional_int(
+            metadata, "max_iterations", alias="steps"
+        ),
         permissions=permissions,
-        tools=tuple(str(tool) for tool in tools) if tools is not None else None,
+        tools=tools,
+        disabled_tools=disabled_tools,
         hidden=bool(metadata.get("hidden", False)),
     )
+
+
+def _parse_tools(
+    value: Any,
+    path: Path,
+) -> tuple[tuple[str, ...] | None, tuple[str, ...], dict[str, list[dict[str, str]]]]:
+    if value is None:
+        return None, (), {}
+    if isinstance(value, list):
+        return tuple(str(tool) for tool in value), (), {}
+    if isinstance(value, dict) and all(
+        isinstance(enabled, bool) for enabled in value.values()
+    ):
+        disabled = tuple(str(tool) for tool, visible in value.items() if not visible)
+        permissions: dict[str, list[dict[str, str]]] = {}
+        for tool, visible in value.items():
+            decision = "allow" if visible else "deny"
+            permissions.setdefault(decision, []).append(
+                {"tool": _tool_pattern(str(tool))}
+            )
+        return None, disabled, permissions
+    raise ValueError(f"Agent tools must be a list or boolean mapping: {path}")
+
+
+def _parse_permissions(value: Any, path: Path) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        if value not in {"allow", "ask", "deny"}:
+            raise ValueError(f"Invalid Agent permission decision in {path}: {value}")
+        return {value: [{"tool": ".*"}]}
+    if not isinstance(value, dict):
+        raise ValueError(f"Agent permissions must be a mapping or decision: {path}")
+    if set(value).issubset({"allow", "ask", "deny"}) and all(
+        isinstance(rules, list) for rules in value.values()
+    ):
+        return dict(value)
+
+    normalized: dict[str, list[dict[str, str]]] = {}
+    for tool, decision in value.items():
+        if decision not in {"allow", "ask", "deny"}:
+            raise ValueError(
+                f"Permission for {tool!r} must be allow, ask, or deny: {path}"
+            )
+        normalized.setdefault(str(decision), []).append(
+            {"tool": _tool_pattern(str(tool))}
+        )
+    return normalized
+
+
+def _tool_pattern(value: str) -> str:
+    return fnmatch.translate(value)
+
+
+def _parse_model(
+    metadata: dict[str, Any],
+    path: Path,
+) -> tuple[str | None, str | None]:
+    provider = str(metadata["provider"]) if metadata.get("provider") else None
+    model = str(metadata["model"]) if metadata.get("model") else None
+    if model is None or "/" not in model:
+        return provider, model
+    model_provider, model_name = model.split("/", 1)
+    if provider is not None and provider != model_provider:
+        raise ValueError(
+            f"Agent provider {provider!r} conflicts with model {model!r}: {path}"
+        )
+    return provider or model_provider, model_name
+
+
+def _optional_float(metadata: dict[str, Any], name: str) -> float | None:
+    value = metadata.get(name)
+    return float(value) if value is not None else None
+
+
+def _optional_int(
+    metadata: dict[str, Any],
+    name: str,
+    *,
+    alias: str | None = None,
+) -> int | None:
+    if alias and name in metadata and alias in metadata:
+        raise ValueError(f"Use either {name} or {alias}, not both")
+    value = metadata.get(name, metadata.get(alias) if alias else None)
+    return int(value) if value is not None else None

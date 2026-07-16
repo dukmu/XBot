@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -165,6 +165,124 @@ async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         f"Forked session {ctx.session_id} to {session_id}.",
         data={"session_id": session_id, "source_session_id": ctx.session_id},
     )
+
+
+async def _agent_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+    registry = getattr(ctx.engine, "agent_registry", None)
+    definitions = registry.definitions() if registry is not None else ()
+    active = str(getattr(ctx.engine.config, "agent_name", "XBotv2"))
+    action = args[0].lower() if args else "status"
+    if not args or (action in {"status", "list"} and len(args) == 1):
+        visible = [definition for definition in definitions if not definition.hidden]
+        lines = [f"Active Agent: {active}"]
+        if action == "list":
+            lines.extend(
+                f"{definition.name}  {definition.mode}  {definition.description}"
+                for definition in visible
+            )
+        return _result(
+            "agent",
+            "\n".join(lines),
+            data={
+                "active": active,
+                "agent_name": active,
+                "agents": [
+                    {
+                        "name": definition.name,
+                        "mode": definition.mode,
+                        "description": definition.description,
+                        "hidden": definition.hidden,
+                    }
+                    for definition in visible
+                ],
+            },
+        )
+
+    target = args[1] if action == "use" and len(args) == 2 else None
+    if target is None and len(args) == 1 and action not in {"status", "list", "use"}:
+        target = args[0]
+    if target is None:
+        return _result(
+            "agent",
+            "Usage: /agent [list|status|use <name>|<name>]",
+            status="error",
+        )
+    if ctx.turn_lock.locked():
+        return _result(
+            "agent",
+            "Cannot switch Agent while a turn is active.",
+            status="error",
+        )
+    definition = registry.get(target) if registry is not None else None
+    if definition is None or definition.mode == "subagent":
+        return _result("agent", f"Unknown primary Agent: {target}", status="error")
+    if definition.name == active:
+        return _result(
+            "agent",
+            f"Agent {active} is already active.",
+            data=_active_agent_data(ctx, definition),
+        )
+
+    async with ctx.turn_lock:
+        await _activate_agent(ctx, definition)
+    return _result(
+        "agent",
+        f"Switched Agent from {active} to {definition.name}.",
+        data=_active_agent_data(ctx, definition),
+    )
+
+
+async def _activate_agent(ctx: Any, definition: Any) -> None:
+    from xbotv2.config.loader import load_provider_config, load_system_config
+    from xbotv2.core.agents import (
+        apply_agent_definition,
+        apply_agent_provider,
+        apply_agent_tools,
+    )
+    from xbotv2.llm.client import create_llm
+
+    config = load_system_config(ctx.paths, Path(ctx.workspace_root))
+    apply_agent_definition(config, definition)
+    provider_name = definition.provider or ctx.provider_name
+    config.provider = provider_name
+    provider = load_provider_config(ctx.paths, provider_name)
+    apply_agent_provider(provider, definition)
+    llm = (
+        ctx.engine.llm
+        if getattr(ctx.engine, "llm_is_override", False)
+        else create_llm(provider)
+    )
+
+    ctx.engine.config = config
+    ctx.engine.startup_config = config.model_copy(deep=True)
+    _reload_live_policies(ctx)
+    ctx.engine.llm = llm
+    ctx.engine.model = provider.model
+    ctx.engine.context_window = config.max_context_tokens
+    ctx.engine.max_iterations = definition.max_iterations or 50
+    apply_agent_tools(ctx.engine.tool_registry, config, definition)
+
+    ctx.provider_name = provider_name
+    ctx.engine.state_store.provider = provider_name
+    if ctx.engine.session is not None:
+        ctx.engine.session.provider = provider_name
+    metadata = ctx.engine.state_store.read_thread_metadata()
+    metadata.update({
+        "agent": definition.name,
+        "agent_definition": asdict(definition),
+        "provider": provider_name,
+    })
+    ctx.engine.state_store.write_thread_metadata(metadata)
+
+
+def _active_agent_data(ctx: Any, definition: Any) -> dict[str, Any]:
+    return {
+        "active": definition.name,
+        "agent_name": definition.name,
+        "provider": ctx.provider_name,
+        "model": str(getattr(ctx.engine, "model", "")),
+        "context_window": int(getattr(ctx.engine, "context_window", 0)),
+    }
 
 
 def _background_tasks(ctx: Any) -> Any | None:
@@ -355,6 +473,7 @@ def _status_data(ctx: Any) -> dict[str, Any]:
         "thread_id": ctx.thread_id,
         "workspace_root": ctx.workspace_root,
         "provider": ctx.provider_name,
+        "agent_name": str(getattr(ctx.engine.config, "agent_name", "XBotv2")),
         "model": str(getattr(ctx.engine, "model", "")),
         "context_window": int(getattr(ctx.engine, "context_window", 0)),
         "turn_active": ctx.turn_lock.locked(),
@@ -545,6 +664,19 @@ COMMANDS: dict[str, ServerCommand] = {
             description="Fork persisted session state into a new session.",
             handler=_fork_command,
             examples=["/fork"],
+        ),
+        ServerCommand(
+            name="agent",
+            slash="/agent [list|status|use <name>|<name>]",
+            description="List or switch the active primary Agent.",
+            handler=_agent_command,
+            examples=[
+                "/agent",
+                "/agent list",
+                "/agent use Explorer",
+                "/agent default",
+            ],
+            parameters={"name": "Registered primary or all-mode Agent name."},
         ),
         ServerCommand(
             name="clear",

@@ -10,6 +10,8 @@ The built-in `workspace_instructions` plugin reads `<workspace>/AGENTS.md` once
 and registers it as a source-tagged `system_instructions` prompt fragment. It
 is not added to message history or the mailbox. Disable the behavior through
 `.xbot/plugins.yaml` when a workspace does not want project instructions.
+Agent definitions are separate files under `.agents/<name>.md`; `AGENTS.md`
+frontmatter is not interpreted as runtime configuration.
 
 ## .xbot/policy.yaml
 

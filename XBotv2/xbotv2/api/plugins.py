@@ -151,6 +151,7 @@ class PluginSetupContext(Protocol):
     """Capabilities available while a plugin registers extensions."""
 
     workspace_root: Path
+    data_root: Path
     agent_runtime: AgentRuntime | None
 
     def register_agent(self, definition: AgentDefinition) -> str: ...

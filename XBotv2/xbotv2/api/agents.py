@@ -21,8 +21,14 @@ class AgentDefinition:
     mode: AgentMode = "subagent"
     prompt: str = ""
     provider: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    context_window: int | None = None
+    max_iterations: int | None = None
     permissions: dict[str, Any] = field(default_factory=dict)
     tools: tuple[str, ...] | None = None
+    disabled_tools: tuple[str, ...] = ()
     hidden: bool = False
 
     def __post_init__(self) -> None:
@@ -34,6 +40,12 @@ class AgentDefinition:
             raise ValueError("Agent description must not be empty")
         if self.mode not in {"primary", "subagent", "all"}:
             raise ValueError("Agent mode must be primary, subagent, or all")
+        if self.temperature is not None and self.temperature < 0:
+            raise ValueError("Agent temperature must be non-negative")
+        for field_name in ("max_output_tokens", "context_window", "max_iterations"):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"Agent {field_name} must be positive")
 
 
 class AgentRuntime(Protocol):

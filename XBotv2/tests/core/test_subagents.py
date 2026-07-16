@@ -19,7 +19,11 @@ from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
 async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     temp_data_dir, temp_workspace
 ):
-    agents_dir = temp_workspace / ".xbot" / "agents"
+    (temp_data_dir / "config" / "permissions.yaml").write_text(
+        "allow:\n  - tool: task\n",
+        encoding="utf-8",
+    )
+    agents_dir = temp_workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text(
         "---\n"
@@ -92,10 +96,10 @@ async def test_blocking_subagent_can_ask_user_through_parent_session(
     temp_data_dir, temp_workspace
 ):
     (temp_data_dir / "config" / "permissions.yaml").write_text(
-        "allow:\n  - tool: ask_user\n",
+        "allow:\n  - tool: task\n  - tool: ask_user\n",
         encoding="utf-8",
     )
-    agents_dir = temp_workspace / ".xbot" / "agents"
+    agents_dir = temp_workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "interviewer.md").write_text(
         "---\n"
@@ -173,8 +177,12 @@ async def test_blocking_subagent_can_ask_user_through_parent_session(
 async def test_blocking_subagent_can_request_permission_through_parent_session(
     temp_data_dir, temp_workspace
 ):
+    (temp_data_dir / "config" / "permissions.yaml").write_text(
+        "allow:\n  - tool: task\nask:\n  - tool: filesystem_read\n",
+        encoding="utf-8",
+    )
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")
-    agents_dir = temp_workspace / ".xbot" / "agents"
+    agents_dir = temp_workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "reader.md").write_text(
         "---\n"
@@ -248,7 +256,7 @@ async def test_blocking_subagent_can_request_permission_through_parent_session(
 async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     temp_data_dir, temp_workspace
 ):
-    agents_dir = temp_workspace / ".xbot" / "agents"
+    agents_dir = temp_workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "builder.md").write_text(
         "---\n"
@@ -281,6 +289,16 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     assert first.state_store.read_thread_metadata()["agent"] == "builder"
     await first.close_session()
 
+    (agents_dir / "builder.md").write_text(
+        "---\n"
+        "description: Changed builder\n"
+        "mode: primary\n"
+        "tools:\n  - filesystem_read\n"
+        "---\n"
+        "Changed instructions must not alter an existing thread.",
+        encoding="utf-8",
+    )
+
     resumed = await bootstrap(
         paths=paths,
         session_id="primary-session",
@@ -291,8 +309,114 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     await resumed.start_session()
 
     assert resumed.config.agent_name == "builder"
+    assert resumed.config.agent_role == "Build focused changes"
+    assert resumed.tool_registry.get_all() == []
+    assert "Follow the builder workflow." in resumed.config.instructions
+    assert "Changed instructions" not in resumed.config.instructions
     assert [message.content for message in resumed.messages] == ["build", "built"]
     await resumed.close_session()
+
+
+@pytest.mark.asyncio
+async def test_workspace_agent_overrides_builtin_definition(
+    temp_data_dir, temp_workspace
+):
+    builtin_dir = temp_data_dir / ".agents"
+    builtin_dir.mkdir()
+    (builtin_dir / "reviewer.md").write_text(
+        "---\ndescription: Built-in reviewer\nmode: all\n---\nBuilt-in prompt.",
+        encoding="utf-8",
+    )
+    workspace_dir = temp_workspace / ".agents"
+    workspace_dir.mkdir()
+    (workspace_dir / "reviewer.md").write_text(
+        "---\n"
+        "description: Workspace reviewer\n"
+        "mode: all\n"
+        "model: default/test-model\n"
+        "temperature: 0.1\n"
+        "max_output_tokens: 2048\n"
+        "context_window: 64000\n"
+        "steps: 7\n"
+        "tools:\n"
+        "  filesystem_read: true\n"
+        "  filesystem_write: false\n"
+        "permission:\n  deny:\n    - tool: shell\n"
+        "---\nWorkspace prompt.",
+        encoding="utf-8",
+    )
+    engine = await bootstrap(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="agent-precedence",
+        workspace_root=temp_workspace,
+        selected_agent="reviewer",
+        llm_override=MockLLM(responses=[]),
+    )
+
+    definition = engine.agent_registry.get("reviewer")
+    assert definition.description == "Workspace reviewer"
+    assert definition.provider == "default"
+    assert definition.model == "test-model"
+    assert definition.temperature == 0.1
+    assert definition.max_output_tokens == 2048
+    assert definition.disabled_tools == ("filesystem_write",)
+    definition_permissions = PermissionSystem(definition.permissions)
+    assert definition_permissions.check("filesystem_read") == "allow"
+    assert definition_permissions.check("filesystem_write") == "deny"
+    assert definition_permissions.check("shell") == "deny"
+    assert engine.model == "test-model"
+    assert engine.context_window == 64000
+    assert engine.max_iterations == 7
+    assert engine.tool_registry.get("filesystem_write") is None
+    await engine.close_session()
+
+
+@pytest.mark.asyncio
+async def test_new_primary_thread_selects_builtin_default_agent(
+    temp_data_dir, temp_workspace
+):
+    builtin_dir = temp_data_dir / ".agents"
+    builtin_dir.mkdir()
+    (builtin_dir / "default.md").write_text(
+        "---\ndescription: Default coding agent\nmode: all\n---\nDefault prompt.",
+        encoding="utf-8",
+    )
+    engine = await bootstrap(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="default-agent",
+        workspace_root=temp_workspace,
+        llm_override=MockLLM(responses=[]),
+    )
+
+    assert engine.config.agent_name == "default"
+    assert "Default prompt." in engine.config.instructions
+    assert engine.state_store.read_thread_metadata()["agent"] == "default"
+    await engine.close_session()
+
+
+@pytest.mark.asyncio
+async def test_subagent_runtime_does_not_load_agents_plugin(
+    temp_data_dir, temp_workspace
+):
+    definition = AgentDefinition(
+        name="worker",
+        description="Focused worker",
+        mode="subagent",
+    )
+    engine = await bootstrap(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="nested-disabled",
+        thread_id="worker-1",
+        workspace_root=temp_workspace,
+        agent_definition=definition,
+        subagent_depth=1,
+        llm_override=MockLLM(responses=[]),
+    )
+
+    assert engine.plugin_loader.get_command("agent") is None
+    assert engine.tool_registry.get_registered("task") is None
+    assert engine.tool_registry.get_registered("list_agent_tasks") is None
+    await engine.close_session()
 
 
 @pytest.mark.asyncio
@@ -315,7 +439,7 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
     tmp_path
 ):
     workspace = tmp_path / "workspace"
-    agents_dir = workspace / ".xbot" / "agents"
+    agents_dir = workspace / ".agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "invalid.md").write_text(
         "---\n"
@@ -358,6 +482,30 @@ async def test_subagent_manager_rejects_unknown_and_primary_agents(tmp_path):
 
     assert (await manager.run("missing", "work")).error.code == "agent_not_found"
     assert (await manager.run("primary", "work")).error.code == "agent_not_found"
+
+
+@pytest.mark.asyncio
+async def test_subagent_manager_rejects_nested_dispatch(tmp_path):
+    registry = AgentRegistry()
+    registry.register(
+        AgentDefinition(name="worker", description="Focused worker"),
+        owner="test",
+    )
+
+    async def unused_factory(*_args):
+        raise AssertionError("factory must not run")
+
+    manager = SubagentManager(
+        registry=registry,
+        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
+        parent_thread_id="child",
+        engine_factory=unused_factory,
+        depth=1,
+    )
+
+    result = await manager.run("worker", "nested work")
+
+    assert result.error.code == "nested_subagent_disabled"
 
 
 @pytest.mark.asyncio

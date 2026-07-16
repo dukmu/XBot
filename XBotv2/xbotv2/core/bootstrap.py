@@ -24,6 +24,7 @@ import importlib.util
 import re
 import secrets
 import shutil
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,9 +35,15 @@ from xbotv2.config.policy import (
     merge_permission_config,
     merge_sandbox_config,
 )
+from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.context import ContextBuilder
-from xbotv2.core.agents import AgentRegistry
+from xbotv2.core.agents import (
+    AgentRegistry,
+    apply_agent_definition,
+    apply_agent_provider,
+    apply_agent_tools,
+)
 from xbotv2.core.subagents import SubagentManager
 from xbotv2.core.background_tasks import BackgroundTaskManager
 from xbotv2.core.engine import Engine
@@ -59,6 +66,7 @@ from xbotv2.core.builtin_tools.interaction import INTERACTION_TOOLS
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SUBAGENT_BLOCKED_PLUGINS = {"agents"}
 
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
@@ -87,7 +95,7 @@ async def bootstrap(
     plugin_configs: dict[str, dict[str, Any]] | None = None,
     llm_override: Any | None = None,
     selected_agent: str | None = None,
-    agent_definition: Any | None = None,
+    agent_definition: AgentDefinition | None = None,
     parent_permission_system: Any | None = None,
     parent_thread_id: str = "",
     subagent_depth: int = 0,
@@ -120,7 +128,7 @@ async def bootstrap(
     agent_config = startup_config.model_copy(deep=True)
     resolved_agent = agent_definition
     if resolved_agent is not None:
-        _apply_agent_definition(agent_config, resolved_agent)
+        apply_agent_definition(agent_config, resolved_agent)
         provider_name = agent_definition.provider or provider_name
     provider_name = provider_name or agent_config.provider
     policy_base_config = agent_config.model_copy(deep=True)
@@ -154,6 +162,9 @@ async def bootstrap(
     )
     metadata = state_store.read_thread_metadata()
     stored_agent = str(metadata.get("agent") or "") or None
+    stored_definition = metadata.get("agent_definition")
+    if resolved_agent is None and isinstance(stored_definition, dict):
+        resolved_agent = _restore_agent_definition(stored_definition)
     if (
         selected_agent is not None
         and stored_agent is not None
@@ -163,7 +174,7 @@ async def bootstrap(
             f"Thread {thread_id!r} belongs to Agent {stored_agent!r}, "
             f"not {selected_agent!r}"
         )
-    if selected_agent is None and resolved_agent is None:
+    if selected_agent is None and agent_definition is None:
         selected_agent = stored_agent
 
     # 3. Create empty core components
@@ -232,7 +243,6 @@ async def bootstrap(
         parent_thread_id=thread_id,
         engine_factory=create_child_engine,
         depth=subagent_depth,
-        max_depth=agent_config.max_subagent_depth,
         max_concurrency=agent_config.max_concurrent_subagents,
     )
 
@@ -243,6 +253,9 @@ async def bootstrap(
         workspace_plugin_dirs=agent_config.plugin_paths,
     )
     plugin_loader: PluginLoader | None = None
+    disabled_plugins = set(agent_config.disabled_plugins)
+    if subagent_depth > 0:
+        disabled_plugins.update(_SUBAGENT_BLOCKED_PLUGINS)
 
     try:
         if resolved_plugin_dirs:
@@ -255,17 +268,31 @@ async def bootstrap(
                 _plugin_configs,
                 agent_registry,
                 workspace_root,
-                set(agent_config.disabled_plugins),
+                disabled_plugins,
                 subagents,
             )
 
+        if selected_agent is None and resolved_agent is None:
+            default_agent = agent_registry.get("default")
+            if default_agent is not None and default_agent.mode != "subagent":
+                selected_agent = default_agent.name
+
         if selected_agent is not None:
-            resolved_agent = agent_registry.get(selected_agent)
-            if resolved_agent is None or resolved_agent.mode == "subagent":
+            registered_agent = agent_registry.get(selected_agent)
+            if resolved_agent is None:
+                if registered_agent is None or registered_agent.mode == "subagent":
+                    raise ValueError(f"Unknown primary agent: {selected_agent}")
+                resolved_agent = registered_agent
+            elif resolved_agent.name != selected_agent:
+                raise ValueError(
+                    f"Stored Agent {resolved_agent.name!r} does not match "
+                    f"{selected_agent!r}"
+                )
+            elif resolved_agent.mode == "subagent":
                 raise ValueError(f"Unknown primary agent: {selected_agent}")
-            _apply_agent_definition(agent_config, resolved_agent)
+            apply_agent_definition(agent_config, resolved_agent)
             policy_base_config = startup_config.model_copy(deep=True)
-            _apply_agent_definition(policy_base_config, resolved_agent)
+            apply_agent_definition(policy_base_config, resolved_agent)
             provider_name = resolved_agent.provider or provider_name
             permissions = PermissionSystem(agent_config.permissions)
             if parent_permission_system is not None:
@@ -276,8 +303,13 @@ async def bootstrap(
         state_store.provider = provider_name
         agent_config.provider = provider_name
         provider_config = load_provider_config(paths, provider_name)
+        if resolved_agent is not None:
+            apply_agent_provider(provider_config, resolved_agent)
         state_store.write_thread_metadata({
             "agent": resolved_agent.name if resolved_agent is not None else "",
+            "agent_definition": (
+                asdict(resolved_agent) if resolved_agent is not None else None
+            ),
             "provider": provider_name,
             "parent_thread_id": parent_thread_id,
         })
@@ -314,8 +346,8 @@ async def bootstrap(
 
         # Apply tool filter AFTER session init so plugin-discovered tools
         # (skills, MCP) are registered before restrict runs.
-        if resolved_agent is not None and resolved_agent.tools is not None:
-            tool_registry.restrict(list(resolved_agent.tools))
+        if resolved_agent is not None:
+            apply_agent_tools(tool_registry, agent_config, resolved_agent)
         elif agent_config.tools:
             tool_registry.restrict(agent_config.tools)
 
@@ -337,6 +369,13 @@ async def bootstrap(
             startup_config=policy_base_config,
             model=provider_config.model,
             context_window=agent_config.max_context_tokens,
+            llm_is_override=llm_override is not None,
+            max_iterations=(
+                resolved_agent.max_iterations
+                if resolved_agent is not None
+                and resolved_agent.max_iterations is not None
+                else 50
+            ),
         )
         parent_engine = engine
         return engine
@@ -361,20 +400,14 @@ async def bootstrap(
 # Internal helpers
 # ------------------------------------------------------------------
 
-def _apply_agent_definition(agent_config: Any, definition: Any) -> None:
-    agent_config.agent_name = definition.name
-    agent_config.agent_role = definition.description
-    agent_config.instructions = "\n\n".join(
-        part
-        for part in (agent_config.instructions, definition.prompt)
-        if part.strip()
-    )
-    if definition.tools is not None:
-        agent_config.tools = list(definition.tools)
-    agent_config.permissions = merge_permission_config(
-        agent_config.permissions,
-        definition.permissions,
-    )
+def _restore_agent_definition(data: dict[str, Any]) -> AgentDefinition:
+    values = dict(data)
+    for field_name in ("tools", "disabled_tools"):
+        value = values.get(field_name)
+        if isinstance(value, list):
+            values[field_name] = tuple(str(item) for item in value)
+    return AgentDefinition(**values)
+
 
 def _validate_identifier(field: str, value: str) -> None:
     if not value or value in {".", ".."} or not _IDENTIFIER_RE.fullmatch(value):

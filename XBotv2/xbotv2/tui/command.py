@@ -91,9 +91,10 @@ def register_server_commands(commands: list[dict]) -> None:
             continue
         kind = item.get("kind", "server")
         slash = item.get("slash", f"/{name}")
-        if slash.lower() in _CLIENT_ALIASES:
+        alias = str(slash).split(maxsplit=1)[0]
+        if alias.lower() in _CLIENT_ALIASES:
             continue
-        _ALIASES[slash.lower()] = name
+        _ALIASES[alias.lower()] = name
         _COMMANDS[name] = CommandSpec(
             name=name,
             kind=kind,  # type: ignore[arg-type]

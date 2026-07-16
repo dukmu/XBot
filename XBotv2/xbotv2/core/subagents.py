@@ -70,7 +70,6 @@ class SubagentManager:
         parent_thread_id: str,
         engine_factory: ChildEngineFactory,
         depth: int = 0,
-        max_depth: int = 3,
         max_concurrency: int = 4,
     ) -> None:
         self.registry = registry
@@ -78,7 +77,6 @@ class SubagentManager:
         self.parent_thread_id = parent_thread_id
         self.engine_factory = engine_factory
         self.depth = depth
-        self.max_depth = max_depth
         self.max_concurrency = max_concurrency
         self.on_update: TaskCallback | None = None
         self.on_complete: TaskCallback | None = None
@@ -98,10 +96,10 @@ class SubagentManager:
             return ToolResult.failure("agent_not_found", f"Unknown subagent: {agent}")
         if not prompt.strip():
             return ToolResult.failure("invalid_prompt", "Subagent prompt cannot be empty")
-        if self.depth >= self.max_depth:
+        if self.depth > 0:
             return ToolResult.failure(
-                "subagent_depth_exceeded",
-                f"Subagent nesting is limited to {self.max_depth} levels",
+                "nested_subagent_disabled",
+                "Subagents cannot create other subagents",
             )
         if self._closing:
             return ToolResult.failure("session_closing", "Session is closing")

@@ -193,6 +193,7 @@ class Engine:
         startup_config: Any | None = None,
         model: str = "",
         context_window: int = 0,
+        llm_is_override: bool = False,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -213,6 +214,7 @@ class Engine:
         self.context_window = context_window or int(
             getattr(config, "max_context_tokens", 0) or 0
         )
+        self.llm_is_override = llm_is_override
 
         self.messages: list[Message] = []
         self._persisted_messages: list[dict[str, Any]] = []

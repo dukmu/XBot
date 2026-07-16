@@ -92,6 +92,7 @@ class _PluginSetupContext:
     context: ContextBuilder
     agents: AgentRegistry = field(default_factory=AgentRegistry)
     workspace_root: Path = field(default_factory=Path.cwd)
+    data_root: Path = field(default_factory=Path.cwd)
     agent_runtime: AgentRuntime | None = None
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
@@ -326,6 +327,7 @@ class PluginLoader:
             context=self.context_builder,
             agents=self.agent_registry,
             workspace_root=self.workspace_root,
+            data_root=self.state_store.paths.runtime.data_dir,
             agent_runtime=self.agent_runtime,
             commands=self._commands,
         )

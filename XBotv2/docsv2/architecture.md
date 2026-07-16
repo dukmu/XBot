@@ -35,6 +35,7 @@ data/config/providers.yaml
 data/config/permissions.yaml
 data/config/sandbox.yaml
 <workspace_root>/AGENTS.md       # loaded once by workspace_instructions plugin
+<workspace_root>/.agents/*.md    # workspace Agent definitions
 <workspace_root>/.xbot/*.yaml    # startup-only workspace overlays
 ```
 
