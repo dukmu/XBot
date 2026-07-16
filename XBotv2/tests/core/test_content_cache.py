@@ -6,7 +6,11 @@ import pytest
 
 from xbotv2.api.messages import Message
 from xbotv2.api.tools import ToolCall
-from xbotv2.core.content_cache import MAX_INLINE_CHARS, bound_context_messages
+from xbotv2.core.content_cache import (
+    MAX_INLINE_CHARS,
+    MAX_USER_INLINE_CHARS,
+    bound_context_messages,
+)
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
@@ -46,7 +50,7 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
 
 
 def test_reuses_relative_content_cache_reference(state_store):
-    content = "x" * (MAX_INLINE_CHARS + 1)
+    content = "x" * (MAX_USER_INLINE_CHARS + 1)
 
     first = bound_context_messages([Message(role="user", content=content)], state_store)
     second = bound_context_messages([Message(role="user", content=content)], state_store)
@@ -57,7 +61,7 @@ def test_reuses_relative_content_cache_reference(state_store):
 
 
 @pytest.mark.asyncio
-async def test_engine_bounds_user_input_only_at_provider_boundary(
+async def test_engine_keeps_large_current_user_input_until_user_threshold(
     state_store,
     temp_workspace,
 ):
@@ -84,7 +88,38 @@ async def test_engine_bounds_user_input_only_at_provider_boundary(
         for message in llm.get_call_messages(0)
         if message.role == "user"
     )
-    assert "cache_path: session/artifacts/context/" in provider_user.content
+    assert provider_user.content == user_input
     assert engine.messages[0].content == user_input
     assert state_store.read_messages()[0].content == user_input
     assert any(event["type"] == "turn_finished" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_engine_externalizes_oversized_user_input_with_read_instructions(
+    state_store,
+    temp_workspace,
+):
+    user_input = "request:" + "z" * MAX_USER_INLINE_CHARS
+    llm = MockLLM(responses=[{"content": "done"}])
+    engine = Engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        hook_manager=HookManager(),
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=None,
+    )
+
+    _events = [event async for event in engine.run_turn(user_input)]
+
+    provider_user = next(
+        message for message in llm.get_call_messages(0) if message.role == "user"
+    )
+    assert "cache_path: session/artifacts/context/" in provider_user.content
+    assert "filesystem_read using offset and limit" in provider_user.content
+    assert engine.messages[0].content == user_input

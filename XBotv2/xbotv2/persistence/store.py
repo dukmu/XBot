@@ -1,7 +1,7 @@
 """Persistent message store.
 
 Manages:
-- messages.jsonl: append-only message history
+- messages.jsonl: append-only message and history-operation journal
 - plugin_states/: opaque per-plugin state files (core never interprets)
 - artifacts/: cached large tool outputs
 """
@@ -83,7 +83,7 @@ def _json_safe(value: Any) -> Any:
 
 class CoreStateStore:
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -101,6 +101,7 @@ class CoreStateStore:
         self.provider = provider
 
         self.messages_path = paths.messages_file
+        self.usage_path = paths.usage_file
         self.plugin_states_dir = paths.plugin_states_dir
         self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
@@ -129,98 +130,128 @@ class CoreStateStore:
         return store
 
     def append_message(self, msg: Message) -> dict[str, Any]:
+        _discard_incomplete_tail(self.messages_path)
         d = message_to_dict(msg)
         d["msg_id"] = self._next_message_id()
         d["ts"] = now_iso()
-        with open(self.messages_path, "a") as f:
+        with open(self.messages_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
         return d
 
     def append_messages(self, messages: list[Message]) -> int:
         if not messages:
             return 0
+        _discard_incomplete_tail(self.messages_path)
         with open(self.messages_path, "a", encoding="utf-8") as stream:
             for msg in messages:
                 d = message_to_dict(msg)
                 d["msg_id"] = self._next_message_id()
                 d["ts"] = now_iso()
                 stream.write(json.dumps(d, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         return len(messages)
 
     def sync_messages(self, messages: list[Message]) -> int:
-        """Persist current history, appending in the normal case.
-
-        A rewrite is only needed when existing messages changed or disappeared,
-        which occurs during context compaction or explicit truncation.
-        """
-        previous = list(_iter_jsonl(self.messages_path))
+        """Persist a normal history extension without rewriting the journal."""
+        previous = self.read_messages()
         serialized = [message_to_dict(message) for message in messages]
-        previous_payloads = [
-            {k: v for k, v in entry.items() if k not in {"msg_id", "ts"}}
-            for entry in previous
-        ]
+        previous_payloads = [message_to_dict(message) for message in previous]
         if serialized[:len(previous_payloads)] == previous_payloads:
             self.append_messages(messages[len(previous_payloads):])
             return len(messages)
+        self.append_checkpoint(messages, reason="sync")
+        return len(messages)
 
-        previous_by_key: dict[str, list[dict[str, Any]]] = {}
-        for entry in previous:
-            key = _message_identity_key(entry)
-            previous_by_key.setdefault(key, []).append(entry)
+    def append_checkpoint(
+        self,
+        messages: list[Message],
+        *,
+        reason: str,
+    ) -> None:
+        self._append_record({
+            "record_type": "history_checkpoint",
+            "reason": reason,
+            "messages": [message_to_dict(message) for message in messages],
+        })
 
-        rewritten: list[dict[str, Any]] = []
-        next_id = max((entry.get("msg_id", 0) for entry in previous), default=0) + 1
-        for msg in messages:
-            d = message_to_dict(msg)
-            key = _message_identity_key(d)
-            matches = previous_by_key.get(key) or []
-            if matches:
-                old = matches.pop(0)
-                d["msg_id"] = old.get("msg_id", next_id)
-                d["ts"] = old.get("ts", now_iso())
-            else:
-                d["msg_id"] = next_id
-                d["ts"] = now_iso()
-                next_id += 1
-            rewritten.append(d)
+    def append_undo(self, turns: int) -> None:
+        if turns < 1:
+            raise ValueError("Undo turns must be positive")
+        self._append_record({
+            "record_type": "history_undo",
+            "turns": turns,
+        })
 
-        self._atomic_write(rewritten)
-        self._max_msg_id = max((entry["msg_id"] for entry in rewritten), default=0)
-        return len(rewritten)
+    def append_clear(self) -> None:
+        self._append_record({"record_type": "history_clear"})
+
+    def append_mailbox_delivery(self, message: Any) -> None:
+        self._append_record({
+            "record_type": "mailbox_delivery",
+            "mailbox_id": str(getattr(message, "id", "")),
+            "kind": str(getattr(message, "kind", "")),
+            "message": _json_safe(getattr(message, "message", None)),
+            "request_id": str(getattr(message, "request_id", "")),
+        })
 
     def read_messages(self) -> list[Message]:
-        raw = list(_iter_jsonl(self.messages_path))
-        return [dict_to_message(d) for d in raw]
+        entries = list(_iter_jsonl(self.messages_path))
+        checkpoint = next(
+            (
+                index
+                for index in range(len(entries) - 1, -1, -1)
+                if entries[index].get("record_type") == "history_checkpoint"
+            ),
+            None,
+        )
+        if checkpoint is None:
+            messages: list[Message] = []
+            replay = entries
+        else:
+            messages = [
+                dict_to_message(item)
+                for item in entries[checkpoint].get("messages") or []
+            ]
+            replay = entries[checkpoint + 1:]
+        for entry in replay:
+            record_type = entry.get("record_type")
+            if record_type is None:
+                messages.append(dict_to_message(entry))
+            elif record_type == "history_undo":
+                messages = _undo_turns(messages, int(entry.get("turns") or 0))
+            elif record_type == "history_clear":
+                messages = []
+            elif record_type in {"history_checkpoint", "mailbox_delivery"}:
+                continue
+            else:
+                raise ValueError(f"Unknown message journal record: {record_type}")
+        return messages
 
     def message_count(self) -> int:
-        if not self.messages_path.exists():
-            return 0
+        return len(self.read_messages())
+
+    def record_count(self) -> int:
         return sum(1 for _ in _iter_jsonl(self.messages_path))
 
     def truncate_messages(self, keep_last: int = 0) -> int:
-        if not self.messages_path.exists() or keep_last <= 0:
-            if self.messages_path.exists():
-                removed = self.message_count()
-                self.messages_path.unlink()
-                return removed
+        messages = self.read_messages()
+        if len(messages) <= keep_last:
             return 0
-
-        all_msgs = list(_iter_jsonl(self.messages_path))
-        if len(all_msgs) <= keep_last:
-            return 0
-
-        removed = len(all_msgs) - keep_last
-        kept = all_msgs[-keep_last:]
-        self._atomic_write(kept)
-        self._max_msg_id = max((entry.get("msg_id", 0) for entry in kept), default=0)
+        removed = len(messages) - max(0, keep_last)
+        if keep_last <= 0:
+            self.append_clear()
+        else:
+            self.append_checkpoint(messages[-keep_last:], reason="truncate")
         return removed
 
     def clear_messages(self) -> None:
-        if self.messages_path.exists():
-            self.messages_path.unlink()
+        self.append_clear()
 
     def has_existing_session(self) -> bool:
-        return self.messages_path.exists() and self.message_count() > 0
+        return self.messages_path.exists() and self.record_count() > 0
 
     def read_state(self) -> dict[str, Any]:
         return {
@@ -240,6 +271,27 @@ class CoreStateStore:
             "plugin_states": self._read_all_plugin_states(),
             "artifacts_root": str(self.artifacts_dir),
         }
+
+    def read_usage(self) -> dict[str, int] | None:
+        if not self.usage_path.exists():
+            return None
+        data = yaml.safe_load(self.usage_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Session usage state must contain a mapping")
+        return {
+            key: int(data.get(key) or 0)
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "requests",
+                "context_tokens",
+            )
+        }
+
+    def write_usage(self, usage: dict[str, int]) -> None:
+        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write_yaml(self.usage_path, usage)
 
     def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
         path = self._plugin_state_path(plugin_name)
@@ -277,11 +329,21 @@ class CoreStateStore:
     def _next_message_id(self) -> int:
         if self._max_msg_id == 0 and self.messages_path.exists():
             for d in _iter_jsonl(self.messages_path):
-                mid = d.get("msg_id", 0)
+                mid = max(d.get("msg_id", 0), d.get("record_id", 0))
                 if mid > self._max_msg_id:
                     self._max_msg_id = mid
         self._max_msg_id += 1
         return self._max_msg_id
+
+    def _append_record(self, record: dict[str, Any]) -> None:
+        _discard_incomplete_tail(self.messages_path)
+        record = dict(record)
+        record["record_id"] = self._next_message_id()
+        record["ts"] = now_iso()
+        with self.messages_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _read_all_plugin_states(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -293,29 +355,15 @@ class CoreStateStore:
                 result[name] = self.get_plugin_state(name)
         return result
 
-    def _atomic_write(self, entries: list[dict[str, Any]]) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(
-            prefix="messages-", suffix=".jsonl.tmp", dir=self.root
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                for entry in entries:
-                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_name, self.messages_path)
-        except BaseException:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            raise
-
-
-def _message_identity_key(d: dict[str, Any]) -> str:
-    payload = {k: v for k, v in d.items() if k not in {"msg_id", "ts"}}
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+def _undo_turns(messages: list[Message], turns: int) -> list[Message]:
+    if turns <= 0:
+        return messages
+    user_indexes = [
+        index for index, message in enumerate(messages) if message.role == "user"
+    ]
+    if turns >= len(user_indexes):
+        return []
+    return messages[:user_indexes[-turns]]
 
 
 def _iter_jsonl(path: Path):
@@ -323,9 +371,39 @@ def _iter_jsonl(path: Path):
         return
     with open(path, encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                yield json.loads(text)
+            except json.JSONDecodeError:
+                if not line.endswith("\n"):
+                    return
+                raise
+
+
+def _discard_incomplete_tail(path: Path) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb+") as stream:
+        stream.seek(-1, os.SEEK_END)
+        if stream.read(1) == b"\n":
+            return
+        position = stream.tell() - 1
+        while position > 0:
+            size = min(4096, position)
+            position -= size
+            stream.seek(position)
+            chunk = stream.read(size)
+            newline = chunk.rfind(b"\n")
+            if newline >= 0:
+                position += newline + 1
+                break
+        else:
+            position = 0
+        stream.truncate(position)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:

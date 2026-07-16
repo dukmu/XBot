@@ -449,6 +449,12 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     ]
 
     source = http_app.state.paths.session("history")
+    source_records = [
+        json.loads(line)
+        for line in source.messages_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(record.get("content") == "second" for record in source_records)
+    assert source_records[-1]["record_type"] == "history_undo"
     (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
     (source.artifacts_dir / "cached.txt").write_text("cached")
     source.policy_file.write_text("permissions: {}\n")
@@ -462,6 +468,7 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
     assert (fork_paths.artifacts_dir / "cached.txt").read_text() == "cached"
     assert fork_paths.policy_file.read_text() == "permissions: {}\n"
+    assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
     resumed = await client.post(
         "/sessions",
         json={"session_id": fork_id, "thread_id": "t", "mode": "resume"},
@@ -478,6 +485,12 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     assert cleared.json()["data"]["history"] == []
     assert ctx.engine.messages == []
     assert ctx.engine.state_store.read_messages() == []
+    cleared_records = [
+        json.loads(line)
+        for line in source.messages_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert cleared_records[:len(source_records)] == source_records
+    assert cleared_records[-1]["record_type"] == "history_clear"
 
 
 @pytest.mark.asyncio
@@ -1143,10 +1156,12 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     assert next(
         event for event in received if event and event["type"] == "assistant_message"
     )["data"]["content"] == "background result"
-    assert [
-        message.role for message in ctx.engine.messages
-    ] == ["system", "assistant"]
-    assert "background command completed" in ctx.engine.messages[0].content.lower()
+    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    assert any(
+        message.role == "system"
+        and "background command completed" in message.content.lower()
+        for message in llm.get_call_messages(0)
+    )
     assert item.kind == "general"
 
 
@@ -1194,7 +1209,12 @@ async def test_background_task_updates_and_completion_use_session_stream(
         and event["data"]["content"] == "task acknowledged"
         for event in received
     )
-    assert "background task task-1 completed" in ctx.engine.messages[0].content.lower()
+    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    assert any(
+        message.role == "system"
+        and "background task task-1 completed" in message.content.lower()
+        for message in llm.get_call_messages(0)
+    )
 
 
 @pytest.mark.asyncio
@@ -1544,7 +1564,13 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
             "tool_calls": [
                 {
                     "name": "ask_user",
-                    "args": {"question": "Continue?", "options": ["yes", "no"]},
+                    "args": {
+                        "question": "Continue?",
+                        "options": [
+                            {"label": "yes", "description": "Continue."},
+                            {"label": "no", "description": "Stop."},
+                        ],
+                    },
                     "id": "call_wait",
                 },
             ],
@@ -1596,7 +1622,10 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
                     "name": "ask_user",
                     "args": {
                         "question": "Continue?",
-                        "options": ["continue", "stop"],
+                        "options": [
+                            {"label": "continue", "description": "Keep working."},
+                            {"label": "stop", "description": "Stop now."},
+                        ],
                     },
                     "id": "call_ask",
                 },
@@ -1644,7 +1673,10 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
     assert len(seen_payloads) == 1
     assert seen_payloads[0]["request_id"] == "user_input:call_ask"
     assert seen_payloads[0]["question"] == "Continue?"
-    assert seen_payloads[0]["options"] == ["continue", "stop"]
+    assert seen_payloads[0]["options"] == [
+        {"label": "continue", "description": "Keep working."},
+        {"label": "stop", "description": "Stop now."},
+    ]
     assert any(event["type"] == "user_input_recorded" for event in events)
     assert any(
         event.get("type") == "tool_result"

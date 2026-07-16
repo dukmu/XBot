@@ -120,6 +120,7 @@ class Tool:
     @classmethod
     def from_function(cls, function: Callable[..., Any], *, name: str | None = None) -> "Tool":
         signature = inspect.signature(function)
+        description = (inspect.getdoc(function) or "").strip()
         try:
             type_hints = get_type_hints(function)
         except (NameError, TypeError):
@@ -132,7 +133,7 @@ class Tool:
         )
         return cls(
             name=name or function.__name__,
-            description=(inspect.getdoc(function) or "").strip(),
+            description=description,
             function=function,
             parameters=_parameters_schema(signature, type_hints),
             injected_parameters=injected,
@@ -219,6 +220,12 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
         return {"type": "string"}
     origin = get_origin(annotation)
     args = get_args(annotation)
+    if origin is Literal:
+        values = list(args)
+        value_type = type(values[0]) if values else str
+        schema = _annotation_schema(value_type)
+        schema["enum"] = values
+        return schema
     if origin is list:
         return {"type": "array", "items": _annotation_schema(args[0] if args else str)}
     if origin in {dict, tuple, set}:

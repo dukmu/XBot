@@ -44,121 +44,146 @@ def setup_plugin(state_store) -> tuple[TodolistPlugin, SetupContext]:
     return plugin, setup
 
 
-def test_todolist_registers_four_host_tools(state_store):
+def todo(content: str, status: str) -> dict[str, str]:
+    return {"content": content, "status": status}
+
+
+def test_todolist_registers_one_atomic_host_tool(state_store):
     plugin, setup = setup_plugin(state_store)
 
-    assert list(setup.tools) == [
-        "list_todos",
-        "create_todo",
-        "update_todo",
-        "remove_todo",
+    assert list(setup.tools) == ["update_todos"]
+    tool = setup.tools["update_todos"]
+    options = setup.options["update_todos"]
+    assert options.namespace == "plugin:todolist"
+    assert options.sandbox_mode == "host"
+    assert tool.parameters["required"] == ["todos"]
+    item = tool.parameters["properties"]["todos"]["items"]
+    assert item["required"] == ["content", "status"]
+    assert item["properties"]["status"]["enum"] == [
+        "pending", "in_progress", "completed",
     ]
-    assert all(
-        options.namespace == "plugin:todolist"
-        and options.sandbox_mode == "host"
-        for options in setup.options.values()
-    )
-    assert setup.tools["create_todo"].parameters["required"] == ["content"]
-    assert setup.tools["update_todo"].parameters["required"] == ["todo_id"]
+    assert "Call only when" in tool.description
     assert plugin.diagnostics() == {
         "status": "ready",
         "scope": "session",
+        "tool": "update_todos",
         "item_statuses": ["completed", "in_progress", "pending"],
     }
 
 
 @pytest.mark.asyncio
-async def test_todolist_crud_preserves_order_and_never_reuses_ids(state_store):
+async def test_update_todos_atomically_replaces_the_complete_list(state_store):
     plugin = make_plugin(state_store)
+    initial = [
+        todo("inspect API", "in_progress"),
+        todo("write tests", "pending"),
+    ]
 
-    first = await plugin.create_todo("inspect API")
-    second = await plugin.create_todo("write tests")
-    updated = await plugin.update_todo(
-        "todo-1",
-        content="inspect public API",
-        status="in_progress",
-    )
-    listed = await plugin.list_todos()
-    removed = await plugin.remove_todo("todo-1")
-    third = await plugin.create_todo("update docs")
+    created = await plugin.update_todos(initial)
+    unchanged = await plugin.update_todos(initial)
+    replacement = [
+        todo("inspect API", "completed"),
+        todo("write tests", "in_progress"),
+        todo("update docs", "pending"),
+    ]
+    updated = await plugin.update_todos(replacement)
 
-    assert first.data["item"]["id"] == "todo-1"
-    assert second.data["item"]["id"] == "todo-2"
-    assert updated.data["item"] == {
-        "id": "todo-1",
-        "content": "inspect public API",
-        "status": "in_progress",
+    assert created.data == {
+        "todos": initial,
+        "cleared": False,
     }
-    assert [item["id"] for item in listed.data["items"]] == ["todo-1", "todo-2"]
-    assert removed.data["item"]["id"] == "todo-1"
-    assert third.data["item"]["id"] == "todo-3"
+    assert "unchanged" in unchanged.content
+    assert "Do not call update_todos again" in unchanged.content
+    assert "updated" in updated.content
+    assert await plugin.store.get("state") == {"items": replacement}
 
 
 @pytest.mark.asyncio
-async def test_invalid_mutations_leave_persisted_state_unchanged(state_store):
+async def test_invalid_list_never_partially_changes_state(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_todo("keep this")
-    before = await plugin.store.all()
+    original = [todo("keep this", "in_progress")]
+    await plugin.update_todos(original)
 
     results = [
-        await plugin.create_todo("   "),
-        await plugin.update_todo("todo-1"),
-        await plugin.update_todo("todo-1", content=""),
-        await plugin.update_todo("todo-1", status="blocked"),
-        await plugin.update_todo("todo-99", status="completed"),
-        await plugin.remove_todo("todo-99"),
+        await plugin.update_todos([todo("not started", "pending")]),
+        await plugin.update_todos([
+            todo("first", "in_progress"),
+            todo("second", "in_progress"),
+        ]),
+        await plugin.update_todos([todo(" ", "in_progress")]),
+        await plugin.update_todos([todo("bad status", "blocked")]),
+        await plugin.update_todos([{
+            "content": "unexpected field",
+            "status": "in_progress",
+            "id": "todo-1",
+        }]),
     ]
 
     assert [result.error.code for result in results] == [
+        "invalid_todo_progress",
+        "invalid_todo_progress",
         "invalid_todo",
-        "invalid_update",
-        "invalid_todo",
-        "invalid_status",
-        "todo_not_found",
-        "todo_not_found",
+        "invalid_todo_status",
+        "invalid_todos",
     ]
-    assert await plugin.store.all() == before
+    assert await plugin.store.get("state") == {"items": original}
 
 
 @pytest.mark.asyncio
-async def test_todolist_survives_state_store_recreation(state_store):
+async def test_all_completed_returns_final_list_then_clears_active_state(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_todo("persist across restart")
-    await plugin.update_todo("todo-1", status="completed")
+    await plugin.update_todos([todo("verify behavior", "in_progress")])
+    completed = [todo("verify behavior", "completed")]
 
-    restored_store = CoreStateStore(
-        paths=state_store.paths,
-        thread_id=state_store.thread_id,
-        workspace_root=state_store.workspace_root,
-        provider=state_store.provider,
-    )
-    restored = make_plugin(restored_store)
+    result = await plugin.update_todos(completed)
 
-    result = await restored.list_todos()
-    assert result.data["items"] == [
-        {
-            "id": "todo-1",
-            "content": "persist across restart",
-            "status": "completed",
-        }
-    ]
-    assert (await restored.create_todo("next")).data["item"]["id"] == "todo-2"
+    assert result.data == {
+        "todos": completed,
+        "cleared": True,
+    }
+    assert "All todos completed" in result.content
+    assert await plugin.store.get("state") == {"items": []}
+
+
+@pytest.mark.asyncio
+async def test_empty_list_clears_without_requiring_progress_item(state_store):
+    plugin = make_plugin(state_store)
+    await plugin.update_todos([todo("obsolete", "in_progress")])
+
+    result = await plugin.update_todos([])
+
+    assert result.data["cleared"] is False
+    assert result.data["todos"] == []
+    assert await plugin.store.get("state") == {"items": []}
+
+
+@pytest.mark.asyncio
+async def test_old_id_based_state_is_read_without_exposing_ids(state_store):
+    plugin = make_plugin(state_store)
+    await plugin.store.set("state", {
+        "next_id": 3,
+        "items": [
+            {"id": "todo-2", "content": "resume work", "status": "in_progress"},
+        ],
+    })
+
+    assert await plugin._read_items() == [todo("resume work", "in_progress")]
 
 
 @pytest.mark.asyncio
 async def test_todolist_rejects_invalid_persisted_state(state_store):
     plugin = make_plugin(state_store)
-    invalid = {"next_id": 1, "items": "not-a-list"}
+    invalid = {"items": "not-a-list"}
     await plugin.store.set("state", invalid)
 
     with pytest.raises(ValueError, match="Todo list state is invalid"):
-        await plugin.list_todos()
+        await plugin._read_items()
 
     assert await plugin.store.get("state") == invalid
 
 
 @pytest.mark.asyncio
-async def test_loader_unload_removes_tools_but_retains_todos(tmp_path, state_store):
+async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_store):
     plugins_root = tmp_path / "plugins"
     plugin_dir = plugins_root / "todolist"
     plugin_dir.mkdir(parents=True)
@@ -177,55 +202,50 @@ async def test_loader_unload_removes_tools_but_retains_todos(tmp_path, state_sto
 
     loaded = await loader.load()
     assert isinstance(loaded[0], TodolistPlugin)
-    assert registry.registered_names() == [
-        "plugin:todolist:list_todos",
-        "plugin:todolist:create_todo",
-        "plugin:todolist:update_todo",
-        "plugin:todolist:remove_todo",
-    ]
-    await registry.get("create_todo").tool.ainvoke({"content": "survive unload"})
+    assert registry.registered_names() == ["plugin:todolist:update_todos"]
+    active = [todo("survive unload", "in_progress")]
+    await registry.get("update_todos").tool.ainvoke({"todos": active})
 
     assert await loader.unload("todolist") is True
     assert registry.registered_names() == []
-    assert state_store.get_plugin_state("todolist")["state"]["items"][0][
-        "content"
-    ] == "survive unload"
+    assert state_store.get_plugin_state("todolist") == {
+        "state": {"items": active},
+    }
 
     await loader.load()
-    listed = await registry.get("list_todos").tool.ainvoke({})
-    assert listed.data["items"][0]["content"] == "survive unload"
+    assert registry.registered_names() == ["plugin:todolist:update_todos"]
     await loader.unload_all()
 
 
 @pytest.mark.asyncio
-async def test_engine_exposes_structured_todo_result(
+async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     state_store,
     temp_workspace: Path,
 ):
     _plugin, setup = setup_plugin(state_store)
     registry = ToolRegistry()
-    for name, tool in setup.tools.items():
-        options = setup.options[name]
-        registry.register(
-            tool,
-            sandbox_mode=options.sandbox_mode,
-            namespace=options.namespace,
-        )
-    llm = MockLLM(
-        responses=[
-            {
-                "content": "tracking work",
-                "tool_calls": [
-                    {
-                        "id": "todo-call-1",
-                        "name": "create_todo",
-                        "args": {"content": "verify SSE"},
-                    }
-                ],
-            },
-            {"content": "Tracked."},
-        ]
+    tool = setup.tools["update_todos"]
+    options = setup.options["update_todos"]
+    registry.register(
+        tool,
+        sandbox_mode=options.sandbox_mode,
+        namespace=options.namespace,
     )
+    active = [
+        todo("verify SSE", "in_progress"),
+        todo("write docs", "pending"),
+    ]
+    llm = MockLLM(responses=[
+        {
+            "content": "tracking work",
+            "tool_calls": [{
+                "id": "todo-call-1",
+                "name": "update_todos",
+                "args": {"todos": active},
+            }],
+        },
+        {"content": "Tracked."},
+    ])
     engine = Engine(
         llm=llm,
         tool_registry=registry,
@@ -241,22 +261,20 @@ async def test_engine_exposes_structured_todo_result(
     )
     await engine.start_session()
 
-    events = [event async for event in engine.run_turn("track SSE verification")]
+    events = [event async for event in engine.run_turn("track verification")]
     tool_event = next(event for event in events if event["type"] == "tool_result")
+    second_context = llm.get_call_messages(1)
 
-    assert tool_event["data"]["status"] == "success"
     assert tool_event["data"]["data"] == {
-        "item": {
-            "id": "todo-1",
-            "content": "verify SSE",
-            "status": "pending",
-        }
+        "todos": active,
+        "cleared": False,
     }
-    stored = await PluginStore(state_store, "todolist").get("state")
-    assert stored["items"] == [
-        {
-            "id": "todo-1",
-            "content": "verify SSE",
-            "status": "pending",
-        }
+    assert [message.role for message in second_context][-3:] == [
+        "user", "assistant", "tool",
     ]
+    assistant = second_context[-2]
+    result = second_context[-1]
+    assert assistant.tool_calls[0].name == "update_todos"
+    assert assistant.tool_calls[0].args == {"todos": active}
+    assert result.tool_call_id == "todo-call-1"
+    assert "Todo list updated" in result.content

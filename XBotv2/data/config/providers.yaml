@@ -31,6 +31,16 @@ providers:
     reasoning_effort: high        # or max
     thinking_enabled: true
 
+  lmstudio_pc:
+    provider: anthropic
+    model: qwen/qwen3.5-9b
+    base_url: http://10.106.21.164:1234/
+    api_key: lm-studio
+    temperature: 0.2
+    max_tokens: 128000
+    reasoning_effort: high        # or max
+    thinking_enabled: true
+
   openai:
     provider: openai
     model: gpt-4o

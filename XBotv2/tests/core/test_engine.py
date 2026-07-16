@@ -12,7 +12,7 @@ from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.llm.mock import MockLLM
 from xbotv2.api import ContextComponent
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import Message, ModelResponse
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -172,6 +172,17 @@ class TestEngineBasics:
                 },
             }
         ]
+        assert engine.session_usage == {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+            "requests": 1,
+            "context_tokens": 11,
+        }
+
+        await engine.replace_history([])
+
+        assert state_store.read_usage() == engine.session_usage
 
     @pytest.mark.asyncio
     async def test_streaming_text_deltas_precede_final_assistant_message(self, state_store, temp_workspace):
@@ -943,6 +954,41 @@ class TestEngineHooks:
         assert calls[1] == ("engine", "RuntimeError")
 
     @pytest.mark.asyncio
+    async def test_connection_failure_retries_before_model_output(
+        self,
+        state_store,
+        temp_workspace,
+        monkeypatch,
+    ):
+        class FlakyLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def astream(self, messages):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("temporary disconnect")
+                yield ModelResponse(content="recovered")
+
+        llm = FlakyLLM()
+        monkeypatch.setattr("xbotv2.core.engine.asyncio.sleep", AsyncMock())
+        engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
+
+        events = [event async for event in engine.run_turn("test")]
+
+        assert llm.calls == 2
+        assert any(
+            event["type"] == "client_message"
+            and "retrying" in event["data"]["message"]
+            for event in events
+        )
+        assert any(
+            event["type"] == "assistant_message"
+            and event["data"]["content"] == "recovered"
+            for event in events
+        )
+
+    @pytest.mark.asyncio
     async def test_tool_call_lifecycle_hooks_fire(self, state_store, temp_workspace):
         """Parsed, per-call before/after, and denial hooks are visible."""
         llm = MockLLM(responses=[
@@ -1535,7 +1581,7 @@ class TestEngineHooks:
         assert summaries[0].content == "summary"
         assert summaries[0].usage_metadata == {"input_tokens": 3}
         assert llm.get_call_messages(0)[0].content == "summarize history"
-        assert llm.get_call_messages(1)[-2].content == "question"
+        assert llm.get_call_messages(1)[-1].content == "question"
         assert next(
             event for event in events if event["type"] == "assistant_message"
         )["data"]["content"] == "answer"

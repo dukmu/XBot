@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -56,7 +57,13 @@ class CompactPlugin(PluginBase):
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
-            """Request conversation compaction before the next model call."""
+            """Request one semantic compaction before the next model call.
+
+            Use this when older conversation detail is consuming context but the
+            task must continue. It summarizes an old completed prefix, preserves
+            recent turns, and does not complete the current task. Do not call it
+            repeatedly when automatic compaction is already active.
+            """
             self._manual_requested = True
             return ToolResult.success(
                 "Conversation compaction requested.",
@@ -72,23 +79,42 @@ class CompactPlugin(PluginBase):
         )
         ctx.register_command(Command(
             name="compact",
-            description="Compact conversation history before the next model call.",
+            description="Compact conversation history immediately while idle.",
             handler=self._compact_command,
             usage="/compact",
             examples=("/compact",),
         ))
 
-    async def _compact_command(self, _ctx: Any, raw_args: str) -> CommandResult:
+    async def _compact_command(self, ctx: Any, raw_args: str) -> CommandResult:
         if raw_args.strip():
             return CommandResult(
                 "Usage: /compact",
                 status="error",
                 data={"requested": False},
             )
-        self._manual_requested = True
+        await ctx.turn_lock.acquire()
+        try:
+            self._manual_requested = True
+            try:
+                compacted = await ctx.engine.run_context_maintenance()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return CommandResult(
+                    f"Conversation compaction failed: {exc}",
+                    status="error",
+                    data={"requested": False},
+                )
+        finally:
+            ctx.turn_lock.release()
+        if not compacted:
+            return CommandResult(
+                "Conversation history is too short to compact.",
+                data={"requested": False, "compacted": False},
+            )
         return CommandResult(
-            "Conversation compaction requested.",
-            data={"requested": True},
+            "Conversation history compacted.",
+            data={"requested": True, "compacted": True},
         )
 
     async def _allow_compact(self, ctx: HookContext):
@@ -131,16 +157,25 @@ class CompactPlugin(PluginBase):
             len(messages),
             history_chars,
         )
-        response = await ctx.invoke_model(
-            _summary_request(messages[:split], self._summary_max_chars)
-        )
-        if response.tool_calls:
-            raise RuntimeError("Compaction model must not call tools")
-        summary = response.content.strip()
-        if not summary:
-            raise RuntimeError("Compaction model returned an empty summary")
-        summary = summary[:self._summary_max_chars]
-
+        try:
+            response = await ctx.invoke_model(
+                _summary_request(messages[:split], self._summary_max_chars)
+            )
+            if response.tool_calls:
+                raise RuntimeError("Compaction model must not call tools")
+            summary = response.content.strip()
+            if not summary:
+                raise RuntimeError("Compaction model returned an empty summary")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if manual:
+                raise
+            logger.exception(
+                "automatic compaction failed; continuing with original history"
+            )
+            return None
+        summary = _strip_summary_heading(summary)[:self._summary_max_chars]
         compacted = Message(
             role="system",
             content=f"## Conversation Summary\n\n{summary}",
@@ -193,13 +228,13 @@ def _latest_provider_input_tokens(messages: list[Message]) -> int | None:
 
 
 def _compact_prefix_end(messages: list[Message], keep_recent_turns: int) -> int:
-    input_indexes = [
+    user_indexes = [
         index
         for index, message in enumerate(messages)
-        if message.role in {"user", "system"}
+        if message.role == "user"
     ]
-    if len(input_indexes) > keep_recent_turns:
-        return input_indexes[-keep_recent_turns]
+    if len(user_indexes) > keep_recent_turns:
+        return user_indexes[-keep_recent_turns]
 
     assistant_indexes = [
         index
@@ -223,3 +258,10 @@ def _summary_request(messages: list[Message], max_chars: int) -> list[Message]:
         *messages,
         Message(role="user", content="Produce the conversation summary now."),
     ]
+
+
+def _strip_summary_heading(summary: str) -> str:
+    heading = "## Conversation Summary"
+    while summary.startswith(heading):
+        summary = summary[len(heading):].lstrip(" \r\n")
+    return summary

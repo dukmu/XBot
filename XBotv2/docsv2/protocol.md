@@ -43,6 +43,8 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 - `OpenSessionResponse.usage` restores cumulative session token totals and the
   latest provider-reported `context_tokens`. Live `usage` events are per-model-
   call deltas; clients add them to the restored totals.
+  Core persists these totals independently in `state/usage.yaml`, so compact,
+  clear, and undo do not erase token accounting.
 
 ### Endpoints
 
@@ -88,17 +90,29 @@ are its only message kinds. User messages have priority, and FIFO order is
 preserved within each kind. A message submitted while another turn is active
 receives `message_queued`; the server, rather than the TUI, controls delivery.
 
-`general` messages carry source and metadata inside their payload and become
-system input when the session is idle. They cover Goal continuation and future
-runtime notifications without pretending to be human messages. Their output
+`general` messages carry source and metadata inside their payload. When the
+session becomes idle, Core builds one non-persisted turn instruction from the
+payload and the owning plugin's current state. They cover Goal continuation and
+future runtime notifications without pretending to be human messages. Their output
 continues on the originating message stream when possible, otherwise on
 `GET /sessions/{id}/events`. The session event stream remains open across
 separate `general` turns and closes only when the client disconnects or the
 session ends.
 
-The mailbox is not persistent state. Closing or losing the client connection
-drops queued messages, and `resume` starts with an empty mailbox. The append-only
-`logs/mailbox.jsonl` file is diagnostic evidence only and is never replayed.
+The mailbox queue is not persistent state. Closing or losing the client
+connection drops queued messages, and `resume` starts with an empty mailbox.
+Once delivery starts, Core also appends a `mailbox_delivery` record to
+`state/messages.jsonl`; replay retains it as audit evidence but does not turn it
+back into a queued item or provider Message. The separate append-only
+`logs/mailbox.jsonl` file remains lower-level queue diagnostic evidence.
+
+XBot conversation history uses the provider-neutral roles `system`, `user`,
+`assistant`, and `tool`. Only human input uses `user`; runtime source is carried
+as internal metadata. Provider adapters own wire conversion: OpenAI-compatible
+requests receive one leading instruction message, while Anthropic receives the
+same instruction text through its top-level `system` field and groups adjacent
+Tool results into one user content block. OpenAI's `developer` role is a
+provider capability, not a portable XBot history role.
 
 ## Command System
 
@@ -216,8 +230,9 @@ The client must continue consuming the SSE stream while local input is pending;
 it submits the response independently through the interaction endpoint. A turn
 terminal event invalidates any unanswered request.
 Permission responses accept `allow` or `deny` with `once` or `session` scope.
-User-input responses accept an arbitrary JSON-compatible `answer`; the
-request may include suggested string `options` and a timeout.
+User-input responses accept an arbitrary JSON-compatible `answer`; `ask_user`
+normally returns a non-empty selected label or typed string. Suggested options
+are `{label, description}` objects and the timeout, when present, is positive.
 
 Because `ask_user` is a registered tool, permission policy runs first. Under an
 `ask` policy, one turn therefore carries two ordered interactions:

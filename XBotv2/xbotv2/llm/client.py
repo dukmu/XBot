@@ -171,13 +171,17 @@ class AnthropicProvider:
         return clone
 
     async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
+        system, request_messages = anthropic_request_messages(messages)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": anthropic_messages(messages),
-            "tools": self.bound_tools or None,
+            "messages": request_messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if system:
+            api_kwargs["system"] = system
+        if self.bound_tools:
+            api_kwargs["tools"] = self.bound_tools
         if self.reasoning_effort:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
         if self.thinking_enabled:
@@ -190,29 +194,66 @@ class AnthropicProvider:
         tool_json: dict[int, list[str]] = {}
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
-        final_usage: dict[str, Any] = {}
+        usage_values = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+        response_model = self.model
 
-        async with self.client.messages.stream(**api_kwargs) as stream:
+        stream = await self.client.messages.create(stream=True, **api_kwargs)
+        try:
             async for event in stream:
                 event_type = getattr(event, "type", "")
-                if event_type == "content_block_start":
+                if event_type == "message_start":
+                    message = getattr(event, "message", None)
+                    response_model = getattr(message, "model", self.model)
+                    _merge_anthropic_usage(usage_values, getattr(message, "usage", None))
+                elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     idx = int(getattr(event, "index", 0))
-                    if getattr(block, "type", "") == "tool_use":
+                    block_type = getattr(block, "type", "")
+                    if block_type == "tool_use":
                         tool_blocks[idx] = {
                             "id": getattr(block, "id", ""),
                             "name": getattr(block, "name", ""),
                         }
                         tool_json[idx] = []
+                    elif block_type == "text" and getattr(block, "text", ""):
+                        text = str(block.text)
+                        text_parts.append(text)
+                        yield ModelChunk(content=text)
+                    elif block_type == "thinking" and getattr(block, "thinking", ""):
+                        thinking = str(block.thinking)
+                        reasoning_parts.append(thinking)
+                        yield ModelChunk(
+                            content=thinking,
+                            additional_kwargs={"reasoning_content": thinking},
+                        )
                 elif event_type == "content_block_delta":
                     idx = int(getattr(event, "index", 0))
                     delta = getattr(event, "delta", None)
                     if delta is None:
                         continue
-                    if getattr(delta, "type", "") == "input_json_delta":
+                    delta_type = getattr(delta, "type", "")
+                    if delta_type == "input_json_delta":
                         partial = getattr(delta, "partial_json", "")
                         if partial:
                             tool_json.setdefault(idx, []).append(partial)
+                    elif delta_type == "text_delta":
+                        text = getattr(delta, "text", "")
+                        if text:
+                            text_parts.append(text)
+                            yield ModelChunk(content=text)
+                    elif delta_type == "thinking_delta":
+                        thinking = getattr(delta, "thinking", "")
+                        if thinking:
+                            reasoning_parts.append(thinking)
+                            yield ModelChunk(
+                                content=thinking,
+                                additional_kwargs={"reasoning_content": thinking},
+                            )
                 elif event_type == "content_block_stop":
                     idx = int(getattr(event, "index", 0))
                     meta = tool_blocks.get(idx)
@@ -222,6 +263,7 @@ class AnthropicProvider:
                             args = json.loads(raw) if raw else {}
                         except json.JSONDecodeError:
                             args = {}
+                        meta["args"] = args
                         yield ModelChunk(
                             tool_calls=[ToolCall(
                                 id=meta.get("id", ""),
@@ -229,46 +271,35 @@ class AnthropicProvider:
                                 args=args,
                             )]
                         )
-                elif event_type == "text":
-                    text = getattr(event, "text", "")
-                    if text:
-                        text_parts.append(text)
-                        yield ModelChunk(content=text)
-                elif event_type == "thinking":
-                    thinking = getattr(event, "thinking", "")
-                    if thinking:
-                        reasoning_parts.append(thinking)
-                        yield ModelChunk(
-                            content=thinking,
-                            additional_kwargs={"reasoning_content": thinking},
-                        )
                 elif event_type == "message_delta":
-                    usage = getattr(event, "usage", None)
-                    if usage is not None:
-                        final_usage = anthropic_usage(usage)
+                    _merge_anthropic_usage(
+                        usage_values,
+                        getattr(event, "usage", None),
+                    )
+        finally:
+            await stream.close()
 
-            final_message = await stream.get_final_message()
-            # Reconstruct the full text + tool calls from the final
-            # message so the engine sees the same shape as the
-            # OpenAI provider: complete content + complete tool calls
-            # in a single ModelResponse.
-            final_text = "".join(text_parts)
-            final_tool_calls: list[ToolCall] = []
-            for block in getattr(final_message, "content", []) or []:
-                btype = getattr(block, "type", "")
-                if btype == "tool_use":
-                    final_tool_calls.append(ToolCall(
-                        id=getattr(block, "id", ""),
-                        name=getattr(block, "name", ""),
-                        args=getattr(block, "input", {}) or {},
-                    ))
-            yield ModelResponse(
-                content=final_text,
-                tool_calls=final_tool_calls,
-                response_metadata={"model_name": getattr(final_message, "model", self.model)},
-                usage_metadata=final_usage,
-                additional_kwargs={"reasoning_content": "".join(reasoning_parts)} if reasoning_parts else {},
+        final_usage = _anthropic_usage_values(**usage_values)
+        # Reconstruct the final response so the engine sees the same shape as
+        # the OpenAI provider: complete content and complete tool calls.
+        final_tool_calls = [
+            ToolCall(
+                id=str(meta.get("id") or ""),
+                name=str(meta.get("name") or ""),
+                args=dict(meta.get("args") or {}),
             )
+            for meta in tool_blocks.values()
+            if meta.get("name")
+        ]
+        yield ModelResponse(
+            content="".join(text_parts),
+            tool_calls=final_tool_calls,
+            response_metadata={"model_name": response_model},
+            usage_metadata=final_usage,
+            additional_kwargs={
+                "reasoning_content": "".join(reasoning_parts)
+            } if reasoning_parts else {},
+        )
 
 
 def create_llm(provider_config: Any) -> Any:
@@ -354,8 +385,18 @@ def _strip_reasoning_headers(text: str) -> str:
 
 def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    system_parts = [
+        str(getattr(message, "content", ""))
+        for message in messages
+        if message_role(message) == "system"
+        and str(getattr(message, "content", "")).strip()
+    ]
+    if system_parts:
+        result.append({"role": "system", "content": "\n\n".join(system_parts)})
     for message in messages:
         role = message_role(message)
+        if role == "system":
+            continue
         content = getattr(message, "content", "")
         if role == "tool":
             result.append({"role": "tool", "content": str(content), "tool_call_id": getattr(message, "tool_call_id", "")})
@@ -436,18 +477,44 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
         return {}
 
 
+def anthropic_request_messages(
+    messages: list[Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    system = "\n\n".join(
+        str(getattr(message, "content", ""))
+        for message in messages
+        if message_role(message) == "system"
+        and str(getattr(message, "content", "")).strip()
+    )
+    return system, anthropic_messages(messages)
+
+
 def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
-    result = []
+    result: list[dict[str, Any]] = []
     for msg in messages:
         role = getattr(msg, "role", "user")
         content = getattr(msg, "content", "")
-        if role in ("system",):
-            result.append({"role": "user", "content": [{"type": "text", "text": str(content)}]})
+        if role == "system":
+            continue
         elif role == "tool":
-            result.append({
-                "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": getattr(msg, "tool_call_id", ""), "content": str(content)}],
-            })
+            block = {
+                "type": "tool_result",
+                "tool_use_id": getattr(msg, "tool_call_id", ""),
+                "content": str(content),
+            }
+            if (
+                result
+                and result[-1].get("role") == "user"
+                and isinstance(result[-1].get("content"), list)
+                and all(
+                    item.get("type") == "tool_result"
+                    for item in result[-1]["content"]
+                    if isinstance(item, dict)
+                )
+            ):
+                result[-1]["content"].append(block)
+            else:
+                result.append({"role": "user", "content": [block]})
         elif role == "assistant":
             item: dict[str, Any] = {"role": "assistant", "content": [{"type": "text", "text": str(content)}]}
             tool_calls = getattr(msg, "tool_calls", None)
@@ -474,10 +541,36 @@ def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
 def anthropic_usage(usage: Any) -> dict[str, Any]:
     if usage is None:
         return {}
-    input_tokens = getattr(usage, "input_tokens", 0) or 0
-    output_tokens = getattr(usage, "output_tokens", 0) or 0
-    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    return _anthropic_usage_values(
+        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cache_read_input_tokens=(
+            getattr(usage, "cache_read_input_tokens", 0) or 0
+        ),
+        cache_creation_input_tokens=(
+            getattr(usage, "cache_creation_input_tokens", 0) or 0
+        ),
+    )
+
+
+def _merge_anthropic_usage(total: dict[str, int], usage: Any) -> None:
+    if usage is None:
+        return
+    for key in total:
+        value = getattr(usage, key, None)
+        if value is not None:
+            total[key] = int(value)
+
+
+def _anthropic_usage_values(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int,
+    cache_creation_input_tokens: int,
+) -> dict[str, Any]:
+    cache_read = cache_read_input_tokens
+    cache_creation = cache_creation_input_tokens
     result = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,

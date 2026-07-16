@@ -109,6 +109,27 @@ def test_decode_server_event_surfaces_invalid_interaction_payload() -> None:
     assert "data.question" in event.data["message"]
 
 
+def test_user_input_event_preserves_structured_options() -> None:
+    event = server_event(
+        type="user_input_required",
+        data={
+            "request_id": "user_input:c1",
+            "source": "ask_user",
+            "tool_call_id": "c1",
+            "question": "Continue?",
+            "options": [
+                {"label": "continue", "description": "Keep working."},
+                {"label": "stop", "description": "Stop now."},
+            ],
+        },
+    )
+
+    assert event.data["options"] == [
+        {"label": "continue", "description": "Keep working."},
+        {"label": "stop", "description": "Stop now."},
+    ]
+
+
 def test_encoder_rejects_line_breaks_in_event_type() -> None:
     event = server_event(type="message\ninjected", sequence=1)
 

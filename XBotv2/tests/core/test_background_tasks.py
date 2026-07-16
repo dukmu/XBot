@@ -4,6 +4,7 @@ import pytest
 
 from xbotv2.core.background_tasks import BackgroundTaskManager
 from xbotv2.core.builtin_tools.shell import run_shell_command
+from xbotv2.tools.sandbox import SandboxPolicy
 
 
 @pytest.mark.asyncio
@@ -27,9 +28,9 @@ async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeyp
 
     tools = {tool.name: tool for tool in manager.tools}
     assert set(tools) == {"shell", "list_tasks", "stop_task"}
-    assert tools["shell"].parameters["properties"]["background"] == {
-        "type": "boolean"
-    }
+    background = tools["shell"].parameters["properties"]["background"]
+    assert background == {"type": "boolean"}
+    assert "Start a session-owned task" in tools["shell"].description
 
     started = await manager.shell(
         "printf background-output", background=True
@@ -43,6 +44,22 @@ async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeyp
     ]
     assert completions[0]["status"] == "completed"
     assert result.data["output"] == "background-output"
+
+
+@pytest.mark.asyncio
+async def test_foreground_shell_defaults_to_workspace_when_sandbox_is_disabled(
+    temp_workspace,
+):
+    sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
+    manager = BackgroundTaskManager(
+        workspace_root=str(temp_workspace),
+        sandbox=sandbox,
+    )
+
+    result = await manager.shell("pwd")
+
+    assert result.status == "success"
+    assert result.content.strip() == str(temp_workspace)
 
 
 @pytest.mark.asyncio
@@ -169,7 +186,7 @@ async def test_host_shell_cancellation_reaps_process_group(
 
 
 @pytest.mark.asyncio
-async def test_host_shell_marks_bounded_output(temp_workspace, monkeypatch):
+async def test_host_shell_returns_complete_output_for_common_cache(temp_workspace, monkeypatch):
     class Process:
         pid = 123
         returncode = 0
@@ -187,5 +204,4 @@ async def test_host_shell_marks_bounded_output(temp_workspace, monkeypatch):
 
     result = await run_shell_command("generate", cwd=str(temp_workspace))
 
-    assert result.endswith("[output truncated at 100000 bytes]")
-    assert len(result) < 100_100
+    assert result == "x" * 100_001

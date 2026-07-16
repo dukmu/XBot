@@ -189,13 +189,14 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Todo List
 
-- The initial plugin provides explicit list, create, update, and remove tools
-  for ordered session-scoped items with stable identifiers.
-- A single `PluginStore` value makes each mutation one immediate persisted
-  write; resume retains the list and next identifier.
-- Mutations remain tool-driven and use only `pending`, `in_progress`, and
-  `completed`. Real-provider tool selection, permission interaction, and
-  post-restart restoration have been verified.
+- The plugin provides one atomic `update_todos` Tool; every call supplies the
+  complete ordered checklist instead of per-item CRUD operations.
+- A single `PluginStore` value makes each changed list one immediate persisted
+  replacement. Resume retains only current active items.
+- Todo calls and results remain on the normal conversation path so the next
+  model call sees the update confirmation. The plugin does not repeatedly
+  inject the active list. Real-provider loop behavior still requires
+  verification.
 
 ### Goal
 

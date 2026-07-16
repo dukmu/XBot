@@ -103,7 +103,7 @@ async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     removed_turns = sum(
         message.role == "user" for message in ctx.engine.messages
     )
-    await ctx.engine.replace_history([])
+    await ctx.engine.replace_history([], operation="clear")
     return _result(
         "clear",
         f"Cleared {removed_turns} conversation turns.",
@@ -138,7 +138,7 @@ async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
             status="error",
         )
     kept = messages[:user_indexes[-count]]
-    await ctx.engine.replace_history(kept)
+    await ctx.engine.replace_history(kept, operation="undo", turns=count)
     return _result(
         "undo",
         f"Removed {count} conversation turn{'s' if count != 1 else ''}.",

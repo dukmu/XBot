@@ -304,22 +304,6 @@ Body
         assert "not registered" in tool_event["data"]["content"].lower()
 
     @pytest.mark.asyncio
-    async def test_active_skill_context_order_is_stable(self):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import Message, PluginManifest
-
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
-        plugin._active_skills.update({"zeta", "alpha"})
-        ctx = SimpleNamespace(
-            context_messages=[Message(role="system", content="base")]
-        )
-
-        result = await plugin._on_after_context(ctx)
-        content = result["context_messages"][1].content
-
-        assert content.index("### alpha") < content.index("### zeta")
-
-    @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest, Tool

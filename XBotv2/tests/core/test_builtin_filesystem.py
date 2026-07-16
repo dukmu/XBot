@@ -12,6 +12,7 @@ from xbotv2.core.builtin_tools.filesystem import (
     filesystem_write,
     write_file,
 )
+from xbotv2.tools.sandbox import SandboxPolicy
 
 
 def _payload(result) -> dict:
@@ -69,6 +70,23 @@ class TestFilesystemReadList:
 
 
 class TestFilesystemWriteModes:
+    @pytest.mark.asyncio
+    async def test_relative_write_uses_workspace_when_sandbox_is_disabled(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        policy = SandboxPolicy(enabled=False, workspace_root=workspace)
+
+        result = await write_file(
+            "notes.txt",
+            content="workspace content",
+            sandbox=policy,
+        )
+
+        assert result.data["ok"] is True
+        assert (workspace / "notes.txt").read_text(encoding="utf-8") == (
+            "workspace content"
+        )
+
     def test_append_prepend_insert_and_replace_lines(self, tmp_path):
         path = tmp_path / "notes.txt"
 

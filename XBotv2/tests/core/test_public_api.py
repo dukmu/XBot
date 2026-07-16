@@ -1,5 +1,6 @@
 """Contract tests for the supported XBotv2 extension surface."""
 
+import inspect
 import re
 from pathlib import Path
 
@@ -78,6 +79,28 @@ def test_public_api_exports_core_extension_types():
         stage=HookStage.ON_TURN_START,
         request_id="request-1",
     ).request_id == "request-1"
+
+
+def test_tool_from_function_preserves_docstring_and_exports_json_schema():
+    from typing import Literal
+
+    def edit(path: str, mode: Literal["append", "overwrite"] = "append"):
+        """Edit a file with one explicit mode.
+
+        Args:
+            path: Destination file path inside the workspace.
+            mode: Whether to append or replace the complete file.
+        """
+
+    schema = Tool.from_function(edit).provider_schema()["function"]
+
+    assert schema["description"] == inspect.getdoc(edit)
+    assert schema["parameters"]["properties"]["path"] == {"type": "string"}
+    assert schema["parameters"]["properties"]["mode"] == {
+        "type": "string",
+        "enum": ["append", "overwrite"],
+    }
+    assert schema["parameters"]["required"] == ["path"]
     assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
     assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
 

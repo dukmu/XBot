@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 from typing import Any
 
 from xbotv2.api import (
@@ -14,139 +16,155 @@ from xbotv2.api import (
 
 
 _STATUSES = {"pending", "in_progress", "completed"}
+_UPDATE_TODOS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "todos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "content": {"type": "string", "minLength": 1},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "in_progress", "completed"],
+                    },
+                },
+                "required": ["content", "status"],
+            },
+        },
+    },
+    "required": ["todos"],
+}
 
 
 class TodolistPlugin(PluginBase):
     def setup(self, ctx: PluginSetupContext) -> None:
-        options = ToolRegistrationOptions(
-            sandbox_mode="host",
-            namespace="plugin:todolist",
-        )
-        ctx.register_tool(Tool.from_function(self.list_todos), options=options)
-        ctx.register_tool(Tool.from_function(self.create_todo), options=options)
-        ctx.register_tool(Tool.from_function(self.update_todo), options=options)
-        ctx.register_tool(Tool.from_function(self.remove_todo), options=options)
-
-    async def list_todos(self) -> ToolResult:
-        """List todo items in creation order."""
-        state = await self._read_state()
-        items = state["items"]
-        if not items:
-            return ToolResult.success("Todo list is empty.", data={"items": []})
-        lines = [
-            f"{item['id']} [{item['status']}] {item['content']}"
-            for item in items
-        ]
-        return ToolResult.success("\n".join(lines), data={"items": items})
-
-    async def create_todo(self, content: str) -> ToolResult:
-        """Create a todo item with pending status."""
-        content = content.strip()
-        if not content:
-            return ToolResult.failure("invalid_todo", "Todo content must not be empty")
-        state = await self._read_state()
-        item = {
-            "id": f"todo-{state['next_id']}",
-            "content": content,
-            "status": "pending",
-        }
-        state["next_id"] += 1
-        state["items"].append(item)
-        await self.store.set("state", state)
-        return ToolResult.success(
-            f"Created {item['id']}.",
-            data={"item": item},
-        )
-
-    async def update_todo(
-        self,
-        todo_id: str,
-        content: str | None = None,
-        status: str | None = None,
-    ) -> ToolResult:
-        """Update content or status: pending, in_progress, or completed."""
-        if content is None and status is None:
-            return ToolResult.failure(
-                "invalid_update",
-                "Provide content or status to update",
-            )
-        if content is not None:
-            content = content.strip()
-            if not content:
-                return ToolResult.failure(
-                    "invalid_todo",
-                    "Todo content must not be empty",
-                )
-        if status is not None and status not in _STATUSES:
-            return ToolResult.failure(
-                "invalid_status",
-                "Todo status must be pending, in_progress, or completed",
-            )
-
-        state = await self._read_state()
-        item = next(
-            (item for item in state["items"] if item["id"] == todo_id),
-            None,
-        )
-        if item is None:
-            return ToolResult.failure("todo_not_found", f"Todo {todo_id!r} not found")
-        if content is not None:
-            item["content"] = content
-        if status is not None:
-            item["status"] = status
-        await self.store.set("state", state)
-        return ToolResult.success(
-            f"Updated {todo_id}.",
-            data={"item": item},
-        )
-
-    async def remove_todo(self, todo_id: str) -> ToolResult:
-        """Remove a todo item by its stable identifier."""
-        state = await self._read_state()
-        index = next(
-            (
-                index
-                for index, item in enumerate(state["items"])
-                if item["id"] == todo_id
+        ctx.register_tool(
+            Tool(
+                name="update_todos",
+                description=inspect.getdoc(self.update_todos) or "",
+                function=self.update_todos,
+                parameters=_UPDATE_TODOS_SCHEMA,
             ),
-            None,
-        )
-        if index is None:
-            return ToolResult.failure("todo_not_found", f"Todo {todo_id!r} not found")
-        item = state["items"].pop(index)
-        await self.store.set("state", state)
-        return ToolResult.success(
-            f"Removed {todo_id}.",
-            data={"item": item},
+            options=ToolRegistrationOptions(
+                sandbox_mode="host",
+                namespace="plugin:todolist",
+            ),
         )
 
-    async def _read_state(self) -> dict[str, Any]:
+    async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
+        """Replace the current Todo checklist with one complete list.
+
+        Use this for non-trivial work with multiple meaningful steps, or when
+        the user explicitly requests a checklist. Do not use it for a simple
+        task, conversational answer, or as a substitute for doing the work.
+        Call only when the checklist's contents or status actually changes.
+        After updating it, perform the current work before updating it again;
+        never repeatedly submit the same list. Each call replaces the whole
+        list. Keep exactly one item in_progress while unfinished work remains,
+        and mark work completed only after verification. An empty list clears
+        the checklist.
+
+        Args:
+            todos: Complete ordered checklist. Each item contains content and a
+                status: pending, in_progress, or completed.
+        """
+        normalized = _normalize_todos(todos)
+        if isinstance(normalized, ToolResult):
+            return normalized
+
+        in_progress = sum(
+            item["status"] == "in_progress" for item in normalized
+        )
+        unfinished = any(item["status"] != "completed" for item in normalized)
+        if unfinished and in_progress != 1:
+            return ToolResult.failure(
+                "invalid_todo_progress",
+                "An unfinished Todo list must contain exactly one in_progress item",
+            )
+
+        current = await self._read_items()
+        cleared = bool(normalized) and not unfinished
+        active = [] if cleared else normalized
+        changed = current != active
+        if changed:
+            await self.store.set("state", {"items": active})
+
+        data = {"todos": normalized, "cleared": cleared}
+        if cleared:
+            content = "All todos completed; the active checklist was cleared."
+        elif not active:
+            content = "Todo list cleared." if changed else "Todo list is already empty."
+        else:
+            action = "updated" if changed else "unchanged"
+            content = f"Todo list {action}:\n{json.dumps(active, ensure_ascii=False)}"
+            if not changed:
+                content += "\nDo not call update_todos again until the work changes."
+        return ToolResult.success(content, data=data)
+
+    async def _read_items(self) -> list[dict[str, str]]:
         state = await self.store.get("state")
         if state is None:
-            return {"next_id": 1, "items": []}
-        if not isinstance(state, dict):
-            raise ValueError("Todo list state must be an object")
-        next_id = state.get("next_id")
-        items = state.get("items")
-        if not isinstance(next_id, int) or next_id < 1 or not isinstance(items, list):
+            return []
+        if not isinstance(state, dict) or not isinstance(state.get("items"), list):
             raise ValueError("Todo list state is invalid")
-        for item in items:
+        items: list[dict[str, str]] = []
+        for item in state["items"]:
             if not _valid_item(item):
                 raise ValueError("Todo list contains an invalid item")
-        return {"next_id": next_id, "items": [dict(item) for item in items]}
+            items.append({
+                "content": item["content"],
+                "status": item["status"],
+            })
+        return items
 
     def diagnostics(self) -> dict[str, Any]:
         return {
             "status": "ready",
             "scope": "session",
+            "tool": "update_todos",
             "item_statuses": sorted(_STATUSES),
         }
+
+
+def _normalize_todos(value: Any) -> list[dict[str, str]] | ToolResult:
+    if not isinstance(value, list):
+        return ToolResult.failure("invalid_todos", "Todos must be a list")
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            return ToolResult.failure(
+                "invalid_todos",
+                f"Todo at index {index} must be an object",
+            )
+        if set(item) != {"content", "status"}:
+            return ToolResult.failure(
+                "invalid_todos",
+                f"Todo at index {index} must contain only content and status",
+            )
+        content = item.get("content")
+        status = item.get("status")
+        if not isinstance(content, str) or not content.strip():
+            return ToolResult.failure(
+                "invalid_todo",
+                f"Todo at index {index} must have non-empty content",
+            )
+        if status not in _STATUSES:
+            return ToolResult.failure(
+                "invalid_todo_status",
+                f"Todo at index {index} has an invalid status",
+            )
+        normalized.append({"content": content.strip(), "status": status})
+    return normalized
 
 
 def _valid_item(item: Any) -> bool:
     return (
         isinstance(item, dict)
-        and isinstance(item.get("id"), str)
         and isinstance(item.get("content"), str)
+        and bool(item["content"].strip())
         and item.get("status") in _STATUSES
     )

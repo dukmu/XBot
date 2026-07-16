@@ -1,6 +1,8 @@
 """Tests for tool runtime path resolution and result caching."""
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.tools import tool as langchain_tool
@@ -17,6 +19,7 @@ from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
+from xbotv2.api.messages import Message
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -273,7 +276,10 @@ async def test_builtin_ask_user_waits_for_live_answer() -> None:
             "ask_user",
             {
                 "question": "Continue?",
-                "options": ["continue", "stop"],
+                "options": [
+                    {"label": "continue", "description": "Keep running."},
+                    {"label": "stop", "description": "Stop the current work."},
+                ],
                 "timeout_seconds": 3,
             },
         )],
@@ -285,6 +291,74 @@ async def test_builtin_ask_user_waits_for_live_answer() -> None:
     assert seen == [("user_input_required", "user_input:c1", 3)]
     assert results[0].status == "success"
     assert results[0].content == "User answered: continue"
+
+
+@pytest.mark.asyncio
+async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
+    registry = ToolRegistry()
+    registry.register(ask_user, sandbox_mode="host")
+    called = False
+
+    async def answer(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "answered", "answer": "unused"}
+
+    results = await execute_tools(
+        [
+            ToolCall("c1", "ask_user", {
+                "question": "Continue?",
+                "options": [
+                    {"label": "", "description": "Continue."},
+                    {"label": "stop", "description": "Stop."},
+                ],
+            }),
+            ToolCall("c2", "ask_user", {
+                "question": "Continue?",
+                "options": [
+                    {"content": "continue"},
+                    {"content": "stop"},
+                ],
+            }),
+        ],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+        client_interaction_handler=answer,
+    )
+
+    assert called is False
+    assert [result.status for result in results] == ["error", "error"]
+    assert "Invalid arguments for ask_user" in results[0].content
+    assert "Invalid arguments for ask_user" in results[1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_status"),
+    [
+        ({"status": "answered", "answer": ""}, "error"),
+        ({"status": "timeout"}, "error"),
+        ({"status": "cancelled", "reason": "interrupted"}, "cancelled"),
+    ],
+)
+async def test_builtin_ask_user_preserves_unsuccessful_outcomes(
+    response,
+    expected_status,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(ask_user, sandbox_mode="host")
+
+    async def answer(*_args, **_kwargs):
+        return response
+
+    results = await execute_tools(
+        [ToolCall("c1", "ask_user", {"question": "Continue?"})],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+        client_interaction_handler=answer,
+    )
+
+    assert results[0].status == expected_status
 
 
 @pytest.mark.asyncio
@@ -510,6 +584,8 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert "[Tool result cached]" in tool_event["data"]["content"]
     assert "[Tool result cached]" in tool_message.content
     assert "x" * 100 not in tool_message.content
+    assert "Ending excerpt" in tool_message.content
+    assert "filesystem_read using offset and limit" in tool_message.content
     assert tool_message.artifact["kind"] == "cached_tool_result"
     assert tool_message.artifact["tool_call_id"] == "call_large"
     assert tool_message.artifact["cache_path"].startswith("session/artifacts/tool_results/")
@@ -524,6 +600,32 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
         m for m in state_store.read_messages() if m.role == "tool"
     )
     assert restored_tool_message.artifact == tool_message.artifact
+
+
+@pytest.mark.asyncio
+async def test_cache_hook_externalizes_large_structured_data(state_store):
+    hook = make_tool_result_cache_hook(
+        state_store,
+        max_inline_chars=100,
+        preview_chars=20,
+    )
+    message = Message(
+        role="tool",
+        content="Short result summary.",
+        tool_call_id="large-data",
+        additional_kwargs={"xbotv2_data": {"content": "x" * 200}},
+    )
+    ctx = SimpleNamespace(tool_results=[message])
+
+    await hook(ctx)
+
+    data = message.additional_kwargs["xbotv2_data"]
+    assert data["cached"] is True
+    assert data["cache_path"].startswith("session/artifacts/tool_results/")
+    assert not Path(data["cache_path"]).is_absolute()
+    assert message.artifact["data_cache_path"] == data["cache_path"]
+    assert message.artifact["kind"] == "cached_tool_data"
+    assert message.content == "Short result summary."
 
 
 def _hook_context(stage, **kwargs):

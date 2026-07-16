@@ -17,7 +17,19 @@ WriteMode = Literal[
 
 
 async def read_file(path: str, offset: int = 0, limit: int = 2000, *, sandbox=None) -> ToolResult:
-    """Read a text file and return JSON with content and file metadata."""
+    """Read a bounded range of lines from one UTF-8 text file.
+
+    Use this before editing an existing file and to inspect cached tool/context
+    artifacts. Paths are workspace-relative unless they use the read-only
+    ``session/`` mount. The result includes content, resolved path, file size,
+    line count, and flags indicating omitted lines.
+
+    Args:
+        path: File path to read. It must identify a file, not a directory.
+        offset: Zero-based first line to return. Use it to continue a bounded read.
+        limit: Maximum lines to return. Values <= 0 read all remaining lines and
+            should only be used after checking that the file is small.
+    """
     if sandbox is not None and sandbox.enabled:
         return _tool_result_from_json(await sandbox.read_file(path, offset=offset, limit=limit))
 
@@ -53,11 +65,33 @@ async def write_file(
     pattern: str | None = None, replacement: str = "",
     *, sandbox=None,
 ) -> ToolResult:
-    """Write or patch a text file and return JSON metadata."""
+    """Create or edit one UTF-8 text file using an explicit write mode.
+
+    Read an existing file before changing it. Prefer ``apply_patch`` or a narrow
+    line/regex replacement for source edits; use ``append`` for incremental
+    documents and ``overwrite`` only when replacing the complete file is
+    intended. The result reports the resolved path, final size, line count,
+    whether content changed, and mode-specific metadata.
+
+    Args:
+        path: Destination file path. Relative paths resolve inside the workspace.
+        content: Text to write. For apply_patch this is a unified diff.
+        mode: Operation: overwrite replaces the whole file; append/prepend add
+            text; insert_line inserts before a one-based line; replace_lines
+            replaces an inclusive one-based range; regex_replace applies pattern;
+            apply_patch applies unified-diff hunks.
+        line: One-based insertion line required by insert_line.
+        start_line: First one-based line required by replace_lines.
+        end_line: Last inclusive one-based line required by replace_lines.
+        pattern: Python regular expression required by regex_replace.
+        replacement: Replacement text used by regex_replace.
+    """
     if sandbox is not None and sandbox.enabled:
         return await _sandboxed_write(sandbox, path, content, mode, line, start_line, end_line, pattern, replacement)
 
     p = Path(path)
+    if sandbox is not None and not p.is_absolute():
+        p = Path(sandbox.workspace_root) / p
     before = _read_existing_text(p)
     if before["error"]:
         return before["error"]
@@ -123,7 +157,19 @@ async def _sandboxed_write(
 
 
 async def list_files(path: str = ".", recursive: bool = False, max_entries: int = 500, *, sandbox=None) -> ToolResult:
-    """List files/directories and return JSON metadata."""
+    """List directory entries with bounded structured metadata.
+
+    Use this to inspect directory shape before selecting files. It returns entry
+    names, relative paths, kinds, sizes, and truncation metadata; it does not read
+    file contents.
+
+    Args:
+        path: Directory path. Relative paths resolve inside the workspace;
+            ``session/`` exposes the current session state read-only.
+        recursive: When true, include descendants instead of direct children only.
+        max_entries: Maximum entries returned. Values <= 0 are unbounded and
+            should only be used for a directory already known to be small.
+    """
     if sandbox is not None and sandbox.enabled:
         return _tool_result_from_json(
             await sandbox.list_dir(path, recursive=recursive, max_entries=max_entries)
@@ -156,7 +202,18 @@ async def search_text(
     *,
     sandbox=None,
 ) -> ToolResult:
-    """Search UTF-8 text recursively and return matching lines."""
+    """Search UTF-8 files recursively with a Python regular expression.
+
+    Use this to locate text and line numbers before reading or patching files.
+    Binary and invalid UTF-8 files are skipped. Results use
+    ``relative_path:line_number:text`` and include total/truncation metadata.
+
+    Args:
+        pattern: Non-empty Python regular expression matched against each line.
+        path: Root directory to search recursively.
+        glob: Optional glob applied to each path relative to the search root.
+        max_results: Maximum matching lines returned; <= 0 is unbounded.
+    """
     if not pattern:
         return _json_error("invalid_pattern", "pattern must be non-empty", path=path)
     if sandbox is not None and sandbox.enabled:
@@ -206,7 +263,17 @@ async def find_files(
     *,
     sandbox=None,
 ) -> ToolResult:
-    """Find files recursively by glob pattern."""
+    """Find file paths recursively by glob without reading file content.
+
+    Use this when filenames or extensions are known but locations are not. The
+    result contains paths relative to the requested root plus count and
+    truncation metadata.
+
+    Args:
+        pattern: Glob pattern such as ``*.py`` or ``**/test_*.py``.
+        path: Root directory to search recursively.
+        max_results: Maximum paths returned; <= 0 is unbounded.
+    """
     if sandbox is not None and sandbox.enabled:
         listing = _parse_sandbox_result(
             await sandbox.list_dir(path, recursive=True, max_entries=0)

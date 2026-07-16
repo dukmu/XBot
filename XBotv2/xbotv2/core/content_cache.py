@@ -11,6 +11,7 @@ from xbotv2.api.messages import Message
 from xbotv2.api.tools import ToolCall
 
 MAX_INLINE_CHARS = 12_000
+MAX_USER_INLINE_CHARS = 48_000
 HEAD_CHARS = 3_000
 TAIL_CHARS = 1_000
 
@@ -30,7 +31,8 @@ def bound_context_messages(
 
 def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
     content = str(message.content or "")
-    bounded_content = _externalize(content, state_store, limit)
+    content_limit = MAX_USER_INLINE_CHARS if message.role == "user" else limit
+    bounded_content = _externalize(content, state_store, content_limit)
     bounded_calls = [
         ToolCall(
             id=call.id,
@@ -92,8 +94,14 @@ def _externalize(content: str, state_store: Any, limit: int) -> str:
         "Beginning excerpt:\n"
         f"{content[:HEAD_CHARS]}\n\n"
         "Ending excerpt:\n"
-        f"{content[-TAIL_CHARS:]}"
+        f"{content[-TAIL_CHARS:]}\n\n"
+        "Read the cached file with filesystem_read using offset and limit "
+        "before acting when omitted content may matter."
     )
 
 
-__all__ = ["MAX_INLINE_CHARS", "bound_context_messages"]
+__all__ = [
+    "MAX_INLINE_CHARS",
+    "MAX_USER_INLINE_CHARS",
+    "bound_context_messages",
+]

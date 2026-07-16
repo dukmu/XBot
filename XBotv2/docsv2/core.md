@@ -95,23 +95,29 @@ from the hook does not bypass core permission policy.
 
 ```
 data/sessions/<sid>/state/
-├── messages.jsonl          # append normally; atomic rewrite after history mutation
+├── messages.jsonl          # append-only messages and history operations
 ├── plugin_states/          # per-plugin YAML files
 └── artifacts/              # cached large tool outputs and provider context
 ```
 
 `CoreStateStore` (`persistence/store.py`):
-- `sync_messages()`: append new messages; atomically rewrite changed history
-- `read_messages()`: reconstruct Message objects from JSONL
+- `sync_messages()`: append normal message extensions
+- `append_checkpoint()`: append a Compact or explicit replacement baseline
+- `append_undo()` / `append_clear()`: append replayable stack operations
+- `append_mailbox_delivery()`: record delivered Mailbox input without requeueing it
+- `read_messages()`: replay the latest checkpoint, later messages, Undo, and Clear
 - `has_existing_session()`: session resume detection
 - `_max_msg_id` cached to avoid O(n) scan
 
-No `events.jsonl`, `state.yaml`, or materializer.
+Old message-only files remain readable. No operation removes earlier JSONL
+records; Compact replay starts at the last checkpoint for bounded reconstruction.
+There is no separate `events.jsonl` or `state.yaml`.
 
 `SessionRuntime` (`core/session.py`) owns live-only turn, Mailbox, interaction,
 and event-stream state. It is shared by HTTP and once mode, while resume still
 reconstructs only persisted Engine and plugin state. Mailbox queues and pending
-interaction waiters are never replayed.
+interaction waiters are never replayed. Started deliveries remain journal audit
+records separate from reconstructed provider Messages.
 
 ## Context Builder (`core/context.py`)
 
@@ -121,11 +127,17 @@ Assembly order:
 [plugin fragments: system_instructions stage]
 [runtime rules]
 [sandbox summary]
-[active skills (if any)]
 [message history]
-[plugin fragments: context_suffix stage]
-[current state]
+[plugin fragments: context_suffix stage, if any]
+[active subagent count, if non-zero]
 ```
+
+This is component render order. Final model messages contain one leading system
+message with all system components, followed by non-system conversation history.
+No provider receives a trailing system message from `context_suffix`.
+The default prompt contains no clock or turn counter, so repeated model calls
+retain a stable prefix. Skill activation uses its normal Tool-result or
+prompt-expansion message and is not repeated as a system marker.
 
 Cache key uses tuple (was SHA256). `_sanitize_history` removes orphaned
 tool messages before provider conversion.

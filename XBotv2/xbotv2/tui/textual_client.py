@@ -1006,6 +1006,11 @@ class XBotTextualApp(App[None]):
             return False
         request_id = self._choice_request_ids.get(key, key)
         choice = choices[self._active_choice_index]
+        if choice.kind == "answer_custom":
+            self._resolve_active_choice("Other")
+            self._interaction_response_pending = False
+            self._refresh_input_mode()
+            return True
         self._interaction_response_pending = True
         self._resolve_active_choice(choice.label)
         if choice.kind == "permission":
@@ -1427,11 +1432,21 @@ class XBotTextualApp(App[None]):
             return self._request_widget(notice, key=key, title=f"{notice.ts}  approval request", choices=choices)
         if notice.kind == "user_input_required":
             options = notice.payload.get("options")
-            choices = (
-                [InlineChoice(str(option), "answer", {"answer": str(option)}) for option in options]
-                if isinstance(options, list)
-                else []
-            )
+            choices = []
+            if isinstance(options, list):
+                for option in options:
+                    if not isinstance(option, dict):
+                        continue
+                    label = str(option.get("label") or "")
+                    description = str(option.get("description") or "")
+                    if label and description:
+                        choices.append(InlineChoice(
+                            f"{label}: {description}",
+                            "answer",
+                            {"answer": label},
+                        ))
+                if choices:
+                    choices.append(InlineChoice("Other", "answer_custom", {}))
             return self._request_widget(notice, key=key, title=f"{notice.ts}  question", choices=choices)
         return entry_widget("notice", f"{notice.ts}  {notice_title(notice.kind)}", notice.text)
 

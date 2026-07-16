@@ -12,7 +12,6 @@ from xbotv2.api import (
     HookContext,
     HookDecision,
     HookStage,
-    Message,
     PluginBase,
     PluginManifest,
     PluginSetupContext,
@@ -53,7 +52,6 @@ class SkillsPlugin(PluginBase):
         ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
         ctx.register_hook(HookStage.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
         ctx.register_hook(HookStage.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
-        ctx.register_hook(HookStage.AFTER_CONTEXT, self._on_after_context)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
 
@@ -188,18 +186,6 @@ class SkillsPlugin(PluginBase):
         )
         self._activate_skill(skill)
         return {"user_input": content}
-
-    async def _on_after_context(self, ctx: HookContext) -> None:
-        if not self._active_skills:
-            return
-        parts = ["## Active Skills"]
-        for name in sorted(self._active_skills):
-            parts.append(f"\n### {name}")
-        parts.append("")
-        content = "\n".join(parts)
-        msgs = list(ctx.context_messages) if ctx.context_messages else []
-        msgs.insert(1, Message(role="system", content=content))
-        return {"context_messages": msgs}
 
     async def _on_turn_end(self, ctx: HookContext) -> None:
         self._active_skills.clear()

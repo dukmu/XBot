@@ -83,7 +83,8 @@ stages aggregate failures with `ExceptionGroup`.
 Buffers `user_message` and `general` inputs while a session is alive. A session
 worker turns one message at a time into an Engine turn; user input has priority
 over runtime notifications. Queue contents are destroyed on disconnect and are
-not restored from the append-only diagnostic log.
+not restored. Deliveries that started are appended to the session message
+journal for reconstruction and analysis, but are never requeued on resume.
 
 ### LLM Provider (`xbotv2/llm/`)
 
@@ -96,9 +97,13 @@ not restored from the append-only diagnostic log.
 
 ### Context Builder (`xbotv2/core/context.py`)
 
-Assembles provider messages: system prefix → plugin fragments → runtime rules →
-history → `context_suffix` plugin fragments → current state. SHA256 cache
-replaced with tuple key.
+Assembles typed context components from system prefix, plugin fragments, runtime
+rules, history, and optional runtime state. Before provider dispatch, every system
+component is combined into one leading system message and non-system history
+follows it. The default prompt excludes clocks, turn counters, and duplicate
+identity fields so it remains stable. `context_suffix` names a component stage;
+it does not place a system message after history on the wire. SHA256 cache was
+replaced with a tuple key.
 
 ## Plugin System
 
@@ -112,10 +117,11 @@ history persistence.
 
 ### TodolistPlugin (`builtin_plugins/todolist/`)
 
-Provides four explicit session-scoped todo tools. One `PluginStore` value holds
-the ordered items and next stable identifier, so every successful mutation is
-one immediate persisted write. It does not infer state from conversation text
-or duplicate goal ownership.
+Provides one atomic `update_todos` Tool that replaces the complete ordered
+checklist after validation. One `PluginStore` value holds the active items;
+Tool calls and results use the normal conversation path without a repeated
+context Hook. It does not infer state from conversation text or duplicate goal
+ownership.
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
@@ -204,14 +210,15 @@ model and MCP Tools do not become slash commands.
 
 ```
 data/sessions/<sid>/state/
-├── messages.jsonl          # XBot-owned Message objects, append-only
+├── messages.jsonl          # append-only Messages and history operations
 ├── plugin_states/          # per-plugin YAML state
 └── artifacts/              # cached tool outputs and provider context
 ```
 
-No `events.jsonl`, `state.yaml`, or materializer. `CoreStateStore` appends new
-messages in normal turns and uses an atomic replacement only after compaction or
-history mutation.
+No `events.jsonl` or `state.yaml`. `CoreStateStore` appends normal Messages,
+Compact checkpoints, Undo/Clear stack operations, and Mailbox delivery records.
+`read_messages()` materializes current provider history from the last checkpoint
+forward without rewriting or deleting prior interaction records.
 
 ## Streaming & Reasoning
 

@@ -35,17 +35,22 @@ class TestContextBuilderBasics:
         human_msgs = [m for m in messages if m.role == "user"]
         assert len(human_msgs) == 2
 
-    def test_build_ends_with_current_state(self, context_builder):
-        """The last message is always the current state suffix."""
-        messages = context_builder.build(
+    def test_default_system_prompt_is_stable_between_builds(self, context_builder):
+        first = context_builder.build(
             messages=[],
             agent_name="TestBot",
             turn_count=5,
         )
-        last = messages[-1]
-        assert last.role == "system"
-        assert "Current State" in last.content
-        assert "Turn: 6" in last.content  # turn_count + 1
+        second = context_builder.build(
+            messages=[],
+            agent_name="TestBot",
+            turn_count=5,
+        )
+
+        assert first[0].role == "system"
+        assert first[0].content == second[0].content
+        assert "Current State" not in first[0].content
+        assert "Time:" not in first[0].content
 
     def test_build_includes_runtime_rules(self, context_builder):
         """Runtime rules section is always present."""
@@ -75,14 +80,7 @@ class TestFragmentInjection:
             "context_suffix", "planning_plugin", "## Plan Status\nActive: node-1"
         )
         messages = context_builder.build(messages=[], agent_name="TestBot")
-        # Find the suffix section
-        suffix_idx = None
-        for i, m in enumerate(messages):
-            if "Current State" in m.content:
-                suffix_idx = i
-                break
-        assert suffix_idx is not None
-        assert "Plan Status" in messages[suffix_idx].content
+        assert "Plan Status" in messages[0].content
 
     def test_register_fragment_invalid_stage_raises(self, context_builder):
         """Invalid fragment stages raise ValueError."""
@@ -108,12 +106,7 @@ class TestFragmentInjection:
             "context_suffix", "plugin_b", "## Plugin B"
         )
         messages = context_builder.build(messages=[], agent_name="TestBot")
-        suffix_idx = None
-        for i, m in enumerate(messages):
-            if "Current State" in m.content:
-                suffix_idx = i
-                break
-        content = messages[suffix_idx].content
+        content = messages[0].content
         assert "Plugin A" in content
         assert "Plugin B" in content
 
@@ -148,7 +141,7 @@ class TestContextComponents:
             "runtime_rules",
         ]
         assert "history" in sources
-        assert sources[-1] == "context_suffix"
+        assert sources[-1] == "history"
 
         skills = next(
             component
@@ -191,11 +184,24 @@ class TestContextComponents:
         assert [type(message) for message in via_components] == [
             type(message) for message in direct
         ]
-        assert via_components[0].content == direct[0].content
-        assert via_components[1].content == direct[1].content
-        assert via_components[2].content == direct[2].content
-        assert "Current State" in via_components[-1].content
-        assert "Current State" in direct[-1].content
+        assert [message.role for message in via_components] == [
+            message.role for message in direct
+        ]
+        assert "Runtime Rules" in via_components[0].content
+        assert "Runtime Rules" in direct[0].content
+        assert via_components[-1].content == direct[-1].content == "hello"
+        assert "Current State" not in via_components[0].content
+        assert "Current State" not in direct[0].content
+
+    def test_active_subagents_add_only_needed_dynamic_state(self, context_builder):
+        messages = context_builder.build(
+            messages=[],
+            active_subagents=2,
+        )
+
+        assert "# Current State" in messages[0].content
+        assert "Active subagents: 2" in messages[0].content
+        assert "Time:" not in messages[0].content
 
     def test_messages_from_components_rejects_untyped_values(self, context_builder):
         with pytest.raises(TypeError, match="must be a ContextComponent"):

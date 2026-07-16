@@ -99,6 +99,10 @@ class SessionPaths:
         return self.state_dir / "messages.jsonl"
 
     @property
+    def usage_file(self) -> Path:
+        return self.state_dir / "usage.yaml"
+
+    @property
     def plugin_states_dir(self) -> Path:
         return self.state_dir / "plugin_states"
 

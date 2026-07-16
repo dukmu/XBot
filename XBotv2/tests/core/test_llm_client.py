@@ -1,7 +1,13 @@
 """Tests for llm provider message conversion."""
 
+from types import SimpleNamespace
+
+import pytest
+
 from xbotv2.llm.client import (
+    AnthropicProvider,
     _strip_reasoning_headers,
+    anthropic_request_messages,
     anthropic_usage,
     provider_messages,
 )
@@ -51,6 +57,44 @@ def test_provider_messages_strips_reasoning_header_on_replay():
     assert out[0]["content"] == ""
 
 
+def test_provider_messages_moves_all_system_content_before_history():
+    out = provider_messages([
+        Message(role="system", content="base"),
+        Message(role="user", content="hello"),
+        Message(role="system", content="goal"),
+    ])
+
+    assert out == [
+        {"role": "system", "content": "base\n\ngoal"},
+        {"role": "user", "content": "hello"},
+    ]
+
+
+def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
+    system, messages = anthropic_request_messages([
+        Message(role="system", content="base"),
+        Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall("c1", "first", {}),
+                ToolCall("c2", "second", {}),
+            ],
+        ),
+        Message(role="tool", tool_call_id="c1", content="one"),
+        Message(role="tool", tool_call_id="c2", content="two"),
+        Message(role="system", content="goal"),
+    ])
+
+    assert system == "base\n\ngoal"
+    assert messages[1] == {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "tool_use_id": "c1", "content": "one"},
+            {"type": "tool_result", "tool_use_id": "c2", "content": "two"},
+        ],
+    }
+
+
 def test_anthropic_usage_preserves_cache_context_tokens():
     usage = type("Usage", (), {
         "input_tokens": 100,
@@ -66,4 +110,76 @@ def test_anthropic_usage_preserves_cache_context_tokens():
         "context_tokens": 850,
         "cache_read_input_tokens": 700,
         "cache_creation_input_tokens": 50,
+    }
+
+
+@pytest.mark.asyncio
+async def test_anthropic_raw_stream_tolerates_null_delta_usage():
+    events = [
+        SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                model="model",
+                usage=SimpleNamespace(
+                    input_tokens=10,
+                    cache_read_input_tokens=20,
+                    cache_creation_input_tokens=0,
+                ),
+            ),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="text_delta", text="done"),
+        ),
+        SimpleNamespace(type="message_delta", usage=None),
+        SimpleNamespace(
+            type="message_delta",
+            usage=SimpleNamespace(output_tokens=3),
+        ),
+    ]
+
+    class FakeStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not events:
+                raise StopAsyncIteration
+            return events.pop(0)
+
+        async def close(self):
+            return None
+
+    captured = {}
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeStream()
+
+    provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.model = "model"
+    provider.temperature = 0.2
+    provider.max_tokens = 100
+    provider.reasoning_effort = None
+    provider.thinking_enabled = False
+    provider.bound_tools = []
+    provider.client = SimpleNamespace(messages=FakeMessages())
+
+    chunks = [chunk async for chunk in provider.astream([
+        Message(role="system", content="instructions"),
+        Message(role="user", content="work"),
+    ])]
+    final = chunks[-1]
+
+    assert "tools" not in captured
+    assert captured["system"] == "instructions"
+    assert final.content == "done"
+    assert final.usage_metadata == {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "total_tokens": 13,
+        "context_tokens": 30,
+        "cache_read_input_tokens": 20,
     }

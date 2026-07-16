@@ -165,10 +165,7 @@ class TestConfigLoading:
             "find_files",
             "list_tasks",
             "stop_task",
-            "list_todos",
-            "create_todo",
-            "update_todo",
-            "remove_todo",
+            "update_todos",
         ):
             assert permissions.check(tool_name, {}) == "allow"
 

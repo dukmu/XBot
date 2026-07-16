@@ -3,7 +3,7 @@ allow:
 - tool: stop_task
 - tool: (?:send_message|ask_user)
 - tool: (?:search_text|find_files)
-- tool: (?:list_todos|create_todo|update_todo|remove_todo)
+- tool: update_todos
 - tool: (?:filesystem_read|filesystem_list)
 - tool: shell
 ask:

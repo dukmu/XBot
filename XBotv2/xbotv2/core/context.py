@@ -15,15 +15,10 @@ Message structure (cache-friendly):
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from xbotv2.api.context import ContextComponent, PromptFragmentStage
 from xbotv2.api.messages import Message
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class ContextBuilder:
@@ -206,36 +201,45 @@ class ContextBuilder:
                 suffix_parts.append(text)
                 suffix_owners.append(plugin_name)
 
-        current_state = self._build_current_state(
-            turn_count=turn_count,
-            active_subagents=active_subagents,
-            user_name=user_name,
-            user_id=user_id,
-        )
-        suffix_parts.append(current_state)
-        components.append(ContextComponent(
-            role="system",
-            source="context_suffix",
-            content="\n\n".join(suffix_parts),
-            plugin_name=",".join(suffix_owners) if suffix_owners else None,
-            stage="context_suffix" if suffix_owners else None,
-        ))
+        if active_subagents > 0:
+            suffix_parts.append(
+                f"# Current State\nActive subagents: {active_subagents}"
+            )
+        if suffix_parts:
+            components.append(ContextComponent(
+                role="system",
+                source="context_suffix",
+                content="\n\n".join(suffix_parts),
+                plugin_name=",".join(suffix_owners) if suffix_owners else None,
+                stage="context_suffix" if suffix_owners else None,
+            ))
 
         return components
 
     @staticmethod
     def messages_from_components(components: list[ContextComponent]) -> list[Message]:
-        result: list[Message] = []
+        system_parts: list[str] = []
+        history: list[Message] = []
         for index, component in enumerate(components):
             if not isinstance(component, ContextComponent):
                 raise TypeError(
                     f"context component {index} must be a ContextComponent"
                 )
-            if component.message is not None:
-                result.append(component.message)
+            message = component.message or Message(
+                role="system",
+                content=component.content,
+            )
+            if message.role == "system":
+                if message.content.strip():
+                    system_parts.append(message.content)
             else:
-                result.append(Message(role="system", content=component.content))
-        return result
+                history.append(message)
+        if not system_parts:
+            return history
+        return [
+            Message(role="system", content="\n\n".join(system_parts)),
+            *history,
+        ]
 
     # ------------------------------------------------------------------
     # Sub-builders
@@ -299,24 +303,6 @@ class ContextBuilder:
             "- Be concise but complete.",
         ]
         return "\n".join(rules)
-
-    @staticmethod
-    def _build_current_state(
-        turn_count: int,
-        active_subagents: int,
-        user_name: str,
-        user_id: str,
-    ) -> str:
-        """Build the current-state suffix section."""
-        lines = [
-            "# Current State",
-            f"Time: {now_iso()}",
-            f"User: {user_name} ({user_id})",
-            f"Turn: {turn_count + 1}",
-        ]
-        if active_subagents > 0:
-            lines.append(f"Active subagents: {active_subagents}")
-        return "\n".join(lines)
 
     @staticmethod
     def _sanitize_history(messages: list[Message]) -> list[Message]:

@@ -190,9 +190,9 @@ POST /sessions/{sid}/interactions/user-input
 ```
 
 The TUI must render acknowledgement events without duplicating the user's answer
-as a new user turn. An inline selection is shown on its request widget; free
-text uses the waiting composer state. The client does not add a separate queued
-notice before the server acknowledgement arrives.
+as a new user turn. Each structured option shows its label and description and
+submits the label. `Other` switches back to free text. The client does not add a
+separate queued notice before the server acknowledgement arrives.
 
 ## Interrupt
 

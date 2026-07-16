@@ -59,16 +59,19 @@ needed for that final model call.
 
 ## Continuation And Persistence
 
-Every successful transition persists immediately through `PluginStore`. An
-active Goal is rebuilt as a non-persisted `ContextComponent` during
-`AFTER_CONTEXT_COMPONENTS_BUILD`. Terminal and paused Goals remain available to
-the command and Tools, but are not injected into unrelated model calls.
+Every successful transition persists immediately through `PluginStore`. Goal
+does not inject state during each context build. When an active Goal reaches an
+idle session, its runtime-only mailbox wake causes `ON_TURN_START` to build one
+non-persisted Goal snapshot for that turn. ReAct iterations reuse that stable
+snapshot. Terminal and paused Goals remain available to the command and Tools,
+but are not injected into unrelated model calls.
 
-At `ON_TURN_END`, an active Goal places at most one runtime-only `general`
-message in the Core mailbox. Delivery clears the pending marker before the next
-turn. ESC pauses the Goal and schedules no successor. `/goal resume` activates
-it and schedules continuation again. Mailbox entries are not restored by
-session resume.
+At `ON_TURN_END`, an active Goal places at most one wake-only `general` message
+in the Core mailbox; the objective remains authoritative in `PluginStore` and is
+not duplicated in the mailbox payload. Delivery clears the pending marker
+before the next turn. ESC pauses the Goal and schedules no successor. `/goal
+resume` activates it and schedules continuation again. Mailbox entries and
+turn snapshots are not restored by session resume.
 
 Goal does not infer objectives from ordinary conversation and does not create
 TodoList items.

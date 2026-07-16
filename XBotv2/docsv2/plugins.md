@@ -130,10 +130,11 @@ The setup transaction should record every resource for rollback and unload.
 Prompt fragments use the public `PromptFragmentStage` values, in render order:
 `system_prefix`, `system_instructions`, `system_rules`, and `context_suffix`.
 Each manifest declaration provides exactly one non-empty `file` or `handler`.
-The suffix stage renders after message history and before the core current-state
-text. Unknown stages are rejected during manifest validation; Python plugins
-using `ctx.add_prompt_fragment()` receive the same validation from the context
-builder.
+The suffix stage renders after message-history components and before the core
+current-state component. It is still system content: final provider conversion
+combines it into the single leading system message. Unknown stages are rejected
+during manifest validation; Python plugins using `ctx.add_prompt_fragment()`
+receive the same validation from the context builder.
 After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
 `ContextComponent` values. A Hook may replace the component list, but every
 replacement entry must remain a `ContextComponent`; provider conversion does
@@ -208,16 +209,17 @@ contract. The `compact` tool requests a manual compaction; current provider inpu
 usage triggers it automatically, with a character fallback when usage is absent.
 Recent complete user turns remain verbatim, the
 auxiliary model call has no tools, and only a successful summary is returned as
-a message replacement. Engine persistence then atomically rewrites history, so
-resume observes the same summary and recent tail. See
+a message replacement. Engine persistence appends a history checkpoint, so
+resume observes the same summary and recent tail without deleting raw records. See
 [Compact plugin](compact.md).
 
 ### TodolistPlugin (`builtin_plugins/todolist/`)
 
-Provides explicit list, create, update, and remove tools backed by one
-immediately persisted `PluginStore` value. Items retain creation order and
-stable identifiers across session resume. Invalid mutations return structured
-errors without changing stored state. See [TodoList plugin](todolist.md).
+Provides one atomic `update_todos` Tool backed by an immediately persisted
+`PluginStore` value. Each call supplies the complete ordered checklist; invalid
+lists cannot partially change stored state. Its normal Tool result confirms the
+update to the next model call; the plugin does not inject repeated context.
+See [TodoList plugin](todolist.md).
 
 ### GoalPlugin (`builtin_plugins/goal/`)
 
@@ -242,7 +244,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `ON_SESSION_INIT`: transactionally discover SKILL.md files from 6 paths and
   register each discovered skill once
 - `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
-- `AFTER_CONTEXT`: inject active skill content into context
+- Skill content enters context through the normal prompt-expansion or Tool-result
+  path; the plugin does not add a repeated active-skill system message.
 - `ON_TURN_END`: clear active skills and permission scopes
 - `BEFORE_TOOL_CALL`: enforce active-skill tool restrictions before core
   permission checks

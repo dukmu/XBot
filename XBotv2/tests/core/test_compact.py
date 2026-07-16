@@ -1,5 +1,7 @@
 """Behavior tests for the built-in conversation compaction plugin."""
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -108,6 +110,119 @@ async def test_manual_tool_requests_compaction_below_threshold():
     assert result["messages"][0].role == "system"
     assert "Important earlier context" in result["messages"][0].content
     assert result["messages"][1:] == original[-2:]
+
+
+@pytest.mark.asyncio
+async def test_human_command_compacts_and_persists_immediately(
+    state_store,
+    temp_workspace,
+):
+    plugin = make_plugin()
+    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    setup = SetupContext()
+    plugin.setup(setup)
+    hooks = HookManager()
+    hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
+    original = history(3)
+    state_store.sync_messages(original)
+    llm = MockLLM(responses=[{"content": "Earlier requirements."}])
+    engine = Engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        hook_manager=hooks,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=None,
+    )
+    await engine.start_session()
+    command_ctx = SimpleNamespace(turn_lock=asyncio.Lock(), engine=engine)
+
+    result = await setup.commands["compact"].handler(command_ctx, "")
+
+    records = [
+        json.loads(line)
+        for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
+    ]
+    checkpoint = next(
+        record for record in records
+        if record.get("record_type") == "history_checkpoint"
+    )
+    assert checkpoint["reason"] == "compact:manual"
+    assert any(record.get("content") == "user 0 message" for record in records)
+
+    assert result.status == "ok"
+    assert result.data == {"requested": True, "compacted": True}
+    assert llm.call_count == 1
+    assert engine.messages[0].role == "system"
+    assert "Earlier requirements." in engine.messages[0].content
+    assert state_store.read_messages() == engine.messages
+    assert command_ctx.turn_lock.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_human_command_runs_when_active_turn_becomes_idle():
+    plugin = make_plugin()
+    await plugin.on_load({"automatic": False})
+    setup = SetupContext()
+    plugin.setup(setup)
+    turn_lock = asyncio.Lock()
+    await turn_lock.acquire()
+    calls = 0
+
+    class EngineStub:
+        async def run_context_maintenance(self):
+            nonlocal calls
+            calls += 1
+            return True
+
+    command_ctx = SimpleNamespace(turn_lock=turn_lock, engine=EngineStub())
+
+    command_task = asyncio.create_task(
+        setup.commands["compact"].handler(command_ctx, "")
+    )
+    await asyncio.sleep(0)
+
+    assert command_task.done() is False
+    assert calls == 0
+
+    turn_lock.release()
+    result = await command_task
+
+    assert result.status == "ok"
+    assert result.data == {"requested": True, "compacted": True}
+    assert calls == 1
+    assert turn_lock.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_compaction_does_not_append_duplicate_human_directives():
+    plugin = make_plugin()
+    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin._manual_requested = True
+    original = history(3)
+    original[2].content = "Do not ask me again; decide the safest option."
+
+    async def invoke_model(_messages):
+        return ModelResponse(
+            content="## Conversation Summary\n\nOlder context only."
+        )
+
+    result = await plugin._on_before_context(HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        session=SimpleNamespace(turn_count=3),
+        invoke_model=invoke_model,
+    ))
+
+    summary = result["messages"][0].content
+    assert summary.count("## Conversation Summary") == 1
+    assert "## Recent Human Directives (verbatim)" not in summary
+    assert summary.count("Older context only.") == 1
 
 
 @pytest.mark.asyncio
@@ -301,6 +416,27 @@ async def test_failed_summary_leaves_history_untouched():
 
     assert ctx.state["messages"] == original
     assert plugin._manual_requested is False
+    assert plugin.diagnostics()["compactions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_automatic_summary_continues_with_original_history():
+    plugin = make_plugin()
+    await plugin.on_load({"trigger_chars": 100, "keep_recent_turns": 1})
+    original = history(3, content="x" * 100)
+
+    async def fail(_messages):
+        raise ConnectionError("summary provider unavailable")
+
+    ctx = HookContext(
+        stage=HookStage.BEFORE_CONTEXT,
+        state={"messages": original},
+        session=SimpleNamespace(turn_count=2),
+        invoke_model=fail,
+    )
+
+    assert await plugin._on_before_context(ctx) is None
+    assert ctx.state["messages"] == original
     assert plugin.diagnostics()["compactions"] == 0
 
 

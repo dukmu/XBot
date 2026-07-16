@@ -11,16 +11,22 @@ import tempfile
 from xbotv2.api.tools import ToolResult
 from xbotv2.api.tools import Tool
 
-_MAX_OUTPUT_BYTES = 100_000
-
-
 async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -> ToolResult:
-    """Execute a shell command and return the output.
+    """Execute a short non-interactive shell command and wait for completion.
+
+    Use this for inspection, tests, and commands that should finish within 30
+    seconds. Standard error is merged into standard output. A non-zero exit,
+    timeout, or sandbox failure returns a structured Tool error. Large output is
+    cached by the common Tool-result pipeline and remains available through its
+    session-relative artifact path. Use ``background=true`` for long-running
+    processes.
 
     Args:
-        command: The shell command to execute.
+        command: Complete shell command to execute.
         cwd: Working directory. Defaults to the session workspace root.
     """
+    if cwd is None and sandbox is not None:
+        cwd = str(sandbox.workspace_root)
     try:
         return ToolResult.success(
             await run_shell_command(
@@ -63,13 +69,7 @@ async def run_shell_command(
             await _wait_process(proc, None)
             raise
         output_file.seek(0)
-        raw_output = output_file.read(_MAX_OUTPUT_BYTES + 1)
-        truncated = len(raw_output) > _MAX_OUTPUT_BYTES
-        output = raw_output[:_MAX_OUTPUT_BYTES].decode(
-            "utf-8", errors="replace"
-        )
-        if truncated:
-            output += "\n[output truncated at 100000 bytes]"
+        output = output_file.read().decode("utf-8", errors="replace")
     output = output or "(no output)"
     if proc.returncode:
         raise RuntimeError(

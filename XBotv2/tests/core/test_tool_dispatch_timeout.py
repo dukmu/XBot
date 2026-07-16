@@ -53,3 +53,28 @@ async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
     assert time.monotonic() - started < 0.2
     assert results[0].status == "error"
     assert "Error executing slow" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
+    invoked = False
+
+    def choose(options: list[str]) -> str:
+        nonlocal invoked
+        invoked = True
+        return options[0]
+
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(choose), sandbox_mode="host")
+
+    results = await execute_tools(
+        [ToolCall("call_1", "choose", {"options": [["nested"]]})],
+        registry,
+    )
+
+    assert invoked is False
+    assert results[0].status == "error"
+    assert results[0].content == (
+        "Error: Invalid arguments for choose at options.0: "
+        "['nested'] is not of type 'string'"
+    )

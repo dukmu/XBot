@@ -6,8 +6,11 @@ import asyncio
 import logging
 from typing import Any
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
 from xbotv2.api.hooks import HookAction, HookDecision, HookStage
-from xbotv2.api.tools import ToolCall, ToolResult
+from xbotv2.api.tools import ToolCall, ToolResult, tool_parameters_schema
 from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.api.messages import Message
 
@@ -238,7 +241,7 @@ async def _tool_message_from_user_input_wait(
                 "support live user input."
             ),
             tool_call_id=tool_call_id,
-            status="success",
+            status="error",
             additional_kwargs={
                 "xbotv2_events": events,
                 "xbotv2_user_input_result": {
@@ -260,9 +263,14 @@ async def _tool_message_from_user_input_wait(
         tool_call_id=tool_call_id,
     )
     status = str(response.get("status") or "")
+    tool_status = "error"
     if status == "answered":
         answer = response.get("answer", "")
-        content = f"User answered: {answer}"
+        if isinstance(answer, str) and not answer.strip():
+            content = "The user submitted an empty answer."
+        else:
+            content = f"User answered: {answer}"
+            tool_status = "success"
     elif status == "disconnected":
         raise UserInputDisconnected(
             f"Client disconnected while waiting for {response.get('request_id')}"
@@ -272,13 +280,14 @@ async def _tool_message_from_user_input_wait(
     elif status == "cancelled":
         reason = response.get("reason") or "cancelled"
         content = f"No user reply was received because the request was cancelled: {reason}"
+        tool_status = "cancelled"
     else:
         content = "No user reply was received."
     return Message(
         role="tool",
         content=content,
         tool_call_id=tool_call_id,
-        status="success",
+        status=tool_status,
     )
 
 
@@ -435,6 +444,21 @@ async def _execute_one_tool(
         return
 
     call = ToolCall(tool_id, tool_name, args)
+    try:
+        Draft202012Validator(tool_parameters_schema(tool)).validate(args)
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path)
+        location = f" at {path}" if path else ""
+        reason = f"Invalid arguments for {tool_name}{location}: {exc.message}"
+        observed_tool_calls.append(call)
+        results.append(_error_message(call, reason))
+        await _emit_tool_denied(
+            hook_manager,
+            hook_context_factory,
+            call,
+            reason,
+        )
+        return
     if permission_system:
         decision = permission_system.check(tool_name, args)
         if decision == "deny":

@@ -184,13 +184,18 @@ class PermissionDeniedData(WireModel):
     resume_supported: bool = False
 
 
+class UserInputOption(WireModel):
+    label: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
 class UserInputRequiredData(WireModel):
     request_id: str = Field(min_length=1)
     source: str = Field(min_length=1)
     tool_call_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    options: list[str] = Field(default_factory=list)
-    timeout_seconds: float | None = Field(default=None, ge=0)
+    options: list[UserInputOption] = Field(default_factory=list)
+    timeout_seconds: float | None = Field(default=None, gt=0)
     resume_supported: bool = False
 
 
@@ -396,6 +401,7 @@ __all__ = [
     "TurnData",
     "TYPED_SERVER_EVENT_TYPES",
     "UsageData",
+    "UserInputOption",
     "UserInputRequiredData",
     "UserInputResponseRequest",
     "WireModel",

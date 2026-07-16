@@ -11,6 +11,7 @@ from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
+from xbotv2.core.mailbox import MailboxMessage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.plugin.store import PluginStore
@@ -58,7 +59,7 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
     plugin, setup = setup_plugin(state_store)
 
     assert list(setup.hooks) == [
-        HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        HookStage.ON_TURN_START,
         HookStage.ON_TURN_END,
         HookStage.BEFORE_TOOL_CALL,
         HookStage.BEFORE_MAILBOX_DELIVERY,
@@ -197,30 +198,92 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
 
 
 @pytest.mark.asyncio
-async def test_complete_goal_is_not_injected_into_later_context(state_store):
+async def test_goal_snapshot_is_added_only_to_goal_mailbox_turn(state_store):
     plugin = make_plugin(state_store)
-    components = [ContextComponent(role="system", source="system_prefix", content="base")]
     await plugin.create_goal("output two greetings")
     active_ctx = HookContext(
-        stage=HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        stage=HookStage.ON_TURN_START,
         session=SimpleNamespace(),
-        context_components=components,
+        user_input="wake",
+        mailbox_message=SimpleNamespace(
+            kind="general",
+            message={"source": "goal", "event": "continue"},
+        ),
     )
 
-    await plugin._add_goal_context(active_ctx)
+    await plugin._start_goal_turn(active_ctx)
 
-    assert "## Session Goal" in active_ctx.context_components[-1].content
+    assert "## Session Goal" in active_ctx.user_input
+    assert "output two greetings" in active_ctx.user_input
 
     await plugin.update_goal("complete", "Output both requested greetings.")
     ctx = HookContext(
-        stage=HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        stage=HookStage.ON_TURN_START,
         session=SimpleNamespace(),
-        context_components=components,
+        user_input="wake",
+        mailbox_message=active_ctx.mailbox_message,
     )
 
-    await plugin._add_goal_context(ctx)
+    await plugin._start_goal_turn(ctx)
 
-    assert ctx.context_components == components
+    assert ctx.user_input == "wake"
+
+
+@pytest.mark.asyncio
+async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
+    state_store,
+    temp_workspace,
+):
+    plugin, setup = setup_plugin(state_store)
+    await plugin.create_goal("finish the audit")
+    hooks = HookManager()
+    hooks.register(HookStage.ON_TURN_START, setup.hooks[HookStage.ON_TURN_START])
+    llm = MockLLM(responses=[{"content": "Working on the audit."}])
+    engine = Engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        hook_manager=hooks,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=None,
+    )
+    item = MailboxMessage.create(
+        "general",
+        {"source": "goal", "event": "continue"},
+    )
+
+    _ = [
+        event
+        async for event in engine.run_turn(
+            "Mailbox wake",
+            mailbox_message=item,
+        )
+    ]
+
+    request = llm.get_call_messages(0)
+    assert "## Session Goal" in request[0].content
+    assert "finish the audit" in request[0].content
+    assert all(message.role != "user" for message in request)
+    assert all("Session Goal" not in message.content for message in engine.messages)
+    records = [
+        yaml.safe_load(line)
+        for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
+    ]
+    delivery = next(
+        record for record in records
+        if record.get("record_type") == "mailbox_delivery"
+    )
+    assert delivery["kind"] == "general"
+    assert delivery["message"] == {"source": "goal", "event": "continue"}
+    assert all(
+        message.content != str(delivery["message"])
+        for message in state_store.read_messages()
+    )
 
 
 @pytest.mark.asyncio
@@ -285,7 +348,7 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
 
     assert await loader.unload("goal") is True
     assert registry.registered_names() == []
-    assert hooks._hooks.get(HookStage.AFTER_CONTEXT_COMPONENTS_BUILD, []) == []
+    assert hooks._hooks.get(HookStage.ON_TURN_START, []) == []
     assert state_store.get_plugin_state("goal")["goal"]["objective"] == "retain me"
 
 
@@ -298,8 +361,8 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
     await plugin.create_goal("finish this turn")
     hooks = HookManager()
     hooks.register(
-        HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-        setup.hooks[HookStage.AFTER_CONTEXT_COMPONENTS_BUILD],
+        HookStage.ON_TURN_START,
+        setup.hooks[HookStage.ON_TURN_START],
     )
     registry = ToolRegistry()
     registry.register(

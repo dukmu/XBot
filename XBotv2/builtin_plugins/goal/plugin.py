@@ -7,7 +7,6 @@ from typing import Any
 from xbotv2.api import (
     Command,
     CommandResult,
-    ContextComponent,
     HookAction,
     HookContext,
     HookDecision,
@@ -36,10 +35,7 @@ class GoalPlugin(PluginBase):
         self._continuation_pending = False
 
     def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(
-            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-            self._add_goal_context,
-        )
+        ctx.register_hook(HookStage.ON_TURN_START, self._start_goal_turn)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_goal)
         ctx.register_hook(
@@ -109,15 +105,38 @@ class GoalPlugin(PluginBase):
         objective: str,
         token_budget: int | None = None,
     ) -> ToolResult:
-        """Create a persistent goal only when the human explicitly requests one."""
+        """Create the persistent session goal explicitly requested by the human.
+
+        Use this only when the human asks for sustained autonomous work across
+        turns. Do not infer a Goal from an ordinary task. Only one active Goal may
+        exist; inspect it with get_goal before replacing prior state.
+
+        Args:
+            objective: Concrete outcome that determines when the Goal is complete.
+            token_budget: Optional positive total-token budget supplied by the human.
+        """
         return await self._create(objective, None, token_budget)
 
     async def get_goal(self) -> ToolResult:
-        """Inspect the current persistent goal."""
+        """Read the current session Goal without changing or advancing it.
+
+        Use this when Goal status, objective, summary, or budget is needed. It
+        returns no Goal when the session has none.
+        """
         return await self._get()
 
     async def update_goal(self, status: str, summary: str) -> ToolResult:
-        """Mark the active goal complete or blocked with a final summary."""
+        """Finish the active Goal after reaching a terminal outcome.
+
+        Use complete only after every required outcome is verified. Use blocked
+        only when progress cannot continue without external change; transient
+        Provider or internal errors are not a blocked Goal. This transition stops
+        automatic Goal turns, after which the assistant must summarize to human.
+
+        Args:
+            status: Terminal state, either complete or blocked.
+            summary: Concise evidence of completion or the exact blocking condition.
+        """
         if status not in {"complete", "blocked"}:
             return ToolResult.failure(
                 "invalid_status",
@@ -274,20 +293,19 @@ class GoalPlugin(PluginBase):
             "token_budget": goal["token_budget"],
         }
 
-    async def _add_goal_context(self, ctx: HookContext) -> None:
-        goal = await self._active_goal()
-        if goal is None or ctx.context_components is None:
+    async def _start_goal_turn(self, ctx: HookContext) -> None:
+        item = ctx.mailbox_message
+        message = getattr(item, "message", None)
+        if not (
+            getattr(item, "kind", None) == "general"
+            and isinstance(message, dict)
+            and message.get("source") == "goal"
+            and message.get("event") == "continue"
+        ):
             return
-        ctx.context_components = [
-            *ctx.context_components,
-            ContextComponent(
-                role="system",
-                source="plugin_fragment",
-                content=_goal_context(goal),
-                plugin_name="goal",
-                stage="context_suffix",
-            ),
-        ]
+        goal = await self._active_goal()
+        if goal is not None:
+            ctx.user_input = _goal_context(goal)
 
     async def _on_turn_end(self, ctx: HookContext) -> None:
         if ctx.stop_reason == "client_interrupt":
@@ -308,8 +326,6 @@ class GoalPlugin(PluginBase):
         await enqueue_mailbox({
             "source": "goal",
             "event": "continue",
-            "content": "Continue progressing the active session goal.",
-            "data": {"objective": goal["objective"]},
         })
 
     async def _on_mailbox_delivery(self, ctx: HookContext) -> None:

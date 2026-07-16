@@ -8,22 +8,30 @@ owns history replacement and persistence.
 
 - The model-visible `compact` tool requests compaction before the next model
   call. Its result is a structured `ToolResult`.
+- Human `/compact` runs the same Hook-owned compaction immediately when the
+  session is idle. During an active turn, the command waits for the first idle
+  boundary and then runs without requiring another model turn; it never
+  interrupts an in-flight model or Tool stream.
 - Automatic compaction uses the latest provider-reported effective context
   tokens for the current history. It triggers at `trigger_ratio` of
   `max_context_tokens` after reserving `output_reservation` tokens. The
   independent `trigger_chars` threshold also protects providers that omit or
   under-report usage.
-- The split normally occurs at a user or mailbox-system input boundary. A long
-  Goal iteration with no later input uses assistant boundaries while preserving
+- The split normally preserves recent human-user boundaries. A long Goal
+  iteration with no human input uses assistant boundaries while preserving
   the configured number of recent assistant/tool iterations.
 - Automatic compaction may run again in the same long Goal turn after the
   compacted history grows past a threshold again.
 - The auxiliary model receives no tools and must return summary text only.
 - The summary becomes a system history message. The Engine runs the existing
-  `PRE_COMPACT` and `POST_COMPACT` Hooks and atomically rewrites messages during
-  the normal persistence checkpoint.
-- A failed or cancelled summary call returns no replacement. The original
-  history remains intact and normal turn error behavior reports the failure.
+  `PRE_COMPACT` and `POST_COMPACT` Hooks and appends a `history_checkpoint`
+  record. Earlier raw records remain available, while resume starts replay at
+  the latest checkpoint.
+- The summary instruction explicitly requires preservation of human directives;
+  the plugin does not append the same directives a second time after summarizing.
+- A cancelled summary propagates cancellation. A failed manual request reports
+  the error; failed automatic compaction logs the failure and continues the turn
+  with the original history.
 
 Provider context usage and the character threshold are independent signals
 because cumulative token usage measures cost, not current context size. The
@@ -52,7 +60,9 @@ call, and the plugin returns the existing `BEFORE_CONTEXT` compaction result.
 Auxiliary calls do not recursively run model Hooks or stream assistant deltas.
 
 The agent Tool and human `/compact` command are separate registrations owned by
-the same plugin. Both set the plugin's manual-request flag, but only the Agent
-path enters Tool Hooks and permissions. The plugin preapproves its Tool request
-at `BEFORE_TOOL_CALL`. Compaction runs at the next normal `BEFORE_CONTEXT`
-boundary.
+the same plugin. Only the Agent path enters Tool Hooks and permissions; it sets
+the manual-request flag for the next safe `BEFORE_CONTEXT` boundary. The plugin
+preapproves that Tool request at `BEFORE_TOOL_CALL`. The human command acquires
+the session turn lock and immediately runs the same `BEFORE_CONTEXT`,
+`PRE_COMPACT`, `POST_COMPACT`, and persistence path without starting a model
+turn. If another turn owns the lock, the command runs as soon as that turn ends.

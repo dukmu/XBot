@@ -72,6 +72,18 @@ logger = logging.getLogger("xbotv2.engine")
 # cancels the turn.  On timeout the engine yields an ``error`` event
 # and saves state — the user can retry or switch providers.
 _LLM_DISPATCH_TIMEOUT = 120.0  # seconds
+_MODEL_REQUEST_ATTEMPTS = 2
+
+
+def _retryable_model_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code == 429 or status_code >= 500
+    return isinstance(error, (ConnectionError, TimeoutError)) or type(error).__name__ in {
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+    }
 
 
 def merge_xbot_chunk(
@@ -200,6 +212,7 @@ class Engine:
         self._persisted_messages: list[dict[str, Any]] = []
         self.session: SessionInfo | None = None
         self.turn_count = 0
+        self.session_usage = self._empty_usage()
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
@@ -214,6 +227,10 @@ class Engine:
         self._mailbox_message: ContextVar[MailboxMessage | None] = ContextVar(
             f"xbotv2_mailbox_message_{id(self)}",
             default=None,
+        )
+        self._turn_instruction: ContextVar[str] = ContextVar(
+            f"xbotv2_turn_instruction_{id(self)}",
+            default="",
         )
 
     # ------------------------------------------------------------------
@@ -230,6 +247,7 @@ class Engine:
         )
         if self.state_store.has_existing_session():
             self.messages = self.state_store.read_messages()
+            self._restore_usage()
             self._persisted_messages = self._message_snapshot()
             self._close_interrupted_tool_calls("session_restarted")
             self.turn_count = max(
@@ -240,12 +258,14 @@ class Engine:
             await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
             await self.save_messages()
         else:
+            self._restore_usage()
             ctx = self._make_hook_context(HookStage.ON_SESSION_START)
             await self.hook_manager.run(HookStage.ON_SESSION_START, ctx, short_circuit=False)
 
     async def resume_session(self) -> None:
         """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
         self.messages = self.state_store.read_messages()
+        self._restore_usage()
         self._persisted_messages = self._message_snapshot()
         self._close_interrupted_tool_calls("session_restarted")
         self.turn_count = max(
@@ -295,13 +315,39 @@ class Engine:
         if errors:
             raise BaseExceptionGroup("Session close failed", errors)
 
-    async def replace_history(self, messages: list[Message]) -> None:
+    async def replace_history(
+        self,
+        messages: list[Message],
+        *,
+        operation: str = "checkpoint",
+        turns: int = 0,
+    ) -> None:
         """Replace persisted conversation history at an idle command boundary."""
         self.messages = list(messages)
         self.turn_count = sum(1 for message in self.messages if message.role == "user")
         if self.session is not None:
             self.session.turn_count = self.turn_count
+        await self.save_messages(history_operation=(operation, turns))
+
+    async def run_context_maintenance(self) -> bool:
+        """Apply a pending ``BEFORE_CONTEXT`` rewrite at an idle boundary."""
+        before_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT)
+        result = await self.hook_manager.run(
+            HookStage.BEFORE_CONTEXT,
+            before_ctx,
+            short_circuit=True,
+        )
+        if result is None:
+            return False
+        event = await self._handle_compaction(result)
+        if event is not None:
+            message = event.get("data", {}).get(
+                "message",
+                "Context maintenance was rejected by a hook.",
+            )
+            raise RuntimeError(message)
         await self.save_messages()
+        return True
 
     async def _prepare_tool_calls(
         self,
@@ -410,6 +456,9 @@ class Engine:
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
         mailbox_token = self._mailbox_message.set(mailbox_message)
+        instruction_token = self._turn_instruction.set("")
+        if mailbox_message is not None:
+            self.state_store.append_mailbox_delivery(mailbox_message)
         turn_started = False
         turn_ended = False
         try:
@@ -487,6 +536,7 @@ class Engine:
             finally:
                 self._request_id.reset(request_token)
                 self._mailbox_message.reset(mailbox_token)
+                self._turn_instruction.reset(instruction_token)
 
     async def _run_turn_impl(
         self,
@@ -575,6 +625,7 @@ class Engine:
                 additional_kwargs=getattr(response, "additional_kwargs", None) or {},
             )
             self.messages.append(response_msg)
+            self._record_usage(response_msg.usage_metadata)
 
             yield {
                 "type": "assistant_message",
@@ -752,11 +803,6 @@ class Engine:
             self.turn_count += 1
             if self.session is not None:
                 self.session.turn_count = self.turn_count
-            self.messages.append(Message(
-                role="system",
-                content=user_input,
-                additional_kwargs={"xbotv2_source": "mailbox"},
-            ))
             turn_ctx = self._make_hook_context(
                 HookStage.ON_TURN_START,
                 user_input=user_input,
@@ -766,6 +812,8 @@ class Engine:
                 turn_ctx,
                 short_circuit=False,
             )
+            user_input = str(turn_ctx.user_input or user_input)
+            self._turn_instruction.set(user_input)
             return _TurnStartResult(
                 user_input,
                 [{"type": "turn_started", "data": {"turn": self.turn_count}}],
@@ -852,8 +900,16 @@ class Engine:
             if event is not None:
                 return _ContextBuildResult(event=event, turn_complete=True)
 
+        turn_messages = list(self.messages)
+        turn_instruction = self._turn_instruction.get()
+        if turn_instruction:
+            turn_messages.append(Message(
+                role="system",
+                content=turn_instruction,
+                additional_kwargs={"xbotv2_source": "mailbox"},
+            ))
         context_kwargs = {
-            "messages": self.messages,
+            "messages": turn_messages,
             "agent_name": getattr(self.config, "agent_name", "XBotv2"),
             "agent_role": getattr(self.config, "agent_role", ""),
             "user_name": "User",
@@ -1103,62 +1159,105 @@ class Engine:
         context_messages: list[Any],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""
-
-        aggregate: ModelResponse | None = None
-        tool_stream_ids: dict[int, str] = {}
-        async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
-            async for chunk in llm.astream(context_messages):
-                if isinstance(chunk, ModelChunk):
-                    aggregate = merge_xbot_chunk(aggregate, chunk)
-                    if chunk.content:
-                        is_reasoning = bool(
-                            (chunk.additional_kwargs or {}).get("reasoning_content")
+        for attempt in range(1, _MODEL_REQUEST_ATTEMPTS + 1):
+            aggregate: ModelResponse | None = None
+            tool_stream_ids: dict[int, str] = {}
+            model_output_emitted = False
+            try:
+                async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
+                    async for chunk in llm.astream(context_messages):
+                        if isinstance(chunk, ModelChunk):
+                            aggregate = merge_xbot_chunk(aggregate, chunk)
+                            if chunk.content:
+                                model_output_emitted = True
+                                is_reasoning = bool(
+                                    (chunk.additional_kwargs or {}).get(
+                                        "reasoning_content"
+                                    )
+                                )
+                                key = "reasoning" if is_reasoning else "content"
+                                yield {
+                                    "type": "assistant_message_delta",
+                                    "data": {key: chunk.content},
+                                }
+                            for tool_delta in xbot_tool_call_deltas(
+                                chunk, tool_stream_ids
+                            ):
+                                model_output_emitted = True
+                                yield {
+                                    "type": "tool_call_delta",
+                                    "data": tool_delta,
+                                }
+                            continue
+                        if isinstance(chunk, ModelResponse):
+                            aggregate = chunk
+                            continue
+                        logger.warning(
+                            "_stream_model_response: unexpected chunk type %s",
+                            type(chunk).__name__,
                         )
-                        # Tag reasoning vs content so the TUI can
-                        # render them separately and never mix them
-                        # into the same message.
-                        if is_reasoning:
-                            yield {
-                                "type": "assistant_message_delta",
-                                "data": {"reasoning": chunk.content},
-                            }
-                        else:
-                            yield {
-                                "type": "assistant_message_delta",
-                                "data": {"content": chunk.content},
-                            }
-                    for tool_delta in xbot_tool_call_deltas(chunk, tool_stream_ids):
-                        yield {"type": "tool_call_delta", "data": tool_delta}
-                    continue
-                if isinstance(chunk, ModelResponse):
-                    aggregate = chunk
-                    continue
+            except Exception as exc:
+                if (
+                    model_output_emitted
+                    or attempt == _MODEL_REQUEST_ATTEMPTS
+                    or not _retryable_model_error(exc)
+                ):
+                    raise
+                delay = 0.5 * attempt
                 logger.warning(
-                    "_stream_model_response: unexpected chunk type %s",
-                    type(chunk).__name__,
+                    "model request failed before output; retrying attempt=%d error=%s",
+                    attempt,
+                    exc,
                 )
+                yield {
+                    "type": "client_message",
+                    "data": {
+                        "message": (
+                            "Model request failed before producing output; "
+                            f"retrying in {delay:.1f}s."
+                        ),
+                        "level": "warning",
+                        "source": "runtime",
+                        "tool_call_id": "",
+                    },
+                }
+                await asyncio.sleep(delay)
+                continue
 
-        if aggregate is None:
-            raise RuntimeError("LLM stream produced no chunks")
-        yield {"type": "_model_response", "data": {"response": aggregate}}
+            if aggregate is None:
+                raise RuntimeError("LLM stream produced no chunks")
+            yield {"type": "_model_response", "data": {"response": aggregate}}
+            return
 
     async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
         """Run one unbound auxiliary model call for a Hook."""
-        aggregate: ModelResponse | None = None
-        async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
-            async for chunk in self.llm.astream(messages):
-                if isinstance(chunk, ModelChunk):
-                    aggregate = merge_xbot_chunk(aggregate, chunk)
-                elif isinstance(chunk, ModelResponse):
-                    aggregate = chunk
-                else:
-                    logger.warning(
-                        "_invoke_model: unexpected chunk type %s",
-                        type(chunk).__name__,
-                    )
-        if aggregate is None:
-            raise RuntimeError("LLM stream produced no chunks")
-        return aggregate
+        for attempt in range(1, _MODEL_REQUEST_ATTEMPTS + 1):
+            aggregate: ModelResponse | None = None
+            try:
+                async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
+                    async for chunk in self.llm.astream(messages):
+                        if isinstance(chunk, ModelChunk):
+                            aggregate = merge_xbot_chunk(aggregate, chunk)
+                        elif isinstance(chunk, ModelResponse):
+                            aggregate = chunk
+                        else:
+                            logger.warning(
+                                "_invoke_model: unexpected chunk type %s",
+                                type(chunk).__name__,
+                            )
+            except Exception as exc:
+                if (
+                    attempt == _MODEL_REQUEST_ATTEMPTS
+                    or not _retryable_model_error(exc)
+                ):
+                    raise
+                await asyncio.sleep(0.5 * attempt)
+                continue
+            if aggregate is None:
+                raise RuntimeError("LLM stream produced no chunks")
+            self._record_usage(aggregate.usage_metadata)
+            return aggregate
+        raise RuntimeError("Model request retry loop ended unexpectedly")
 
     async def _handle_compaction(self, short_circuit: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(short_circuit, dict) or "messages" not in short_circuit:
@@ -1193,6 +1292,9 @@ class Engine:
             "current_message_count": len(self.messages),
         })
         await self.hook_manager.run(HookStage.POST_COMPACT, post_compact_ctx, short_circuit=False)
+        await self.save_messages(
+            history_operation=(f"compact:{compact_reason}", 0)
+        )
         return None
 
     # ------------------------------------------------------------------
@@ -1201,14 +1303,33 @@ class Engine:
 
 
 
-    async def save_messages(self) -> bool:
+    async def save_messages(
+        self,
+        *,
+        history_operation: tuple[str, int] | None = None,
+    ) -> bool:
         """Persist changed message history and bracket the write with hooks."""
-        if self._message_snapshot() == self._persisted_messages:
+        if (
+            history_operation is None
+            and self._message_snapshot() == self._persisted_messages
+        ):
             return False
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
         snapshot = self._message_snapshot()
-        self.state_store.sync_messages(self.messages)
+        if history_operation is None:
+            self.state_store.sync_messages(self.messages)
+        else:
+            operation, turns = history_operation
+            if operation == "clear":
+                self.state_store.append_clear()
+            elif operation == "undo":
+                self.state_store.append_undo(turns)
+            else:
+                self.state_store.append_checkpoint(
+                    self.messages,
+                    reason=operation,
+                )
         self._persisted_messages = snapshot
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
@@ -1454,6 +1575,51 @@ class Engine:
             ensure_ascii=False,
             sort_keys=True,
         )
+
+    @staticmethod
+    def _empty_usage() -> dict[str, int]:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "requests": 0,
+            "context_tokens": 0,
+        }
+
+    def _restore_usage(self) -> None:
+        usage = self.state_store.read_usage()
+        if usage is None:
+            usage = self._empty_usage()
+            for message in self.messages:
+                self._add_usage(usage, message.usage_metadata)
+            self.state_store.write_usage(usage)
+        self.session_usage = usage
+
+    def _record_usage(self, usage: dict[str, Any] | None) -> None:
+        if self._add_usage(self.session_usage, usage):
+            self.state_store.write_usage(self.session_usage)
+
+    @staticmethod
+    def _add_usage(
+        total: dict[str, int],
+        usage: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(usage, dict):
+            return False
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        if not input_tokens and not output_tokens:
+            return False
+        total["input_tokens"] += input_tokens
+        total["output_tokens"] += output_tokens
+        total["total_tokens"] += int(
+            usage.get("total_tokens") or input_tokens + output_tokens
+        )
+        total["requests"] += int(usage.get("requests") or 1)
+        total["context_tokens"] = int(
+            usage.get("context_tokens") or input_tokens
+        )
+        return True
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, int] | None:

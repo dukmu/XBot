@@ -190,6 +190,74 @@ class TestMessagePersistence:
         assert after[1]["ts"] == before[1]["ts"]
         assert after[2]["msg_id"] == 3
 
+    def test_history_operations_append_without_removing_prior_records(self, store):
+        store.append_messages([
+            Message(role="user", content="first"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="second"),
+            Message(role="assistant", content="answer two"),
+        ])
+        original = store.messages_path.read_text(encoding="utf-8")
+
+        store.append_undo(1)
+        after_undo = store.messages_path.read_text(encoding="utf-8")
+        store.append_clear()
+        after_clear = store.messages_path.read_text(encoding="utf-8")
+
+        assert after_undo.startswith(original)
+        assert after_clear.startswith(after_undo)
+        assert [message.content for message in store.read_messages()] == []
+        records = _raw_messages(store)
+        assert records[-2]["record_type"] == "history_undo"
+        assert records[-1]["record_type"] == "history_clear"
+
+    def test_replay_starts_from_last_checkpoint_then_applies_undo(self, store):
+        store.append_messages([
+            Message(role="user", content="discarded raw input"),
+            Message(role="assistant", content="discarded raw answer"),
+        ])
+        checkpoint = [
+            Message(role="system", content="summary"),
+            Message(role="user", content="kept turn"),
+            Message(role="assistant", content="kept answer"),
+            Message(role="user", content="undo turn"),
+            Message(role="assistant", content="undo answer"),
+        ]
+        store.append_checkpoint(checkpoint, reason="compact:automatic")
+        store.append_undo(1)
+
+        restored = store.read_messages()
+
+        assert [message.content for message in restored] == [
+            "summary", "kept turn", "kept answer",
+        ]
+        assert "discarded raw input" in store.messages_path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_legacy_message_records_remain_readable(self, store):
+        store.messages_path.write_text(
+            json.dumps({"role": "user", "content": "legacy", "status": ""})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert [message.content for message in store.read_messages()] == ["legacy"]
+
+    def test_replay_ignores_only_an_incomplete_trailing_record(self, store):
+        store.append_message(Message(role="user", content="durable"))
+        with store.messages_path.open("a", encoding="utf-8") as stream:
+            stream.write('{"record_type":"history_checkpoint"')
+
+        assert [message.content for message in store.read_messages()] == ["durable"]
+
+        store.append_message(Message(role="assistant", content="continued"))
+
+        assert [message.content for message in store.read_messages()] == [
+            "durable", "continued",
+        ]
+        assert store.messages_path.read_bytes().endswith(b"\n")
+
     def test_message_ids_are_sequential(self, store):
         d1 = store.append_message(Message(role="user", content="m1"))
         d2 = store.append_message(Message(role="user", content="m2"))

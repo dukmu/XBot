@@ -503,7 +503,13 @@ def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
 
     state.apply_event(_frame("turn_started", {"turn": 1}))
     state.apply_event(
-        _frame("user_input_required", {"question": "Proceed?", "options": ["yes", "no"]})
+        _frame("user_input_required", {
+            "question": "Proceed?",
+            "options": [
+                {"label": "yes", "description": "Continue."},
+                {"label": "no", "description": "Stop."},
+            ],
+        })
     )
     state.apply_event(_frame("turn_finished", {"turn": 1}))
 
@@ -1523,7 +1529,10 @@ async def test_textual_app_turn_finished_clears_pending_user_input_ui():
             {
                 "request_id": "question-finished",
                 "question": "Continue?",
-                "options": ["yes", "no"],
+                "options": [
+                    {"label": "yes", "description": "Continue."},
+                    {"label": "no", "description": "Stop."},
+                ],
             },
         )
         app.state.apply_event(input_event)
@@ -1572,7 +1581,10 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
             payload = {
                 "request_id": "user_input:c1",
                 "question": "继续执行？",
-                "options": ["继续", "停止"],
+                "options": [
+                    {"label": "继续", "description": "继续当前工作"},
+                    {"label": "停止", "description": "停止当前工作"},
+                ],
             }
             yield {
                 "type": "user_input_required",
@@ -1609,6 +1621,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         assert list(app.query(Button)) == []
         assert app._active_choice_key == "0"
         assert "继续" in str(app._choice_widgets["0"].content)
+        assert app._choice_payloads["0"][-1].kind == "answer_custom"
         assert input_widget.disabled is True
         assert input_widget.display is False
         assert app.focused is None
@@ -1621,7 +1634,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         assert input_widget.disabled is False
         assert input_widget.display is True
 
-        assert app._choice_results["0"] == "继续"
+        assert app._choice_results["0"] == "继续: 继续当前工作"
         assert [notice.kind for notice in app.state.notices] == [
             "user_input_required",
             "user_input_recorded",
@@ -1660,13 +1673,25 @@ async def test_textual_app_records_typed_answer_without_queued_notice():
         await pilot.pause()
         event = {
             "type": "user_input_required",
-            "data": {"request_id": "user_input:c1", "question": "Codename?"},
+            "data": {
+                "request_id": "user_input:c1",
+                "question": "Codename?",
+                "options": [
+                    {"label": "ALPHA", "description": "Use the default name."},
+                    {"label": "BETA", "description": "Use the alternate name."},
+                ],
+            },
         }
         app.state.apply_event(event)
         await app._handle_stream_event(event)
         await app._start_interaction_response(event)
 
+        app._active_choice_index = len(app._active_choices()) - 1
+        assert await app.confirm_active_choice() is True
+
         composer = app.query_one("#input")
+        assert composer.display is True
+        assert composer.disabled is False
         composer.load_text("NOVA")
         await app.submit_composer()
         await pilot.pause()

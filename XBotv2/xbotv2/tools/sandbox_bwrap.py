@@ -32,7 +32,6 @@ class BubblewrapBackend:
     workspace_root: Path
     timeout_seconds: float = 60.0
     network: bool = True
-    max_output_chars: int = 100_000
 
     def process_args(
         self,
@@ -96,14 +95,8 @@ class BubblewrapBackend:
                 raise
             stdout_file.seek(0)
             stderr_file.seek(0)
-            stdout = _read_output(
-                stdout_file,
-                self.max_output_chars,
-            )
-            stderr = _read_output(
-                stderr_file,
-                self.max_output_chars,
-            )
+            stdout = _read_output(stdout_file)
+            stderr = _read_output(stderr_file)
         if proc.returncode:
             detail = stderr.strip() or stdout.strip() or "no error output"
             raise RuntimeError(f"Sandbox command failed with exit code {proc.returncode}: {detail}")
@@ -135,13 +128,8 @@ def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _read_output(file: BinaryIO, limit: int) -> str:
-    raw = file.read(limit + 1)
-    truncated = len(raw) > limit
-    text = raw[:limit].decode("utf-8", errors="replace")
-    if truncated:
-        text += f"\n[output truncated at {limit} bytes]"
-    return text
+def _read_output(file: BinaryIO) -> str:
+    return file.read().decode("utf-8", errors="replace")
 
 
 def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str) -> list[str]:

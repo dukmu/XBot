@@ -72,7 +72,20 @@ class BackgroundTaskManager:
         cwd: str | None = None,
         background: bool = False,
     ) -> ToolResult:
-        """Run a shell command, optionally as a session-owned background task."""
+        """Run a shell command in the foreground or as a background task.
+
+        Use foreground mode for short commands whose result is needed before the
+        next step. Use background mode only for long-running processes; it returns
+        immediately with a task ID, publishes task updates, and requires
+        ``list_tasks`` to retrieve full output. Commands run inside the session
+        sandbox when enabled. Avoid interactive commands that wait for terminal
+        input.
+
+        Args:
+            command: Complete shell command to execute.
+            cwd: Working directory. Defaults to the session workspace root.
+            background: Start a session-owned task and return immediately when true.
+        """
         if background:
             return await self.start_task(command, cwd)
         return await execute_shell(command, cwd, sandbox=self.sandbox)
@@ -98,7 +111,16 @@ class BackgroundTaskManager:
         )
 
     async def list_tasks(self, task_id: str | None = None) -> ToolResult:
-        """List background tasks, or return the full result for one task."""
+        """Inspect session-owned background shell tasks.
+
+        With no ID, return bounded snapshots of every task. With an ID, return
+        that task's complete captured output and current status. Tasks are runtime
+        state and do not survive session shutdown.
+
+        Args:
+            task_id: Optional ID returned by shell(background=true). Omit to list
+                all tasks; provide it to retrieve one task's full result.
+        """
         if task_id:
             task = self._tasks.get(task_id)
             if task is None:
@@ -113,7 +135,14 @@ class BackgroundTaskManager:
         )
 
     async def stop_task(self, task_id: str) -> ToolResult:
-        """Stop a running background task."""
+        """Stop one session-owned background shell task.
+
+        This is idempotent for a task that has already reached a terminal state.
+        Use ``list_tasks`` first when the task ID or status is unknown.
+
+        Args:
+            task_id: Exact task ID returned by shell(background=true).
+        """
         task = self._tasks.get(task_id)
         if task is None:
             return ToolResult.failure("task_not_found", f"Unknown task: {task_id}")
