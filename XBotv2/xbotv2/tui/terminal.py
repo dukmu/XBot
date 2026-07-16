@@ -40,6 +40,7 @@ class TerminalSession:
         *,
         session_id: str | None = None,
         thread_id: str = "agent",
+        agent: str | None = None,
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
@@ -50,6 +51,7 @@ class TerminalSession:
         self._session_id = session_id or _new_session_id()
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
+        self._agent = agent
         self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
         self._transport: Transport = transport or HttpTransport(base_url, token=token, uds_path=uds_path)
         self._connected = False
@@ -79,12 +81,15 @@ class TerminalSession:
         server_thread = str(hello.get("thread_id") or self._thread_id)
         self._session_id = server_session
         self._thread_id = server_thread
-        session = await self._transport.open_session(
+        open_kwargs = dict(
             session_id=self._session_id,
             thread_id=self._thread_id,
             workspace_root=self._workspace_root,
             mode=self._session_mode,
         )
+        if self._agent:
+            open_kwargs["agent"] = self._agent
+        session = await self._transport.open_session(**open_kwargs)
         self._connected = True
         return session
 

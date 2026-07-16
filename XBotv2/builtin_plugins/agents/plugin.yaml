@@ -1,0 +1,11 @@
+name: agents
+version: "1.0.0"
+description: Register workspace agents and run blocking subagent tasks
+api_version: "1"
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    timeout_seconds:
+      type: number
+      exclusiveMinimum: 0

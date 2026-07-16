@@ -390,6 +390,7 @@ class TestPluginSetupContext:
             options=ToolRegistrationOptions(
                 sandbox_mode="sandboxed",
                 namespace="plugin:sample",
+                timeout_seconds=90,
             ),
         )
 
@@ -399,6 +400,7 @@ class TestPluginSetupContext:
         assert entry is not None
         assert entry.sandbox_mode == "sandboxed"
         assert entry.namespace == "plugin:sample"
+        assert entry.timeout_seconds == 90
 
     def test_command_registration_uses_separate_owned_registry(self):
         setup = _PluginSetupContext(

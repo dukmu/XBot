@@ -12,7 +12,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from xbotv2.api.commands import Command
-from xbotv2.api.agents import AgentDefinition
+from xbotv2.api.agents import AgentDefinition, AgentRuntime
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
 from xbotv2.api.tools import Tool
@@ -59,10 +59,13 @@ class ToolRegistrationOptions:
     sandbox_mode: Literal["host", "sandboxed"] = "host"
     namespace: str | None = None
     model_visible: bool = True
+    timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.sandbox_mode not in {"host", "sandboxed"}:
             raise ValueError("sandbox_mode must be 'host' or 'sandboxed'")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
 
 
 class PromptFragmentDeclaration(BaseModel):
@@ -148,6 +151,7 @@ class PluginSetupContext(Protocol):
     """Capabilities available while a plugin registers extensions."""
 
     workspace_root: Path
+    agent_runtime: AgentRuntime | None
 
     def register_agent(self, definition: AgentDefinition) -> str: ...
     def register_hook(self, stage: HookStage, callback: Any) -> None: ...

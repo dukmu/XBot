@@ -67,6 +67,7 @@ class TuiTool:
 class TuiTask:
     task_id: str
     command: str
+    kind: str = "shell"
     cwd: str = ""
     status: str = "pending"
     created_at: float = 0.0
@@ -223,6 +224,7 @@ class TuiState:
                 self.tasks[task_id] = TuiTask(
                     task_id=task_id,
                     command=str(data.get("command") or ""),
+                    kind=str(data.get("kind") or "shell"),
                     cwd=str(data.get("cwd") or ""),
                     status=str(data.get("status") or "pending"),
                     created_at=float(data.get("created_at") or 0),

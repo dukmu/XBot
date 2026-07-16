@@ -56,6 +56,28 @@ async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_registered_tool_can_override_dispatch_timeout(monkeypatch) -> None:
+    import xbotv2.tools.runtime as runtime
+
+    async def slow() -> str:
+        await asyncio.sleep(0.2)
+        return "late"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool.from_function(slow),
+        sandbox_mode="host",
+        timeout_seconds=0.02,
+    )
+    monkeypatch.setattr(runtime, "_TOOL_DISPATCH_TIMEOUT_SECONDS", 1.0)
+
+    results = await execute_tools([ToolCall("call_1", "slow", {})], registry)
+
+    assert results[0].status == "error"
+    assert "Error executing slow" in results[0].content
+
+
+@pytest.mark.asyncio
 async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
     invoked = False
 

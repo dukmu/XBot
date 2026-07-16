@@ -188,6 +188,7 @@ class Engine:
         max_iterations: int = 50,
         plugin_loader: Any | None = None,
         background_tasks: Any | None = None,
+        subagents: Any | None = None,
         agent_registry: Any | None = None,
         startup_config: Any | None = None,
         model: str = "",
@@ -205,6 +206,7 @@ class Engine:
         self.max_iterations = max_iterations
         self.plugin_loader = plugin_loader
         self.background_tasks = background_tasks
+        self.subagents = subagents
         self.agent_registry = agent_registry
         self.startup_config = startup_config or config
         self.model = model
@@ -294,6 +296,11 @@ class Engine:
         if self.background_tasks is not None:
             try:
                 await self.background_tasks.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if self.subagents is not None:
+            try:
+                await self.subagents.close()
             except BaseException as exc:
                 errors.append(exc)
         try:
@@ -927,6 +934,7 @@ class Engine:
             "sandbox_summary": (
                 self.sandbox_policy.describe() if self.sandbox_policy else ""
             ),
+            "system_notice": self._agent_catalog_notice(),
             "turn_count": self.turn_count,
         }
         build_ctx = self._make_hook_context(HookStage.BEFORE_CONTEXT_BUILD)
@@ -1006,6 +1014,24 @@ class Engine:
             short_circuit=False,
         )
         return _ContextBuildResult(messages=context_messages)
+
+    def _agent_catalog_notice(self) -> str:
+        registry = self.agent_registry
+        if registry is None or self.tool_registry.get("task") is None:
+            return ""
+        definitions = [
+            definition
+            for definition in registry.definitions()
+            if definition.mode in {"subagent", "all"} and not definition.hidden
+        ]
+        if not definitions:
+            return ""
+        lines = ["Available subagents for the task tool:"]
+        lines.extend(
+            f"- {definition.name}: {definition.description}"
+            for definition in definitions
+        )
+        return "\n".join(lines)
 
     async def _prepare_model_request(
         self,

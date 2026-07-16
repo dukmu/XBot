@@ -79,6 +79,7 @@ class TextualTuiClient:
         self,
         session_id: str | None = None,
         thread_id: str = "agent",
+        agent: str | None = None,
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
@@ -87,6 +88,7 @@ class TextualTuiClient:
         config = TuiSessionConfig(
             session_id=session_id,
             thread_id=thread_id,
+            agent=agent,
             workspace_root=workspace_root,
             session_mode=session_mode,
             base_url=base_url,
@@ -125,6 +127,7 @@ class XBotTextualApp(App[None]):
         config: TuiSessionConfig | None = None,
         session_id: str | None = None,
         thread_id: str = "agent",
+        agent: str | None = None,
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
@@ -135,6 +138,7 @@ class XBotTextualApp(App[None]):
             config = TuiSessionConfig(
                 session_id=session_id,
                 thread_id=thread_id,
+                agent=agent,
                 workspace_root=workspace_root,
                 session_mode=session_mode,
                 base_url=base_url,

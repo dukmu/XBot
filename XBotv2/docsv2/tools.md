@@ -15,7 +15,11 @@ Core registers these tools without plugins:
 | `list_tasks` | session runtime | List tasks or read one full result |
 | `stop_task` | session runtime | Stop one background task |
 
-Background tasks are runtime-only and end with the live session. They emit
+The built-in Agents plugin adds `task`, `list_agent_tasks`, and
+`stop_agent_task`. Subagent tools use Core Agent execution and do not implement
+a separate model or Tool loop inside the plugin.
+
+Background shell and subagent tasks are runtime-only and end with the live session. They emit
 bounded previews through `task_updated`; `list_tasks(task_id)` returns the
 captured output through the normal ToolResult cache boundary. Shell capture is
 complete; large foreground and background results are externalized by the

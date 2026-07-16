@@ -13,7 +13,7 @@ import yaml
 
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.agents import AgentRegistry
-from xbotv2.api.agents import AgentDefinition
+from xbotv2.api.agents import AgentDefinition, AgentRuntime
 from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
@@ -92,6 +92,7 @@ class _PluginSetupContext:
     context: ContextBuilder
     agents: AgentRegistry = field(default_factory=AgentRegistry)
     workspace_root: Path = field(default_factory=Path.cwd)
+    agent_runtime: AgentRuntime | None = None
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
@@ -175,6 +176,7 @@ class PluginLoader:
         agent_registry: AgentRegistry | None = None,
         workspace_root: Path | str | None = None,
         disabled_plugins: set[str] | None = None,
+        agent_runtime: AgentRuntime | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs
@@ -185,6 +187,7 @@ class PluginLoader:
         self.agent_registry = agent_registry or AgentRegistry()
         self.workspace_root = Path(workspace_root or state_store.workspace_root)
         self.disabled_plugins = disabled_plugins or set()
+        self.agent_runtime = agent_runtime
         self.plugin_configs = plugin_configs or {}
         self._records: dict[str, LoadedPluginRecord] = {}
         self._commands: dict[str, Command] = {}
@@ -323,6 +326,7 @@ class PluginLoader:
             context=self.context_builder,
             agents=self.agent_registry,
             workspace_root=self.workspace_root,
+            agent_runtime=self.agent_runtime,
             commands=self._commands,
         )
         try:
@@ -450,6 +454,7 @@ def _register_plugin_tool(
         sandbox_mode=registration.sandbox_mode,
         namespace=registration.namespace,
         model_visible=registration.model_visible,
+        timeout_seconds=registration.timeout_seconds,
     )
     tool_names.append(registered_name)
     return registered_name

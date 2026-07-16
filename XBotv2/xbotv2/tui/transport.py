@@ -36,6 +36,7 @@ class Transport(Protocol):
         thread_id: str,
         workspace_root: str,
         mode: str = "new",
+        agent: str | None = None,
     ) -> dict[str, Any]:
         """Open or resume a session. Returns the agent_name and status."""
 

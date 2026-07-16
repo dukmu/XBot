@@ -271,6 +271,61 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
+    http_app, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "agent-workspace"
+    agents_dir = workspace / ".xbot" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "builder.md").write_text(
+        "---\n"
+        "description: Build focused changes\n"
+        "mode: primary\n"
+        "tools: []\n"
+        "---\n"
+        "Follow the builder workflow.",
+        encoding="utf-8",
+    )
+    app = create_app(
+        paths=http_app.state.paths,
+        workspace_root=str(workspace),
+        no_plugins=False,
+        llm_override=MockLLM(responses=[]),
+    )
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        opened = await ac.post(
+            "/sessions",
+            json={
+                "session_id": "primary-http",
+                "thread_id": "agent",
+                "agent": "builder",
+            },
+        )
+        catalog = await ac.post(
+            "/sessions/primary-http/commands",
+            json={"command": "agent", "args": ["list"]},
+        )
+        resumed = await ac.post(
+            "/sessions",
+            json={
+                "session_id": "primary-http",
+                "thread_id": "agent",
+                "mode": "resume",
+            },
+        )
+
+    assert opened.status_code == 200
+    assert opened.json()["agent_name"] == "builder"
+    assert catalog.status_code == 200
+    assert catalog.json()["data"]["data"]["active"] == "builder"
+    assert catalog.json()["data"]["data"]["agents"][0]["name"] == "builder"
+    assert resumed.status_code == 200
+    assert resumed.json()["agent_name"] == "builder"
+
+
+@pytest.mark.asyncio
 async def test_http_resume_returns_display_history(client: httpx.AsyncClient) -> None:
     opened = await client.post(
         "/sessions", json={"session_id": "resume-history", "thread_id": "t1"}

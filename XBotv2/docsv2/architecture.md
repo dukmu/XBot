@@ -212,11 +212,14 @@ model and MCP Tools do not become slash commands.
 ```
 data/sessions/<sid>/
 ├── policy.yaml             # policy shared by threads in the session
-└── threads/<thread-id>/state/
-    ├── messages.jsonl      # append-only Messages and history operations
-    ├── usage.yaml          # thread-local provider usage
-    ├── plugin_states/      # thread-local per-plugin YAML state
-    └── artifacts/          # cached tool outputs and provider context
+├── threads.jsonl           # parent/child Agent lifecycle journal
+└── threads/<thread-id>/
+    ├── thread.yaml         # selected Agent, Provider, and parent thread
+    └── state/
+        ├── messages.jsonl  # append-only Messages and history operations
+        ├── usage.yaml      # thread-local provider usage
+        ├── plugin_states/  # thread-local per-plugin YAML state
+        └── artifacts/      # cached tool outputs and provider context
 ```
 
 No `events.jsonl` or `state.yaml`. `CoreStateStore` appends normal Messages,

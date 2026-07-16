@@ -26,6 +26,7 @@ class ToolEntry:
     sandbox_mode: RegisteredSandboxMode = "host"
     namespace: str = "builtin"
     model_visible: bool = True
+    timeout_seconds: float | None = None
 
 
 class ToolRegistry:
@@ -40,6 +41,7 @@ class ToolRegistry:
         sandbox_mode: RegisteredSandboxMode = "host",
         namespace: str | None = None,
         model_visible: bool = True,
+        timeout_seconds: float | None = None,
     ) -> str:
         name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
         ns = namespace or "builtin"
@@ -64,6 +66,7 @@ class ToolRegistry:
             sandbox_mode=sandbox_mode,
             namespace=ns,
             model_visible=model_visible,
+            timeout_seconds=timeout_seconds,
         )
         return full_name
 
@@ -126,7 +129,7 @@ class ToolRegistry:
         return tuple(self._entries.values())
 
     def restrict(self, tool_names: list[str] | None) -> list[str]:
-        if not tool_names:
+        if tool_names is None:
             self._enabled_names = None
             return self.names()
 

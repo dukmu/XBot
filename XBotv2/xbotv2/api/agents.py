@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
+
+from xbotv2.api.tools import ToolResult
 
 AgentMode = Literal["primary", "subagent", "all"]
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -34,4 +36,21 @@ class AgentDefinition:
             raise ValueError("Agent mode must be primary, subagent, or all")
 
 
-__all__ = ["AgentDefinition", "AgentMode"]
+class AgentRuntime(Protocol):
+    """Core execution capability exposed to Agent plugins."""
+
+    async def run(
+        self,
+        agent: str,
+        prompt: str,
+        background: bool = False,
+    ) -> ToolResult: ...
+
+    async def list_tasks(self, task_id: str | None = None) -> ToolResult: ...
+
+    async def stop_task(self, task_id: str) -> ToolResult: ...
+
+    def definitions(self) -> tuple[AgentDefinition, ...]: ...
+
+
+__all__ = ["AgentDefinition", "AgentMode", "AgentRuntime"]

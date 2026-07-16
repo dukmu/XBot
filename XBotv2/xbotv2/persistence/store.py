@@ -306,6 +306,20 @@ class CoreStateStore:
         self.paths.state_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_yaml(self.usage_path, usage)
 
+    def read_thread_metadata(self) -> dict[str, Any]:
+        if not self.paths.metadata_file.exists():
+            return {}
+        data = yaml.safe_load(self.paths.metadata_file.read_text(encoding="utf-8"))
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("Thread metadata must contain a mapping")
+        return data
+
+    def write_thread_metadata(self, data: dict[str, Any]) -> None:
+        self.paths.root.mkdir(parents=True, exist_ok=True)
+        _atomic_write_yaml(self.paths.metadata_file, data)
+
     def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
         path = self._plugin_state_path(plugin_name)
         if path.exists():

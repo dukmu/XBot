@@ -146,12 +146,16 @@ def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
             "failed": ("failed", "red"),
             "stopped": ("stopped", "dim"),
         }.get(task.status, (task.status, "white"))
-        summary_width = max(12, width - len(task.task_id) - len(marker) - 12)
+        kind = "agent" if task.kind == "agent" else "shell"
+        summary_width = max(
+            12, width - len(task.task_id) - len(marker) - len(kind) - 15
+        )
         command = shorten(task.command, width=summary_width, placeholder="...")
         if text.plain:
             text.append("\n")
         text.append(f"{marker:>7}  ", style=style)
         text.append(f"{task.task_id}  ", style="cyan")
+        text.append(f"{kind}  ", style="magenta" if kind == "agent" else "blue")
         text.append(command)
         text.append(f"  {task.elapsed():.1f}s", style="dim")
         detail = ""

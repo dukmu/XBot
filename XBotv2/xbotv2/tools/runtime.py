@@ -490,6 +490,7 @@ async def _execute_one_tool(
             tool,
             args,
             sandbox=sandbox_policy if use_sandbox_policy else None,
+            timeout_seconds=entry.timeout_seconds,
         )
 
         if _is_user_input_wait_result(result):
@@ -590,6 +591,7 @@ async def _invoke_tool(
     args: dict[str, Any],
     *,
     sandbox: Any = None,
+    timeout_seconds: float | None = None,
 ) -> Any:
     """Invoke any registered tool without blocking the event loop."""
     if hasattr(tool, "ainvoke"):
@@ -600,4 +602,7 @@ async def _invoke_tool(
         call = asyncio.to_thread(tool, **args)
     else:
         raise TypeError(f"Tool {tool!r} is not callable")
-    return await asyncio.wait_for(call, timeout=_TOOL_DISPATCH_TIMEOUT_SECONDS)
+    return await asyncio.wait_for(
+        call,
+        timeout=timeout_seconds or _TOOL_DISPATCH_TIMEOUT_SECONDS,
+    )

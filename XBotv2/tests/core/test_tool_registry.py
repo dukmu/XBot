@@ -124,6 +124,12 @@ class TestFiltering:
         assert tool_registry.get("tool_a") is not None
         assert tool_registry.get("tool_b") is None
 
+    def test_empty_restriction_exposes_no_tools(self, tool_registry):
+        tool_registry.register(tool_a)
+
+        assert tool_registry.restrict([]) == []
+        assert tool_registry.get_all() == []
+
     def test_restrict_expands_prefix_and_silently_ignores_unmatched(self, tool_registry):
         """Restrict supports group selectors; unmatched selectors are silently ignored."""
         tool_registry.register(filesystem_read)

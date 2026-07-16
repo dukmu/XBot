@@ -80,6 +80,7 @@ class SessionManager:
         thread_id: str,
         provider_name: str,
         workspace_root: str,
+        selected_agent: str | None = None,
         mode: str = "new",
         no_plugins: bool,
         llm_override: Any | None = None,
@@ -113,12 +114,13 @@ class SessionManager:
                 workspace_root=workspace_root,
                 plugin_dirs=[] if no_plugins else None,
                 llm_override=llm_override,
+                selected_agent=selected_agent,
             )
             await engine.start_session()
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
-                provider_name=provider_name,
+                provider_name=str(getattr(engine.config, "provider", provider_name)),
                 paths=self.paths,
                 workspace_root=workspace_root,
                 no_plugins=no_plugins,
@@ -259,6 +261,7 @@ def _register_routes(app: FastAPI) -> None:
                 provider_name=app.state.provider_name,
                 workspace_root=workspace_root,
                 mode=payload.mode,
+                selected_agent=payload.agent,
                 no_plugins=app.state.no_plugins,
                 llm_override=app.state.llm_override.get("value"),
             )

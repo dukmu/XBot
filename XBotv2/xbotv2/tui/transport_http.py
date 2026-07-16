@@ -87,6 +87,7 @@ class HttpTransport:
         thread_id: str,
         workspace_root: str,
         mode: str = "new",
+        agent: str | None = None,
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/sessions",
@@ -95,6 +96,7 @@ class HttpTransport:
                 thread_id=thread_id,
                 workspace_root=workspace_root,
                 mode=mode,
+                agent=agent,
             ).model_dump(),
         )
         _raise_for_status(response)

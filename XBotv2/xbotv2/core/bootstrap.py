@@ -23,6 +23,7 @@ import importlib
 import importlib.util
 import re
 import secrets
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,13 +37,14 @@ from xbotv2.config.policy import (
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.agents import AgentRegistry
+from xbotv2.core.subagents import SubagentManager
 from xbotv2.core.background_tasks import BackgroundTaskManager
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
-from xbotv2.tools.permissions import PermissionSystem
+from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
 
@@ -84,6 +86,11 @@ async def bootstrap(
     plugin_dirs: list[Path | str] | None = None,
     plugin_configs: dict[str, dict[str, Any]] | None = None,
     llm_override: Any | None = None,
+    selected_agent: str | None = None,
+    agent_definition: Any | None = None,
+    parent_permission_system: Any | None = None,
+    parent_thread_id: str = "",
+    subagent_depth: int = 0,
 ) -> Engine:
     """Bootstrap the complete XBotv2 runtime.
 
@@ -111,8 +118,12 @@ async def bootstrap(
     # 1. Load configuration
     startup_config = load_system_config(paths, workspace_root)
     agent_config = startup_config.model_copy(deep=True)
+    resolved_agent = agent_definition
+    if resolved_agent is not None:
+        _apply_agent_definition(agent_config, resolved_agent)
+        provider_name = agent_definition.provider or provider_name
     provider_name = provider_name or agent_config.provider
-    provider_config = load_provider_config(paths, provider_name)
+    policy_base_config = agent_config.model_copy(deep=True)
     load_user_context(paths)
 
     session_policy = load_session_policy(paths, session_id)
@@ -131,6 +142,8 @@ async def bootstrap(
 
     # Ensure session state directory
     session_paths = paths.session(session_id)
+    session_preexisting = session_paths.root.exists()
+    thread_preexisting = session_paths.has_thread(thread_id)
 
     # 2. Create CoreStateStore
     state_store = CoreStateStore.create(
@@ -139,6 +152,19 @@ async def bootstrap(
         workspace_root=str(workspace_root),
         provider=provider_name,
     )
+    metadata = state_store.read_thread_metadata()
+    stored_agent = str(metadata.get("agent") or "") or None
+    if (
+        selected_agent is not None
+        and stored_agent is not None
+        and selected_agent != stored_agent
+    ):
+        raise ValueError(
+            f"Thread {thread_id!r} belongs to Agent {stored_agent!r}, "
+            f"not {selected_agent!r}"
+        )
+    if selected_agent is None and resolved_agent is None:
+        selected_agent = stored_agent
 
     # 3. Create empty core components
     hook_manager = HookManager()
@@ -166,12 +192,49 @@ async def bootstrap(
         session_root=state_store.root,
     )
     permissions = PermissionSystem(agent_config.permissions)
+    if parent_permission_system is not None:
+        permissions = PermissionIntersection(parent_permission_system, permissions)
     background_tasks = BackgroundTaskManager(
         workspace_root=str(workspace_root),
         sandbox=sandbox,
     )
     for tool in background_tasks.tools:
         tool_registry.register(tool, sandbox_mode="host")
+
+    parent_engine: Engine | None = None
+
+    async def create_child_engine(
+        definition: Any,
+        child_thread_id: str,
+        child_depth: int,
+    ) -> Engine:
+        child = await bootstrap(
+            paths=paths,
+            provider_name=definition.provider or provider_name,
+            session_id=session_id,
+            thread_id=child_thread_id,
+            workspace_root=workspace_root,
+            plugin_dirs=plugin_dirs,
+            plugin_configs=plugin_configs,
+            llm_override=llm_override,
+            agent_definition=definition,
+            parent_permission_system=permissions,
+            parent_thread_id=thread_id,
+            subagent_depth=child_depth,
+        )
+        if parent_engine is not None:
+            child.set_client_event_sink(parent_engine.client_event_sink)
+        return child
+
+    subagents = SubagentManager(
+        registry=agent_registry,
+        session_paths=session_paths,
+        parent_thread_id=thread_id,
+        engine_factory=create_child_engine,
+        depth=subagent_depth,
+        max_depth=agent_config.max_subagent_depth,
+        max_concurrency=agent_config.max_concurrent_subagents,
+    )
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # No-plugin mode used by isolated core tests and pure-core embeddings.
@@ -181,20 +244,44 @@ async def bootstrap(
     )
     plugin_loader: PluginLoader | None = None
 
-    if resolved_plugin_dirs:
-        plugin_loader = await _load_plugins(
-            resolved_plugin_dirs,
-            hook_manager,
-            tool_registry,
-            context_builder,
-            state_store,
-            _plugin_configs,
-            agent_registry,
-            workspace_root,
-            set(agent_config.disabled_plugins),
-        )
-
     try:
+        if resolved_plugin_dirs:
+            plugin_loader = await _load_plugins(
+                resolved_plugin_dirs,
+                hook_manager,
+                tool_registry,
+                context_builder,
+                state_store,
+                _plugin_configs,
+                agent_registry,
+                workspace_root,
+                set(agent_config.disabled_plugins),
+                subagents,
+            )
+
+        if selected_agent is not None:
+            resolved_agent = agent_registry.get(selected_agent)
+            if resolved_agent is None or resolved_agent.mode == "subagent":
+                raise ValueError(f"Unknown primary agent: {selected_agent}")
+            _apply_agent_definition(agent_config, resolved_agent)
+            policy_base_config = startup_config.model_copy(deep=True)
+            _apply_agent_definition(policy_base_config, resolved_agent)
+            provider_name = resolved_agent.provider or provider_name
+            permissions = PermissionSystem(agent_config.permissions)
+            if parent_permission_system is not None:
+                permissions = PermissionIntersection(
+                    parent_permission_system, permissions
+                )
+
+        state_store.provider = provider_name
+        agent_config.provider = provider_name
+        provider_config = load_provider_config(paths, provider_name)
+        state_store.write_thread_metadata({
+            "agent": resolved_agent.name if resolved_agent is not None else "",
+            "provider": provider_name,
+            "parent_thread_id": parent_thread_id,
+        })
+
         # 7. Create LLM client
         if llm_override is not None:
             llm = llm_override
@@ -227,7 +314,9 @@ async def bootstrap(
 
         # Apply tool filter AFTER session init so plugin-discovered tools
         # (skills, MCP) are registered before restrict runs.
-        if agent_config.tools:
+        if resolved_agent is not None and resolved_agent.tools is not None:
+            tool_registry.restrict(list(resolved_agent.tools))
+        elif agent_config.tools:
             tool_registry.restrict(agent_config.tools)
 
         # 9. Build engine
@@ -243,11 +332,13 @@ async def bootstrap(
             config=agent_config,
             plugin_loader=plugin_loader,
             background_tasks=background_tasks,
+            subagents=subagents,
             agent_registry=agent_registry,
-            startup_config=startup_config,
+            startup_config=policy_base_config,
             model=provider_config.model,
             context_window=agent_config.max_context_tokens,
         )
+        parent_engine = engine
         return engine
     except BaseException as bootstrap_error:
         if plugin_loader is not None:
@@ -258,12 +349,32 @@ async def bootstrap(
                     f"Plugin cleanup after bootstrap failure also failed: "
                     f"{cleanup_error!r}"
                 )
+        if not thread_preexisting:
+            if not session_preexisting:
+                shutil.rmtree(session_paths.root, ignore_errors=True)
+            else:
+                shutil.rmtree(state_store.paths.root, ignore_errors=True)
         raise
 
 
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
+
+def _apply_agent_definition(agent_config: Any, definition: Any) -> None:
+    agent_config.agent_name = definition.name
+    agent_config.agent_role = definition.description
+    agent_config.instructions = "\n\n".join(
+        part
+        for part in (agent_config.instructions, definition.prompt)
+        if part.strip()
+    )
+    if definition.tools is not None:
+        agent_config.tools = list(definition.tools)
+    agent_config.permissions = merge_permission_config(
+        agent_config.permissions,
+        definition.permissions,
+    )
 
 def _validate_identifier(field: str, value: str) -> None:
     if not value or value in {".", ".."} or not _IDENTIFIER_RE.fullmatch(value):
@@ -310,6 +421,7 @@ async def _load_plugins(
     agent_registry: AgentRegistry,
     workspace_root: Path,
     disabled_plugins: set[str],
+    agent_runtime: Any,
 ) -> PluginLoader:
     """Discover, load, and wire plugins."""
     loader = PluginLoader(
@@ -322,6 +434,7 @@ async def _load_plugins(
         agent_registry=agent_registry,
         workspace_root=workspace_root,
         disabled_plugins=disabled_plugins,
+        agent_runtime=agent_runtime,
     )
     await loader.load()
     return loader

@@ -10,6 +10,7 @@ tools:
   - send_message
   - ask_user
   - plugin:compact:*
+  - plugin:agents:*
   - plugin:todolist:*
   - plugin:goal:*
   - plugin:skills:*

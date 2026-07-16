@@ -10,6 +10,7 @@ from pydantic import ValidationError
 import xbotv2.api as public_api
 
 from xbotv2.api import (
+    AgentRuntime,
     Command,
     CommandResult,
     ContextComponent,
@@ -61,6 +62,7 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
+    assert AgentRuntime is not None
     assert HookDecision(HookAction.DENY, "policy").reason == "policy"
     assert Tool is not None
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
@@ -109,16 +111,21 @@ def test_tool_registration_options_validate_values():
     options = ToolRegistrationOptions(
         sandbox_mode="sandboxed",
         namespace="plugin:test",
+        timeout_seconds=120,
     )
 
     assert options.sandbox_mode == "sandboxed"
     assert options.namespace == "plugin:test"
+    assert options.timeout_seconds == 120
 
     with pytest.raises(ValueError, match="sandbox_mode"):
         ToolRegistrationOptions(sandbox_mode="invalid")
 
     with pytest.raises(TypeError, match="execution_mode"):
         ToolRegistrationOptions(execution_mode="parallel")
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        ToolRegistrationOptions(timeout_seconds=0)
 
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():

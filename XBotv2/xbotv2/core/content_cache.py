@@ -29,6 +29,16 @@ def bound_context_messages(
     ]
 
 
+def externalize_content(
+    content: str,
+    state_store: Any,
+    *,
+    max_inline_chars: int = MAX_INLINE_CHARS,
+) -> str:
+    """Externalize one non-message string through the context cache."""
+    return _externalize(content, state_store, max_inline_chars)
+
+
 def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
     content = str(message.content or "")
     content_limit = MAX_USER_INLINE_CHARS if message.role == "user" else limit
@@ -104,4 +114,5 @@ __all__ = [
     "MAX_INLINE_CHARS",
     "MAX_USER_INLINE_CHARS",
     "bound_context_messages",
+    "externalize_content",
 ]

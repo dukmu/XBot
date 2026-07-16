@@ -255,7 +255,7 @@ Boundary tests enforce this for TUI modules.
 
 ## Runtime Object Views
 
-Background shell processes are displayed in a compact, collapsible Tasks
+Background shell processes and subagents are displayed in a compact, collapsible Tasks
 control with stable identifiers, status, elapsed time, command summary, and a
 bounded result preview. `task_updated` replaces the existing snapshot in place
 instead of appending transcript rows. The control keeps at most five task rows
@@ -263,8 +263,7 @@ visible while `/tasks` exposes the complete live-session list.
 
 The lifecycle comes from the session-owned task manager through the existing
 protocol envelope; the TUI does not infer it from tool text or mailbox
-messages. Future subagents need the same authoritative IDs and lifecycle before
-they receive a dynamic view.
+messages. The `kind` field distinguishes shell and Agent rows.
 
 Tasks and queued follow-ups share one runtime band so they do not consume
 independent vertical regions on short terminals. At less than 24 rows the band

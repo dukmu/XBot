@@ -243,10 +243,9 @@ documentation before it becomes a shipped default.
   remaining, workspace, model, and provider, with session identifiers shown
   only on wide terminals. Plan progress still requires authoritative runtime
   data.
-- Background shell tasks now expose stable IDs and lifecycle snapshots through
-  `task_updated`; the TUI updates a collapsible Tasks control in place. Future
-  subagent views still wait for authoritative core lifecycle events and must
-  not parse display text.
+- Background shell and subagent tasks expose stable IDs and authoritative
+  lifecycle snapshots through `task_updated`; the TUI updates one collapsible
+  Tasks control in place and distinguishes their `kind` without parsing text.
 - Queued follow-ups now render ordered summaries beside Tasks in one runtime
   band. Their display lifecycle reuses the existing client request map while
   delivery ordering remains owned by the Core mailbox.

@@ -35,6 +35,7 @@ class BackgroundTask:
         error = self.error if full_output else _preview(self.error, 2000)
         return {
             "task_id": self.id,
+            "kind": "shell",
             "command": command,
             "cwd": self.cwd,
             "status": self.status,

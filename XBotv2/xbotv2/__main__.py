@@ -61,6 +61,11 @@ def main():
         help="Thread ID within the session (default: agent)",
     )
     parser.add_argument(
+        "--agent",
+        default=None,
+        help="Registered primary Agent to use for a new thread",
+    )
+    parser.add_argument(
         "--no-plugins",
         action="store_true",
         help="Disable plugin discovery for pure-core runs",
@@ -216,6 +221,7 @@ def _run_tui(args) -> None:
     client = TextualTuiClient(
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
+        agent=getattr(args, "agent", None),
         workspace_root=str(_workspace_root(args)),
         session_mode="resume" if getattr(args, "session", None) else "new",
         base_url=server_url,
@@ -249,6 +255,7 @@ def _run_attach(args, url: str) -> None:
     client = TextualTuiClient(
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
+        agent=getattr(args, "agent", None),
         workspace_root=str(_workspace_root(args)),
         session_mode="resume" if getattr(args, "session", None) else "new",
         base_url=url,
@@ -338,6 +345,7 @@ async def _terminal_loop(args):
             thread_id=getattr(args, "thread", "agent"),
             workspace_root=str(_workspace_root(args)),
             plugin_dirs=[] if args.no_plugins else None,
+            selected_agent=getattr(args, "agent", None),
         )
         await engine.start_session()
     except Exception as exc:
@@ -406,6 +414,7 @@ def _run_once(args):
             thread_id=getattr(args, "thread", "agent"),
             workspace_root=str(_workspace_root(args)),
             plugin_dirs=[] if args.no_plugins else None,
+            selected_agent=getattr(args, "agent", None),
         )
         await engine.start_session()
         runtime = SessionRuntime(
@@ -417,6 +426,8 @@ def _run_once(args):
             no_plugins=args.no_plugins,
             engine=engine,
         )
+        if engine.subagents is not None:
+            engine.subagents.on_complete = None
 
         async for event in runtime.stream_message(args.prompt, "once"):
             etype = event.get("type", "")

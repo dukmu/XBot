@@ -1930,11 +1930,13 @@ async def test_terminal_session_passes_explicit_resume_mode():
         transport=FakeTransport(),
         session_id="existing",
         session_mode="resume",
+        agent="builder",
     )
 
     response = await session.connect()
 
     assert opened["mode"] == "resume"
+    assert opened["agent"] == "builder"
     assert response["history"] == []
 
 
@@ -2449,6 +2451,25 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
     assert list(state.tasks) == ["task-1"]
     assert state.tasks["task-1"].status == "completed"
     assert state.tasks["task-1"].output == "done"
+
+    state.apply_event({
+        "type": "task_updated",
+        "data": {
+            **base,
+            "task_id": "agent-task-1",
+            "kind": "agent",
+            "command": "reviewer: inspect changes",
+            "status": "running",
+        },
+    })
+    assert state.tasks["agent-task-1"].kind == "agent"
+
+    from xbotv2.tui.textual_widgets import tasks_renderable
+
+    rendered = tasks_renderable(
+        [state.tasks["agent-task-1"]], width=100
+    ).plain
+    assert "agent-task-1  agent  reviewer" in rendered
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ type-only import inside XBotv2 itself.
 | `ArtifactRef` | dataclass | Tool-produced artifact metadata. |
 | `AgentDefinition` | dataclass | Plugin-registered primary or subagent definition. |
 | `AgentMode` | type alias | Supported primary/subagent visibility modes. |
+| `AgentRuntime` | protocol | Core subagent execution capability exposed to Agent plugins. |
 | `ClientEvent` | dataclass | Client-facing event emitted by tools. |
 | `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
 | `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
@@ -78,6 +79,8 @@ their documented stage-specific return dictionaries for replacements.
 definitions, while runtime
 Tool and Command registrations join the same unload record. Runtime unregister
 operations can remove only resources owned by that plugin.
+Tool registrations may set a positive `timeout_seconds`; the dispatcher applies
+it through the normal Tool execution path instead of special-casing long tools.
 Duplicate canonical names or provider-visible tool names are rejected before
 registry mutation.
 Entered `on_load` callbacks receive best-effort `on_unload` after failure, and

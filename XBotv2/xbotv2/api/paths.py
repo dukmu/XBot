@@ -94,6 +94,10 @@ class SessionPaths:
     def threads_dir(self) -> Path:
         return self.root / "threads"
 
+    @property
+    def threads_log(self) -> Path:
+        return self.root / "threads.jsonl"
+
     def thread(self, thread_id: str, *, legacy: bool = False) -> ThreadPaths:
         return ThreadPaths(self, _identifier("thread_id", thread_id), legacy)
 
@@ -149,6 +153,10 @@ class ThreadPaths:
     @property
     def mailbox_log(self) -> Path:
         return self.root / "logs" / "mailbox.jsonl"
+
+    @property
+    def metadata_file(self) -> Path:
+        return self.root / "thread.yaml"
 
 
 __all__ = ["RuntimePaths", "SessionPaths", "ThreadPaths"]

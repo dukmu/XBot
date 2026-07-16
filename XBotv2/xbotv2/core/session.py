@@ -52,6 +52,10 @@ class SessionRuntime:
         if background_tasks is not None:
             background_tasks.on_update = self._publish_task_update
             background_tasks.on_complete = self._enqueue_task_completion
+        subagents = getattr(self.engine, "subagents", None)
+        if subagents is not None:
+            subagents.on_update = self._publish_task_update
+            subagents.on_complete = self._enqueue_subagent_completion
 
     async def _publish_task_update(self, task: dict[str, Any]) -> None:
         if self.session_events is not None:
@@ -63,6 +67,24 @@ class SessionRuntime:
             "content": (
                 f"Background task {task['task_id']} {task['status']}: "
                 f"{task['command']}"
+            ),
+            "data": task,
+        })
+
+    async def _enqueue_subagent_completion(self, task: dict[str, Any]) -> None:
+        from xbotv2.core.content_cache import externalize_content
+
+        task = dict(task)
+        task["output"] = externalize_content(
+            str(task.get("output") or ""),
+            self.engine.state_store,
+        )
+        await self.enqueue_general({
+            "source": "subagent",
+            "event": "finished",
+            "content": (
+                f"Subagent task {task['task_id']} {task['status']}: "
+                f"{task['agent']}"
             ),
             "data": task,
         })
@@ -169,6 +191,9 @@ class SessionRuntime:
         background_tasks = getattr(self.engine, "background_tasks", None)
         if background_tasks is not None:
             await background_tasks.close()
+        subagents = getattr(self.engine, "subagents", None)
+        if subagents is not None:
+            await subagents.close()
         await self.mailbox.close(reason)
         worker = self.mailbox_worker
         if worker is not None and not worker.done() and worker is not asyncio.current_task():

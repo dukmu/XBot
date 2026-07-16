@@ -126,3 +126,26 @@ class PermissionSystem:
                 return False
 
         return True
+
+
+class PermissionIntersection:
+    """Return the more restrictive decision from parent and child policy."""
+
+    def __init__(self, parent: Any, child: Any) -> None:
+        self.parent = parent
+        self.child = child
+
+    def check(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+    ) -> PermissionDecision:
+        decisions = {
+            self.parent.check(tool_name, args),
+            self.child.check(tool_name, args),
+        }
+        if "deny" in decisions:
+            return "deny"
+        if "ask" in decisions:
+            return "ask"
+        return "allow"

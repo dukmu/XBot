@@ -171,28 +171,43 @@ def _background_tasks(ctx: Any) -> Any | None:
     return getattr(ctx.engine, "background_tasks", None)
 
 
+def _subagent_tasks(ctx: Any) -> Any | None:
+    return getattr(ctx.engine, "subagents", None)
+
+
 async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     if args not in ([], ["ps"]):
         return _result("tasks", "Usage: /tasks [ps]", status="error")
-    manager = _background_tasks(ctx)
-    if manager is None:
+    shell_tasks = _background_tasks(ctx)
+    agent_tasks = _subagent_tasks(ctx)
+    if shell_tasks is None and agent_tasks is None:
         return _result("tasks", "Background tasks are unavailable.", status="error")
-    tasks = manager.snapshots()
+    tasks = []
+    if shell_tasks is not None:
+        tasks.extend(shell_tasks.snapshots())
+    if agent_tasks is not None:
+        tasks.extend(agent_tasks.snapshots())
     if not tasks:
         return _result("tasks", "No background tasks.", data={"tasks": []})
     lines = [
-        f"{task['task_id']}  {task['status']}  {task['command']}"
+        f"{task.get('kind', 'shell')}  {task['task_id']}  "
+        f"{task['status']}  {task['command']}"
         for task in tasks
     ]
     return _result("tasks", "\n".join(lines), data={"tasks": tasks})
 
 
 async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
-    manager = _background_tasks(ctx)
-    if manager is None:
+    shell_tasks = _background_tasks(ctx)
+    agent_tasks = _subagent_tasks(ctx)
+    if shell_tasks is None and agent_tasks is None:
         return _result("task", "Background tasks are unavailable.", status="error")
     if len(args) == 2 and args[0] == "stop":
-        result = await manager.stop_task(args[1])
+        task_id = args[1]
+        manager = agent_tasks if task_id.startswith("agent-task-") else shell_tasks
+        if manager is None:
+            return _result("task", f"Unknown task: {task_id}", status="error")
+        result = await manager.stop_task(task_id)
         return _result(
             "task",
             str(result.content),
@@ -200,7 +215,11 @@ async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
             data=result.data,
         )
     if args == ["stopall"]:
-        stopped = await manager.stop_all()
+        stopped = []
+        if shell_tasks is not None:
+            stopped.extend(await shell_tasks.stop_all())
+        if agent_tasks is not None:
+            stopped.extend(await agent_tasks.stop_all())
         return _result(
             "task",
             f"Stopped {len(stopped)} background task(s).",
@@ -545,7 +564,7 @@ COMMANDS: dict[str, ServerCommand] = {
         ServerCommand(
             name="tasks",
             slash="/tasks [ps]",
-            description="List background shell tasks.",
+            description="List background shell and subagent tasks.",
             handler=_tasks_command,
             examples=["/tasks", "/tasks ps"],
         ),

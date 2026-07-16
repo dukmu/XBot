@@ -39,6 +39,7 @@ class OpenSessionRequest(WireModel):
     thread_id: str = "agent"
     workspace_root: str | None = None
     mode: Literal["new", "resume"] = "new"
+    agent: str | None = None
 
 
 class SessionHistoryItem(WireModel):
@@ -273,6 +274,7 @@ class ToolResultData(WireModel):
 
 class TaskUpdatedData(WireModel):
     task_id: str = Field(min_length=1)
+    kind: Literal["shell", "agent"] = "shell"
     command: str = Field(min_length=1)
     cwd: str
     status: Literal["pending", "running", "completed", "failed", "stopped"]
@@ -281,6 +283,9 @@ class TaskUpdatedData(WireModel):
     finished_at: float = Field(ge=0)
     output: str = ""
     error: str = ""
+    agent: str = ""
+    thread_id: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class TurnData(WireModel):

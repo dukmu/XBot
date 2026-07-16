@@ -5,7 +5,7 @@ package are implementation details and may change without a compatibility shim.
 """
 
 from xbotv2.api.context import ContextComponent, PromptFragmentStage
-from xbotv2.api.agents import AgentDefinition, AgentMode
+from xbotv2.api.agents import AgentDefinition, AgentMode, AgentRuntime
 from xbotv2.api.commands import Command, CommandResult
 from xbotv2.api.plugins import (
     PluginBase,
@@ -40,6 +40,7 @@ __all__ = [
     "ArtifactRef",
     "AgentDefinition",
     "AgentMode",
+    "AgentRuntime",
     "ClientEvent",
     "Command",
     "CommandResult",
