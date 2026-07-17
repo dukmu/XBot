@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import xbotv2.__main__ as xbot_main
-from xbotv2.tui.client import TuiState, TuiTool, TuiTranscriptEntry, _parse_permission_decision, _repair_mojibake
+from xbotv2.tui.client import (
+    TuiState,
+    TuiTask,
+    TuiTool,
+    TuiTranscriptEntry,
+    _parse_permission_decision,
+)
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.terminal import CommandOutcome
 from xbotv2.tui.command import CommandSpec
@@ -316,18 +322,12 @@ def test_tui_state_distinguishes_thinking_from_visible_output() -> None:
     assert state.status == "Running"
 
 
-def test_repair_mojibake_restores_chinese_text():
-    mojibake = "完成一个纯Python".encode("utf-8").decode("latin-1")
-
-    assert _repair_mojibake(mojibake) == "完成一个纯Python"
-
-
-def test_tui_state_repairs_mojibake_messages():
+def test_tui_state_preserves_utf8_messages_without_transcoding():
     state = TuiState()
 
-    state.append_message("user", "完成一个纯Python".encode("utf-8").decode("latin-1"))
+    state.append_message("user", "完成一个纯Python é")
 
-    assert state.messages[0].content == "完成一个纯Python"
+    assert state.messages[0].content == "完成一个纯Python é"
 
 
 def test_tui_state_updates_streaming_tool_call_args_by_index():
@@ -546,7 +546,7 @@ def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
     assert "Options:" not in rendered
 
 
-def test_tui_state_turn_finished_clears_pending_but_preserves_denial_status():
+def test_tui_state_turn_finished_clears_pending_and_denial_status():
     state = TuiState()
 
     state.apply_event(_frame("turn_started", {"turn": 1}))
@@ -566,10 +566,10 @@ def test_tui_state_turn_finished_clears_pending_but_preserves_denial_status():
     state.apply_event(
         _frame("permission_denied", {"request_id": "perm:call_deny", "tool_call": {"id": "call_deny"}})
     )
-    # No matching tool for this denied call, status just flips
+    # A denial is visible on its tool, not as a sticky global state.
     state.apply_event(_frame("turn_finished", {"turn": 2}))
 
-    assert state.status == "Permission denied"
+    assert state.status == "Ready"
 
 
 def test_tui_state_renders_interaction_response_acknowledgements():
@@ -625,18 +625,29 @@ def test_tui_state_ack_keeps_running_until_turn_finished():
     assert state.status == "Ready"
 
 
-def test_tui_state_permission_denied_resets_on_next_turn():
+def test_tui_state_permission_denied_keeps_active_turn_running():
     state = TuiState()
 
     state.apply_event(_frame("turn_started", {"turn": 1}))
     state.apply_event(_frame("permission_denied", {"reason": "no"}))
     state.apply_event(_frame("turn_finished", {"turn": 1}))
 
-    assert state.status == "Permission denied"
+    assert state.status == "Ready"
 
     state.apply_event(_frame("turn_started", {"turn": 2}))
 
     assert state.status == "Running"
+
+
+def test_tui_fallback_wrap_preserves_explicit_newlines():
+    state = TuiState()
+    state.append_notice("client_message", "first line\nsecond line")
+
+    rendered = state.lines(width=80, height=8)
+
+    assert any("first line" in line for line in rendered)
+    assert any("second line" in line for line in rendered)
+    assert not any("first line second line" in line for line in rendered)
 
 
 @pytest.mark.parametrize(
@@ -1017,9 +1028,15 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
 
         async def run_command(self, name, args, raw, *, kind):
             self.commands.append((name, args, raw, kind))
-            return {"data": {"message": "Goal started"}}
+            return {
+                "data": {
+                    "message": "Goal started",
+                    "data": {"model_mode": ""},
+                }
+            }
 
     app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.state.model_mode = "high"
     session = FakeSession()
     app.session = session
 
@@ -1037,6 +1054,7 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
         "requests": 2,
     }
     assert app.state.context_input_tokens == 8_000
+    assert app.state.model_mode == ""
     assert [(message.role, message.content) for message in app.state.messages] == [
         ("user", "/goal audit repo")
     ]
@@ -1878,6 +1896,35 @@ async def test_textual_composer_history_and_multiline_resize():
         assert int(input_widget.styles.height.value) >= 3
 
 
+@pytest.mark.asyncio
+async def test_ctrl_c_clears_nonempty_composer_then_exits_when_empty():
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("draft")
+        await pilot.press("ctrl+c")
+        assert composer.text == ""
+
+        with patch.object(app, "exit") as exit_app:
+            await pilot.press("ctrl+c")
+            exit_app.assert_called_once_with()
+
+
 def test_permission_decision_parser_supports_scopes():
     assert _parse_permission_decision("session allow") == {
         "decision": "allow",
@@ -2508,6 +2555,7 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
 async def test_textual_task_panel_updates_in_place():
     from textual.widgets import Collapsible, Static
     from xbotv2.tui.textual_client import XBotTextualApp
+    from xbotv2.tui.textual_widgets import TaskListWidget
 
     class FakeSession:
         session_id = "s"
@@ -2552,11 +2600,90 @@ async def test_textual_task_panel_updates_in_place():
         await app._handle_stream_event(event)
         await pilot.pause()
         panel = app.query_one("#task_panel", Collapsible)
-        body = app.query_one("#task_list", Static)
+        body = app.query_one("#task_list", TaskListWidget)
+        row = body.query_one(".task-row", Static)
 
         assert panel.display is True
         assert panel.title == "Tasks (1 running)"
-        assert "task-1" in body.render().plain
+        assert "task-1" in row.render().plain
+
+
+def test_tui_state_prunes_successful_tasks_but_keeps_failures():
+    state = TuiState()
+    base = {
+        "command": "work",
+        "cwd": "",
+        "created_at": 1.0,
+        "started_at": 1.0,
+        "finished_at": 2.0,
+        "output": "done",
+        "error": "",
+    }
+    state.apply_event({
+        "type": "task_updated",
+        "data": {**base, "task_id": "done", "status": "completed"},
+    })
+    state.apply_event({
+        "type": "task_updated",
+        "data": {
+            **base,
+            "task_id": "failed",
+            "status": "failed",
+            "error": "boom",
+        },
+    })
+    terminal_since = state.tasks["done"].terminal_since
+
+    assert state.prune_finished_tasks(now=terminal_since + 2.9) is False
+    assert state.prune_finished_tasks(now=terminal_since + 3.0) is True
+    assert list(state.tasks) == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
+    from textual.containers import VerticalScroll
+    from xbotv2.tui.textual_client import XBotTextualApp
+    from xbotv2.tui.textual_widgets import (
+        SubagentTaskWidget,
+        TaskListWidget,
+    )
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    task = TuiTask(
+        task_id="agent-task-1",
+        kind="agent",
+        command="reviewer: inspect changes",
+        status="completed",
+        agent="reviewer",
+        thread_id="agent-reviewer-1",
+        output="\n".join(f"line {index}" for index in range(20)),
+        usage={"total_tokens": 12_500},
+    )
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(80, 18)) as pilot:
+        widget = app.query_one("#task_list", TaskListWidget)
+        widget.update_tasks([task], width=80)
+        await pilot.pause()
+        subagent = widget.query_one(SubagentTaskWidget)
+        body = subagent.query_one(".subagent-output")
+
+        assert subagent.collapsed is True
+        assert "reviewer" in str(subagent.title)
+        subagent.collapsed = False
+        await pilot.pause()
+        assert isinstance(body, VerticalScroll)
+        assert body.styles.height.value == 6
 
 
 @pytest.mark.asyncio

@@ -182,6 +182,17 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
 
 
 @pytest.mark.asyncio
+async def test_goal_exposes_compact_status_slot(state_store):
+    plugin = make_plugin(state_store)
+
+    assert await plugin.status_slots() == {}
+    await plugin.create_goal("show status")
+    assert await plugin.status_slots() == {"goal": "active"}
+    await plugin.update_goal("complete", "done")
+    assert await plugin.status_slots() == {"goal": "complete"}
+
+
+@pytest.mark.asyncio
 async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("pause on escape")

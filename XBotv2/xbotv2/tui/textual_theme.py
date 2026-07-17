@@ -52,7 +52,37 @@ Screen {
 
 #task_list {
     height: auto;
+    max-height: 12;
     padding: 0 1;
+    scrollbar-color: #7aa2f7;
+    scrollbar-background: #171a21;
+}
+
+.task-row {
+    height: auto;
+}
+
+.subagent-task {
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+.subagent-task CollapsibleTitle {
+    height: 1;
+    padding: 0;
+    color: #bb9af7;
+}
+
+.subagent-output {
+    height: 6;
+    max-height: 6;
+    padding: 0 0 0 2;
+    color: #8b95a7;
+    overflow-y: auto;
+    scrollbar-color: #7aa2f7;
+    scrollbar-background: #171a21;
 }
 
 #queue_list {

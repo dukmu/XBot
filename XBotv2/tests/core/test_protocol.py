@@ -179,6 +179,13 @@ providers:
 
         assert config.reasoning_effort == "high"
         assert config.thinking_enabled is True
+        assert config.model_mode == "high"
+
+    def test_model_mode_is_empty_without_explicit_provider_setting(self):
+        from xbotv2.config.models import ProviderConfig
+
+        assert ProviderConfig().model_mode == ""
+        assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
 
     def test_provider_names_support_direct_mapping(self, tmp_path):
         from xbotv2.config.loader import load_provider_names

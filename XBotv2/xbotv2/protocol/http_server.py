@@ -279,7 +279,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return _open_session_response(ctx)
+        return await _open_session_response(ctx)
 
     @app.get("/sessions", operation_id="list_sessions")
     async def list_sessions_endpoint() -> SessionListResponse:
@@ -436,7 +436,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        return _open_session_response(ctx)
+        return await _open_session_response(ctx)
 
     @app.get(
         "/sessions/{session_id}/threads/{thread_id}",
@@ -492,6 +492,7 @@ def _register_routes(app: FastAPI) -> None:
             agent=data["active"],
             provider=data["provider"],
             model=data["model"],
+            model_mode=data["model_mode"],
             context_window=data["context_window"],
         )
 
@@ -1008,7 +1009,9 @@ def _error_payload(
     ).model_dump()
 
 
-def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
+async def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
+    loader = getattr(ctx.engine, "plugin_loader", None)
+    status_slots = await loader.status_slots() if loader is not None else {}
     return OpenSessionResponse(
         session_id=ctx.session_id,
         thread_id=ctx.thread_id,
@@ -1016,9 +1019,11 @@ def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
         workspace_root=ctx.workspace_root,
         provider=ctx.provider_name,
         model=str(getattr(ctx.engine, "model", "")),
+        model_mode=str(getattr(ctx.engine, "model_mode", "")),
         context_window=int(getattr(ctx.engine, "context_window", 0)),
         usage=ctx.engine.session_usage,
         history=display_history(ctx.engine.messages),
+        status_slots=status_slots,
     )
 
 

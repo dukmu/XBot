@@ -133,10 +133,12 @@ class ThreadSummary(WireModel):
     agent: str = ""
     provider: str = ""
     model: str = ""
+    model_mode: str = ""
     context_window: int = Field(default=0, ge=0)
     message_count: int = Field(default=0, ge=0)
     usage: UsageData = Field(default_factory=_empty_usage)
     pending_interactions: list[str] = Field(default_factory=list)
+    status_slots: dict[str, str] = Field(default_factory=dict)
 
 
 class ThreadListResponse(WireModel):
@@ -220,9 +222,11 @@ class OpenSessionResponse(WireModel):
     workspace_root: str
     provider: str
     model: str = ""
+    model_mode: str = ""
     context_window: int = Field(default=0, ge=0)
     usage: UsageData = Field(default_factory=_empty_usage)
     history: list[SessionHistoryItem] = Field(default_factory=list)
+    status_slots: dict[str, str] = Field(default_factory=dict)
 
 
 class OpenThreadRequest(WireModel):
@@ -266,6 +270,7 @@ class AgentSelectionResponse(WireModel):
     agent: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str
+    model_mode: str = ""
     context_window: int = Field(ge=0)
 
 
@@ -278,6 +283,7 @@ class ProviderSelectionResponse(WireModel):
     thread_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    model_mode: str = ""
 
 
 class CommandRequest(WireModel):
@@ -524,6 +530,7 @@ class TaskStopResponse(TaskListResponse):
 
 class TurnData(WireModel):
     turn: int = Field(ge=1)
+    status_slots: dict[str, str] = Field(default_factory=dict)
 
 
 class TurnCancelledData(TurnData):

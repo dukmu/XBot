@@ -184,6 +184,10 @@ class PluginBase:
     async def on_unload(self) -> None:
         """Release resources created by ``on_load``."""
 
+    async def status_slots(self) -> dict[str, str]:
+        """Return compact, human-facing runtime status values."""
+        return {}
+
     def setup(self, ctx: PluginSetupContext) -> None:
         """Register extensions declared by the manifest."""
         for declaration in self.manifest.hooks:

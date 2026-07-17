@@ -12,7 +12,7 @@ OpenCode interaction patterns while preserving XBotv2 constraints:
 - no runtime engine imports in TUI modules
 - HTTP/SSE transport by default
 - workspace-root sessions instead of internal session workspaces
-- server-owned runtime commands
+- typed APIs for built-in runtime commands and plugin-owned server commands
 - live approval UI for permission, sandbox, and `ask_user` interactions
 
 ## Non-Goals
@@ -46,8 +46,8 @@ Startup sequence:
   open-session response before accepting another message.
 - The TUI passes `workspace_root` to the server. The server may host sessions
   from multiple workspace roots in one process.
-- The TUI displays runtime session/provider/workspace status from server command
-  results and protocol events.
+- The TUI displays Agent, provider/model mode, session token totals, context
+  availability, and plugin status slots from typed responses and events.
 
 ## Commands
 
@@ -60,12 +60,15 @@ Local commands:
 - `/thinking [on|off|toggle]`: control current and future reasoning blocks
 - `/details [on|off|toggle]`: control current and future tool detail blocks
 
-Server commands discovered from the active thread command endpoint:
+Built-in client commands backed by typed APIs:
 
 - `/status`
 - `/provider status|list|use <name>`
 - `/permission status|list|set <tool> <allow|deny|ask>|reset [tool]`
 - `/sandbox status|list|set <key> <allow|readwrite|readonly|deny|ask>|reset [key]`
+
+The command endpoint discovers and executes only plugin-owned commands such as
+`/goal`; prompt/Skill commands continue through the message endpoint.
 
 Slash dispatch rules:
 
@@ -92,7 +95,8 @@ The composer is a bottom multiline `ComposerTextArea`.
 Required behavior:
 
 - `Enter` submits text.
-- multiline editing remains supported by Textual text-area behavior.
+- `Shift+Enter` inserts a newline.
+- `Ctrl+C` clears a non-empty composer and exits when the composer is empty.
 - `/` prefix opens completion popup.
 - `Ctrl+P` opens the searchable local/server command palette; long discovered
   command lists scroll with the keyboard selection kept visible.
@@ -113,6 +117,8 @@ Required behavior:
 - Exiting during a blocking interaction cancels that turn. A later session
   resume displays the cancelled tool result and can start a new turn; the old
   interaction request itself cannot be answered after reconnect.
+- All decoded text is treated as UTF-8 and is preserved without heuristic
+  transcoding.
 
 ## Transcript Rendering
 
@@ -221,10 +227,13 @@ priority order:
   `Thinking`, while visible output and tool execution show `Running`
 - queued message count when non-zero
 - cumulative session token usage restored by `OpenSessionResponse` and updated
-  from per-call `usage` events; the active-turn row remains turn-local
+  from per-call `usage` events; counts compact automatically with `k`/`M`, and
+  the active-turn row remains turn-local
 - `ctx-free` percentage, using the latest provider-reported effective context
   token count and the runtime `context_window`
-- workspace, model, and provider from `OpenSessionResponse`
+- active Agent, `provider/model:mode`, and plugin status slots; `mode` is omitted
+  when the provider did not explicitly configure one
+- workspace from `OpenSessionResponse`
 - session/thread identifiers only when the terminal is wide enough
 
 Narrow terminals keep run state and token usage, then omit lower-priority
@@ -259,11 +268,17 @@ Boundary tests enforce this for TUI modules.
 
 ## Runtime Object Views
 
-Background shell processes and subagents are displayed in a compact, collapsible Tasks
-control with stable identifiers, status, elapsed time, command summary, and a
-bounded result preview. `task_updated` replaces the existing snapshot in place
-instead of appending transcript rows. The control keeps at most five task rows
-visible while `/tasks` exposes the complete live-session list.
+Background shell processes and subagents are displayed in a compact,
+collapsible Tasks control with stable identifiers, status, elapsed time,
+command summary, and a bounded result preview. Each subagent row has a nested
+expandable body with a fixed six-line independently scrollable output region,
+thread id, and final token usage. `task_updated` replaces the existing snapshot
+in place instead of appending transcript rows. The control keeps at most five
+task rows visible while `/tasks` exposes the complete live-session list.
+
+Completed and stopped rows remain visible for three seconds, then leave the TUI
+runtime control. Failed rows remain available for diagnosis; server task state
+is unchanged and remains queryable through `/tasks`.
 
 The lifecycle comes from the session-owned task manager through the existing
 protocol envelope; the TUI does not infer it from tool text or mailbox

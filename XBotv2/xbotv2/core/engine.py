@@ -200,6 +200,7 @@ class Engine:
         agent_registry: Any | None = None,
         startup_config: Any | None = None,
         model: str = "",
+        model_mode: str = "",
         context_window: int = 0,
         llm_is_override: bool = False,
         user_context: Any | None = None,
@@ -220,6 +221,7 @@ class Engine:
         self.agent_registry = agent_registry
         self.startup_config = startup_config or config
         self.model = model
+        self.model_mode = model_mode
         self.context_window = context_window or int(
             getattr(config, "max_context_tokens", 0) or 0
         )

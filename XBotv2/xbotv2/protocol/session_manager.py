@@ -182,6 +182,8 @@ async def thread_summary(
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
         engine = active.engine
+        loader = getattr(engine, "plugin_loader", None)
+        status_slots = await loader.status_slots() if loader is not None else {}
         metadata = engine.state_store.read_thread_metadata()
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
         return ThreadSummary(
@@ -197,10 +199,12 @@ async def thread_summary(
             ),
             provider=active.provider_name,
             model=str(getattr(engine, "model", "")),
+            model_mode=str(getattr(engine, "model_mode", "")),
             context_window=int(getattr(engine, "context_window", 0)),
             message_count=len(engine.messages),
             usage=engine.session_usage,
             pending_interactions=pending_interactions(active),
+            status_slots=status_slots,
         )
 
     session = manager.paths.session(session_id)
@@ -223,6 +227,7 @@ async def thread_summary(
         agent=str(metadata.get("agent") or ""),
         provider=str(metadata.get("provider") or ""),
         model=str(metadata.get("model") or ""),
+        model_mode=str(metadata.get("model_mode") or ""),
         context_window=int(metadata.get("context_window") or 0),
         message_count=store.message_count(),
         usage=store.read_usage() or _empty_usage(),

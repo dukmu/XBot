@@ -106,6 +106,7 @@ async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
         "agent_name": definition.name,
         "provider": ctx.provider_name,
         "model": str(getattr(ctx.engine, "model", "")),
+        "model_mode": str(getattr(ctx.engine, "model_mode", "")),
         "context_window": int(getattr(ctx.engine, "context_window", 0)),
     }
 
@@ -126,15 +127,24 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
         if not getattr(ctx.engine, "llm_is_override", False):
             ctx.engine.llm = create_llm(config)
         ctx.engine.model = config.model
+        ctx.engine.model_mode = config.model_mode
         ctx.provider_name = name
         ctx.engine.config.provider = name
         ctx.engine.state_store.provider = name
         if ctx.engine.session is not None:
             ctx.engine.session.provider = name
         metadata = ctx.engine.state_store.read_thread_metadata()
-        metadata.update({"provider": name, "model": config.model})
+        metadata.update({
+            "provider": name,
+            "model": config.model,
+            "model_mode": config.model_mode,
+        })
         ctx.engine.state_store.write_thread_metadata(metadata)
-    return {"provider": name, "model": config.model}
+    return {
+        "provider": name,
+        "model": config.model,
+        "model_mode": config.model_mode,
+    }
 
 
 def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
@@ -243,6 +253,7 @@ async def _activate_agent(
     reload_live_policies(ctx)
     ctx.engine.llm = llm
     ctx.engine.model = provider.model
+    ctx.engine.model_mode = provider.model_mode
     ctx.engine.context_window = config.max_context_tokens
     ctx.engine.max_iterations = definition.max_iterations or 50
     apply_agent_tools(ctx.engine.tool_registry, config, definition)
@@ -257,6 +268,7 @@ async def _activate_agent(
         "agent_definition": asdict(definition),
         "provider": provider_name,
         "model": provider.model,
+        "model_mode": provider.model_mode,
         "context_window": config.max_context_tokens,
     })
     ctx.engine.state_store.write_thread_metadata(metadata)
