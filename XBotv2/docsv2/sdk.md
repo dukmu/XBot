@@ -23,6 +23,29 @@ The exact public path set and unique OpenAPI `operationId` values are contract
 tested. Adding, removing, or renaming a route requires a protocol version
 decision and corresponding tests.
 
+## Python Client
+
+`xbotv2.client.XBotClient` is the first-party asynchronous client. It returns
+the same Pydantic models used by the wire contract and raises
+`XBotClientError` with `status_code`, `code`, `details`, and `retryable` fields.
+
+```python
+from xbotv2.client import XBotClient
+
+async with XBotClient("http://127.0.0.1:4096") as client:
+    session = await client.open_session(workspace_root=".")
+    async for event in client.send_message(
+        session.session_id,
+        session.thread_id,
+        "Inspect the workspace",
+    ):
+        if event.type == "assistant_message":
+            print(event.data["content"])
+```
+
+The client also accepts `uds_path` for the local Unix-socket server. It has no
+slash command or direct Tool execution methods.
+
 ## Mutations
 
 Machine clients use explicit operations rather than constructing slash text:

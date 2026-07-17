@@ -29,9 +29,11 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+import xbotv2
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
+from xbotv2.client import XBotClient, XBotClientError
 from xbotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
@@ -57,6 +59,54 @@ from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
+
+
+@pytest.mark.asyncio
+async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
+    assert xbotv2.XBotClient is XBotClient
+    set_llm_override(http_app, MockLLM(responses=[{"content": "sdk answer"}]))
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        health = await sdk.health()
+        opened = await sdk.open_session(
+            session_id="sdk-client",
+            thread_id="main",
+        )
+        events = [
+            event
+            async for event in sdk.send_message(
+                "sdk-client",
+                "main",
+                "sdk question",
+                request_id="sdk-request",
+            )
+        ]
+        messages = await sdk.list_messages("sdk-client", "main")
+        undone = await sdk.undo_history("sdk-client", "main")
+
+        assert health.status == "ok"
+        assert opened.session_id == "sdk-client"
+        assert any(
+            event.type == "assistant_message"
+            and event.data["content"] == "sdk answer"
+            for event in events
+        )
+        assert events[-1].type == "end"
+        assert [item.content for item in messages.messages] == [
+            "sdk question",
+            "sdk answer",
+        ]
+        assert undone.removed_turns == 1
+        assert undone.messages == []
+        assert not hasattr(sdk, "run_command")
+
+        with pytest.raises(XBotClientError) as raised:
+            await sdk.get_thread("sdk-client", "missing")
+        assert raised.value.status_code == 404
+        assert raised.value.code == "session_not_found"
+        assert raised.value.retryable is False
 
 
 @pytest.mark.asyncio
