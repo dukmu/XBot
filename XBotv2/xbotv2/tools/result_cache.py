@@ -40,7 +40,9 @@ def make_tool_result_cache_hook(
             content = getattr(message, "content", "")
             if not isinstance(content, str):
                 content = str(content)
-            data_text = _large_data_json(message, max_inline_chars)
+            data_cache = _large_data_content(message, max_inline_chars)
+            data_text = data_cache[0] if data_cache is not None else None
+            data_suffix = data_cache[1] if data_cache is not None else ""
             if len(content) <= max_inline_chars and data_text is None:
                 continue
 
@@ -53,15 +55,17 @@ def make_tool_result_cache_hook(
             content_path = None
             content_cache_path = None
             if len(content) > max_inline_chars:
-                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                content_path = cache_dir / f"{name}-{digest[:16]}.txt"
-                content_path.write_text(content, encoding="utf-8")
+                cached_content = data_text if data_suffix == "txt" else content
+                digest = hashlib.sha256(cached_content.encode("utf-8")).hexdigest()
+                suffix = "json" if data_text == content and data_suffix == "json" else "txt"
+                content_path = cache_dir / f"{name}-{digest[:16]}.{suffix}"
+                content_path.write_text(cached_content, encoding="utf-8")
                 content_cache_path = (
                     Path("session")
                     / content_path.relative_to(Path(state_store.root))
                 )
                 replacement = _format_cached_result(
-                    content=content,
+                    content=cached_content,
                     cache_path=content_cache_path,
                     max_inline_chars=max_inline_chars,
                     preview_chars=preview_chars,
@@ -70,12 +74,12 @@ def make_tool_result_cache_hook(
                 message.additional_kwargs[CACHED_CONTENT_KEY] = True
                 message.additional_kwargs[DISPLAY_CONTENT_KEY] = (
                     f"Tool result cached at {content_cache_path} "
-                    f"({len(content)} characters)."
+                    f"({len(cached_content)} characters)."
                 )
                 artifact.update({
                     "kind": "cached_tool_result",
                     "cache_path": str(content_cache_path),
-                    "original_chars": len(content),
+                    "original_chars": len(cached_content),
                     "inline_chars": len(replacement),
                     "sha256": digest,
                 })
@@ -83,9 +87,10 @@ def make_tool_result_cache_hook(
                 _cache_large_data(
                     message,
                     data_text,
+                    data_suffix,
                     cache_dir,
                     name,
-                    content,
+                    data_text if data_suffix == "txt" else content,
                     content_path,
                     content_cache_path,
                     artifact,
@@ -132,6 +137,7 @@ def _format_cached_result(
 def _cache_large_data(
     message: Any,
     serialized: str,
+    suffix: str,
     cache_dir: Path,
     name: str,
     content: str,
@@ -145,7 +151,7 @@ def _cache_large_data(
         data_cache_path = content_cache_path
     else:
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
-        data_path = cache_dir / f"{name}-{digest}-data.json"
+        data_path = cache_dir / f"{name}-{digest}-data.{suffix}"
         data_path.write_text(serialized, encoding="utf-8")
         data_cache_path = (
             Path("session") / data_path.relative_to(Path(state_store.root))
@@ -164,12 +170,21 @@ def _cache_large_data(
         })
 
 
-def _large_data_json(message: Any, limit: int) -> str | None:
+def _large_data_content(message: Any, limit: int) -> tuple[str, str] | None:
     metadata = getattr(message, "additional_kwargs", None)
     if not isinstance(metadata, dict) or "xbotv2_data" not in metadata:
         return None
-    serialized = json.dumps(metadata["xbotv2_data"], ensure_ascii=False)
-    return serialized if len(serialized) > limit else None
+    value = metadata["xbotv2_data"]
+    if isinstance(value, str):
+        return (value, "txt") if len(value) > limit else None
+    if isinstance(value, dict):
+        original_text = value.get("content")
+        if isinstance(original_text, str) and len(original_text) > limit:
+            return original_text, "txt"
+    if isinstance(value, (dict, list)):
+        serialized = json.dumps(value, ensure_ascii=False)
+        return (serialized, "json") if len(serialized) > limit else None
+    return None
 
 
 def _safe_name(value: str) -> str:

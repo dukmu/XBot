@@ -661,6 +661,97 @@ async def test_cache_hook_externalizes_large_structured_data(state_store):
     assert message.artifact["data_cache_path"] == data["cache_path"]
     assert message.artifact["kind"] == "cached_tool_data"
     assert message.content == "Short result summary."
+    cache_files = list(
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.txt")
+    )
+    assert len(cache_files) == 1
+    assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
+
+
+@pytest.mark.asyncio
+async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_store):
+    hook = make_tool_result_cache_hook(
+        state_store,
+        max_inline_chars=100,
+        preview_chars=20,
+    )
+    original = "line 1\n" + "source text\n" * 20
+    data = {
+        "ok": True,
+        "path": "/workspace/source.py",
+        "content": original,
+    }
+    message = Message(
+        role="tool",
+        content=json.dumps(data, ensure_ascii=False),
+        tool_call_id="filesystem-read",
+        additional_kwargs={"xbotv2_data": data},
+    )
+
+    await hook(SimpleNamespace(tool_results=[message]))
+
+    cache_dir = Path(state_store.artifacts_dir) / "tool_results"
+    cache_files = list(cache_dir.glob("*.txt"))
+    assert len(cache_files) == 1
+    assert cache_files[0].read_text(encoding="utf-8") == original
+    assert not list(cache_dir.glob("*.json"))
+    cached = ET.fromstring(message.content)
+    assert cached.tag == "cached_content"
+    assert cached.attrib["original_chars"] == str(len(original))
+    assert message.additional_kwargs["xbotv2_data"]["cache_path"].endswith(
+        cache_files[0].name
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_hook_serializes_original_object_data_as_json(state_store):
+    hook = make_tool_result_cache_hook(
+        state_store,
+        max_inline_chars=100,
+        preview_chars=20,
+    )
+    structured = {"items": [{"path": f"file-{index}.txt"} for index in range(30)]}
+    message = Message(
+        role="tool",
+        content="30 files found.",
+        tool_call_id="filesystem-list",
+        additional_kwargs={"xbotv2_data": structured},
+    )
+
+    await hook(SimpleNamespace(tool_results=[message]))
+
+    data = message.additional_kwargs["xbotv2_data"]
+    assert message.content == "30 files found."
+    assert data["cached"] is True
+    cache_files = list(
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.json")
+    )
+    assert len(cache_files) == 1
+    assert json.loads(cache_files[0].read_text(encoding="utf-8")) == structured
+
+
+@pytest.mark.asyncio
+async def test_cache_hook_does_not_json_encode_string_data(state_store):
+    hook = make_tool_result_cache_hook(
+        state_store,
+        max_inline_chars=20,
+        preview_chars=10,
+    )
+    original = '{"already":"json text","lines":"a\\nb"}'
+    message = Message(
+        role="tool",
+        content="Structured result.",
+        tool_call_id="string-data",
+        additional_kwargs={"xbotv2_data": original},
+    )
+
+    await hook(SimpleNamespace(tool_results=[message]))
+
+    cache_files = list(
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.txt")
+    )
+    assert len(cache_files) == 1
+    assert cache_files[0].read_text(encoding="utf-8") == original
 
 
 def test_cached_result_zero_preview_does_not_duplicate_content():
