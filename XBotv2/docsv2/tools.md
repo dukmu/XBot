@@ -69,8 +69,13 @@ emission. The model receives bounded beginning and ending excerpts plus a `cache
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
 callers should use `offset` and `limit` to inspect only the required lines.
-Oversized structured Tool data becomes a relative JSON artifact reference
-instead of being duplicated in history and SSE. The
+Cached Tool results preserve their original representation. String results and
+explicit original text payloads, such as the `content` returned by
+`filesystem_read`, are stored verbatim in a `.txt` artifact without JSON
+encoding or escaped lines. Only an original object or array is serialized as
+JSON. A string that already contains JSON text remains that exact string and is
+not encoded a second time. The cached value becomes a relative artifact
+reference instead of being duplicated in history and SSE. The
 single read-only `session/` namespace maps the current session state directory;
 other relative paths remain workspace-relative. It is intentionally not a
 general virtual filesystem. Policy updates preserve the mount, and cached-result
