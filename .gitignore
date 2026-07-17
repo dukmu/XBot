@@ -5,6 +5,13 @@ __pycache__/
 
 # Dependencies
 uv.lock
+node_modules/
+
+# Web builds
+dist/
+playwright-report/
+test-results/
+*.tsbuildinfo
 
 .claude/
 .copilot/
