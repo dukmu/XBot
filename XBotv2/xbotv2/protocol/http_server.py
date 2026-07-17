@@ -15,7 +15,7 @@ import logging
 import shlex
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -25,12 +25,16 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from xbotv2.protocol.models import (
     AgentInfo,
     AgentListResponse,
+    AgentSelectionRequest,
+    AgentSelectionResponse,
     CloseResponse,
     CommandRequest,
     CommandListResponse,
     CommandResponse,
     ErrorResponse,
+    ForkResponse,
     HealthResponse,
+    HistoryMutationResponse,
     HelloRequest,
     HelloResponse,
     InteractionResponse,
@@ -42,14 +46,18 @@ from xbotv2.protocol.models import (
     PermissionResponseRequest,
     ProviderInfo,
     ProviderListResponse,
+    ProviderSelectionRequest,
+    ProviderSelectionResponse,
     SessionListResponse,
     SessionSummary,
     TaskListResponse,
+    TaskStopResponse,
     ThreadListResponse,
     ThreadMessagesResponse,
     ThreadSummary,
     ToolInfo,
     ToolListResponse,
+    UndoRequest,
     UserInputResponseRequest,
     server_event,
 )
@@ -60,6 +68,17 @@ from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.config.loader import load_provider_config, load_provider_names
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.protocol.commands import execute_command, list_commands
+from xbotv2.protocol.runtime_operations import (
+    OperationError,
+    clear_history,
+    fork_persisted_session,
+    select_agent,
+    select_provider,
+    stop_all_tasks,
+    stop_task,
+    task_snapshots,
+    undo_history,
+)
 from xbotv2.protocol.session_manager import (
     SessionExists,
     SessionManager,
@@ -272,6 +291,35 @@ def _register_routes(app: FastAPI) -> None:
     async def get_session_endpoint(session_id: str) -> SessionSummary:
         return await session_summary(manager, session_id)
 
+    @app.post(
+        "/sessions/{session_id}/fork",
+        operation_id="fork_session",
+    )
+    async def fork_session_endpoint(session_id: str) -> ForkResponse:
+        await session_summary(manager, session_id)
+        active = await manager.active_threads()
+        session_contexts = [
+            ctx
+            for (active_session_id, _), ctx in active.items()
+            if active_session_id == session_id
+        ]
+        if any(ctx.turn_lock.locked() for ctx in session_contexts):
+            raise OperationError(
+                "thread_busy",
+                "Cannot fork while a session thread is active.",
+                retryable=True,
+            )
+        async with AsyncExitStack() as stack:
+            for ctx in sorted(session_contexts, key=lambda item: item.thread_id):
+                await stack.enter_async_context(ctx.turn_lock)
+            for ctx in session_contexts:
+                await ctx.engine.save_messages()
+            forked_id = fork_persisted_session(manager.paths, session_id)
+        return ForkResponse(
+            session_id=forked_id,
+            source_session_id=session_id,
+        )
+
     @app.get(
         "/sessions/{session_id}/threads",
         operation_id="list_threads",
@@ -388,6 +436,43 @@ def _register_routes(app: FastAPI) -> None:
             ],
         )
 
+    @app.put(
+        "/sessions/{session_id}/threads/{thread_id}/agent",
+        operation_id="select_agent",
+    )
+    async def select_agent_endpoint(
+        session_id: str,
+        thread_id: str,
+        payload: AgentSelectionRequest,
+    ) -> AgentSelectionResponse:
+        ctx = await manager.get(session_id, thread_id)
+        data = await select_agent(ctx, payload.name)
+        return AgentSelectionResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            agent=data["active"],
+            provider=data["provider"],
+            model=data["model"],
+            context_window=data["context_window"],
+        )
+
+    @app.put(
+        "/sessions/{session_id}/threads/{thread_id}/provider",
+        operation_id="select_provider",
+    )
+    async def select_provider_endpoint(
+        session_id: str,
+        thread_id: str,
+        payload: ProviderSelectionRequest,
+    ) -> ProviderSelectionResponse:
+        ctx = await manager.get(session_id, thread_id)
+        data = await select_provider(ctx, payload.name)
+        return ProviderSelectionResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            **data,
+        )
+
     @app.get(
         "/sessions/{session_id}/threads/{thread_id}/tools",
         operation_id="list_tools",
@@ -441,6 +526,41 @@ def _register_routes(app: FastAPI) -> None:
             messages=_display_history(messages),
         )
 
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/history/clear",
+        operation_id="clear_thread_history",
+    )
+    async def clear_thread_history(
+        session_id: str,
+        thread_id: str,
+    ) -> HistoryMutationResponse:
+        ctx = await manager.get(session_id, thread_id)
+        removed_turns = await clear_history(ctx)
+        return HistoryMutationResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            removed_turns=removed_turns,
+            messages=[],
+        )
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/history/undo",
+        operation_id="undo_thread_history",
+    )
+    async def undo_thread_history(
+        session_id: str,
+        thread_id: str,
+        payload: UndoRequest,
+    ) -> HistoryMutationResponse:
+        ctx = await manager.get(session_id, thread_id)
+        messages = await undo_history(ctx, payload.count)
+        return HistoryMutationResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            removed_turns=payload.count,
+            messages=_display_history(messages),
+        )
+
     @app.get(
         "/sessions/{session_id}/threads/{thread_id}/tasks",
         operation_id="list_tasks",
@@ -450,22 +570,51 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> TaskListResponse:
         ctx = await manager.get(session_id, thread_id)
-        tasks: list[dict[str, Any]] = []
-        background = getattr(ctx.engine, "background_tasks", None)
-        subagents = getattr(ctx.engine, "subagents", None)
-        if background is not None:
-            tasks.extend(background.snapshots())
-        if subagents is not None:
-            tasks.extend(subagents.snapshots())
         return TaskListResponse(
             session_id=session_id,
             thread_id=thread_id,
+            tasks=task_snapshots(ctx),
+        )
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop",
+        operation_id="stop_task",
+    )
+    async def stop_task_endpoint(
+        session_id: str,
+        thread_id: str,
+        task_id: str,
+    ) -> TaskStopResponse:
+        ctx = await manager.get(session_id, thread_id)
+        task = await stop_task(ctx, task_id)
+        return TaskStopResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            matched_count=1,
+            tasks=[task],
+        )
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
+        operation_id="stop_all_tasks",
+    )
+    async def stop_all_tasks_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> TaskStopResponse:
+        ctx = await manager.get(session_id, thread_id)
+        tasks = await stop_all_tasks(ctx)
+        return TaskStopResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            matched_count=len(tasks),
             tasks=tasks,
         )
 
     @app.get(
         "/sessions/{session_id}/threads/{thread_id}/commands",
         operation_id="list_commands",
+        include_in_schema=False,
     )
     async def session_commands(
         session_id: str,
@@ -480,6 +629,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.post(
         "/sessions/{session_id}/threads/{thread_id}/commands",
         operation_id="run_command",
+        include_in_schema=False,
     )
     async def run_command(
         session_id: str,
@@ -760,6 +910,25 @@ def _register_routes(app: FastAPI) -> None:
                 exc.code,
                 exc.message,
                 details=exc.details,
+                retryable=exc.retryable,
+            ),
+        )
+
+    @app.exception_handler(OperationError)
+    async def _on_operation_error(
+        _: Request, exc: OperationError
+    ) -> JSONResponse:
+        if exc.code.endswith("_not_found"):
+            status = 404
+        elif exc.code in {"thread_busy", "task_not_background"}:
+            status = 409
+        else:
+            status = 400
+        return JSONResponse(
+            status_code=status,
+            content=_error_payload(
+                exc.code,
+                exc.message,
                 retryable=exc.retryable,
             ),
         )

@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-import secrets
-import shutil
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from xbotv2.api.commands import Command
+from xbotv2.protocol.runtime_operations import (
+    OperationError,
+    clear_history,
+    fork_session,
+    reload_live_policies,
+    select_agent,
+    select_provider,
+    stop_all_tasks,
+    stop_task,
+    task_snapshots,
+    undo_history,
+)
 
 CommandHandler = Callable[[Any, list[str]], Awaitable[dict[str, Any]]]
 
@@ -92,18 +100,12 @@ def _plugin_command_dict(command: Command) -> dict[str, Any]:
 
 
 async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
-    if ctx.turn_lock.locked():
-        return _result(
-            "clear",
-            "Cannot rewrite history while a turn is active.",
-            status="error",
-        )
     if args:
         return _result("clear", "Usage: /clear", status="error")
-    removed_turns = sum(
-        message.role == "user" for message in ctx.engine.messages
-    )
-    await ctx.engine.replace_history([], operation="clear")
+    try:
+        removed_turns = await clear_history(ctx)
+    except OperationError as exc:
+        return _operation_error("clear", exc)
     return _result(
         "clear",
         f"Cleared {removed_turns} conversation turns.",
@@ -113,32 +115,16 @@ async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
 
 
 async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
-    if ctx.turn_lock.locked():
-        return _result(
-            "undo",
-            "Cannot rewrite history while a turn is active.",
-            status="error",
-        )
     if len(args) > 1:
         return _result("undo", "Usage: /undo [count]", status="error")
     try:
         count = int(args[0]) if args else 1
     except ValueError:
         return _result("undo", "Undo count must be a positive integer.", status="error")
-    messages = list(ctx.engine.messages)
-    user_indexes = [
-        index for index, message in enumerate(messages) if message.role == "user"
-    ]
-    if count < 1:
-        return _result("undo", "Undo count must be a positive integer.", status="error")
-    if count > len(user_indexes):
-        return _result(
-            "undo",
-            f"Cannot undo {count} turns; session has {len(user_indexes)}.",
-            status="error",
-        )
-    kept = messages[:user_indexes[-count]]
-    await ctx.engine.replace_history(kept, operation="undo", turns=count)
+    try:
+        kept = await undo_history(ctx, count)
+    except OperationError as exc:
+        return _operation_error("undo", exc)
     return _result(
         "undo",
         f"Removed {count} conversation turn{'s' if count != 1 else ''}.",
@@ -150,16 +136,10 @@ async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
 async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     if args:
         return _result("fork", "Usage: /fork", status="error")
-    if ctx.turn_lock.locked():
-        return _result("fork", "Cannot fork while a turn is active.", status="error")
-    await ctx.engine.save_messages()
-    session_id = _new_fork_id()
-    while ctx.paths.session(session_id).root.exists():
-        session_id = _new_fork_id()
-    source = ctx.paths.session(ctx.session_id).root
-    target = ctx.paths.session(session_id).root
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target)
+    try:
+        session_id = await fork_session(ctx)
+    except OperationError as exc:
+        return _operation_error("fork", exc)
     return _result(
         "fork",
         f"Forked session {ctx.session_id} to {session_id}.",
@@ -207,104 +187,27 @@ async def _agent_command(ctx: Any, args: list[str]) -> dict[str, Any]:
             "Usage: /agent [list|status|use <name>|<name>]",
             status="error",
         )
-    if ctx.turn_lock.locked():
-        return _result(
-            "agent",
-            "Cannot switch Agent while a turn is active.",
-            status="error",
-        )
-    definition = registry.get(target) if registry is not None else None
-    if definition is None or definition.mode == "subagent":
-        return _result("agent", f"Unknown primary Agent: {target}", status="error")
-    if definition.name == active:
+    try:
+        data = await select_agent(ctx, target)
+    except OperationError as exc:
+        return _operation_error("agent", exc)
+    if data["active"] == active:
         return _result(
             "agent",
             f"Agent {active} is already active.",
-            data=_active_agent_data(ctx, definition),
+            data=data,
         )
-
-    async with ctx.turn_lock:
-        await _activate_agent(ctx, definition)
     return _result(
         "agent",
-        f"Switched Agent from {active} to {definition.name}.",
-        data=_active_agent_data(ctx, definition),
+        f"Switched Agent from {active} to {data['active']}.",
+        data=data,
     )
-
-
-async def _activate_agent(ctx: Any, definition: Any) -> None:
-    from xbotv2.config.loader import load_provider_config, load_system_config
-    from xbotv2.core.agents import (
-        apply_agent_definition,
-        apply_agent_provider,
-        apply_agent_tools,
-    )
-    from xbotv2.llm.client import create_llm
-
-    config = load_system_config(ctx.paths, Path(ctx.workspace_root))
-    apply_agent_definition(config, definition)
-    provider_name = definition.provider or ctx.provider_name
-    config.provider = provider_name
-    provider = load_provider_config(ctx.paths, provider_name)
-    apply_agent_provider(provider, definition)
-    llm = (
-        ctx.engine.llm
-        if getattr(ctx.engine, "llm_is_override", False)
-        else create_llm(provider)
-    )
-
-    ctx.engine.config = config
-    ctx.engine.startup_config = config.model_copy(deep=True)
-    _reload_live_policies(ctx)
-    ctx.engine.llm = llm
-    ctx.engine.model = provider.model
-    ctx.engine.context_window = config.max_context_tokens
-    ctx.engine.max_iterations = definition.max_iterations or 50
-    apply_agent_tools(ctx.engine.tool_registry, config, definition)
-
-    ctx.provider_name = provider_name
-    ctx.engine.state_store.provider = provider_name
-    if ctx.engine.session is not None:
-        ctx.engine.session.provider = provider_name
-    metadata = ctx.engine.state_store.read_thread_metadata()
-    metadata.update({
-        "agent": definition.name,
-        "agent_definition": asdict(definition),
-        "provider": provider_name,
-    })
-    ctx.engine.state_store.write_thread_metadata(metadata)
-
-
-def _active_agent_data(ctx: Any, definition: Any) -> dict[str, Any]:
-    return {
-        "active": definition.name,
-        "agent_name": definition.name,
-        "provider": ctx.provider_name,
-        "model": str(getattr(ctx.engine, "model", "")),
-        "context_window": int(getattr(ctx.engine, "context_window", 0)),
-    }
-
-
-def _background_tasks(ctx: Any) -> Any | None:
-    return getattr(ctx.engine, "background_tasks", None)
-
-
-def _subagent_tasks(ctx: Any) -> Any | None:
-    return getattr(ctx.engine, "subagents", None)
 
 
 async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     if args not in ([], ["ps"]):
         return _result("tasks", "Usage: /tasks [ps]", status="error")
-    shell_tasks = _background_tasks(ctx)
-    agent_tasks = _subagent_tasks(ctx)
-    if shell_tasks is None and agent_tasks is None:
-        return _result("tasks", "Background tasks are unavailable.", status="error")
-    tasks = []
-    if shell_tasks is not None:
-        tasks.extend(shell_tasks.snapshots())
-    if agent_tasks is not None:
-        tasks.extend(agent_tasks.snapshots())
+    tasks = task_snapshots(ctx)
     if not tasks:
         return _result("tasks", "No background tasks.", data={"tasks": []})
     lines = [
@@ -316,28 +219,18 @@ async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
 
 
 async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
-    shell_tasks = _background_tasks(ctx)
-    agent_tasks = _subagent_tasks(ctx)
-    if shell_tasks is None and agent_tasks is None:
-        return _result("task", "Background tasks are unavailable.", status="error")
     if len(args) == 2 and args[0] == "stop":
-        task_id = args[1]
-        manager = agent_tasks if task_id.startswith("agent-task-") else shell_tasks
-        if manager is None:
-            return _result("task", f"Unknown task: {task_id}", status="error")
-        result = await manager.stop_task(task_id)
+        try:
+            data = await stop_task(ctx, args[1])
+        except OperationError as exc:
+            return _operation_error("task", exc)
         return _result(
             "task",
-            str(result.content),
-            status="ok" if result.status == "success" else "error",
-            data=result.data,
+            f"Stopped background task {args[1]}.",
+            data=data,
         )
     if args == ["stopall"]:
-        stopped = []
-        if shell_tasks is not None:
-            stopped.extend(await shell_tasks.stop_all())
-        if agent_tasks is not None:
-            stopped.extend(await agent_tasks.stop_all())
+        stopped = await stop_all_tasks(ctx)
         return _result(
             "task",
             f"Stopped {len(stopped)} background task(s).",
@@ -348,12 +241,6 @@ async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         "Usage: /task stop <id> | /task stopall",
         status="error",
     )
-
-
-def _new_fork_id() -> str:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{secrets.token_hex(2)}"
-
 
 def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
     return [
@@ -391,27 +278,15 @@ async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         )
         return _result("provider", message, data={"default": default, "providers": names, "current": current})
     if action == "use" and len(args) >= 2:
-        if ctx.turn_lock.locked():
-            return _result("provider", "Cannot switch provider while a turn is active.", status="error")
-        from xbotv2.config.loader import load_provider_config, load_provider_names
-        from xbotv2.llm.client import create_llm
-
         provider_name = args[1]
-        _default, names = load_provider_names(ctx.paths)
-        if provider_name not in names:
-            return _result("provider", f"Unknown provider: {provider_name}", status="error")
-        provider_config = load_provider_config(ctx.paths, provider_name)
-        ctx.engine.llm = create_llm(provider_config)
-        ctx.engine.model = provider_config.model
-        ctx.provider_name = provider_name
-        if hasattr(ctx.engine.config, "provider"):
-            ctx.engine.config.provider = provider_name
-        if hasattr(ctx.engine.state_store, "provider"):
-            ctx.engine.state_store.provider = provider_name
+        try:
+            data = await select_provider(ctx, provider_name)
+        except OperationError as exc:
+            return _operation_error("provider", exc)
         return _result(
             "provider",
-            f"Provider switched to {provider_name} ({provider_config.model}) for this session.",
-            data={"provider": provider_name, "model": provider_config.model},
+            f"Provider switched to {provider_name} ({data['model']}) for this session.",
+            data=data,
         )
     return _result("provider", "Usage: /provider status | list | use <name>", status="error")
 
@@ -431,7 +306,7 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
         getattr(ctx, f"{name}_overrides")[key] = normalized
         if name == "sandbox":
             _persist_sandbox_overrides(ctx, key, normalized)
-        _reload_live_policies(ctx)
+        reload_live_policies(ctx)
         return _result(name, f"{name} override set for this session: {key}={normalized}")
     if action == "reset":
         overrides = getattr(ctx, f"{name}_overrides")
@@ -447,7 +322,7 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
             overrides.clear()
             if name == "sandbox":
                 _clear_sandbox_overrides(ctx)
-        _reload_live_policies(ctx)
+        reload_live_policies(ctx)
         return _result(name, f"{name} session overrides reset.")
     return _result(name, f"Usage: /{name} status | set <key> <value> | reset", status="error")
 
@@ -520,47 +395,6 @@ def _normalize_sandbox_value(key: str, value: str) -> str | bool | None:
     return value if key not in special else None
 
 
-def _reload_live_policies(ctx: Any) -> None:
-    """Rebuild active permission/sandbox objects from config plus session overlays."""
-    from xbotv2.config.loader import load_system_config
-    from xbotv2.config.policy import (
-        load_session_policy,
-        merge_permission_config,
-        merge_sandbox_config,
-    )
-    from xbotv2.tools.permissions import PermissionSystem
-    from xbotv2.tools.sandbox import SandboxPolicy
-
-    base_config = getattr(ctx.engine, "startup_config", None)
-    if base_config is None:
-        base_config = load_system_config(ctx.paths, Path(ctx.workspace_root))
-    session_policy = load_session_policy(ctx.paths, ctx.session_id)
-    permissions = merge_permission_config(
-        base_config.permissions,
-        session_policy.get("permissions"),
-    )
-    for tool, decision in getattr(ctx, "permission_overrides", {}).items():
-        if decision in {"allow", "deny", "ask"}:
-            permissions.setdefault(decision, []).insert(0, {"tool": tool})
-
-    sandbox = merge_sandbox_config(
-        base_config.sandbox,
-        session_policy.get("sandbox"),
-        overrides=getattr(ctx, "sandbox_overrides", None),
-    )
-
-    ctx.engine.config.permissions = permissions
-    ctx.engine.config.sandbox = sandbox
-    ctx.engine.permission_system = PermissionSystem(permissions)
-    sandbox_policy = SandboxPolicy(
-        sandbox,
-        data_root=ctx.paths.data_dir,
-        workspace_root=Path(ctx.workspace_root),
-        session_root=ctx.engine.sandbox_policy.session_root,
-    )
-    ctx.engine.sandbox_policy = sandbox_policy
-
-
 def _persist_sandbox_overrides(ctx: Any, key: str, value: Any) -> None:
     overrides = getattr(ctx, "sandbox_overrides", {})
     if not overrides:
@@ -621,6 +455,15 @@ def _result(
             "history": history,
         },
     }
+
+
+def _operation_error(command: str, exc: OperationError) -> dict[str, Any]:
+    return _result(
+        command,
+        exc.message,
+        status="error",
+        data={"code": exc.code, "retryable": exc.retryable},
+    )
 
 
 COMMANDS: dict[str, ServerCommand] = {

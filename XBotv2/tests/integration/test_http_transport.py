@@ -515,16 +515,16 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
             "/sessions/switch-primary/threads/main/messages",
             json={"content": "keep this history"},
         )
-        switched = await ac.post(
-            "/sessions/switch-primary/threads/main/commands",
-            json={"command": "agent", "args": ["use", "Explorer"]},
+        switched = await ac.put(
+            "/sessions/switch-primary/threads/main/agent",
+            json={"name": "Explorer"},
         )
         ctx = await app.state.manager.get("switch-primary", "main")
 
         assert switched.status_code == 200
-        assert switched.json()["data"]["data"]["agent_name"] == "Explorer"
-        assert switched.json()["data"]["data"]["model"] == "explorer-model"
-        assert switched.json()["data"]["data"]["context_window"] == 64000
+        assert switched.json()["agent"] == "Explorer"
+        assert switched.json()["model"] == "explorer-model"
+        assert switched.json()["context_window"] == 64000
         assert ctx.session_id == "switch-primary"
         assert ctx.thread_id == "main"
         assert [message.content for message in ctx.engine.messages] == [
@@ -537,22 +537,25 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert ctx.engine.context_window == 64000
         assert ctx.engine.state_store.read_thread_metadata()["agent"] == "Explorer"
 
-        child_only = await ac.post(
-            "/sessions/switch-primary/threads/main/commands",
-            json={"command": "agent", "args": ["use", "worker"]},
+        child_only = await ac.put(
+            "/sessions/switch-primary/threads/main/agent",
+            json={"name": "worker"},
         )
-        assert child_only.json()["data"]["status"] == "error"
+        assert child_only.status_code == 404
+        assert child_only.json()["code"] == "agent_not_found"
         assert ctx.engine.config.agent_name == "Explorer"
 
         await ctx.turn_lock.acquire()
         try:
-            busy = await ac.post(
-                "/sessions/switch-primary/threads/main/commands",
-                json={"command": "agent", "args": ["use", "builder"]},
+            busy = await ac.put(
+                "/sessions/switch-primary/threads/main/agent",
+                json={"name": "builder"},
             )
         finally:
             ctx.turn_lock.release()
-        assert busy.json()["data"]["status"] == "error"
+        assert busy.status_code == 409
+        assert busy.json()["code"] == "thread_busy"
+        assert busy.json()["retryable"] is True
         assert ctx.engine.config.agent_name == "Explorer"
 
         resumed = await ac.post(
@@ -770,11 +773,8 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
     (source.artifacts_dir / "cached.txt").write_text("cached")
     source_session.policy_file.write_text("permissions: {}\n")
-    forked = await client.post(
-        "/sessions/history/threads/t/commands",
-        json={"command": "fork", "args": []},
-    )
-    fork_id = forked.json()["data"]["data"]["session_id"]
+    forked = await client.post("/sessions/history/fork")
+    fork_id = forked.json()["session_id"]
     fork_session = http_app.state.paths.session(fork_id)
     fork_paths = fork_session.thread("t")
 
@@ -805,6 +805,11 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     assert cleared_records[:len(source_records)] == source_records
     assert cleared_records[-1]["record_type"] == "history_clear"
 
+    await client.post("/sessions/history/close")
+    inactive_fork = await client.post("/sessions/history/fork")
+    assert inactive_fork.status_code == 200
+    assert inactive_fork.json()["source_session_id"] == "history"
+
 
 @pytest.mark.asyncio
 async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClient) -> None:
@@ -816,6 +821,58 @@ async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClien
             json={"command": "undo", "args": [count]},
         )
         assert response.json()["data"]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_typed_history_mutations_validate_and_reject_busy_threads(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    set_llm_override(http_app, MockLLM(responses=[{"content": "answer"}]))
+    await client.post(
+        "/sessions", json={"session_id": "typed-history", "thread_id": "t"}
+    )
+    await client.post(
+        "/sessions/typed-history/threads/t/messages",
+        json={"content": "question"},
+    )
+
+    invalid = await client.post(
+        "/sessions/typed-history/threads/t/history/undo",
+        json={"count": 0},
+    )
+    excessive = await client.post(
+        "/sessions/typed-history/threads/t/history/undo",
+        json={"count": 2},
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == "invalid_request"
+    assert excessive.status_code == 400
+    assert excessive.json()["code"] == "invalid_undo_count"
+
+    ctx = await http_app.state.manager.get("typed-history", "t")
+    await ctx.turn_lock.acquire()
+    try:
+        busy = await client.post(
+            "/sessions/typed-history/threads/t/history/clear"
+        )
+        busy_fork = await client.post("/sessions/typed-history/fork")
+    finally:
+        ctx.turn_lock.release()
+    assert busy.status_code == 409
+    assert busy.json()["code"] == "thread_busy"
+    assert busy.json()["retryable"] is True
+    assert busy_fork.status_code == 409
+    assert busy_fork.json()["code"] == "thread_busy"
+
+    undone = await client.post(
+        "/sessions/typed-history/threads/t/history/undo",
+        json={"count": 1},
+    )
+    assert undone.status_code == 200
+    assert undone.json()["removed_turns"] == 1
+    assert undone.json()["messages"] == []
+    assert ctx.engine.messages == []
 
 
 @pytest.mark.asyncio
@@ -833,6 +890,46 @@ async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient
     data = list_response.json()["data"]
     assert data["status"] == "ok"
     assert data["data"]["providers"] == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_typed_provider_selection_persists_across_resume(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    providers_file = http_app.state.paths.config_dir / "providers.yaml"
+    providers_file.write_text(
+        providers_file.read_text(encoding="utf-8")
+        + "alternate:\n"
+        "  provider: openai\n"
+        "  model: alternate-model\n"
+        "  base_url: http://alternate\n"
+        "  api_key: test\n",
+        encoding="utf-8",
+    )
+    await client.post(
+        "/sessions", json={"session_id": "provider-switch", "thread_id": "t"}
+    )
+
+    selected = await client.put(
+        "/sessions/provider-switch/threads/t/provider",
+        json={"name": "alternate"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["provider"] == "alternate"
+    assert selected.json()["model"] == "alternate-model"
+
+    resumed = await client.post(
+        "/sessions",
+        json={
+            "session_id": "provider-switch",
+            "thread_id": "t",
+            "mode": "resume",
+        },
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["provider"] == "alternate"
+    assert resumed.json()["model"] == "alternate-model"
 
 
 @pytest.mark.asyncio
@@ -1536,6 +1633,38 @@ async def test_background_task_updates_and_completion_use_session_stream(
     assert runtime_input.role == "user"
     assert "not a human message" in runtime_input.content
     assert "background task task-1 completed" in runtime_input.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_typed_task_stop_is_idempotent(
+    client: httpx.AsyncClient,
+    http_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    await client.post(
+        "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
+    )
+    ctx = await http_app.state.manager.get("task-stop", "t")
+    started = await ctx.engine.background_tasks.start_task("sleep forever")
+    task_id = started.data["task_id"]
+    await asyncio.sleep(0)
+
+    first = await client.post(
+        f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
+    )
+    second = await client.post(
+        f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
+    )
+
+    assert first.status_code == 200
+    assert first.json()["matched_count"] == 1
+    assert first.json()["tasks"][0]["status"] == "stopped"
+    assert second.status_code == 200
+    assert second.json()["tasks"][0]["status"] == "stopped"
 
 
 @pytest.mark.asyncio

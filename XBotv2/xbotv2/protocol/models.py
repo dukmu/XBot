@@ -181,6 +181,47 @@ class ThreadMessagesResponse(WireModel):
     messages: list[SessionHistoryItem] = Field(default_factory=list)
 
 
+class UndoRequest(WireModel):
+    count: int = Field(default=1, ge=1)
+
+
+class HistoryMutationResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    removed_turns: int = Field(ge=0)
+    messages: list[SessionHistoryItem] = Field(default_factory=list)
+
+
+class ForkResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    source_session_id: str = Field(min_length=1)
+    status: Literal["forked"] = "forked"
+
+
+class AgentSelectionRequest(WireModel):
+    name: str = Field(min_length=1)
+
+
+class AgentSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    agent: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str
+    context_window: int = Field(ge=0)
+
+
+class ProviderSelectionRequest(WireModel):
+    name: str = Field(min_length=1)
+
+
+class ProviderSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
 class CommandRequest(WireModel):
     command: str = ""
     args: list[str] | None = None
@@ -419,6 +460,10 @@ class TaskListResponse(WireModel):
     tasks: list[TaskUpdatedData] = Field(default_factory=list)
 
 
+class TaskStopResponse(TaskListResponse):
+    matched_count: int = Field(ge=0)
+
+
 class TurnData(WireModel):
     turn: int = Field(ge=1)
 
@@ -504,6 +549,8 @@ SessionMode = Literal["new", "resume"]
 __all__ = [
     "AssistantMessageData",
     "AssistantMessageDeltaData",
+    "AgentSelectionRequest",
+    "AgentSelectionResponse",
     "AgentInfo",
     "AgentListResponse",
     "ClientMessageData",
@@ -516,9 +563,11 @@ __all__ = [
     "EndData",
     "ErrorEventData",
     "ErrorResponse",
+    "ForkResponse",
     "HelloRequest",
     "HelloResponse",
     "HealthResponse",
+    "HistoryMutationResponse",
     "InteractionResponse",
     "InteractionRecordedData",
     "InterruptResponse",
@@ -532,6 +581,8 @@ __all__ = [
     "PermissionResponseRequest",
     "ProviderInfo",
     "ProviderListResponse",
+    "ProviderSelectionRequest",
+    "ProviderSelectionResponse",
     "ServerEvent",
     "ServerEventType",
     "SessionHistoryItem",
@@ -539,6 +590,7 @@ __all__ = [
     "SessionMode",
     "SessionSummary",
     "TaskListResponse",
+    "TaskStopResponse",
     "TaskUpdatedData",
     "ToolCallData",
     "ToolCallDeltaData",
@@ -554,6 +606,7 @@ __all__ = [
     "ThreadSummary",
     "TYPED_SERVER_EVENT_TYPES",
     "UsageData",
+    "UndoRequest",
     "UserInputOption",
     "UserInputRequiredData",
     "UserInputResponseRequest",

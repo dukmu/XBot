@@ -162,6 +162,7 @@ async def bootstrap(
     )
     metadata = state_store.read_thread_metadata()
     stored_agent = str(metadata.get("agent") or "") or None
+    stored_provider = str(metadata.get("provider") or "") or None
     stored_definition = metadata.get("agent_definition")
     if resolved_agent is None and isinstance(stored_definition, dict):
         resolved_agent = _restore_agent_definition(stored_definition)
@@ -302,6 +303,8 @@ async def bootstrap(
                     parent_permission_system, permissions
                 )
 
+        if thread_preexisting and stored_provider is not None:
+            provider_name = stored_provider
         state_store.provider = provider_name
         agent_config.provider = provider_name
         provider_config = load_provider_config(paths, provider_name)

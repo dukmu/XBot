@@ -43,8 +43,8 @@ Thread status and history remain queryable after its runtime closes.
   `error`, and `artifacts` so resumed clients render the same Details content
   as the live event stream.
 - `OpenSessionResponse.model` and `context_window` describe the active provider
-  model and the configured runtime context budget. `/provider use` updates the
-  model reported by subsequent status commands.
+  model and configured runtime context budget. Provider selection is persisted
+  in thread metadata and restored by `resume`.
 - `OpenSessionResponse.usage` restores cumulative session token totals and the
   latest provider-reported `context_tokens`. Live `usage` events are per-model-
   call deltas; clients add them to the restored totals.
@@ -61,31 +61,36 @@ Thread status and history remain queryable after its runtime closes.
 | POST | `/sessions` | Open session (new/resume) |
 | GET | `/sessions` | List persisted sessions and runtime status |
 | GET | `/sessions/{sid}` | Read one session summary |
+| POST | `/sessions/{sid}/fork` | Copy persisted session state to a new id |
 | GET | `/sessions/{sid}/threads` | List main and subagent threads |
 | POST | `/sessions/{sid}/threads` | Open a new or persisted subagent thread |
 | GET | `/sessions/{sid}/threads/{tid}` | Read thread status and usage |
 | GET | `/sessions/{sid}/threads/{tid}/agents` | List workspace-visible Agents |
+| PUT | `/sessions/{sid}/threads/{tid}/agent` | Select the active Primary Agent |
+| PUT | `/sessions/{sid}/threads/{tid}/provider` | Select and persist the provider |
 | GET | `/sessions/{sid}/threads/{tid}/tools` | List model-visible Tool schemas |
 | GET | `/sessions/{sid}/threads/{tid}/messages` | Read display-safe history |
 | POST | `/sessions/{sid}/threads/{tid}/messages` | Send message, receive turn SSE |
+| POST | `/sessions/{sid}/threads/{tid}/history/clear` | Clear conversation history |
+| POST | `/sessions/{sid}/threads/{tid}/history/undo` | Undo complete user turns |
 | GET | `/sessions/{sid}/threads/{tid}/events` | Receive server-initiated events |
 | GET | `/sessions/{sid}/threads/{tid}/tasks` | List shell and subagent tasks |
+| POST | `/sessions/{sid}/threads/{tid}/tasks/{task_id}/stop` | Stop one task idempotently |
+| POST | `/sessions/{sid}/threads/{tid}/tasks/stop` | Stop all running tasks |
 | POST | `/sessions/{sid}/threads/{tid}/interrupt` | Cancel running turn |
-| GET | `/sessions/{sid}/threads/{tid}/commands` | List commands and prompt expansions |
-| POST | `/sessions/{sid}/threads/{tid}/commands` | Execute a server-owned command |
 | POST | `/sessions/{sid}/threads/{tid}/interactions/permission-response` | Submit permission decision |
 | POST | `/sessions/{sid}/threads/{tid}/interactions/user-input` | Submit user input answer |
 | POST | `/sessions/{sid}/threads/{tid}/close` | Close one thread runtime |
 | POST | `/sessions/{sid}/close` | Close all live runtimes in a session |
 
 `close` never deletes persisted history, artifacts, policy, or plugin state.
-There is deliberately no global `/commands`: command discovery requires a live
-thread because plugin and prompt registrations are thread-specific.
+Slash command transport is not part of the OpenAPI/SDK resource contract.
 
 The session-open body may include `agent` to select a plugin-registered Primary
 Agent for a new thread. Resume reads the Agent identity from thread metadata.
 
-Session history commands use the same command endpoint:
+The typed history, session, Agent, provider, and task endpoints above are the
+machine API. Human slash commands remain TUI adapters:
 
 - `/undo [count]` removes complete user turns from the persisted tail; `count`
   defaults to one.
@@ -103,10 +108,8 @@ Tools `create_goal`, `get_goal`, and `update_goal`. The command endpoint invokes
 the plugin's command handler directly; it never translates slash text into a
 Tool call.
 
-`CommandResult.history` is normally `null`. `clear` and `undo` set it to the
-resulting display history so clients can rebuild their transcript from the same
-state the next provider request will use. Command-specific values such as
-`removed_turns` remain in `CommandResult.data`.
+Typed history mutations return `HistoryMutationResponse.messages`, which is the
+same display-safe state the next provider request will use.
 
 ## Runtime Mailbox
 
@@ -143,10 +146,10 @@ same instruction text through its top-level `system` field and groups adjacent
 Tool results into one user content block. OpenAI's `developer` role is a
 provider capability, not a portable XBot history role.
 
-## Command System
+## TUI Command Compatibility
 
-`GET /sessions/{sid}/threads/{tid}/commands` returns the unified command list
-with a `kind` field:
+The current TUI uses a non-OpenAPI compatibility route to discover the unified
+command list with a `kind` field:
 
 ```json
 [
@@ -161,8 +164,9 @@ Kinds: `client` (local TUI only), `server`, and `prompt`.
 Each server command registry entry contains human-facing discovery metadata and
 an async handler that receives the unparsed argument text. Human syntax belongs
 to that command's domain; the protocol does not derive a CLI from JSON Schema.
-Server commands execute deterministically outside model history, Tool
-permissions, sandboxing, Tool Hooks, and Tool result caching.
+Server commands execute deterministically outside model history. Built-in
+commands delegate state changes to the same operation functions as typed HTTP
+routes. Plugin commands own plugin-specific business state.
 
 A `prompt` entry has metadata but no command handler. The client submits its
 original slash text through the message endpoint, where the owning plugin
