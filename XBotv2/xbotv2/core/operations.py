@@ -1,4 +1,4 @@
-"""Protocol-neutral mutations shared by commands and HTTP routes."""
+"""Runtime state mutations shared by human and machine interfaces."""
 
 from __future__ import annotations
 
@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from xbotv2.api.agents import AgentDefinition
+from xbotv2.api.paths import RuntimePaths
+from xbotv2.core.session import SessionRuntime
+
 
 class OperationError(RuntimeError):
     def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
@@ -18,7 +22,7 @@ class OperationError(RuntimeError):
         self.retryable = retryable
 
 
-async def clear_history(ctx: Any) -> int:
+async def clear_history(ctx: SessionRuntime) -> int:
     _require_idle(ctx, "rewrite history")
     async with ctx.turn_lock:
         removed_turns = sum(
@@ -28,7 +32,7 @@ async def clear_history(ctx: Any) -> int:
     return removed_turns
 
 
-async def undo_history(ctx: Any, count: int) -> list[Any]:
+async def undo_history(ctx: SessionRuntime, count: int) -> list[Any]:
     _require_idle(ctx, "rewrite history")
     if count < 1:
         raise OperationError(
@@ -51,14 +55,14 @@ async def undo_history(ctx: Any, count: int) -> list[Any]:
     return kept
 
 
-async def fork_session(ctx: Any) -> str:
-    _require_idle(ctx, "fork")
+async def fork_session(ctx: SessionRuntime) -> str:
+    require_forkable(ctx)
     async with ctx.turn_lock:
         await ctx.engine.save_messages()
         return fork_persisted_session(ctx.paths, ctx.session_id)
 
 
-def fork_persisted_session(paths: Any, source_session_id: str) -> str:
+def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
     session_id = _new_fork_id()
     while paths.session(session_id).root.exists():
         session_id = _new_fork_id()
@@ -69,7 +73,21 @@ def fork_persisted_session(paths: Any, source_session_id: str) -> str:
     return session_id
 
 
-async def select_agent(ctx: Any, name: str) -> dict[str, Any]:
+def require_forkable(*contexts: SessionRuntime) -> None:
+    for ctx in contexts:
+        _require_idle(ctx, "fork")
+        if any(
+            task.get("status") in {"pending", "running"}
+            for task in task_snapshots(ctx)
+        ):
+            raise OperationError(
+                "thread_busy",
+                "Cannot fork while a background task is active.",
+                retryable=True,
+            )
+
+
+async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
     _require_idle(ctx, "switch Agent")
     registry = getattr(ctx.engine, "agent_registry", None)
     definition = registry.get(name) if registry is not None else None
@@ -82,10 +100,16 @@ async def select_agent(ctx: Any, name: str) -> dict[str, Any]:
     if definition.name != active:
         async with ctx.turn_lock:
             await _activate_agent(ctx, definition)
-    return active_agent_data(ctx, definition)
+    return {
+        "active": definition.name,
+        "agent_name": definition.name,
+        "provider": ctx.provider_name,
+        "model": str(getattr(ctx.engine, "model", "")),
+        "context_window": int(getattr(ctx.engine, "context_window", 0)),
+    }
 
 
-async def select_provider(ctx: Any, name: str) -> dict[str, str]:
+async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
     from xbotv2.config.loader import load_provider_config, load_provider_names
     from xbotv2.llm.client import create_llm
@@ -112,7 +136,7 @@ async def select_provider(ctx: Any, name: str) -> dict[str, str]:
     return {"provider": name, "model": config.model}
 
 
-def task_snapshots(ctx: Any) -> list[dict[str, Any]]:
+def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     background = getattr(ctx.engine, "background_tasks", None)
     subagents = getattr(ctx.engine, "subagents", None)
@@ -123,7 +147,7 @@ def task_snapshots(ctx: Any) -> list[dict[str, Any]]:
     return tasks
 
 
-async def stop_task(ctx: Any, task_id: str) -> dict[str, Any]:
+async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
     background = getattr(ctx.engine, "background_tasks", None)
     subagents = getattr(ctx.engine, "subagents", None)
     manager = subagents if task_id.startswith("agent-task-") else background
@@ -139,7 +163,7 @@ async def stop_task(ctx: Any, task_id: str) -> dict[str, Any]:
     return dict(result.data) if isinstance(result.data, dict) else {}
 
 
-async def stop_all_tasks(ctx: Any) -> list[dict[str, Any]]:
+async def stop_all_tasks(ctx: SessionRuntime) -> list[dict[str, Any]]:
     stopped: list[dict[str, Any]] = []
     background = getattr(ctx.engine, "background_tasks", None)
     subagents = getattr(ctx.engine, "subagents", None)
@@ -150,17 +174,9 @@ async def stop_all_tasks(ctx: Any) -> list[dict[str, Any]]:
     return stopped
 
 
-def active_agent_data(ctx: Any, definition: Any) -> dict[str, Any]:
-    return {
-        "active": definition.name,
-        "agent_name": definition.name,
-        "provider": ctx.provider_name,
-        "model": str(getattr(ctx.engine, "model", "")),
-        "context_window": int(getattr(ctx.engine, "context_window", 0)),
-    }
-
-
-async def _activate_agent(ctx: Any, definition: Any) -> None:
+async def _activate_agent(
+    ctx: SessionRuntime, definition: AgentDefinition
+) -> None:
     from xbotv2.config.loader import load_provider_config, load_system_config
     from xbotv2.core.agents import (
         apply_agent_definition,
@@ -205,7 +221,7 @@ async def _activate_agent(ctx: Any, definition: Any) -> None:
     ctx.engine.state_store.write_thread_metadata(metadata)
 
 
-def reload_live_policies(ctx: Any) -> None:
+def reload_live_policies(ctx: SessionRuntime) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
     from xbotv2.config.loader import load_system_config
     from xbotv2.config.policy import (
@@ -244,7 +260,7 @@ def reload_live_policies(ctx: Any) -> None:
     )
 
 
-def _require_idle(ctx: Any, action: str) -> None:
+def _require_idle(ctx: SessionRuntime, action: str) -> None:
     if ctx.turn_lock.locked():
         raise OperationError(
             "thread_busy",
@@ -260,11 +276,11 @@ def _new_fork_id() -> str:
 
 __all__ = [
     "OperationError",
-    "active_agent_data",
     "clear_history",
     "fork_persisted_session",
     "fork_session",
     "reload_live_policies",
+    "require_forkable",
     "select_agent",
     "select_provider",
     "stop_all_tasks",

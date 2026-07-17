@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from xbotv2.api.commands import Command
-from xbotv2.protocol.runtime_operations import (
+from xbotv2.core.operations import (
     OperationError,
     clear_history,
     fork_session,
@@ -18,8 +19,12 @@ from xbotv2.protocol.runtime_operations import (
     task_snapshots,
     undo_history,
 )
+from xbotv2.core.session import SessionRuntime
+from xbotv2.protocol.history import display_history
 
-CommandHandler = Callable[[Any, list[str]], Awaitable[dict[str, Any]]]
+logger = logging.getLogger("xbotv2.commands")
+
+CommandHandler = Callable[[SessionRuntime, list[str]], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -55,7 +60,7 @@ def list_commands(*, extra: tuple[Command, ...] = ()) -> list[dict[str, Any]]:
 
 
 async def execute_command(
-    ctx: Any,
+    ctx: SessionRuntime,
     command: str,
     args: list[str],
     *,
@@ -99,7 +104,7 @@ def _plugin_command_dict(command: Command) -> dict[str, Any]:
     }
 
 
-async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _clear_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if args:
         return _result("clear", "Usage: /clear", status="error")
     try:
@@ -114,7 +119,7 @@ async def _clear_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     )
 
 
-async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _undo_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if len(args) > 1:
         return _result("undo", "Usage: /undo [count]", status="error")
     try:
@@ -129,11 +134,11 @@ async def _undo_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         "undo",
         f"Removed {count} conversation turn{'s' if count != 1 else ''}.",
         data={"removed_turns": count},
-        history=_display_history(kept),
+        history=display_history(kept),
     )
 
 
-async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _fork_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if args:
         return _result("fork", "Usage: /fork", status="error")
     try:
@@ -147,7 +152,7 @@ async def _fork_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     )
 
 
-async def _agent_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _agent_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     registry = getattr(ctx.engine, "agent_registry", None)
     definitions = registry.definitions() if registry is not None else ()
     active = str(getattr(ctx.engine.config, "agent_name", "XBotv2"))
@@ -204,7 +209,7 @@ async def _agent_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     )
 
 
-async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _tasks_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if args not in ([], ["ps"]):
         return _result("tasks", "Usage: /tasks [ps]", status="error")
     tasks = task_snapshots(ctx)
@@ -218,7 +223,7 @@ async def _tasks_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     return _result("tasks", "\n".join(lines), data={"tasks": tasks})
 
 
-async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _task_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if len(args) == 2 and args[0] == "stop":
         try:
             data = await stop_task(ctx, args[1])
@@ -242,21 +247,7 @@ async def _task_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         status="error",
     )
 
-def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "role": message.role,
-            "content": str(message.content or ""),
-            "tool_calls": [call.to_dict() for call in message.tool_calls or []],
-            "tool_call_id": message.tool_call_id,
-            "status": message.status,
-        }
-        for message in messages
-        if message.role in {"user", "assistant", "tool"}
-    ]
-
-
-async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _provider_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     action = args[0] if args else "status"
     if action == "status":
         model = str(getattr(ctx.engine, "model", ""))
@@ -271,12 +262,20 @@ async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
         default, names = load_provider_names(ctx.paths)
         current = ctx.provider_name
         if not names:
-            return _result("provider", "No providers configured.", data={"default": default, "providers": []})
+            return _result(
+                "provider",
+                "No providers configured.",
+                data={"default": default, "providers": []},
+            )
         message = "Providers: " + ", ".join(
             f"{name}{' (current)' if name == current else ''}{' (default)' if name == default else ''}"
             for name in names
         )
-        return _result("provider", message, data={"default": default, "providers": names, "current": current})
+        return _result(
+            "provider",
+            message,
+            data={"default": default, "providers": names, "current": current},
+        )
     if action == "use" and len(args) >= 2:
         provider_name = args[1]
         try:
@@ -291,13 +290,19 @@ async def _provider_command(ctx: Any, args: list[str]) -> dict[str, Any]:
     return _result("provider", "Usage: /provider status | list | use <name>", status="error")
 
 
-def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
+def _policy_command(
+    ctx: SessionRuntime, name: str, args: list[str]
+) -> dict[str, Any]:
     action = args[0] if args else "status"
     if action in {"status", "list"}:
         config_key = "sandbox" if name == "sandbox" else "permissions"
         config = getattr(ctx.engine.config, config_key, {})
         overrides = getattr(ctx, f"{name}_overrides", {})
-        return _result(name, f"{name} policy: {config}; session overrides: {overrides}", data={"config": config, "overrides": overrides})
+        return _result(
+            name,
+            f"{name} policy: {config}; session overrides: {overrides}",
+            data={"config": config, "overrides": overrides},
+        )
     if action == "set" and len(args) >= 3:
         key, value = args[1], args[2]
         valid, normalized, message = _validate_policy_action(name, key, value)
@@ -305,7 +310,7 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
             return _result(name, message, status="error")
         getattr(ctx, f"{name}_overrides")[key] = normalized
         if name == "sandbox":
-            _persist_sandbox_overrides(ctx, key, normalized)
+            _persist_sandbox_overrides(ctx)
         reload_live_policies(ctx)
         return _result(name, f"{name} override set for this session: {key}={normalized}")
     if action == "reset":
@@ -317,31 +322,36 @@ def _policy_command(ctx: Any, name: str, args: list[str]) -> dict[str, Any]:
                 return _result(name, message, status="error")
             overrides.pop(key, None)
             if name == "sandbox":
-                _remove_sandbox_override(ctx, key)
+                _persist_sandbox_overrides(ctx, remove=(key,))
         else:
+            removed = tuple(overrides)
             overrides.clear()
             if name == "sandbox":
-                _clear_sandbox_overrides(ctx)
+                _persist_sandbox_overrides(ctx, remove=removed)
         reload_live_policies(ctx)
         return _result(name, f"{name} session overrides reset.")
     return _result(name, f"Usage: /{name} status | set <key> <value> | reset", status="error")
 
 
-async def _permission_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _permission_command(
+    ctx: SessionRuntime, args: list[str]
+) -> dict[str, Any]:
     return _policy_command(ctx, "permission", args)
 
 
-async def _sandbox_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _sandbox_command(
+    ctx: SessionRuntime, args: list[str]
+) -> dict[str, Any]:
     return _policy_command(ctx, "sandbox", args)
 
 
-async def _status_command(ctx: Any, args: list[str]) -> dict[str, Any]:
+async def _status_command(ctx: SessionRuntime, args: list[str]) -> dict[str, Any]:
     if args:
         return _result("status", "Usage: /status", status="error")
     return _result("status", _status_message(ctx), data=_status_data(ctx))
 
 
-def _status_data(ctx: Any) -> dict[str, Any]:
+def _status_data(ctx: SessionRuntime) -> dict[str, Any]:
     loader = getattr(ctx.engine, "plugin_loader", None)
     return {
         "session_id": ctx.session_id,
@@ -395,41 +405,23 @@ def _normalize_sandbox_value(key: str, value: str) -> str | bool | None:
     return value if key not in special else None
 
 
-def _persist_sandbox_overrides(ctx: Any, key: str, value: Any) -> None:
+def _persist_sandbox_overrides(
+    ctx: SessionRuntime, *, remove: tuple[str, ...] = ()
+) -> None:
     overrides = getattr(ctx, "sandbox_overrides", {})
-    if not overrides:
-        return
     from xbotv2.config.policy import persist_sandbox_config
     try:
         persist_sandbox_config(
             paths=ctx.paths,
             session_id=ctx.session_id,
             sandbox=dict(overrides),
+            remove=remove,
         )
     except Exception as exc:
-        from xbotv2.protocol.http_server import logger
         logger.warning("sandbox override persist failed: %s", exc)
 
 
-def _remove_sandbox_override(ctx: Any, key: str) -> None:
-    overrides = getattr(ctx, "sandbox_overrides", {})
-    if overrides:
-        _persist_sandbox_overrides(ctx, key, None)
-
-
-def _clear_sandbox_overrides(ctx: Any) -> None:
-    from xbotv2.config.policy import clear_sandbox_config
-    try:
-        clear_sandbox_config(
-            paths=ctx.paths,
-            session_id=ctx.session_id,
-        )
-    except Exception as exc:
-        from xbotv2.protocol.http_server import logger
-        logger.warning("sandbox override clear failed: %s", exc)
-
-
-def _status_message(ctx: Any) -> str:
+def _status_message(ctx: SessionRuntime) -> str:
     data = _status_data(ctx)
     return (
         f"session={data['session_id']} thread={data['thread_id']} "

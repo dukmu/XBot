@@ -30,6 +30,7 @@ import httpx
 import pytest
 import pytest_asyncio
 import xbotv2
+import yaml
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
@@ -1703,6 +1704,7 @@ async def test_typed_task_stop_is_idempotent(
     task_id = started.data["task_id"]
     await asyncio.sleep(0)
 
+    busy_fork = await client.post("/sessions/task-stop/fork")
     first = await client.post(
         f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
     )
@@ -1710,6 +1712,8 @@ async def test_typed_task_stop_is_idempotent(
         f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
     )
 
+    assert busy_fork.status_code == 409
+    assert busy_fork.json()["code"] == "thread_busy"
     assert first.status_code == 200
     assert first.json()["matched_count"] == 1
     assert first.json()["tasks"][0]["status"] == "stopped"
@@ -2439,6 +2443,12 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
         "/sessions", json={"session_id": "sandbox-persist", "thread_id": "t"}
     )
     assert open_resp.status_code == 200
+    policy_path = http_app.state.paths.session("sandbox-persist").policy_file
+    kept_resources = [{"path": "/tmp/approved", "access": "readwrite"}]
+    policy_path.write_text(
+        yaml.safe_dump({"sandbox": {"resources": kept_resources}}),
+        encoding="utf-8",
+    )
 
     # Set network=false — should persist to policy.yaml
     set_network = await client.post(
@@ -2464,12 +2474,40 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
     assert ctx.engine.sandbox_policy.external_read == "deny"
 
     # policy.yaml file was written
-    policy_path = ctx.paths.session("sandbox-persist").policy_file
     assert policy_path.exists()
-    import yaml
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     assert doc["sandbox"]["network"] is False
     assert doc["sandbox"]["external_read"] == "deny"
+    assert doc["sandbox"]["resources"] == kept_resources
+
+    await client.post(
+        "/sessions/sandbox-persist/threads/t/commands",
+        json={"command": "sandbox", "args": ["reset", "network"]},
+    )
+    doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    assert doc["sandbox"] == {
+        "resources": kept_resources,
+        "external_read": "deny",
+    }
+
+    await client.post(
+        "/sessions/sandbox-persist/threads/t/commands",
+        json={"command": "sandbox", "args": ["reset", "external_read"]},
+    )
+    doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    assert doc["sandbox"] == {"resources": kept_resources}
+
+    resumed = await client.post(
+        "/sessions",
+        json={
+            "session_id": "sandbox-persist",
+            "thread_id": "t",
+            "mode": "resume",
+        },
+    )
+    assert resumed.status_code == 200
+    resumed_ctx = await http_app.state.manager.get("sandbox-persist", "t")
+    assert resumed_ctx.sandbox_overrides == {}
 
 
 @pytest.mark.asyncio

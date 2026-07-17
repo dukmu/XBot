@@ -63,7 +63,8 @@ POST /sessions/{session_id}/threads/{thread_id}/tasks/stop
 History and configuration mutations require an active, idle thread. A running
 turn returns `409 thread_busy` with `retryable=true`. Missing Agents, providers,
 and tasks return typed `404` errors. Stopping an already terminal task is an
-idempotent success.
+idempotent success. Fork also returns `thread_busy` while a background task is
+pending or running.
 
 The TUI currently has a compatibility endpoint for discovery and execution of
 plugin-defined human slash commands. It is intentionally omitted from OpenAPI

@@ -81,7 +81,9 @@ Server command results render as transcript notices but do not enter LLM message
 history.
 
 Policy commands validate keys and values. `set` and `reset` both update the
-session overrides and the live in-memory session policy.
+session overrides and the live in-memory session policy. Sandbox reset removes
+only the selected override, preserving independent resource approvals, and the
+removed key does not reappear after resume.
 
 ## Composer
 

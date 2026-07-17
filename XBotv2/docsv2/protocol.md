@@ -97,7 +97,8 @@ machine API. Human slash commands remain TUI adapters:
 - `/clear` removes all message history while preserving the session id, policy,
   artifacts, and plugin state.
 - `/fork` copies persisted state, artifacts, plugin state, and policy to a new
-  session id without copying a live turn or interaction.
+  session id. It rejects live turns, interactions, and background tasks rather
+  than copying changing runtime state.
 - `/agent list` discovers Primary Agents and `/agent use <name>` changes the
   active Agent for subsequent turns without replacing the thread or history.
 - `/tasks [ps]` lists live background shell and subagent tasks. `/task stop <id>` and

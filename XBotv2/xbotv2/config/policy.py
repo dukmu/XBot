@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,10 @@ def merge_permission_config(
     overlay: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Merge permission rules, preserving deny/allow/ask precedence in PermissionSystem."""
-    merged: dict[str, Any] = {key: list((base or {}).get(key, [])) for key in ("deny", "allow", "ask")}
+    merged: dict[str, Any] = {
+        key: list((base or {}).get(key, []))
+        for key in ("deny", "allow", "ask")
+    }
     if overlay:
         for key in ("deny", "allow", "ask"):
             merged[key] = list(overlay.get(key, [])) + merged[key]
@@ -57,33 +61,25 @@ def persist_sandbox_config(
     paths: RuntimePaths,
     session_id: str,
     sandbox: dict[str, Any],
+    remove: Iterable[str] = (),
 ) -> None:
-    """Write top-level sandbox keys to the session policy file.
+    """Update explicit sandbox keys in the session policy file.
 
     Callers should strip implicit workspace/data-root rules before
     passing the dict — only user-visible keys (enabled, network,
-    resources, external_read/write, …) should be persisted.
+    resources, external_read/write, …) should be persisted. ``remove``
+    deletes only named keys and preserves independently persisted rules.
     """
 
-    if not sandbox:
-        return
     path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
-    sandbox_section = doc.setdefault("sandbox", {})
+    current = doc.setdefault("sandbox", {})
+    for key in remove:
+        current.pop(key, None)
     clean: dict[str, Any] = {k: v for k, v in sandbox.items() if not k.startswith("_")}
-    sandbox_section.update(clean)
-    _write_yaml(path, doc)
-
-
-def clear_sandbox_config(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-) -> None:
-    """Remove the session sandbox overlay entirely from policy.yaml."""
-    path = paths.session(session_id).policy_file
-    doc = _read_yaml(path)
-    doc.pop("sandbox", None)
+    current.update(clean)
+    if not current:
+        doc.pop("sandbox", None)
     if doc:
         _write_yaml(path, doc)
     elif path.exists():

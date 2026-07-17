@@ -63,15 +63,12 @@ from xbotv2.protocol.models import (
 )
 from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
-from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.config.loader import load_provider_config, load_provider_names
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.protocol.commands import execute_command, list_commands
-from xbotv2.protocol.runtime_operations import (
+from xbotv2.core.operations import (
     OperationError,
     clear_history,
     fork_persisted_session,
+    require_forkable,
     select_agent,
     select_provider,
     stop_all_tasks,
@@ -79,6 +76,10 @@ from xbotv2.protocol.runtime_operations import (
     task_snapshots,
     undo_history,
 )
+from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
+from xbotv2.persistence.store import CoreStateStore
+from xbotv2.protocol.commands import execute_command, list_commands
+from xbotv2.protocol.history import display_history
 from xbotv2.protocol.session_manager import (
     SessionExists,
     SessionManager,
@@ -303,12 +304,7 @@ def _register_routes(app: FastAPI) -> None:
             for (active_session_id, _), ctx in active.items()
             if active_session_id == session_id
         ]
-        if any(ctx.turn_lock.locked() for ctx in session_contexts):
-            raise OperationError(
-                "thread_busy",
-                "Cannot fork while a session thread is active.",
-                retryable=True,
-            )
+        require_forkable(*session_contexts)
         async with AsyncExitStack() as stack:
             for ctx in sorted(session_contexts, key=lambda item: item.thread_id):
                 await stack.enter_async_context(ctx.turn_lock)
@@ -523,7 +519,7 @@ def _register_routes(app: FastAPI) -> None:
         return ThreadMessagesResponse(
             session_id=session_id,
             thread_id=thread_id,
-            messages=_display_history(messages),
+            messages=display_history(messages),
         )
 
     @app.post(
@@ -558,7 +554,7 @@ def _register_routes(app: FastAPI) -> None:
             session_id=session_id,
             thread_id=thread_id,
             removed_turns=payload.count,
-            messages=_display_history(messages),
+            messages=display_history(messages),
         )
 
     @app.get(
@@ -993,47 +989,8 @@ def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
         model=str(getattr(ctx.engine, "model", "")),
         context_window=int(getattr(ctx.engine, "context_window", 0)),
         usage=ctx.engine.session_usage,
-        history=_display_history(ctx.engine.messages),
+        history=display_history(ctx.engine.messages),
     )
-
-
-def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
-    history = []
-    for message in messages:
-        role = str(getattr(message, "role", ""))
-        if role not in {"user", "assistant", "tool"}:
-            continue
-        additional = getattr(message, "additional_kwargs", {}) or {}
-        artifacts = []
-        for artifact in getattr(message, "artifact", None) or []:
-            if hasattr(artifact, "to_dict"):
-                artifacts.append(artifact.to_dict())
-            elif isinstance(artifact, dict):
-                artifacts.append(dict(artifact))
-        item = {
-            "role": role,
-            "content": (
-                tool_result_display_content(
-                    str(getattr(message, "content", "") or "")
-                )
-                if role == "tool"
-                and additional.get(MESSAGE_FORMAT_KEY) == "xml-v1"
-                else str(getattr(message, "content", "") or "")
-            ),
-            "tool_calls": [
-                call.to_dict() for call in (getattr(message, "tool_calls", None) or [])
-            ],
-            "tool_call_id": str(getattr(message, "tool_call_id", "") or ""),
-            "status": str(getattr(message, "status", "") or ""),
-        }
-        if role == "tool":
-            item.update({
-                "data": additional.get("xbotv2_data"),
-                "error": additional.get("xbotv2_error"),
-                "artifacts": artifacts,
-            })
-        history.append(item)
-    return history
 
 
 async def _resolve_interaction(
