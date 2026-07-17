@@ -446,14 +446,27 @@ class XBotTextualApp(App[None]):
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
         try:
-            result = await self.session.run_command(spec.name, parts, spec.raw, kind=spec.kind)
+            if spec.kind == "client":
+                outcome = await self.session.run_builtin_command(spec.name, parts)
+                message = outcome.message
+                metadata = outcome.data
+                history = outcome.history
+            else:
+                result = await self.session.run_command(
+                    spec.name, parts, spec.raw, kind=spec.kind
+                )
+                data = result.get("data") if isinstance(result, dict) else {}
+                message = str(data.get("message") or result)
+                command_data = data.get("data")
+                metadata = command_data if isinstance(command_data, dict) else data
+                history = data.get("history")
+        except ValueError as exc:
+            await self._append_local_notice(f"/{spec.name}", str(exc))
+            return
         except Exception as exc:
             self._record_error(exc)
             return
-        data = result.get("data") if isinstance(result, dict) else {}
-        if isinstance(data, dict):
-            command_data = data.get("data")
-            metadata = command_data if isinstance(command_data, dict) else data
+        if isinstance(metadata, dict):
             metadata_changed = False
             if metadata.get("agent_name"):
                 self.state.agent_name = str(metadata["agent_name"])
@@ -472,8 +485,6 @@ class XBotTextualApp(App[None]):
                 metadata_changed = True
             if metadata_changed:
                 self._refresh_status()
-        message = str(data.get("message") or result)
-        history = data.get("history")
         if isinstance(history, list):
             await self._cmd_clear()
             self.state.restore_history(history)
@@ -578,24 +589,6 @@ class XBotTextualApp(App[None]):
         popup = self._get_completion_popup()
         if popup is not None:
             popup.update_for("")
-
-    async def _cmd_status(self) -> None:
-        """Append a snapshot of the current TUI state to the stream."""
-
-        usage = self.state.usage
-        await self._append_local_notice(
-            "Status",
-            (
-                f"mode={self._current_tui_mode().value} "
-                f"status={self.state.status} "
-                f"turn={self.state.turn} "
-                f"queued={self._queued_request_count()} "
-                f"req={usage['requests']} "
-                f"in={usage['input_tokens']} "
-                f"out={usage['output_tokens']} "
-                f"total={usage['total_tokens']}"
-            ),
-        )
 
     async def _collect_queued_message(
         self,

@@ -108,6 +108,89 @@ class HttpTransport:
         )
         return result.model_dump()
 
+    async def get_thread(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (await self._client.get_thread(session_id, thread_id)).model_dump()
+
+    async def list_providers(self) -> dict[str, Any]:
+        return (await self._client.list_providers()).model_dump()
+
+    async def select_provider(
+        self, *, session_id: str, thread_id: str, name: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.select_provider(session_id, thread_id, name)
+        ).model_dump()
+
+    async def list_agents(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (await self._client.list_agents(session_id, thread_id)).model_dump()
+
+    async def select_agent(
+        self, *, session_id: str, thread_id: str, name: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.select_agent(session_id, thread_id, name)
+        ).model_dump()
+
+    async def clear_history(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (await self._client.clear_history(session_id, thread_id)).model_dump()
+
+    async def undo_history(
+        self, *, session_id: str, thread_id: str, count: int
+    ) -> dict[str, Any]:
+        return (
+            await self._client.undo_history(session_id, thread_id, count)
+        ).model_dump()
+
+    async def fork_session(self, *, session_id: str) -> dict[str, Any]:
+        return (await self._client.fork_session(session_id)).model_dump()
+
+    async def list_tasks(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (await self._client.list_tasks(session_id, thread_id)).model_dump()
+
+    async def stop_task(
+        self, *, session_id: str, thread_id: str, task_id: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.stop_task(session_id, thread_id, task_id)
+        ).model_dump()
+
+    async def stop_all_tasks(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.stop_all_tasks(session_id, thread_id)
+        ).model_dump()
+
+    async def get_session_policy(self, *, session_id: str) -> dict[str, Any]:
+        return (await self._client.get_session_policy(session_id)).model_dump()
+
+    async def update_session_policy(
+        self,
+        *,
+        session_id: str,
+        permissions: dict[str, str] | None = None,
+        remove_permissions: list[str] | None = None,
+        sandbox: dict[str, Any] | None = None,
+        remove_sandbox: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return (
+            await self._client.update_session_policy(
+                session_id,
+                permissions=permissions,
+                remove_permissions=remove_permissions,
+                sandbox=sandbox,
+                remove_sandbox=remove_sandbox,
+            )
+        ).model_dump()
+
     def send_message(
         self,
         *,

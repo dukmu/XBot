@@ -30,8 +30,6 @@ class SessionRuntime:
     workspace_root: str
     no_plugins: bool
     engine: Any
-    permission_overrides: dict[str, str] = field(default_factory=dict)
-    sandbox_overrides: dict[str, str] = field(default_factory=dict)
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
     mailbox: SessionMailbox = field(init=False)

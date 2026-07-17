@@ -54,6 +54,56 @@ class Transport(Protocol):
     ) -> dict[str, Any]:
         """Execute a server-side slash command."""
 
+    async def get_thread(self, *, session_id: str, thread_id: str) -> dict[str, Any]: ...
+
+    async def list_providers(self) -> dict[str, Any]: ...
+
+    async def select_provider(
+        self, *, session_id: str, thread_id: str, name: str
+    ) -> dict[str, Any]: ...
+
+    async def list_agents(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]: ...
+
+    async def select_agent(
+        self, *, session_id: str, thread_id: str, name: str
+    ) -> dict[str, Any]: ...
+
+    async def clear_history(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]: ...
+
+    async def undo_history(
+        self, *, session_id: str, thread_id: str, count: int
+    ) -> dict[str, Any]: ...
+
+    async def fork_session(self, *, session_id: str) -> dict[str, Any]: ...
+
+    async def list_tasks(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]: ...
+
+    async def stop_task(
+        self, *, session_id: str, thread_id: str, task_id: str
+    ) -> dict[str, Any]: ...
+
+    async def stop_all_tasks(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]: ...
+
+    async def get_session_policy(self, *, session_id: str) -> dict[str, Any]: ...
+
+    async def update_session_policy(
+        self,
+        *,
+        session_id: str,
+        permissions: dict[str, str] | None = None,
+        remove_permissions: list[str] | None = None,
+        sandbox: dict[str, Any] | None = None,
+        remove_sandbox: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+
     def send_message(
         self,
         *,

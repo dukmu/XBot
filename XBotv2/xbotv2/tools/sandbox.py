@@ -81,6 +81,23 @@ class SandboxPolicy:
     def add_rule(self, path: str, access: PathAccess) -> None:
         self._rules.insert(0, SandboxResourceRule(path=path, access=access))
 
+    def replace_config(self, config: dict[str, Any]) -> None:
+        """Replace policy state without invalidating runtime references."""
+        replacement = SandboxPolicy(
+            config,
+            data_root=self.data_root,
+            workspace_root=self.workspace_root,
+            session_root=self.session_root,
+        )
+        self.enabled = replacement.enabled
+        self._network = replacement._network
+        self.external_read = replacement.external_read
+        self.external_write = replacement.external_write
+        self.workspace_read = replacement.workspace_read
+        self.workspace_write = replacement.workspace_write
+        self._rules = replacement._rules
+        self._backend = replacement._backend
+
     # ------------------------------------------------------------------
     # Sandbox capabilities (system I/O isolated via bwrap)
     # ------------------------------------------------------------------

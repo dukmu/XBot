@@ -72,9 +72,71 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/details [on|off|toggle]",
         raw="/details",
     ),
+    "status": CommandSpec(
+        name="status", kind="client",
+        description="Show the current session and thread status",
+        raw="/status",
+    ),
+    "provider": CommandSpec(
+        name="provider", kind="client",
+        description="List or switch provider configuration",
+        usage="/provider [status|list|use <name>]",
+        raw="/provider",
+    ),
+    "agent": CommandSpec(
+        name="agent", kind="client",
+        description="List or switch the active primary Agent",
+        usage="/agent [status|list|use <name>|<name>]",
+        raw="/agent",
+    ),
+    "clear": CommandSpec(
+        name="clear", kind="client",
+        description="Clear conversation history",
+        raw="/clear",
+    ),
+    "undo": CommandSpec(
+        name="undo", kind="client",
+        description="Remove recent conversation turns",
+        usage="/undo [count]",
+        raw="/undo",
+    ),
+    "fork": CommandSpec(
+        name="fork", kind="client",
+        description="Fork the persisted session",
+        raw="/fork",
+    ),
+    "tasks": CommandSpec(
+        name="tasks", kind="client",
+        description="List background tasks",
+        usage="/tasks [ps]",
+        raw="/tasks",
+    ),
+    "task": CommandSpec(
+        name="task", kind="client",
+        description="Stop background tasks",
+        usage="/task stop <id> | /task stopall",
+        raw="/task",
+    ),
+    "permission": CommandSpec(
+        name="permission", kind="client",
+        description="Inspect or update session tool permissions",
+        usage="/permission [status|set <tool> <decision>|reset [tool]]",
+        raw="/permission",
+    ),
+    "sandbox": CommandSpec(
+        name="sandbox", kind="client",
+        description="Inspect or update the session sandbox",
+        usage="/sandbox [status|set <key> <value>|reset [key]]",
+        raw="/sandbox",
+    ),
 }
+_CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
-_CLIENT_SEARCH_ORDER = ("help", "clear-screen", "thinking", "details", "exit")
+_CLIENT_SEARCH_ORDER = (
+    "help", "status", "provider", "agent", "clear", "undo", "fork",
+    "tasks", "task", "permission", "sandbox", "clear-screen", "thinking",
+    "details", "exit",
+)
 _ALIASES = dict(_CLIENT_ALIASES)
 _COMMANDS = dict(_CLIENT_COMMANDS)
 _SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)

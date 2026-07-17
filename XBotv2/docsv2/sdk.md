@@ -46,7 +46,7 @@ async with XBotClient("http://127.0.0.1:4096") as client:
 The client also accepts `uds_path` for the local Unix-socket server. It has no
 slash command or direct Tool execution methods. The TUI HTTP transport delegates
 public operations and SSE decoding to this client, adding only tracing, dict
-adaptation, and the temporary human-command compatibility route.
+adaptation, and the plugin-command compatibility route.
 
 ## Mutations
 
@@ -54,6 +54,8 @@ Machine clients use explicit operations rather than constructing slash text:
 
 ```text
 POST /sessions/{session_id}/fork
+GET   /sessions/{session_id}/policy
+PATCH /sessions/{session_id}/policy
 POST /sessions/{session_id}/threads/{thread_id}/history/clear
 POST /sessions/{session_id}/threads/{thread_id}/history/undo
 PUT  /sessions/{session_id}/threads/{thread_id}/agent
@@ -62,16 +64,22 @@ POST /sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop
 POST /sessions/{session_id}/threads/{thread_id}/tasks/stop
 ```
 
-History and configuration mutations require an active, idle thread. A running
-turn returns `409 thread_busy` with `retryable=true`. Missing Agents, providers,
-and tasks return typed `404` errors. Stopping an already terminal task is an
-idempotent success. Fork also returns `thread_busy` while a background task is
-pending or running.
+Thread-scoped history and configuration mutations require an active, idle
+thread. Session policy can also be updated while all threads are inactive, but
+rejects an active turn or background task. Busy mutations return
+`409 thread_busy` with `retryable=true`. Missing Agents, providers, and tasks
+return typed `404` errors. Stopping an already terminal task is an idempotent
+success. Fork also rejects pending or running background tasks.
+
+Session policy patches update exact top-level Tool decisions and sparse sandbox
+keys. They preserve parameter-specific permission rules and sandbox resource
+approvals. The server persists the patch to `policy.yaml` and reloads every
+active thread without replacing parent/child permission intersections.
 
 The TUI currently has a compatibility endpoint for discovery and execution of
 plugin-defined human slash commands. It is intentionally omitted from OpenAPI
-and generated SDKs. Commands parse human syntax and then call the same runtime
-operations as the typed API; they are not an alternate machine API.
+and generated SDKs. Built-in TUI commands parse human syntax in the client and
+call typed SDK methods. Only plugin-owned commands use the compatibility route.
 
 ## Streaming
 

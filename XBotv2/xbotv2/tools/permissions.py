@@ -73,6 +73,14 @@ class PermissionSystem:
         }[decision]
         target.insert(0, rule)
 
+    def replace_rules(self, config: Any | None) -> None:
+        """Replace configured rules without invalidating shared references."""
+        self._deny_rules.clear()
+        self._allow_rules.clear()
+        self._ask_rules.clear()
+        if config is not None:
+            self._load_config(config)
+
     @staticmethod
     def _parse_rule(data: dict, decision: PermissionDecision) -> PermissionRule:
         return PermissionRule(

@@ -26,13 +26,18 @@ from xbotv2.protocol.models import (
     OpenSessionResponse,
     OpenThreadRequest,
     PermissionResponseRequest,
+    PermissionDecision,
     ProviderListResponse,
     ProviderSelectionRequest,
     ProviderSelectionResponse,
     ServerEvent,
     SessionListResponse,
     SessionMode,
+    SessionPolicyPatch,
+    SessionPolicyResponse,
     SessionSummary,
+    SandboxKey,
+    SandboxValue,
     TaskListResponse,
     TaskStopResponse,
     ThreadListResponse,
@@ -148,6 +153,34 @@ class XBotClient:
     async def get_session(self, session_id: str) -> SessionSummary:
         return await self._request(
             "GET", f"/sessions/{_segment(session_id)}", SessionSummary
+        )
+
+    async def get_session_policy(self, session_id: str) -> SessionPolicyResponse:
+        return await self._request(
+            "GET",
+            f"/sessions/{_segment(session_id)}/policy",
+            SessionPolicyResponse,
+        )
+
+    async def update_session_policy(
+        self,
+        session_id: str,
+        *,
+        permissions: dict[str, PermissionDecision] | None = None,
+        remove_permissions: list[str] | None = None,
+        sandbox: dict[SandboxKey, SandboxValue] | None = None,
+        remove_sandbox: list[SandboxKey] | None = None,
+    ) -> SessionPolicyResponse:
+        return await self._request(
+            "PATCH",
+            f"/sessions/{_segment(session_id)}/policy",
+            SessionPolicyResponse,
+            SessionPolicyPatch(
+                permissions=permissions or {},
+                remove_permissions=remove_permissions or [],
+                sandbox=sandbox or {},
+                remove_sandbox=remove_sandbox or [],
+            ),
         )
 
     async def fork_session(self, session_id: str) -> ForkResponse:

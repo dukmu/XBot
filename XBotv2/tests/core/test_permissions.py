@@ -1,13 +1,22 @@
 """Tests for PermissionSystem."""
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from xbotv2.tools.permissions import PermissionSystem, PermissionRule
+from xbotv2.tools.permissions import (
+    PermissionIntersection,
+    PermissionRule,
+    PermissionSystem,
+)
 from xbotv2.api import ToolCall
 from xbotv2.config.policy import _permission_rule_for_tool_call
+from xbotv2.api.paths import RuntimePaths
+from xbotv2.core.operations import update_session_policy
+from xbotv2.tools.sandbox import SandboxPolicy
 
 
 class TestPermissionRule:
@@ -50,6 +59,18 @@ class TestPermissionSystemBasics:
         """When no rules match, default is used."""
         decision = permission_system.check("any_tool", {})
         assert decision == permission_system.default_decision
+
+    def test_replacing_rules_preserves_parent_intersection_reference(self):
+        parent = PermissionSystem({"deny": [{"tool": "shell"}]})
+        child = PermissionSystem({"ask": [{"tool": "shell"}]})
+        permissions = PermissionIntersection(parent, child)
+
+        parent.replace_rules({"allow": [{"tool": "shell"}]})
+        child.replace_rules({"allow": [{"tool": "shell"}]})
+
+        assert permissions.parent is parent
+        assert permissions.child is child
+        assert permissions.check("shell") == "allow"
 
     def test_deny_wins(self, permission_system):
         """Deny always takes precedence."""
@@ -110,6 +131,59 @@ class TestPermissionSystemBasics:
             "filesystem_write",
             {"path": "other.md", "content": "large private document"},
         ) == "ask"
+
+
+@pytest.mark.asyncio
+async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.session("s").root.mkdir(parents=True)
+    parent_permissions = PermissionSystem({"deny": [{"tool": "shell"}]})
+    child_permissions = PermissionSystem({"allow": [{"tool": "shell"}]})
+    intersection = PermissionIntersection(parent_permissions, child_permissions)
+
+    def runtime(thread_id, permissions, base_permissions):
+        sandbox = SandboxPolicy(
+            {},
+            data_root=paths.data_dir,
+            workspace_root=tmp_path,
+            session_root=paths.session("s").thread(thread_id).root,
+        )
+        engine = SimpleNamespace(
+            permission_system=permissions,
+            sandbox_policy=sandbox,
+            startup_config=SimpleNamespace(
+                permissions=base_permissions,
+                sandbox={},
+            ),
+            config=SimpleNamespace(permissions={}, sandbox={}),
+        )
+        return SimpleNamespace(
+            session_id="s",
+            thread_id=thread_id,
+            paths=paths,
+            workspace_root=str(tmp_path),
+            engine=engine,
+            turn_lock=asyncio.Lock(),
+        )
+
+    parent = runtime(
+        "agent", parent_permissions, {"deny": [{"tool": "shell"}]}
+    )
+    child = runtime(
+        "child", intersection, {"allow": [{"tool": "shell"}]}
+    )
+
+    await update_session_policy(
+        paths=paths,
+        session_id="s",
+        contexts=[parent, child],
+        permissions={"shell": "allow"},
+    )
+
+    assert parent.engine.permission_system is parent_permissions
+    assert child.engine.permission_system is intersection
+    assert intersection.parent is parent_permissions
+    assert intersection.check("shell") == "deny"
 
 
 class TestConfigLoading:

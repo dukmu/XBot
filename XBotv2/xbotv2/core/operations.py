@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import shutil
+from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -174,6 +175,46 @@ async def stop_all_tasks(ctx: SessionRuntime) -> list[dict[str, Any]]:
     return stopped
 
 
+async def update_session_policy(
+    *,
+    paths: RuntimePaths,
+    session_id: str,
+    contexts: list[SessionRuntime],
+    permissions: dict[str, str] | None = None,
+    remove_permissions: list[str] | None = None,
+    sandbox: dict[str, Any] | None = None,
+    remove_sandbox: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persist a session policy patch and apply it to every live thread."""
+    from xbotv2.config.policy import patch_session_policy
+
+    for ctx in contexts:
+        _require_idle(ctx, "update session policy")
+        if any(
+            task.get("status") in {"pending", "running"}
+            for task in task_snapshots(ctx)
+        ):
+            raise OperationError(
+                "thread_busy",
+                "Cannot update session policy while a background task is active.",
+                retryable=True,
+            )
+    async with AsyncExitStack() as stack:
+        for ctx in sorted(contexts, key=lambda item: item.thread_id):
+            await stack.enter_async_context(ctx.turn_lock)
+        policy = patch_session_policy(
+            paths=paths,
+            session_id=session_id,
+            permissions=permissions,
+            remove_permissions=remove_permissions or (),
+            sandbox=sandbox,
+            remove_sandbox=remove_sandbox or (),
+        )
+        for ctx in contexts:
+            reload_live_policies(ctx)
+    return policy
+
+
 async def _activate_agent(
     ctx: SessionRuntime, definition: AgentDefinition
 ) -> None:
@@ -229,7 +270,7 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
         merge_permission_config,
         merge_sandbox_config,
     )
-    from xbotv2.tools.permissions import PermissionSystem
+    from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
     from xbotv2.tools.sandbox import SandboxPolicy
 
     base_config = getattr(ctx.engine, "startup_config", None)
@@ -240,24 +281,29 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
         base_config.permissions,
         session_policy.get("permissions"),
     )
-    for tool, decision in getattr(ctx, "permission_overrides", {}).items():
-        if decision in {"allow", "deny", "ask"}:
-            permissions.setdefault(decision, []).insert(0, {"tool": tool})
-
     sandbox = merge_sandbox_config(
         base_config.sandbox,
         session_policy.get("sandbox"),
-        overrides=getattr(ctx, "sandbox_overrides", None),
     )
     ctx.engine.config.permissions = permissions
     ctx.engine.config.sandbox = sandbox
-    ctx.engine.permission_system = PermissionSystem(permissions)
-    ctx.engine.sandbox_policy = SandboxPolicy(
-        sandbox,
-        data_root=ctx.paths.data_dir,
-        workspace_root=Path(ctx.workspace_root),
-        session_root=ctx.engine.sandbox_policy.session_root,
-    )
+    live_permissions = ctx.engine.permission_system
+    if isinstance(live_permissions, PermissionIntersection):
+        live_permissions.child.replace_rules(permissions)
+    elif isinstance(live_permissions, PermissionSystem):
+        live_permissions.replace_rules(permissions)
+    else:
+        ctx.engine.permission_system = PermissionSystem(permissions)
+    live_sandbox = ctx.engine.sandbox_policy
+    if isinstance(live_sandbox, SandboxPolicy):
+        live_sandbox.replace_config(sandbox)
+    else:
+        ctx.engine.sandbox_policy = SandboxPolicy(
+            sandbox,
+            data_root=ctx.paths.data_dir,
+            workspace_root=Path(ctx.workspace_root),
+            session_root=getattr(live_sandbox, "session_root", None),
+        )
 
 
 def _require_idle(ctx: SessionRuntime, action: str) -> None:
@@ -287,4 +333,5 @@ __all__ = [
     "stop_task",
     "task_snapshots",
     "undo_history",
+    "update_session_policy",
 ]

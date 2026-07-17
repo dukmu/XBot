@@ -13,11 +13,48 @@ from xbotv2.api.tools import ToolCall
 
 
 PermissionScope = str
+_PERMISSION_DECISIONS = ("deny", "allow", "ask")
 
 
 def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
     """Load optional session-local policy overlay."""
     return _read_yaml(paths.session(session_id).policy_file)
+
+
+def patch_session_policy(
+    *,
+    paths: RuntimePaths,
+    session_id: str,
+    permissions: dict[str, str] | None = None,
+    remove_permissions: Iterable[str] = (),
+    sandbox: dict[str, Any] | None = None,
+    remove_sandbox: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Apply one session policy patch while preserving unrelated rules."""
+    path = paths.session(session_id).policy_file
+    doc = _read_yaml(path)
+    permission_config = doc.setdefault("permissions", {})
+    for tool in (*remove_permissions, *(permissions or {})):
+        _remove_rule(permission_config, {"tool": re.escape(tool)})
+    for tool, decision in (permissions or {}).items():
+        permission_config.setdefault(decision, []).insert(
+            0, {"tool": re.escape(tool)}
+        )
+    if not permission_config:
+        doc.pop("permissions", None)
+
+    sandbox_config = doc.setdefault("sandbox", {})
+    for key in remove_sandbox:
+        sandbox_config.pop(key, None)
+    sandbox_config.update(sandbox or {})
+    if not sandbox_config:
+        doc.pop("sandbox", None)
+
+    if doc:
+        _write_yaml(path, doc)
+    elif path.exists():
+        path.unlink()
+    return doc
 
 
 def merge_permission_config(
@@ -27,10 +64,10 @@ def merge_permission_config(
     """Merge permission rules, preserving deny/allow/ask precedence in PermissionSystem."""
     merged: dict[str, Any] = {
         key: list((base or {}).get(key, []))
-        for key in ("deny", "allow", "ask")
+        for key in _PERMISSION_DECISIONS
     }
     if overlay:
-        for key in ("deny", "allow", "ask"):
+        for key in _PERMISSION_DECISIONS:
             merged[key] = list(overlay.get(key, [])) + merged[key]
     return {key: value for key, value in merged.items() if value}
 
@@ -54,36 +91,6 @@ def merge_sandbox_config(
     if resources:
         merged["resources"] = resources
     return merged
-
-
-def persist_sandbox_config(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    sandbox: dict[str, Any],
-    remove: Iterable[str] = (),
-) -> None:
-    """Update explicit sandbox keys in the session policy file.
-
-    Callers should strip implicit workspace/data-root rules before
-    passing the dict — only user-visible keys (enabled, network,
-    resources, external_read/write, …) should be persisted. ``remove``
-    deletes only named keys and preserves independently persisted rules.
-    """
-
-    path = paths.session(session_id).policy_file
-    doc = _read_yaml(path)
-    current = doc.setdefault("sandbox", {})
-    for key in remove:
-        current.pop(key, None)
-    clean: dict[str, Any] = {k: v for k, v in sandbox.items() if not k.startswith("_")}
-    current.update(clean)
-    if not current:
-        doc.pop("sandbox", None)
-    if doc:
-        _write_yaml(path, doc)
-    elif path.exists():
-        path.unlink()
 
 
 def persist_permission_decision(
@@ -135,8 +142,11 @@ def persist_permission_decision(
     if rule not in permissions[decision]:
         permissions[decision].insert(0, rule)
     _write_yaml(path, doc)
-    if engine is not None and getattr(engine, "permission_system", None) is not None:
-        engine.permission_system.add_rule(decision, rule)
+    if engine is not None:
+        permission_system = getattr(engine, "permission_system", None)
+        permission_system = getattr(permission_system, "child", permission_system)
+        if permission_system is not None:
+            permission_system.add_rule(decision, rule)
 
 
 def _persist_sandbox_rule(
@@ -199,7 +209,7 @@ def _tool_call_paths(tool_call: ToolCall, workspace_root: Path) -> list[str]:
 
 
 def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:
-    for key in ("deny", "allow", "ask"):
+    for key in _PERMISSION_DECISIONS:
         permissions[key] = [item for item in permissions.get(key, []) if item != rule]
         if not permissions[key]:
             permissions.pop(key, None)

@@ -282,8 +282,6 @@ class CoreStateStore:
             "message_count": self.message_count(),
             "status": "active",
             "pending_interactions": [],
-            "permission_overrides": {},
-            "sandbox_overrides": {},
             "workspace": {},
             "plugin_states": self._read_all_plugin_states(),
             "artifacts_root": str(self.artifacts_dir),

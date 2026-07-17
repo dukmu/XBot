@@ -32,6 +32,7 @@ import pytest
 
 from xbotv2.tui.command import parse_slash_command, search_commands
 from xbotv2.tui.completion_popup import CompletionPopup
+from xbotv2.tui.terminal import CommandOutcome
 from xbotv2.tui.textual_client import XBotTextualApp
 
 
@@ -61,11 +62,13 @@ class _ScriptedSession:
         return None
 
     async def list_commands(self):
-        return {
-            "commands": [
-                {"name": "status", "slash": "/status", "description": "show status"}
-            ]
-        }
+        return {"commands": []}
+
+    async def run_builtin_command(self, command, args):
+        del args
+        if command == "status":
+            return CommandOutcome("turn=0 mode=composing")
+        return CommandOutcome(f"ran {command}")
 
     async def run_command(self, command, args, raw, *, kind="server"):
         del args, raw
@@ -312,7 +315,7 @@ async def test_completion_popup_filters_by_prefix(scripted_session) -> None:
         names = [m.name for m in popup.matches]
         assert "clear-screen" in names
         assert popup.current_match() is not None
-        assert popup.current_match().name in {"clear-screen"}
+        assert popup.current_match().name == "clear"
 
 
 @pytest.mark.asyncio
@@ -350,7 +353,7 @@ async def test_completion_popup_tab_accepts_highlighted(
         popup = app.query_one(CompletionPopup)
         composer = app.query_one("#input")
 
-        # Type "/c" — completion popup appears, /clear-screen is first.
+        # Type "/c" — completion popup appears, /clear is first.
         composer.load_text("/c")
         app._refresh_completion_popup(composer.text)
         await pilot.pause()
@@ -359,7 +362,7 @@ async def test_completion_popup_tab_accepts_highlighted(
         app._accept_completion(popup.current_match())
         await pilot.pause()
 
-        assert composer.text == "/clear-screen"
+        assert composer.text == "/clear"
         # The popup should still be visible (the prefix is still a slash).
         assert popup.visible is True
 
@@ -864,7 +867,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         assert app.focused is not None
         # All client and discovered server commands are visible.
         from xbotv2.tui.command import search_commands
-        assert len(search_commands("")) == 6
+        assert len(search_commands("")) == 15
 
         await pilot.press("escape")
         await pilot.pause()
@@ -1313,7 +1316,12 @@ async def test_help_body_renders_each_command_on_its_own_row(
         help_notices = [n for n in app.state.notices if n.kind == "Help"]
         assert len(help_notices) == 1
         body = help_notices[0].text
-        for command in ("help [client cmd]", "clear-screen [client cmd]", "status [server cmd]", "exit [client cmd]"):
+        for command in (
+            "help [client cmd]",
+            "clear-screen [client cmd]",
+            "status [client cmd]",
+            "exit [client cmd]",
+        ):
             assert command in body, f"command {command} not found in: {body!r}"
 
 

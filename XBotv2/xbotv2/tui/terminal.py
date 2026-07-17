@@ -11,12 +11,20 @@ per the design document §10.5.2.
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from xbotv2.tui.transport import Transport
 from xbotv2.tui.transport_http import HttpTransport
+
+
+@dataclass(frozen=True)
+class CommandOutcome:
+    message: str
+    data: dict[str, Any] = field(default_factory=dict)
+    history: list[dict[str, Any]] | None = None
 
 
 def _new_session_id() -> str:
@@ -53,7 +61,9 @@ class TerminalSession:
         self._thread_id = thread_id
         self._agent = agent
         self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
-        self._transport: Transport = transport or HttpTransport(base_url, token=token, uds_path=uds_path)
+        self._transport: Transport = transport or HttpTransport(
+            base_url, token=token, uds_path=uds_path
+        )
         self._connected = False
 
     @property
@@ -99,7 +109,14 @@ class TerminalSession:
             thread_id=self._thread_id,
         )
 
-    async def run_command(self, command: str, args: list[str], raw: str, *, kind: str = "server") -> dict[str, Any]:
+    async def run_command(
+        self,
+        command: str,
+        args: list[str],
+        raw: str,
+        *,
+        kind: str = "server",
+    ) -> dict[str, Any]:
         return await self._transport.run_command(
             session_id=self._session_id,
             thread_id=self._thread_id,
@@ -107,6 +124,196 @@ class TerminalSession:
             args=args,
             raw=raw,
             kind=kind,
+        )
+
+    async def run_builtin_command(
+        self, command: str, args: list[str]
+    ) -> CommandOutcome:
+        """Execute a human-facing built-in through typed resource operations."""
+        if command == "status" and not args:
+            data = await self._thread_status()
+            return CommandOutcome(
+                " ".join(
+                    f"{key}={data[key]}"
+                    for key in ("session_id", "thread_id", "provider", "model")
+                ),
+                data,
+            )
+        if command == "provider":
+            return await self._provider_command(args)
+        if command == "agent":
+            return await self._agent_command(args)
+        if command == "clear" and not args:
+            data = await self._transport.clear_history(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+            )
+            return CommandOutcome(
+                f"Cleared {data['removed_turns']} conversation turns.",
+                data,
+                data["messages"],
+            )
+        if command == "undo" and len(args) <= 1:
+            try:
+                count = int(args[0]) if args else 1
+            except ValueError as exc:
+                raise ValueError("Undo count must be a positive integer.") from exc
+            data = await self._transport.undo_history(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                count=count,
+            )
+            return CommandOutcome(
+                f"Removed {data['removed_turns']} conversation turn(s).",
+                data,
+                data["messages"],
+            )
+        if command == "fork" and not args:
+            data = await self._transport.fork_session(session_id=self._session_id)
+            return CommandOutcome(f"Forked session to {data['session_id']}.", data)
+        if command == "tasks" and args in ([], ["ps"]):
+            data = await self._transport.list_tasks(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+            )
+            tasks = data["tasks"]
+            message = "No background tasks." if not tasks else "\n".join(
+                f"{task['kind']}  {task['task_id']}  {task['status']}  {task['command']}"
+                for task in tasks
+            )
+            return CommandOutcome(message, data)
+        if command == "task":
+            return await self._task_command(args)
+        if command in {"permission", "sandbox"}:
+            return await self._policy_command(command, args)
+        raise ValueError(f"Usage: /{command}")
+
+    async def _thread_status(self) -> dict[str, Any]:
+        data = await self._transport.get_thread(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
+        data["workspace_root"] = self._workspace_root
+        return data
+
+    async def _provider_command(self, args: list[str]) -> CommandOutcome:
+        action = args[0].lower() if args else "status"
+        if action == "status" and len(args) <= 1:
+            data = await self._thread_status()
+            return CommandOutcome(
+                f"Provider: {data['provider']} ({data['model']})", data
+            )
+        if action == "list" and len(args) == 1:
+            data = await self._transport.list_providers()
+            current = (await self._thread_status())["provider"]
+            data["current"] = current
+            return CommandOutcome(
+                "Providers: " + ", ".join(
+                    f"{item['name']}{' (current)' if item['name'] == current else ''}"
+                    for item in data["providers"]
+                ),
+                data,
+            )
+        if action == "use" and len(args) == 2:
+            data = await self._transport.select_provider(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                name=args[1],
+            )
+            return CommandOutcome(
+                f"Provider switched to {data['provider']} ({data['model']}).", data
+            )
+        raise ValueError("Usage: /provider [status|list|use <name>]")
+
+    async def _agent_command(self, args: list[str]) -> CommandOutcome:
+        action = args[0].lower() if args else "status"
+        if action in {"status", "list"} and len(args) <= 1:
+            data = await self._transport.list_agents(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+            )
+            lines = [f"Active Agent: {data['active']}"]
+            if action == "list":
+                lines.extend(
+                    f"{item['name']}  {item['mode']}  {item['description']}"
+                    for item in data["agents"]
+                )
+            return CommandOutcome("\n".join(lines), data)
+        target = args[1] if action == "use" and len(args) == 2 else None
+        if len(args) == 1 and action not in {"status", "list", "use"}:
+            target = args[0]
+        if target is None:
+            raise ValueError("Usage: /agent [status|list|use <name>|<name>]")
+        data = await self._transport.select_agent(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            name=target,
+        )
+        data["agent_name"] = data["agent"]
+        return CommandOutcome(f"Active Agent: {data['agent']}.", data)
+
+    async def _task_command(self, args: list[str]) -> CommandOutcome:
+        if len(args) == 2 and args[0] == "stop":
+            data = await self._transport.stop_task(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                task_id=args[1],
+            )
+            return CommandOutcome(f"Stopped background task {args[1]}.", data)
+        if args == ["stopall"]:
+            data = await self._transport.stop_all_tasks(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+            )
+            return CommandOutcome(
+                f"Stopped {data['matched_count']} background task(s).", data
+            )
+        raise ValueError("Usage: /task stop <id> | /task stopall")
+
+    async def _policy_command(
+        self, command: str, args: list[str]
+    ) -> CommandOutcome:
+        action = args[0].lower() if args else "status"
+        if action in {"status", "list"} and len(args) <= 1:
+            data = await self._transport.get_session_policy(
+                session_id=self._session_id
+            )
+            section = "permissions" if command == "permission" else "sandbox"
+            return CommandOutcome(f"Session {command} policy: {data[section]}", data)
+        if action == "set" and len(args) == 3:
+            key, value = args[1], args[2].lower()
+            kwargs: dict[str, Any]
+            if command == "permission":
+                if value not in {"allow", "deny", "ask"}:
+                    raise ValueError("Permission value must be allow, deny, or ask.")
+                kwargs = {"permissions": {key: value}}
+            else:
+                kwargs = {"sandbox": {key: _sandbox_value(key, value)}}
+            data = await self._transport.update_session_policy(
+                session_id=self._session_id, **kwargs
+            )
+            return CommandOutcome(f"{command} policy set: {key}={value}", data)
+        if action == "reset" and len(args) <= 2:
+            if command == "permission":
+                if len(args) != 2:
+                    raise ValueError("Usage: /permission reset <tool>")
+                kwargs = {"remove_permissions": [args[1]]}
+            else:
+                keys = [args[1]] if len(args) == 2 else [
+                    "enabled",
+                    "network",
+                    "external_read",
+                    "external_write",
+                    "workspace_read",
+                    "workspace_write",
+                ]
+                kwargs = {"remove_sandbox": keys}
+            data = await self._transport.update_session_policy(
+                session_id=self._session_id, **kwargs
+            )
+            return CommandOutcome(f"{command} session policy reset.", data)
+        raise ValueError(
+            f"Usage: /{command} [status|set <key> <value>|reset [key]]"
         )
 
     async def disconnect(self) -> None:
@@ -180,3 +387,17 @@ class TerminalSession:
             decision=decision,
             scope=scope,
         )
+
+
+def _sandbox_value(key: str, value: str) -> bool | str:
+    if key in {"enabled", "network"}:
+        if value in {"true", "yes", "1"}:
+            return True
+        if value in {"false", "no", "0"}:
+            return False
+        raise ValueError(f"sandbox.{key} must be true or false")
+    if key not in {
+        "external_read", "external_write", "workspace_read", "workspace_write"
+    } or value not in {"allow", "deny", "ask", "readonly", "readwrite"}:
+        raise ValueError(f"Invalid value {value!r} for sandbox.{key}")
+    return value

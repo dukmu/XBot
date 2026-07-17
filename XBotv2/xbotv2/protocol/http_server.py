@@ -49,6 +49,8 @@ from xbotv2.protocol.models import (
     ProviderSelectionRequest,
     ProviderSelectionResponse,
     SessionListResponse,
+    SessionPolicyPatch,
+    SessionPolicyResponse,
     SessionSummary,
     TaskListResponse,
     TaskStopResponse,
@@ -75,7 +77,9 @@ from xbotv2.core.operations import (
     stop_task,
     task_snapshots,
     undo_history,
+    update_session_policy,
 )
+from xbotv2.config.policy import load_session_policy
 from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.protocol.commands import execute_command, list_commands
@@ -291,6 +295,45 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/sessions/{session_id}", operation_id="get_session")
     async def get_session_endpoint(session_id: str) -> SessionSummary:
         return await session_summary(manager, session_id)
+
+    @app.get(
+        "/sessions/{session_id}/policy",
+        operation_id="get_session_policy",
+    )
+    async def get_session_policy_endpoint(
+        session_id: str,
+    ) -> SessionPolicyResponse:
+        await session_summary(manager, session_id)
+        return _session_policy_response(
+            session_id,
+            load_session_policy(manager.paths, session_id),
+        )
+
+    @app.patch(
+        "/sessions/{session_id}/policy",
+        operation_id="update_session_policy",
+    )
+    async def update_session_policy_endpoint(
+        session_id: str,
+        payload: SessionPolicyPatch,
+    ) -> SessionPolicyResponse:
+        await session_summary(manager, session_id)
+        active = await manager.active_threads()
+        contexts = [
+            ctx
+            for (active_session_id, _), ctx in active.items()
+            if active_session_id == session_id
+        ]
+        policy = await update_session_policy(
+            paths=manager.paths,
+            session_id=session_id,
+            contexts=contexts,
+            permissions=payload.permissions,
+            remove_permissions=payload.remove_permissions,
+            sandbox=payload.sandbox,
+            remove_sandbox=payload.remove_sandbox,
+        )
+        return _session_policy_response(session_id, policy)
 
     @app.post(
         "/sessions/{session_id}/fork",
@@ -976,6 +1019,17 @@ def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
         context_window=int(getattr(ctx.engine, "context_window", 0)),
         usage=ctx.engine.session_usage,
         history=display_history(ctx.engine.messages),
+    )
+
+
+def _session_policy_response(
+    session_id: str,
+    policy: dict[str, Any],
+) -> SessionPolicyResponse:
+    return SessionPolicyResponse(
+        session_id=session_id,
+        permissions=policy.get("permissions") or {},
+        sandbox=policy.get("sandbox") or {},
     )
 
 

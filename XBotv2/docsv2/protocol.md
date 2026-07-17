@@ -62,6 +62,8 @@ Thread status and history remain queryable after its runtime closes.
 | GET | `/sessions` | List persisted sessions and runtime status |
 | GET | `/sessions/{sid}` | Read one session summary |
 | POST | `/sessions/{sid}/fork` | Copy persisted session state to a new id |
+| GET | `/sessions/{sid}/policy` | Read session-local policy rules |
+| PATCH | `/sessions/{sid}/policy` | Update session-local permission and sandbox rules |
 | GET | `/sessions/{sid}/threads` | List main and subagent threads |
 | POST | `/sessions/{sid}/threads` | Open a new or persisted subagent thread |
 | GET | `/sessions/{sid}/threads/{tid}` | Read thread status and usage |
@@ -149,12 +151,12 @@ provider capability, not a portable XBot history role.
 
 ## TUI Command Compatibility
 
-The current TUI uses a non-OpenAPI compatibility route to discover the unified
-command list with a `kind` field:
+The TUI owns built-in human commands and executes them through typed HTTP
+resources. A non-OpenAPI compatibility route discovers only plugin commands
+and prompt expansions with a `kind` field:
 
 ```json
 [
-  {"name": "status", "kind": "server", "description": "Server status"},
   {"name": "goal", "kind": "server", "description": "Manage the session goal"},
   {"name": "find-skills", "kind": "prompt", "description": "Find skills"}
 ]
@@ -165,9 +167,10 @@ Kinds: `client` (local TUI only), `server`, and `prompt`.
 Each server command registry entry contains human-facing discovery metadata and
 an async handler that receives the unparsed argument text. Human syntax belongs
 to that command's domain; the protocol does not derive a CLI from JSON Schema.
-Server commands execute deterministically outside model history. Built-in
-commands delegate state changes to the same operation functions as typed HTTP
-routes. Plugin commands own plugin-specific business state.
+Server commands execute deterministically outside model history. Plugin
+commands own plugin-specific business state. Built-ins such as `/undo`,
+`/provider`, and `/tasks` never enter this registry: the TUI parser calls the
+corresponding typed API through `XBotClient`.
 
 A `prompt` entry has metadata but no command handler. The client submits its
 original slash text through the message endpoint, where the owning plugin

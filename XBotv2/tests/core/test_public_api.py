@@ -37,6 +37,7 @@ from xbotv2.protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     HelloRequest,
     MessageRequest,
+    SessionPolicyPatch,
     server_event,
 )
 
@@ -302,6 +303,7 @@ def test_openapi_uses_typed_request_contracts():
         "/sessions/{session_id}",
         "/sessions/{session_id}/close",
         "/sessions/{session_id}/fork",
+        "/sessions/{session_id}/policy",
         "/sessions/{session_id}/threads",
         "/sessions/{session_id}/threads/{thread_id}",
         "/sessions/{session_id}/threads/{thread_id}/agent",
@@ -322,6 +324,9 @@ def test_openapi_uses_typed_request_contracts():
     }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
+    policy_path = "/sessions/{session_id}/policy"
+    assert paths[policy_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyPatch")
+    assert paths[policy_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyResponse")
     assert "/commands" not in paths
     assert not any(path.endswith("/commands") for path in paths)
     assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
@@ -349,3 +354,15 @@ def test_openapi_uses_typed_request_contracts():
         if method in {"get", "post", "put", "patch", "delete"}
     ]
     assert len(operation_ids) == len(set(operation_ids))
+
+
+def test_session_policy_patch_rejects_ambiguous_or_mistyped_values():
+    with pytest.raises(ValidationError):
+        SessionPolicyPatch(
+            permissions={"shell": "allow"},
+            remove_permissions=["shell"],
+        )
+    with pytest.raises(ValidationError):
+        SessionPolicyPatch(sandbox={"network": "false"})
+    with pytest.raises(ValidationError):
+        SessionPolicyPatch(sandbox={"external_write": True})

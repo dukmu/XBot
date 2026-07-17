@@ -111,6 +111,85 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app) -> None:
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        await sdk.open_session(session_id="sdk-policy", thread_id="main")
+        policy_path = http_app.state.paths.session("sdk-policy").policy_file
+        policy_path.write_text(
+            yaml.safe_dump({
+                "permissions": {
+                    "allow": [{"tool": "filesystem_write", "params": {"path": "a\\.txt"}}],
+                },
+                "sandbox": {
+                    "resources": [{"path": "/tmp/approved", "access": "readwrite"}],
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        updated = await sdk.update_session_policy(
+            "sdk-policy",
+            permissions={"shell": "allow", "filesystem_write": "deny"},
+            sandbox={"network": False, "external_write": "deny"},
+        )
+        ctx = await http_app.state.manager.get("sdk-policy", "main")
+        sandbox = ctx.engine.sandbox_policy
+
+        assert updated.permissions == {
+            "deny": [{"tool": "filesystem_write"}],
+            "allow": [{"tool": "shell"}, {"tool": "filesystem_write", "params": {"path": "a\\.txt"}}],
+        }
+        assert updated.sandbox["resources"] == [
+            {"path": "/tmp/approved", "access": "readwrite"}
+        ]
+        assert ctx.engine.permission_system.check("shell") == "allow"
+        assert ctx.engine.permission_system.check(
+            "filesystem_write", {"path": "a.txt"}
+        ) == "deny"
+        assert ctx.engine.sandbox_policy.network is False
+        assert ctx.engine.sandbox_policy.external_write == "deny"
+        assert ctx.engine.sandbox_policy is sandbox
+        assert ctx.engine.background_tasks.sandbox is sandbox
+
+        cleared = await sdk.update_session_policy(
+            "sdk-policy",
+            remove_permissions=["shell", "filesystem_write"],
+            remove_sandbox=["network"],
+        )
+        assert cleared.permissions == {
+            "allow": [
+                {"tool": "filesystem_write", "params": {"path": "a\\.txt"}}
+            ]
+        }
+        assert "network" not in cleared.sandbox
+        assert (await sdk.get_session_policy("sdk-policy")) == cleared
+
+
+@pytest.mark.asyncio
+async def test_session_policy_api_rejects_update_during_turn(http_app) -> None:
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        await sdk.open_session(session_id="busy-policy", thread_id="main")
+        ctx = await http_app.state.manager.get("busy-policy", "main")
+        await ctx.turn_lock.acquire()
+        try:
+            with pytest.raises(XBotClientError) as raised:
+                await sdk.update_session_policy(
+                    "busy-policy", permissions={"shell": "allow"}
+                )
+        finally:
+            ctx.turn_lock.release()
+
+        assert raised.value.status_code == 409
+        assert raised.value.code == "thread_busy"
+
+
+@pytest.mark.asyncio
 async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) -> None:
     turn_cancelled = asyncio.Event()
 
@@ -491,10 +570,6 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
                 "agent": "builder",
             },
         )
-        catalog = await ac.post(
-            "/sessions/primary-http/threads/agent/commands",
-            json={"command": "agent", "args": ["list"]},
-        )
         agents = await ac.get(
             "/sessions/primary-http/threads/agent/agents"
         )
@@ -509,9 +584,7 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
 
     assert opened.status_code == 200
     assert opened.json()["agent_name"] == "builder"
-    assert catalog.status_code == 200
-    assert catalog.json()["data"]["data"]["active"] == "builder"
-    assert catalog.json()["data"]["data"]["agents"][0]["name"] == "builder"
+    assert agents.json()["active"] == "builder"
     assert any(
         item["name"] == "builder" for item in agents.json()["agents"]
     )
@@ -742,7 +815,7 @@ async def test_http_server_hosts_sessions_from_multiple_workspaces(
 
 
 @pytest.mark.asyncio
-async def test_http_commands_are_discoverable_and_session_scoped(
+async def test_http_command_compatibility_route_only_exposes_plugins(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
@@ -758,10 +831,7 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     )
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
-    assert {
-        "status", "provider", "permission", "sandbox", "fork", "agent",
-        "clear", "undo",
-    }.issubset(names)
+    assert names == set()
 
     result_response = await client.post(
         "/sessions/cmds/threads/t/commands",
@@ -770,7 +840,8 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     assert result_response.status_code == 200
     body = result_response.json()
     assert body["type"] == "command_result"
-    assert body["data"]["data"]["session_id"] == "cmds"
+    assert body["data"]["status"] == "error"
+    assert body["data"]["message"] == "Unknown server command: /status"
     state_root = http_app.state.paths.session("cmds").thread("t").state_dir
     messages_path = state_root / "messages.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
@@ -778,7 +849,7 @@ async def test_http_commands_are_discoverable_and_session_scoped(
 
 
 @pytest.mark.asyncio
-async def test_history_commands_undo_fork_and_clear_persist_atomically(
+async def test_typed_history_undo_fork_and_clear_persist_atomically(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
@@ -791,12 +862,12 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     await client.post("/sessions/history/threads/t/messages", json={"content": "second"})
 
     undone = await client.post(
-        "/sessions/history/threads/t/commands",
-        json={"command": "undo", "args": ["1"]},
+        "/sessions/history/threads/t/history/undo",
+        json={"count": 1},
     )
 
     assert undone.status_code == 200
-    assert undone.json()["data"]["history"] == [
+    assert undone.json()["messages"] == [
         {
             "role": "user", "content": "first", "tool_calls": [],
             "tool_call_id": "", "status": "",
@@ -842,11 +913,10 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     ]
 
     cleared = await client.post(
-        "/sessions/history/threads/t/commands",
-        json={"command": "clear", "args": []},
+        "/sessions/history/threads/t/history/clear",
     )
-    assert cleared.json()["data"]["data"] == {"removed_turns": 1}
-    assert cleared.json()["data"]["history"] == []
+    assert cleared.json()["removed_turns"] == 1
+    assert cleared.json()["messages"] == []
     assert ctx.engine.messages == []
     assert ctx.engine.state_store.read_messages() == []
     cleared_records = [
@@ -866,12 +936,12 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
 async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClient) -> None:
     await client.post("/sessions", json={"session_id": "undo-errors", "thread_id": "t"})
 
-    for count in ("0", "two", "2"):
+    for count in (0, "two", 2):
         response = await client.post(
-            "/sessions/undo-errors/threads/t/commands",
-            json={"command": "undo", "args": [count]},
+            "/sessions/undo-errors/threads/t/history/undo",
+            json={"count": count},
         )
-        assert response.json()["data"]["status"] == "error"
+        assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -933,14 +1003,11 @@ async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient
     )
     assert open_response.status_code == 200
 
-    list_response = await client.post(
-        "/sessions/providers/threads/t/commands",
-        json={"command": "provider", "args": ["list"]},
-    )
+    list_response = await client.get("/providers")
     assert list_response.status_code == 200
-    data = list_response.json()["data"]
-    assert data["status"] == "ok"
-    assert data["data"]["providers"] == ["default"]
+    assert [item["name"] for item in list_response.json()["providers"]] == [
+        "default"
+    ]
 
 
 @pytest.mark.asyncio
@@ -984,7 +1051,7 @@ async def test_typed_provider_selection_persists_across_resume(
 
 
 @pytest.mark.asyncio
-async def test_http_policy_commands_update_session_overrides(
+async def test_http_policy_api_updates_live_session_policy(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
@@ -993,13 +1060,12 @@ async def test_http_policy_commands_update_session_overrides(
     )
     assert open_response.status_code == 200
 
-    permission_response = await client.post(
-        "/sessions/policy/threads/t/commands",
-        json={"command": "permission", "args": ["set", "shell", "allow"]},
-    )
-    sandbox_response = await client.post(
-        "/sessions/policy/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
+    policy_response = await client.patch(
+        "/sessions/policy/policy",
+        json={
+            "permissions": {"shell": "allow"},
+            "sandbox": {"external_read": "ask"},
+        },
     )
     ctx = await http_app.state.manager.get("policy", "t")
     cached_path = (
@@ -1015,17 +1081,13 @@ async def test_http_policy_commands_update_session_overrides(
         {"path": "session/artifacts/tool_results/cached.txt"},
         sandbox=ctx.engine.sandbox_policy,
     )
-    status_response = await client.post(
-        "/sessions/policy/threads/t/commands",
-        json={"command": "permission", "args": ["status"]},
-    )
+    status_response = await client.get("/sessions/policy/policy")
 
-    assert permission_response.status_code == 200
-    assert sandbox_response.status_code == 200
+    assert policy_response.status_code == 200
     assert status_response.status_code == 200
     assert cached_result.status == "success"
     assert "cached after policy reload" in cached_result.content
-    assert status_response.json()["data"]["data"]["overrides"] == {"shell": "allow"}
+    assert status_response.json()["permissions"]["allow"] == [{"tool": "shell"}]
     state_root = http_app.state.paths.session("policy").thread("t").state_dir
     events_path = state_root / "events.jsonl"
     events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
@@ -1193,7 +1255,7 @@ async def test_http_permission_response_rejects_always_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_policy_command_reset_rebuilds_live_policy(
+async def test_http_policy_patch_reset_rebuilds_live_policy(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
@@ -1203,37 +1265,34 @@ async def test_http_policy_command_reset_rebuilds_live_policy(
     assert open_response.status_code == 200
     ctx = await http_app.state.manager.get("policy-reset", "t")
 
-    permission_set = await client.post(
-        "/sessions/policy-reset/threads/t/commands",
-        json={"command": "permission", "args": ["set", "shell", "deny"]},
+    permission_set = await client.patch(
+        "/sessions/policy-reset/policy",
+        json={"permissions": {"shell": "deny"}},
     )
     assert permission_set.status_code == 200
     assert ctx.engine.permission_system.check("shell", {}) == "deny"
 
-    permission_reset = await client.post(
-        "/sessions/policy-reset/threads/t/commands",
-        json={"command": "permission", "args": ["reset", "shell"]},
+    permission_reset = await client.patch(
+        "/sessions/policy-reset/policy",
+        json={"remove_permissions": ["shell"]},
     )
     assert permission_reset.status_code == 200
     assert ctx.engine.permission_system.check("shell", {}) == "ask"
 
-    sandbox_status = await client.post(
-        "/sessions/policy-reset/threads/t/commands",
-        json={"command": "sandbox", "args": ["status"]},
-    )
+    sandbox_status = await client.get("/sessions/policy-reset/policy")
     assert sandbox_status.status_code == 200
-    assert "sandbox" in sandbox_status.json()["data"]["message"].lower()
+    assert sandbox_status.json()["sandbox"] == {}
 
-    sandbox_invalid = await client.post(
-        "/sessions/policy-reset/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
+    sandbox_update = await client.patch(
+        "/sessions/policy-reset/policy",
+        json={"sandbox": {"external_read": "deny"}},
     )
-    assert sandbox_invalid.status_code == 200
-    assert sandbox_invalid.json()["data"]["status"] == "ok"
+    assert sandbox_update.status_code == 200
+    assert ctx.engine.sandbox_policy.external_read == "deny"
 
 
 @pytest.mark.asyncio
-async def test_http_policy_commands_reject_invalid_values(
+async def test_http_policy_api_rejects_invalid_permission_values(
     client: httpx.AsyncClient,
 ) -> None:
     open_response = await client.post(
@@ -1241,19 +1300,19 @@ async def test_http_policy_commands_reject_invalid_values(
     )
     assert open_response.status_code == 200
 
-    permission_response = await client.post(
-        "/sessions/policy-invalid/threads/t/commands",
-        json={"command": "permission", "args": ["set", "shell", "sometimes"]},
+    permission_response = await client.patch(
+        "/sessions/policy-invalid/policy",
+        json={"permissions": {"shell": "sometimes"}},
     )
-    sandbox_response = await client.post(
-        "/sessions/policy-invalid/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
+    sandbox_response = await client.patch(
+        "/sessions/policy-invalid/policy",
+        json={"sandbox": {"external_read": "ask"}},
     )
 
-    assert permission_response.status_code == 200
-    assert permission_response.json()["data"]["status"] == "error"
+    assert permission_response.status_code == 400
+    assert permission_response.json()["code"] == "invalid_request"
     assert sandbox_response.status_code == 200
-    assert sandbox_response.json()["data"]["status"] == "ok"
+    assert sandbox_response.json()["sandbox"]["external_read"] == "ask"
 
 
 @pytest.mark.asyncio
@@ -2435,7 +2494,7 @@ Follow this test instruction: $ARGUMENTS
 
 
 @pytest.mark.asyncio
-async def test_http_sandbox_set_persists_to_policy_yaml(
+async def test_http_policy_patch_persists_sandbox_to_yaml(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
@@ -2450,26 +2509,21 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
         encoding="utf-8",
     )
 
-    # Set network=false — should persist to policy.yaml
-    set_network = await client.post(
-        "/sessions/sandbox-persist/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "network", "false"]},
+    set_network = await client.patch(
+        "/sessions/sandbox-persist/policy",
+        json={"sandbox": {"network": False}},
     )
     assert set_network.status_code == 200
-    assert set_network.json()["data"]["status"] == "ok"
+    assert set_network.json()["sandbox"]["network"] is False
 
     # Set external_read=deny — also persisted
-    set_ext = await client.post(
-        "/sessions/sandbox-persist/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
+    set_ext = await client.patch(
+        "/sessions/sandbox-persist/policy",
+        json={"sandbox": {"external_read": "deny"}},
     )
     assert set_ext.status_code == 200
 
     ctx = await http_app.state.manager.get("sandbox-persist", "t")
-    # Live overrides are in memory
-    assert ctx.sandbox_overrides.get("network") is False
-    assert ctx.sandbox_overrides.get("external_read") == "deny"
-    # Engine sandbox policy reflects the overrides
     assert ctx.engine.sandbox_policy.network is False
     assert ctx.engine.sandbox_policy.external_read == "deny"
 
@@ -2480,9 +2534,9 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
     assert doc["sandbox"]["external_read"] == "deny"
     assert doc["sandbox"]["resources"] == kept_resources
 
-    await client.post(
-        "/sessions/sandbox-persist/threads/t/commands",
-        json={"command": "sandbox", "args": ["reset", "network"]},
+    await client.patch(
+        "/sessions/sandbox-persist/policy",
+        json={"remove_sandbox": ["network"]},
     )
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     assert doc["sandbox"] == {
@@ -2490,9 +2544,9 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
         "external_read": "deny",
     }
 
-    await client.post(
-        "/sessions/sandbox-persist/threads/t/commands",
-        json={"command": "sandbox", "args": ["reset", "external_read"]},
+    await client.patch(
+        "/sessions/sandbox-persist/policy",
+        json={"remove_sandbox": ["external_read"]},
     )
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     assert doc["sandbox"] == {"resources": kept_resources}
@@ -2507,28 +2561,27 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
     )
     assert resumed.status_code == 200
     resumed_ctx = await http_app.state.manager.get("sandbox-persist", "t")
-    assert resumed_ctx.sandbox_overrides == {}
+    assert resumed_ctx.engine.sandbox_policy.network is True
 
 
 @pytest.mark.asyncio
-async def test_http_sandbox_set_rejects_invalid_values(
+async def test_http_policy_patch_rejects_invalid_sandbox_values(
     client: httpx.AsyncClient,
 ) -> None:
     await client.post(
         "/sessions", json={"session_id": "sandbox-validate", "thread_id": "t"}
     )
 
-    bad = await client.post(
-        "/sessions/sandbox-validate/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "external_read", "garbage"]},
+    bad = await client.patch(
+        "/sessions/sandbox-validate/policy",
+        json={"sandbox": {"external_read": "garbage"}},
     )
-    assert bad.status_code == 200
-    assert bad.json()["data"]["status"] == "error"
-    assert "Invalid value" in bad.json()["data"]["message"]
+    assert bad.status_code == 400
+    assert bad.json()["code"] == "invalid_request"
 
-    bad_network = await client.post(
-        "/sessions/sandbox-validate/threads/t/commands",
-        json={"command": "sandbox", "args": ["set", "network", "maybe"]},
+    bad_network = await client.patch(
+        "/sessions/sandbox-validate/policy",
+        json={"sandbox": {"network": "maybe"}},
     )
-    assert bad_network.status_code == 200
-    assert bad_network.json()["data"]["status"] == "error"
+    assert bad_network.status_code == 400
+    assert bad_network.json()["code"] == "invalid_request"

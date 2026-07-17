@@ -7,10 +7,11 @@ drives the composer completion popup and the command palette.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from xbotv2.api.tools import ToolResult
+from xbotv2.api.commands import Command, CommandResult
 
 from xbotv2.tui.command import (
     CommandSpec,
@@ -40,6 +41,16 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
     results = search_commands("")
     assert [spec.name for spec in results] == [
         "help",
+        "status",
+        "provider",
+        "agent",
+        "clear",
+        "undo",
+        "fork",
+        "tasks",
+        "task",
+        "permission",
+        "sandbox",
         "clear-screen",
         "thinking",
         "details",
@@ -48,13 +59,13 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(search_commands("   ")) == 5
+    assert len(search_commands("   ")) == 15
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
     results = search_commands("/c")
     names = [spec.name for spec in results]
-    assert names[0] == "clear-screen"
+    assert names[0] == "clear"
     assert "help" in names
 
 
@@ -79,7 +90,7 @@ def test_server_command_alias_ignores_usage_parameters() -> None:
 
     assert spec is not None
     assert spec.name == "agent"
-    assert spec.kind == "server"
+    assert spec.kind == "client"
     assert spec.args == "list"
 
 
@@ -104,7 +115,7 @@ def test_search_commands_falls_back_to_substring() -> None:
 def test_search_commands_deduplicates_results() -> None:
     results = search_commands("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 5
+    assert len(names) == len(set(names)) == 15
 
 
 def test_register_server_commands_adds_dynamic_completion() -> None:
@@ -278,61 +289,127 @@ def test_parse_slash_command_preserves_args_for_skill() -> None:
 
 
 @pytest.mark.asyncio
-async def test_server_command_registry_owns_metadata_and_dispatch(monkeypatch) -> None:
-    from xbotv2.protocol.commands import COMMANDS, ServerCommand, execute_command
+async def test_plugin_command_registry_owns_server_dispatch() -> None:
+    from xbotv2.protocol.commands import execute_command
 
-    async def handler(ctx, args):
-        return {
-            "type": "command_result",
-            "data": {
-                "command": "sample",
-                "status": "ok",
-                "message": f"{ctx}:{','.join(args)}",
-                "data": None,
-            },
-        }
+    async def handler(_ctx, raw_args):
+        return CommandResult(f"sample:{raw_args}")
 
-    monkeypatch.setitem(COMMANDS, "sample", ServerCommand(
+    extension = Command(
         name="sample",
-        slash="/sample",
         description="Sample extension command.",
         handler=handler,
-    ))
+    )
+    loader = SimpleNamespace(get_command=lambda name: extension if name == "sample" else None)
+    ctx = SimpleNamespace(engine=SimpleNamespace(plugin_loader=loader))
 
-    result = await execute_command("context", "sample", ["a", "b"])
+    result = await execute_command(ctx, "sample", ["a", "b"], raw_args="a b")
 
-    assert result["data"]["message"] == "context:a,b"
+    assert result["data"]["message"] == "sample:a b"
 
 
 @pytest.mark.asyncio
-async def test_task_commands_reuse_session_task_manager() -> None:
-    class Tasks:
-        def snapshots(self):
-            return [{
+async def test_task_commands_use_typed_transport_operations(tmp_path) -> None:
+    from xbotv2.tui.terminal import TerminalSession
+
+    task = {
                 "task_id": "task-1",
+                "kind": "shell",
                 "status": "running",
                 "command": "sleep 30",
-            }]
-
-        async def stop_task(self, task_id):
-            return ToolResult.success(
-                f"Stopped {task_id}",
-                data={"task_id": task_id, "status": "stopped"},
-            )
-
-        async def stop_all(self):
-            return [{"task_id": "task-1", "status": "stopped"}]
-
-    from xbotv2.protocol.commands import execute_command
-
-    ctx = SimpleNamespace(
-        engine=SimpleNamespace(background_tasks=Tasks()),
+    }
+    transport = SimpleNamespace(
+        list_tasks=AsyncMock(return_value={"tasks": [task]}),
+        stop_task=AsyncMock(return_value={"matched_count": 1, "tasks": [task]}),
+        stop_all_tasks=AsyncMock(
+            return_value={"matched_count": 1, "tasks": [task]}
+        ),
+    )
+    session = TerminalSession(
+        session_id="s",
+        thread_id="t",
+        workspace_root=tmp_path,
+        transport=transport,
     )
 
-    listed = await execute_command(ctx, "tasks", ["ps"])
-    stopped = await execute_command(ctx, "task", ["stop", "task-1"])
-    stopped_all = await execute_command(ctx, "task", ["stopall"])
+    listed = await session.run_builtin_command("tasks", ["ps"])
+    stopped = await session.run_builtin_command("task", ["stop", "task-1"])
+    stopped_all = await session.run_builtin_command("task", ["stopall"])
 
-    assert listed["data"]["data"]["tasks"][0]["task_id"] == "task-1"
-    assert stopped["data"]["data"]["status"] == "stopped"
-    assert stopped_all["data"]["message"] == "Stopped 1 background task(s)."
+    assert listed.data["tasks"][0]["task_id"] == "task-1"
+    assert stopped.message == "Stopped background task task-1."
+    assert stopped_all.message == "Stopped 1 background task(s)."
+
+
+@pytest.mark.asyncio
+async def test_history_builtins_use_typed_transport_operations(tmp_path) -> None:
+    from xbotv2.tui.terminal import TerminalSession
+
+    transport = SimpleNamespace(
+        clear_history=AsyncMock(
+            return_value={"removed_turns": 2, "messages": []}
+        ),
+        undo_history=AsyncMock(
+            return_value={
+                "removed_turns": 1,
+                "messages": [{"role": "user", "content": "kept"}],
+            }
+        ),
+        fork_session=AsyncMock(
+            return_value={"session_id": "forked", "source_session_id": "s"}
+        ),
+    )
+    session = TerminalSession(
+        session_id="s",
+        thread_id="t",
+        workspace_root=tmp_path,
+        transport=transport,
+    )
+
+    cleared = await session.run_builtin_command("clear", [])
+    undone = await session.run_builtin_command("undo", ["1"])
+    forked = await session.run_builtin_command("fork", [])
+
+    assert cleared.history == []
+    assert undone.history == [{"role": "user", "content": "kept"}]
+    assert forked.data["session_id"] == "forked"
+    transport.undo_history.assert_awaited_once_with(
+        session_id="s", thread_id="t", count=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_policy_builtins_use_session_policy_resource(tmp_path) -> None:
+    from xbotv2.tui.terminal import TerminalSession
+
+    transport = SimpleNamespace(
+        get_session_policy=AsyncMock(
+            return_value={"permissions": {}, "sandbox": {}}
+        ),
+        update_session_policy=AsyncMock(
+            return_value={
+                "permissions": {"allow": [{"tool": "shell"}]},
+                "sandbox": {},
+            }
+        ),
+    )
+    session = TerminalSession(
+        session_id="s",
+        thread_id="t",
+        workspace_root=tmp_path,
+        transport=transport,
+    )
+
+    status = await session.run_builtin_command("permission", [])
+    await session.run_builtin_command("permission", ["set", "shell", "allow"])
+    await session.run_builtin_command("permission", ["reset", "shell"])
+
+    assert status.message == "Session permission policy: {}"
+    assert transport.update_session_policy.await_args_list[0].kwargs == {
+        "session_id": "s",
+        "permissions": {"shell": "allow"},
+    }
+    assert transport.update_session_policy.await_args_list[1].kwargs == {
+        "session_id": "s",
+        "remove_permissions": ["shell"],
+    }
