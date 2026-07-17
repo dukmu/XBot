@@ -40,11 +40,14 @@ async def execute_command(
         return _result(command, f"Unknown server command: /{command}", status="error")
     assert extension.handler is not None
     result = await extension.handler(ctx, raw_args)
+    data = dict(result.data) if isinstance(result.data, dict) else result.data
+    if isinstance(data, dict):
+        data["status_slots"] = await loader.status_slots()
     return _result(
         command,
         result.message,
         status=result.status,
-        data=result.data,
+        data=data,
         history=result.history,
     )
 

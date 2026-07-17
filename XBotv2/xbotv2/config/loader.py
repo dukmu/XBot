@@ -52,7 +52,7 @@ def load_yaml(path: Path) -> dict[str, Any]:
     """Read and parse a YAML file. Returns {} if the file is missing."""
     if not path.exists():
         return {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         result = yaml.safe_load(f)
     return result if result is not None else {}
 

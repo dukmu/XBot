@@ -33,6 +33,12 @@ class ProviderConfig(BaseModel):
     thinking_enabled: bool = Field(default=False)
     mock_responses: list[dict[str, Any]] = Field(default_factory=list)
 
+    @property
+    def model_mode(self) -> str:
+        return self.reasoning_effort or (
+            "thinking" if self.thinking_enabled else ""
+        )
+
 
 class HookConfig(BaseModel):
     """A system-configured hook."""

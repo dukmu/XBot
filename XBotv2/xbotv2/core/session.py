@@ -343,7 +343,12 @@ async def _pump_turn(
     )
     try:
         async for event in turn_stream:
-            await events.put(_event_payload(event))
+            payload = _event_payload(event)
+            if payload["type"] in {"turn_finished", "turn_cancelled"}:
+                loader = getattr(runtime.engine, "plugin_loader", None)
+                if loader is not None:
+                    payload["data"]["status_slots"] = await loader.status_slots()
+            await events.put(payload)
     except asyncio.CancelledError:
         logger.info("Turn cancelled for session %s", runtime.session_id)
         raise

@@ -34,6 +34,10 @@ class GoalPlugin(PluginBase):
     async def on_unload(self) -> None:
         self._continuation_pending = False
 
+    async def status_slots(self) -> dict[str, str]:
+        goal = await self._read_goal()
+        return {"goal": goal["status"]} if goal is not None else {}
+
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.ON_TURN_START, self._start_goal_turn)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)

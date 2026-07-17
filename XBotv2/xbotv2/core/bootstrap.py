@@ -319,6 +319,7 @@ async def bootstrap(
             "parent_thread_id": parent_thread_id,
             "workspace_root": str(workspace_root),
             "model": provider_config.model,
+            "model_mode": provider_config.model_mode,
             "context_window": agent_config.max_context_tokens,
         })
 
@@ -376,6 +377,7 @@ async def bootstrap(
             agent_registry=agent_registry,
             startup_config=policy_base_config,
             model=provider_config.model,
+            model_mode=provider_config.model_mode,
             context_window=agent_config.max_context_tokens,
             llm_is_override=llm_override is not None,
             user_context=user_context,

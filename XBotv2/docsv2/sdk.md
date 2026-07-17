@@ -48,6 +48,11 @@ slash command or direct Tool execution methods. The TUI HTTP transport delegates
 public operations and SSE decoding to this client, adding only tracing, dict
 adaptation, and the plugin-command compatibility route.
 
+Session and thread DTOs expose `model_mode` only when the selected provider
+explicitly configures a reasoning effort or thinking mode. They also expose
+plugin `status_slots`; these values are display metadata, not Agent context or
+an alternate plugin mutation API.
+
 ## Mutations
 
 Machine clients use explicit operations rather than constructing slash text:

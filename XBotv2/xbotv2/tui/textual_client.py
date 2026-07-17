@@ -25,7 +25,6 @@ from xbotv2.tui.client import (
     TuiState,
     TuiTranscriptEntry,
     _parse_permission_decision,
-    _repair_mojibake,
 )
 from xbotv2.tui.command import (
     CommandSpec,
@@ -46,6 +45,7 @@ from xbotv2.tui.textual_widgets import (
     ComposerTextArea,
     InlineChoice,
     TranscriptScroll,
+    TaskListWidget,
     _build_title,
     entry_widget,
     message_widget,
@@ -57,7 +57,6 @@ from xbotv2.tui.textual_widgets import (
     reasoning_widget,
     spinner,
     status_renderable,
-    tasks_renderable,
     tool_detail,
     tool_detail_widget,
     tool_widget,
@@ -115,7 +114,7 @@ class XBotTextualApp(App[None]):
     CSS = TEXTUAL_TUI_CSS
 
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
+        ("ctrl+c", "cancel_or_quit", "Clear input or quit"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
         ("ctrl+p", "open_palette", "Command palette"),
@@ -180,7 +179,7 @@ class XBotTextualApp(App[None]):
         yield CompletionPopup(id="completion_popup")
         with Horizontal(id="runtime_panels"):
             yield Collapsible(
-                Static(id="task_list"),
+                TaskListWidget(id="task_list"),
                 title="Tasks",
                 collapsed=False,
                 id="task_panel",
@@ -242,6 +241,14 @@ class XBotTextualApp(App[None]):
                 self.state.workspace_root = str(session.get("workspace_root") or "")
                 self.state.provider = str(session.get("provider") or "")
                 self.state.model = str(session.get("model") or "")
+                self.state.model_mode = str(
+                    session.get("model_mode") or ""
+                )
+                slots = session.get("status_slots")
+                if isinstance(slots, dict):
+                    self.state.status_slots = {
+                        str(name): str(value) for name, value in slots.items()
+                    }
                 self.state.context_window = int(session.get("context_window") or 0)
                 usage = session.get("usage")
                 if isinstance(usage, dict):
@@ -279,7 +286,7 @@ class XBotTextualApp(App[None]):
         composer = self.query_one("#input", ComposerTextArea)
         if self._choice_mode_active():
             return
-        text = _repair_mojibake(composer.text.strip())
+        text = composer.text.strip()
         trace_event("tui.submit", {"text": text, "repr": repr(text)})
         composer.load_text("")
         composer.clear()
@@ -344,6 +351,16 @@ class XBotTextualApp(App[None]):
         self.query_one("#input", ComposerTextArea).load_text("")
         self._history_index = None
         self._resize_composer()
+
+    def action_cancel_or_quit(self) -> None:
+        """Clear a non-empty composer; quit when there is nothing to clear."""
+        composer = self.query_one("#input", ComposerTextArea)
+        if composer.text:
+            composer.load_text("")
+            self._history_index = None
+            self._resize_composer()
+            return
+        self.exit()
 
     def action_interrupt_turn(self) -> None:
         """Cancel the running turn via the HTTP /interrupt endpoint.
@@ -476,6 +493,15 @@ class XBotTextualApp(App[None]):
                 metadata_changed = True
             if metadata.get("model"):
                 self.state.model = str(metadata["model"])
+                metadata_changed = True
+            if "model_mode" in metadata:
+                self.state.model_mode = str(metadata["model_mode"] or "")
+                metadata_changed = True
+            slots = metadata.get("status_slots")
+            if isinstance(slots, dict):
+                self.state.status_slots = {
+                    str(name): str(value) for name, value in slots.items()
+                }
                 metadata_changed = True
             if "context_window" in metadata:
                 self.state.context_window = int(metadata["context_window"] or 0)
@@ -758,6 +784,9 @@ class XBotTextualApp(App[None]):
                 workspace_root=self.state.workspace_root,
                 provider=self.state.provider,
                 model=self.state.model,
+                agent_name=self.state.agent_name,
+                model_mode=self.state.model_mode,
+                status_slots=self.state.status_slots,
                 context_window=self.state.context_window,
                 context_input_tokens=self.state.context_input_tokens,
                 activity=self._activity_status(),
@@ -769,7 +798,7 @@ class XBotTextualApp(App[None]):
 
     def _refresh_task_panel(self) -> None:
         panel = self._safe_query_one("#task_panel", Collapsible)
-        body = self._safe_query_one("#task_list", Static)
+        body = self._safe_query_one("#task_list", TaskListWidget)
         if panel is None or body is None:
             return
         tasks = list(self.state.tasks.values())
@@ -791,11 +820,9 @@ class XBotTextualApp(App[None]):
         visible = active[:5]
         if len(visible) < 5:
             visible += terminal[-(5 - len(visible)):]
-        body.update(
-            tasks_renderable(
-                visible,
-                width=body.size.width or self.size.width,
-            )
+        body.update_tasks(
+            visible,
+            width=body.size.width or self.size.width,
         )
 
     def _refresh_queue_panel(self) -> None:
@@ -847,6 +874,7 @@ class XBotTextualApp(App[None]):
             refresh_input = True
         elif event_type == "usage":
             self._update_activity()
+            self._refresh_status()
         elif event_type == "assistant_message_delta":
             if self._stream_timer is None:
                 self._stream_timer = asyncio.create_task(self._stream_tick())
@@ -1171,6 +1199,7 @@ class XBotTextualApp(App[None]):
         # the next event. Helps the user answer "why is this tool
         # still pending" without watching the activity spinner.
         self._update_pending_tool_elapsed()
+        self.state.prune_finished_tasks()
         self._refresh_task_panel()
         self._refresh_status()
 

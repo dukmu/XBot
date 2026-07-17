@@ -39,6 +39,9 @@ def status_renderable(
     workspace_root: str,
     provider: str,
     model: str,
+    agent_name: str = "",
+    model_mode: str = "",
+    status_slots: dict[str, str] | None = None,
     context_window: int,
     context_input_tokens: int,
     activity: str,
@@ -79,7 +82,8 @@ def status_renderable(
     if width >= 80:
         detailed_tokens = (
             f"tokens:{_compact_count(total)} "
-            f"({usage['input_tokens']} in / {usage['output_tokens']} out)"
+            f"({_compact_count(usage['input_tokens'])} in / "
+            f"{_compact_count(usage['output_tokens'])} out)"
         )
         token_index = next(
             index for index, (label, _style) in enumerate(segments)
@@ -90,13 +94,18 @@ def status_renderable(
         if _segments_width(with_detailed_tokens) <= width:
             segments[token_index] = (detailed_tokens, "")
 
-    optional = []
+    optional: list[tuple[str, str]] = []
+    if agent_name:
+        optional.append((f"agent:{agent_name[:20]}", "blue"))
+    model_identity = "/".join(part for part in (provider, model) if part)
+    if model_identity:
+        if model_mode:
+            model_identity = f"{model_identity}:{model_mode}"
+        optional.append((model_identity[:40], "green"))
+    for name, value in (status_slots or {}).items():
+        optional.append((f"{name}:{value}"[:30], "magenta"))
     if workspace:
         optional.append((f"cwd:{workspace[:20]}", "cyan"))
-    if model:
-        optional.append((f"model:{model[:24]}", "green"))
-    if provider:
-        optional.append((f"provider:{provider[:20]}", "magenta"))
     if width >= 120:
         session = session_id if thread_id == "agent" else f"{session_id}/{thread_id}"
         optional.append((f"session:{session}", "dim"))
@@ -131,7 +140,7 @@ def _compact_count(value: int) -> str:
         return str(value)
     if value < 1_000_000:
         return f"{value / 1_000:.1f}k"
-    return f"{value / 1_000_000:.1f}m"
+    return f"{value / 1_000_000:.1f}M"
 
 
 def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
@@ -170,6 +179,106 @@ def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
                 style="dim",
             )
     return text
+
+
+class SubagentTaskWidget(Collapsible):
+    """One expandable subagent task with a fixed-height scrollable body."""
+
+    def __init__(
+        self,
+        task: TuiTask,
+        *,
+        width: int,
+        collapsed: bool = True,
+    ) -> None:
+        self.task_id = task.task_id
+        output = task.error or task.output or "Waiting for subagent output..."
+        details = [f"thread: {task.thread_id or '-'}"]
+        total = int(task.usage.get("total_tokens") or 0)
+        if total:
+            details.append(f"tokens: {_compact_count(total)}")
+        details.extend(("", output))
+        body = VerticalScroll(
+            Static("\n".join(details), markup=False),
+            classes="subagent-output",
+        )
+        super().__init__(
+            body,
+            title=_task_title(task, width=width),
+            collapsed=collapsed,
+            classes="subagent-task",
+        )
+
+
+class TaskListWidget(VerticalScroll):
+    """Scrollable task list with nested subagent details."""
+
+    can_focus = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._signature: tuple[Any, ...] = ()
+
+    def update_tasks(self, tasks: list[TuiTask], *, width: int) -> None:
+        signature = tuple(
+            (
+                task.task_id,
+                task.status,
+                task.output,
+                task.error,
+                task.thread_id,
+                tuple(sorted(task.usage.items())),
+                int(time.monotonic() * 2)
+                if task.status in {"pending", "running"}
+                else 0,
+            )
+            for task in tasks
+        )
+        if signature == self._signature:
+            return
+        expanded = {
+            widget.task_id
+            for widget in self.query(SubagentTaskWidget)
+            if not widget.collapsed
+        }
+        self._signature = signature
+        self.remove_children()
+        widgets: list[Static | SubagentTaskWidget] = []
+        for task in tasks:
+            if task.kind == "agent":
+                widgets.append(
+                    SubagentTaskWidget(
+                        task,
+                        width=width,
+                        collapsed=task.task_id not in expanded,
+                    )
+                )
+            else:
+                widgets.append(
+                    Static(
+                        tasks_renderable([task], width=width),
+                        classes="task-row",
+                    )
+                )
+        if widgets:
+            self.mount(*widgets)
+
+
+def _task_title(task: TuiTask, *, width: int) -> str:
+    marker = {
+        "pending": "-",
+        "running": "running",
+        "completed": "done",
+        "failed": "failed",
+        "stopped": "stopped",
+    }.get(task.status, task.status)
+    agent = task.agent or task.command.partition(":")[0] or "subagent"
+    available = max(12, width - len(task.task_id) - len(marker) - len(agent) - 8)
+    prompt = task.command.partition(":")[2].strip() or task.command
+    return (
+        f"{marker}  {task.task_id}  {agent}  "
+        f"{shorten(prompt, width=available, placeholder='...')}"
+    )
 
 
 def queue_renderable(messages: list[str], *, width: int) -> Text:

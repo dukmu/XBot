@@ -75,6 +75,10 @@ class TuiTask:
     finished_at: float = 0.0
     output: str = ""
     error: str = ""
+    agent: str = ""
+    thread_id: str = ""
+    usage: dict[str, int] = field(default_factory=dict)
+    terminal_since: float = 0.0
 
     def elapsed(self, now: float | None = None) -> float:
         if self.started_at <= 0:
@@ -99,6 +103,8 @@ class TuiState:
     workspace_root: str = ""
     provider: str = ""
     model: str = ""
+    model_mode: str = ""
+    status_slots: dict[str, str] = field(default_factory=dict)
     context_window: int = 0
     context_input_tokens: int = 0
     status: str = "Disconnected"
@@ -135,6 +141,13 @@ class TuiState:
         self._tool_id_renames.clear()
         event_type = str(event.get("type") or "")
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        slots = data.get("status_slots")
+        if isinstance(slots, dict):
+            self.status_slots = {
+                str(name): str(value)
+                for name, value in slots.items()
+                if str(name).strip() and str(value).strip()
+            }
 
         if event_type == "hello_ok":
             self.status = f"Connected to {data.get('server_name') or 'server'}"
@@ -221,17 +234,32 @@ class TuiState:
         elif event_type == "task_updated":
             task_id = str(data.get("task_id") or "")
             if task_id:
+                previous = self.tasks.get(task_id)
+                status = str(data.get("status") or "pending")
+                raw_usage = data.get("usage")
+                usage = raw_usage if isinstance(raw_usage, dict) else {}
+                terminal_since = previous.terminal_since if previous else 0.0
+                if status in {"completed", "stopped"} and terminal_since <= 0:
+                    terminal_since = time.monotonic()
                 self.tasks[task_id] = TuiTask(
                     task_id=task_id,
                     command=str(data.get("command") or ""),
                     kind=str(data.get("kind") or "shell"),
                     cwd=str(data.get("cwd") or ""),
-                    status=str(data.get("status") or "pending"),
+                    status=status,
                     created_at=float(data.get("created_at") or 0),
                     started_at=float(data.get("started_at") or 0),
                     finished_at=float(data.get("finished_at") or 0),
                     output=str(data.get("output") or ""),
                     error=str(data.get("error") or ""),
+                    agent=str(data.get("agent") or ""),
+                    thread_id=str(data.get("thread_id") or ""),
+                    usage={
+                        str(key): int(value or 0)
+                        for key, value in usage.items()
+                        if isinstance(value, (int, float))
+                    },
+                    terminal_since=terminal_since,
                 )
         elif event_type == "usage":
             self._apply_usage(data)
@@ -261,7 +289,6 @@ class TuiState:
                 self._ensure_tool_transcript(tool_id)
                 self._changed_tool_ids.add(tool_id)
         elif event_type == "permission_denied":
-            self.status = "Permission denied"
             self.pending_permission_payload = None
             request_id = str(data.get("request_id") or "")
             tool = self._tool_for_permission_request(request_id)
@@ -269,6 +296,7 @@ class TuiState:
                 tool.permission_pending = False
                 tool.status = "denied"
                 self._changed_tool_ids.add(tool.tool_call_id)
+            self._refresh_status(reset_terminal=True)
         elif event_type == "user_input_required":
             self.pending_user_input_payload = data
             self._refresh_status()
@@ -301,7 +329,6 @@ class TuiState:
             self.status = "Shutdown"
 
     def append_message(self, role: str, content: str) -> None:
-        content = _repair_mojibake(content)
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
@@ -384,6 +411,25 @@ class TuiState:
             self.status = "Running"
         else:
             self.status = "Ready"
+
+    def prune_finished_tasks(
+        self,
+        *,
+        now: float | None = None,
+        retention_seconds: float = 3.0,
+    ) -> bool:
+        """Remove successful/stopped tasks after a short visible grace period."""
+        current = time.monotonic() if now is None else now
+        expired = [
+            task_id
+            for task_id, task in self.tasks.items()
+            if task.status in {"completed", "stopped"}
+            and task.terminal_since > 0
+            and current - task.terminal_since >= retention_seconds
+        ]
+        for task_id in expired:
+            self.tasks.pop(task_id, None)
+        return bool(expired)
 
     def lines(self, *, width: int, height: int) -> list[str]:
         width = max(20, width)
@@ -639,25 +685,16 @@ def format_value(value: Any, *, indent: int | None = None) -> str:
         return str(value)
 
 
-def _repair_mojibake(text: str) -> str:
-    """Repair common UTF-8 bytes decoded as Latin-1/CP1252 mojibake."""
-
-    if not text or not any(marker in text for marker in ("Ã", "Â", "å", "æ", "ç", "è", "é")):
-        return text
-    try:
-        repaired = text.encode("latin-1").decode("utf-8")
-    except UnicodeError:
-        return text
-    return repaired if _cjk_score(repaired) > _cjk_score(text) else text
-
-
-def _cjk_score(text: str) -> int:
-    return sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-
-
 def _wrap(text: str, width: int) -> list[str]:
     if width <= 0:
         return [""]
+    lines: list[str] = []
+    for source_line in text.splitlines() or [""]:
+        lines.extend(_wrap_line(source_line, width))
+    return lines
+
+
+def _wrap_line(text: str, width: int) -> list[str]:
     words = text.split()
     if not words:
         return [""]

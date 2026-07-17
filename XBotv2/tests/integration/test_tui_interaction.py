@@ -187,6 +187,34 @@ def test_status_bar_preserves_queue_and_tokens_for_any_status(
     assert ("t:1.5k" if width < 32 else "tokens:1.5k") in rendered
 
 
+def test_status_bar_compacts_million_token_counts() -> None:
+    from xbotv2.tui.textual_widgets import status_renderable
+
+    rendered = status_renderable(
+        status="Ready",
+        session_id="s",
+        thread_id="agent",
+        workspace_root="",
+        provider="minimax",
+        model="MiniMax-M3",
+        model_mode="high",
+        context_window=0,
+        context_input_tokens=0,
+        activity="turn:1",
+        queue_depth=0,
+        usage={
+            "requests": 1,
+            "input_tokens": 1_200_000,
+            "output_tokens": 300_000,
+            "total_tokens": 1_500_000,
+        },
+        width=100,
+    ).plain
+
+    assert "tokens:1.5M" in rendered
+    assert "1.2M in / 300.0k out" in rendered
+
+
 @pytest.mark.asyncio
 async def test_status_bar_uses_open_session_metadata() -> None:
     class MetadataSession(_ScriptedSession):
@@ -198,6 +226,8 @@ async def test_status_bar_uses_open_session_metadata() -> None:
                 "workspace_root": "/workspace/XBot",
                 "provider": "minimax",
                 "model": "Minimax-M3",
+                "model_mode": "high",
+                "status_slots": {"goal": "active"},
                 "context_window": 32000,
                 "history": [],
             }
@@ -217,7 +247,9 @@ async def test_status_bar_uses_open_session_metadata() -> None:
         assert app.state.provider == "minimax"
         assert app.state.model == "Minimax-M3"
         assert app.state.context_window == 32000
-        assert "model:Minimax-M3" in status.visual.plain
+        assert "agent:BuildBot" in status.visual.plain
+        assert "minimax/Minimax-M3:high" in status.visual.plain
+        assert "goal:active" in status.visual.plain
         assert "ctx:" not in status.visual.plain
         app.state.apply_event({
             "type": "usage",
@@ -231,8 +263,7 @@ async def test_status_bar_uses_open_session_metadata() -> None:
         app._refresh_status()
         await pilot.pause()
         assert "ctx-free:75%" in status.visual.plain
-        assert "cwd:XBot" in status.visual.plain
-        assert "provider:minimax" in status.visual.plain
+        assert "minimax/Minimax-M3:high" in status.visual.plain
 
 
 @pytest.mark.asyncio

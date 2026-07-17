@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,8 @@ from xbotv2.api.plugins import (
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.store import PluginStore
 from xbotv2.tools.registry import ToolRegistry
+
+logger = logging.getLogger("xbotv2.plugin_loader")
 
 
 @dataclass
@@ -230,6 +233,26 @@ class PluginLoader:
             })
         return result
 
+    async def status_slots(self) -> dict[str, str]:
+        """Collect validated status slots without exposing plugin objects."""
+        slots: dict[str, str] = {}
+        for plugin in self.loaded_plugins:
+            try:
+                values = await plugin.status_slots()
+            except Exception:
+                logger.exception(
+                    "Plugin %s status slots failed", plugin.manifest.name
+                )
+                continue
+            if not isinstance(values, dict):
+                continue
+            for raw_name, raw_value in values.items():
+                name = str(raw_name).strip()
+                value = str(raw_value).strip()
+                if name and value and name not in slots:
+                    slots[name] = value
+        return slots
+
     def discover(self) -> list[tuple[PluginManifest, Path]]:
         """Scan plugin directories for plugin.yaml manifests."""
         manifests: list[tuple[PluginManifest, Path]] = []
@@ -242,7 +265,7 @@ class PluginLoader:
                 manifest_path = candidate / "plugin.yaml"
                 if not manifest_path.exists():
                     continue
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 manifest = PluginManifest(**data)
                 if manifest.name in self.disabled_plugins:

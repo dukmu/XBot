@@ -2357,6 +2357,9 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         },
     )
     assert response.json()["data"]["message"] == "Set the active goal."
+    assert response.json()["data"]["data"]["status_slots"] == {
+        "goal": "active"
+    }
     events = []
     while True:
         event = await asyncio.wait_for(session_events.get(), timeout=2)
@@ -2371,6 +2374,10 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         for event in events
         if event["type"] == "assistant_message" and event["data"]["content"]
     ] == ["Goal complete: API tests passed."]
+    turn_finished = next(
+        event for event in events if event["type"] == "turn_finished"
+    )
+    assert turn_finished["data"]["status_slots"] == {"goal": "complete"}
     for _ in range(20):
         if not ctx.turn_lock.locked():
             break
@@ -2391,6 +2398,9 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         json={"command": "goal", "raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
+    assert get_response.json()["data"]["data"]["status_slots"] == {
+        "goal": "complete"
+    }
 
 
 @pytest.mark.asyncio

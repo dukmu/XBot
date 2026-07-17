@@ -57,6 +57,8 @@ type-only import inside XBotv2 itself.
 | `ToolRegistrationOptions` | dataclass | Setup-time plugin tool registration options. |
 
 `PluginBase.on_load` and `PluginBase.on_unload` have safe no-op defaults.
+`PluginBase.status_slots()` may return compact `dict[str, str]` display values;
+the default is empty and failures do not break session execution.
 `HookContext.request_id` carries the current message/turn correlation id for
 turn-scoped hooks, including error and persistence hooks. Session lifecycle
 hooks use an empty value because they are not owned by one message request.

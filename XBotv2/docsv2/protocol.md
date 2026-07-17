@@ -42,14 +42,21 @@ Thread status and history remain queryable after its runtime closes.
   and private provider metadata. Tool history retains structured `data`,
   `error`, and `artifacts` so resumed clients render the same Details content
   as the live event stream.
-- `OpenSessionResponse.model` and `context_window` describe the active provider
-  model and configured runtime context budget. Provider selection is persisted
-  in thread metadata and restored by `resume`.
+- `OpenSessionResponse.model`, `model_mode`, and `context_window` describe the
+  active provider model, its explicitly configured reasoning/thinking mode, and
+  the runtime context budget. An empty `model_mode` means the provider did not
+  configure one; XBot does not invent a default mode. Provider selection is
+  persisted in thread metadata and restored by `resume`.
+- `status_slots` is a compact `dict[str, str]` supplied by loaded plugins for
+  human status displays. It appears on open/thread responses and turn-finished
+  events. The Goal plugin exposes its current state as the `goal` slot.
 - `OpenSessionResponse.usage` restores cumulative session token totals and the
   latest provider-reported `context_tokens`. Live `usage` events are per-model-
   call deltas; clients add them to the restored totals.
   Core persists these totals independently in `state/usage.yaml`, so compact,
   clear, and undo do not erase token accounting.
+- Protocol/configuration text is UTF-8. Clients do not attempt Latin-1 or
+  CP1252 repair when text is already decoded.
 
 ### Endpoints
 
