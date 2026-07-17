@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 
@@ -70,15 +71,17 @@ class XBotClient:
         timeout: float = 30.0,
         uds_path: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         if uds_path is not None and transport is not None:
             raise ValueError("uds_path and transport are mutually exclusive")
         if uds_path is not None:
             transport = httpx.AsyncHTTPTransport(uds=uds_path)
         self._timeout = timeout
+        request_headers = {"Accept": "application/json", **dict(headers or {})}
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={"Accept": "application/json"},
+            headers=request_headers,
             timeout=timeout,
             transport=transport,
         )

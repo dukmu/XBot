@@ -685,12 +685,7 @@ def _register_routes(app: FastAPI) -> None:
     ) -> Response:
         content = payload.content
         client_request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
-        try:
-            ctx = await manager.get(session_id, thread_id)
-        except SessionNotFound as exc:
-            raise HttpServerError(
-                "session_not_found", str(exc), status=404
-            ) from exc
+        ctx = await manager.get(session_id, thread_id)
 
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
@@ -770,13 +765,9 @@ def _register_routes(app: FastAPI) -> None:
         responses=_SSE_RESPONSE,
     )
     async def session_events(session_id: str, thread_id: str) -> Response:
+        ctx = await manager.get(session_id, thread_id)
         try:
-            ctx = await manager.get(session_id, thread_id)
             events = ctx.attach_event_stream()
-        except SessionNotFound as exc:
-            raise HttpServerError(
-                "session_not_found", str(exc), status=404
-            ) from exc
         except SessionBusy as exc:
             raise HttpServerError(
                 "event_stream_connected", str(exc), status=409
@@ -875,12 +866,7 @@ def _register_routes(app: FastAPI) -> None:
         session_id: str,
         thread_id: str,
     ) -> InterruptResponse:
-        try:
-            ctx = await manager.get(session_id, thread_id)
-        except SessionNotFound as exc:
-            raise HttpServerError(
-                "session_not_found", str(exc), status=404
-            ) from exc
+        ctx = await manager.get(session_id, thread_id)
         cancelled = ctx.request_interrupt()
         if not cancelled:
             # No running turn to cancel — treat as no-op success so
@@ -1008,12 +994,7 @@ async def _resolve_interaction(
             f"{kind}.response payload.request_id must be non-empty",
             status=400,
         )
-    try:
-        ctx = await manager.get(session_id, thread_id)
-    except SessionNotFound as exc:
-        raise HttpServerError(
-            "session_not_found", str(exc), status=404
-        ) from exc
+    ctx = await manager.get(session_id, thread_id)
 
     if kind == "permission":
         decision = str(payload.get("decision") or "").strip().lower()

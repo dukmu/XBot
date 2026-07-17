@@ -1,42 +1,22 @@
-"""HTTP/SSE transport for the TUI.
-
-Implementation of the ``Transport`` protocol on top of FastAPI (server)
-and ``httpx.AsyncClient`` (client). v1 only supports loopback binds
-(``127.0.0.1``); remote binds are rejected upstream in the server.
-
-See ``docsv2/tui_opencode_requirements.md`` §10.5.
-"""
+"""TUI adapter over the typed XBot HTTP client."""
 
 from __future__ import annotations
 
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
-import httpx
-
-from xbotv2.protocol.version import PROTOCOL_VERSION
+from xbotv2.client import XBotClient
 from xbotv2.protocol.models import (
-    CloseResponse,
     CommandListResponse,
     CommandRequest,
     CommandResponse,
-    HelloRequest,
-    HelloResponse,
-    InteractionResponse,
-    InterruptResponse,
-    MessageRequest,
-    OpenSessionRequest,
-    OpenSessionResponse,
-    PermissionResponseRequest,
     ServerEvent,
-    UserInputResponseRequest,
 )
-from xbotv2.protocol.sse import SseDecoder, SseMessage, decode_server_event
-
 from xbotv2.tui.trace import trace_event
 
 
 class HttpTransport:
-    """Async HTTP/SSE transport for the TUI."""
+    """Adapt typed client models to the dict-based TUI transport contract."""
 
     def __init__(
         self,
@@ -46,19 +26,13 @@ class HttpTransport:
         timeout: float = 30.0,
         uds_path: str | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        transport = httpx.AsyncHTTPTransport(uds=uds_path) if uds_path else None
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            headers=headers,
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        self._client = XBotClient(
+            base_url,
             timeout=timeout,
-            transport=transport,
+            uds_path=uds_path,
+            headers=headers,
         )
-        self._closed = False
 
     async def hello(
         self,
@@ -66,21 +40,14 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            "/hello",
-            json=HelloRequest(
+        payload = (
+            await self._client.hello(
                 client_name="xbotv2-tui",
-                protocol_version=PROTOCOL_VERSION,
                 session_id=session_id,
                 thread_id=thread_id,
-            ).model_dump(),
-        )
-        _raise_for_status(response)
-        payload = HelloResponse.model_validate(response.json()).model_dump()
-        trace_event(
-            "tui.http",
-            {"stage": "hello", "status": response.status_code, "payload": payload},
-        )
+            )
+        ).model_dump()
+        _trace_response("hello", payload)
         return payload
 
     async def open_session(
@@ -92,22 +59,16 @@ class HttpTransport:
         mode: str = "new",
         agent: str | None = None,
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            "/sessions",
-            json=OpenSessionRequest(
+        payload = (
+            await self._client.open_session(
                 session_id=session_id,
                 thread_id=thread_id,
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
-            ).model_dump(),
-        )
-        _raise_for_status(response)
-        payload = OpenSessionResponse.model_validate(response.json()).model_dump()
-        trace_event(
-            "tui.http",
-            {"stage": "open_session", "status": response.status_code, "payload": payload},
-        )
+            )
+        ).model_dump()
+        _trace_response("open_session", payload)
         return payload
 
     async def list_commands(
@@ -116,27 +77,36 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> dict[str, Any]:
-        response = await self._client.get(
-            f"/sessions/{session_id}/threads/{thread_id}/commands"
+        # Human command compatibility is intentionally outside the public SDK.
+        result = await self._client._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/commands",
+            CommandListResponse,
         )
-        _raise_for_status(response)
-        return CommandListResponse.model_validate(response.json()).model_dump()
+        return result.model_dump()
 
     async def run_command(
-        self, *, session_id: str, thread_id: str, command: str,
-        args: list[str], raw: str, kind: str = "server",
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        command: str,
+        args: list[str],
+        raw: str,
+        kind: str = "server",
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            f"/sessions/{session_id}/threads/{thread_id}/commands",
-            json=CommandRequest(
+        result = await self._client._request(
+            "POST",
+            f"{_thread_path(session_id, thread_id)}/commands",
+            CommandResponse,
+            CommandRequest(
                 command=command,
                 args=args,
                 raw=raw,
                 kind=kind,
-            ).model_dump(),
+            ),
         )
-        _raise_for_status(response)
-        return CommandResponse.model_validate(response.json()).model_dump()
+        return result.model_dump()
 
     def send_message(
         self,
@@ -146,13 +116,16 @@ class HttpTransport:
         content: str,
         request_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
-        return self._sse_iter(
-            f"/sessions/{session_id}/threads/{thread_id}/messages",
-            json_body=MessageRequest(
-                content=content,
+        return self._trace_events(
+            self._client.send_message(
+                session_id,
+                thread_id,
+                content,
                 request_id=request_id,
-            ).model_dump(),
+            ),
             trace_label="messages",
+            path=f"{_thread_path(session_id, thread_id)}/messages",
+            body={"content": content, "request_id": request_id},
         )
 
     def session_events(
@@ -161,9 +134,10 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
-        return self._sse_iter(
-            f"/sessions/{session_id}/threads/{thread_id}/events",
+        return self._trace_events(
+            self._client.stream_events(session_id, thread_id),
             trace_label="session_events",
+            path=f"{_thread_path(session_id, thread_id)}/events",
         )
 
     async def send_permission_response(
@@ -175,24 +149,16 @@ class HttpTransport:
         decision: str,
         scope: str,
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            f"/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
-            json=PermissionResponseRequest(
+        payload = (
+            await self._client.respond_permission(
+                session_id,
+                thread_id,
                 request_id=request_id,
                 decision=decision,
                 scope=scope,
-            ).model_dump(),
-        )
-        _raise_for_status(response)
-        payload = InteractionResponse.model_validate(response.json()).model_dump()
-        trace_event(
-            "tui.http",
-            {
-                "stage": "permission_response",
-                "status": response.status_code,
-                "payload": payload,
-            },
-        )
+            )
+        ).model_dump()
+        _trace_response("permission_response", payload)
         return payload
 
     async def send_user_input(
@@ -203,25 +169,19 @@ class HttpTransport:
         request_id: str,
         answer: Any,
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            f"/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
-            json=UserInputResponseRequest(
+        payload = (
+            await self._client.respond_user_input(
+                session_id,
+                thread_id,
                 request_id=request_id,
                 answer=answer,
-            ).model_dump(),
-        )
-        _raise_for_status(response)
-        payload = InteractionResponse.model_validate(response.json()).model_dump()
-        trace_event(
-            "tui.http",
-            {"stage": "user_input", "status": response.status_code, "payload": payload},
-        )
+            )
+        ).model_dump()
+        _trace_response("user_input", payload)
         return payload
 
     async def shutdown(self, *, session_id: str) -> dict[str, Any]:
-        response = await self._client.post(f"/sessions/{session_id}/close")
-        _raise_for_status(response)
-        return CloseResponse.model_validate(response.json()).model_dump()
+        return (await self._client.close_session(session_id)).model_dump()
 
     async def interrupt(
         self,
@@ -229,95 +189,46 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            f"/sessions/{session_id}/threads/{thread_id}/interrupt"
-        )
-        _raise_for_status(response)
-        payload = InterruptResponse.model_validate(response.json()).model_dump()
-        trace_event(
-            "tui.http",
-            {"stage": "interrupt", "status": response.status_code, "payload": payload},
-        )
+        payload = (
+            await self._client.interrupt(session_id, thread_id)
+        ).model_dump()
+        _trace_response("interrupt", payload)
         return payload
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        await self._client.aclose()
+        await self._client.close()
 
-    async def _sse_iter(
+    async def _trace_events(
         self,
-        path: str,
+        events: AsyncIterator[ServerEvent],
         *,
-        json_body: dict[str, Any] | None = None,
         trace_label: str,
+        path: str,
+        body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Iterate one SSE stream from the server.
-
-        Yields one dict per event in the order they arrive. The iterator
-        ends cleanly when the server sends an ``end`` event or closes
-        the connection.
-        """
-
         trace_event(
             "tui.http",
-            {"stage": f"{trace_label}.request", "url": path, "body": json_body},
+            {"stage": f"{trace_label}.request", "url": path, "body": body},
         )
-        async with self._client.stream(
-            "POST" if json_body is not None else "GET",
-            path,
-            json=json_body,
-            timeout=httpx.Timeout(self._timeout, read=None),
-        ) as response:
-            _raise_for_status(response)
-            decoder = SseDecoder()
-            async for raw_line in response.aiter_lines():
-                message = decoder.feed(raw_line)
-                if message is None:
-                    continue
-                event = decode_server_event(message)
-                _trace_sse_event(trace_label, message, event)
-                yield event.model_dump()
-                if event.type == "end":
-                    return
-
-            message = decoder.finish()
-            if message is not None:
-                event = decode_server_event(message)
-                _trace_sse_event(trace_label, message, event)
-                yield event.model_dump()
+        async for event in events:
+            trace_event(
+                "tui.http",
+                {
+                    "stage": f"{trace_label}.event",
+                    "event": event.type,
+                    "id": event.sequence,
+                    "event_type": event.type,
+                },
+            )
+            yield event.model_dump()
 
 
-def _trace_sse_event(
-    trace_label: str,
-    message: SseMessage,
-    event: ServerEvent,
-) -> None:
-    trace_event(
-        "tui.http",
-        {
-            "stage": f"{trace_label}.event",
-            "event": message.event,
-            "id": message.event_id,
-            "event_type": event.type,
-        },
+def _thread_path(session_id: str, thread_id: str) -> str:
+    return (
+        f"/sessions/{quote(session_id, safe='')}/threads/"
+        f"{quote(thread_id, safe='')}"
     )
 
 
-def _raise_for_status(response: httpx.Response) -> None:
-    """Raise a readable protocol error for non-2xx HTTP responses."""
-
-    is_success = getattr(response, "is_success", None)
-    if is_success is None:
-        response.raise_for_status()
-        return
-    if is_success:
-        return
-    try:
-        payload = response.json()
-    except ValueError:
-        response.raise_for_status()
-    code = str(payload.get("code") or response.status_code)
-    message = str(payload.get("message") or response.text or response.reason_phrase)
-    raise RuntimeError(f"{code}: {message}")
+def _trace_response(stage: str, payload: dict[str, Any]) -> None:
+    trace_event("tui.http", {"stage": stage, "status": 200, "payload": payload})

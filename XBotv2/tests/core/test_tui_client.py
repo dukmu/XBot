@@ -759,6 +759,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
     class FakeStream:
         def __init__(self, lines):
             self._lines = list(lines)
+            self.is_success = True
 
         async def __aenter__(self):
             return self
@@ -794,7 +795,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
             return None
 
     client = HttpTransport("http://127.0.0.1:4096")
-    client._client = FakeClient([
+    client._client._http = FakeClient([
         "event: assistant_message",
         "id: 1",
         "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",

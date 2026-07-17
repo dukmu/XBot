@@ -44,7 +44,9 @@ async with XBotClient("http://127.0.0.1:4096") as client:
 ```
 
 The client also accepts `uds_path` for the local Unix-socket server. It has no
-slash command or direct Tool execution methods.
+slash command or direct Tool execution methods. The TUI HTTP transport delegates
+public operations and SSE decoding to this client, adding only tracing, dict
+adaptation, and the temporary human-command compatibility route.
 
 ## Mutations
 
