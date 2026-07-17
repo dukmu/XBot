@@ -40,12 +40,17 @@ class Transport(Protocol):
     ) -> dict[str, Any]:
         """Open or resume a session. Returns the agent_name and status."""
 
-    async def list_commands(self, session_id: str | None = None) -> dict[str, Any]:
+    async def list_commands(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
         """Return server command metadata for completion/help."""
 
     async def run_command(
-        self, *, session_id: str, command: str, args: list[str], raw: str,
-        kind: str = "server",
+        self, *, session_id: str, thread_id: str, command: str,
+        args: list[str], raw: str, kind: str = "server",
     ) -> dict[str, Any]:
         """Execute a server-side slash command."""
 
@@ -53,6 +58,7 @@ class Transport(Protocol):
         self,
         *,
         session_id: str,
+        thread_id: str,
         content: str,
         request_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -68,6 +74,7 @@ class Transport(Protocol):
         self,
         *,
         session_id: str,
+        thread_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield server-initiated events for the active session."""
 
@@ -75,6 +82,7 @@ class Transport(Protocol):
         self,
         *,
         session_id: str,
+        thread_id: str,
         request_id: str,
         decision: str,
         scope: str,
@@ -85,6 +93,7 @@ class Transport(Protocol):
         self,
         *,
         session_id: str,
+        thread_id: str,
         request_id: str,
         answer: Any,
     ) -> dict[str, Any]:
@@ -93,7 +102,12 @@ class Transport(Protocol):
     async def shutdown(self, *, session_id: str) -> dict[str, Any]:
         """Close a session."""
 
-    async def interrupt(self, *, session_id: str) -> dict[str, Any]:
+    async def interrupt(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
         """Cancel the running turn in ``session_id`` if any.
 
         Returns a status dict (``{"status": "interrupting", ...}``).

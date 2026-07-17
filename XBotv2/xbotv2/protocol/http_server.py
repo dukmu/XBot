@@ -23,16 +23,33 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from xbotv2.protocol.models import (
+    AgentInfo,
+    AgentListResponse,
+    CloseResponse,
     CommandRequest,
     CommandListResponse,
     CommandResponse,
     ErrorResponse,
+    HealthResponse,
     HelloRequest,
     HelloResponse,
+    InteractionResponse,
+    InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
+    OpenThreadRequest,
     PermissionResponseRequest,
+    ProviderInfo,
+    ProviderListResponse,
+    SessionListResponse,
+    SessionSummary,
+    TaskListResponse,
+    ThreadListResponse,
+    ThreadMessagesResponse,
+    ThreadSummary,
+    ToolInfo,
+    ToolListResponse,
     UserInputResponseRequest,
     server_event,
 )
@@ -40,117 +57,34 @@ from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
 from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
-from xbotv2.core.bootstrap import bootstrap
+from xbotv2.config.loader import load_provider_config, load_provider_names
+from xbotv2.persistence.store import CoreStateStore
 from xbotv2.protocol.commands import execute_command, list_commands
+from xbotv2.protocol.session_manager import (
+    SessionExists,
+    SessionManager,
+    SessionNotFound,
+    ThreadNotActive,
+    close_disconnected_runtime,
+    pending_interactions,
+    persisted_thread_ids,
+    session_summary,
+    thread_summary,
+)
 from xbotv2.protocol.version import PROTOCOL_VERSION
 
 logger = logging.getLogger("xbotv2.http_server")
 
-
-class SessionNotFound(KeyError):
-    """The caller asked for a session that has not been opened."""
-
-
-class SessionExists(RuntimeError):
-    """A new session was requested with an identifier already in use."""
-
-
-class SessionManager:
-    """Owns active HTTP sessions keyed by session id."""
-
-    def __init__(self, paths: RuntimePaths) -> None:
-        self.paths = paths
-        self._sessions: dict[str, SessionRuntime] = {}
-        self._lock = asyncio.Lock()
-
-    @property
-    def size(self) -> int:
-        return len(self._sessions)
-
-    async def get(self, session_id: str) -> SessionRuntime:
-        async with self._lock:
-            ctx = self._sessions.get(session_id)
-        if ctx is None:
-            raise SessionNotFound(session_id)
-        return ctx
-
-    async def open_session(
-        self,
-        *,
-        session_id: str | None,
-        thread_id: str,
-        provider_name: str,
-        workspace_root: str,
-        selected_agent: str | None = None,
-        mode: str = "new",
-        no_plugins: bool,
-        llm_override: Any | None = None,
-    ) -> SessionRuntime:
-        async with self._lock:
-            mode = (mode or "new").lower().strip()
-            if mode not in {"new", "resume"}:
-                raise ValueError("session mode must be new or resume")
-            if mode == "resume" and not session_id:
-                raise ValueError("resume mode requires session_id")
-            if mode == "new":
-                session_id = session_id or _new_session_id()
-            assert session_id is not None
-            existing = self._sessions.get(session_id)
-            if existing is not None:
-                if mode == "resume":
-                    self._sessions.pop(session_id)
-                    await existing.close()
-                else:
-                    raise SessionExists(session_id)
-            session_paths = self.paths.session(session_id)
-            if mode == "resume" and not session_paths.has_thread(thread_id):
-                raise SessionNotFound(session_id)
-            if mode == "new" and session_paths.root.exists():
-                raise SessionExists(session_id)
-            engine = await bootstrap(
-                paths=self.paths,
-                provider_name=provider_name,
-                session_id=session_id,
-                thread_id=thread_id,
-                workspace_root=workspace_root,
-                plugin_dirs=[] if no_plugins else None,
-                llm_override=llm_override,
-                selected_agent=selected_agent,
-            )
-            await engine.start_session()
-            ctx = SessionRuntime(
-                session_id=session_id,
-                thread_id=thread_id,
-                provider_name=str(getattr(engine.config, "provider", provider_name)),
-                paths=self.paths,
-                workspace_root=workspace_root,
-                no_plugins=no_plugins,
-                engine=engine,
-            )
-            self._sessions[session_id] = ctx
-            return ctx
-
-    async def close_session(
-        self,
-        session_id: str,
-        *,
-        expected: SessionRuntime | None = None,
-        reason: str = "session_closed",
-    ) -> None:
-        async with self._lock:
-            ctx = self._sessions.get(session_id)
-            if expected is not None and ctx is not expected:
-                return
-            ctx = self._sessions.pop(session_id, None)
-        if ctx is not None:
-            await ctx.close(reason)
-
-    async def close_all(self) -> None:
-        async with self._lock:
-            contexts = list(self._sessions.values())
-            self._sessions.clear()
-        for ctx in contexts:
-            await ctx.close()
+_SSE_RESPONSE = {
+    200: {
+        "description": "Server-Sent Events stream",
+        "content": {
+            "text/event-stream": {
+                "schema": {"type": "string"},
+            },
+        },
+    },
+}
 
 
 class HttpServerError(Exception):
@@ -202,7 +136,27 @@ def create_app(
         finally:
             await manager.close_all()
 
-    app = FastAPI(title="XBotv2 TUI HTTP Server", lifespan=lifespan)
+    error_responses = {
+        status: {
+            "model": ErrorResponse,
+            "description": description,
+        }
+        for status, description in {
+            400: "Invalid request",
+            404: "Resource not found",
+            409: "Resource state conflict",
+            410: "Interaction no longer pending",
+            422: "Request schema validation failed",
+            426: "Unsupported protocol version",
+            500: "Server error",
+        }.items()
+    }
+    app = FastAPI(
+        title="XBot API",
+        version=PROTOCOL_VERSION,
+        lifespan=lifespan,
+        responses=error_responses,
+    )
     app.state.manager = manager
     app.state.server_name = server_name
     app.state.provider_name = provider_name
@@ -223,18 +177,34 @@ def set_llm_override(app: FastAPI, llm: Any | None) -> None:
 def _register_routes(app: FastAPI) -> None:
     manager: SessionManager = app.state.manager
 
-    @app.get("/health")
-    async def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "server_name": app.state.server_name,
-            "protocol_version": PROTOCOL_VERSION,
-            "uptime_s": int(time.monotonic() - app.state.started_at),
-            "sessions": manager.size,
-            "workspace_root": app.state.workspace_root,
-        }
+    @app.get("/health", operation_id="health")
+    async def health() -> HealthResponse:
+        return HealthResponse(
+            status="ok",
+            server_name=app.state.server_name,
+            uptime_s=int(time.monotonic() - app.state.started_at),
+            sessions=manager.size,
+            threads=manager.thread_count,
+            workspace_root=app.state.workspace_root,
+        )
 
-    @app.post("/hello")
+    @app.get("/providers", operation_id="list_providers")
+    async def list_providers_endpoint() -> ProviderListResponse:
+        default, names = load_provider_names(manager.paths)
+        providers = []
+        for name in names:
+            config = load_provider_config(manager.paths, name)
+            providers.append(ProviderInfo(
+                name=name,
+                provider=config.provider,
+                model=config.model,
+                max_tokens=config.max_tokens,
+                reasoning_effort=config.reasoning_effort or "",
+                thinking_enabled=config.thinking_enabled,
+            ))
+        return ProviderListResponse(default=default, providers=providers)
+
+    @app.post("/hello", operation_id="hello")
     async def hello(payload: HelloRequest) -> HelloResponse:
         if payload.protocol_version != PROTOCOL_VERSION:
             raise HttpServerError(
@@ -248,10 +218,20 @@ def _register_routes(app: FastAPI) -> None:
             thread_id=payload.thread_id.strip() or "agent",
         )
 
-    @app.post("/sessions")
+    @app.post("/sessions", operation_id="open_session")
     async def open_session(payload: OpenSessionRequest) -> OpenSessionResponse:
         raw_session_id = (payload.session_id or "").strip() or None
         thread_id = payload.thread_id.strip() or "agent"
+        if (
+            payload.mode == "new"
+            and raw_session_id is not None
+            and manager.paths.session(raw_session_id).root.exists()
+        ):
+            raise HttpServerError(
+                "session_exists",
+                raw_session_id,
+                status=409,
+            )
         workspace_root = str(
             Path(payload.workspace_root or app.state.workspace_root).resolve()
         )
@@ -275,33 +255,238 @@ def _register_routes(app: FastAPI) -> None:
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return OpenSessionResponse(
-            session_id=ctx.session_id,
-            thread_id=ctx.thread_id,
-            agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
-            workspace_root=ctx.workspace_root,
-            provider=ctx.provider_name,
-            model=str(getattr(ctx.engine, "model", "")),
-            context_window=int(getattr(ctx.engine, "context_window", 0)),
-            usage=ctx.engine.session_usage,
-            history=_display_history(ctx.engine.messages),
+        return _open_session_response(ctx)
+
+    @app.get("/sessions", operation_id="list_sessions")
+    async def list_sessions_endpoint() -> SessionListResponse:
+        root = manager.paths.sessions_dir
+        session_ids = sorted(
+            path.name for path in root.iterdir() if path.is_dir()
+        ) if root.is_dir() else []
+        return SessionListResponse(sessions=[
+            await session_summary(manager, session_id)
+            for session_id in session_ids
+        ])
+
+    @app.get("/sessions/{session_id}", operation_id="get_session")
+    async def get_session_endpoint(session_id: str) -> SessionSummary:
+        return await session_summary(manager, session_id)
+
+    @app.get(
+        "/sessions/{session_id}/threads",
+        operation_id="list_threads",
+    )
+    async def list_threads_endpoint(session_id: str) -> ThreadListResponse:
+        await session_summary(manager, session_id)
+        return ThreadListResponse(
+            session_id=session_id,
+            threads=[
+                await thread_summary(manager, session_id, thread_id)
+                for thread_id in persisted_thread_ids(manager.paths, session_id)
+            ],
         )
 
-    @app.get("/commands")
-    async def commands() -> CommandListResponse:
-        return CommandListResponse(commands=list_commands())
+    @app.post(
+        "/sessions/{session_id}/threads",
+        operation_id="open_thread",
+    )
+    async def open_thread_endpoint(
+        session_id: str,
+        payload: OpenThreadRequest,
+    ) -> OpenSessionResponse:
+        await session_summary(manager, session_id)
+        parent_thread_id = payload.parent_thread_id
+        if payload.mode == "resume":
+            session = manager.paths.session(session_id)
+            if not session.has_thread(payload.thread_id):
+                raise HttpServerError(
+                    "session_not_found",
+                    f"{session_id}/{payload.thread_id}",
+                    status=404,
+                )
+            store = CoreStateStore(
+                session,
+                thread_id=payload.thread_id,
+                workspace_root="",
+                provider="",
+            )
+            parent_thread_id = str(
+                store.read_thread_metadata().get("parent_thread_id") or ""
+            )
+        if not parent_thread_id or parent_thread_id == payload.thread_id:
+            raise HttpServerError(
+                "invalid_request",
+                "A subagent thread requires a different parent_thread_id",
+                status=400,
+            )
+        try:
+            parent = await manager.get(session_id, parent_thread_id)
+        except (SessionNotFound, ThreadNotActive) as exc:
+            raise HttpServerError(
+                "parent_thread_not_active",
+                str(exc),
+                status=409,
+                retryable=True,
+            ) from exc
+        workspace_root = str(
+            Path(payload.workspace_root or parent.workspace_root).resolve()
+        )
+        try:
+            ctx = await manager.open_session(
+                session_id=session_id,
+                thread_id=payload.thread_id,
+                provider_name=app.state.provider_name,
+                workspace_root=workspace_root,
+                mode=payload.mode,
+                selected_agent=payload.agent,
+                no_plugins=app.state.no_plugins,
+                llm_override=app.state.llm_override.get("value"),
+                parent_thread_id=parent_thread_id,
+                parent_permission_system=parent.engine.permission_system,
+                subagent_depth=1,
+            )
+        except SessionNotFound as exc:
+            raise HttpServerError("session_not_found", str(exc), status=404) from exc
+        except SessionExists as exc:
+            raise HttpServerError("session_exists", str(exc), status=409) from exc
+        return _open_session_response(ctx)
 
-    @app.get("/sessions/{session_id}/commands")
-    async def session_commands(session_id: str) -> CommandListResponse:
-        ctx = await manager.get(session_id)
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}",
+        operation_id="get_thread",
+    )
+    async def get_thread_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> ThreadSummary:
+        return await thread_summary(manager, session_id, thread_id)
+
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/agents",
+        operation_id="list_agents",
+    )
+    async def list_agents_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> AgentListResponse:
+        ctx = await manager.get(session_id, thread_id)
+        registry = ctx.engine.agent_registry
+        definitions = registry.definitions() if registry is not None else ()
+        return AgentListResponse(
+            active=str(getattr(ctx.engine.config, "agent_name", "")),
+            agents=[
+                AgentInfo(
+                    name=definition.name,
+                    description=definition.description,
+                    mode=definition.mode,
+                    provider=definition.provider or "",
+                    model=definition.model or "",
+                    context_window=definition.context_window or 0,
+                )
+                for definition in definitions
+                if not definition.hidden
+            ],
+        )
+
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/tools",
+        operation_id="list_tools",
+    )
+    async def list_tools_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> ToolListResponse:
+        ctx = await manager.get(session_id, thread_id)
+        registry = ctx.engine.tool_registry
+        enabled = set(registry.names())
+        return ToolListResponse(tools=[
+            ToolInfo(
+                name=str(getattr(entry.tool, "name", entry.registered_name)),
+                registered_name=entry.registered_name,
+                namespace=entry.namespace,
+                description=str(getattr(entry.tool, "description", "") or ""),
+                parameters=dict(getattr(entry.tool, "parameters", {}) or {}),
+                sandbox_mode=entry.sandbox_mode,
+                timeout_seconds=entry.timeout_seconds,
+            )
+            for entry in registry.registered_entries()
+            if entry.model_visible and entry.registered_name in enabled
+        ])
+
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/messages",
+        operation_id="list_messages",
+    )
+    async def list_messages_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> ThreadMessagesResponse:
+        active = (await manager.active_threads()).get((session_id, thread_id))
+        if active is not None:
+            messages = active.engine.messages
+        else:
+            session = manager.paths.session(session_id)
+            if not session.has_thread(thread_id):
+                raise SessionNotFound(f"{session_id}/{thread_id}")
+            store = CoreStateStore(
+                session,
+                thread_id=thread_id,
+                workspace_root="",
+                provider="",
+            )
+            messages = store.read_messages()
+        return ThreadMessagesResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            messages=_display_history(messages),
+        )
+
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/tasks",
+        operation_id="list_tasks",
+    )
+    async def list_tasks_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> TaskListResponse:
+        ctx = await manager.get(session_id, thread_id)
+        tasks: list[dict[str, Any]] = []
+        background = getattr(ctx.engine, "background_tasks", None)
+        subagents = getattr(ctx.engine, "subagents", None)
+        if background is not None:
+            tasks.extend(background.snapshots())
+        if subagents is not None:
+            tasks.extend(subagents.snapshots())
+        return TaskListResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            tasks=tasks,
+        )
+
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/commands",
+        operation_id="list_commands",
+    )
+    async def session_commands(
+        session_id: str,
+        thread_id: str,
+    ) -> CommandListResponse:
+        ctx = await manager.get(session_id, thread_id)
         loader = ctx.engine.plugin_loader
         return CommandListResponse(
             commands=list_commands(extra=loader.commands if loader is not None else ())
         )
 
-    @app.post("/sessions/{session_id}/commands")
-    async def run_command(session_id: str, payload: CommandRequest) -> CommandResponse:
-        ctx = await manager.get(session_id)
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/commands",
+        operation_id="run_command",
+    )
+    async def run_command(
+        session_id: str,
+        thread_id: str,
+        payload: CommandRequest,
+    ) -> CommandResponse:
+        ctx = await manager.get(session_id, thread_id)
         raw = payload.raw
         command = payload.command.strip().removeprefix("/")
         args = payload.args
@@ -341,12 +526,21 @@ def _register_routes(app: FastAPI) -> None:
             ) from exc
         return CommandResponse.model_validate(result)
 
-    @app.post("/sessions/{session_id}/messages")
-    async def post_message(session_id: str, payload: MessageRequest) -> Response:
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/messages",
+        operation_id="send_message",
+        response_class=StreamingResponse,
+        responses=_SSE_RESPONSE,
+    )
+    async def post_message(
+        session_id: str,
+        thread_id: str,
+        payload: MessageRequest,
+    ) -> Response:
         content = payload.content
         client_request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
         try:
-            ctx = await manager.get(session_id)
+            ctx = await manager.get(session_id, thread_id)
         except SessionNotFound as exc:
             raise HttpServerError(
                 "session_not_found", str(exc), status=404
@@ -408,11 +602,7 @@ def _register_routes(app: FastAPI) -> None:
             finally:
                 if disconnected:
                     if ctx.session_events is None:
-                        await manager.close_session(
-                            session_id,
-                            expected=ctx,
-                            reason="client_disconnected",
-                        )
+                        await close_disconnected_runtime(manager, ctx)
                 else:
                     final = emit_end()
                     if final:
@@ -427,10 +617,15 @@ def _register_routes(app: FastAPI) -> None:
             },
         )
 
-    @app.get("/sessions/{session_id}/events")
-    async def session_events(session_id: str) -> Response:
+    @app.get(
+        "/sessions/{session_id}/threads/{thread_id}/events",
+        operation_id="stream_events",
+        response_class=StreamingResponse,
+        responses=_SSE_RESPONSE,
+    )
+    async def session_events(session_id: str, thread_id: str) -> Response:
         try:
-            ctx = await manager.get(session_id)
+            ctx = await manager.get(session_id, thread_id)
             events = ctx.attach_event_stream()
         except SessionNotFound as exc:
             raise HttpServerError(
@@ -463,11 +658,7 @@ def _register_routes(app: FastAPI) -> None:
             finally:
                 ctx.detach_event_stream(events)
                 if disconnected:
-                    await manager.close_session(
-                        session_id,
-                        expected=ctx,
-                        reason="client_disconnected",
-                    )
+                    await close_disconnected_runtime(manager, ctx)
 
         return StreamingResponse(
             sse_stream(),
@@ -478,37 +669,68 @@ def _register_routes(app: FastAPI) -> None:
             },
         )
 
-    @app.post("/sessions/{session_id}/interactions/permission-response")
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
+        operation_id="respond_permission",
+    )
     async def post_permission_response(
-        session_id: str, payload: PermissionResponseRequest, request: Request
-    ) -> dict[str, Any]:
+        session_id: str,
+        thread_id: str,
+        payload: PermissionResponseRequest,
+        request: Request,
+    ) -> InteractionResponse:
         return await _resolve_interaction(
             manager=request.app.state.manager,
             session_id=session_id,
+            thread_id=thread_id,
             payload=payload.model_dump(),
             kind="permission",
         )
 
-    @app.post("/sessions/{session_id}/interactions/user-input")
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
+        operation_id="respond_user_input",
+    )
     async def post_user_input(
-        session_id: str, payload: UserInputResponseRequest, request: Request
-    ) -> dict[str, Any]:
+        session_id: str,
+        thread_id: str,
+        payload: UserInputResponseRequest,
+        request: Request,
+    ) -> InteractionResponse:
         return await _resolve_interaction(
             manager=request.app.state.manager,
             session_id=session_id,
+            thread_id=thread_id,
             payload=payload.model_dump(),
             kind="user_input",
         )
 
-    @app.post("/sessions/{session_id}/shutdown")
-    async def shutdown_session(session_id: str) -> dict[str, Any]:
+    @app.post(
+        "/sessions/{session_id}/close",
+        operation_id="close_session",
+    )
+    async def shutdown_session(session_id: str) -> CloseResponse:
         await manager.close_session(session_id)
-        return {"status": "closed", "session_id": session_id}
+        return CloseResponse(session_id=session_id)
 
-    @app.post("/sessions/{session_id}/interrupt")
-    async def interrupt_session(session_id: str) -> dict[str, Any]:
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/close",
+        operation_id="close_thread",
+    )
+    async def close_thread(session_id: str, thread_id: str) -> CloseResponse:
+        await manager.close_thread(session_id, thread_id)
+        return CloseResponse(session_id=session_id, thread_id=thread_id)
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/interrupt",
+        operation_id="interrupt_thread",
+    )
+    async def interrupt_session(
+        session_id: str,
+        thread_id: str,
+    ) -> InterruptResponse:
         try:
-            ctx = await manager.get(session_id)
+            ctx = await manager.get(session_id, thread_id)
         except SessionNotFound as exc:
             raise HttpServerError(
                 "session_not_found", str(exc), status=404
@@ -517,16 +739,18 @@ def _register_routes(app: FastAPI) -> None:
         if not cancelled:
             # No running turn to cancel — treat as no-op success so
             # the TUI can press ESC any time without a 4xx.
-            return {
-                "session_id": session_id,
-                "status": "idle",
-                "cancelled": False,
-            }
-        return {
-            "session_id": session_id,
-            "status": "interrupting",
-            "cancelled": True,
-        }
+            return InterruptResponse(
+                session_id=session_id,
+                thread_id=thread_id,
+                status="idle",
+                cancelled=False,
+            )
+        return InterruptResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            status="interrupting",
+            cancelled=True,
+        )
 
     @app.exception_handler(HttpServerError)
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:
@@ -560,6 +784,20 @@ def _register_routes(app: FastAPI) -> None:
             content=_error_payload("session_not_found", str(exc)),
         )
 
+    @app.exception_handler(ThreadNotActive)
+    async def _on_thread_not_active(
+        _: Request,
+        exc: ThreadNotActive,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=_error_payload(
+                "thread_not_active",
+                str(exc),
+                retryable=True,
+            ),
+        )
+
 
 def _error_payload(
     code: str,
@@ -576,10 +814,18 @@ def _error_payload(
     ).model_dump()
 
 
-def _new_session_id() -> str:
-    from datetime import datetime
-
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
+    return OpenSessionResponse(
+        session_id=ctx.session_id,
+        thread_id=ctx.thread_id,
+        agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
+        workspace_root=ctx.workspace_root,
+        provider=ctx.provider_name,
+        model=str(getattr(ctx.engine, "model", "")),
+        context_window=int(getattr(ctx.engine, "context_window", 0)),
+        usage=ctx.engine.session_usage,
+        history=_display_history(ctx.engine.messages),
+    )
 
 
 def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
@@ -625,9 +871,10 @@ async def _resolve_interaction(
     *,
     manager: SessionManager,
     session_id: str,
+    thread_id: str,
     payload: dict[str, Any],
     kind: str,
-) -> dict[str, Any]:
+) -> InteractionResponse:
     request_id = str(payload.get("request_id") or "").strip()
     if not request_id:
         raise HttpServerError(
@@ -636,7 +883,7 @@ async def _resolve_interaction(
             status=400,
         )
     try:
-        ctx = await manager.get(session_id)
+        ctx = await manager.get(session_id, thread_id)
     except SessionNotFound as exc:
         raise HttpServerError(
             "session_not_found", str(exc), status=404
@@ -667,11 +914,10 @@ async def _resolve_interaction(
                 str(exc),
                 status=410,
             ) from exc
-        return {
-            "request_id": request_id,
-            "recorded": True,
-            "pending_interactions": _pending_snapshot(ctx),
-        }
+        return InteractionResponse(
+            request_id=request_id,
+            pending_interactions=pending_interactions(ctx),
+        )
 
     answer = payload.get("answer", "")
     try:
@@ -684,20 +930,9 @@ async def _resolve_interaction(
             str(exc),
             status=410,
         ) from exc
-    return {
-        "request_id": request_id,
-        "recorded": True,
-        "pending_interactions": _pending_snapshot(ctx),
-    }
-
-
-def _pending_snapshot(ctx: SessionRuntime) -> list[str]:
-    """Return the list of currently pending interaction request ids."""
-
-    return list(
-        ctx.engine.user_input_waiter.pending_request_ids()  # noqa: SLF001
-    ) + list(
-        ctx.engine.permission_waiter.pending_request_ids()  # noqa: SLF001
+    return InteractionResponse(
+        request_id=request_id,
+        pending_interactions=pending_interactions(ctx),
     )
 
 

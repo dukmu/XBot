@@ -61,6 +61,99 @@ class UsageData(WireModel):
     context_tokens: int = Field(default=0, ge=0)
 
 
+def _empty_usage() -> UsageData:
+    return UsageData(
+        input_tokens=0,
+        output_tokens=0,
+        total_tokens=0,
+        requests=0,
+    )
+
+
+class HealthResponse(WireModel):
+    status: Literal["ok"] = "ok"
+    server_name: str
+    protocol_version: str = PROTOCOL_VERSION
+    uptime_s: int = Field(ge=0)
+    sessions: int = Field(ge=0)
+    threads: int = Field(ge=0)
+    workspace_root: str
+
+
+class ProviderInfo(WireModel):
+    name: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    max_tokens: int = Field(ge=1)
+    reasoning_effort: str = ""
+    thinking_enabled: bool = False
+
+
+class ProviderListResponse(WireModel):
+    default: str
+    providers: list[ProviderInfo] = Field(default_factory=list)
+
+
+class AgentInfo(WireModel):
+    name: str = Field(min_length=1)
+    description: str
+    mode: Literal["primary", "subagent", "all"]
+    provider: str = ""
+    model: str = ""
+    context_window: int = Field(default=0, ge=0)
+
+
+class AgentListResponse(WireModel):
+    active: str = ""
+    agents: list[AgentInfo] = Field(default_factory=list)
+
+
+class ToolInfo(WireModel):
+    name: str = Field(min_length=1)
+    registered_name: str = Field(min_length=1)
+    namespace: str = Field(min_length=1)
+    description: str
+    parameters: dict[str, Any]
+    sandbox_mode: Literal["sandboxed", "host"]
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class ToolListResponse(WireModel):
+    tools: list[ToolInfo] = Field(default_factory=list)
+
+
+class ThreadSummary(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    status: Literal["active", "inactive"]
+    kind: Literal["main", "subagent"] = "main"
+    turn_status: Literal["idle", "running"] = "idle"
+    parent_thread_id: str = ""
+    agent: str = ""
+    provider: str = ""
+    model: str = ""
+    context_window: int = Field(default=0, ge=0)
+    message_count: int = Field(default=0, ge=0)
+    usage: UsageData = Field(default_factory=_empty_usage)
+    pending_interactions: list[str] = Field(default_factory=list)
+
+
+class ThreadListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    threads: list[ThreadSummary] = Field(default_factory=list)
+
+
+class SessionSummary(WireModel):
+    session_id: str = Field(min_length=1)
+    status: Literal["active", "inactive"]
+    active_threads: int = Field(default=0, ge=0)
+    thread_count: int = Field(default=0, ge=0)
+
+
+class SessionListResponse(WireModel):
+    sessions: list[SessionSummary] = Field(default_factory=list)
+
+
 class OpenSessionResponse(WireModel):
     session_id: str
     thread_id: str
@@ -70,15 +163,22 @@ class OpenSessionResponse(WireModel):
     provider: str
     model: str = ""
     context_window: int = Field(default=0, ge=0)
-    usage: UsageData = Field(
-        default_factory=lambda: UsageData(
-            input_tokens=0,
-            output_tokens=0,
-            total_tokens=0,
-            requests=0,
-        )
-    )
+    usage: UsageData = Field(default_factory=_empty_usage)
     history: list[SessionHistoryItem] = Field(default_factory=list)
+
+
+class OpenThreadRequest(WireModel):
+    thread_id: str = Field(min_length=1)
+    parent_thread_id: str = Field(default="agent", min_length=1)
+    workspace_root: str | None = None
+    mode: Literal["new", "resume"] = "new"
+    agent: str | None = None
+
+
+class ThreadMessagesResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    messages: list[SessionHistoryItem] = Field(default_factory=list)
 
 
 class CommandRequest(WireModel):
@@ -129,6 +229,25 @@ class PermissionResponseRequest(WireModel):
 class UserInputResponseRequest(WireModel):
     request_id: str = Field(min_length=1)
     answer: Any = None
+
+
+class InteractionResponse(WireModel):
+    request_id: str = Field(min_length=1)
+    recorded: Literal[True] = True
+    pending_interactions: list[str] = Field(default_factory=list)
+
+
+class InterruptResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    status: Literal["idle", "interrupting"]
+    cancelled: bool
+
+
+class CloseResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = ""
+    status: Literal["closed"] = "closed"
 
 
 class ErrorResponse(WireModel):
@@ -294,6 +413,12 @@ class TaskUpdatedData(WireModel):
     usage: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    tasks: list[TaskUpdatedData] = Field(default_factory=list)
+
+
 class TurnData(WireModel):
     turn: int = Field(ge=1)
 
@@ -379,7 +504,10 @@ SessionMode = Literal["new", "resume"]
 __all__ = [
     "AssistantMessageData",
     "AssistantMessageDeltaData",
+    "AgentInfo",
+    "AgentListResponse",
     "ClientMessageData",
+    "CloseResponse",
     "CommandInfo",
     "CommandListResponse",
     "CommandRequest",
@@ -390,26 +518,40 @@ __all__ = [
     "ErrorResponse",
     "HelloRequest",
     "HelloResponse",
+    "HealthResponse",
+    "InteractionResponse",
     "InteractionRecordedData",
+    "InterruptResponse",
     "KNOWN_SERVER_EVENT_TYPES",
     "MessageRequest",
     "OpenSessionRequest",
     "OpenSessionResponse",
+    "OpenThreadRequest",
     "PermissionDeniedData",
     "PermissionRequestData",
     "PermissionResponseRequest",
+    "ProviderInfo",
+    "ProviderListResponse",
     "ServerEvent",
     "ServerEventType",
     "SessionHistoryItem",
+    "SessionListResponse",
     "SessionMode",
+    "SessionSummary",
+    "TaskListResponse",
     "TaskUpdatedData",
     "ToolCallData",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",
     "ToolCallsStartedData",
     "ToolResultData",
+    "ToolInfo",
+    "ToolListResponse",
     "TurnCancelledData",
     "TurnData",
+    "ThreadListResponse",
+    "ThreadMessagesResponse",
+    "ThreadSummary",
     "TYPED_SERVER_EVENT_TYPES",
     "UsageData",
     "UserInputOption",

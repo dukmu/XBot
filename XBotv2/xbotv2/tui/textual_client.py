@@ -360,7 +360,8 @@ class XBotTextualApp(App[None]):
         async def _do() -> None:
             try:
                 result = await self.session.transport.interrupt(
-                    session_id=self.session.session_id
+                    session_id=self.session.session_id,
+                    thread_id=self.session.thread_id,
                 )
             except Exception:  # noqa: BLE001 — worker must not raise
                 return

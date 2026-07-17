@@ -94,11 +94,15 @@ class TerminalSession:
         return session
 
     async def list_commands(self) -> dict[str, Any]:
-        return await self._transport.list_commands(self._session_id)
+        return await self._transport.list_commands(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
 
     async def run_command(self, command: str, args: list[str], raw: str, *, kind: str = "server") -> dict[str, Any]:
         return await self._transport.run_command(
             session_id=self._session_id,
+            thread_id=self._thread_id,
             command=command,
             args=args,
             raw=raw,
@@ -134,6 +138,7 @@ class TerminalSession:
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
         stream = self._transport.send_message(
             session_id=self._session_id,
+            thread_id=self._thread_id,
             content=content,
             request_id=request_id,
         )
@@ -148,6 +153,7 @@ class TerminalSession:
 
         async for event in self._transport.session_events(
             session_id=self._session_id,
+            thread_id=self._thread_id,
         ):
             if str(event.get("type") or "") != "end":
                 yield event
@@ -155,6 +161,7 @@ class TerminalSession:
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
         return await self._transport.send_user_input(
             session_id=self._session_id,
+            thread_id=self._thread_id,
             request_id=request_id,
             answer=answer,
         )
@@ -168,6 +175,7 @@ class TerminalSession:
     ) -> dict[str, Any]:
         return await self._transport.send_permission_response(
             session_id=self._session_id,
+            thread_id=self._thread_id,
             request_id=request_id,
             decision=decision,
             scope=scope,

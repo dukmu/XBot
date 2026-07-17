@@ -42,6 +42,10 @@ from xbotv2.protocol.http_server import (
     create_app,
     set_llm_override,
 )
+from xbotv2.protocol.session_manager import (
+    ThreadNotActive,
+    close_disconnected_runtime,
+)
 from xbotv2.core.session import (
     SessionRuntime,
     _live_sink,
@@ -271,6 +275,137 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
     assert body["model"] == "test"
     assert body["context_window"] == 4096
 
+    providers = (await client.get("/providers")).json()
+    assert providers == {
+        "default": "default",
+        "providers": [{
+            "name": "default",
+            "provider": "openai",
+            "model": "test",
+            "max_tokens": 4096,
+            "reasoning_effort": "",
+            "thinking_enabled": False,
+        }],
+    }
+    assert "api_key" not in str(providers)
+
+    tools = (
+        await client.get("/sessions/s1/threads/t1/tools")
+    ).json()["tools"]
+    ask_user = next(item for item in tools if item["name"] == "ask_user")
+    assert ask_user["parameters"]["required"] == ["question", "options"]
+    assert ask_user["description"]
+
+
+@pytest.mark.asyncio
+async def test_http_session_exposes_independent_thread_resources(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    set_llm_override(http_app, MockLLM(responses=[
+        {"content": "main reply"},
+        {"content": "child reply"},
+    ]))
+    opened = await client.post(
+        "/sessions",
+        json={"session_id": "thread-resources", "thread_id": "agent"},
+    )
+    child = await client.post(
+        "/sessions/thread-resources/threads",
+        json={"thread_id": "child"},
+    )
+
+    assert opened.status_code == 200
+    assert child.status_code == 200
+    session = (await client.get("/sessions/thread-resources")).json()
+    assert session == {
+        "session_id": "thread-resources",
+        "status": "active",
+        "active_threads": 2,
+        "thread_count": 2,
+    }
+    threads = (
+        await client.get("/sessions/thread-resources/threads")
+    ).json()["threads"]
+    assert {item["thread_id"] for item in threads} == {"agent", "child"}
+    assert all(item["status"] == "active" for item in threads)
+    assert {item["thread_id"]: item["kind"] for item in threads} == {
+        "agent": "main",
+        "child": "subagent",
+    }
+
+    main_turn = await client.post(
+        "/sessions/thread-resources/threads/agent/messages",
+        json={"content": "main message"},
+    )
+    child_turn = await client.post(
+        "/sessions/thread-resources/threads/child/messages",
+        json={"content": "child message"},
+    )
+    assert main_turn.status_code == 200
+    assert child_turn.status_code == 200
+    main_messages = (
+        await client.get(
+            "/sessions/thread-resources/threads/agent/messages"
+        )
+    ).json()["messages"]
+    child_messages = (
+        await client.get(
+            "/sessions/thread-resources/threads/child/messages"
+        )
+    ).json()["messages"]
+    assert [item["content"] for item in main_messages] == [
+        "main message",
+        "main reply",
+    ]
+    assert [item["content"] for item in child_messages] == [
+        "child message",
+        "child reply",
+    ]
+
+    closed = await client.post(
+        "/sessions/thread-resources/threads/child/close"
+    )
+    assert closed.json() == {
+        "session_id": "thread-resources",
+        "thread_id": "child",
+        "status": "closed",
+    }
+    assert (
+        await client.get("/sessions/thread-resources/threads/child")
+    ).json()["status"] == "inactive"
+    assert (
+        await client.get("/sessions/thread-resources/threads/agent")
+    ).json()["status"] == "active"
+    inactive_tasks = await client.get(
+        "/sessions/thread-resources/threads/child/tasks"
+    )
+    assert inactive_tasks.status_code == 409
+    assert inactive_tasks.json()["code"] == "thread_not_active"
+
+
+@pytest.mark.asyncio
+async def test_main_thread_disconnect_closes_child_runtimes(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    await client.post(
+        "/sessions",
+        json={"session_id": "disconnect-tree", "thread_id": "agent"},
+    )
+    await client.post(
+        "/sessions/disconnect-tree/threads",
+        json={"thread_id": "child"},
+    )
+    main = await http_app.state.manager.get("disconnect-tree", "agent")
+
+    await close_disconnected_runtime(http_app.state.manager, main)
+
+    with pytest.raises(ThreadNotActive):
+        await http_app.state.manager.get("disconnect-tree", "agent")
+    with pytest.raises(ThreadNotActive):
+        await http_app.state.manager.get("disconnect-tree", "child")
+
 
 @pytest.mark.asyncio
 async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
@@ -306,8 +441,11 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
             },
         )
         catalog = await ac.post(
-            "/sessions/primary-http/commands",
+            "/sessions/primary-http/threads/agent/commands",
             json={"command": "agent", "args": ["list"]},
+        )
+        agents = await ac.get(
+            "/sessions/primary-http/threads/agent/agents"
         )
         resumed = await ac.post(
             "/sessions",
@@ -323,6 +461,9 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
     assert catalog.status_code == 200
     assert catalog.json()["data"]["data"]["active"] == "builder"
     assert catalog.json()["data"]["data"]["agents"][0]["name"] == "builder"
+    assert any(
+        item["name"] == "builder" for item in agents.json()["agents"]
+    )
     assert resumed.status_code == 200
     assert resumed.json()["agent_name"] == "builder"
 
@@ -371,14 +512,14 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
             },
         )
         await ac.post(
-            "/sessions/switch-primary/messages",
+            "/sessions/switch-primary/threads/main/messages",
             json={"content": "keep this history"},
         )
         switched = await ac.post(
-            "/sessions/switch-primary/commands",
+            "/sessions/switch-primary/threads/main/commands",
             json={"command": "agent", "args": ["use", "Explorer"]},
         )
-        ctx = await app.state.manager.get("switch-primary")
+        ctx = await app.state.manager.get("switch-primary", "main")
 
         assert switched.status_code == 200
         assert switched.json()["data"]["data"]["agent_name"] == "Explorer"
@@ -397,7 +538,7 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert ctx.engine.state_store.read_thread_metadata()["agent"] == "Explorer"
 
         child_only = await ac.post(
-            "/sessions/switch-primary/commands",
+            "/sessions/switch-primary/threads/main/commands",
             json={"command": "agent", "args": ["use", "worker"]},
         )
         assert child_only.json()["data"]["status"] == "error"
@@ -406,7 +547,7 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         await ctx.turn_lock.acquire()
         try:
             busy = await ac.post(
-                "/sessions/switch-primary/commands",
+                "/sessions/switch-primary/threads/main/commands",
                 json={"command": "agent", "args": ["use", "builder"]},
             )
         finally:
@@ -441,13 +582,13 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     assert opened.status_code == 200
 
     turn = await client.post(
-        "/sessions/resume-history/messages",
+        "/sessions/resume-history/threads/t1/messages",
         json={"content": "remember this"},
     )
     assert turn.status_code == 200
     assert "turn_finished" in turn.text
     manager = client._transport.app.state.manager
-    original = await manager.get("resume-history")
+    original = await manager.get("resume-history", "t1")
     tool_message = Message(
         role="tool",
         content="cached result",
@@ -471,7 +612,7 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     )
 
     assert resumed.status_code == 200
-    replacement = await manager.get("resume-history")
+    replacement = await manager.get("resume-history", "t1")
     assert replacement is not original
     assert replacement.engine is not original.engine
     history = resumed.json()["history"]
@@ -551,7 +692,16 @@ async def test_http_commands_are_discoverable_and_session_scoped(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    commands_response = await client.get("/commands")
+    assert (await client.get("/commands")).status_code == 404
+
+    open_response = await client.post(
+        "/sessions", json={"session_id": "cmds", "thread_id": "t"}
+    )
+    assert open_response.status_code == 200
+
+    commands_response = await client.get(
+        "/sessions/cmds/threads/t/commands"
+    )
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
     assert {
@@ -559,13 +709,8 @@ async def test_http_commands_are_discoverable_and_session_scoped(
         "clear", "undo",
     }.issubset(names)
 
-    open_response = await client.post(
-        "/sessions", json={"session_id": "cmds", "thread_id": "t"}
-    )
-    assert open_response.status_code == 200
-
     result_response = await client.post(
-        "/sessions/cmds/commands",
+        "/sessions/cmds/threads/t/commands",
         json={"command": "status", "args": []},
     )
     assert result_response.status_code == 200
@@ -588,11 +733,11 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
         {"content": "second answer"},
     ]))
     await client.post("/sessions", json={"session_id": "history", "thread_id": "t"})
-    await client.post("/sessions/history/messages", json={"content": "first"})
-    await client.post("/sessions/history/messages", json={"content": "second"})
+    await client.post("/sessions/history/threads/t/messages", json={"content": "first"})
+    await client.post("/sessions/history/threads/t/messages", json={"content": "second"})
 
     undone = await client.post(
-        "/sessions/history/commands",
+        "/sessions/history/threads/t/commands",
         json={"command": "undo", "args": ["1"]},
     )
 
@@ -609,7 +754,7 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
             "data": None, "error": None, "artifacts": [],
         },
     ]
-    ctx = await http_app.state.manager.get("history")
+    ctx = await http_app.state.manager.get("history", "t")
     assert [message.content for message in ctx.engine.messages] == [
         "first", "first answer",
     ]
@@ -626,7 +771,7 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     (source.artifacts_dir / "cached.txt").write_text("cached")
     source_session.policy_file.write_text("permissions: {}\n")
     forked = await client.post(
-        "/sessions/history/commands",
+        "/sessions/history/threads/t/commands",
         json={"command": "fork", "args": []},
     )
     fork_id = forked.json()["data"]["data"]["session_id"]
@@ -646,7 +791,7 @@ async def test_history_commands_undo_fork_and_clear_persist_atomically(
     ]
 
     cleared = await client.post(
-        "/sessions/history/commands",
+        "/sessions/history/threads/t/commands",
         json={"command": "clear", "args": []},
     )
     assert cleared.json()["data"]["data"] == {"removed_turns": 1}
@@ -667,7 +812,7 @@ async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClien
 
     for count in ("0", "two", "2"):
         response = await client.post(
-            "/sessions/undo-errors/commands",
+            "/sessions/undo-errors/threads/t/commands",
             json={"command": "undo", "args": [count]},
         )
         assert response.json()["data"]["status"] == "error"
@@ -681,7 +826,7 @@ async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient
     assert open_response.status_code == 200
 
     list_response = await client.post(
-        "/sessions/providers/commands",
+        "/sessions/providers/threads/t/commands",
         json={"command": "provider", "args": ["list"]},
     )
     assert list_response.status_code == 200
@@ -701,14 +846,14 @@ async def test_http_policy_commands_update_session_overrides(
     assert open_response.status_code == 200
 
     permission_response = await client.post(
-        "/sessions/policy/commands",
+        "/sessions/policy/threads/t/commands",
         json={"command": "permission", "args": ["set", "shell", "allow"]},
     )
     sandbox_response = await client.post(
-        "/sessions/policy/commands",
+        "/sessions/policy/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
     )
-    ctx = await http_app.state.manager.get("policy")
+    ctx = await http_app.state.manager.get("policy", "t")
     cached_path = (
         http_app.state.paths.session("policy").thread("t").artifacts_dir
         / "tool_results"
@@ -723,7 +868,7 @@ async def test_http_policy_commands_update_session_overrides(
         sandbox=ctx.engine.sandbox_policy,
     )
     status_response = await client.post(
-        "/sessions/policy/commands",
+        "/sessions/policy/threads/t/commands",
         json={"command": "permission", "args": ["status"]},
     )
 
@@ -770,18 +915,20 @@ async def test_http_permission_response_preserves_scope() -> None:
         engine = _Engine()
 
     class _Manager:
-        async def get(self, session_id: str):
+        async def get(self, session_id: str, thread_id: str):
             assert session_id == "permission-scope"
+            assert thread_id == "t"
             return _Context()
 
     response = await _resolve_interaction(
         manager=_Manager(),
         session_id="permission-scope",
+        thread_id="t",
         payload={"request_id": request_id, "decision": "allow", "scope": "session"},
         kind="permission",
     )
 
-    assert response["recorded"] is True
+    assert response.recorded is True
     assert captured == {
         "request_id": request_id,
         "decision": "allow",
@@ -875,14 +1022,16 @@ async def test_http_permission_response_rejects_always_scope() -> None:
         engine = _Engine()
 
     class _Manager:
-        async def get(self, session_id: str):
+        async def get(self, session_id: str, thread_id: str):
             assert session_id == "permission-scope"
+            assert thread_id == "t"
             return _Context()
 
     with pytest.raises(Exception) as exc_info:
         await _resolve_interaction(
             manager=_Manager(),
             session_id="permission-scope",
+            thread_id="t",
             payload={
                 "request_id": "permission:scope",
                 "decision": "allow",
@@ -904,31 +1053,31 @@ async def test_http_policy_command_reset_rebuilds_live_policy(
         "/sessions", json={"session_id": "policy-reset", "thread_id": "t"}
     )
     assert open_response.status_code == 200
-    ctx = await http_app.state.manager.get("policy-reset")
+    ctx = await http_app.state.manager.get("policy-reset", "t")
 
     permission_set = await client.post(
-        "/sessions/policy-reset/commands",
+        "/sessions/policy-reset/threads/t/commands",
         json={"command": "permission", "args": ["set", "shell", "deny"]},
     )
     assert permission_set.status_code == 200
     assert ctx.engine.permission_system.check("shell", {}) == "deny"
 
     permission_reset = await client.post(
-        "/sessions/policy-reset/commands",
+        "/sessions/policy-reset/threads/t/commands",
         json={"command": "permission", "args": ["reset", "shell"]},
     )
     assert permission_reset.status_code == 200
     assert ctx.engine.permission_system.check("shell", {}) == "ask"
 
     sandbox_status = await client.post(
-        "/sessions/policy-reset/commands",
+        "/sessions/policy-reset/threads/t/commands",
         json={"command": "sandbox", "args": ["status"]},
     )
     assert sandbox_status.status_code == 200
     assert "sandbox" in sandbox_status.json()["data"]["message"].lower()
 
     sandbox_invalid = await client.post(
-        "/sessions/policy-reset/commands",
+        "/sessions/policy-reset/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
     )
     assert sandbox_invalid.status_code == 200
@@ -945,11 +1094,11 @@ async def test_http_policy_commands_reject_invalid_values(
     assert open_response.status_code == 200
 
     permission_response = await client.post(
-        "/sessions/policy-invalid/commands",
+        "/sessions/policy-invalid/threads/t/commands",
         json={"command": "permission", "args": ["set", "shell", "sometimes"]},
     )
     sandbox_response = await client.post(
-        "/sessions/policy-invalid/commands",
+        "/sessions/policy-invalid/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "ask"]},
     )
 
@@ -1005,7 +1154,7 @@ async def test_http_messages_sse_stream_turn_events(
 
     async with client.stream(
         "POST",
-        "/sessions/stream1/messages",
+        "/sessions/stream1/threads/t/messages",
         json={"content": "hi there", "request_id": "req-1"},
     ) as response:
         assert response.status_code == 200
@@ -1041,7 +1190,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
         json={"session_id": "request-context", "thread_id": "t"},
     )
     assert open_resp.status_code == 200
-    session = await http_app.state.manager.get("request-context")
+    session = await http_app.state.manager.get("request-context", "t")
     observed = []
 
     async def record(ctx):
@@ -1052,7 +1201,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
 
     async with client.stream(
         "POST",
-        "/sessions/request-context/messages",
+        "/sessions/request-context/threads/t/messages",
         json={"content": "hello", "request_id": "request-http-1"},
     ) as response:
         body = "".join([chunk async for chunk in response.aiter_text()])
@@ -1077,7 +1226,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
         json={"session_id": "generated-request", "thread_id": "t"},
     )
     assert open_resp.status_code == 200
-    session = await http_app.state.manager.get("generated-request")
+    session = await http_app.state.manager.get("generated-request", "t")
     observed = []
 
     async def record(ctx):
@@ -1087,7 +1236,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
 
     async with client.stream(
         "POST",
-        "/sessions/generated-request/messages",
+        "/sessions/generated-request/threads/t/messages",
         json={"content": "hello"},
     ) as response:
         body = "".join([chunk async for chunk in response.aiter_text()])
@@ -1111,7 +1260,7 @@ async def test_http_messages_preserves_chinese_payload_in_request(
 
     async with client.stream(
         "POST",
-        "/sessions/zh/messages",
+        "/sessions/zh/threads/t/messages",
         json={"content": "当前磁盘用了多少", "request_id": "req-zh"},
     ) as response:
         assert response.status_code == 200
@@ -1135,7 +1284,7 @@ async def test_http_messages_empty_content_rejected(client: httpx.AsyncClient) -
     assert open_resp.status_code == 200
 
     response = await client.post(
-        "/sessions/empty/messages", json={"content": "   ", "request_id": "x"}
+        "/sessions/empty/threads/t/messages", json={"content": "   ", "request_id": "x"}
     )
     assert response.status_code == 400
     body = response.json()
@@ -1147,7 +1296,7 @@ async def test_http_messages_unknown_session_returns_404(
     client: httpx.AsyncClient,
 ) -> None:
     response = await client.post(
-        "/sessions/does-not-exist/messages",
+        "/sessions/does-not-exist/threads/t/messages",
         json={"content": "hi", "request_id": "r"},
     )
     assert response.status_code == 404
@@ -1165,7 +1314,7 @@ async def test_http_interactions_endpoint_validates_request_id(
     assert open_resp.status_code == 200
 
     response = await client.post(
-        "/sessions/validate/interactions/permission-response",
+        "/sessions/validate/threads/t/interactions/permission-response",
         json={"decision": "allow", "scope": "once"},
     )
     assert response.status_code == 400
@@ -1491,7 +1640,7 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
             async def _consume_sse() -> None:
                 async with ac.stream(
                     "POST",
-                    "/sessions/esc/messages",
+                    "/sessions/esc/threads/t/messages",
                     json={"content": "do something long", "request_id": "req-esc"},
                 ) as response:
                     assert response.status_code == 200
@@ -1501,7 +1650,7 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
                         # engine is past the bootstrap and is about
                         # to call the (gated) LLM.
                         if "turn_started" in chunk:
-                            ir = await ac.post("/sessions/esc/interrupt")
+                            ir = await ac.post("/sessions/esc/threads/t/interrupt")
                             assert ir.status_code == 200
                             assert ir.json()["cancelled"] is True
 
@@ -1538,7 +1687,7 @@ async def test_http_interrupt_when_idle_returns_no_op(
     )
     assert open_resp.status_code == 200
 
-    response = await client.post("/sessions/idle/interrupt")
+    response = await client.post("/sessions/idle/threads/t/interrupt")
     assert response.status_code == 200
     body = response.json()
     assert body["session_id"] == "idle"
@@ -1707,7 +1856,8 @@ async def test_real_http_interrupt_while_permission_waits(
                 collected.append(event)
                 if event.get("type") == "permission_request":
                     response = await session.transport.interrupt(
-                        session_id=session.session_id
+                        session_id=session.session_id,
+                        thread_id=session.thread_id,
                     )
                     assert response["cancelled"] is True
             return collected
@@ -1764,7 +1914,8 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
                 )
             elif event.get("type") == "user_input_required":
                 response = await session.transport.interrupt(
-                    session_id=session.session_id
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
                 )
                 assert response["cancelled"] is True
 
@@ -1905,7 +2056,12 @@ async def test_http_server_commands_include_kind(
     skills_client: httpx.AsyncClient,
 ) -> None:
     """Server commands now include kind field."""
-    resp = await skills_client.get("/commands")
+    await skills_client.post(
+        "/sessions", json={"session_id": "command-kind", "thread_id": "t"}
+    )
+    resp = await skills_client.get(
+        "/sessions/command-kind/threads/t/commands"
+    )
     assert resp.status_code == 200
     body = resp.json()
     cmds = body.get("commands", [])
@@ -1936,7 +2092,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     await skills_client.post(
         "/sessions", json={"session_id": "goal-state", "thread_id": "t"}
     )
-    commands = await skills_client.get("/sessions/goal-state/commands")
+    commands = await skills_client.get("/sessions/goal-state/threads/t/commands")
     goal_commands = [
         item for item in commands.json()["commands"] if item["name"] == "goal"
     ]
@@ -1948,11 +2104,11 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         for item in commands.json()["commands"]
     )
 
-    ctx = await skills_app.state.manager.get("goal-state")
+    ctx = await skills_app.state.manager.get("goal-state", "t")
     session_events = ctx.attach_event_stream()
 
     response = await skills_client.post(
-        "/sessions/goal-state/commands",
+        "/sessions/goal-state/threads/t/commands",
         json={
             "command": "goal",
             "raw": "/goal --token-budget 2000 ship the API",
@@ -1989,7 +2145,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         "token_budget": 2000,
     }
     get_response = await skills_client.post(
-        "/sessions/goal-state/commands",
+        "/sessions/goal-state/threads/t/commands",
         json={"command": "goal", "raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
@@ -2003,11 +2159,11 @@ async def test_http_goal_command_remains_available_during_active_turn(
     await skills_client.post(
         "/sessions", json={"session_id": "busy-command", "thread_id": "t"}
     )
-    ctx = await skills_app.state.manager.get("busy-command")
+    ctx = await skills_app.state.manager.get("busy-command", "t")
     await ctx.turn_lock.acquire()
     try:
         response = await skills_client.post(
-            "/sessions/busy-command/commands",
+            "/sessions/busy-command/threads/t/commands",
             json={"command": "goal", "raw": "/goal"},
         )
     finally:
@@ -2026,7 +2182,7 @@ async def test_http_command_rejects_invalid_quoting(
     )
 
     response = await skills_client.post(
-        "/sessions/invalid-command/commands",
+        "/sessions/invalid-command/threads/t/commands",
         json={"raw": "/goal 'unterminated"},
     )
 
@@ -2067,13 +2223,13 @@ Follow this test instruction: $ARGUMENTS
     )
 
     commands = (
-        await skills_client.get("/sessions/skill-prompt/commands")
+        await skills_client.get("/sessions/skill-prompt/threads/t/commands")
     ).json()["commands"]
     command = next(item for item in commands if item["name"] == "xbot-test-prompt")
     assert command["kind"] == "prompt"
 
     response = await skills_client.post(
-        "/sessions/skill-prompt/messages",
+        "/sessions/skill-prompt/threads/t/messages",
         json={"content": "/xbot-test-prompt verify boundaries"},
     )
     assert response.status_code == 200
@@ -2107,7 +2263,7 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
 
     # Set network=false — should persist to policy.yaml
     set_network = await client.post(
-        "/sessions/sandbox-persist/commands",
+        "/sessions/sandbox-persist/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "network", "false"]},
     )
     assert set_network.status_code == 200
@@ -2115,12 +2271,12 @@ async def test_http_sandbox_set_persists_to_policy_yaml(
 
     # Set external_read=deny — also persisted
     set_ext = await client.post(
-        "/sessions/sandbox-persist/commands",
+        "/sessions/sandbox-persist/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "deny"]},
     )
     assert set_ext.status_code == 200
 
-    ctx = await http_app.state.manager.get("sandbox-persist")
+    ctx = await http_app.state.manager.get("sandbox-persist", "t")
     # Live overrides are in memory
     assert ctx.sandbox_overrides.get("network") is False
     assert ctx.sandbox_overrides.get("external_read") == "deny"
@@ -2146,7 +2302,7 @@ async def test_http_sandbox_set_rejects_invalid_values(
     )
 
     bad = await client.post(
-        "/sessions/sandbox-validate/commands",
+        "/sessions/sandbox-validate/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "external_read", "garbage"]},
     )
     assert bad.status_code == 200
@@ -2154,7 +2310,7 @@ async def test_http_sandbox_set_rejects_invalid_values(
     assert "Invalid value" in bad.json()["data"]["message"]
 
     bad_network = await client.post(
-        "/sessions/sandbox-validate/commands",
+        "/sessions/sandbox-validate/threads/t/commands",
         json={"command": "sandbox", "args": ["set", "network", "maybe"]},
     )
     assert bad_network.status_code == 200

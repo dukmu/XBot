@@ -104,7 +104,7 @@ async def test_http_turn_latency_distribution(client: httpx.AsyncClient) -> None
         started = time.perf_counter()
         async with client.stream(
             "POST",
-            "/sessions/bench/messages",
+            "/sessions/bench/threads/t/messages",
             json={"content": f"turn-{turn_idx}", "request_id": f"r-{turn_idx}"},
         ) as response:
             assert response.status_code == 200

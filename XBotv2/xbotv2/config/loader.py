@@ -103,9 +103,12 @@ def load_provider_names(paths: RuntimePaths) -> tuple[str, list[str]]:
     all_data = load_yaml(paths.providers_config)
     if not all_data:
         return "default", []
-    providers = all_data.get("providers") if isinstance(all_data.get("providers"), dict) else all_data
+    nested = isinstance(all_data.get("providers"), dict)
+    providers = all_data["providers"] if nested else all_data
     names = sorted(str(name) for name in providers if isinstance(providers, dict))
-    default = str(all_data.get("default") or "default")
+    default = str(all_data.get("default") or "default") if nested else (
+        "default" if "default" in names else names[0] if names else "default"
+    )
     return default, names
 
 

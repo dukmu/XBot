@@ -292,7 +292,52 @@ def test_server_event_type_inventory_covers_current_stream_events():
 
 def test_openapi_uses_typed_request_contracts():
     schema = create_app(paths=RuntimePaths.from_data_dir("data"), no_plugins=True).openapi()
+    assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
+    assert set(paths) == {
+        "/health",
+        "/hello",
+        "/providers",
+        "/sessions",
+        "/sessions/{session_id}",
+        "/sessions/{session_id}/close",
+        "/sessions/{session_id}/threads",
+        "/sessions/{session_id}/threads/{thread_id}",
+        "/sessions/{session_id}/threads/{thread_id}/agents",
+        "/sessions/{session_id}/threads/{thread_id}/close",
+        "/sessions/{session_id}/threads/{thread_id}/commands",
+        "/sessions/{session_id}/threads/{thread_id}/events",
+        "/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
+        "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
+        "/sessions/{session_id}/threads/{thread_id}/interrupt",
+        "/sessions/{session_id}/threads/{thread_id}/messages",
+        "/sessions/{session_id}/threads/{thread_id}/tasks",
+        "/sessions/{session_id}/threads/{thread_id}/tools",
+    }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
-    assert paths["/sessions/{session_id}/commands"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/CommandListResponse")
+    command_path = "/sessions/{session_id}/threads/{thread_id}/commands"
+    assert paths[command_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/CommandListResponse")
+    assert "/commands" not in paths
+    assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
+    assert paths["/sessions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionListResponse")
+    thread_path = "/sessions/{session_id}/threads/{thread_id}"
+    assert paths[thread_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/ThreadSummary")
+    assert paths[thread_path]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
+    assert paths["/sessions"]["post"]["responses"]["422"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
+    message_path = "/sessions/{session_id}/threads/{thread_id}/messages"
+    event_path = "/sessions/{session_id}/threads/{thread_id}/events"
+    assert set(paths[message_path]["post"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    assert set(paths[event_path]["get"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+
+    operation_ids = [
+        operation["operationId"]
+        for methods in paths.values()
+        for method, operation in methods.items()
+        if method in {"get", "post", "put", "patch", "delete"}
+    ]
+    assert len(operation_ids) == len(set(operation_ids))

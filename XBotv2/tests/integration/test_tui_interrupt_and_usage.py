@@ -32,12 +32,13 @@ class _InterruptibleSession:
 
     def __init__(self) -> None:
         self.sent: list[str] = []
-        self.interrupt_calls: list[str] = []
+        self.interrupt_calls: list[tuple[str, str]] = []
         self.release = asyncio.Event()
         # Match the production ``TerminalSession`` shape: the TUI
         # addresses the transport through ``session.transport`` and
         # reads ``session.session_id`` to scope the interrupt.
         self.session_id = "s"
+        self.thread_id = "t"
         self.transport = None  # wired by the test fixture
         # The asyncio task currently running ``send_message``;
         # the ``interrupt`` method cancels it to abort the turn.
@@ -48,6 +49,9 @@ class _InterruptibleSession:
 
     async def disconnect(self) -> None:
         return None
+
+    async def list_commands(self):
+        return {"commands": []}
 
     async def send_message(self, text):
         self.turn_task = asyncio.current_task()
@@ -74,8 +78,8 @@ class _InterruptibleSession:
     async def respond_permission(self, request_id, decision, *, scope="once"):
         return {}
 
-    async def interrupt(self, *, session_id: str):
-        self.interrupt_calls.append(session_id)
+    async def interrupt(self, *, session_id: str, thread_id: str):
+        self.interrupt_calls.append((session_id, thread_id))
         if self.turn_task is not None and not self.turn_task.done():
             # Mirror the real HTTP session runtime: cancel the in-flight turn
             # task. The send_message generator's ``release.wait()`` will
@@ -121,8 +125,9 @@ async def test_esc_during_running_turn_calls_transport_interrupt() -> None:
             if session.interrupt_calls:
                 break
 
-    assert session.interrupt_calls == ["s"], (
-        f"expected one interrupt call for session 's'; got {session.interrupt_calls!r}"
+    assert session.interrupt_calls == [("s", "t")], (
+        "expected one interrupt call for thread 's/t'; "
+        f"got {session.interrupt_calls!r}"
     )
 
 
@@ -134,11 +139,14 @@ async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     """
 
     class CancellableSession(_InterruptibleSession):
-        async def interrupt(self, *, session_id: str):
+        async def interrupt(self, *, session_id: str, thread_id: str):
             # Simulate the protocol: the engine emits turn_cancelled,
             # the HTTP session runtime pipes it through the SSE stream, the
             # TUI's state.apply_event fires.
-            await super().interrupt(session_id=session_id)
+            await super().interrupt(
+                session_id=session_id,
+                thread_id=thread_id,
+            )
             return {"status": "interrupting", "cancelled": True}
 
     session = CancellableSession()

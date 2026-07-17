@@ -783,7 +783,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
                     return None
 
                 def json(self_inner):
-                    return {"server_name": "xbotv2", "protocol_version": "xbotv2.v2"}
+                    return {"server_name": "xbotv2", "protocol_version": "xbotv2.v3"}
 
             return Resp()
 
@@ -807,7 +807,8 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
 
     events: list[dict[str, Any]] = []
     async for event in client.send_message(
-        session_id="s", content="当前磁盘用了多少", request_id="r",
+        session_id="s", thread_id="t", content="当前磁盘用了多少",
+        request_id="r",
     ):
         events.append(event)
     await client.close()
@@ -1872,7 +1873,7 @@ async def test_terminal_session_only_yields_live_interaction_events():
             del workspace_root, mode
             return {"session_id": session_id, "thread_id": thread_id, "status": "ready"}
 
-        def send_message(self, *, session_id, content, request_id):
+        def send_message(self, *, session_id, thread_id, content, request_id):
             async def _events():
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {
@@ -1897,7 +1898,7 @@ async def test_terminal_session_only_yields_live_interaction_events():
         async def shutdown(self, *, session_id):
             return {"status": "closed"}
 
-        async def interrupt(self, *, session_id):
+        async def interrupt(self, *, session_id, thread_id):
             return {"status": "idle", "cancelled": False}
 
         async def close(self):
@@ -1948,7 +1949,7 @@ async def test_terminal_session_passes_explicit_resume_mode():
 @pytest.mark.asyncio
 async def test_terminal_session_consumes_transport_end_sentinel():
     class FakeTransport:
-        def send_message(self, *, session_id, content, request_id):
+        def send_message(self, *, session_id, thread_id, content, request_id):
             async def _events():
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {"type": "turn_finished", "data": {"turn": 1}}

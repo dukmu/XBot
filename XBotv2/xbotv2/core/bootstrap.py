@@ -280,7 +280,9 @@ async def bootstrap(
         if selected_agent is not None:
             registered_agent = agent_registry.get(selected_agent)
             if resolved_agent is None:
-                if registered_agent is None or registered_agent.mode == "subagent":
+                if registered_agent is None or (
+                    registered_agent.mode == "subagent" and subagent_depth == 0
+                ):
                     raise ValueError(f"Unknown primary agent: {selected_agent}")
                 resolved_agent = registered_agent
             elif resolved_agent.name != selected_agent:
@@ -288,7 +290,7 @@ async def bootstrap(
                     f"Stored Agent {resolved_agent.name!r} does not match "
                     f"{selected_agent!r}"
                 )
-            elif resolved_agent.mode == "subagent":
+            elif resolved_agent.mode == "subagent" and subagent_depth == 0:
                 raise ValueError(f"Unknown primary agent: {selected_agent}")
             apply_agent_definition(agent_config, resolved_agent)
             policy_base_config = startup_config.model_copy(deep=True)
@@ -312,6 +314,9 @@ async def bootstrap(
             ),
             "provider": provider_name,
             "parent_thread_id": parent_thread_id,
+            "workspace_root": str(workspace_root),
+            "model": provider_config.model,
+            "context_window": agent_config.max_context_tokens,
         })
 
         # 7. Create LLM client

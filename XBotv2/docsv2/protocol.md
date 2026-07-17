@@ -22,6 +22,11 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 
 ## Session
 
+A session is a persistent container with one main thread and zero or more
+subagent threads. Live runtimes are addressed by `(session_id, thread_id)`;
+opening or closing one subagent thread does not replace the main thread.
+Thread status and history remain queryable after its runtime closes.
+
 ### Modes
 
 - `new`: create session, generate session_id if not provided
@@ -51,16 +56,31 @@ python -m xbotv2 --mode server                 # server-only on 127.0.0.1
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Health check |
+| GET | `/providers` | List provider names and non-secret capabilities |
 | POST | `/hello` | Client handshake |
 | POST | `/sessions` | Open session (new/resume) |
-| POST | `/sessions/{id}/messages` | Send message, receive SSE stream |
-| GET | `/sessions/{id}/events` | Receive server-initiated turn events |
-| POST | `/sessions/{id}/interrupt` | Cancel running turn |
-| GET | `/sessions/{id}/commands` | List server commands and prompt expansions |
-| POST | `/sessions/{id}/commands` | Execute a server-owned command |
-| POST | `/sessions/{id}/interactions/permission-response` | Submit permission decision |
-| POST | `/sessions/{id}/interactions/user-input` | Submit user input answer |
-| POST | `/sessions/{id}/shutdown` | Close session |
+| GET | `/sessions` | List persisted sessions and runtime status |
+| GET | `/sessions/{sid}` | Read one session summary |
+| GET | `/sessions/{sid}/threads` | List main and subagent threads |
+| POST | `/sessions/{sid}/threads` | Open a new or persisted subagent thread |
+| GET | `/sessions/{sid}/threads/{tid}` | Read thread status and usage |
+| GET | `/sessions/{sid}/threads/{tid}/agents` | List workspace-visible Agents |
+| GET | `/sessions/{sid}/threads/{tid}/tools` | List model-visible Tool schemas |
+| GET | `/sessions/{sid}/threads/{tid}/messages` | Read display-safe history |
+| POST | `/sessions/{sid}/threads/{tid}/messages` | Send message, receive turn SSE |
+| GET | `/sessions/{sid}/threads/{tid}/events` | Receive server-initiated events |
+| GET | `/sessions/{sid}/threads/{tid}/tasks` | List shell and subagent tasks |
+| POST | `/sessions/{sid}/threads/{tid}/interrupt` | Cancel running turn |
+| GET | `/sessions/{sid}/threads/{tid}/commands` | List commands and prompt expansions |
+| POST | `/sessions/{sid}/threads/{tid}/commands` | Execute a server-owned command |
+| POST | `/sessions/{sid}/threads/{tid}/interactions/permission-response` | Submit permission decision |
+| POST | `/sessions/{sid}/threads/{tid}/interactions/user-input` | Submit user input answer |
+| POST | `/sessions/{sid}/threads/{tid}/close` | Close one thread runtime |
+| POST | `/sessions/{sid}/close` | Close all live runtimes in a session |
+
+`close` never deletes persisted history, artifacts, policy, or plugin state.
+There is deliberately no global `/commands`: command discovery requires a live
+thread because plugin and prompt registrations are thread-specific.
 
 The session-open body may include `agent` to select a plugin-registered Primary
 Agent for a new thread. Resume reads the Agent identity from thread metadata.
@@ -103,8 +123,8 @@ a transient user-role envelope because supported chat protocols need a final
 input to trigger generation, but its content and internal metadata state that it
 is not human input. It never enters conversation history as a user message.
 These turns cover Goal continuation and runtime notifications. Their output
-uses `GET /sessions/{id}/events`; queued human turns keep their originating
-message stream. The session event stream remains open across separate `general`
+uses `GET /sessions/{sid}/threads/{tid}/events`; queued human turns keep their
+originating message stream. The thread event stream remains open across separate `general`
 turns and closes only when the client disconnects or the session ends.
 
 The mailbox queue is not persistent state. Closing or losing the client
@@ -125,7 +145,8 @@ provider capability, not a portable XBot history role.
 
 ## Command System
 
-`GET /sessions/{id}/commands` returns unified command list with `kind` field:
+`GET /sessions/{sid}/threads/{tid}/commands` returns the unified command list
+with a `kind` field:
 
 ```json
 [
@@ -155,7 +176,7 @@ Every SSE `data:` payload is a `ServerEvent` envelope:
 
 ```json
 {
-  "protocol_version": "xbotv2.v2",
+  "protocol_version": "xbotv2.v3",
   "session_id": "session-1",
   "thread_id": "agent",
   "request_id": "client-request-1",
@@ -270,8 +291,10 @@ boundaries. `TYPED_SERVER_EVENT_TYPES` must cover the complete
 Error codes remain strings rather than an enum. The current server-owned
 inventory is:
 
-- HTTP: `invalid_request`, `interaction_no_longer_pending`, `session_exists`,
-  `session_not_found`, `session_open_failed`, `unsupported_protocol`;
+- HTTP: `invalid_request`, `interaction_no_longer_pending`,
+  `parent_thread_not_active`, `session_busy`, `session_exists`,
+  `session_not_found`, `session_open_failed`, `thread_not_active`,
+  `unsupported_protocol`;
 - SSE: `engine_busy`, `engine_error`, `hook_short_circuit_rejected`,
   `sse_decode_error`, `stream_failed`, `turn_failed`,
   `user_message_rejected`.

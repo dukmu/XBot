@@ -1,5 +1,5 @@
-{"protocol_version":"xbotv2.v2","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":1,"type":"turn_started","data":{"turn":1}}
-{"protocol_version":"xbotv2.v2","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":2,"type":"assistant_message_delta","data":{"content":"hello from mock"}}
-{"protocol_version":"xbotv2.v2","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":3,"type":"assistant_message","data":{"content":"hello from mock","tool_calls":[]}}
-{"protocol_version":"xbotv2.v2","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":4,"type":"turn_finished","data":{"turn":1}}
-{"protocol_version":"xbotv2.v2","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":5,"type":"end","data":{"status":"ok"}}
+{"protocol_version":"xbotv2.v3","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":1,"type":"turn_started","data":{"turn":1}}
+{"protocol_version":"xbotv2.v3","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":2,"type":"assistant_message_delta","data":{"content":"hello from mock"}}
+{"protocol_version":"xbotv2.v3","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":3,"type":"assistant_message","data":{"content":"hello from mock","tool_calls":[]}}
+{"protocol_version":"xbotv2.v3","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":4,"type":"turn_finished","data":{"turn":1}}
+{"protocol_version":"xbotv2.v3","session_id":"stream1","thread_id":"t","request_id":"req-1","sequence":5,"type":"end","data":{"status":"ok"}}

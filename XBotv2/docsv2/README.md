@@ -6,6 +6,7 @@ This directory describes the current XBotv2 implementation.
 - [Engineering behavior](behavior.md)
 - [Core runtime](core.md)
 - [Wire protocol](protocol.md)
+- [SDK contract](sdk.md)
 - [Public API](public_api.md)
 - [API inventory](api_inventory.md)
 - [Architecture iteration backlog](iteration_backlog.md)

@@ -28,7 +28,7 @@ Startup sequence:
 
 1. `GET /health`
 2. `POST /hello`
-3. `GET /commands`
+3. `GET /sessions/{sid}/threads/{tid}/commands`
 4. `POST /sessions` with `workspace_root` and `mode`
 5. Register local and server command completion metadata
 
@@ -60,7 +60,7 @@ Local commands:
 - `/thinking [on|off|toggle]`: control current and future reasoning blocks
 - `/details [on|off|toggle]`: control current and future tool detail blocks
 
-Server commands discovered from `GET /commands`:
+Server commands discovered from the active thread command endpoint:
 
 - `/status`
 - `/provider status|list|use <name>`
@@ -70,7 +70,8 @@ Server commands discovered from `GET /commands`:
 Slash dispatch rules:
 
 - local commands execute locally
-- registered server commands call `POST /sessions/{sid}/commands`
+- registered server commands call
+  `POST /sessions/{sid}/threads/{tid}/commands`
 - discovered Tool, Skill, and MCP commands are sent as normal user messages;
   the Agent invokes their registered tool when appropriate
 - unknown slash commands render a local notice
@@ -200,7 +201,7 @@ separate queued notice before the server acknowledgement arrives.
 `Escape` during a running turn calls:
 
 ```http
-POST /sessions/{sid}/interrupt
+POST /sessions/{sid}/threads/{tid}/interrupt
 ```
 
 The TUI treats idle interrupt as a no-op. If the server emits `turn_cancelled`,

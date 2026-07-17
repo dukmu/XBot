@@ -15,11 +15,14 @@ import httpx
 
 from xbotv2.protocol.version import PROTOCOL_VERSION
 from xbotv2.protocol.models import (
+    CloseResponse,
     CommandListResponse,
     CommandRequest,
     CommandResponse,
     HelloRequest,
     HelloResponse,
+    InteractionResponse,
+    InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
@@ -107,18 +110,24 @@ class HttpTransport:
         )
         return payload
 
-    async def list_commands(self, session_id: str | None = None) -> dict[str, Any]:
-        url = f"/sessions/{session_id}/commands" if session_id else "/commands"
-        response = await self._client.get(url)
+    async def list_commands(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        response = await self._client.get(
+            f"/sessions/{session_id}/threads/{thread_id}/commands"
+        )
         _raise_for_status(response)
         return CommandListResponse.model_validate(response.json()).model_dump()
 
     async def run_command(
-        self, *, session_id: str, command: str, args: list[str], raw: str,
-        kind: str = "server",
+        self, *, session_id: str, thread_id: str, command: str,
+        args: list[str], raw: str, kind: str = "server",
     ) -> dict[str, Any]:
         response = await self._client.post(
-            f"/sessions/{session_id}/commands",
+            f"/sessions/{session_id}/threads/{thread_id}/commands",
             json=CommandRequest(
                 command=command,
                 args=args,
@@ -133,11 +142,12 @@ class HttpTransport:
         self,
         *,
         session_id: str,
+        thread_id: str,
         content: str,
         request_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
         return self._sse_iter(
-            f"/sessions/{session_id}/messages",
+            f"/sessions/{session_id}/threads/{thread_id}/messages",
             json_body=MessageRequest(
                 content=content,
                 request_id=request_id,
@@ -149,9 +159,10 @@ class HttpTransport:
         self,
         *,
         session_id: str,
+        thread_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
         return self._sse_iter(
-            f"/sessions/{session_id}/events",
+            f"/sessions/{session_id}/threads/{thread_id}/events",
             trace_label="session_events",
         )
 
@@ -159,12 +170,13 @@ class HttpTransport:
         self,
         *,
         session_id: str,
+        thread_id: str,
         request_id: str,
         decision: str,
         scope: str,
     ) -> dict[str, Any]:
         response = await self._client.post(
-            f"/sessions/{session_id}/interactions/permission-response",
+            f"/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
             json=PermissionResponseRequest(
                 request_id=request_id,
                 decision=decision,
@@ -172,7 +184,7 @@ class HttpTransport:
             ).model_dump(),
         )
         _raise_for_status(response)
-        payload = response.json()
+        payload = InteractionResponse.model_validate(response.json()).model_dump()
         trace_event(
             "tui.http",
             {
@@ -187,18 +199,19 @@ class HttpTransport:
         self,
         *,
         session_id: str,
+        thread_id: str,
         request_id: str,
         answer: Any,
     ) -> dict[str, Any]:
         response = await self._client.post(
-            f"/sessions/{session_id}/interactions/user-input",
+            f"/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
             json=UserInputResponseRequest(
                 request_id=request_id,
                 answer=answer,
             ).model_dump(),
         )
         _raise_for_status(response)
-        payload = response.json()
+        payload = InteractionResponse.model_validate(response.json()).model_dump()
         trace_event(
             "tui.http",
             {"stage": "user_input", "status": response.status_code, "payload": payload},
@@ -206,16 +219,21 @@ class HttpTransport:
         return payload
 
     async def shutdown(self, *, session_id: str) -> dict[str, Any]:
-        response = await self._client.post(f"/sessions/{session_id}/shutdown")
+        response = await self._client.post(f"/sessions/{session_id}/close")
         _raise_for_status(response)
-        return response.json()
+        return CloseResponse.model_validate(response.json()).model_dump()
 
-    async def interrupt(self, *, session_id: str) -> dict[str, Any]:
+    async def interrupt(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
         response = await self._client.post(
-            f"/sessions/{session_id}/interrupt"
+            f"/sessions/{session_id}/threads/{thread_id}/interrupt"
         )
         _raise_for_status(response)
-        payload = response.json()
+        payload = InterruptResponse.model_validate(response.json()).model_dump()
         trace_event(
             "tui.http",
             {"stage": "interrupt", "status": response.status_code, "payload": payload},

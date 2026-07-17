@@ -180,6 +180,25 @@ providers:
         assert config.reasoning_effort == "high"
         assert config.thinking_enabled is True
 
+    def test_provider_names_support_direct_mapping(self, tmp_path):
+        from xbotv2.config.loader import load_provider_names
+
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "providers.yaml").write_text("""
+default:
+  provider: openai
+  model: test
+other:
+  provider: anthropic
+  model: other
+""")
+
+        assert load_provider_names(RuntimePaths.from_data_dir(tmp_path)) == (
+            "default",
+            ["default", "other"],
+        )
+
     def test_env_var_expansion_in_nested_section(self, tmp_path, monkeypatch):
         """${VAR} patterns are expanded in provider sections."""
         from xbotv2.config.loader import load_provider_config
