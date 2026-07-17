@@ -239,9 +239,10 @@ The client must continue consuming the SSE stream while local input is pending;
 it submits the response independently through the interaction endpoint. A turn
 terminal event invalidates any unanswered request.
 Permission responses accept `allow` or `deny` with `once` or `session` scope.
-User-input responses accept an arbitrary JSON-compatible `answer`; `ask_user`
-normally returns a non-empty selected label or typed string. Suggested options
-are `{label, description}` objects and the timeout, when present, is positive.
+User-input responses accept an arbitrary JSON-compatible `answer`. `ask_user`
+requires at least two `{label, description}` choices and returns the selected
+label; other interaction sources may request free-form input. The timeout, when
+present, is positive.
 
 Because `ask_user` is a registered tool, permission policy runs first. Under an
 `ask` policy, one turn therefore carries two ordered interactions:

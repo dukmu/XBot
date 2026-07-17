@@ -50,7 +50,13 @@ def request_input(question: str) -> dict:
         "events": [
             {
                 "type": "user_input_required",
-                "data": {"question": question},
+                "data": {
+                    "question": question,
+                    "options": [
+                        {"label": "continue", "description": "Continue the work."},
+                        {"label": "stop", "description": "Stop the work."},
+                    ],
+                },
             }
         ],
     }

@@ -116,10 +116,10 @@ session-to-session filesystem isolation is required.
 and resolve `permission_request` before the tool emits
 `user_input_required`. Clients must support both interactions on the same SSE
 turn; answering the question does not bypass tool authorization.
-Its optional choices are structured `{label, description}` objects. Empty
+Its required choices are structured `{label, description}` objects. Empty
 questions, empty choices, fewer than two choices, and non-positive timeouts are
 rejected by the Tool schema before an interaction is opened. A timeout,
-cancellation, unsupported live client, or empty typed answer is not reported as
+cancellation, or unsupported live client is not reported as
 a successful Tool result.
 
 Registered tools use one canonical string name:

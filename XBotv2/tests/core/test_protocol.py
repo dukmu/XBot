@@ -156,6 +156,30 @@ openai:
         assert c2.model == "gpt-4o"
         assert c2.api_key == "sk-openai-xxx"
 
+    def test_preserves_reasoning_configuration(self, tmp_path):
+        from xbotv2.config.loader import load_provider_config
+
+        config_subdir = tmp_path / "config"
+        config_subdir.mkdir(parents=True)
+        (config_subdir / "providers.yaml").write_text("""
+default: minimax
+providers:
+  minimax:
+    provider: anthropic
+    model: MiniMax-M3
+    api_key: test-key
+    reasoning_effort: high
+    thinking_enabled: true
+""")
+
+        config = load_provider_config(
+            RuntimePaths.from_data_dir(tmp_path),
+            "minimax",
+        )
+
+        assert config.reasoning_effort == "high"
+        assert config.thinking_enabled is True
+
     def test_env_var_expansion_in_nested_section(self, tmp_path, monkeypatch):
         """${VAR} patterns are expanded in provider sections."""
         from xbotv2.config.loader import load_provider_config

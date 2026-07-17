@@ -356,13 +356,40 @@ async def test_builtin_ask_user_preserves_unsuccessful_outcomes(
         return response
 
     results = await execute_tools(
-        [ToolCall("c1", "ask_user", {"question": "Continue?"})],
+        [
+            ToolCall(
+                "c1",
+                "ask_user",
+                {
+                    "question": "Continue?",
+                    "options": [
+                        {"label": "continue", "description": "Keep running."},
+                        {"label": "stop", "description": "Stop the current work."},
+                    ],
+                },
+            )
+        ],
         registry,
         permission_system=PermissionSystem(default_decision="allow"),
         client_interaction_handler=answer,
     )
 
     assert results[0].status == expected_status
+
+
+@pytest.mark.asyncio
+async def test_builtin_ask_user_requires_options() -> None:
+    registry = ToolRegistry()
+    registry.register(ask_user, sandbox_mode="host")
+
+    results = await execute_tools(
+        [ToolCall("c1", "ask_user", {"question": "Continue?"})],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "error"
+    assert "Invalid arguments for ask_user" in results[0].content
 
 
 @pytest.mark.asyncio

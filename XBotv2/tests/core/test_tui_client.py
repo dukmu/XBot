@@ -1580,6 +1580,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
                 "request_id": "user_input:c1",
+                "source": "ask_user",
                 "question": "继续执行？",
                 "options": [
                     {"label": "继续", "description": "继续当前工作"},
@@ -1621,7 +1622,10 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         assert list(app.query(Button)) == []
         assert app._active_choice_key == "0"
         assert "继续" in str(app._choice_widgets["0"].content)
-        assert app._choice_payloads["0"][-1].kind == "answer_custom"
+        assert [choice.kind for choice in app._choice_payloads["0"]] == [
+            "answer",
+            "answer",
+        ]
         assert input_widget.disabled is True
         assert input_widget.display is False
         assert app.focused is None
@@ -1675,6 +1679,7 @@ async def test_textual_app_records_typed_answer_without_queued_notice():
             "type": "user_input_required",
             "data": {
                 "request_id": "user_input:c1",
+                "source": "mcp",
                 "question": "Codename?",
                 "options": [
                     {"label": "ALPHA", "description": "Use the default name."},

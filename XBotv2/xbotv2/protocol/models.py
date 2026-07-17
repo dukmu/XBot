@@ -199,6 +199,12 @@ class UserInputRequiredData(WireModel):
     timeout_seconds: float | None = Field(default=None, gt=0)
     resume_supported: bool = False
 
+    @model_validator(mode="after")
+    def _validate_ask_user_options(self) -> "UserInputRequiredData":
+        if self.source == "ask_user" and len(self.options) < 2:
+            raise ValueError("ask_user requires at least two options")
+        return self
+
 
 class InteractionRecordedData(WireModel):
     request_id: str = Field(min_length=1)

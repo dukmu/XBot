@@ -317,7 +317,7 @@ def reasoning_widget(reasoning: Text, *, expanded: bool = False) -> Collapsible:
 
     return Collapsible(
         Static(reasoning, classes="reasoning"),
-        title="Thought",
+        title="Thinking",
         collapsed=not expanded,
         classes="reasoning-block",
     )

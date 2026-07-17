@@ -29,6 +29,8 @@ class ProviderConfig(BaseModel):
     api_key: str | None = Field(default=None)
     temperature: float = Field(default=0.7)
     max_tokens: int = Field(default=4096)
+    reasoning_effort: str | None = Field(default=None)
+    thinking_enabled: bool = Field(default=False)
     mock_responses: list[dict[str, Any]] = Field(default_factory=list)
 
 

@@ -250,6 +250,22 @@ def test_server_event_carries_stream_envelope_fields():
     assert event.data == {"content": "ok"}
 
 
+def test_server_event_rejects_ask_user_without_choices():
+    with pytest.raises(
+        ValidationError,
+        match="ask_user requires at least two options",
+    ):
+        server_event(
+            type="user_input_required",
+            data={
+                "request_id": "user_input:c1",
+                "source": "ask_user",
+                "tool_call_id": "c1",
+                "question": "Continue?",
+            },
+        )
+
+
 def test_server_event_type_inventory_covers_current_stream_events():
     assert set(KNOWN_SERVER_EVENT_TYPES) == {
         "assistant_message",

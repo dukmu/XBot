@@ -1071,10 +1071,12 @@ async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
         await pilot.pause()
 
         block = app.query_one(".reasoning-block", Collapsible)
+        assert block.title == "Thinking"
         assert block.collapsed is True
         await pilot.click(block.query_one("CollapsibleTitle"))
         await pilot.pause()
         assert block.collapsed is False
+        assert app._reasoning_expanded is True
 
         app.state.apply_event(
             {"type": "assistant_message_delta", "data": {"reasoning": " and more"}}

@@ -218,6 +218,8 @@ class XBotTextualApp(App[None]):
     def _restore_composer_focus(self, event: Collapsible.Toggled) -> None:
         if not event.collapsible.display:
             return
+        if event.collapsible.has_class("reasoning-block"):
+            self._reasoning_expanded = not event.collapsible.collapsed
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.disabled:
             self.call_after_refresh(composer.focus)
@@ -1458,6 +1460,7 @@ class XBotTextualApp(App[None]):
             return self._request_widget(notice, key=key, title=f"{notice.ts}  approval request", choices=choices)
         if notice.kind == "user_input_required":
             options = notice.payload.get("options")
+            source = str(notice.payload.get("source") or "")
             choices = []
             if isinstance(options, list):
                 for option in options:
@@ -1471,7 +1474,7 @@ class XBotTextualApp(App[None]):
                             "answer",
                             {"answer": label},
                         ))
-                if choices:
+                if choices and source != "ask_user":
                     choices.append(InlineChoice("Other", "answer_custom", {}))
             return self._request_widget(notice, key=key, title=f"{notice.ts}  question", choices=choices)
         return entry_widget("notice", f"{notice.ts}  {notice_title(notice.kind)}", notice.text)

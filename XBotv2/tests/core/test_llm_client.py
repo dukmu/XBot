@@ -191,8 +191,8 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     provider.model = "model"
     provider.temperature = 0.2
     provider.max_tokens = 100
-    provider.reasoning_effort = None
-    provider.thinking_enabled = False
+    provider.reasoning_effort = "high"
+    provider.thinking_enabled = True
     provider.bound_tools = []
     provider.client = SimpleNamespace(messages=FakeMessages())
 
@@ -204,6 +204,10 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
 
     assert "tools" not in captured
     assert captured["system"] == "instructions"
+    assert captured["extra_body"] == {
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+    }
     assert final.content == "done"
     assert final.usage_metadata == {
         "input_tokens": 10,

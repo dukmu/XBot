@@ -182,10 +182,13 @@ class AnthropicProvider:
             api_kwargs["system"] = system
         if self.bound_tools:
             api_kwargs["tools"] = self.bound_tools
+        extra_body: dict[str, Any] = {}
         if self.reasoning_effort:
-            api_kwargs["reasoning_effort"] = self.reasoning_effort
+            extra_body["reasoning_effort"] = self.reasoning_effort
         if self.thinking_enabled:
-            api_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            extra_body["thinking"] = {"type": "enabled"}
+        if extra_body:
+            api_kwargs["extra_body"] = extra_body
 
         # Track per-block state for tool_use blocks — the SDK
         # streams the JSON in pieces and we yield the parsed
