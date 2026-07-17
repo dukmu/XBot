@@ -2,6 +2,7 @@
 
 import json
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -515,9 +516,68 @@ class ConfiguredPlugin(PluginBase):
 
         _ = [e async for e in engine.run_turn("hello")]
 
-        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
-        assert "Workspace instruction: prefer concise answers." in prompt
-        assert prompt.count("Workspace instruction: prefer concise answers.") == 1
+        system = llm.get_call_messages(0)[0]
+        root = ET.fromstring(system.content)
+        workspace = next(
+            element
+            for element in root.findall("plugin_instruction")
+            if element.attrib["name"] == "workspace_instructions"
+        )
+        assert workspace.attrib["source"] == "AGENTS.md"
+        assert workspace.text.strip() == (
+            "Workspace instruction: prefer concise answers."
+        )
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_uses_configured_human_identity(
+        self, temp_data_dir, temp_workspace
+    ):
+        (temp_data_dir / "config" / "user.yaml").write_text(
+            "user_id: human-7\nuser_name: Ada\nplatform: tui\n",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[{"content": "ok"}])
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="identity",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=llm,
+        )
+
+        _ = [event async for event in engine.run_turn("hello")]
+
+        root = ET.fromstring(llm.get_call_messages(0)[0].content)
+        assert "Human: Ada (human-7)" in root.findtext("runtime_environment")
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_separates_configured_and_agent_instructions(
+        self, temp_data_dir, temp_workspace
+    ):
+        (temp_data_dir / "config" / "system.yaml").write_text(
+            "instructions: Configured rule.\n",
+            encoding="utf-8",
+        )
+        agents_dir = temp_data_dir / ".agents"
+        agents_dir.mkdir()
+        (agents_dir / "default.md").write_text(
+            "---\ndescription: Default Agent\nmode: all\n---\nAgent workflow.",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[{"content": "ok"}])
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="instruction-sources",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+
+        _ = [event async for event in engine.run_turn("hello")]
+
+        root = ET.fromstring(llm.get_call_messages(0)[0].content)
+        assert root.findtext("developer_instructions").strip() == "Configured rule."
+        assert root.findtext("agent_instructions").strip() == "Agent workflow."
 
     @pytest.mark.asyncio
     async def test_workspace_can_disable_agents_md_plugin(

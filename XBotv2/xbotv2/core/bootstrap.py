@@ -132,7 +132,7 @@ async def bootstrap(
         provider_name = agent_definition.provider or provider_name
     provider_name = provider_name or agent_config.provider
     policy_base_config = agent_config.model_copy(deep=True)
-    load_user_context(paths)
+    user_context = load_user_context(paths)
 
     session_policy = load_session_policy(paths, session_id)
     agent_config.permissions = merge_permission_config(
@@ -370,6 +370,7 @@ async def bootstrap(
             model=provider_config.model,
             context_window=agent_config.max_context_tokens,
             llm_is_override=llm_override is not None,
+            user_context=user_context,
             max_iterations=(
                 resolved_agent.max_iterations
                 if resolved_agent is not None

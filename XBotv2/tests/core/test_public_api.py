@@ -21,6 +21,8 @@ from xbotv2.api import (
     PluginConfigError,
     PluginManifest,
     PromptFragmentStage,
+    prompt_container,
+    prompt_element,
     RuntimePaths,
     RuntimePluginContext,
     SessionPaths,
@@ -74,6 +76,9 @@ def test_public_api_exports_core_extension_types():
     assert hasattr(RuntimePluginContext, "unregister_tool")
     assert hasattr(RuntimePluginContext, "register_command")
     assert hasattr(RuntimePluginContext, "unregister_command")
+    assert prompt_container(
+        "root", [prompt_element("item", "a < b")]
+    ) == "<root>\n<item>\na &lt; b\n</item>\n</root>"
     assert SessionPaths is not None
     error = PluginConfigError("sample", ("limits", 0), "invalid")
     assert error.path == ("limits", 0)

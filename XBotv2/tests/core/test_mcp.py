@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -225,10 +226,11 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
     requested = []
 
     async def invoke_model(messages):
-        assert [(message.role, message.content) for message in messages] == [
-            ("system", "Be concise"),
-            ("user", "Summarize"),
-        ]
+        system = ET.fromstring(messages[0].content)
+        assert system.tag == "mcp_sampling_system_prompt"
+        assert system.attrib["source"] == "mcp_server"
+        assert system.text.strip() == "Be concise"
+        assert (messages[1].role, messages[1].content) == ("user", "Summarize")
         return ModelResponse(content="Done")
 
     async def request_user_input(question, **kwargs):

@@ -124,24 +124,27 @@ records separate from reconstructed provider Messages.
 
 Assembly order:
 ```
-[system_prefix]
-[plugin fragments: system_instructions stage]
-[runtime rules]
-[sandbox summary]
+[core instructions]
+[runtime environment and enforced sandbox facts]
+[configured developer instructions, if any]
+[active Agent identity and instructions]
+[source-tagged plugin/workspace fragments]
+[memory, if any]
+[runtime state, if any]
 [message history]
-[plugin fragments: context_suffix stage, if any]
-[active subagent count, if non-zero]
 ```
 
-This is component render order. Final model messages contain one leading system
-message with all system components, followed by non-system conversation history.
-No provider receives a trailing system message from `context_suffix`.
-The default prompt contains no clock or turn counter, so repeated model calls
-retain a stable prefix. Skill activation uses its normal Tool-result or
-prompt-expansion message and is not repeated as a system marker.
-
-Cache key uses tuple (was SHA256). `_sanitize_history` removes orphaned
-tool messages before provider conversion.
+Final model messages contain one leading `<xbot_context>` system message,
+followed by non-system conversation history. Fragment stage names remain
+compatible ordering zones and do not describe wire positions or authority.
+Every synthetic section escapes its content and source metadata. The default
+prompt contains no clock or turn counter, so repeated model calls retain a
+deterministic provider prefix. Slash Skill expansion and runtime notifications
+use separate structured transient inputs. Runtime Tool results are stored as
+`<tool_result>` content under their standard Tool role; both cache paths use
+`<cached_content>` with relative session paths. `_sanitize_history` removes
+orphaned tool messages before provider conversion. See
+[Prompt assembly](prompts.md).
 
 ## LLM Provider (`llm/client.py`)
 

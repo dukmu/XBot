@@ -31,11 +31,16 @@ from xbotv2.core.interactions import (
     InteractionResult,
     InteractionWaiter,
 )
+from xbotv2.core.internal_messages import (
+    DISPLAY_CONTENT_KEY,
+    structure_tool_message,
+)
 from xbotv2.core.mailbox import MailboxMessage
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 from xbotv2.api.context import ContextComponent
+from xbotv2.api.prompts import prompt_container, prompt_element
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 from xbotv2.persistence.store import message_to_dict
 
@@ -135,7 +140,10 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
     data: dict[str, Any] = {
         "tool_call_id": message.tool_call_id,
         "name": name,
-        "content": message.content,
+        "content": message.additional_kwargs.get(
+            DISPLAY_CONTENT_KEY,
+            message.content,
+        ),
         "status": message.status or "success",
     }
     metadata = message.additional_kwargs
@@ -194,6 +202,7 @@ class Engine:
         model: str = "",
         context_window: int = 0,
         llm_is_override: bool = False,
+        user_context: Any | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -215,6 +224,7 @@ class Engine:
             getattr(config, "max_context_tokens", 0) or 0
         )
         self.llm_is_override = llm_is_override
+        self.user_context = user_context
 
         self.messages: list[Message] = []
         self._persisted_messages: list[dict[str, Any]] = []
@@ -741,6 +751,18 @@ class Engine:
         }
 
         tool_messages = await self._execute_tool_calls(tool_calls)
+        tool_event_payloads = [
+            tool_result_event_data(
+                message,
+                tool_names_by_id.get(str(message.tool_call_id), "tool"),
+            )
+            for message in tool_messages
+        ]
+        for message in tool_messages:
+            structure_tool_message(
+                message,
+                tool_names_by_id.get(str(message.tool_call_id), "tool"),
+            )
 
         logger.info(
             "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
@@ -753,7 +775,11 @@ class Engine:
         # Commit tool responses before exposing them or requesting another model step.
         await self.save_messages()
 
-        for message in tool_messages:
+        for message, event_payload in zip(
+            tool_messages,
+            tool_event_payloads,
+            strict=True,
+        ):
             client_events = getattr(message, "additional_kwargs", {}).get(
                 "xbotv2_events",
                 [],
@@ -772,10 +798,7 @@ class Engine:
                 yield client_event
             yield {
                 "type": "tool_result",
-                "data": tool_result_event_data(
-                    message,
-                    tool_names_by_id.get(str(message.tool_call_id), "tool"),
-                ),
+                "data": event_payload,
             }
 
         for message in tool_messages:
@@ -826,7 +849,10 @@ class Engine:
                 short_circuit=False,
             )
             user_input = str(turn_ctx.user_input or user_input)
-            user_input = self._runtime_event_content(user_input)
+            user_input = self._runtime_event_content(
+                user_input,
+                mailbox_message=self._mailbox_message.get(),
+            )
             self._turn_instruction.set(user_input)
             return _TurnStartResult(
                 user_input,
@@ -935,13 +961,14 @@ class Engine:
             "messages": turn_messages,
             "agent_name": getattr(self.config, "agent_name", "XBotv2"),
             "agent_role": getattr(self.config, "agent_role", ""),
-            "user_name": "User",
-            "user_id": "default-user",
-            "instructions": getattr(
+            "user_name": getattr(self.user_context, "user_name", "User"),
+            "user_id": getattr(self.user_context, "user_id", "default-user"),
+            "developer_instructions": getattr(
                 self.config,
                 "effective_instructions",
                 getattr(self.config, "instructions", ""),
             ),
+            "instructions": getattr(self.config, "agent_instructions", ""),
             "memory": getattr(self.config, "memory", ""),
             "sandbox_summary": (
                 self.sandbox_policy.describe() if self.sandbox_policy else ""
@@ -1404,15 +1431,15 @@ class Engine:
             call for call in self.messages[assistant_index].tool_calls
             if call.id not in answered
         ]
-        self.messages.extend(
-            Message(
+        for call in missing:
+            message = Message(
                 role="tool",
                 content=f"Tool call did not complete: {reason}.",
                 tool_call_id=call.id,
                 status="error",
             )
-            for call in missing
-        )
+            structure_tool_message(message, call.name)
+            self.messages.append(message)
 
     async def _handle_client_interaction(
         self,
@@ -1619,12 +1646,39 @@ class Engine:
         )
 
     @staticmethod
-    def _runtime_event_content(payload: str) -> str:
-        return (
-            "[XBot runtime event; not a human message]\n"
-            "Continue the active work using this event. Do not ask the user to "
-            "repeat the preceding request.\n"
-            f"{payload}"
+    def _runtime_event_content(
+        payload: str,
+        *,
+        mailbox_message: MailboxMessage | None = None,
+    ) -> str:
+        message = getattr(mailbox_message, "message", None)
+        attributes = {"kind": "general", "source": "mailbox"}
+        if isinstance(message, dict):
+            attributes.update({
+                "source": str(message.get("source") or "runtime"),
+                "event": str(message.get("event") or "message"),
+            })
+        try:
+            json.loads(payload)
+            encoding = "json"
+        except (json.JSONDecodeError, TypeError):
+            encoding = "text"
+        return prompt_container(
+            "runtime_event",
+            [
+                prompt_element(
+                    "instruction",
+                    "This is runtime-generated input, not a human message. "
+                    "Continue the active work using the event and do not ask "
+                    "the human to repeat the preceding request.",
+                ),
+                prompt_element(
+                    "payload",
+                    payload,
+                    attributes={"encoding": encoding},
+                ),
+            ],
+            attributes=attributes,
         )
 
     @staticmethod

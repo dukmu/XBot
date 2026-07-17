@@ -661,7 +661,12 @@ class SearchablePlugin(PluginBase):
 
         assert [manifest.name for manifest, _ in manifests] == ["simple"]
         assert len(plugins) == 1
-        assert "Loader instructions" in context_builder._fragments["system_instructions"]["simple"]
+        assert "Loader instructions" in context_builder.get_fragment(
+            "system_instructions", "simple"
+        )
+        components = context_builder.build_components(messages=[])
+        fragment = next(item for item in components if item.plugin_name == "simple")
+        assert fragment.source_path == "prompts/instructions.md"
 
     @pytest.mark.asyncio
     async def test_loader_rolls_back_partial_registration_on_failure(self, tmp_path, monkeypatch):

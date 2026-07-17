@@ -35,6 +35,7 @@ from xbotv2.api.hooks import (
     HookStage,
 )
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.prompts import prompt_container, prompt_element
 
 __all__ = [
     "ArtifactRef",
@@ -59,6 +60,8 @@ __all__ = [
     "PluginManifest",
     "PluginStore",
     "PromptFragmentStage",
+    "prompt_container",
+    "prompt_element",
     "RuntimePluginContext",
     "RuntimePaths",
     "SessionInfo",

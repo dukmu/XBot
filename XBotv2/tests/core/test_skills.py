@@ -1,6 +1,7 @@
 """Integration tests for SkillsPlugin — discovery, loading, and shell injection."""
 
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -236,9 +237,12 @@ Body
             SimpleNamespace(user_input="/manual-only focus", sandbox=None)
         )
 
-        assert manual_result["user_input"].startswith("## manual-only")
-        assert "Manual skill content." in manual_result["user_input"]
-        assert manual_result["user_input"].endswith("focus")
+        invocation = manual_result["user_input"]
+        root = ET.fromstring(invocation)
+        assert invocation.startswith('<skill_invocation name="manual-only"')
+        assert root.attrib["name"] == "manual-only"
+        assert "Manual skill content." in root.findtext("skill_instructions")
+        assert root.findtext("user_arguments").strip() == "focus"
 
         model_only_result = await plugin._on_before_user_message(
             SimpleNamespace(user_input="/model-only", sandbox=None)
@@ -543,8 +547,7 @@ Demo content
         reg.discover(ws)
 
         result = await load_skill("demo", skill_registry=reg)
-        assert "# demo" in result.lower() or "## demo" in result.lower()
-        assert "Demo content" in result
+        assert result == "Demo content"
 
 
 class TestSkillPermissionScope:

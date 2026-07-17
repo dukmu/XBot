@@ -1,6 +1,7 @@
 """Provider-boundary tests for oversized context externalization."""
 
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -34,9 +35,23 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
     bounded = bound_context_messages([message], state_store)[0]
 
     assert bounded is not message
-    assert "cache_path: session/artifacts/context/" in bounded.content
-    assert "cache_path: session/artifacts/context/" in bounded.tool_calls[0].args["value"]
-    assert "cache_path: session/artifacts/context/" in bounded.additional_kwargs["reasoning_content"]
+    cached_values = [
+        bounded.content,
+        bounded.tool_calls[0].args["value"],
+        bounded.additional_kwargs["reasoning_content"],
+    ]
+    roots = [ET.fromstring(value) for value in cached_values]
+    assert [root.attrib["kind"] for root in roots] == [
+        "assistant_content",
+        "tool_argument",
+        "reasoning_content",
+    ]
+    assert all(
+        root.findtext("cache_path").strip().startswith(
+            "session/artifacts/context/"
+        )
+        for root in roots
+    )
     assert message.content == content
     assert message.tool_calls[0].args["value"] == argument
     assert message.additional_kwargs["reasoning_content"] == reasoning
@@ -56,7 +71,11 @@ def test_reuses_relative_content_cache_reference(state_store):
     second = bound_context_messages([Message(role="user", content=content)], state_store)
 
     assert first[0].content == second[0].content
-    assert "cache_path: session/artifacts/context/" in first[0].content
+    cached = ET.fromstring(first[0].content)
+    assert cached.attrib["kind"] == "user_input"
+    assert cached.findtext("cache_path").strip().startswith(
+        "session/artifacts/context/"
+    )
     assert len(list((Path(state_store.artifacts_dir) / "context").glob("*.txt"))) == 1
 
 
@@ -120,6 +139,20 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     provider_user = next(
         message for message in llm.get_call_messages(0) if message.role == "user"
     )
-    assert "cache_path: session/artifacts/context/" in provider_user.content
+    cached = ET.fromstring(provider_user.content)
+    assert cached.attrib["kind"] == "user_input"
+    assert cached.findtext("cache_path").strip().startswith(
+        "session/artifacts/context/"
+    )
     assert "filesystem_read using offset and limit" in provider_user.content
     assert engine.messages[0].content == user_input
+
+
+def test_never_externalizes_the_complete_system_context(state_store):
+    content = "<xbot_context>" + "x" * MAX_USER_INLINE_CHARS + "</xbot_context>"
+    message = Message(role="system", content=content)
+
+    bounded = bound_context_messages([message], state_store)[0]
+
+    assert bounded is message
+    assert bounded.content == content

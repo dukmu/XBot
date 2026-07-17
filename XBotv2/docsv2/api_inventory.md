@@ -42,6 +42,8 @@ type-only import inside XBotv2 itself.
 | `PluginManifest` | pydantic model | Validated plugin manifest. |
 | `PluginStore` | protocol | Per-plugin persistent key-value storage. |
 | `PromptFragmentStage` | type alias | Supported plugin prompt insertion stages. |
+| `prompt_container` | function | Wrap pre-rendered prompt elements in a validated XML container. |
+| `prompt_element` | function | Render one XML prompt element with escaped content and attributes. |
 | `RuntimePluginContext` | protocol | Runtime hook capabilities owned by a plugin record. |
 | `RuntimePaths` | dataclass | Server process filesystem layout. |
 | `SessionInfo` | dataclass | Session identity and status metadata. |
@@ -67,8 +69,11 @@ cancels the turn, and resume never restores the pending request.
 Persistence Hook contexts are emitted only for a changed normalized message
 snapshot; repeated save attempts with no state change do not emit them.
 `PromptFragmentStage` contains `system_prefix`, `system_instructions`,
-`system_rules`, and `context_suffix` in render order. Manifest declarations are
-validated against this list before plugin setup.
+`system_rules`, and `context_suffix` as compatible ordering zones. They do not
+grant authority or describe wire positions. Manifest declarations are validated
+against this list before plugin setup. `PluginSetupContext.add_prompt_fragment`
+accepts an optional source label which is preserved in `ContextComponent` and
+the rendered system envelope.
 `HookContext.context_components` exposes a `list[ContextComponent]` at
 `AFTER_CONTEXT_COMPONENTS_BUILD`. Components are immutable; the Hook may
 replace the list with another list of public components. Invalid entries fail

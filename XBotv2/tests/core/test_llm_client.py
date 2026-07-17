@@ -13,6 +13,7 @@ from xbotv2.llm.client import (
 )
 from xbotv2.api.messages import Message
 from xbotv2.api.tools import ToolCall
+from xbotv2.core.internal_messages import structure_tool_message
 
 
 def test_strip_reasoning_headers_no_header():
@@ -93,6 +94,34 @@ def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
             {"type": "tool_result", "tool_use_id": "c2", "content": "two"},
         ],
     }
+
+
+def test_structured_tool_content_stays_in_the_native_tool_role():
+    message = Message(
+        role="tool",
+        content="result <data>",
+        tool_call_id="call-1",
+        status="success",
+    )
+    structure_tool_message(message, "sample")
+
+    openai = provider_messages([message])
+    _system, anthropic = anthropic_request_messages([message])
+
+    assert openai == [{
+        "role": "tool",
+        "content": message.content,
+        "tool_call_id": "call-1",
+    }]
+    assert anthropic == [{
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": "call-1",
+            "content": message.content,
+        }],
+    }]
+    assert "<tool_result" in message.content
 
 
 def test_anthropic_usage_preserves_cache_context_tokens():

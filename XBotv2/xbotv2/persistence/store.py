@@ -21,7 +21,11 @@ from xbotv2.api.messages import Message
 from xbotv2.api.paths import SessionPaths, ThreadPaths
 from xbotv2.api.tools import ToolCall
 
-_PERSISTED_XBOT_KWARGS = {"xbotv2_data", "xbotv2_error"}
+_PERSISTED_XBOT_KWARGS = {
+    "xbotv2_data",
+    "xbotv2_error",
+    "xbotv2_message_format",
+}
 
 
 def now_iso() -> str:

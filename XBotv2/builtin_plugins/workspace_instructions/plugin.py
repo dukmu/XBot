@@ -13,4 +13,8 @@ class WorkspaceInstructionsPlugin(PluginBase):
         if path.is_file():
             text = path.read_text(encoding="utf-8")
             if text.strip():
-                ctx.add_prompt_fragment("system_instructions", text)
+                ctx.add_prompt_fragment(
+                    "system_instructions",
+                    text,
+                    source="AGENTS.md",
+                )

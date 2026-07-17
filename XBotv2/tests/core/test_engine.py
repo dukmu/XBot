@@ -793,7 +793,8 @@ class TestEngineHooks:
         _ = [e async for e in engine.run_turn("test")]
 
         assert calls[0] == ("before_build", HookStage.BEFORE_CONTEXT_BUILD)
-        assert "system_prefix" in calls[1][1]
+        assert "core_instructions" in calls[1][1]
+        assert "agent_instructions" in calls[1][1]
         assert "history" in calls[1][1]
         assert any("from hook" in content for content in calls[2][1])
         assert any("Hook Component" in content for content in calls[2][1])
@@ -1138,7 +1139,8 @@ class TestEngineHooks:
 
         assert not any(event["type"] == "permission_request" for event in events)
         tool_message = next(message for message in engine.messages if message.role == "tool")
-        assert tool_message.content == "Error: blocked by plugin policy"
+        assert "Error: blocked by plugin policy" in tool_message.content
+        assert tool_message.content.startswith('<tool_result name="echo" status="error">')
 
     @pytest.mark.asyncio
     async def test_message_tool_and_permission_hooks_receive_caller_payloads(

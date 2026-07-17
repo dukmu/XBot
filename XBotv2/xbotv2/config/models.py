@@ -69,8 +69,8 @@ class SystemConfig(BaseModel):
     """Runtime configuration after startup-only workspace overlays."""
 
     agent_name: str = Field(default="XBotv2")
-    agent_role: str = Field(default="AI coding assistant")
-    system_prompt: str = Field(default="You are a helpful AI assistant.")
+    agent_role: str = Field(default="General-purpose agent")
+    system_prompt: str = Field(default="")
     provider: str = Field(default="default")
     max_context_tokens: int = Field(default=32000)
     max_concurrent_subagents: int = Field(default=4, ge=1)
@@ -79,8 +79,8 @@ class SystemConfig(BaseModel):
     plugins: dict[str, dict] = Field(default_factory=dict)
     plugin_paths: list[str] = Field(default_factory=list)
     disabled_plugins: list[str] = Field(default_factory=list)
-    system_template: str = Field(default="")
     instructions: str = Field(default="")
+    agent_instructions: str = Field(default="")
     memory: str = Field(default="")
     sandbox: dict = Field(default_factory=lambda: {
         "enabled": True,

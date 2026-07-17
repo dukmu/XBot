@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ import pytest_asyncio
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
+from xbotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
 from xbotv2.llm.mock import MockLLM
@@ -446,7 +448,7 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     assert "turn_finished" in turn.text
     manager = client._transport.app.state.manager
     original = await manager.get("resume-history")
-    original.engine.messages.append(Message(
+    tool_message = Message(
         role="tool",
         content="cached result",
         tool_call_id="call-1",
@@ -458,7 +460,9 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         artifact=[
             {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
         ],
-    ))
+    )
+    structure_tool_message(tool_message, "sample")
+    original.engine.messages.append(tool_message)
     await original.engine.save_messages()
 
     resumed = await client.post(
@@ -2073,15 +2077,21 @@ Follow this test instruction: $ARGUMENTS
         json={"content": "/xbot-test-prompt verify boundaries"},
     )
     assert response.status_code == 200
-    contents = [
-        str(getattr(message, "content", ""))
-        for message in llm.get_call_messages(0)
-    ]
-    assert any(
-        "Follow this test instruction: verify boundaries" in content
-        for content in contents
+    model_messages = llm.get_call_messages(0)
+    expanded = next(
+        message for message in model_messages if message.role == "user"
     )
-    assert all("/xbot-test-prompt" not in content for content in contents)
+    invocation = ET.fromstring(expanded.content)
+    assert invocation.tag == "skill_invocation"
+    assert invocation.attrib["name"] == "xbot-test-prompt"
+    assert "Follow this test instruction: verify boundaries" in (
+        invocation.findtext("skill_instructions") or ""
+    )
+    assert invocation.findtext("user_arguments").strip() == "verify boundaries"
+    assert all(
+        message.content != "/xbot-test-prompt verify boundaries"
+        for message in model_messages
+    )
 
 
 

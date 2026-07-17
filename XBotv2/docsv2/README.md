@@ -12,6 +12,7 @@ This directory describes the current XBotv2 implementation.
 - [Hooks](hooks.md)
 - [Hook stage matrix](hook_stage_matrix.md)
 - [Plugin system](plugins.md)
+- [Prompt assembly](prompts.md)
 - [Built-in tools](tools.md)
 - [Compact plugin](compact.md)
 - [TodoList plugin](todolist.md)

@@ -17,13 +17,14 @@ PromptFragmentStage = Literal[
 
 @dataclass(frozen=True, slots=True)
 class ContextComponent:
-    """One source-tagged context section before provider conversion."""
+    """One source-tagged context section before escaped provider rendering."""
 
     role: str
     source: str
     content: str
     plugin_name: str | None = None
     stage: PromptFragmentStage | None = None
+    source_path: str | None = None
     message: Message | None = None
 
 

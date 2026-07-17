@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import pytest
 from langchain_core.tools import tool as langchain_tool
@@ -23,7 +24,10 @@ from xbotv2.api.messages import Message
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.result_cache import make_tool_result_cache_hook
+from xbotv2.tools.result_cache import (
+    _format_cached_result,
+    make_tool_result_cache_hook,
+)
 from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.api.tools import Tool, ToolCall
@@ -581,10 +585,14 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     tool_event = next(e for e in events if e["type"] == "tool_result")
     tool_message = next(m for m in engine.messages if m.role == "tool")
 
-    assert "[Tool result cached]" in tool_event["data"]["content"]
-    assert "[Tool result cached]" in tool_message.content
+    assert tool_event["data"]["content"].startswith("Tool result cached at session/")
+    tool_result = ET.fromstring(tool_message.content)
+    cached = tool_result.find("cached_content")
+    assert tool_result.attrib == {"name": "large_output", "status": "success"}
+    assert cached is not None
+    assert cached.attrib["kind"] == "tool_result"
     assert "x" * 100 not in tool_message.content
-    assert "Ending excerpt" in tool_message.content
+    assert cached.find("preview/ending") is not None
     assert "filesystem_read using offset and limit" in tool_message.content
     assert tool_message.artifact["kind"] == "cached_tool_result"
     assert tool_message.artifact["tool_call_id"] == "call_large"
@@ -626,6 +634,20 @@ async def test_cache_hook_externalizes_large_structured_data(state_store):
     assert message.artifact["data_cache_path"] == data["cache_path"]
     assert message.artifact["kind"] == "cached_tool_data"
     assert message.content == "Short result summary."
+
+
+def test_cached_result_zero_preview_does_not_duplicate_content():
+    content = _format_cached_result(
+        content="secret",
+        cache_path=Path("session/artifacts/tool_results/result.txt"),
+        max_inline_chars=1,
+        preview_chars=0,
+    )
+    cached = ET.fromstring(content)
+
+    assert cached.findtext("preview/beginning").strip() == ""
+    assert cached.findtext("preview/ending").strip() == ""
+    assert "secret" not in content
 
 
 def _hook_context(stage, **kwargs):

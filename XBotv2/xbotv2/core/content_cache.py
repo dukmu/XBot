@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from xbotv2.api.messages import Message
+from xbotv2.api.prompts import cached_content_prompt
 from xbotv2.api.tools import ToolCall
 
 MAX_INLINE_CHARS = 12_000
@@ -34,20 +35,40 @@ def externalize_content(
     state_store: Any,
     *,
     max_inline_chars: int = MAX_INLINE_CHARS,
+    kind: str = "content",
 ) -> str:
     """Externalize one non-message string through the context cache."""
-    return _externalize(content, state_store, max_inline_chars)
+    return _externalize(content, state_store, max_inline_chars, kind=kind)
 
 
 def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
     content = str(message.content or "")
     content_limit = MAX_USER_INLINE_CHARS if message.role == "user" else limit
-    bounded_content = _externalize(content, state_store, content_limit)
+    content_kind = {
+        "user": "user_input",
+        "assistant": "assistant_content",
+        "tool": "tool_result",
+    }.get(message.role, "message_content")
+    bounded_content = (
+        content
+        if message.role == "system"
+        else _externalize(
+            content,
+            state_store,
+            content_limit,
+            kind=content_kind,
+        )
+    )
     bounded_calls = [
         ToolCall(
             id=call.id,
             name=call.name,
-            args=_bound_value(call.args, state_store, limit),
+            args=_bound_value(
+                call.args,
+                state_store,
+                limit,
+                kind="tool_argument",
+            ),
         )
         for call in message.tool_calls
     ]
@@ -55,7 +76,10 @@ def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
     reasoning = bounded_kwargs.get("reasoning_content")
     if isinstance(reasoning, str):
         bounded_kwargs["reasoning_content"] = _externalize(
-            reasoning, state_store, limit
+            reasoning,
+            state_store,
+            limit,
+            kind="reasoning_content",
         )
     if (
         bounded_content == content
@@ -71,20 +95,35 @@ def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
     )
 
 
-def _bound_value(value: Any, state_store: Any, limit: int) -> Any:
+def _bound_value(
+    value: Any,
+    state_store: Any,
+    limit: int,
+    *,
+    kind: str,
+) -> Any:
     if isinstance(value, str):
-        return _externalize(value, state_store, limit)
+        return _externalize(value, state_store, limit, kind=kind)
     if isinstance(value, dict):
         return {
-            key: _bound_value(item, state_store, limit)
+            key: _bound_value(item, state_store, limit, kind=kind)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_bound_value(item, state_store, limit) for item in value]
+        return [
+            _bound_value(item, state_store, limit, kind=kind)
+            for item in value
+        ]
     return value
 
 
-def _externalize(content: str, state_store: Any, limit: int) -> str:
+def _externalize(
+    content: str,
+    state_store: Any,
+    limit: int,
+    *,
+    kind: str,
+) -> str:
     if len(content) <= limit:
         return content
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -95,18 +134,15 @@ def _externalize(content: str, state_store: Any, limit: int) -> str:
         path.write_text(content, encoding="utf-8")
     relative = Path("session") / path.relative_to(Path(state_store.root))
     omitted = len(content) - HEAD_CHARS - TAIL_CHARS
-    return (
-        "[Long context cached]\n"
-        f"cache_path: {relative}\n"
-        f"original_chars: {len(content)}\n"
-        f"sha256: {digest}\n"
-        f"omitted_chars: {omitted}\n\n"
-        "Beginning excerpt:\n"
-        f"{content[:HEAD_CHARS]}\n\n"
-        "Ending excerpt:\n"
-        f"{content[-TAIL_CHARS:]}\n\n"
-        "Read the cached file with filesystem_read using offset and limit "
-        "before acting when omitted content may matter."
+    return cached_content_prompt(
+        kind=kind,
+        cache_path=str(relative),
+        original_chars=len(content),
+        omitted_chars=omitted,
+        beginning=content[:HEAD_CHARS],
+        ending=content[-TAIL_CHARS:],
+        sha256=digest,
+        inline_limit_chars=limit,
     )
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import pytest
@@ -92,7 +93,9 @@ async def test_manual_tool_requests_compaction_below_threshold():
     tool_result = await setup.tool.ainvoke({})
 
     async def invoke_model(messages):
-        assert messages[-1].content == "Produce the conversation summary now."
+        request = ET.fromstring(messages[-1].content)
+        assert request.tag == "summary_request"
+        assert request.text.strip() == "Produce the conversation summary now."
         return ModelResponse(content="Important earlier context")
 
     original = history(3)
@@ -220,7 +223,8 @@ async def test_compaction_does_not_append_duplicate_human_directives():
     ))
 
     summary = result["messages"][0].content
-    assert summary.count("## Conversation Summary") == 1
+    root = ET.fromstring(summary)
+    assert root.tag == "conversation_summary"
     assert "## Recent Human Directives (verbatim)" not in summary
     assert summary.count("Older context only.") == 1
 
@@ -366,7 +370,9 @@ async def test_long_mailbox_turn_compacts_without_user_messages():
     ))
 
     assert result["compact_reason"] == "automatic"
-    assert result["messages"][0].content.startswith("## Conversation Summary")
+    assert ET.fromstring(result["messages"][0].content).tag == (
+        "conversation_summary"
+    )
     assert [message.role for message in result["messages"][1:]] == [
         "assistant", "tool", "assistant", "tool",
     ]

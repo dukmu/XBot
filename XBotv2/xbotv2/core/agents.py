@@ -40,11 +40,7 @@ def apply_agent_definition(config: Any, definition: AgentDefinition) -> None:
     """Apply one resolved Agent definition to a fresh base configuration."""
     config.agent_name = definition.name
     config.agent_role = definition.description
-    config.instructions = "\n\n".join(
-        part
-        for part in (config.instructions, definition.prompt)
-        if part.strip()
-    )
+    config.agent_instructions = definition.prompt
     if definition.tools is not None:
         config.tools = list(definition.tools)
     if definition.context_window is not None:

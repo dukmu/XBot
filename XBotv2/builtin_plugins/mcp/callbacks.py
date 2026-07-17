@@ -9,7 +9,7 @@ from typing import Any
 
 from mcp import types
 
-from xbotv2.api import HookContext, Message
+from xbotv2.api import HookContext, Message, prompt_element
 
 logger = logging.getLogger("xbotv2.mcp")
 
@@ -20,7 +20,14 @@ def client_callbacks(ctx: HookContext) -> dict[str, Any]:
             return types.ErrorData(code=-32603, message="Model invocation unavailable")
         messages: list[Message] = []
         if params.systemPrompt:
-            messages.append(Message(role="system", content=params.systemPrompt))
+            messages.append(Message(
+                role="system",
+                content=prompt_element(
+                    "mcp_sampling_system_prompt",
+                    params.systemPrompt,
+                    attributes={"source": "mcp_server"},
+                ),
+            ))
         for message in params.messages:
             text = _sampling_text(message.content)
             if text is None:

@@ -21,8 +21,7 @@ async def load_skill(
     if skill is None:
         return f"Error: skill '{name}' not found"
     content = _substitute_arguments(skill.content, arguments)
-    content = await _preprocess(content, sandbox=sandbox)
-    return f"## {skill.name}\n\n{content}"
+    return await _preprocess(content, sandbox=sandbox)
 
 
 def _substitute_arguments(content: str, arguments: str) -> str:

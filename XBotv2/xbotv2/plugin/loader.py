@@ -140,8 +140,19 @@ class _PluginSetupContext:
             tool_names=self.tool_names,
         )
 
-    def add_prompt_fragment(self, stage: PromptFragmentStage, text: str) -> None:
-        self.context.register_fragment(stage, self.plugin_name, text)
+    def add_prompt_fragment(
+        self,
+        stage: PromptFragmentStage,
+        text: str,
+        *,
+        source: str | None = None,
+    ) -> None:
+        self.context.register_fragment(
+            stage,
+            self.plugin_name,
+            text,
+            source=source,
+        )
         if stage not in self.fragment_stages:
             self.fragment_stages.append(stage)
 

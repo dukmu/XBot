@@ -21,6 +21,7 @@ from xbotv2.api import (
     Tool,
     ToolRegistrationOptions,
     ToolResult,
+    prompt_element,
 )
 
 logger = logging.getLogger("xbotv2.compact")
@@ -178,7 +179,12 @@ class CompactPlugin(PluginBase):
         summary = _strip_summary_heading(summary)[:self._summary_max_chars]
         compacted = Message(
             role="system",
-            content=f"## Conversation Summary\n\n{summary}",
+            content=prompt_element(
+                "conversation_summary",
+                summary,
+                attributes={"reason": reason},
+            ),
+            additional_kwargs={"xbotv2_message_format": "xml-v1"},
         )
         self._compactions += 1
         self._last_reason = reason
@@ -254,9 +260,18 @@ def _summary_request(messages: list[Message], max_chars: int) -> list[Message]:
         f"than {max_chars} characters."
     )
     return [
-        Message(role="system", content=instruction),
+        Message(
+            role="system",
+            content=prompt_element("summary_instructions", instruction),
+        ),
         *messages,
-        Message(role="user", content="Produce the conversation summary now."),
+        Message(
+            role="user",
+            content=prompt_element(
+                "summary_request",
+                "Produce the conversation summary now.",
+            ),
+        ),
     ]
 
 

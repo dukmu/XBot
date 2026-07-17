@@ -101,13 +101,19 @@ analysis, but are never requeued on resume.
 
 ### Context Builder (`xbotv2/core/context.py`)
 
-Assembles typed context components from system prefix, plugin fragments, runtime
-rules, history, and optional runtime state. Before provider dispatch, every system
-component is combined into one leading system message and non-system history
-follows it. The default prompt excludes clocks, turn counters, and duplicate
-identity fields so it remains stable. `context_suffix` names a component stage;
-it does not place a system message after history on the wire. SHA256 cache was
-replaced with a tuple key.
+Assembles source-tagged context components into one leading XML-delimited system
+message followed by provider-neutral history. Core, runtime, Agent, workspace,
+plugin, memory, and dynamic state remain visibly distinct, and all injected text
+and metadata is escaped. Fragment stages are compatible ordering zones rather
+than provider positions or authority levels. The default core instructions are
+owned by `ContextBuilder` and apply to primary Agents and subagents; clocks and
+turn counters are excluded to keep the provider prefix deterministic. See
+[`prompts.md`](prompts.md) for the complete contract.
+
+Runtime-owned non-system content uses the same source-delimited convention
+inside its existing role: Tool results, cache references, Skill expansion,
+Mailbox events, and Compact summaries are structured without promoting them to
+system messages.
 
 ## Plugin System
 

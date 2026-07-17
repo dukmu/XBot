@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from xbotv2.api.prompts import (
+    CACHED_CONTENT_KEY,
+    DISPLAY_CONTENT_KEY,
+    cached_content_prompt,
+)
+
 
 DEFAULT_MAX_INLINE_CHARS = 12000
 DEFAULT_PREVIEW_CHARS = 4000
@@ -47,8 +53,8 @@ def make_tool_result_cache_hook(
             content_path = None
             content_cache_path = None
             if len(content) > max_inline_chars:
-                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-                content_path = cache_dir / f"{name}-{digest}.txt"
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                content_path = cache_dir / f"{name}-{digest[:16]}.txt"
                 content_path.write_text(content, encoding="utf-8")
                 content_cache_path = (
                     Path("session")
@@ -61,6 +67,11 @@ def make_tool_result_cache_hook(
                     preview_chars=preview_chars,
                 )
                 message.content = replacement
+                message.additional_kwargs[CACHED_CONTENT_KEY] = True
+                message.additional_kwargs[DISPLAY_CONTENT_KEY] = (
+                    f"Tool result cached at {content_cache_path} "
+                    f"({len(content)} characters)."
+                )
                 artifact.update({
                     "kind": "cached_tool_result",
                     "cache_path": str(content_cache_path),
@@ -100,25 +111,21 @@ def _format_cached_result(
     max_inline_chars: int,
     preview_chars: int,
 ) -> str:
+    preview_chars = max(0, min(preview_chars, len(content)))
     tail_chars = min(DEFAULT_TAIL_CHARS, preview_chars)
-    head_chars = max(0, preview_chars - tail_chars)
+    head_chars = preview_chars - tail_chars
     head = content[:head_chars]
-    tail = content[-tail_chars:]
+    tail = content[-tail_chars:] if tail_chars else ""
     omitted = len(content) - len(head) - len(tail)
-    return (
-        "[Tool result cached]\n"
-        f"cache_path: {cache_path}\n"
-        f"original_chars: {len(content)}\n"
-        f"inline_limit_chars: {max_inline_chars}\n"
-        f"preview_chars: {len(head) + len(tail)}\n"
-        f"omitted_chars: {omitted}\n"
-        "\n"
-        "Beginning excerpt:\n"
-        f"{head}\n\n"
-        "Ending excerpt:\n"
-        f"{tail}\n\n"
-        "Read the cached file with filesystem_read using offset and limit "
-        "before acting when omitted content may matter."
+    return cached_content_prompt(
+        kind="tool_result",
+        cache_path=str(cache_path),
+        original_chars=len(content),
+        omitted_chars=omitted,
+        beginning=head,
+        ending=tail,
+        sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        inline_limit_chars=max_inline_chars,
     )
 
 

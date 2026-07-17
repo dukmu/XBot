@@ -38,6 +38,7 @@ from xbotv2.protocol.models import (
 )
 from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
 from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.core.bootstrap import bootstrap
 from xbotv2.protocol.commands import execute_command, list_commands
@@ -596,7 +597,14 @@ def _display_history(messages: list[Any]) -> list[dict[str, Any]]:
                 artifacts.append(dict(artifact))
         item = {
             "role": role,
-            "content": str(getattr(message, "content", "") or ""),
+            "content": (
+                tool_result_display_content(
+                    str(getattr(message, "content", "") or "")
+                )
+                if role == "tool"
+                and additional.get(MESSAGE_FORMAT_KEY) == "xml-v1"
+                else str(getattr(message, "content", "") or "")
+            ),
             "tool_calls": [
                 call.to_dict() for call in (getattr(message, "tool_calls", None) or [])
             ],

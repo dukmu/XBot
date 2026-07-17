@@ -16,6 +16,8 @@ from xbotv2.api import (
     PluginManifest,
     PluginSetupContext,
     PluginStore,
+    prompt_container,
+    prompt_element,
     RuntimePluginContext,
     Tool,
     ToolRegistrationOptions,
@@ -185,7 +187,20 @@ class SkillsPlugin(PluginBase):
             sandbox=ctx.sandbox,
         )
         self._activate_skill(skill)
-        return {"user_input": content}
+        return {
+            "user_input": prompt_container(
+                "skill_invocation",
+                [
+                    prompt_element("skill_instructions", content),
+                    prompt_element("user_arguments", instructions),
+                ],
+                attributes={
+                    "name": skill.name,
+                    "scope": skill.scope,
+                    "source": skill.path,
+                },
+            )
+        }
 
     async def _on_turn_end(self, ctx: HookContext) -> None:
         self._active_skills.clear()

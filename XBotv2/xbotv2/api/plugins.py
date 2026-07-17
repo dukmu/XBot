@@ -162,7 +162,13 @@ class PluginSetupContext(Protocol):
         options: ToolRegistrationOptions | None = None,
     ) -> str: ...
     def register_command(self, command: Command) -> str: ...
-    def add_prompt_fragment(self, stage: PromptFragmentStage, text: str) -> None: ...
+    def add_prompt_fragment(
+        self,
+        stage: PromptFragmentStage,
+        text: str,
+        *,
+        source: str | None = None,
+    ) -> None: ...
 
 
 class PluginBase:
@@ -193,7 +199,11 @@ class PluginBase:
                 ),
             )
         for declaration in self.manifest.prompt_fragments:
-            ctx.add_prompt_fragment(declaration.stage, self._render_fragment(declaration))
+            ctx.add_prompt_fragment(
+                declaration.stage,
+                self._render_fragment(declaration),
+                source=declaration.file or declaration.handler,
+            )
 
     def diagnostics(self) -> dict[str, Any]:
         return {"status": "ready"}

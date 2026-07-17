@@ -132,14 +132,15 @@ names are unique, setup failure rolls them back, and unload unregisters them.
 Core owns Agent execution; a plugin registers definitions, not a separate loop.
 The setup transaction should record every resource for rollback and unload.
 
-Prompt fragments use the public `PromptFragmentStage` values, in render order:
+Prompt fragments use the public `PromptFragmentStage` values as compatible
+ordering zones:
 `system_prefix`, `system_instructions`, `system_rules`, and `context_suffix`.
 Each manifest declaration provides exactly one non-empty `file` or `handler`.
-The suffix stage renders after message-history components and before the core
-current-state component. It is still system content: final provider conversion
-combines it into the single leading system message. Unknown stages are rejected
-during manifest validation; Python plugins using `ctx.add_prompt_fragment()`
-receive the same validation from the context builder.
+All fragments are rendered as escaped `plugin_instruction` sections in the one
+leading system context; no stage grants core authority or places a system
+message after history. Unknown stages are rejected during manifest validation.
+Python plugins receive the same validation from the context builder and may
+provide a source label through `ctx.add_prompt_fragment(..., source=...)`.
 After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
 `ContextComponent` values. A Hook may replace the component list, but every
 replacement entry must remain a `ContextComponent`; provider conversion does

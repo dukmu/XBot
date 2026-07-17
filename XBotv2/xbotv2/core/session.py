@@ -78,6 +78,7 @@ class SessionRuntime:
         task["output"] = externalize_content(
             str(task.get("output") or ""),
             self.engine.state_store,
+            kind="subagent_output",
         )
         await self.enqueue_general({
             "source": "subagent",

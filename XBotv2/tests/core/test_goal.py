@@ -1,6 +1,7 @@
 """Behavior tests for the built-in Goal plugin."""
 
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
@@ -268,6 +269,14 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     request = llm.get_call_messages(0)
     runtime_input = request[-1]
     assert runtime_input.role == "user"
+    runtime_event = ET.fromstring(runtime_input.content)
+    assert runtime_event.tag == "runtime_event"
+    assert runtime_event.attrib == {
+        "event": "continue",
+        "kind": "general",
+        "source": "goal",
+    }
+    assert runtime_event.find("payload").attrib["encoding"] == "text"
     assert "not a human message" in runtime_input.content
     assert "## Session Goal" in runtime_input.content
     assert "finish the audit" in runtime_input.content

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -73,6 +74,13 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     )
     assert "Act as the workspace reviewer." in "\n".join(
         str(message.content) for message in llm.get_call_messages(1)
+    )
+    assert all(
+        str(messages[0].content).count("<core_instructions>") == 1
+        for messages in (
+            llm.get_call_messages(0),
+            llm.get_call_messages(1),
+        )
     )
 
     records = [
@@ -311,8 +319,8 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     assert resumed.config.agent_name == "builder"
     assert resumed.config.agent_role == "Build focused changes"
     assert resumed.tool_registry.get_all() == []
-    assert "Follow the builder workflow." in resumed.config.instructions
-    assert "Changed instructions" not in resumed.config.instructions
+    assert "Follow the builder workflow." in resumed.config.agent_instructions
+    assert "Changed instructions" not in resumed.config.agent_instructions
     assert [message.content for message in resumed.messages] == ["build", "built"]
     await resumed.close_session()
 
@@ -389,7 +397,7 @@ async def test_new_primary_thread_selects_builtin_default_agent(
     )
 
     assert engine.config.agent_name == "default"
-    assert "Default prompt." in engine.config.instructions
+    assert "Default prompt." in engine.config.agent_instructions
     assert engine.state_store.read_thread_metadata()["agent"] == "default"
     await engine.close_session()
 
@@ -668,8 +676,11 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
     })
     long_item = await runtime.mailbox.get()
     bounded = long_item.message["data"]["output"]
-    assert bounded.startswith("[Long context cached]")
-    assert "cache_path: session/artifacts/context/" in bounded
+    cached = ET.fromstring(bounded)
+    assert cached.attrib["kind"] == "subagent_output"
+    assert cached.findtext("cache_path").strip().startswith(
+        "session/artifacts/context/"
+    )
     assert list((state_store.artifacts_dir / "context").glob("*.txt"))
 
 
