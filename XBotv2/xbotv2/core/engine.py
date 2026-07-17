@@ -826,6 +826,7 @@ class Engine:
                 short_circuit=False,
             )
             user_input = str(turn_ctx.user_input or user_input)
+            user_input = self._runtime_event_content(user_input)
             self._turn_instruction.set(user_input)
             return _TurnStartResult(
                 user_input,
@@ -916,10 +917,19 @@ class Engine:
         turn_messages = list(self.messages)
         turn_instruction = self._turn_instruction.get()
         if turn_instruction:
+            mailbox_message = self._mailbox_message.get()
             turn_messages.append(Message(
-                role="system",
+                role=(
+                    "user"
+                    if mailbox_message is not None
+                    and mailbox_message.kind == "general"
+                    else "system"
+                ),
                 content=turn_instruction,
-                additional_kwargs={"xbotv2_source": "mailbox"},
+                additional_kwargs={
+                    "xbotv2_source": "runtime_mailbox",
+                    "xbotv2_runtime_input": True,
+                },
             ))
         context_kwargs = {
             "messages": turn_messages,
@@ -1602,10 +1612,19 @@ class Engine:
     def mailbox_content(message: MailboxMessage) -> str:
         if isinstance(message.message, str):
             return message.message
-        return "Mailbox message:\n" + json.dumps(
+        return json.dumps(
             message.message,
             ensure_ascii=False,
             sort_keys=True,
+        )
+
+    @staticmethod
+    def _runtime_event_content(payload: str) -> str:
+        return (
+            "[XBot runtime event; not a human message]\n"
+            "Continue the active work using this event. Do not ask the user to "
+            "repeat the preceding request.\n"
+            f"{payload}"
         )
 
     @staticmethod

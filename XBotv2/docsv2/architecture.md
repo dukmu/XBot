@@ -82,11 +82,13 @@ stages aggregate failures with `ExceptionGroup`.
 
 ### Runtime Mailbox (`xbotv2/core/mailbox.py`)
 
-Buffers `user_message` and `general` inputs while a session is alive. A session
-worker turns one message at a time into an Engine turn; user input has priority
-over runtime notifications. Queue contents are destroyed on disconnect and are
-not restored. Deliveries that started are appended to the session message
-journal for reconstruction and analysis, but are never requeued on resume.
+Buffers queued `user_message` and `general` inputs while a session is alive.
+Idle human input enters Engine directly; only submissions made behind an active
+turn or existing queue use the mailbox. A session worker turns one queued item
+at a time into an Engine turn, with user input ahead of runtime notifications.
+Queue contents are destroyed on disconnect and are not restored. Deliveries
+that started are appended to the session message journal for reconstruction and
+analysis, but are never requeued on resume.
 
 ### LLM Provider (`xbotv2/llm/`)
 

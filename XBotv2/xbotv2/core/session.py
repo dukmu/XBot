@@ -112,6 +112,20 @@ class SessionRuntime:
         content: str,
         request_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
+        if not self.turn_lock.locked() and self.mailbox.size == 0:
+            try:
+                async for event in run_turn_stream(
+                    self,
+                    content=content,
+                    request_id=request_id,
+                ):
+                    yield event
+                return
+            except SessionBusy:
+                # Another request acquired the turn between the idle check and
+                # entering run_turn_stream; preserve ordering through mailbox.
+                pass
+
         item, events, queued, position = await self.enqueue_user_message(
             content, request_id
         )

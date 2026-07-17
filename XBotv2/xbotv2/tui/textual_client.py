@@ -313,14 +313,16 @@ class XBotTextualApp(App[None]):
             return
 
         self._remember_input(text)
-        self.state.append_message("user", text)
-        await self._render_new_transcript_entries()
+        append_on_start = self.state.turn_active or bool(self._pending_messages)
+        if not append_on_start:
+            self.state.append_message("user", text)
+            await self._render_new_transcript_entries()
         self._request_sequence += 1
         sequence = self._request_sequence
         self._pending_messages[sequence] = text
         self._refresh_all()
         self.run_worker(
-            self._collect_queued_message(sequence, text),
+            self._collect_queued_message(sequence, text, append_on_start),
             exclusive=False,
             name=f"turn-{sequence}",
         )
@@ -592,9 +594,17 @@ class XBotTextualApp(App[None]):
             ),
         )
 
-    async def _collect_queued_message(self, sequence: int, text: str) -> None:
+    async def _collect_queued_message(
+        self,
+        sequence: int,
+        text: str,
+        append_on_start: bool,
+    ) -> None:
         try:
-            await self._collect_response(text)
+            await self._collect_response(
+                text,
+                queued_text=text if append_on_start else None,
+            )
         finally:
             self._pending_messages.pop(sequence, None)
             self._refresh_all()
@@ -611,11 +621,20 @@ class XBotTextualApp(App[None]):
             if self.is_mounted:
                 self._record_error(exc)
 
-    async def _collect_response(self, text: str) -> None:
+    async def _collect_response(
+        self,
+        text: str,
+        *,
+        queued_text: str | None = None,
+    ) -> None:
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
             async for event in self.session.send_message(text):
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
+                if queued_text is not None and event.get("type") == "turn_started":
+                    self.state.append_message("user", queued_text)
+                    queued_text = None
+                    await self._render_new_transcript_entries()
                 self.state.apply_event(event)
                 await self._handle_stream_event(event)
                 await self._start_interaction_response(event)

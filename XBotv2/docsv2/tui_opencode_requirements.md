@@ -97,11 +97,12 @@ Required behavior:
 - `Escape` clears input when idle and interrupts the active turn when running.
 - `PageUp` and `PageDown` scroll the main transcript while the composer keeps
   keyboard focus.
-- Submitted text appears immediately in the transcript before server response.
+- Idle submitted text appears immediately in the transcript.
 - Submissions during an active turn are queued and drained FIFO.
 - Queued follow-ups are visible in a compact Queue control above the composer.
-  It shows ordered message summaries and disappears when the requests begin or
-  finish; the server mailbox remains authoritative for delivery.
+  They enter the transcript only when their server turn starts. The control
+  shows ordered message summaries and disappears as requests begin or finish;
+  the server mailbox remains authoritative for delivery.
 - During `user_input_required`, typed text is routed to the live interaction
   answer queue instead of starting a new user turn.
 - During `permission_request`, typed approval shortcuts are routed to the

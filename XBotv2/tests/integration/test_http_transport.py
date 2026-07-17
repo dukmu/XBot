@@ -1298,6 +1298,10 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         llm_override=llm,
     )
     events = ctx.attach_event_stream()
+    ctx.engine.messages.extend([
+        Message(role="user", content="an earlier human request"),
+        Message(role="assistant", content="the earlier request is complete"),
+    ])
 
     item = await ctx.enqueue_general({
         "source": "task",
@@ -1320,12 +1324,13 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     assert next(
         event for event in received if event and event["type"] == "assistant_message"
     )["data"]["content"] == "background result"
-    assert [message.role for message in ctx.engine.messages] == ["assistant"]
-    assert any(
-        message.role == "system"
-        and "background command completed" in message.content.lower()
-        for message in llm.get_call_messages(0)
-    )
+    assert [message.role for message in ctx.engine.messages] == [
+        "user", "assistant", "assistant",
+    ]
+    runtime_input = llm.get_call_messages(0)[-1]
+    assert runtime_input.role == "user"
+    assert "not a human message" in runtime_input.content
+    assert "background command completed" in runtime_input.content.lower()
     assert item.kind == "general"
 
 
@@ -1374,11 +1379,10 @@ async def test_background_task_updates_and_completion_use_session_stream(
         for event in received
     )
     assert [message.role for message in ctx.engine.messages] == ["assistant"]
-    assert any(
-        message.role == "system"
-        and "background task task-1 completed" in message.content.lower()
-        for message in llm.get_call_messages(0)
-    )
+    runtime_input = llm.get_call_messages(0)[-1]
+    assert runtime_input.role == "user"
+    assert "not a human message" in runtime_input.content
+    assert "background task task-1 completed" in runtime_input.content.lower()
 
 
 @pytest.mark.asyncio

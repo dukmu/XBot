@@ -266,9 +266,12 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     ]
 
     request = llm.get_call_messages(0)
-    assert "## Session Goal" in request[0].content
-    assert "finish the audit" in request[0].content
-    assert all(message.role != "user" for message in request)
+    runtime_input = request[-1]
+    assert runtime_input.role == "user"
+    assert "not a human message" in runtime_input.content
+    assert "## Session Goal" in runtime_input.content
+    assert "finish the audit" in runtime_input.content
+    assert all(message.role != "user" for message in request[:-1])
     assert all("Session Goal" not in message.content for message in engine.messages)
     records = [
         yaml.safe_load(line)

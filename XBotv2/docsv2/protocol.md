@@ -92,17 +92,20 @@ state the next provider request will use. Command-specific values such as
 
 Each connected session owns an in-memory mailbox. `user_message` and `general`
 are its only message kinds. User messages have priority, and FIFO order is
-preserved within each kind. A message submitted while another turn is active
-receives `message_queued`; the server, rather than the TUI, controls delivery.
+preserved within each kind. Idle human input bypasses the mailbox. A message
+submitted behind an active turn or existing queue receives `message_queued`;
+the server, rather than the TUI, controls delivery.
 
 `general` messages carry source and metadata inside their payload. When the
-session becomes idle, Core builds one non-persisted turn instruction from the
-payload and the owning plugin's current state. They cover Goal continuation and
-future runtime notifications without pretending to be human messages. Their output
-continues on the originating message stream when possible, otherwise on
-`GET /sessions/{id}/events`. The session event stream remains open across
-separate `general` turns and closes only when the client disconnects or the
-session ends.
+session becomes idle, Core builds one explicitly labelled, non-persisted runtime
+input from the payload and the owning plugin's current state. The provider sees
+a transient user-role envelope because supported chat protocols need a final
+input to trigger generation, but its content and internal metadata state that it
+is not human input. It never enters conversation history as a user message.
+These turns cover Goal continuation and runtime notifications. Their output
+uses `GET /sessions/{id}/events`; queued human turns keep their originating
+message stream. The session event stream remains open across separate `general`
+turns and closes only when the client disconnects or the session ends.
 
 The mailbox queue is not persistent state. Closing or losing the client
 connection drops queued messages, and `resume` starts with an empty mailbox.
@@ -112,8 +115,9 @@ back into a queued item or provider Message. The separate append-only
 `logs/mailbox.jsonl` file remains lower-level queue diagnostic evidence.
 
 XBot conversation history uses the provider-neutral roles `system`, `user`,
-`assistant`, and `tool`. Only human input uses `user`; runtime source is carried
-as internal metadata. Provider adapters own wire conversion: OpenAI-compatible
+`assistant`, and `tool`. Only human input is persisted with `user`; transient
+runtime input is source-labelled and excluded from history. Provider adapters
+own wire conversion: OpenAI-compatible
 requests receive one leading instruction message, while Anthropic receives the
 same instruction text through its top-level `system` field and groups adjacent
 Tool results into one user content block. OpenAI's `developer` role is a

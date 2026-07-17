@@ -1,6 +1,7 @@
 """Core live-session lifecycle tests independent of HTTP."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -29,7 +30,7 @@ class FakeEngine:
     async def run_turn(self, content, *, request_id="", mailbox_message=None):
         del content, request_id
         yield {"type": "turn_started", "data": {"turn": 1}}
-        if mailbox_message.kind == "user_message":
+        if mailbox_message is None or mailbox_message.kind == "user_message":
             await self.enqueue_mailbox({"source": "test", "event": "continue"})
             reply = "first"
         else:
@@ -54,7 +55,9 @@ def runtime(tmp_path) -> SessionRuntime:
 
 
 @pytest.mark.asyncio
-async def test_stream_message_drains_immediate_general_continuation(tmp_path):
+async def test_idle_user_turn_bypasses_mailbox_and_general_uses_session_events(
+    tmp_path,
+):
     session = runtime(tmp_path)
 
     events = [event async for event in session.stream_message("start", "request")]
@@ -63,7 +66,32 @@ async def test_stream_message_drains_immediate_general_continuation(tmp_path):
         event["data"]["content"]
         for event in events
         if event["type"] == "assistant_message"
-    ] == ["first", "continued"]
+    ] == ["first"]
+    assert session.mailbox.size == 1
+    mailbox_log = session.paths.session("session").thread("agent").mailbox_log
+    records = [
+        json.loads(line)
+        for line in mailbox_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert {
+        record["item"]["kind"]
+        for record in records
+        if record["event"] == "enqueued"
+    } == {"general"}
+
+    session_events = session.attach_event_stream()
+    continued = []
+    while True:
+        event = await asyncio.wait_for(session_events.get(), timeout=1)
+        assert event is not None
+        continued.append(event)
+        if event["type"] == "turn_finished":
+            break
+    assert [
+        event["data"]["content"]
+        for event in continued
+        if event["type"] == "assistant_message"
+    ] == ["continued"]
     await session.close()
     assert session.engine.closed is True
 
