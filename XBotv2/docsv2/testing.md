@@ -92,8 +92,8 @@ and does not leave an interaction waiter running.
 ## Running Specific Tests
 
 ```bash
-# Core tests, compilation, and diff checks
-python XBotv2/scripts/check_iteration.py
+# Core tests
+pytest XBotv2/tests/core/ -q
 
 # Core engine tests
 pytest XBotv2/tests/core/test_engine.py -v

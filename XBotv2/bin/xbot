@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Installed packages place this script beside the Python console entrypoint.
+if [[ -x "$script_dir/xbotv2" ]]; then
+    exec "$script_dir/xbotv2" "$@"
+fi
+
+repo_root="$(cd -- "$script_dir/../.." && pwd)"
 
 export XBOT_DATA_DIR="${XBOT_DATA_DIR:-$repo_root/XBotv2/data}"
 export XBOT_PROVIDER="${XBOT_PROVIDER:-default}"

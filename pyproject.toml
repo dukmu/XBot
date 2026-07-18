@@ -49,5 +49,9 @@ where = ["XBotv2"]
 include = ["xbotv2*", "builtin_plugins*"]
 namespaces = true
 
+[tool.setuptools]
+script-files = ["XBotv2/bin/xbot"]
+
 [tool.setuptools.package-data]
 "builtin_plugins" = ["**/plugin.yaml"]
+"xbotv2" = ["web_dist/*", "web_dist/**/*"]

@@ -78,7 +78,7 @@ def test_xbot_environment_defaults_override_legacy_prefix(monkeypatch):
 
 
 def test_bash_entrypoint_has_valid_syntax():
-    entrypoint = Path(__file__).parents[3] / "xbot"
+    entrypoint = Path(__file__).parents[2] / "bin" / "xbot"
 
     subprocess.run(["bash", "-n", str(entrypoint)], check=True)
 

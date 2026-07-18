@@ -31,13 +31,14 @@ local URL:
 XBOT_API_URL=http://127.0.0.1:4100 npm run dev
 ```
 
-From the repository root, `./xbot web` serves the compiled client with Python,
-starts the API over an internal Unix socket, and opens the workbench. Runtime
-Web mode does not invoke npm. Use `--server http://127.0.0.1:4096` to connect to
-an existing API server or `--no-open` when no desktop browser is available.
-The browser always uses same-origin `/api`; the Python Web process performs the
-HTTP-to-UDS or HTTP-to-HTTP proxying. `--server` and `--uds` are mutually
-exclusive, and the generated socket is removed when Web mode exits.
+From the repository root, `./XBotv2/bin/xbot web` serves the compiled client
+with Python, starts the API over an internal Unix socket, and opens the
+workbench. Runtime Web mode does not invoke npm. Use
+`--server http://127.0.0.1:4096` to connect to an existing API server or
+`--no-open` when no desktop browser is available. The browser always uses
+same-origin `/api`; the Python Web process performs the HTTP-to-UDS or
+HTTP-to-HTTP proxying. `--server` and `--uds` are mutually exclusive, and the
+generated socket is removed when Web mode exits.
 
 ## Production
 
