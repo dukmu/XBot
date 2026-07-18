@@ -8,6 +8,7 @@ import pytest
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.builtin_tools.shell import shell
+from xbotv2.core.builtin_tools.interaction import request_permission
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.llm.mock import MockLLM
@@ -1683,6 +1684,76 @@ class TestEngineHooks:
         assert state["pending_interactions"] == []
 
     @pytest.mark.asyncio
+    async def test_explicit_permission_allows_one_matching_tool_call(
+        self, state_store, temp_workspace
+    ):
+        arguments = {"message": "approved"}
+        llm = MockLLM(responses=[
+            {
+                "tool_calls": [{
+                    "name": "request_permission",
+                    "args": {
+                        "tool": "echo",
+                        "params": {"message": "approved"},
+                        "reason": "Echo the requested value.",
+                    },
+                    "id": "permission-1",
+                }],
+            },
+            {
+                "tool_calls": [{
+                    "name": "echo",
+                    "args": arguments,
+                    "id": "echo-1",
+                }],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(request_permission, sandbox_mode="host")
+
+        async def approved_echo(message: str) -> str:
+            return f"Echo: {message}"
+
+        registry.register(
+            Tool.from_function(approved_echo, name="echo"),
+            sandbox_mode="host",
+        )
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        engine.permission_system = PermissionSystem({
+            "allow": [{"tool": "request_permission"}],
+            "ask": [{"tool": "echo"}],
+        })
+        requests = []
+
+        async def approve(event, **_kwargs):
+            requests.append(event["data"])
+            return {
+                "status": "answered",
+                "decision": "allow",
+                "scope": "once",
+            }
+
+        engine.set_client_event_sink(approve)
+        events = [event async for event in engine.run_turn("echo it")]
+
+        assert [request["source"] for request in requests] == [
+            "request_permission"
+        ]
+        assert requests[0]["permission"] == {
+            "tool": "echo",
+            "params": {"message": "approved"},
+        }
+        assert "tool_call" not in requests[0]
+        result = next(
+            event for event in events
+            if event["type"] == "tool_result"
+            and event["data"]["tool_call_id"] == "echo-1"
+        )
+        assert result["data"]["status"] == "success"
+        assert engine.permission_system.check("echo", arguments) == "ask"
+
+    @pytest.mark.asyncio
     async def test_disconnect_during_ask_user_closes_tool_call_history(
         self, state_store, temp_workspace
     ):
@@ -2295,28 +2366,3 @@ async def test_additional_kwargs_merged_across_streaming_chunks(state_store, tem
     assistant = [e for e in events if e["type"] == "assistant_message"]
     assert len(assistant) == 1
     assert assistant[0]["data"]["content"] == "hello"
-
-
-# ------------------------------------------------------------------
-# Permission persistence (session-scope)
-# ------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_persist_permission_if_session_scope_writes_to_disk(state_store, temp_workspace):
-    """Session-scope permission decisions are persisted to disk via persist_permission_decision."""
-    llm = MockLLM(responses=[{"content": "ok"}])
-    registry = ToolRegistry()
-    engine = make_engine(llm, registry, state_store, temp_workspace)
-
-    client_event = {
-        "type": "permission_request",
-        "data": {
-            "request_id": "perm-persist",
-            "tool_call": {"name": "shell", "args": {}},
-        },
-    }
-    result = {"scope": "session", "decision": "allow", "status": "answered"}
-
-    engine.persist_permission_if_session_scope(client_event, result)
-    assert True

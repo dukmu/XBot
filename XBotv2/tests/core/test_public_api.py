@@ -25,6 +25,7 @@ from xbotv2.api import (
     prompt_element,
     RuntimePaths,
     RuntimePluginContext,
+    RuntimeVariables,
     SessionPaths,
     ToolCall,
     ToolRegistrationOptions,
@@ -72,6 +73,7 @@ def test_public_api_exports_core_extension_types():
     assert CommandResult("done").status == "ok"
     assert RuntimePaths is not None
     assert RuntimePluginContext is not None
+    assert RuntimeVariables is not None
     assert PromptFragmentStage is not None
     assert hasattr(RuntimePluginContext, "register_tool")
     assert hasattr(RuntimePluginContext, "unregister_tool")
@@ -87,6 +89,33 @@ def test_public_api_exports_core_extension_types():
         stage=HookStage.ON_TURN_START,
         request_id="request-1",
     ).request_id == "request-1"
+
+
+def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
+    runtime = RuntimePaths.from_data_dir(tmp_path / "data")
+    thread = runtime.session("session-1").thread("agent")
+    variables = RuntimeVariables.for_thread(runtime, tmp_path / "workspace", thread)
+
+    assert variables["tool_results"] == str(
+        thread.artifacts_dir / "tool_results"
+    )
+    assert variables.expand("Read ${tool_results}/result.txt") == (
+        f"Read {thread.artifacts_dir}/tool_results/result.txt"
+    )
+    assert variables.expand_markdown(
+        "Literal ${workspace}.\n\n```var\n${workspace}\n```"
+    ) == f"Literal ${{workspace}}.\n\n{tmp_path / 'workspace'}"
+    assert re.fullmatch(
+        variables.expand_regex("${workspace}/generated/.*"),
+        str(tmp_path / "workspace" / "generated" / "result.txt"),
+    )
+    with pytest.raises(ValueError, match="Unknown runtime variable"):
+        variables.expand("${UNKNOWN}")
+    assert variables.expand_markdown("```var\n${workspace}/src\n```") == (
+        "```var\n${workspace}/src\n```"
+    )
+    with pytest.raises(TypeError):
+        variables["workspace"] = "/changed"  # type: ignore[index]
 
 
 def test_tool_from_function_preserves_docstring_and_exports_json_schema():

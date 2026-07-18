@@ -42,6 +42,7 @@ from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 from xbotv2.api.context import ContextComponent
 from xbotv2.api.prompts import prompt_container, prompt_element
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.persistence.store import message_to_dict
 
 
@@ -204,6 +205,7 @@ class Engine:
         context_window: int = 0,
         llm_is_override: bool = False,
         user_context: Any | None = None,
+        runtime_variables: RuntimeVariables | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -227,6 +229,11 @@ class Engine:
         )
         self.llm_is_override = llm_is_override
         self.user_context = user_context
+        self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
+            state_store.paths.runtime,
+            self.workspace_root,
+            state_store.paths,
+        )
 
         self.messages: list[Message] = []
         self._persisted_messages: list[dict[str, Any]] = []
@@ -998,6 +1005,12 @@ class Engine:
             "sandbox_summary": (
                 self.sandbox_policy.describe() if self.sandbox_policy else ""
             ),
+            "runtime_paths": {
+                "workspace": self.runtime_variables.get("workspace", "."),
+                "session": "session/ (read-only)",
+                "artifacts": "session/artifacts/ (read-only)",
+                "tool_results": "session/artifacts/tool_results/ (read-only)",
+            },
             "system_notice": self._agent_catalog_notice(),
             "turn_count": self.turn_count,
         }
@@ -1550,15 +1563,33 @@ class Engine:
         return await self._handle_client_interaction(
             client_event, self.permission_waiter, ("decision", "scope"),
             timeout_seconds=timeout_seconds,
-            on_sink_result=lambda r: self.persist_permission_if_session_scope(client_event, r),
+            on_sink_result=lambda result: self.record_permission_decision(
+                client_event, result
+            ),
         )
 
-    def persist_permission_if_session_scope(
+    def record_permission_decision(
         self,
         client_event: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        if str(result.get("scope") or "once") != "session":
+        decision = str(result.get("decision") or "")
+        if decision not in {"allow", "deny"}:
+            return
+        data = client_event.get("data") or {}
+        scope = str(result.get("scope") or "once")
+        if (
+            decision == "allow"
+            and scope == "once"
+            and data.get("source") == "request_permission"
+        ):
+            permission = dict(data.get("permission") or {})
+            self.permission_system.grant_once(
+                str(permission.get("tool") or ""),
+                dict(permission.get("params") or {}),
+            )
+            return
+        if scope != "session":
             return
         try:
             from pathlib import Path

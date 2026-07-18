@@ -30,7 +30,6 @@ async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeyp
     assert set(tools) == {"shell", "list_tasks", "stop_task"}
     background = tools["shell"].parameters["properties"]["background"]
     assert background == {"type": "boolean"}
-    assert "Start a session-owned task" in tools["shell"].description
 
     started = await manager.shell(
         "printf background-output", background=True

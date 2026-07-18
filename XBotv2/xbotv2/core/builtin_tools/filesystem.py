@@ -1,197 +1,115 @@
-"""Filesystem tools — read, write, and list files. Use session sandbox capabilities when available."""
+"""Bounded, structured filesystem tools."""
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Literal
 
-from xbotv2.api.tools import ToolResult
-from xbotv2.api.tools import Tool
-
-WriteMode = Literal[
-    "overwrite", "append", "prepend", "insert_line",
-    "replace_lines", "regex_replace", "apply_patch",
-]
+from xbotv2.api.tools import Tool, ToolResult
+from xbotv2.tools.filesystem_ops import PATH_ACCESS, execute
 
 
-async def read_file(path: str, offset: int = 0, limit: int = 2000, *, sandbox=None) -> ToolResult:
-    """Read a bounded range of lines from one UTF-8 text file.
-
-    Use this before editing an existing file and to inspect cached tool/context
-    artifacts. Paths are workspace-relative unless they use the read-only
-    ``session/`` mount. The result includes content, resolved path, file size,
-    line count, and flags indicating omitted lines.
-
-    Args:
-        path: File path to read. It must identify a file, not a directory.
-        offset: Zero-based first line to return. Use it to continue a bounded read.
-        limit: Maximum lines to return. Values <= 0 read all remaining lines and
-            should only be used after checking that the file is small.
-    """
-    if sandbox is not None and sandbox.enabled:
-        return _tool_result_from_json(await sandbox.read_file(path, offset=offset, limit=limit))
-
-    p = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
-    if not p.exists():
-        return _json_error("file_not_found", f"File not found: {path}", path=path)
-    if not p.is_file():
-        return _json_error("not_a_file", f"Not a file: {path}", path=path)
-    try:
-        text = p.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return _json_error("not_text", f"File is not valid UTF-8 text: {path}", path=path)
-    except Exception as exc:
-        return _json_error("read_failed", f"Error reading {path}: {exc}", path=path)
-
-    lines = text.splitlines()
-    start = max(0, offset)
-    end = len(lines) if limit <= 0 else min(len(lines), start + limit)
-    selected = lines[start:end]
-    stat = p.stat()
-    return _json_ok({
-        "path": str(p), "resolved_path": str(p.resolve()), "kind": "file",
-        "size_bytes": stat.st_size, "mtime": stat.st_mtime, "line_count": len(lines),
-        "offset": start, "limit": limit, "returned_lines": len(selected),
-        "truncated_before": start > 0, "truncated_after": end < len(lines),
-        "content": "\n".join(selected),
-    })
-
-
-async def write_file(
-    path: str, content: str = "", mode: WriteMode = "overwrite",
-    line: int | None = None, start_line: int | None = None, end_line: int | None = None,
-    pattern: str | None = None, replacement: str = "",
-    *, sandbox=None,
+async def read_file(
+    path: str,
+    offset: int = 0,
+    limit: int = 2000,
+    char_offset: int = 0,
+    max_chars: int = 12000,
+    line_numbers: bool = False,
+    *,
+    sandbox=None,
 ) -> ToolResult:
-    """Create or edit one UTF-8 text file using an explicit write mode.
+    """Read a bounded UTF-8 text range or inspect a non-text file.
 
-    Read an existing file before changing it. Prefer ``apply_patch`` or a narrow
-    line/regex replacement for source edits; use ``append`` for incremental
-    documents and ``overwrite`` only when replacing the complete file is
-    intended. The result reports the resolved path, final size, line count,
-    whether content changed, and mode-specific metadata.
+    Text reads are limited by both line count and character count. If the
+    result is truncated, continue from the returned next offsets before
+    relying on omitted content. Non-UTF-8 files return metadata instead of
+    binary content, including MIME type, size, SHA-256, and recognized image
+    dimensions. The ``session/`` virtual path is read-only.
 
     Args:
-        path: Destination file path. Relative paths resolve inside the workspace.
-        content: Text to write. For apply_patch this is a unified diff.
-        mode: Operation: overwrite replaces the whole file; append/prepend add
-            text; insert_line inserts before a one-based line; replace_lines
-            replaces an inclusive one-based range; regex_replace applies pattern;
-            apply_patch applies unified-diff hunks.
-        line: One-based insertion line required by insert_line.
-        start_line: First one-based line required by replace_lines.
-        end_line: Last inclusive one-based line required by replace_lines.
-        pattern: Python regular expression required by regex_replace.
-        replacement: Replacement text used by regex_replace.
+        path: Workspace-relative, absolute approved, or ``session/`` file path.
+        offset: Zero-based first line.
+        limit: Maximum lines; must be at least one.
+        char_offset: Character offset within the first selected line.
+        max_chars: Maximum raw characters returned; must be at least one.
+        line_numbers: Prefix displayed text with one-based line numbers.
     """
-    if sandbox is not None and sandbox.enabled:
-        return await _sandboxed_write(sandbox, path, content, mode, line, start_line, end_line, pattern, replacement)
-
-    p = Path(path)
-    if sandbox is not None and not p.is_absolute():
-        p = Path(sandbox.workspace_root) / p
-    before = _read_existing_text(p)
-    if before["error"]:
-        return before["error"]
-    old_text = before["text"]
-    try:
-        new_text, edit_meta = _apply_write_mode(
-            old_text=old_text, content=content, mode=mode,
-            line=line, start_line=start_line, end_line=end_line,
-            pattern=pattern, replacement=replacement,
-        )
-    except ValueError as exc:
-        return _json_error("invalid_write", str(exc), path=path, mode=mode)
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(new_text, encoding="utf-8")
-    except Exception as exc:
-        return _json_error("write_failed", f"Error writing {path}: {exc}", path=path)
-    stat = p.stat()
-    return _json_ok({
-        "path": str(p), "resolved_path": str(p.resolve()), "mode": mode,
-        "bytes_written": len(new_text.encode("utf-8")), "size_bytes": stat.st_size,
-        "mtime": stat.st_mtime, "line_count": len(new_text.splitlines()),
-        "changed": old_text != new_text, **edit_meta,
-    })
-
-
-async def _sandboxed_write(
-    sandbox,
-    path,
-    content,
-    mode,
-    line,
-    start_line,
-    end_line,
-    pattern,
-    replacement,
-):
-    read_result = _parse_sandbox_result(
-        await sandbox.read_file(path, offset=0, limit=0)
+    data = await _operation(
+        "read",
+        {
+            "path": path,
+            "offset": offset,
+            "limit": limit,
+            "char_offset": char_offset,
+            "max_chars": max_chars,
+        },
+        sandbox,
     )
-    if read_result.get("ok"):
-        old_text = str(read_result.get("content") or "")
-    elif (read_result.get("error") or {}).get("code") == "file_not_found":
-        old_text = ""
-    else:
-        return _tool_result_from_data(read_result)
-    try:
-        new_text, edit_meta = _apply_write_mode(
-            old_text=old_text, content=content, mode=mode,
-            line=line, start_line=start_line, end_line=end_line,
-            pattern=pattern, replacement=replacement,
+    if not data.get("ok"):
+        return _failure(data)
+    content = str(data.pop("content", ""))
+    data["requested_path"] = path
+    if not data.get("is_text", True):
+        image = data.get("image") or {}
+        dimensions = (
+            f", {image.get('width')}x{image.get('height')} {image.get('format')}"
+            if image else ""
         )
-    except ValueError as exc:
-        return _json_error("invalid_write", str(exc), path=path, mode=mode)
-    write_result = _parse_sandbox_result(await sandbox.write_file(path, new_text))
-    if write_result.get("ok"):
-        write_result.update(
-            mode=mode,
-            changed=old_text != new_text,
-            **edit_meta,
+        content = (
+            f"Non-text file: {path} ({data.get('media_type')}, "
+            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})"
         )
-    return _tool_result_from_data(write_result)
+    elif line_numbers:
+        content = _with_line_numbers(content, offset + 1)
+    return ToolResult.success(content, data=data)
 
 
-async def list_files(path: str = ".", recursive: bool = False, max_entries: int = 500, *, sandbox=None) -> ToolResult:
-    """List directory entries with bounded structured metadata.
+async def stat_path(path: str, *, sandbox=None) -> ToolResult:
+    """Return metadata for a file, directory, or symbolic link.
 
-    Use this to inspect directory shape before selecting files. It returns entry
-    names, relative paths, kinds, sizes, and truncation metadata; it does not read
-    file contents.
+    Regular files include size, mtime, SHA-256, UTF-8 status, inferred MIME
+    type, extension, and recognized image dimensions. No file content is
+    returned.
 
     Args:
-        path: Directory path. Relative paths resolve inside the workspace;
-            ``session/`` exposes the current session state read-only.
-        recursive: When true, include descendants instead of direct children only.
-        max_entries: Maximum entries returned. Values <= 0 are unbounded and
-            should only be used for a directory already known to be small.
+        path: Workspace-relative, absolute approved, or ``session/`` path.
     """
-    if sandbox is not None and sandbox.enabled:
-        return _tool_result_from_json(
-            await sandbox.list_dir(path, recursive=recursive, max_entries=max_entries)
-        )
-    p = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
-    if not p.exists():
-        return _json_error("path_not_found", f"Path not found: {path}", path=path)
-    if not p.is_dir():
-        return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
-    try:
-        it = p.rglob("*") if recursive else p.iterdir()
-        entries = sorted(it, key=lambda x: (not x.is_dir(), str(x)))
-        limited = entries[:max_entries] if max_entries > 0 else entries
-        return _json_ok({
-            "path": str(p), "resolved_path": str(p.resolve()), "kind": "directory",
-            "recursive": recursive, "entry_count": len(entries),
-            "returned_entries": len(limited),
-            "truncated": max_entries > 0 and len(entries) > max_entries,
-            "entries": [_entry_metadata(e, root=p) for e in limited],
-        })
-    except Exception as exc:
-        return _json_error("list_failed", f"Error listing {path}: {exc}", path=path)
+    return await _structured_operation("stat", {"path": path}, sandbox)
+
+
+async def list_files(
+    path: str = ".",
+    recursive: bool = False,
+    max_entries: int = 500,
+    include_hidden: bool = True,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """List directory entries with bounded metadata.
+
+    Results distinguish files, directories, and symbolic links. Recursive
+    traversal does not follow symlinks and stops once ``max_entries`` is
+    reached instead of scanning the complete tree.
+
+    Args:
+        path: Workspace-relative, absolute approved, or ``session/`` directory.
+        recursive: Include descendants when true.
+        max_entries: Maximum returned entries; must be at least one.
+        include_hidden: Include names beginning with a dot.
+    """
+    data = await _operation(
+        "list",
+        {
+            "path": path,
+            "recursive": recursive,
+            "max_entries": max_entries,
+            "include_hidden": include_hidden,
+        },
+        sandbox,
+    )
+    return _data_result(data, _entry_lines(data, "entries"))
 
 
 async def search_text(
@@ -199,270 +117,410 @@ async def search_text(
     path: str = ".",
     glob: str | None = None,
     max_results: int = 200,
+    case_sensitive: bool = True,
+    literal: bool = False,
+    include_hidden: bool = False,
+    exclude: list[str] | None = None,
+    max_line_chars: int = 1000,
     *,
     sandbox=None,
 ) -> ToolResult:
-    """Search UTF-8 files recursively with a Python regular expression.
+    """Search UTF-8 files with bounded structured matches.
 
-    Use this to locate text and line numbers before reading or patching files.
-    Binary and invalid UTF-8 files are skipped. Results use
-    ``relative_path:line_number:text`` and include total/truncation metadata.
+    Traversal stops at ``max_results``, skips symlinks and common dependency
+    directories by default, and ignores non-UTF-8 files. Matches contain path,
+    one-based line and column, clipped text, and a clipping flag.
 
     Args:
-        pattern: Non-empty Python regular expression matched against each line.
+        pattern: Regular expression, or literal text when ``literal`` is true.
         path: Root directory to search recursively.
-        glob: Optional glob applied to each path relative to the search root.
-        max_results: Maximum matching lines returned; <= 0 is unbounded.
+        glob: Optional glob matched against relative paths or basenames.
+        max_results: Maximum matches; must be at least one.
+        case_sensitive: Use case-sensitive matching.
+        literal: Escape ``pattern`` instead of interpreting it as regex.
+        include_hidden: Search dotfiles and dot-directories.
+        exclude: Directory or file names to skip; defaults to common generated directories.
+        max_line_chars: Maximum text retained for each match.
     """
-    if not pattern:
-        return _json_error("invalid_pattern", "pattern must be non-empty", path=path)
-    if sandbox is not None and sandbox.enabled:
-        return _tool_result_from_json(
-            await sandbox.search_text(pattern, path, glob, max_results)
-        )
-    root = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
-    if not root.is_dir():
-        return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
-    try:
-        expression = re.compile(pattern)
-    except re.error as exc:
-        return _json_error("invalid_pattern", str(exc), path=path)
-    import fnmatch
-
-    matches: list[str] = []
-    for candidate in root.rglob("*"):
-        if not candidate.is_file():
-            continue
-        relative = str(candidate.relative_to(root))
-        if glob and not fnmatch.fnmatch(relative, glob):
-            continue
-        try:
-            lines = candidate.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        matches.extend(
-            f"{relative}:{number}:{line}"
-            for number, line in enumerate(lines, 1)
-            if expression.search(line)
-        )
-    limited = matches[:max_results] if max_results > 0 else matches
-    return _json_ok({
-        "path": path,
-        "pattern": pattern,
-        "matches": limited,
-        "match_count": len(matches),
-        "returned_matches": len(limited),
-        "truncated": max_results > 0 and len(matches) > max_results,
-    })
+    data = await _operation(
+        "search",
+        {
+            "pattern": pattern,
+            "path": path,
+            "glob": glob,
+            "max_results": max_results,
+            "case_sensitive": case_sensitive,
+            "literal": literal,
+            "include_hidden": include_hidden,
+            "exclude": exclude,
+            "max_line_chars": max_line_chars,
+        },
+        sandbox,
+    )
+    lines = [
+        f"{item['path']}:{item['line']}:{item['column']}:{item['text']}"
+        for item in data.get("matches", [])
+    ]
+    return _data_result(data, "\n".join(lines))
 
 
 async def find_files(
     pattern: str = "*",
     path: str = ".",
     max_results: int = 500,
+    kind: Literal["file", "directory", "any"] = "file",
+    include_hidden: bool = False,
+    exclude: list[str] | None = None,
     *,
     sandbox=None,
 ) -> ToolResult:
-    """Find file paths recursively by glob without reading file content.
+    """Find paths recursively with bounded glob matching.
 
-    Use this when filenames or extensions are known but locations are not. The
-    result contains paths relative to the requested root plus count and
-    truncation metadata.
+    Matching is consistent in host and sandbox modes, symlinks are not
+    followed, and traversal stops at ``max_results``.
 
     Args:
-        pattern: Glob pattern such as ``*.py`` or ``**/test_*.py``.
-        path: Root directory to search recursively.
-        max_results: Maximum paths returned; <= 0 is unbounded.
+        pattern: Glob matched against relative paths and, without a slash, basenames.
+        path: Root directory.
+        max_results: Maximum paths; must be at least one.
+        kind: Return files, directories, or both.
+        include_hidden: Include dotfiles and dot-directories.
+        exclude: Names to skip; defaults to common generated directories.
     """
+    data = await _operation(
+        "find",
+        {
+            "pattern": pattern,
+            "path": path,
+            "max_results": max_results,
+            "kind": kind,
+            "include_hidden": include_hidden,
+            "exclude": exclude,
+        },
+        sandbox,
+    )
+    return _data_result(data, "\n".join(data.get("files", [])))
+
+
+async def write_file(
+    path: str,
+    content: str,
+    expected_sha256: str | None = None,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Atomically create or completely replace one UTF-8 text file.
+
+    ``content`` is the entire final file, never a fragment or patch. For an
+    existing file, read it first and pass the returned hash. Use
+    ``filesystem_edit`` for a localized exact replacement and
+    ``filesystem_patch`` for a unified diff. After writing, inspect the result
+    and reread the relevant range before reporting the change as verified.
+    Existing non-UTF-8 files are rejected. Parent directories are created.
+
+    Args:
+        path: Destination path relative to the workspace unless explicitly approved.
+        content: Complete UTF-8 file content.
+        expected_sha256: Optional hash that the current file must match.
+    """
+    return await _structured_operation(
+        "write",
+        {"path": path, "content": content, "expected_sha256": expected_sha256},
+        sandbox,
+    )
+
+
+async def edit_file(
+    path: str,
+    old_text: str,
+    new_text: str,
+    replace_all: bool = False,
+    expected_sha256: str | None = None,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Atomically replace exact text in an existing UTF-8 file.
+
+    Read the relevant file range first, use enough exact surrounding text to
+    identify one occurrence, and pass its hash when available. The edit fails
+    when ``old_text`` is absent or ambiguous. Set ``replace_all`` only when every
+    occurrence should change. Reread the changed range before reporting success.
+
+    Args:
+        path: Existing text file.
+        old_text: Exact non-empty text expected in the file.
+        new_text: Replacement text.
+        replace_all: Replace every occurrence instead of requiring one match.
+        expected_sha256: Optional hash that the current file must match.
+    """
+    return await _structured_operation(
+        "edit",
+        {
+            "path": path,
+            "old_text": old_text,
+            "new_text": new_text,
+            "replace_all": replace_all,
+            "expected_sha256": expected_sha256,
+        },
+        sandbox,
+    )
+
+
+async def patch_file(
+    path: str,
+    patch: str,
+    expected_sha256: str | None = None,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Apply a validated unified diff to one UTF-8 file.
+
+    Build the diff against current file content and pass its hash when available.
+    The system ``patch`` implementation performs a dry run before applying any
+    hunk. The patch must target only ``path``; use separate calls for multiple
+    files. Reread the changed ranges before reporting success.
+
+    Args:
+        path: File created, updated, or deleted by the patch.
+        patch: Complete unified diff with file headers and at least one hunk.
+        expected_sha256: Optional hash that an existing target must match.
+    """
+    return await _structured_operation(
+        "patch",
+        {"path": path, "patch": patch, "expected_sha256": expected_sha256},
+        sandbox,
+    )
+
+
+async def move_path(
+    source: str,
+    destination: str,
+    overwrite: bool = False,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Move or rename one file, directory, or symbolic link.
+
+    Args:
+        source: Existing source path.
+        destination: New path; its parent is created automatically.
+        overwrite: Remove an existing destination before moving.
+    """
+    return await _structured_operation(
+        "move",
+        {"source": source, "destination": destination, "overwrite": overwrite},
+        sandbox,
+    )
+
+
+async def copy_path(
+    source: str,
+    destination: str,
+    overwrite: bool = False,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Copy one file, directory, or symbolic link without decoding content.
+
+    Args:
+        source: Existing source path.
+        destination: New path; its parent is created automatically.
+        overwrite: Remove an existing destination before copying.
+    """
+    return await _structured_operation(
+        "copy",
+        {"source": source, "destination": destination, "overwrite": overwrite},
+        sandbox,
+    )
+
+
+async def delete_path(
+    path: str,
+    recursive: bool = False,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Delete one file, symbolic link, or directory.
+
+    Non-empty directories require ``recursive=true``. This operation is
+    destructive and remains subject to explicit tool and sandbox permission.
+
+    Args:
+        path: Existing path to delete.
+        recursive: Recursively delete a non-empty directory.
+    """
+    return await _structured_operation(
+        "delete", {"path": path, "recursive": recursive}, sandbox
+    )
+
+
+async def make_directory(
+    path: str,
+    parents: bool = True,
+    *,
+    sandbox=None,
+) -> ToolResult:
+    """Create an empty directory.
+
+    Args:
+        path: Directory path.
+        parents: Create missing parent directories.
+    """
+    return await _structured_operation(
+        "mkdir", {"path": path, "parents": parents}, sandbox
+    )
+
+
+async def _structured_operation(
+    operation: str,
+    args: dict[str, Any],
+    sandbox: Any,
+) -> ToolResult:
+    return _data_result(await _operation(operation, args, sandbox))
+
+
+async def _operation(
+    operation: str,
+    args: dict[str, Any],
+    sandbox: Any,
+) -> dict[str, Any]:
     if sandbox is not None and sandbox.enabled:
-        listing = _parse_sandbox_result(
-            await sandbox.list_dir(path, recursive=True, max_entries=0)
-        )
-        if not listing.get("ok"):
-            return _tool_result_from_data(listing)
-        paths = [
-            str(entry.get("relative_path") or entry.get("path") or "")
-            for entry in listing.get("entries", [])
-            if entry.get("kind") == "file"
-        ]
-        import fnmatch
+        return _parse_result(await sandbox.filesystem(operation, args))
+    return execute(operation, _resolved_args(operation, args, sandbox))
 
-        matches = [candidate for candidate in paths if fnmatch.fnmatch(candidate, pattern)]
-    else:
-        root = sandbox.resolve_read_path(path) if sandbox is not None else Path(path)
-        if not root.is_dir():
-            return _json_error("not_a_directory", f"Not a directory: {path}", path=path)
-        matches = sorted(
-            str(candidate.relative_to(root))
-            for candidate in root.rglob(pattern)
-            if candidate.is_file()
-        )
-    limited = matches[:max_results] if max_results > 0 else matches
-    return _json_ok({
-        "path": path,
-        "pattern": pattern,
-        "files": limited,
-        "file_count": len(matches),
-        "returned_files": len(limited),
-        "truncated": max_results > 0 and len(matches) > max_results,
-    })
 
-def _parse_sandbox_result(text: str) -> dict[str, Any]:
+def _resolved_args(
+    operation: str,
+    args: dict[str, Any],
+    sandbox: Any,
+) -> dict[str, Any]:
+    if sandbox is not None:
+        return sandbox.resolve_filesystem_args(operation, args)
+    resolved = dict(args)
+    for field, _access in PATH_ACCESS.get(operation, ()):
+        resolved[field] = str(
+            Path(str(args[field])).expanduser().absolute()
+        )
+    return resolved
+
+
+def _parse_result(value: str) -> dict[str, Any]:
     try:
-        return json.loads(text)
+        result = json.loads(value)
     except (json.JSONDecodeError, TypeError):
-        return {"ok": True, "content": text}
-
-
-def _apply_write_mode(*, old_text, content, mode, line, start_line, end_line, pattern, replacement):
-    if mode == "overwrite":
-        return content, {"operation": "overwrite"}
-    if mode == "append":
-        return old_text + content, {"operation": "append"}
-    if mode == "prepend":
-        return content + old_text, {"operation": "prepend"}
-    if mode == "insert_line":
-        if line is None or line < 1:
-            raise ValueError("insert_line requires one-based line >= 1")
-        lines = old_text.splitlines(keepends=True)
-        lines.insert(min(line - 1, len(lines)), _ensure_line_ending(content))
-        return "".join(lines), {"operation": "insert_line", "line": line}
-    if mode == "replace_lines":
-        if start_line is None or end_line is None or start_line < 1 or end_line < start_line:
-            raise ValueError("replace_lines requires 1 <= start_line <= end_line")
-        lines = old_text.splitlines(keepends=True)
-        start = min(start_line - 1, len(lines))
-        end = min(end_line, len(lines))
-        lines[start:end] = [_ensure_line_ending(content)]
-        return "".join(lines), {"operation": "replace_lines", "start_line": start_line, "end_line": end_line}
-    if mode == "regex_replace":
-        if not pattern:
-            raise ValueError("regex_replace requires pattern")
-        new_text, count = re.subn(pattern, replacement, old_text, flags=re.MULTILINE)
-        return new_text, {"operation": "regex_replace", "replacements": count}
-    if mode == "apply_patch":
-        return _apply_unified_diff(old_text, content), {"operation": "apply_patch"}
-    raise ValueError(f"Unknown write mode: {mode}")
-
-
-def _apply_unified_diff(old_text: str, patch_text: str) -> str:
-    old_lines = old_text.splitlines(keepends=True)
-    patch_lines = patch_text.splitlines(keepends=True)
-    if not patch_lines:
-        return old_text
-    out, old_index, i, saw_hunk = [], 0, 0, False
-    while i < len(patch_lines):
-        line = patch_lines[i]
-        if line.startswith(("--- ", "+++ ")):
-            i += 1; continue
-        if not line.startswith("@@ "):
-            i += 1; continue
-        m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
-        if not m:
-            raise ValueError(f"Invalid unified diff hunk header: {line.rstrip()}")
-        saw_hunk = True
-        hunk_old_start = int(m.group(1)) - 1
-        if hunk_old_start < old_index:
-            raise ValueError("Overlapping unified diff hunks are not supported")
-        out.extend(old_lines[old_index:hunk_old_start])
-        old_index = hunk_old_start
-        i += 1
-        while i < len(patch_lines) and not patch_lines[i].startswith("@@ "):
-            raw = patch_lines[i]
-            if raw.startswith("\\ No newline at end of file"):
-                i += 1; continue
-            if not raw:
-                i += 1; continue
-            marker, value = raw[0], raw[1:]
-            if marker == " ":
-                _expect_old_line(old_lines, old_index, value)
-                out.append(old_lines[old_index]); old_index += 1
-            elif marker == "-":
-                _expect_old_line(old_lines, old_index, value); old_index += 1
-            elif marker == "+":
-                out.append(value)
-            elif raw.startswith(("--- ", "+++ ")):
-                pass
-            else:
-                raise ValueError(f"Invalid unified diff line: {raw.rstrip()}")
-            i += 1
-    if not saw_hunk:
-        raise ValueError("apply_patch requires a unified diff with at least one hunk")
-    out.extend(old_lines[old_index:])
-    return "".join(out)
-
-
-def _expect_old_line(old_lines, index, expected):
-    if index >= len(old_lines):
-        raise ValueError("Unified diff hunk extends past end of file")
-    if old_lines[index] != expected:
-        raise ValueError(f"Unified diff context mismatch at line {index+1}: expected {expected.rstrip()!r}, found {old_lines[index].rstrip()!r}")
-
-
-def _entry_metadata(entry: Path, *, root: Path) -> dict[str, Any]:
-    stat = entry.stat()
-    return {
-        "name": entry.name, "path": str(entry),
-        "relative_path": str(entry.relative_to(root)),
-        "kind": "directory" if entry.is_dir() else "file",
-        "size_bytes": stat.st_size, "mtime": stat.st_mtime,
+        return {
+            "ok": False,
+            "error": {
+                "code": "invalid_result",
+                "message": "Filesystem backend returned invalid JSON",
+            },
+        }
+    return result if isinstance(result, dict) else {
+        "ok": False,
+        "error": {"code": "invalid_result", "message": "Filesystem backend returned a non-object"},
     }
 
 
-def _read_existing_text(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"text": "", "error": None}
-    if not path.is_file():
-        return {"text": "", "error": _json_error("not_a_file", f"Not a file: {path}", path=str(path))}
-    try:
-        return {"text": path.read_text(encoding="utf-8"), "error": None}
-    except UnicodeDecodeError:
-        return {"text": "", "error": _json_error("not_text", f"File is not valid UTF-8 text: {path}", path=str(path))}
+def _data_result(data: dict[str, Any], content: str | None = None) -> ToolResult:
+    if not data.get("ok"):
+        return _failure(data)
+    visible = content if content is not None else _summary(data)
+    return ToolResult.success(visible, data=data)
 
 
-def _ensure_line_ending(content: str) -> str:
-    return content if content.endswith("\n") else content + "\n"
-
-
-def _tool_result_from_json(value: str) -> ToolResult:
-    return _tool_result_from_data(_parse_sandbox_result(value))
-
-
-def _tool_result_from_data(data: dict[str, Any]) -> ToolResult:
-    content = json.dumps(data, ensure_ascii=False)
-    if data.get("ok", True):
-        return ToolResult.success(content, data=data)
+def _failure(data: dict[str, Any]) -> ToolResult:
     error = data.get("error") or {}
-    result = ToolResult.failure(
-        str(error.get("code") or "tool_error"),
-        str(error.get("message") or content),
+    failed = ToolResult.failure(
+        str(error.get("code") or "filesystem_error"),
+        str(error.get("message") or "Filesystem operation failed"),
     )
     return ToolResult(
-        status=result.status,
-        content=content,
+        status=failed.status,
+        content=failed.content,
         data=data,
-        error=result.error,
+        error=failed.error,
     )
 
 
-def _json_ok(payload: dict[str, Any]) -> ToolResult:
-    return _tool_result_from_data({"ok": True, **payload})
+def _summary(data: dict[str, Any]) -> str:
+    for action in ("deleted", "moved", "copied", "created", "changed"):
+        if data.get(action):
+            path = data.get("path") or data.get("destination") or ""
+            return f"{action.capitalize()}: {path}"
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
-def _json_error(code: str, message: str, **extra: Any) -> ToolResult:
-    data = {"ok": False, "error": {"code": code, "message": message}, **extra}
-    return _tool_result_from_data(data)
+def _entry_lines(data: dict[str, Any], key: str) -> str:
+    return "\n".join(
+        f"{entry.get('kind', 'file')}\t{entry.get('relative_path', entry.get('path', ''))}"
+        for entry in data.get(key, [])
+    )
+
+
+def _with_line_numbers(content: str, first_line: int) -> str:
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return content
+    width = len(str(first_line + len(lines) - 1))
+    return "".join(
+        f"{number:>{width}}: {line}"
+        for number, line in enumerate(lines, first_line)
+    )
 
 
 filesystem_read = Tool.from_function(read_file, name="filesystem_read")
-filesystem_write = Tool.from_function(write_file, name="filesystem_write")
+filesystem_stat = Tool.from_function(stat_path, name="filesystem_stat")
 filesystem_list = Tool.from_function(list_files, name="filesystem_list")
 filesystem_search = Tool.from_function(search_text, name="search_text")
 filesystem_find = Tool.from_function(find_files, name="find_files")
+filesystem_write = Tool.from_function(write_file, name="filesystem_write")
+filesystem_edit = Tool.from_function(edit_file, name="filesystem_edit")
+filesystem_patch = Tool.from_function(patch_file, name="filesystem_patch")
+filesystem_move = Tool.from_function(move_path, name="filesystem_move")
+filesystem_copy = Tool.from_function(copy_path, name="filesystem_copy")
+filesystem_delete = Tool.from_function(delete_path, name="filesystem_delete")
+filesystem_mkdir = Tool.from_function(make_directory, name="filesystem_mkdir")
+
 FILESYSTEM_TOOLS = [
     filesystem_read,
-    filesystem_write,
+    filesystem_stat,
     filesystem_list,
     filesystem_search,
     filesystem_find,
+    filesystem_write,
+    filesystem_edit,
+    filesystem_patch,
+    filesystem_move,
+    filesystem_copy,
+    filesystem_delete,
+    filesystem_mkdir,
+]
+
+
+__all__ = [
+    "FILESYSTEM_TOOLS",
+    "copy_path",
+    "delete_path",
+    "edit_file",
+    "filesystem_copy",
+    "filesystem_delete",
+    "filesystem_edit",
+    "filesystem_find",
+    "filesystem_list",
+    "filesystem_mkdir",
+    "filesystem_move",
+    "filesystem_patch",
+    "filesystem_read",
+    "filesystem_search",
+    "filesystem_stat",
+    "filesystem_write",
+    "find_files",
+    "list_files",
+    "make_directory",
+    "move_path",
+    "patch_file",
+    "read_file",
+    "search_text",
+    "stat_path",
+    "write_file",
 ]

@@ -80,6 +80,11 @@ Session policy patches update exact top-level Tool decisions and sparse sandbox
 keys. They preserve parameter-specific permission rules and sandbox resource
 approvals. The server persists the patch to `policy.yaml` and reloads every
 active thread without replacing parent/child permission intersections.
+The policy response keeps session-local overrides in `permissions` and
+`sandbox`; `effective_sandbox` reports the merged live state used by execution.
+The TUI `/sandbox status` command displays the effective value. `/sandbox set
+enabled false` disables isolation between turns, but Tool permissions continue
+to apply.
 
 The TUI currently has a compatibility endpoint for discovery and execution of
 plugin-defined human slash commands. It is intentionally omitted from OpenAPI

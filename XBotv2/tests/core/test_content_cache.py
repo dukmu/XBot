@@ -144,7 +144,7 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     assert cached.findtext("cache_path").strip().startswith(
         "session/artifacts/context/"
     )
-    assert "filesystem_read using offset and limit" in provider_user.content
+    assert cached.find("read_instruction") is not None
     assert engine.messages[0].content == user_input
 
 

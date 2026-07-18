@@ -11,7 +11,9 @@ ctx.register_agent(AgentDefinition(
     description="Review a change for correctness and missing tests.",
     mode="subagent",
     prompt="Inspect the requested change and report findings first.",
-    permissions={"deny": [{"tool": "filesystem_write"}]},
+    permissions={"deny": [{
+        "tool": "filesystem_(?:write|edit|patch|move|copy|delete|mkdir)"
+    }]},
 ))
 ```
 
@@ -79,7 +81,13 @@ in Agent Markdown.
 each primary-agent and subagent model request and is never parsed as an Agent
 definition.
 
-Select a `primary` or `all` definition with `xbotv2 --agent <name>`. The HTTP
+Runtime variables in an Agent Markdown body use explicit fenced `var` blocks;
+ordinary `${...}` Markdown and frontmatter descriptions remain literal.
+Permission values retain their references until the permission system evaluates
+them, so `paths: ${workspace}` keeps directory scope instead of becoming a
+one-file regular expression.
+
+Select a `primary` or `all` definition with `xbot --agent <name>`. The HTTP
 session-open request exposes the same optional `agent` field. The selected name
 and resolved definition are written to `thread.yaml`, so resume keeps the same
 prompt, model settings, and tool policy even if the source Markdown later

@@ -192,21 +192,24 @@ def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[st
     elif event_type == "client_message":
         data.setdefault("source", "send_message")
         data.setdefault("tool_call_id", tool_call_id)
+    elif event_type == "permission_request":
+        data.setdefault("request_id", f"permission:{tool_call_id}")
 
     normalized["data"] = data
     return normalized
 
 
-def _is_user_input_wait_result(result: Any) -> bool:
+def _is_interaction_wait_result(result: Any) -> bool:
     if isinstance(result, ToolResult):
         return result.wait_for_user
     return isinstance(result, dict) and bool(result.get("wait_for_user"))
 
 
-async def _tool_message_from_user_input_wait(
+async def _tool_message_from_interaction_wait(
     result: ToolResult | dict[str, Any],
     tool_call_id: str,
     client_interaction_handler: Any,
+    permission_interaction_handler: Any,
 ) -> Message:
     raw_events = (
         [event.to_dict() for event in result.client_events]
@@ -221,16 +224,41 @@ async def _tool_message_from_user_input_wait(
         (
             item
             for item in events
-            if isinstance(item, dict) and item.get("type") == "user_input_required"
+            if isinstance(item, dict)
+            and item.get("type") in {"user_input_required", "permission_request"}
         ),
         None,
     )
     if event is None:
         return Message(
             role="tool",
-            content="Error: ask_user did not produce a user_input_required event.",
+            content="Error: interactive tool did not produce a supported request event.",
             tool_call_id=tool_call_id,
             status="error",
+        )
+    if event.get("type") == "permission_request":
+        permission = dict((event.get("data") or {}).get("permission") or {})
+        tool_name = str(permission.get("tool") or "tool")
+        response = await _resolve_live_permission(
+            event,
+            permission_interaction_handler,
+            tool_call_id,
+        )
+        if response.get("decision") == "allow":
+            scope = str(response.get("scope") or "once")
+            content = f"Permission granted ({scope}) for {tool_name}."
+            status = "success"
+        else:
+            content = _permission_denial_reason(
+                response,
+                f"Permission approval for {tool_name} is unavailable.",
+            )
+            status = "error"
+        return Message(
+            role="tool",
+            content=content,
+            tool_call_id=tool_call_id,
+            status=status,
         )
     if client_interaction_handler is None:
         request_id = str((event.get("data") or {}).get("request_id") or "")
@@ -294,7 +322,7 @@ async def _tool_message_from_user_input_wait(
 async def _resolve_live_permission(
     event: dict[str, Any],
     permission_interaction_handler: Any,
-    tool_call: ToolCall,
+    tool_call_id: str,
 ) -> dict[str, Any]:
     if permission_interaction_handler is None:
         return {
@@ -305,7 +333,7 @@ async def _resolve_live_permission(
     response = await permission_interaction_handler(
         event,
         timeout_seconds=None,
-        tool_call_id=tool_call.id,
+        tool_call_id=tool_call_id,
     )
     decision = str(response.get("decision") or "").lower()
     if response.get("status") == "answered" and decision == "allow":
@@ -327,6 +355,69 @@ def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
     if status == "unsupported":
         return fallback
     return fallback
+
+
+async def _authorize_sandbox_tool(
+    call: ToolCall,
+    sandbox_policy: Any,
+    permission_interaction_handler: Any,
+    hook_manager: Any,
+    hook_context_factory: Any,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    issues = sandbox_policy.check_tool_access(call.name, call.args)
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[str, bool]] = set()
+    for issue in issues:
+        path = str(issue["path"])
+        write = bool(issue["write"])
+        key = (path, write)
+        if key in seen:
+            continue
+        seen.add(key)
+        decision = str(issue["decision"])
+        access = "readwrite" if write else "readonly"
+        action = "write" if write else "read"
+        reason = (
+            f"Path approval required for {action}: {path}"
+            if decision == "ask"
+            else f"Sandbox denied {action} access: {path}"
+        )
+        stage = (
+            HookStage.ON_PERMISSION_REQUEST
+            if decision == "ask"
+            else HookStage.ON_PERMISSION_DENIED
+        )
+        event = _permission_client_event(
+            stage,
+            call,
+            decision,
+            reason,
+            source="sandbox",
+        )
+        event["data"].update({
+            "sandbox_path": path,
+            "sandbox_access": access,
+        })
+        events.append(event)
+        await _emit_permission_event(
+            hook_manager,
+            hook_context_factory,
+            stage,
+            call,
+            decision,
+            reason,
+        )
+        if decision != "ask":
+            return False, events, reason
+        response = await _resolve_live_permission(
+            event,
+            permission_interaction_handler,
+            call.id,
+        )
+        if response.get("decision") != "allow":
+            return False, events, _permission_denial_reason(response, reason)
+        sandbox_policy.add_rule(path, access)
+    return True, events, ""
 
 
 async def _run_tool_hook(
@@ -473,7 +564,9 @@ async def _execute_one_tool(
             reason = f"Permission approval required for tool: {tool_name}. No live permission handler is available, so this call fails closed."
             events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
             await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
-            response = await _resolve_live_permission(events[0], permission_interaction_handler, call)
+            response = await _resolve_live_permission(
+                events[0], permission_interaction_handler, call.id
+            )
             if response.get("decision") != "allow":
                 final_reason = _permission_denial_reason(response, reason)
                 await _emit_tool_denied(hook_manager, hook_context_factory, call, final_reason)
@@ -481,11 +574,30 @@ async def _execute_one_tool(
                 observed_tool_calls.append(call)
                 return
 
-    try:
-        use_sandbox_policy = (
-            entry.sandbox_mode == "sandboxed"
-            and sandbox_policy is not None
+    use_sandbox_policy = (
+        entry.sandbox_mode == "sandboxed"
+        and sandbox_policy is not None
+    )
+    if use_sandbox_policy and sandbox_policy.enabled:
+        allowed, sandbox_events, reason = await _authorize_sandbox_tool(
+            call,
+            sandbox_policy,
+            permission_interaction_handler,
+            hook_manager,
+            hook_context_factory,
         )
+        if not allowed:
+            await _emit_tool_denied(
+                hook_manager,
+                hook_context_factory,
+                call,
+                reason,
+            )
+            results.append(_error_message(call, reason, events=sandbox_events))
+            observed_tool_calls.append(call)
+            return
+
+    try:
         result = await _invoke_tool(
             tool,
             args,
@@ -493,8 +605,13 @@ async def _execute_one_tool(
             timeout_seconds=entry.timeout_seconds,
         )
 
-        if _is_user_input_wait_result(result):
-            message = await _tool_message_from_user_input_wait(result, tool_id, client_interaction_handler)
+        if _is_interaction_wait_result(result):
+            message = await _tool_message_from_interaction_wait(
+                result,
+                tool_id,
+                client_interaction_handler,
+                permission_interaction_handler,
+            )
             observed_call = ToolCall(tool_id, tool_name, args)
             observed_tool_calls.append(observed_call)
             results.append(message)

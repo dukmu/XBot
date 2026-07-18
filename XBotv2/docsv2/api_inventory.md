@@ -46,6 +46,7 @@ type-only import inside XBotv2 itself.
 | `prompt_element` | function | Render one XML prompt element with escaped content and attributes. |
 | `RuntimePluginContext` | protocol | Runtime hook capabilities owned by a plugin record. |
 | `RuntimePaths` | dataclass | Server process filesystem layout. |
+| `RuntimeVariables` | mapping | Immutable built-in runtime path variables and expansion API. |
 | `SessionInfo` | dataclass | Session identity and status metadata. |
 | `SessionPaths` | dataclass | Per-session filesystem layout. |
 | `ThreadPaths` | dataclass | Per-thread mutable state layout within a session. |
@@ -86,6 +87,11 @@ their documented stage-specific return dictionaries for replacements.
 definitions, while runtime
 Tool and Command registrations join the same unload record. Runtime unregister
 operations can remove only resources owned by that plugin.
+`PluginSetupContext.variables` exposes the immutable `RuntimeVariables` mapping
+used by Core configuration consumers. Plugins may read and expand it but cannot
+add or replace built-in values. Markdown prompt fragments use fenced `var`
+blocks through `RuntimeVariables.expand_markdown`; ordinary Markdown references
+remain untouched.
 Tool registrations may set a positive `timeout_seconds`; the dispatcher applies
 it through the normal Tool execution path instead of special-casing long tools.
 Duplicate canonical names or provider-visible tool names are rejected before

@@ -288,6 +288,22 @@ class TuiState:
                 tool.status = "pending approval"
                 self._ensure_tool_transcript(tool_id)
                 self._changed_tool_ids.add(tool_id)
+            else:
+                permission = (
+                    data.get("permission")
+                    if isinstance(data.get("permission"), dict)
+                    else {}
+                )
+                detail = (
+                    f"{permission.get('tool') or 'tool'} "
+                    f"{permission.get('params') or {}}"
+                )
+                reason = str(data.get("reason") or "")
+                self.append_notice(
+                    "permission_request",
+                    f"{detail}\n{reason}" if reason else detail,
+                    payload=data,
+                )
         elif event_type == "permission_denied":
             self.pending_permission_payload = None
             request_id = str(data.get("request_id") or "")

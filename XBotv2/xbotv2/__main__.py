@@ -586,6 +586,7 @@ async def _run_once(args):
         workspace_root=str(_workspace_root(args)),
         plugin_dirs=[] if args.no_plugins else None,
         selected_agent=getattr(args, "agent", None),
+        interactive=False,
     )
     await engine.start_session()
     runtime = SessionRuntime(
@@ -596,6 +597,7 @@ async def _run_once(args):
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         engine=engine,
+        interactive=False,
     )
     if engine.subagents is not None:
         engine.subagents.on_complete = None
@@ -615,12 +617,8 @@ async def _run_once(args):
                 print(f"\n[{tc_id}]: {content[:300]}")
             elif etype == "client_message":
                 print(f"\n[message] {data.get('message', '')}")
-            elif etype == "permission_request":
-                print(f"\n[approval required] {data.get('reason', '')}")
             elif etype == "permission_denied":
                 print(f"\n[permission denied] {data.get('reason', '')}")
-            elif etype == "user_input_required":
-                print(f"\n[question] {data.get('question', '')}")
             elif etype == "error":
                 print(f"\nError: {data.get('message', 'unknown')}")
     finally:

@@ -1,238 +1,290 @@
-"""Tests for core filesystem tools."""
+"""Behavioral tests for the core filesystem tools."""
 
-import json
+from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from xbotv2.core.builtin_tools.filesystem import (
-    filesystem_find,
-    filesystem_list,
-    filesystem_read,
-    filesystem_search,
-    filesystem_write,
+    copy_path,
+    delete_path,
+    edit_file,
+    find_files,
+    list_files,
+    make_directory,
+    move_path,
+    patch_file,
+    read_file,
+    search_text,
+    stat_path,
     write_file,
 )
 from xbotv2.tools.sandbox import SandboxPolicy
 
 
-def _payload(result) -> dict:
-    return json.loads(result.content if hasattr(result, "content") else result)
-
-
-class TestFilesystemReadList:
-    def test_read_returns_metadata_and_truncation_flags(self, tmp_path):
+class TestFilesystemRead:
+    @pytest.mark.asyncio
+    async def test_reads_bounded_lines_with_optional_numbers(self, tmp_path):
         path = tmp_path / "sample.txt"
         path.write_text("a\nb\nc\nd\n", encoding="utf-8")
 
-        data = _payload(filesystem_read.invoke({"path": str(path), "offset": 1, "limit": 2}))
+        result = await read_file(
+            str(path), offset=1, limit=2, line_numbers=True
+        )
 
-        assert data["ok"] is True
-        assert data["line_count"] == 4
-        assert data["returned_lines"] == 2
-        assert data["truncated_before"] is True
-        assert data["truncated_after"] is True
-        assert data["content"] == "b\nc"
+        assert result.status == "success"
+        assert result.content == "2: b\n3: c\n"
+        assert result.data["line_count"] == 4
+        assert result.data["returned_lines"] == 2
+        assert result.data["truncated_before"] is True
+        assert result.data["truncated_after"] is True
+        assert result.data["next_offset"] == 3
+        assert result.data["sha256"]
 
-    def test_list_returns_entry_metadata(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_long_single_line_can_be_resumed_by_character(self, tmp_path):
+        path = tmp_path / "single-line.json"
+        path.write_text("x" * 100, encoding="utf-8")
+
+        first = await read_file(str(path), max_chars=30)
+        second = await read_file(
+            str(path),
+            offset=first.data["next_offset"],
+            char_offset=first.data["next_char_offset"],
+            max_chars=30,
+        )
+
+        assert first.content == "x" * 30
+        assert second.content == "x" * 30
+        assert first.data["next_offset"] == 0
+        assert first.data["next_char_offset"] == 30
+        assert second.data["next_char_offset"] == 60
+
+    @pytest.mark.asyncio
+    async def test_non_text_file_returns_metadata_and_image_dimensions(self, tmp_path):
+        path = tmp_path / "pixel.png"
+        path.write_bytes(
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+            + (2).to_bytes(4, "big") + (3).to_bytes(4, "big")
+            + b"\x00" * 8
+        )
+
+        result = await read_file(str(path))
+
+        assert result.status == "success"
+        assert result.data["is_text"] is False
+        assert result.data["media_type"] == "image/png"
+        assert result.data["image"] == {"format": "PNG", "width": 2, "height": 3}
+        assert result.data["sha256"]
+        assert "Non-text file" in result.content
+
+    @pytest.mark.asyncio
+    async def test_utf8_decodable_binary_returns_metadata_instead_of_controls(self, tmp_path):
+        path = tmp_path / "controls.bin"
+        path.write_bytes(b"header\x00payload")
+
+        result = await read_file(str(path))
+
+        assert result.status == "success"
+        assert result.data["is_text"] is False
+        assert result.data["media_type"] == "application/octet-stream"
+        assert "\x00" not in result.content
+
+    @pytest.mark.asyncio
+    async def test_image_magic_overrides_an_uninformative_extension(self, tmp_path):
+        path = tmp_path / "photo.bin"
+        path.write_bytes(
+            b"\xff\xd8\xff\xff\xc0\x00\x0b\x08\x00\x03\x00\x02" + b"\x00" * 6
+        )
+
+        result = await stat_path(str(path))
+
+        assert result.data["is_text"] is False
+        assert result.data["media_type"] == "image/jpeg"
+        assert result.data["image"] == {"format": "JPEG", "width": 2, "height": 3}
+
+    @pytest.mark.asyncio
+    async def test_stat_reports_symlink_without_following_it(self, tmp_path):
+        target = tmp_path / "target.txt"
+        target.write_text("target", encoding="utf-8")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target.name)
+
+        result = await stat_path(str(link))
+
+        assert result.data["kind"] == "symlink"
+        assert result.data["target"] == target.name
+
+
+class TestFilesystemDiscovery:
+    @pytest.mark.asyncio
+    async def test_list_is_bounded_and_marks_symlinks(self, tmp_path):
         (tmp_path / "dir").mkdir()
         (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "link").symlink_to("file.txt")
 
-        data = _payload(filesystem_list.invoke({"path": str(tmp_path)}))
+        complete = await list_files(str(tmp_path))
+        bounded = await list_files(str(tmp_path), max_entries=2)
 
-        assert data["ok"] is True
-        assert data["entry_count"] == 2
-        assert {entry["name"] for entry in data["entries"]} == {"dir", "file.txt"}
-        assert all("size_bytes" in entry for entry in data["entries"])
+        kinds = {entry["name"]: entry["kind"] for entry in complete.data["entries"]}
+        assert kinds["link"] == "symlink"
+        assert bounded.data["returned_entries"] == 2
+        assert bounded.data["truncated"] is True
 
-    def test_find_files_filters_by_glob(self, tmp_path):
-        (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "app.py").write_text("print('x')", encoding="utf-8")
-        (tmp_path / "README.md").write_text("docs", encoding="utf-8")
-
-        data = _payload(filesystem_find.invoke({
-            "path": str(tmp_path), "pattern": "*.py"
-        }))
-
-        assert data["ok"] is True
-        assert data["files"] == ["src/app.py"]
-
-    def test_search_text_returns_line_matches(self, tmp_path):
-        (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
-        (tmp_path / "b.txt").write_text("alpha two\n", encoding="utf-8")
-
-        data = _payload(filesystem_search.invoke({
-            "path": str(tmp_path), "pattern": "alpha"
-        }))
-
-        assert data["ok"] is True
-        assert data["match_count"] == 2
-        assert all("alpha" in match for match in data["matches"])
-
-
-class TestFilesystemWriteModes:
     @pytest.mark.asyncio
-    async def test_relative_write_uses_workspace_when_sandbox_is_disabled(self, tmp_path):
+    async def test_find_skips_generated_directories_and_stops_at_limit(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass", encoding="utf-8")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "ignored.py").write_text("pass", encoding="utf-8")
+        (tmp_path / "other.py").write_text("pass", encoding="utf-8")
+
+        bounded = await find_files("*.py", str(tmp_path), max_results=1)
+        complete = await find_files("*.py", str(tmp_path), max_results=10)
+
+        assert bounded.data["truncated"] is True
+        assert set(complete.data["files"]) == {"other.py", "src/app.py"}
+
+    @pytest.mark.asyncio
+    async def test_search_returns_structured_locations_and_clips_lines(self, tmp_path):
+        (tmp_path / "a.txt").write_text("prefix ALPHA " + "x" * 30, encoding="utf-8")
+        (tmp_path / "binary.dat").write_bytes(b"\xffalpha")
+
+        result = await search_text(
+            "alpha",
+            str(tmp_path),
+            literal=True,
+            case_sensitive=False,
+            max_line_chars=12,
+        )
+
+        assert result.data["returned_matches"] == 1
+        match = result.data["matches"][0]
+        assert match["path"] == "a.txt"
+        assert match["line"] == 1
+        assert match["column"] == 8
+        assert match["text_truncated"] is True
+
+
+class TestFilesystemMutation:
+    @pytest.mark.asyncio
+    async def test_write_is_atomic_and_hash_guarded(self, tmp_path):
+        path = tmp_path / "code.py"
+        created = await write_file(str(path), "value = 1\n")
+
+        rejected = await write_file(
+            str(path), "value = 2\n", expected_sha256="stale"
+        )
+        updated = await write_file(
+            str(path),
+            "value = 2\n",
+            expected_sha256=created.data["sha256"],
+        )
+
+        assert rejected.status == "error"
+        assert rejected.error.code == "content_changed"
+        assert updated.data["changed"] is True
+        assert path.read_text(encoding="utf-8") == "value = 2\n"
+
+    @pytest.mark.asyncio
+    async def test_exact_edit_rejects_ambiguous_match(self, tmp_path):
+        path = tmp_path / "code.py"
+        path.write_text("name = 1\nname = 2\n", encoding="utf-8")
+
+        ambiguous = await edit_file(str(path), "name", "value")
+        replaced = await edit_file(
+            str(path), "name", "value", replace_all=True
+        )
+
+        assert ambiguous.status == "error"
+        assert ambiguous.error.code == "ambiguous_edit"
+        assert replaced.data["replacements"] == 2
+        assert path.read_text(encoding="utf-8") == "value = 1\nvalue = 2\n"
+
+    @pytest.mark.asyncio
+    async def test_patch_uses_system_parser_and_rejects_bad_hunks(self, tmp_path):
+        path = tmp_path / "code.py"
+        path.write_text("one\ntwo\n", encoding="utf-8")
+        valid = (
+            "--- a/code.py\n+++ b/code.py\n"
+            "@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n"
+        )
+        invalid = (
+            "--- a/code.py\n+++ b/code.py\n"
+            "@@ -1,9 +1,1 @@\n missing\n"
+        )
+
+        applied = await patch_file(str(path), valid)
+        rejected = await patch_file(str(path), invalid)
+
+        assert applied.status == "success"
+        assert rejected.status == "error"
+        assert rejected.error.code == "patch_failed"
+        assert path.read_text(encoding="utf-8") == "one\nTWO\n"
+
+    @pytest.mark.asyncio
+    async def test_directory_lifecycle(self, tmp_path):
+        source = tmp_path / "source"
+        made = await make_directory(str(source))
+        (source / "file.txt").write_text("content", encoding="utf-8")
+        copied = tmp_path / "copied"
+        moved = tmp_path / "moved"
+
+        copy_result = await copy_path(str(source), str(copied))
+        move_result = await move_path(str(copied), str(moved))
+        delete_result = await delete_path(str(moved), recursive=True)
+
+        assert made.data["created"] is True
+        assert copy_result.data["copied"] is True
+        assert move_result.data["moved"] is True
+        assert delete_result.data["deleted"] is True
+        assert source.exists()
+        assert not moved.exists()
+
+
+class TestFilesystemSandboxContract:
+    @pytest.mark.asyncio
+    async def test_host_and_bwrap_return_the_same_read_contract(self, tmp_path):
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        policy = SandboxPolicy(enabled=False, workspace_root=workspace)
+        (workspace / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        policy = SandboxPolicy(workspace_root=workspace)
+        if not policy.backend_available:
+            pytest.skip("bubblewrap is not installed")
 
-        result = await write_file(
-            "notes.txt",
-            content="workspace content",
+        host = await read_file("sample.txt", sandbox=SandboxPolicy(
+            enabled=False, workspace_root=workspace
+        ))
+        isolated = await read_file("sample.txt", sandbox=policy)
+
+        assert isolated.content == host.content
+        for key in ("is_text", "line_count", "sha256", "truncated_after"):
+            assert isolated.data[key] == host.data[key]
+
+    @pytest.mark.asyncio
+    async def test_real_bwrap_mutation_lifecycle(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        policy = SandboxPolicy(workspace_root=workspace)
+        if not policy.backend_available:
+            pytest.skip("bubblewrap is not installed")
+
+        assert (await make_directory("tree", sandbox=policy)).status == "success"
+        created = await write_file("tree/code.py", "one\n", sandbox=policy)
+        edited = await edit_file("tree/code.py", "one", "two", sandbox=policy)
+        patched = await patch_file(
+            "tree/code.py",
+            "--- a/code.py\n+++ b/code.py\n@@ -1 +1 @@\n-two\n+TWO\n",
             sandbox=policy,
         )
+        copied = await copy_path("tree/code.py", "copy.py", sandbox=policy)
+        moved = await move_path("copy.py", "moved.py", sandbox=policy)
+        deleted_file = await delete_path("moved.py", sandbox=policy)
+        deleted_tree = await delete_path("tree", recursive=True, sandbox=policy)
 
-        assert result.data["ok"] is True
-        assert (workspace / "notes.txt").read_text(encoding="utf-8") == (
-            "workspace content"
-        )
-
-    def test_append_prepend_insert_and_replace_lines(self, tmp_path):
-        path = tmp_path / "notes.txt"
-
-        _payload(filesystem_write.invoke({"path": str(path), "content": "b\n"}))
-        _payload(filesystem_write.invoke({"path": str(path), "content": "a\n", "mode": "prepend"}))
-        _payload(filesystem_write.invoke({
-            "path": str(path),
-            "content": "middle",
-            "mode": "insert_line",
-            "line": 2,
-        }))
-        data = _payload(filesystem_write.invoke({
-            "path": str(path),
-            "content": "z",
-            "mode": "replace_lines",
-            "start_line": 3,
-            "end_line": 3,
-        }))
-
-        assert data["ok"] is True
-        assert path.read_text(encoding="utf-8") == "a\nmiddle\nz\n"
-
-    def test_regex_replace_reports_replacement_count(self, tmp_path):
-        path = tmp_path / "code.py"
-        path.write_text("alpha = 1\nalpha = 2\n", encoding="utf-8")
-
-        data = _payload(filesystem_write.invoke({
-            "path": str(path),
-            "mode": "regex_replace",
-            "pattern": "alpha",
-            "replacement": "beta",
-        }))
-
-        assert data["ok"] is True
-        assert data["replacements"] == 2
-        assert path.read_text(encoding="utf-8") == "beta = 1\nbeta = 2\n"
-
-    def test_apply_patch_uses_unified_diff(self, tmp_path):
-        path = tmp_path / "patchme.txt"
-        path.write_text("one\ntwo\nthree\n", encoding="utf-8")
-        patch = (
-            "--- a/patchme.txt\n"
-            "+++ b/patchme.txt\n"
-            "@@ -1,3 +1,3 @@\n"
-            " one\n"
-            "-two\n"
-            "+TWO\n"
-            " three\n"
-        )
-
-        data = _payload(filesystem_write.invoke({
-            "path": str(path),
-            "mode": "apply_patch",
-            "content": patch,
-        }))
-
-        assert data["ok"] is True
-        assert path.read_text(encoding="utf-8") == "one\nTWO\nthree\n"
-
-
-class TestSandboxedFilesystemWrite:
-    class FakeSandbox:
-        enabled = True
-
-        def __init__(self, read_data, write_data=None):
-            self.read_data = read_data
-            self.write_data = write_data
-            self.writes = []
-
-        async def read_file(self, path, offset=0, limit=2000):
-            assert offset == 0
-            assert limit == 0
-            return json.dumps(self.read_data)
-
-        async def write_file(self, path, content):
-            self.writes.append((path, content))
-            return json.dumps(self.write_data or {
-                "ok": True,
-                "path": path,
-                "bytes_written": len(content.encode("utf-8")),
-            })
-
-    @pytest.mark.asyncio
-    async def test_preserves_edit_metadata(self):
-        sandbox = self.FakeSandbox({"ok": True, "content": "alpha = 1\n"})
-
-        result = await write_file(
-            "code.py",
-            mode="regex_replace",
-            pattern="alpha",
-            replacement="beta",
-            sandbox=sandbox,
-        )
-
-        assert sandbox.writes == [("code.py", "beta = 1\n")]
-        assert result.data["mode"] == "regex_replace"
-        assert result.data["changed"] is True
-        assert result.data["replacements"] == 1
-
-    @pytest.mark.asyncio
-    async def test_append_creates_missing_file(self):
-        sandbox = self.FakeSandbox({
-            "ok": False,
-            "error": {"code": "file_not_found", "message": "missing"},
-        })
-
-        result = await write_file(
-            "new.txt",
-            content="first\n",
-            mode="append",
-            sandbox=sandbox,
-        )
-
-        assert sandbox.writes == [("new.txt", "first\n")]
-        assert result.data["mode"] == "append"
-        assert result.data["changed"] is True
-
-    @pytest.mark.asyncio
-    async def test_read_error_remains_structured(self):
-        sandbox = self.FakeSandbox({
-            "ok": False,
-            "error": {"code": "not_text", "message": "binary file"},
-            "path": "binary.dat",
-        })
-
-        result = await write_file("binary.dat", content="replace", sandbox=sandbox)
-
-        assert sandbox.writes == []
-        assert result.status == "error"
-        assert result.error.code == "not_text"
-        assert result.data["path"] == "binary.dat"
-
-    @pytest.mark.asyncio
-    async def test_write_error_remains_structured(self):
-        sandbox = self.FakeSandbox(
-            {"ok": True, "content": "before"},
-            {
-                "ok": False,
-                "error": {"code": "write_failed", "message": "read only"},
-                "path": "notes.txt",
-            },
-        )
-
-        result = await write_file("notes.txt", content="after", sandbox=sandbox)
-
-        assert sandbox.writes == [("notes.txt", "after")]
-        assert result.status == "error"
-        assert result.error.code == "write_failed"
-        assert result.data["path"] == "notes.txt"
+        assert all(result.status == "success" for result in (
+            created, edited, patched, copied, moved, deleted_file, deleted_tree,
+        ))
+        assert not (workspace / "tree").exists()
+        assert not (workspace / "moved.py").exists()

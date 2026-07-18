@@ -14,7 +14,7 @@ Its sections have a fixed logical order:
 1. `core_instructions`: built into XBotv2 and present for every primary Agent
    and subagent.
 2. `runtime_environment`: the actual human identity, sandbox description, and
-   available runtime capabilities.
+   model-visible workspace/session paths.
 3. `developer_instructions`: explicit compatible `system_prompt` and
    `instructions` configuration.
 4. `agent_identity` and `agent_instructions`: the active `.agents/<name>.md`
@@ -39,6 +39,11 @@ prefix. Clocks and turn counters are excluded. Runtime mailbox notifications
 are transient `<runtime_event>` inputs and are not persisted as human history.
 An active Goal is injected only when its idle continuation is delivered, not on
 every provider call.
+
+Runtime paths are stable for the thread. The workspace is shown explicitly;
+cached artifacts use the read-only `session/artifacts/...` virtual namespace.
+Internal configuration and plugin-state directories are not exposed merely
+because Core has immutable runtime variables for them.
 
 Slash-invoked Skills use `<skill_invocation>` with separate
 `skill_instructions` and `user_arguments` children. Model-invoked Skills remain

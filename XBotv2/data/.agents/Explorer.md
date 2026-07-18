@@ -4,6 +4,7 @@ mode: all
 temperature: 0.1
 tools:
   - filesystem_read
+  - filesystem_stat
   - filesystem_list
   - search_text
   - find_files

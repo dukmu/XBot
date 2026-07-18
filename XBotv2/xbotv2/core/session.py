@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -30,6 +30,7 @@ class SessionRuntime:
     workspace_root: str
     no_plugins: bool
     engine: Any
+    interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
     mailbox: SessionMailbox = field(init=False)
@@ -388,7 +389,12 @@ async def run_turn_stream(
         )
         runtime.turn_task = pump_task
         try:
-            async with _live_interaction_sink(runtime, events, disconnected):
+            interaction_sink = (
+                _live_interaction_sink(runtime, events, disconnected)
+                if getattr(runtime, "interactive", True)
+                else nullcontext()
+            )
+            async with interaction_sink:
                 while True:
                     event = await events.get()
                     if event is None:

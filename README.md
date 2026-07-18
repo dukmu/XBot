@@ -12,6 +12,10 @@ uv run xbot serve
 uv run xbot web
 ```
 
+`once` submits one input and runs its complete Agent/Tool loop to the final
+output. It is non-interactive: `ask_user` and `request_permission` are hidden,
+and permission rules that require confirmation fail closed without waiting.
+
 The repository entrypoint defaults to `XBotv2/data`; installed packages use the
 Python environment's `data` directory. The workspace defaults to the startup
 directory and the provider defaults to `default`. Use `--data-dir`,

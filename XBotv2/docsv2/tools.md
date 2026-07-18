@@ -5,13 +5,21 @@ Core registers these tools without plugins:
 | Tool | Execution | Purpose |
 |---|---|---|
 | `shell` | session runtime | Run a foreground command or start one with `background=true` |
-| `filesystem_read` | sandboxed, sequential | Read UTF-8 text with metadata |
-| `filesystem_write` | sandboxed, sequential | Write, patch, or replace text |
-| `filesystem_list` | sandboxed, sequential | List directory entries |
-| `search_text` | sandboxed, sequential | Search UTF-8 text by regular expression |
-| `find_files` | sandboxed, sequential | Find files by glob |
+| `filesystem_read` | sandboxed, sequential | Read bounded UTF-8 text or return non-text metadata |
+| `filesystem_stat` | sandboxed, sequential | Inspect file, symlink, hash, MIME, and image metadata |
+| `filesystem_list` | sandboxed, sequential | List bounded directory entries |
+| `search_text` | sandboxed, sequential | Search UTF-8 text with structured locations |
+| `find_files` | sandboxed, sequential | Find bounded paths by glob |
+| `filesystem_write` | sandboxed, sequential | Atomically create or replace UTF-8 text |
+| `filesystem_edit` | sandboxed, sequential | Atomically replace exact text |
+| `filesystem_patch` | sandboxed, sequential | Apply a validated single-file unified diff |
+| `filesystem_move` | sandboxed, sequential | Move or rename a path |
+| `filesystem_copy` | sandboxed, sequential | Copy a path without decoding content |
+| `filesystem_delete` | sandboxed, sequential | Delete a path |
+| `filesystem_mkdir` | sandboxed, sequential | Create an empty directory |
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
+| `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
 | `list_tasks` | session runtime | List tasks or read one full result |
 | `stop_task` | session runtime | Stop one background task |
 
@@ -25,7 +33,9 @@ captured output through the normal ToolResult cache boundary. Shell capture is
 complete; large foreground and background results are externalized by the
 common ToolResult cache instead of being irreversibly truncated. Task completion
 enters the runtime mailbox as a general message, so the Agent can react while
-the client is connected without polling.
+the client is connected without polling. Starting a background task confirms
+only that it was accepted. After the completion notification, the Agent reads
+`list_tasks(task_id)` before using its output or reporting command success.
 
 `shell(background=true)` uses the same canonical Tool name, command arguments,
 Hooks, and permission rules as foreground shell execution. Background mode is
@@ -71,7 +81,8 @@ system-level settings in `data/config/system.yaml`, and the preview may not
 exceed the inline threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
-callers should use `offset` and `limit` to inspect only the required lines.
+callers should use `offset`, `char_offset`, `limit`, and `max_chars` to inspect
+only the required range, including long single-line artifacts.
 Cached Tool results preserve their original representation. String results and
 explicit original text payloads, such as the `content` returned by
 `filesystem_read`, are stored verbatim in a `.txt` artifact without JSON
@@ -96,29 +107,37 @@ History compaction remains responsible for semantic summaries across many
 messages; context caching is deterministic externalization, not a second model
 summarizer.
 
-Filesystem write modes have the same semantics with or without the session
-sandbox. Successful writes retain mode-specific metadata such as `changed` and
-`replacements`; read/write failures retain their structured `data` and `error`
-instead of exposing sandbox process output as an untyped string.
+Filesystem operations use one implementation with or without bwrap. Complete
+writes, exact edits, and patches accept an optional `expected_sha256` guard and
+write atomically. Non-text reads return MIME, size, hash, and recognized image
+metadata without placing binary content in context. Text must be valid UTF-8
+and must not contain binary control data. Existing files are read before
+mutation, complete content is sent only to `filesystem_write`, and relevant
+ranges are read again before a change is reported as verified.
 
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 
-A session-scoped approval for `filesystem_write` records only its Tool name and
-operated `path`. File content is neither persisted in the permission rule nor
-used to distinguish later writes to the same path; a different path requires a
-separate decision.
+A session-scoped approval for a mutating filesystem tool records only its Tool
+name, source/destination paths, and destructive flags such as `recursive` or
+`overwrite`. Content, replacement text, and patch bodies are never persisted
+in permission rules.
 
 The shipped permission policy pre-approves internal state tools, client
-interaction tools, shell, and read-only workspace filesystem tools.
-`filesystem_write`, discovered Skills, MCP tools, and unknown tools remain
-subject to explicit policy. The
-sandbox implicitly mounts only the workspace (read-write), the current session
-state (read-only, exposed through relative `session/...` cache paths), and the
-minimal system files required to execute commands. Other paths require an
-explicit sandbox `resources` entry; the complete data directory is not added as
-a separate mount. Keep the runtime data directory outside the workspace when
-session-to-session filesystem isolation is required.
+interaction tools, shell, and workspace filesystem operations. The special
+permission scope `paths: ${workspace}` matches only when every path argument of
+a filesystem call resolves inside the active workspace; external mutations
+still require an explicit decision. Any exact built-in directory reference has
+the same directory-tree semantics. Other `paths` values are full-match regular
+expressions over resolved absolute paths and may embed runtime variables.
+Discovered Skills, MCP tools, and unknown tools remain subject to explicit
+policy. The workspace mount follows
+`workspace_read` and `workspace_write`; current session state remains read-only
+through relative `session/...` paths. External `ask` paths use the normal
+ordered permission interaction and record only the approved path. For atomic
+filesystem mutations, the trusted filesystem worker receives a temporary parent
+directory mount for that call; shell commands do not inherit it. The complete
+data directory is not mounted separately.
 
 `ask_user` is itself a tool call, so a restrictive permission policy may emit
 and resolve `permission_request` before the tool emits
@@ -129,6 +148,14 @@ questions, empty choices, fewer than two choices, and non-positive timeouts are
 rejected by the Tool schema before an interaction is opened. A timeout,
 cancellation, or unsupported live client is not reported as
 a successful Tool result.
+
+`request_permission` accepts the complete model-visible Tool name, a mapping of
+parameter names to full-match regular expressions, and a reason. The Tool name
+is treated literally, not as a regular expression. It never constructs or
+executes a target ToolCall. An allow-once response installs a rule consumed by
+the next matching call; an allow-session response uses normal session policy
+persistence. Explicit deny rules and sandbox checks still take precedence.
+Non-interactive runtimes do not expose this Tool.
 
 Registered tools use one canonical string name:
 

@@ -212,6 +212,7 @@ class SessionPolicyResponse(WireModel):
     session_id: str = Field(min_length=1)
     permissions: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     sandbox: dict[str, Any] = Field(default_factory=dict)
+    effective_sandbox: dict[str, Any] = Field(default_factory=dict)
 
 
 class OpenSessionResponse(WireModel):
@@ -391,13 +392,27 @@ ServerEventType = Literal[
 KNOWN_SERVER_EVENT_TYPES: tuple[str, ...] = get_args(ServerEventType)
 
 
+class RequestedPermissionData(WireModel):
+    tool: str = Field(min_length=1)
+    params: dict[str, str] = Field(default_factory=dict)
+
+
 class PermissionRequestData(WireModel):
     request_id: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    tool_call: dict[str, Any]
+    tool_call: dict[str, Any] | None = None
+    permission: RequestedPermissionData | None = None
     decision: Literal["ask"] = "ask"
     reason: str
     resume_supported: bool = False
+
+    @model_validator(mode="after")
+    def _require_subject(self) -> "PermissionRequestData":
+        if (self.tool_call is None) == (self.permission is None):
+            raise ValueError(
+                "permission request requires exactly one tool_call or permission"
+            )
+        return self
 
 
 class PermissionDeniedData(WireModel):
@@ -644,6 +659,7 @@ __all__ = [
     "PermissionDeniedData",
     "PermissionRequestData",
     "PermissionResponseRequest",
+    "RequestedPermissionData",
     "ProviderInfo",
     "ProviderListResponse",
     "ProviderSelectionRequest",

@@ -2306,6 +2306,25 @@ def test_apply_event_permission_request_sets_status_to_approval_required():
     assert len(notice_entries) == 0
 
 
+def test_permission_rule_request_is_rendered_without_a_tool_call():
+    state = TuiState()
+    payload = {
+        "request_id": "permission:rule-1",
+        "reason": "Allow report writes.",
+        "permission": {
+            "tool": "filesystem_write",
+            "params": {"path": r"reports/.*"},
+        },
+    }
+
+    state.apply_event({"type": "permission_request", "data": payload})
+
+    assert state.pending_permission_payload == payload
+    assert state.notices[-1].kind == "permission_request"
+    assert "filesystem_write" in state.notices[-1].text
+    assert state.transcript[-1].kind == "notice"
+
+
 @pytest.mark.asyncio
 async def test_permission_before_tool_event_still_renders_inline_choices():
     from xbotv2.tui.textual_client import XBotTextualApp

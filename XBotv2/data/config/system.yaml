@@ -8,9 +8,21 @@ tools:
   - shell
   - list_tasks
   - stop_task
-  - filesystem
+  - filesystem_read
+  - filesystem_stat
+  - filesystem_list
+  - filesystem_write
+  - filesystem_edit
+  - filesystem_patch
+  - filesystem_move
+  - filesystem_copy
+  - filesystem_delete
+  - filesystem_mkdir
+  - search_text
+  - find_files
   - send_message
   - ask_user
+  - request_permission
   - plugin:compact:*
   - plugin:agents:*
   - plugin:todolist:*

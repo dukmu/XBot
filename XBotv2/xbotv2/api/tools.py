@@ -218,6 +218,8 @@ def _parameters_schema(
 def _annotation_schema(annotation: Any) -> dict[str, Any]:
     if annotation is inspect.Signature.empty:
         return {"type": "string"}
+    if annotation is Any:
+        return {}
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin is Literal:
@@ -228,7 +230,13 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
         return schema
     if origin is list:
         return {"type": "array", "items": _annotation_schema(args[0] if args else str)}
-    if origin in {dict, tuple, set}:
+    if origin is dict:
+        value_type = args[1] if len(args) > 1 else Any
+        return {
+            "type": "object",
+            "additionalProperties": _annotation_schema(value_type),
+        }
+    if origin in {tuple, set}:
         return {"type": "object"}
     if origin is not None and type(None) in args:
         return _annotation_schema(next(arg for arg in args if arg is not type(None)))

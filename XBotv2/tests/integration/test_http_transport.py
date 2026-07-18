@@ -425,6 +425,13 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
     ask_user = next(item for item in tools if item["name"] == "ask_user")
     assert ask_user["parameters"]["required"] == ["question", "options"]
     assert ask_user["description"]
+    request_permission = next(
+        item for item in tools if item["name"] == "request_permission"
+    )
+    assert request_permission["parameters"]["properties"]["params"] == {
+        "type": "object",
+        "additionalProperties": {"type": "string"},
+    }
 
 
 @pytest.mark.asyncio
@@ -1088,6 +1095,12 @@ async def test_http_policy_api_updates_live_session_policy(
     assert cached_result.status == "success"
     assert "cached after policy reload" in cached_result.content
     assert status_response.json()["permissions"]["allow"] == [{"tool": "shell"}]
+    assert status_response.json()["sandbox"] == {"external_read": "ask"}
+    assert status_response.json()["effective_sandbox"]["external_read"] == "ask"
+    assert (
+        status_response.json()["effective_sandbox"]["enabled"]
+        is ctx.engine.sandbox_policy.enabled
+    )
     state_root = http_app.state.paths.session("policy").thread("t").state_dir
     events_path = state_root / "events.jsonl"
     events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
@@ -1282,6 +1295,10 @@ async def test_http_policy_patch_reset_rebuilds_live_policy(
     sandbox_status = await client.get("/sessions/policy-reset/policy")
     assert sandbox_status.status_code == 200
     assert sandbox_status.json()["sandbox"] == {}
+    assert (
+        sandbox_status.json()["effective_sandbox"]["enabled"]
+        is ctx.engine.sandbox_policy.enabled
+    )
 
     sandbox_update = await client.patch(
         "/sessions/policy-reset/policy",

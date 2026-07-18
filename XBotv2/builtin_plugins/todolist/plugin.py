@@ -58,15 +58,14 @@ class TodolistPlugin(PluginBase):
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
 
-        Use this for non-trivial work with multiple meaningful steps, or when
-        the user explicitly requests a checklist. Do not use it for a simple
-        task, conversational answer, or as a substitute for doing the work.
-        Call only when the checklist's contents or status actually changes.
-        After updating it, perform the current work before updating it again;
-        never repeatedly submit the same list. Each call replaces the whole
-        list. Keep exactly one item in_progress while unfinished work remains,
-        and mark work completed only after verification. An empty list clears
-        the checklist.
+        Use only for multi-step work or a human-requested checklist. Each call
+        replaces the list, so retain unfinished items. Items are concrete work,
+        never a final answer, report, summary, or bookkeeping. Status records
+        observed progress, not intent, with exactly one item in_progress.
+        When it is verified, mark it completed and the next item in_progress
+        before starting that work or replying. When all work is verified, submit
+        all items completed once; the plugin clears the list. Call only on a
+        change. Use an empty list only to discard an obsolete checklist.
 
         Args:
             todos: Complete ordered checklist. Each item contains content and a

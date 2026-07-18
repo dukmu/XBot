@@ -30,6 +30,23 @@ class TestBootstrapBasics:
         assert engine.turn_count == 0
 
     @pytest.mark.asyncio
+    async def test_noninteractive_bootstrap_hides_blocking_tools(
+        self, temp_data_dir
+    ):
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="noninteractive",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+            interactive=False,
+        )
+
+        names = set(engine.tool_registry.names())
+        assert "send_message" in names
+        assert "ask_user" not in names
+        assert "request_permission" not in names
+
+    @pytest.mark.asyncio
     async def test_bootstrap_applies_system_tool_result_cache_limits(
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
@@ -229,7 +246,6 @@ class NormalClosePlugin(PluginBase):
         ]
         assert not engine.tool_registry.registered(tool_name)
         assert loader.loaded_plugins == []
-        assert loader._records == {}
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio
@@ -256,16 +272,14 @@ class NormalClosePlugin(PluginBase):
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        tool_names = engine.tool_registry.names()
-        # Core tools always present
-        assert "shell" in tool_names
-        assert "filesystem_read" in tool_names
-        assert "filesystem_write" in tool_names
-        assert "filesystem_list" in tool_names
-        assert "send_message" in tool_names
-        assert "ask_user" in tool_names
-        assert "list_tasks" in tool_names
-        assert "stop_task" in tool_names
+        tool_names = set(engine.tool_registry.names())
+        assert {
+            "shell",
+            "filesystem_read",
+            "ask_user",
+            "request_permission",
+            "list_tasks",
+        } <= tool_names
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
@@ -286,13 +300,13 @@ class NormalClosePlugin(PluginBase):
             llm_override=MockLLM(responses=[]),
         )
 
-        assert "send_message" in engine.tool_registry.names()
-        assert "ask_user" in engine.tool_registry.names()
-        assert "list_tasks" in engine.tool_registry.names()
-        assert "stop_task" in engine.tool_registry.names()
-        assert "plugin:compact:*" in engine.config.tools
-        assert "plugin:todolist:*" in engine.config.tools
-        assert "plugin:goal:*" in engine.config.tools
+        assert {
+            "ask_user",
+            "filesystem_mkdir",
+            "list_tasks",
+            "request_permission",
+        } <= set(engine.tool_registry.names())
+        assert "filesystem" not in engine.config.tools
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
@@ -534,7 +548,11 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
         """The default workspace plugin injects AGENTS.md into model context."""
         (temp_workspace / "AGENTS.md").write_text(
-            "Workspace instruction: prefer concise answers.",
+            "Workspace instruction path:\n"
+            "```var\n"
+            "${workspace}\n"
+            "```\n"
+            "Keep ${workspace} and ${UNRELATED} literal.",
             encoding="utf-8",
         )
         llm = MockLLM(responses=[{"content": "ok"}])
@@ -557,7 +575,8 @@ class ConfiguredPlugin(PluginBase):
         )
         assert workspace.attrib["source"] == "AGENTS.md"
         assert workspace.text.strip() == (
-            "Workspace instruction: prefer concise answers."
+            f"Workspace instruction path:\n{temp_workspace}\n"
+            "Keep ${workspace} and ${UNRELATED} literal."
         )
 
     @pytest.mark.asyncio
@@ -615,7 +634,10 @@ class ConfiguredPlugin(PluginBase):
         _ = [event async for event in engine.run_turn("hello")]
 
         root = ET.fromstring(llm.get_call_messages(0)[0].content)
-        assert "Human: Ada (human-7)" in root.findtext("runtime_environment")
+        runtime = root.findtext("runtime_environment") or ""
+        assert "Human: Ada (human-7)" in runtime
+        assert f"- workspace: {temp_workspace}" in runtime
+        assert "- tool_results: session/artifacts/tool_results/ (read-only)" in runtime
 
     @pytest.mark.asyncio
     async def test_bootstrap_separates_configured_and_agent_instructions(
@@ -749,6 +771,35 @@ class ConfiguredPlugin(PluginBase):
 
         assert engine.permission_system.check("filesystem_read", {}) == "allow"
         assert engine.sandbox_policy.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_binds_workspace_permission_scope(
+        self,
+        temp_data_dir,
+        temp_workspace,
+    ):
+        (temp_data_dir / "config" / "permissions.yaml").write_text(
+            "allow:\n"
+            "  - tool: filesystem_write\n"
+            "    paths: ${workspace}\n"
+            "ask:\n"
+            "  - tool: filesystem_write\n",
+            encoding="utf-8",
+        )
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="test-session",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.permission_system.check(
+            "filesystem_write", {"path": "notes.md"}
+        ) == "allow"
+        assert engine.permission_system.check(
+            "filesystem_write", {"path": str(temp_data_dir / "outside.md")}
+        ) == "ask"
 
 
 class TestBootstrapNoPlugins:

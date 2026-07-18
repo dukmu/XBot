@@ -68,7 +68,8 @@ def cached_content_prompt(
         prompt_element(
             "read_instruction",
             "Read the cached file with filesystem_read using offset and limit "
-            "before acting when omitted content may matter.",
+            "before acting when omitted content may matter. For a long single "
+            "line, continue with next_offset and next_char_offset.",
         ),
     ])
     return prompt_container("cached_content", children, attributes=metadata)

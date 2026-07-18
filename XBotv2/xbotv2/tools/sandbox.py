@@ -12,25 +12,19 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from textwrap import dedent
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
+from xbotv2.api.variables import RuntimeVariables
+from xbotv2.tools import filesystem_ops
 from xbotv2.tools.sandbox_bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
-PathAccess = Literal["readwrite", "readonly", "deny", "ask"]
+PathAccess = Literal["allow", "readwrite", "readonly", "deny", "ask"]
 
 
 @dataclass
 class SandboxResourceRule:
     path: str
     access: PathAccess = "readonly"
-
-    def matches(self, target: str) -> bool:
-        try:
-            Path(target).relative_to(self.path)
-            return True
-        except ValueError:
-            return False
 
 
 class SandboxPolicy:
@@ -47,6 +41,7 @@ class SandboxPolicy:
         external_write: str = "deny",
         workspace_read: str = "allow",
         workspace_write: str = "allow",
+        variables: RuntimeVariables | None = None,
     ) -> None:
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
@@ -59,16 +54,16 @@ class SandboxPolicy:
         self.external_write = external_write
         self.workspace_read = workspace_read
         self.workspace_write = workspace_write
+        self.variables = variables or RuntimeVariables.from_roots(
+            workspace=self.workspace_root,
+            data_dir=self.data_root,
+            session_dir=self.session_root,
+        )
         self._rules: list[SandboxResourceRule] = []
 
         if config:
             self._load_config(config)
         self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
-        self._rules.append(SandboxResourceRule(path=str(self.workspace_root), access="readwrite"))
-        if self.session_root is not None:
-            self._rules.append(
-                SandboxResourceRule(path=str(self.session_root), access="readonly")
-            )
 
     @property
     def network(self) -> bool:
@@ -88,6 +83,7 @@ class SandboxPolicy:
             data_root=self.data_root,
             workspace_root=self.workspace_root,
             session_root=self.session_root,
+            variables=self.variables,
         )
         self.enabled = replacement.enabled
         self._network = replacement._network
@@ -116,175 +112,16 @@ class SandboxPolicy:
             timeout_seconds=timeout_seconds,
         )
 
-    async def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
-        spec = self._mount_specs()
-        resolved = self.resolve_read_path(path)
-        script = dedent("""
-            import json
-            import pathlib
-            import sys
-
-            path = pathlib.Path(sys.argv[1])
-            offset = int(sys.argv[2])
-            limit = int(sys.argv[3])
-            if not path.exists():
-                result = {
-                    "ok": False,
-                    "error": {"code": "file_not_found", "message": f"File not found: {path}"},
-                    "path": str(path),
-                }
-            elif not path.is_file():
-                result = {
-                    "ok": False,
-                    "error": {"code": "not_a_file", "message": f"Not a file: {path}"},
-                    "path": str(path),
-                }
-            else:
-                try:
-                    text = path.read_text("utf-8")
-                except UnicodeDecodeError:
-                    result = {
-                        "ok": False,
-                        "error": {"code": "not_text", "message": f"File is not valid UTF-8 text: {path}"},
-                        "path": str(path),
-                    }
-                except OSError as exc:
-                    result = {
-                        "ok": False,
-                        "error": {"code": "read_failed", "message": f"Error reading {path}: {exc}"},
-                        "path": str(path),
-                    }
-                else:
-                    lines = text.splitlines()
-                    start = max(0, offset)
-                    end = len(lines) if limit <= 0 else min(len(lines), start + limit)
-                    selected = lines[start:end]
-                    stat = path.stat()
-                    result = {
-                        "ok": True,
-                        "path": str(path),
-                        "resolved_path": str(path.resolve()),
-                        "kind": "file",
-                        "size_bytes": stat.st_size,
-                        "mtime": stat.st_mtime,
-                        "line_count": len(lines),
-                        "offset": start,
-                        "limit": limit,
-                        "returned_lines": len(selected),
-                        "truncated_before": start > 0,
-                        "truncated_after": end < len(lines),
-                        "content": "\\n".join(selected),
-                    }
-            sys.stdout.write(json.dumps(result, ensure_ascii=False))
-        """)
-        return await self._backend.run(
-            ["python3", "-c", script, str(resolved), str(offset), str(limit)],
-            spec,
-        )
-
-    async def write_file(self, path: str, content: str) -> str:
-        spec = self._mount_specs()
-        resolved = str(self.workspace_root / path)
-        script = dedent("""
-            import json
-            import pathlib
-            import sys
-
-            path = pathlib.Path(sys.argv[1])
-            content = sys.stdin.read()
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, "utf-8")
-                stat = path.stat()
-            except OSError as exc:
-                result = {
-                    "ok": False,
-                    "error": {"code": "write_failed", "message": f"Error writing {path}: {exc}"},
-                    "path": str(path),
-                }
-            else:
-                result = {
-                    "ok": True,
-                    "path": str(path),
-                    "bytes_written": len(content.encode("utf-8")),
-                    "size_bytes": stat.st_size,
-                    "mtime": stat.st_mtime,
-                    "line_count": len(content.splitlines()),
-                }
-            sys.stdout.write(json.dumps(result, ensure_ascii=False))
-        """)
-        return await self._backend.run(
-            ["python3", "-c", script, resolved],
-            spec,
-            stdin=content,
-        )
-
-    async def list_dir(self, path: str = ".", recursive: bool = False, max_entries: int = 500) -> str:
-        spec = self._mount_specs()
-        resolved = self.resolve_read_path(path)
-        script = (
-            "import json, sys, pathlib"
-            "; p = pathlib.Path(sys.argv[1])"
-            "; recursive = sys.argv[2] == '1'"
-            "; max_entries = int(sys.argv[3])"
-            "; it = p.rglob('*') if recursive else p.iterdir()"
-            "; entries = sorted(it, key=lambda x: (not x.is_dir(), str(x)))"
-            "; limited = entries[:max_entries] if max_entries > 0 else entries"
-            "; meta=lambda e:{'name':e.name,'path':str(e),"
-            "'relative_path':str(e.relative_to(p)),"
-            "'kind':'directory' if e.is_dir() else 'file',"
-            "'size_bytes':e.stat().st_size,'mtime':e.stat().st_mtime}"
-            "; r = {'ok':True,'path':str(p),'resolved_path':str(p.resolve()),"
-            "  'kind':'directory','recursive':recursive,'entry_count':len(entries),"
-            "  'returned_entries':len(limited),'truncated':max_entries>0 and len(entries)>max_entries,"
-            "  'entries':[meta(e) for e in limited]}"
-            "; sys.stdout.write(json.dumps(r,ensure_ascii=False))"
+    async def filesystem(self, operation: str, args: dict[str, Any]) -> str:
+        resolved = self.resolve_filesystem_args(operation, args)
+        request = json.dumps(
+            {"operation": operation, "args": resolved}, ensure_ascii=False
         )
         return await self._backend.run(
-            ["python3", "-c", script,
-             str(resolved),
-             "1" if recursive else "0",
-             str(max_entries)],
-            spec,
-        )
-
-    async def search_text(
-        self,
-        pattern: str,
-        path: str = ".",
-        glob: str | None = None,
-        max_results: int = 200,
-    ) -> str:
-        spec = self._mount_specs()
-        resolved = self.resolve_read_path(path)
-        script = (
-            "import fnmatch,json,pathlib,re,sys"
-            "; root=pathlib.Path(sys.argv[1])"
-            "; pattern=sys.argv[2]"
-            "; glob=sys.argv[3] or None"
-            "; limit=int(sys.argv[4])"
-            "; rx=re.compile(pattern)"
-            "; matches=[]"
-            "; files=(p for p in root.rglob('*') if p.is_file())"
-            "; exec(\"for p in files:\\n"
-            "  rel=str(p.relative_to(root))\\n"
-            "  if glob and not fnmatch.fnmatch(rel,glob): continue\\n"
-            "  try: lines=p.read_text('utf-8').splitlines()\\n"
-            "  except (OSError,UnicodeDecodeError): continue\\n"
-            "  for number,line in enumerate(lines,1):\\n"
-            "    if rx.search(line): matches.append(f'{rel}:{number}:{line}')\")"
-            "; limited=matches[:limit] if limit>0 else matches"
-            "; result={'ok':True,'path':str(root),'pattern':pattern,'matches':limited,"
-            "'match_count':len(matches),'returned_matches':len(limited),"
-            "'truncated':limit>0 and len(matches)>limit}"
-            "; print(json.dumps(result,ensure_ascii=False),end='')"
-        )
-        return await self._backend.run(
-            [
-                "python3", "-c", script,
-                str(resolved), pattern, glob or "", str(max_results),
-            ],
-            spec,
+            ["python3", str(Path(filesystem_ops.__file__).resolve())],
+            self._filesystem_mount_specs(operation, resolved),
+            cwd="/",
+            stdin=request,
         )
 
     # ------------------------------------------------------------------
@@ -294,14 +131,31 @@ class SandboxPolicy:
     def _mount_specs(self) -> list[SandboxMountSpec]:
         mounts: list[SandboxMountSpec] = []
 
-        mounts.append(SandboxMountSpec(
-            source=self.workspace_root, target=self.workspace_root,
-            access="readwrite", kind="dir",
-        ))
+        workspace_access = self._configured_mount_access(
+            self.workspace_read,
+            self.workspace_write,
+        )
+        if workspace_access is not None:
+            mounts.append(SandboxMountSpec(
+                source=self.workspace_root,
+                target=self.workspace_root,
+                access=workspace_access,
+                kind="dir",
+            ))
+        if self.session_root is not None:
+            mounts.append(SandboxMountSpec(
+                source=self.session_root,
+                target=self.session_root,
+                access="readonly",
+                kind="dir",
+            ))
 
         for rule in self._rules:
             resolved = self.resolve_resource_path(rule.path)
-            if resolved == str(self.workspace_root):
+            if (
+                self.session_root is not None
+                and Path(resolved).is_relative_to(self.session_root)
+            ):
                 continue
             kind = _path_kind(resolved)
             if rule.access == "readwrite":
@@ -309,6 +163,54 @@ class SandboxPolicy:
             elif rule.access == "readonly":
                 mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind))
 
+        worker = Path(filesystem_ops.__file__).resolve()
+        if not worker.is_relative_to(self.workspace_root):
+            mounts.append(SandboxMountSpec(worker, worker, "readonly", "file"))
+
+        return mounts
+
+    def _filesystem_mount_specs(
+        self,
+        operation: str,
+        args: dict[str, Any],
+    ) -> list[SandboxMountSpec]:
+        """Add per-call mounts for approved paths outside the workspace.
+
+        Mutations mount a parent directory because atomic replace, rename, and
+        delete operate on directory entries. These mounts exist only for the
+        trusted filesystem worker and do not expand shell access.
+        """
+        mounts = self._mount_specs()
+        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+            value = args.get(field)
+            if not isinstance(value, str):
+                continue
+            target = _absolute_path(Path(value))
+            write = access == "write"
+            if self._path_decision(target, write=write) != "allow":
+                continue
+            if target.is_relative_to(self.workspace_root) or (
+                self.session_root is not None
+                and target.is_relative_to(self.session_root)
+            ):
+                continue
+            parent = _nearest_existing_parent(target)
+            if parent == Path("/"):
+                continue
+            if write:
+                resolved_target = target.resolve()
+                mounts = [
+                    mount for mount in mounts
+                    if mount.target not in {target, resolved_target}
+                ]
+            required_access = "readwrite" if write else "readonly"
+            if not _mount_covers(mounts, parent, write=write):
+                mounts.append(SandboxMountSpec(
+                    source=parent,
+                    target=parent,
+                    access=required_access,
+                    kind="dir",
+                ))
         return mounts
 
     # ------------------------------------------------------------------
@@ -316,18 +218,103 @@ class SandboxPolicy:
     # ------------------------------------------------------------------
 
     def resolve_resource_path(self, path: str) -> str:
-        p = Path(path)
+        p = Path(self.variables.expand(path, source="sandbox resource path"))
         return str(p.resolve() if p.is_absolute() else (self.data_root / p).resolve())
 
     def resolve_read_path(self, path: str) -> Path:
         p = Path(path)
         if p.is_absolute():
-            return p.resolve()
+            return _absolute_path(p)
         if p.parts and p.parts[0] == "session" and self.session_root is not None:
-            resolved = (self.session_root / Path(*p.parts[1:])).resolve()
+            resolved = _absolute_path(self.session_root / Path(*p.parts[1:]))
             if resolved.is_relative_to(self.session_root):
                 return resolved
-        return (self.workspace_root / p).resolve()
+        return _absolute_path(self.workspace_root / p)
+
+    def resolve_write_path(self, path: str) -> Path:
+        p = Path(path)
+        if p.is_absolute():
+            return _absolute_path(p)
+        if p.parts and p.parts[0] == "session" and self.session_root is not None:
+            return _absolute_path(self.session_root / Path(*p.parts[1:]))
+        return _absolute_path(self.workspace_root / p)
+
+    def resolve_filesystem_args(
+        self,
+        operation: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        resolved = dict(args)
+        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+            value = args.get(field)
+            if not isinstance(value, str):
+                continue
+            write = access == "write"
+            path = self.resolve_write_path(value) if write else self.resolve_read_path(value)
+            resolved[field] = str(path)
+        return resolved
+
+    def check_filesystem_access(
+        self,
+        operation: str,
+        args: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        resolved = self.resolve_filesystem_args(operation, args)
+        decisions = []
+        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+            value = resolved.get(field)
+            if not isinstance(value, str):
+                continue
+            write = access == "write"
+            decision = self._path_decision(Path(value), write=write)
+            if decision != "allow":
+                decisions.append({
+                    "field": field,
+                    "path": value,
+                    "write": write,
+                    "decision": decision,
+                })
+        return decisions
+
+    def check_tool_access(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        operation = filesystem_ops.TOOL_OPERATIONS.get(tool_name)
+        return self.check_filesystem_access(operation, args) if operation else []
+
+    def _path_decision(self, path: Path, *, write: bool) -> str:
+        lexical = _absolute_path(path)
+        if (
+            write
+            and self.session_root is not None
+            and lexical.is_relative_to(self.session_root)
+        ):
+            return "deny"
+        target = path.resolve()
+        if self.session_root is not None and target.is_relative_to(self.session_root):
+            return "deny" if write else "allow"
+        for rule in self._rules:
+            rule_path = Path(self.resolve_resource_path(rule.path))
+            if target.is_relative_to(rule_path):
+                return _access_decision(rule.access, write=write)
+        if target.is_relative_to(self.workspace_root):
+            configured = self.workspace_write if write else self.workspace_read
+        else:
+            configured = self.external_write if write else self.external_read
+        return _access_decision(configured, write=write)
+
+    @staticmethod
+    def _configured_mount_access(
+        read_access: str,
+        write_access: str,
+    ) -> Literal["readonly", "readwrite"] | None:
+        if _access_decision(write_access, write=True) == "allow":
+            return "readwrite"
+        if _access_decision(read_access, write=False) == "allow":
+            return "readonly"
+        return None
 
     def describe(self) -> str:
         if self.enabled:
@@ -350,10 +337,9 @@ class SandboxPolicy:
         self.workspace_read = str(config.get("workspace_read", "allow"))
         self.workspace_write = str(config.get("workspace_write", "allow"))
         for rule_data in config.get("resources", []):
-            path = _expand_path_placeholders(
+            path = self.variables.expand(
                 str(rule_data.get("path", "")),
-                str(self.workspace_root),
-                str(self.data_root),
+                source="sandbox resource path",
             )
             access = rule_data.get("access", "readonly")
             self._rules.append(SandboxResourceRule(path=path, access=access))
@@ -379,20 +365,16 @@ class SandboxPolicy:
             if field in config:
                 setattr(self, field, str(config[field]))
         if "resources" in config:
-            implicit_paths = {str(self.workspace_root)}
-            if self.session_root is not None:
-                implicit_paths.add(str(self.session_root))
-            self._rules = [
-                rule for rule in self._rules
-                if rule.path in implicit_paths
-            ]
+            self._rules = []
             for rule_data in config["resources"]:
-                path = _expand_path_placeholders(
+                path = self.variables.expand(
                     str(rule_data.get("path", "")),
-                    str(self.workspace_root),
-                    str(self.data_root),
+                    source="sandbox resource path",
                 )
-                self._rules.append(SandboxResourceRule(path=path, access=rule_data.get("access", "readonly")))
+                self._rules.append(SandboxResourceRule(
+                    path=path,
+                    access=rule_data.get("access", "readonly"),
+                ))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the live sandbox config back to the format
@@ -449,5 +431,33 @@ def _path_kind(path_str: str) -> Literal["file", "dir"]:
     return "dir"
 
 
-def _expand_path_placeholders(path: str, workspace: str, data_dir: str) -> str:
-    return path.replace("{{ workspace }}", workspace).replace("{{ data_dir }}", data_dir)
+def _nearest_existing_parent(path: Path) -> Path:
+    parent = path.parent
+    while parent != parent.parent and not parent.exists():
+        parent = parent.parent
+    return parent
+
+
+def _mount_covers(
+    mounts: list[SandboxMountSpec],
+    path: Path,
+    *,
+    write: bool,
+) -> bool:
+    return any(
+        (mount.kind == "dir" and path.is_relative_to(mount.target))
+        and (not write or mount.access == "readwrite")
+        for mount in mounts
+    )
+
+
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(path.expanduser()))
+
+
+def _access_decision(access: str, *, write: bool) -> str:
+    if access in {"allow", "readwrite"}:
+        return "allow"
+    if not write and access == "readonly":
+        return "allow"
+    return "ask" if access == "ask" else "deny"

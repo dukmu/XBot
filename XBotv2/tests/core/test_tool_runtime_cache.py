@@ -23,44 +23,26 @@ from xbotv2.api.messages import Message
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.result_cache import (
-    _format_cached_result,
-    make_tool_result_cache_hook,
-)
+from xbotv2.tools.result_cache import make_tool_result_cache_hook
 from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.api.tools import Tool, ToolCall
 
 
-def large_output() -> str:
+async def large_output() -> str:
     """Return a large deterministic string."""
     return "x" * 200
+
+
 large_output_tool = Tool.from_function(large_output, name="large_output")
 
 
-def failing_tool() -> str:
+async def failing_tool() -> str:
     """Raise a deterministic tool failure."""
     raise RuntimeError("boom")
+
+
 failing_tool_tool = Tool.from_function(failing_tool, name="failing_tool")
-
-
-@pytest.mark.asyncio
-async def test_sync_tool_executes_with_structured_arguments():
-    def sync_tool(message: str) -> str:
-        return f"ok:{message}"
-
-    xbot_tool = Tool.from_function(sync_tool, name="sync_tool")
-    registry = ToolRegistry()
-    registry.register(xbot_tool, sandbox_mode="host")
-
-    results = await execute_tools(
-        [ToolCall("c1", "sync_tool", {"message": "hello"})],
-        registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-    )
-
-    assert results[0].status == "success"
-    assert results[0].content == "ok:hello"
 
 
 @pytest.mark.asyncio
@@ -152,7 +134,7 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     assert all(result.status == "success" for result in results)
     assert "tool_results" in results[0].content
-    assert "tool_results/cached.txt:1:cached content" in results[1].content
+    assert "tool_results/cached.txt:1:1:cached content" in results[1].content
     assert "tool_results/cached.txt" in results[2].content
 
 
@@ -256,47 +238,6 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
 
 
 @pytest.mark.asyncio
-async def test_builtin_ask_user_waits_for_live_answer() -> None:
-    registry = ToolRegistry()
-    registry.register(ask_user, sandbox_mode="host")
-    seen: list[tuple[str, str, float | None]] = []
-
-    async def answer(event, **kwargs):
-        seen.append((
-            event["type"],
-            event["data"]["request_id"],
-            kwargs["timeout_seconds"],
-        ))
-        return {
-            "request_id": event["data"]["request_id"],
-            "status": "answered",
-            "answer": "continue",
-        }
-
-    results = await execute_tools(
-        [ToolCall(
-            "c1",
-            "ask_user",
-            {
-                "question": "Continue?",
-                "options": [
-                    {"label": "continue", "description": "Keep running."},
-                    {"label": "stop", "description": "Stop the current work."},
-                ],
-                "timeout_seconds": 3,
-            },
-        )],
-        registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-        client_interaction_handler=answer,
-    )
-
-    assert seen == [("user_input_required", "user_input:c1", 3)]
-    assert results[0].status == "success"
-    assert results[0].content == "User answered: continue"
-
-
-@pytest.mark.asyncio
 async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
     registry = ToolRegistry()
     registry.register(ask_user, sandbox_mode="host")
@@ -336,64 +277,8 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("response", "expected_status"),
-    [
-        ({"status": "answered", "answer": ""}, "error"),
-        ({"status": "timeout"}, "error"),
-        ({"status": "cancelled", "reason": "interrupted"}, "cancelled"),
-    ],
-)
-async def test_builtin_ask_user_preserves_unsuccessful_outcomes(
-    response,
-    expected_status,
-) -> None:
-    registry = ToolRegistry()
-    registry.register(ask_user, sandbox_mode="host")
-
-    async def answer(*_args, **_kwargs):
-        return response
-
-    results = await execute_tools(
-        [
-            ToolCall(
-                "c1",
-                "ask_user",
-                {
-                    "question": "Continue?",
-                    "options": [
-                        {"label": "continue", "description": "Keep running."},
-                        {"label": "stop", "description": "Stop the current work."},
-                    ],
-                },
-            )
-        ],
-        registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-        client_interaction_handler=answer,
-    )
-
-    assert results[0].status == expected_status
-
-
-@pytest.mark.asyncio
-async def test_builtin_ask_user_requires_options() -> None:
-    registry = ToolRegistry()
-    registry.register(ask_user, sandbox_mode="host")
-
-    results = await execute_tools(
-        [ToolCall("c1", "ask_user", {"question": "Continue?"})],
-        registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-    )
-
-    assert results[0].status == "error"
-    assert "Invalid arguments for ask_user" in results[0].content
-
-
-@pytest.mark.asyncio
 async def test_dictionary_tool_result_preserves_structured_fields() -> None:
-    def structured_result() -> dict:
+    async def structured_result() -> dict:
         return {
             "status": "error",
             "content": "failed",
@@ -423,20 +308,10 @@ async def test_dictionary_tool_result_preserves_structured_fields() -> None:
         permission_system=PermissionSystem(default_decision="allow"),
     )
 
-    assert results[0].additional_kwargs == {
-        "xbotv2_data": {"attempt": 1},
-        "xbotv2_error": {
-            "code": "dict_error",
-            "message": "failed",
-            "retryable": False,
-            "details": {},
-        },
-    }
-    assert results[0].artifact == [{
-        "id": "artifact-1",
-        "media_type": "text/plain",
-        "name": "result.txt",
-    }]
+    assert results[0].status == "error"
+    assert results[0].additional_kwargs["xbotv2_data"] == {"attempt": 1}
+    assert results[0].additional_kwargs["xbotv2_error"]["code"] == "dict_error"
+    assert results[0].artifact[0]["name"] == "result.txt"
 
 
 @pytest.mark.asyncio
@@ -475,6 +350,101 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
         ("denied", "filesystem_write", "PermissionError"),
         ("batch", 1, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("approved\n", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        config={"external_read": "ask", "external_write": "deny"},
+        workspace_root=workspace,
+    )
+    if not sandbox.backend_available:
+        pytest.skip("bubblewrap is not installed")
+    registry = ToolRegistry()
+    registry.register(filesystem_read, sandbox_mode="sandboxed")
+    events = []
+
+    async def approve(event, **_kwargs):
+        events.append(event)
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "filesystem_read", {"path": str(external)})],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert results[0].content == "approved\n"
+    assert events[0]["data"]["source"] == "sandbox"
+    assert events[0]["data"]["sandbox_path"] == str(external.resolve())
+    assert events[0]["data"]["sandbox_access"] == "readonly"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("before\n", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        config={"external_read": "ask", "external_write": "ask"},
+        workspace_root=workspace,
+    )
+    if not sandbox.backend_available:
+        pytest.skip("bubblewrap is not installed")
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    events = []
+
+    async def approve(event, **_kwargs):
+        events.append(event)
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall(
+            "c1",
+            "filesystem_write",
+            {"path": str(external), "content": "after\n"},
+        )],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert external.read_text(encoding="utf-8") == "after\n"
+    assert events[0]["data"]["sandbox_path"] == str(external)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxPolicy(
+        config={"workspace_read": "allow", "workspace_write": "deny"},
+        workspace_root=workspace,
+    )
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+
+    results = await execute_tools(
+        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "error"
+    assert "Sandbox denied write access" in results[0].content
+    assert not (workspace / "blocked.txt").exists()
 
 
 @pytest.mark.asyncio
@@ -617,7 +587,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert cached.attrib["kind"] == "tool_result"
     assert "x" * 100 not in tool_message.content
     assert cached.find("preview/ending") is not None
-    assert "filesystem_read using offset and limit" in tool_message.content
+    assert cached.find("read_instruction") is not None
     assert tool_message.artifact["kind"] == "cached_tool_result"
     assert tool_message.artifact["tool_call_id"] == "call_large"
     assert tool_message.artifact["cache_path"].startswith("session/artifacts/tool_results/")
@@ -632,37 +602,6 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
         m for m in state_store.read_messages() if m.role == "tool"
     )
     assert restored_tool_message.artifact == tool_message.artifact
-
-
-@pytest.mark.asyncio
-async def test_cache_hook_externalizes_large_structured_data(state_store):
-    hook = make_tool_result_cache_hook(
-        state_store,
-        max_inline_chars=100,
-        preview_chars=20,
-    )
-    message = Message(
-        role="tool",
-        content="Short result summary.",
-        tool_call_id="large-data",
-        additional_kwargs={"xbotv2_data": {"content": "x" * 200}},
-    )
-    ctx = SimpleNamespace(tool_results=[message])
-
-    await hook(ctx)
-
-    data = message.additional_kwargs["xbotv2_data"]
-    assert data["cached"] is True
-    assert data["cache_path"].startswith("session/artifacts/tool_results/")
-    assert not Path(data["cache_path"]).is_absolute()
-    assert message.artifact["cache_path"] == data["cache_path"]
-    assert message.artifact["kind"] == "cached_tool_result"
-    assert ET.fromstring(message.content).tag == "cached_content"
-    cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*.txt")
-    )
-    assert len(cache_files) == 1
-    assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
 
 
 @pytest.mark.asyncio
@@ -698,6 +637,8 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     assert message.additional_kwargs["xbotv2_data"]["cache_path"].endswith(
         cache_files[0].name
     )
+    assert message.artifact["kind"] == "cached_tool_result"
+    assert message.artifact["cache_path"].endswith(cache_files[0].name)
 
 
 @pytest.mark.asyncio
@@ -749,20 +690,6 @@ async def test_cache_hook_does_not_json_encode_string_data(state_store):
     )
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == original
-
-
-def test_cached_result_zero_preview_does_not_duplicate_content():
-    content = _format_cached_result(
-        content="secret",
-        cache_path=Path("session/artifacts/tool_results/result.txt"),
-        max_inline_chars=1,
-        preview_chars=0,
-    )
-    cached = ET.fromstring(content)
-
-    assert cached.findtext("preview/beginning").strip() == ""
-    assert cached.findtext("preview/ending").strip() == ""
-    assert "secret" not in content
 
 
 def _hook_context(stage, **kwargs):

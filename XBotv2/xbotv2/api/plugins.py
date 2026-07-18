@@ -16,6 +16,7 @@ from xbotv2.api.agents import AgentDefinition, AgentRuntime
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
 from xbotv2.api.tools import Tool
+from xbotv2.api.variables import RuntimeVariables
 
 
 class PluginConfigError(ValueError):
@@ -152,6 +153,7 @@ class PluginSetupContext(Protocol):
 
     workspace_root: Path
     data_root: Path
+    variables: RuntimeVariables
     agent_runtime: AgentRuntime | None
 
     def register_agent(self, definition: AgentDefinition) -> str: ...
@@ -205,7 +207,10 @@ class PluginBase:
         for declaration in self.manifest.prompt_fragments:
             ctx.add_prompt_fragment(
                 declaration.stage,
-                self._render_fragment(declaration),
+                ctx.variables.expand_markdown(
+                    self._render_fragment(declaration),
+                    source=f"plugin {self.manifest.name} prompt fragment",
+                ),
                 source=declaration.file or declaration.handler,
             )
 

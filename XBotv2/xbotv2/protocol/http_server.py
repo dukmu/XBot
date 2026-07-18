@@ -65,7 +65,11 @@ from xbotv2.protocol.models import (
 )
 from xbotv2.protocol.sse import encode_server_event
 from xbotv2.api.paths import RuntimePaths
-from xbotv2.config.loader import load_provider_config, load_provider_names
+from xbotv2.config.loader import (
+    load_provider_config,
+    load_provider_names,
+    load_system_config,
+)
 from xbotv2.core.operations import (
     OperationError,
     clear_history,
@@ -79,7 +83,10 @@ from xbotv2.core.operations import (
     undo_history,
     update_session_policy,
 )
-from xbotv2.config.policy import load_session_policy
+from xbotv2.config.policy import (
+    load_session_policy,
+    merge_sandbox_config,
+)
 from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.protocol.commands import execute_command, list_commands
@@ -304,9 +311,11 @@ def _register_routes(app: FastAPI) -> None:
         session_id: str,
     ) -> SessionPolicyResponse:
         await session_summary(manager, session_id)
+        policy = load_session_policy(manager.paths, session_id)
         return _session_policy_response(
             session_id,
-            load_session_policy(manager.paths, session_id),
+            policy,
+            await _effective_sandbox(manager, session_id, policy),
         )
 
     @app.patch(
@@ -333,7 +342,11 @@ def _register_routes(app: FastAPI) -> None:
             sandbox=payload.sandbox,
             remove_sandbox=payload.remove_sandbox,
         )
-        return _session_policy_response(session_id, policy)
+        return _session_policy_response(
+            session_id,
+            policy,
+            await _effective_sandbox(manager, session_id, policy),
+        )
 
     @app.post(
         "/sessions/{session_id}/fork",
@@ -1030,12 +1043,44 @@ async def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
 def _session_policy_response(
     session_id: str,
     policy: dict[str, Any],
+    effective_sandbox: dict[str, Any],
 ) -> SessionPolicyResponse:
     return SessionPolicyResponse(
         session_id=session_id,
         permissions=policy.get("permissions") or {},
         sandbox=policy.get("sandbox") or {},
+        effective_sandbox=effective_sandbox,
     )
+
+
+async def _effective_sandbox(
+    manager: SessionManager,
+    session_id: str,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    active = await manager.active_threads()
+    contexts = [
+        ctx
+        for (active_session_id, _), ctx in active.items()
+        if active_session_id == session_id
+    ]
+    if contexts:
+        return contexts[0].engine.sandbox_policy.to_dict()
+
+    thread_ids = persisted_thread_ids(manager.paths, session_id)
+    workspace = Path.cwd()
+    if thread_ids:
+        thread_id = "agent" if "agent" in thread_ids else thread_ids[0]
+        store = CoreStateStore(
+            manager.paths.session(session_id),
+            thread_id=thread_id,
+            workspace_root="",
+            provider="",
+        )
+        metadata = store.read_thread_metadata()
+        workspace = Path(metadata.get("workspace_root") or workspace)
+    config = load_system_config(manager.paths, workspace)
+    return merge_sandbox_config(config.sandbox, policy.get("sandbox"))
 
 
 async def _resolve_interaction(
