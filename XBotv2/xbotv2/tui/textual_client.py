@@ -1,6 +1,6 @@
 """Textual HTTP/SSE TUI client.
 
-This frontend talks to ``xbotv2 --mode server`` through ``TerminalSession``
+This frontend talks to ``xbotv2 serve`` through ``TerminalSession``
 and does not import runtime engine or bootstrap modules.
 """
 

@@ -24,13 +24,6 @@ dependencies = [
 [project.scripts]
 xbotv2 = "xbotv2.__main__:main"
 
-[project.optional-dependencies]
-legacy = [
-    "langchain-core>=0.3",
-    "langchain-openai>=0.3",
-    "langchain-anthropic>=0.3",
-]
-
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -58,3 +51,4 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "builtin_plugins" = ["**/plugin.yaml"]
+"xbotv2" = ["web_dist/index.html", "web_dist/assets/*"]

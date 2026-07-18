@@ -641,6 +641,29 @@ class Engine:
                 )
                 raise
             content = response.content if hasattr(response, "content") else str(response)
+            if not str(content).strip() and not response.tool_calls:
+                reasoning = str(
+                    (getattr(response, "additional_kwargs", None) or {}).get(
+                        "reasoning_content", ""
+                    )
+                )
+                after_tool = bool(
+                    self.messages and self.messages[-1].role == "tool"
+                )
+                stop_reason = (
+                    getattr(response, "response_metadata", None) or {}
+                ).get("stop_reason", "unknown")
+                context = " after ToolResult" if after_tool else ""
+                logger.debug(
+                    "invalid model response%s stop_reason=%s reasoning=%r",
+                    context,
+                    stop_reason,
+                    reasoning[:1000],
+                )
+                raise RuntimeError(
+                    f"LLM returned no assistant content or ToolUse{context} "
+                    f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
+                )
             response_msg = Message(
                 role="assistant",
                 content=content,

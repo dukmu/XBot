@@ -100,7 +100,11 @@ class OpenAICompatibleProvider:
             for tc in tc_list:
                 idx = getattr(tc, "index", 0)
                 if idx not in tool_call_buffers:
-                    tool_call_buffers[idx] = {"id": getattr(tc, "id", "") or "", "name": "", "args": ""}
+                    tool_call_buffers[idx] = {
+                        "id": getattr(tc, "id", "") or "",
+                        "name": "",
+                        "args": "",
+                    }
                 buf = tool_call_buffers[idx]
                 if getattr(tc, "id", None):
                     buf["id"] = tc.id
@@ -204,6 +208,7 @@ class AnthropicProvider:
             "cache_creation_input_tokens": 0,
         }
         response_model = self.model
+        stop_reason = ""
 
         stream = await self.client.messages.create(stream=True, **api_kwargs)
         try:
@@ -275,6 +280,10 @@ class AnthropicProvider:
                             )]
                         )
                 elif event_type == "message_delta":
+                    delta = getattr(event, "delta", None)
+                    stop_reason = (
+                        getattr(delta, "stop_reason", "") or stop_reason
+                    )
                     _merge_anthropic_usage(
                         usage_values,
                         getattr(event, "usage", None),
@@ -294,10 +303,13 @@ class AnthropicProvider:
             for meta in tool_blocks.values()
             if meta.get("name")
         ]
+        response_metadata = {"model_name": response_model}
+        if stop_reason:
+            response_metadata["stop_reason"] = stop_reason
         yield ModelResponse(
             content="".join(text_parts),
             tool_calls=final_tool_calls,
-            response_metadata={"model_name": response_model},
+            response_metadata=response_metadata,
             usage_metadata=final_usage,
             additional_kwargs={
                 "reasoning_content": "".join(reasoning_parts)
@@ -306,12 +318,21 @@ class AnthropicProvider:
 
 
 def create_llm(provider_config: Any) -> Any:
-    provider, model, base_url, api_key, temperature, max_tokens, responses, reasoning_effort, thinking_enabled = provider_values(provider_config)
+    provider = _get_cfg(provider_config, "provider", "openai")
+    model = _get_cfg(provider_config, "model", "gpt-4")
+    base_url = _get_cfg(provider_config, "base_url")
+    api_key = _get_cfg(provider_config, "api_key", "")
+    temperature = _get_cfg(provider_config, "temperature", 0.7)
+    max_tokens = _get_cfg(provider_config, "max_tokens", 4096)
+    reasoning_effort = _get_cfg(provider_config, "reasoning_effort")
+    thinking_enabled = _get_cfg(provider_config, "thinking_enabled", False)
     api_key = expand_env(api_key) if api_key else ""
     base_url = expand_env(base_url) if base_url else None
 
     if provider == "mock":
-        return create_mock_llm(responses)
+        from xbotv2.llm.mock import MockLLM
+
+        return MockLLM(responses=_get_cfg(provider_config, "mock_responses", []))
     if provider in ("openai", "deepseek", "lmstudio-openai"):
         require_api_key(provider, model, api_key)
         logger.info("creating openai-compatible provider=%s model=%s", provider, model)
@@ -331,20 +352,6 @@ def create_llm(provider_config: Any) -> Any:
     raise ValueError(f"Unknown provider: {provider!r}")
 
 
-def provider_values(provider_config: Any) -> tuple[str, str, str | None, str, float, int, list[dict[str, Any]], str | None, bool]:
-    return (
-        _get_cfg(provider_config, "provider", "openai"),
-        _get_cfg(provider_config, "model", "gpt-4"),
-        _get_cfg(provider_config, "base_url"),
-        _get_cfg(provider_config, "api_key", ""),
-        _get_cfg(provider_config, "temperature", 0.7),
-        _get_cfg(provider_config, "max_tokens", 4096),
-        _get_cfg(provider_config, "mock_responses", []),
-        _get_cfg(provider_config, "reasoning_effort"),
-        _get_cfg(provider_config, "thinking_enabled", False),
-    )
-
-
 def _get_cfg(provider_config: Any, key: str, default: Any = None) -> Any:
     if isinstance(provider_config, dict):
         return provider_config.get(key, default)
@@ -357,11 +364,6 @@ def require_api_key(provider: str, model: str, api_key: str) -> None:
             f"Provider {provider!r} for model {model!r} requires api_key. "
             "Set the configured environment variable or providers.yaml api_key."
         )
-
-
-def create_mock_llm(responses: list[dict[str, Any]]) -> Any:
-    from xbotv2.llm.mock import MockLLM
-    return MockLLM(responses=responses)
 
 
 _REASONING_HEADER = "## Thinking\n\n"
@@ -402,13 +404,19 @@ def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
             continue
         content = getattr(message, "content", "")
         if role == "tool":
-            result.append({"role": "tool", "content": str(content), "tool_call_id": getattr(message, "tool_call_id", "")})
+            result.append({
+                "role": "tool",
+                "content": str(content),
+                "tool_call_id": getattr(message, "tool_call_id", ""),
+            })
         else:
             item: dict[str, Any] = {"role": role, "content": str(content)}
             tool_calls = getattr(message, "tool_calls", None)
             if tool_calls:
                 item["tool_calls"] = [openai_tool_call_for_request(tc) for tc in tool_calls]
-                reasoning = (getattr(message, "additional_kwargs", {}) or {}).get("reasoning_content")
+                reasoning = (
+                    getattr(message, "additional_kwargs", {}) or {}
+                ).get("reasoning_content")
                 if reasoning:
                     item["reasoning_content"] = _strip_reasoning_headers(str(reasoning))
             result.append(item)
@@ -432,23 +440,6 @@ def openai_tool_call_for_request(tool_call: ToolCall) -> dict[str, Any]:
     }
 
 
-def openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
-    result: list[ToolCall] = []
-    for tc in tool_calls:
-        args = tc.get("function", {}).get("arguments", "{}")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-        result.append(ToolCall(
-            id=tc.get("id", ""),
-            name=tc.get("function", {}).get("name", tc.get("name", "")),
-            args=args,
-        ))
-    return result
-
-
 def openai_usage(usage: Any) -> dict[str, Any]:
     if usage is None:
         return {}
@@ -459,8 +450,12 @@ def openai_usage(usage: Any) -> dict[str, Any]:
         "context_tokens": getattr(usage, "prompt_tokens", 0) or 0,
     }
     # DeepSeek disk cache: cached tokens are discounted
-    hit = getattr(usage, "prompt_cache_hit_tokens", None) or getattr(usage, "cache_read_input_tokens", None)
-    miss = getattr(usage, "prompt_cache_miss_tokens", None) or getattr(usage, "cache_creation_input_tokens", None)
+    hit = getattr(usage, "prompt_cache_hit_tokens", None) or getattr(
+        usage, "cache_read_input_tokens", None
+    )
+    miss = getattr(usage, "prompt_cache_miss_tokens", None) or getattr(
+        usage, "cache_creation_input_tokens", None
+    )
     write = getattr(usage, "prompt_cache_write_tokens", None)
     if hit is not None:
         result["cache_read_input_tokens"] = int(hit)
@@ -496,39 +491,37 @@ def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for msg in messages:
         role = getattr(msg, "role", "user")
-        content = getattr(msg, "content", "")
         if role == "system":
             continue
-        elif role == "tool":
+        content = str(getattr(msg, "content", "") or "")
+        blocks: list[dict[str, Any]] = []
+        target_role = "assistant" if role == "assistant" else "user"
+        if role == "tool":
             block = {
                 "type": "tool_result",
                 "tool_use_id": getattr(msg, "tool_call_id", ""),
-                "content": str(content),
+                "content": content,
             }
-            if (
-                result
-                and result[-1].get("role") == "user"
-                and isinstance(result[-1].get("content"), list)
-                and all(
-                    item.get("type") == "tool_result"
-                    for item in result[-1]["content"]
-                    if isinstance(item, dict)
-                )
-            ):
-                result[-1]["content"].append(block)
-            else:
-                result.append({"role": "user", "content": [block]})
+            if (getattr(msg, "status", "") or "success") != "success":
+                block["is_error"] = True
+            blocks.append(block)
         elif role == "assistant":
-            item: dict[str, Any] = {"role": "assistant", "content": [{"type": "text", "text": str(content)}]}
+            if content:
+                blocks.append({"type": "text", "text": content})
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
-                item["content"] += [
+                blocks.extend(
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
                     for tc in tool_calls
-                ]
-            result.append(item)
+                )
+        elif content:
+            blocks.append({"type": "text", "text": content})
+        if not blocks:
+            continue
+        if result and result[-1]["role"] == target_role:
+            result[-1]["content"].extend(blocks)
         else:
-            result.append({"role": "user", "content": str(content)})
+            result.append({"role": target_role, "content": blocks})
     return result
 
 
@@ -539,21 +532,6 @@ def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
         "description": fn.get("description", ""),
         "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
     }
-
-
-def anthropic_usage(usage: Any) -> dict[str, Any]:
-    if usage is None:
-        return {}
-    return _anthropic_usage_values(
-        input_tokens=getattr(usage, "input_tokens", 0) or 0,
-        output_tokens=getattr(usage, "output_tokens", 0) or 0,
-        cache_read_input_tokens=(
-            getattr(usage, "cache_read_input_tokens", 0) or 0
-        ),
-        cache_creation_input_tokens=(
-            getattr(usage, "cache_creation_input_tokens", 0) or 0
-        ),
-    )
 
 
 def _merge_anthropic_usage(total: dict[str, int], usage: Any) -> None:

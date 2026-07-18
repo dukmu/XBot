@@ -1,14 +1,16 @@
 # Workspace Startup Configuration
 
-XBot reads workspace configuration once while bootstrapping a thread. It does
-not watch these files or reread them between turns. Start a new runtime to apply
-changes.
+XBot reads `.xbot/*.yaml` configuration once while bootstrapping a thread. It
+does not watch those files or reread them between turns. Start a new runtime to
+apply configuration changes. `AGENTS.md` is the exception described below.
 
 ## AGENTS.md
 
-The built-in `workspace_instructions` plugin reads `<workspace>/AGENTS.md` once
-and registers it as a source-tagged `system_instructions` prompt fragment. It
-is not added to message history or the mailbox. Disable the behavior through
+The built-in `workspace_instructions` plugin reads `<workspace>/AGENTS.md`
+before every model context build. Edits and deletion therefore apply to the
+next model request, including the next Tool loop within the current turn. The
+content is a temporary source-tagged `system_instructions` component; it is not
+added to message history or the mailbox. Disable the behavior through
 `.xbot/plugins.yaml` when a workspace does not want project instructions.
 Agent definitions are separate files under `.agents/<name>.md`; `AGENTS.md`
 frontmatter is not interpreted as runtime configuration.

@@ -2042,9 +2042,7 @@ async def test_terminal_session_consumes_transport_end_sentinel():
     ]
 
 
-def test_tui_modules_do_not_import_runtime_boundaries():
-    forbidden = ("xbotv2.core", "langchain", "langgraph")
-
+def test_tui_modules_do_not_import_core():
     for path in [
         Path("XBotv2/xbotv2/tui/client.py"),
         Path("XBotv2/xbotv2/tui/session_config.py"),
@@ -2062,7 +2060,7 @@ def test_tui_modules_do_not_import_runtime_boundaries():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
 
-        assert not any(name.startswith(forbidden) for name in imports)
+        assert not any(name.startswith("xbotv2.core") for name in imports)
 
 
 def _frame(frame_type: str, payload: dict) -> dict:
@@ -2075,7 +2073,7 @@ def _frame(frame_type: str, payload: dict) -> dict:
 
 
 def test_tui_state_records_engine_error_event():
-    """Engine-level ``error`` events (e.g. LangChain 400 on
+    """Engine-level ``error`` events (for example, provider HTTP 400 on
     ``tool_calls → tool_messages`` mismatches) must be captured on
     ``TuiState.errors`` AND surface as a transcript entry so the
     transcript shows the failure even if the user has scrolled away
@@ -2164,7 +2162,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
     transcript mounts an entry with classes ``"entry error"`` so the
     ``.error`` CSS rule (red meta + body) actually applies. This is
     the visible signal users get when a tool-call error happens
-    (LangChain 400, sandbox rejection, etc.).
+    (provider HTTP 400, sandbox rejection, etc.).
 
     Uses the **real** error text reported in v1.2 testing:
 

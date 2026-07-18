@@ -185,7 +185,11 @@ async def bootstrap(
     agent_registry = AgentRegistry()
     hook_manager.register(
         HookStage.AFTER_TOOLS,
-        make_tool_result_cache_hook(state_store),
+        make_tool_result_cache_hook(
+            state_store,
+            max_inline_chars=agent_config.tool_result_max_inline_chars,
+            preview_chars=agent_config.tool_result_preview_chars,
+        ),
     )
     _register_configured_hooks(agent_config, hook_manager)
 

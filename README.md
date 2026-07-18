@@ -6,9 +6,20 @@ plugin-extensible client/server agent runtime.
 ## Run
 
 ```bash
-uv run xbotv2 --data-dir XBotv2/data --mode tui
-uv run xbotv2 --data-dir XBotv2/data --provider minimax --mode once "Hello"
+./xbot tui --workspace ./output
+./xbot once --provider minimax "Hello"
+./xbot serve
+./xbot web
 ```
+
+The repository entrypoint defaults to `XBotv2/data`, the current directory as
+the workspace, and the `default` provider. Use `--workspace`, `--provider`, and
+the other CLI options to select a run configuration. The workspace always
+defaults to the startup directory; `XBOT_*` variables provide optional defaults
+for the other settings. Run `./xbot --help` for all modes.
+
+Web mode serves the compiled frontend through Python and automatically starts
+the API on an internal Unix socket unless `--server URL` is provided.
 
 ## Develop
 

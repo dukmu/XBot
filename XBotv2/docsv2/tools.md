@@ -63,9 +63,12 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
-Tool results larger than 12,000 characters are stored under the session's
-`state/artifacts/tool_results` directory before history persistence and SSE
-emission. The model receives bounded beginning and ending excerpts plus a `cache_path` relative to
+Tool results larger than `tool_result_max_inline_chars` (12,000 by default) are
+stored under the session's `state/artifacts/tool_results` directory before
+history persistence and SSE emission. `tool_result_preview_chars` controls the
+bounded beginning and ending preview (4,000 characters by default). Both are
+system-level settings in `data/config/system.yaml`, and the preview may not
+exceed the inline threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
 callers should use `offset` and `limit` to inspect only the required lines.

@@ -5,6 +5,10 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
   return {
     plugins: [react()],
+    build: {
+      outDir: "../xbotv2/web_dist",
+      emptyOutDir: true,
+    },
     server: {
       host: "127.0.0.1",
       port: 5173,

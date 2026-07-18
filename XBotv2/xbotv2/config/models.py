@@ -6,7 +6,7 @@ from typing import Any
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from xbotv2.api.hooks import HookStage
 
@@ -81,6 +81,8 @@ class SystemConfig(BaseModel):
     system_prompt: str = Field(default="")
     provider: str = Field(default="default")
     max_context_tokens: int = Field(default=32000)
+    tool_result_max_inline_chars: int = Field(default=12000, ge=1)
+    tool_result_preview_chars: int = Field(default=4000, ge=0)
     max_concurrent_subagents: int = Field(default=4, ge=1)
     tools: list[str] = Field(default_factory=list)
     hooks: list[HookConfig] = Field(default_factory=list)
@@ -100,6 +102,15 @@ class SystemConfig(BaseModel):
     permissions: dict = Field(default_factory=lambda: {
         "ask": [{"tool": ".*"}],
     })
+
+    @model_validator(mode="after")
+    def _validate_tool_result_limits(self) -> "SystemConfig":
+        if self.tool_result_preview_chars > self.tool_result_max_inline_chars:
+            raise ValueError(
+                "tool_result_preview_chars cannot exceed "
+                "tool_result_max_inline_chars"
+            )
+        return self
 
     @property
     def effective_instructions(self) -> str:

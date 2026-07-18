@@ -75,8 +75,9 @@ as `bash` or `edit`. A `model` value may use `provider/model-id`. Credentials,
 provider URLs, plugin configuration, sandbox roots, and Hook paths do not belong
 in Agent Markdown.
 
-`AGENTS.md` remains a standard workspace instruction file. It is injected once
-for primary agents and subagents and is never parsed as an Agent definition.
+`AGENTS.md` remains a standard workspace instruction file. It is reloaded for
+each primary-agent and subagent model request and is never parsed as an Agent
+definition.
 
 Select a `primary` or `all` definition with `xbotv2 --agent <name>`. The HTTP
 session-open request exposes the same optional `agent` field. The selected name

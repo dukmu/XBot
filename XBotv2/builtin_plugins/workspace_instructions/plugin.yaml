@@ -1,4 +1,4 @@
 name: workspace_instructions
 version: "1.0.0"
-description: Load workspace AGENTS.md once when the session starts
+description: Reload workspace AGENTS.md for each model request
 api_version: "1"

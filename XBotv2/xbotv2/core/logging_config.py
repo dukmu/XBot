@@ -7,7 +7,7 @@ Goals (v1.2, see docsv2 §10.5.10):
   so any unhandled exception that would normally print to stderr
   is invisible to the user once the screen clears.
 - Location: ``<data_dir>/logs/xbotv2.log`` by default, overridable
-  with the ``XBOTV2_LOG_FILE`` environment variable or
+  with the ``XBOT_LOG_FILE`` environment variable or
   ``--log-file`` CLI flag.
 - Format: human-readable, includes the logger name + level + a
   per-thread request id so dispatch → engine → TUI events can be
@@ -58,8 +58,7 @@ _PACKAGE_LOGGERS = (
     "xbotv2.core",
 )
 
-# External loggers we leave alone (uvicorn / starlette / httpx /
-# langchain are noisy at INFO).
+# External loggers we leave alone because they are noisy at INFO.
 _NOISY_LOGGERS = (
     "uvicorn",
     "uvicorn.error",
@@ -67,15 +66,13 @@ _NOISY_LOGGERS = (
     "httpx",
     "httpcore",
     "starlette",
-    "langchain",
-    "langchain_core",
 )
 
 
 def _resolve_log_file(data_dir: str | os.PathLike[str] | None) -> Path:
     """Return the absolute path of the log file; create its directory."""
 
-    env = os.environ.get("XBOTV2_LOG_FILE")
+    env = os.environ.get("XBOT_LOG_FILE") or os.environ.get("XBOTV2_LOG_FILE")
     if env:
         path = Path(env).expanduser()
     else:
@@ -100,9 +97,9 @@ def setup_logging(
         level: One of ``"DEBUG"`` / ``"INFO"`` / ``"WARNING"`` /
             ``"ERROR"``. Default: ``"INFO"``.
         log_file: Explicit path; overrides ``data_dir`` and
-            ``XBOTV2_LOG_FILE``.
+            ``XBOT_LOG_FILE``.
         also_stderr: If True, also write to stderr (handy for
-            ``--mode once``). If None, defaults to True when stderr
+            ``xbotv2 once``). If None, defaults to True when stderr
             is a TTY, False otherwise (so the TUI's screen is not
             polluted).
 
@@ -156,7 +153,7 @@ def setup_logging(
         root.addHandler(stream_handler)
 
     # Quiet the noisy third-party loggers at WARNING. They can be
-    # re-enabled by setting XBOTV2_LOG_LEVEL=DEBUG, but we don't
+    # re-enabled by setting XBOT_LOG_LEVEL=DEBUG, but we don't
     # propagate their noise to the file log under default settings.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -176,4 +173,3 @@ def setup_logging(
         also_stderr,
     )
     return path
-

@@ -1,39 +1,41 @@
 """Tests for ToolRegistry."""
 
 import pytest
-from langchain_core.tools import tool as langchain_tool
 
+from xbotv2.api.tools import Tool
 from xbotv2.tools.registry import ToolRegistry
 
 
-@langchain_tool
-def tool_a(x: int = 0) -> str:
+def _tool_a(x: int = 0) -> str:
     """Tool A."""
     return f"A: {x}"
 
 
-@langchain_tool
-def tool_b(y: str = "") -> str:
+def _tool_b(y: str = "") -> str:
     """Tool B."""
     return f"B: {y}"
 
 
-@langchain_tool
-def filesystem_read(path: str) -> str:
+def _filesystem_read(path: str) -> str:
     """Read a file."""
     return "content"
 
 
-@langchain_tool
-def filesystem_write(path: str, content: str) -> str:
+def _filesystem_write(path: str, content: str) -> str:
     """Write a file."""
     return "ok"
 
 
-@langchain_tool
-def filesystem_list(path: str) -> str:
+def _filesystem_list(path: str) -> str:
     """List files."""
     return "files"
+
+
+tool_a = Tool.from_function(_tool_a, name="tool_a")
+tool_b = Tool.from_function(_tool_b, name="tool_b")
+filesystem_read = Tool.from_function(_filesystem_read, name="filesystem_read")
+filesystem_write = Tool.from_function(_filesystem_write, name="filesystem_write")
+filesystem_list = Tool.from_function(_filesystem_list, name="filesystem_list")
 
 
 class TestRegistration:
