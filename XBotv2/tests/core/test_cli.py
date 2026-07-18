@@ -1,8 +1,6 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
-import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -75,12 +73,6 @@ def test_xbot_environment_defaults_override_legacy_prefix(monkeypatch):
 
     assert args.provider == "current"
     assert args.port == 4200
-
-
-def test_bash_entrypoint_has_valid_syntax():
-    entrypoint = Path(__file__).parents[2] / "bin" / "xbot"
-
-    subprocess.run(["bash", "-n", str(entrypoint)], check=True)
 
 
 def compiled_web_root(monkeypatch, tmp_path):

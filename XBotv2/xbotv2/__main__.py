@@ -25,10 +25,15 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.environ.get(f"XBOT_{name}", os.environ.get(f"XBOTV2_{name}", default))
 
 
+def _default_data_dir() -> str:
+    source_data = Path(__file__).resolve().parents[1] / "data"
+    return str(source_data if source_data.is_dir() else Path(sys.prefix) / "data")
+
+
 def _common_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
-        "--data-dir", default=_env("DATA_DIR", "data"),
+        "--data-dir", default=_env("DATA_DIR", _default_data_dir()),
         help="runtime data directory (env: XBOT_DATA_DIR)",
     )
     parser.add_argument(
@@ -64,11 +69,11 @@ def _common_parser() -> argparse.ArgumentParser:
 def _build_parser() -> argparse.ArgumentParser:
     common = _common_parser()
     parser = argparse.ArgumentParser(
-        prog="xbotv2",
+        prog="xbot",
         description="Readable plugin-extensible client/server Agent runtime",
     )
     parser.add_argument(
-        "--version", action="version", version=f"xbotv2 {__version__}"
+        "--version", action="version", version=f"xbot {__version__}"
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

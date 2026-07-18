@@ -9,7 +9,7 @@ not use the plugin-command compatibility endpoints.
 Start the existing XBot server:
 
 ```bash
-uv run xbotv2 serve \
+uv run xbot serve \
   --data-dir XBotv2/data \
   --workspace ./output \
   --provider minimax
@@ -31,9 +31,9 @@ local URL:
 XBOT_API_URL=http://127.0.0.1:4100 npm run dev
 ```
 
-From the repository root, `./XBotv2/bin/xbot web` serves the compiled client
-with Python, starts the API over an internal Unix socket, and opens the
-workbench. Runtime Web mode does not invoke npm. Use
+From the repository root, `uv run xbot web` serves the compiled client with
+Python, starts the API over an internal Unix socket, and opens the workbench.
+Runtime Web mode does not invoke npm. Use
 `--server http://127.0.0.1:4096` to connect to an existing API server or
 `--no-open` when no desktop browser is available. The browser always uses
 same-origin `/api`; the Python Web process performs the HTTP-to-UDS or
@@ -47,7 +47,7 @@ npm run build
 ```
 
 The ignored build output is written to `XBotv2/xbotv2/web_dist`. Run the build
-explicitly before `xbotv2 web`; runtime Web mode never invokes npm. The Python
+explicitly before `xbot web`; runtime Web mode never invokes npm. The Python
 server serves those files and reverse-proxies `/api/*` while removing the
 `/api` prefix. XBot currently has no remote authentication contract, so Web
 mode binds to loopback only. `VITE_XBOT_API_BASE` may select another same-origin

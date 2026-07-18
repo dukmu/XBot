@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-xbotv2 = "xbotv2.__main__:main"
+xbot = "xbotv2.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -49,9 +49,10 @@ where = ["XBotv2"]
 include = ["xbotv2*", "builtin_plugins*"]
 namespaces = true
 
-[tool.setuptools]
-script-files = ["XBotv2/bin/xbot"]
-
 [tool.setuptools.package-data]
 "builtin_plugins" = ["**/plugin.yaml"]
 "xbotv2" = ["web_dist/*", "web_dist/**/*"]
+
+[tool.setuptools.data-files]
+"data/config" = ["XBotv2/data/config/*.yaml"]
+"data/.agents" = ["XBotv2/data/.agents/*.md"]
