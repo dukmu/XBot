@@ -22,11 +22,11 @@ async def read_file(
 ) -> ToolResult:
     """Read a bounded UTF-8 text range or inspect a non-text file.
 
-    Text reads are limited by both line count and character count. When a
-    single line exceeds ``max_chars``, continue with the returned
-    ``next_offset`` and ``next_char_offset``. Non-UTF-8 files return metadata
-    instead of binary content, including MIME type, size, SHA-256, and image
-    dimensions when recognized. The ``session/`` virtual path is read-only.
+    Text reads are limited by both line count and character count. If the
+    result is truncated, continue from the returned next offsets before
+    relying on omitted content. Non-UTF-8 files return metadata instead of
+    binary content, including MIME type, size, SHA-256, and recognized image
+    dimensions. The ``session/`` virtual path is read-only.
 
     Args:
         path: Workspace-relative, absolute approved, or ``session/`` file path.
@@ -211,10 +211,12 @@ async def write_file(
 ) -> ToolResult:
     """Atomically create or completely replace one UTF-8 text file.
 
-    Use ``filesystem_edit`` for a localized change and ``filesystem_patch`` for
-    a unified diff. Existing non-UTF-8 files are rejected. Supplying the hash
-    returned by ``filesystem_read`` prevents overwriting a concurrently changed
-    file. Parent directories are created automatically.
+    ``content`` is the entire final file, never a fragment or patch. For an
+    existing file, read it first and pass the returned hash. Use
+    ``filesystem_edit`` for a localized exact replacement and
+    ``filesystem_patch`` for a unified diff. After writing, inspect the result
+    and reread the relevant range before reporting the change as verified.
+    Existing non-UTF-8 files are rejected. Parent directories are created.
 
     Args:
         path: Destination path relative to the workspace unless explicitly approved.
@@ -239,9 +241,10 @@ async def edit_file(
 ) -> ToolResult:
     """Atomically replace exact text in an existing UTF-8 file.
 
-    The edit fails when ``old_text`` is absent or ambiguous. Set
-    ``replace_all`` only when every occurrence should change. Use surrounding
-    text to make a single replacement unambiguous.
+    Read the relevant file range first, use enough exact surrounding text to
+    identify one occurrence, and pass its hash when available. The edit fails
+    when ``old_text`` is absent or ambiguous. Set ``replace_all`` only when every
+    occurrence should change. Reread the changed range before reporting success.
 
     Args:
         path: Existing text file.
@@ -272,9 +275,10 @@ async def patch_file(
 ) -> ToolResult:
     """Apply a validated unified diff to one UTF-8 file.
 
+    Build the diff against current file content and pass its hash when available.
     The system ``patch`` implementation performs a dry run before applying any
-    hunk. The patch must target only ``path``. Use separate calls for multiple
-    files so permission and change records retain exact paths.
+    hunk. The patch must target only ``path``; use separate calls for multiple
+    files. Reread the changed ranges before reporting success.
 
     Args:
         path: File created, updated, or deleted by the patch.

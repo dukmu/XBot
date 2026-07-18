@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from xbotv2.api import (
     Command,
@@ -61,29 +61,7 @@ class GoalPlugin(PluginBase):
             ),
         )
         ctx.register_tool(
-            Tool(
-                name="update_goal",
-                description=(
-                    "Finish the active goal. Use complete only when all required "
-                    "work is done, or blocked when progress cannot continue."
-                ),
-                function=self.update_goal,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "enum": ["complete", "blocked"],
-                        },
-                        "summary": {
-                            "type": "string",
-                            "description": "Execution or blocking summary.",
-                        },
-                    },
-                    "required": ["status", "summary"],
-                    "additionalProperties": False,
-                },
-            ),
+            Tool.from_function(self.update_goal, name="update_goal"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
                 namespace="plugin:goal",
@@ -111,9 +89,10 @@ class GoalPlugin(PluginBase):
     ) -> ToolResult:
         """Create the persistent session goal explicitly requested by the human.
 
-        Use this only when the human asks for sustained autonomous work across
-        turns. Do not infer a Goal from an ordinary task. Only one active Goal may
-        exist; inspect it with get_goal before replacing prior state.
+        Call only when the human explicitly asks the Agent to create a
+        persistent Goal. Complexity, duration, or a Todo list is not such a
+        request. Never rewrite the human's objective into a new Goal. Only one
+        active Goal may exist; use get_goal when its state is unknown.
 
         Args:
             objective: Concrete outcome that determines when the Goal is complete.
@@ -129,13 +108,20 @@ class GoalPlugin(PluginBase):
         """
         return await self._get()
 
-    async def update_goal(self, status: str, summary: str) -> ToolResult:
+    async def update_goal(
+        self,
+        status: Literal["complete", "blocked"],
+        summary: str,
+    ) -> ToolResult:
         """Finish the active Goal after reaching a terminal outcome.
 
-        Use complete only after every required outcome is verified. Use blocked
-        only when progress cannot continue without external change; transient
-        Provider or internal errors are not a blocked Goal. This transition stops
-        automatic Goal turns, after which the assistant must summarize to human.
+        Compare the entire objective with observed evidence. Complete only when
+        every outcome and required check is finished; name concrete tests,
+        checks, or artifacts. Intent, confidence, and a started task are not
+        evidence. Continue if work, Todo items, or verification remain. Block
+        only when an exact external condition prevents progress after reasonable
+        attempts; transient errors are not enough. Otherwise do not call this
+        Tool. A terminal transition stops automatic turns; then summarize.
 
         Args:
             status: Terminal state, either complete or blocked.
@@ -402,10 +388,11 @@ def _goal_context(goal: dict[str, Any]) -> str:
     if goal["summary"]:
         lines.append(f"Execution summary: {goal['summary']}")
     lines.append(
-        "Persist with this objective. Call update_goal with status=complete and "
-        "a concise execution summary only after all required work is finished; "
-        "use status=blocked only when progress cannot continue. After the transition, "
-        "give the human a concise final summary."
+        "Continue the exact objective without rewriting it. Compare every outcome "
+        "with observed evidence before a terminal transition. Complete only after "
+        "all work and checks finish; block only when an exact external condition "
+        "still prevents progress after reasonable attempts. Otherwise keep working. "
+        "After the transition, give a concise evidence-based summary."
     )
     return "\n\n".join(lines)
 

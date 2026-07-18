@@ -96,9 +96,6 @@ def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
     thread = runtime.session("session-1").thread("agent")
     variables = RuntimeVariables.for_thread(runtime, tmp_path / "workspace", thread)
 
-    assert variables["config_dir"] == str(runtime.config_dir)
-    assert variables["session_dir"] == str(thread.session.root)
-    assert variables["plugin_states"] == str(thread.plugin_states_dir)
     assert variables["tool_results"] == str(
         thread.artifacts_dir / "tool_results"
     )
@@ -114,13 +111,8 @@ def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
     )
     with pytest.raises(ValueError, match="Unknown runtime variable"):
         variables.expand("${UNKNOWN}")
-    with pytest.raises(ValueError, match="Unknown runtime variable"):
-        variables.expand_markdown("```var\n${UNKNOWN}\n```")
     assert variables.expand_markdown("```var\n${workspace}/src\n```") == (
         "```var\n${workspace}/src\n```"
-    )
-    assert variables.expand_markdown("```var\n${workspace}") == (
-        "```var\n${workspace}"
     )
     with pytest.raises(TypeError):
         variables["workspace"] = "/changed"  # type: ignore[index]

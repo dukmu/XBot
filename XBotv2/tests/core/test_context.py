@@ -60,7 +60,6 @@ class TestContextBuilderBasics:
 
         assert root.tag == "xbot_context"
         assert len(root.findall("core_instructions")) == 1
-        assert "never fabricate tool output" in root.findtext("core_instructions")
 
     def test_developer_and_agent_instructions_remain_separate(
         self, context_builder

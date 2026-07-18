@@ -75,12 +75,12 @@ class BackgroundTaskManager:
     ) -> ToolResult:
         """Run a shell command in the foreground or as a background task.
 
-        Use foreground mode for short commands whose result is needed before the
-        next step. Use background mode only for long-running processes; it returns
-        immediately with a task ID, publishes task updates, and requires
-        ``list_tasks`` to retrieve full output. Commands run inside the session
-        sandbox when enabled. Avoid interactive commands that wait for terminal
-        input.
+        Use foreground mode when the next step needs the result. Use background
+        only while other work proceeds. A successful start accepts the process;
+        it does not mean the command succeeded. Keep the task ID, do not poll,
+        and wait for the completion notification. Then call list_tasks with that
+        ID before using its output or reporting success. Stop unneeded tasks.
+        Commands run in the sandbox; do not start interactive commands.
 
         Args:
             command: Complete shell command to execute.
@@ -108,15 +108,18 @@ class BackgroundTaskManager:
             self._run(task), name=f"xbotv2-{task_id}"
         )
         return ToolResult.success(
-            f"Started {task_id}: {command}", data=task.snapshot()
+            f"Started {task_id}; completion is pending: {command}",
+            data=task.snapshot(),
         )
 
     async def list_tasks(self, task_id: str | None = None) -> ToolResult:
         """Inspect session-owned background shell tasks.
 
-        With no ID, return bounded snapshots of every task. With an ID, return
-        that task's complete captured output and current status. Tasks are runtime
-        state and do not survive session shutdown.
+        Omit the ID only to discover task IDs and statuses. With an ID, return
+        that task's authoritative status and complete captured output. Inspect a
+        terminal task by ID after its completion notification; do not treat
+        pending or running status as success. Tasks are runtime state and do not
+        survive session shutdown.
 
         Args:
             task_id: Optional ID returned by shell(background=true). Omit to list

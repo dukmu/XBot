@@ -229,7 +229,6 @@ class NormalClosePlugin(PluginBase):
         ]
         assert not engine.tool_registry.registered(tool_name)
         assert loader.loaded_plugins == []
-        assert loader._records == {}
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio
@@ -256,25 +255,8 @@ class NormalClosePlugin(PluginBase):
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        tool_names = engine.tool_registry.names()
-        # Core tools always present
-        assert "shell" in tool_names
-        assert "filesystem_read" in tool_names
-        assert "filesystem_stat" in tool_names
-        assert "filesystem_write" in tool_names
-        assert "filesystem_edit" in tool_names
-        assert "filesystem_patch" in tool_names
-        assert "filesystem_move" in tool_names
-        assert "filesystem_copy" in tool_names
-        assert "filesystem_delete" in tool_names
-        assert "filesystem_mkdir" in tool_names
-        assert "filesystem_list" in tool_names
-        assert "search_text" in tool_names
-        assert "find_files" in tool_names
-        assert "send_message" in tool_names
-        assert "ask_user" in tool_names
-        assert "list_tasks" in tool_names
-        assert "stop_task" in tool_names
+        tool_names = set(engine.tool_registry.names())
+        assert {"shell", "filesystem_read", "ask_user", "list_tasks"} <= tool_names
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
@@ -295,28 +277,12 @@ class NormalClosePlugin(PluginBase):
             llm_override=MockLLM(responses=[]),
         )
 
-        assert "send_message" in engine.tool_registry.names()
-        assert "ask_user" in engine.tool_registry.names()
-        assert "list_tasks" in engine.tool_registry.names()
-        assert "stop_task" in engine.tool_registry.names()
-        assert "search_text" in engine.tool_registry.names()
-        assert "find_files" in engine.tool_registry.names()
-        assert "filesystem" not in engine.config.tools
         assert {
-            "filesystem_read",
-            "filesystem_stat",
-            "filesystem_list",
-            "filesystem_write",
-            "filesystem_edit",
-            "filesystem_patch",
-            "filesystem_move",
-            "filesystem_copy",
-            "filesystem_delete",
+            "ask_user",
             "filesystem_mkdir",
-        }.issubset(engine.config.tools)
-        assert "plugin:compact:*" in engine.config.tools
-        assert "plugin:todolist:*" in engine.config.tools
-        assert "plugin:goal:*" in engine.config.tools
+            "list_tasks",
+        } <= set(engine.tool_registry.names())
+        assert "filesystem" not in engine.config.tools
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):

@@ -23,6 +23,10 @@ Each item requires `content` and one status: `pending`, `in_progress`, or
 `completed`. An unfinished non-empty list must contain exactly one
 `in_progress` item. `todos: []` clears the list. The complete list is validated
 before one persisted replacement; invalid input cannot partially modify state.
+Items represent work, not a final answer, report, or summary. After the current
+item is finished and checked, its completion and the next `in_progress` item
+are submitted before that next work starts or the Agent replies. The final
+all-completed update happens before the final reply and clears active state.
 
 The Tool description defines when Todo tracking is useful and when it is not.
 The plugin does not register per-item list, create, update, or remove Tools.

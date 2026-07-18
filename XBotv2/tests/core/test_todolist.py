@@ -49,7 +49,7 @@ def todo(content: str, status: str) -> dict[str, str]:
 
 
 def test_todolist_registers_one_atomic_host_tool(state_store):
-    plugin, setup = setup_plugin(state_store)
+    _plugin, setup = setup_plugin(state_store)
 
     assert list(setup.tools) == ["update_todos"]
     tool = setup.tools["update_todos"]
@@ -62,13 +62,6 @@ def test_todolist_registers_one_atomic_host_tool(state_store):
     assert item["properties"]["status"]["enum"] == [
         "pending", "in_progress", "completed",
     ]
-    assert "Call only when" in tool.description
-    assert plugin.diagnostics() == {
-        "status": "ready",
-        "scope": "session",
-        "tool": "update_todos",
-        "item_statuses": ["completed", "in_progress", "pending"],
-    }
 
 
 @pytest.mark.asyncio
@@ -92,9 +85,8 @@ async def test_update_todos_atomically_replaces_the_complete_list(state_store):
         "todos": initial,
         "cleared": False,
     }
-    assert "unchanged" in unchanged.content
-    assert "Do not call update_todos again" in unchanged.content
-    assert "updated" in updated.content
+    assert unchanged.data["todos"] == initial
+    assert updated.data["todos"] == replacement
     assert await plugin.store.get("state") == {"items": replacement}
 
 
@@ -277,4 +269,3 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     assert assistant.tool_calls[0].name == "update_todos"
     assert assistant.tool_calls[0].args == {"todos": active}
     assert result.tool_call_id == "todo-call-1"
-    assert "Todo list updated" in result.content

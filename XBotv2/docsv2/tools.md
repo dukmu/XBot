@@ -32,7 +32,9 @@ captured output through the normal ToolResult cache boundary. Shell capture is
 complete; large foreground and background results are externalized by the
 common ToolResult cache instead of being irreversibly truncated. Task completion
 enters the runtime mailbox as a general message, so the Agent can react while
-the client is connected without polling.
+the client is connected without polling. Starting a background task confirms
+only that it was accepted. After the completion notification, the Agent reads
+`list_tasks(task_id)` before using its output or reporting command success.
 
 `shell(background=true)` uses the same canonical Tool name, command arguments,
 Hooks, and permission rules as foreground shell execution. Background mode is
@@ -108,7 +110,9 @@ Filesystem operations use one implementation with or without bwrap. Complete
 writes, exact edits, and patches accept an optional `expected_sha256` guard and
 write atomically. Non-text reads return MIME, size, hash, and recognized image
 metadata without placing binary content in context. Text must be valid UTF-8
-and must not contain binary control data.
+and must not contain binary control data. Existing files are read before
+mutation, complete content is sent only to `filesystem_write`, and relevant
+ranges are read again before a change is reported as verified.
 
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.

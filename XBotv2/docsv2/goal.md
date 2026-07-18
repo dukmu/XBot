@@ -57,6 +57,13 @@ After `update_goal`, the normal Agent loop continues so the model can summarize
 the result to the human. The Tool result contains the terminal state and summary
 needed for that final model call.
 
+The Agent does not create a Goal merely because work is complex or uses Todos.
+Before a terminal update it compares the complete objective with observed
+evidence. `complete` requires every outcome and its verification; `blocked`
+requires an exact external condition that still prevents progress after
+reasonable attempts. A started background task, intent, or confidence is not
+completion evidence.
+
 ## Continuation And Persistence
 
 Every successful transition persists immediately through `PluginStore`. Goal

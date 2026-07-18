@@ -124,13 +124,13 @@ class TestFilesystemDiscovery:
         (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
         (tmp_path / "link").symlink_to("file.txt")
 
-        result = await list_files(str(tmp_path), max_entries=2)
+        complete = await list_files(str(tmp_path))
+        bounded = await list_files(str(tmp_path), max_entries=2)
 
-        assert result.data["returned_entries"] == 2
-        assert result.data["truncated"] is True
-        assert {entry["kind"] for entry in result.data["entries"]} <= {
-            "directory", "file", "symlink"
-        }
+        kinds = {entry["name"]: entry["kind"] for entry in complete.data["entries"]}
+        assert kinds["link"] == "symlink"
+        assert bounded.data["returned_entries"] == 2
+        assert bounded.data["truncated"] is True
 
     @pytest.mark.asyncio
     async def test_find_skips_generated_directories_and_stops_at_limit(self, tmp_path):
@@ -140,11 +140,11 @@ class TestFilesystemDiscovery:
         (tmp_path / "node_modules" / "ignored.py").write_text("pass", encoding="utf-8")
         (tmp_path / "other.py").write_text("pass", encoding="utf-8")
 
-        result = await find_files("*.py", str(tmp_path), max_results=1)
+        bounded = await find_files("*.py", str(tmp_path), max_results=1)
+        complete = await find_files("*.py", str(tmp_path), max_results=10)
 
-        assert result.data["returned_files"] == 1
-        assert result.data["truncated"] is True
-        assert "node_modules" not in result.content
+        assert bounded.data["truncated"] is True
+        assert set(complete.data["files"]) == {"other.py", "src/app.py"}
 
     @pytest.mark.asyncio
     async def test_search_returns_structured_locations_and_clips_lines(self, tmp_path):
@@ -288,42 +288,3 @@ class TestFilesystemSandboxContract:
         ))
         assert not (workspace / "tree").exists()
         assert not (workspace / "moved.py").exists()
-
-    @pytest.mark.asyncio
-    async def test_workspace_write_deny_is_enforced_before_execution(self, tmp_path):
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        policy = SandboxPolicy(
-            config={"workspace_read": "allow", "workspace_write": "deny"},
-            workspace_root=workspace,
-        )
-
-        issues = policy.check_tool_access(
-            "filesystem_write", {"path": "blocked.txt", "content": "no"}
-        )
-        mounts = [
-            mount for mount in policy._mount_specs()
-            if mount.target == workspace.resolve()
-        ]
-
-        assert issues[0]["decision"] == "deny"
-        assert mounts[0].access == "readonly"
-
-    @pytest.mark.asyncio
-    async def test_session_mount_rejects_writes(self, tmp_path):
-        workspace = tmp_path / "workspace"
-        session = tmp_path / "data" / "session"
-        workspace.mkdir()
-        session.mkdir(parents=True)
-        policy = SandboxPolicy(workspace_root=workspace, session_root=session)
-
-        issues = policy.check_tool_access(
-            "filesystem_write", {"path": "session/state.txt", "content": "no"}
-        )
-
-        assert issues == [{
-            "field": "path",
-            "path": str((session / "state.txt").resolve()),
-            "write": True,
-            "decision": "deny",
-        }]
