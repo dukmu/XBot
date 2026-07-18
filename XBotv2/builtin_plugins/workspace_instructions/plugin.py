@@ -21,7 +21,10 @@ class WorkspaceInstructionsPlugin(PluginBase):
             components = hook_ctx.context_components
             if components is None or not path.is_file():
                 return
-            text = path.read_text(encoding="utf-8").strip()
+            text = ctx.variables.expand_markdown(
+                path.read_text(encoding="utf-8").strip(),
+                source="AGENTS.md",
+            )
             if not text:
                 return
             component = ContextComponent(

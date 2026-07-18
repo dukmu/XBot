@@ -7,33 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.tools.sandbox import SandboxPolicy, SandboxResourceRule
+from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.tools.sandbox_bwrap import _build_args, _read_output
+from xbotv2.api.variables import RuntimeVariables
 
 
 def test_bubblewrap_returns_complete_output_for_common_cache() -> None:
     result = _read_output(BytesIO(b"x" * 11))
 
     assert result == "xxxxxxxxxxx"
-
-
-class TestSandboxResourceRule:
-    def test_rule_matches_subpath(self):
-        rule = SandboxResourceRule(path="/foo", access="readwrite")
-        assert rule.matches("/foo/bar") is True
-        assert rule.matches("/foo/bar/baz") is True
-
-    def test_rule_matches_exact(self):
-        rule = SandboxResourceRule(path="/foo")
-        assert rule.matches("/foo") is True
-
-    def test_rule_does_not_match_sibling(self):
-        rule = SandboxResourceRule(path="/foo")
-        assert rule.matches("/bar") is False
-
-    def test_rule_does_not_match_parent(self):
-        rule = SandboxResourceRule(path="/foo/bar")
-        assert rule.matches("/foo") is False
 
 
 class TestSandboxPolicyBasics:
@@ -102,6 +84,29 @@ class TestResourcePathResolution:
         resolved = policy.resolve_resource_path("skills/test.md")
         assert str(temp_workspace / "data" / "skills" / "test.md") in resolved
 
+    def test_resource_path_uses_shared_runtime_variables(self, tmp_path):
+        plugin_states = tmp_path / "session" / "plugin_states"
+        variables = RuntimeVariables({
+            "workspace": tmp_path / "workspace",
+            "data_dir": tmp_path / "data",
+            "plugin_states": plugin_states,
+        })
+        policy = SandboxPolicy(
+            config={
+                "resources": [
+                    {"path": "${plugin_states}", "access": "readonly"},
+                ],
+            },
+            workspace_root=tmp_path / "workspace",
+            data_root=tmp_path / "data",
+            variables=variables,
+        )
+
+        assert policy.to_dict()["resources"] == [{
+            "path": str(plugin_states.resolve()),
+            "access": "readonly",
+        }]
+
     def test_session_read_path_is_limited_to_current_session(self, tmp_path):
         workspace = tmp_path / "workspace"
         session_root = tmp_path / "data" / "sessions" / "s" / "state"
@@ -118,6 +123,48 @@ class TestResourcePathResolution:
         assert policy.resolve_read_path("session/../outside.txt") == (
             workspace / "session" / "../outside.txt"
         ).resolve()
+
+    def test_session_write_cannot_be_enabled_by_a_resource_rule(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        session_root = tmp_path / "data" / "sessions" / "s" / "state"
+        workspace.mkdir()
+        session_root.mkdir(parents=True)
+        policy = SandboxPolicy(
+            config={
+                "resources": [
+                    {"path": str(session_root), "access": "readwrite"},
+                ],
+            },
+            workspace_root=workspace,
+            session_root=session_root,
+        )
+
+        assert policy.check_filesystem_access(
+            "write", {"path": "session/state.txt"}
+        )[0]["decision"] == "deny"
+        assert not any(
+            mount.access == "readwrite"
+            and mount.target.is_relative_to(session_root)
+            for mount in policy._mount_specs()
+        )
+
+    def test_session_symlink_cannot_redirect_a_write(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        session_root = tmp_path / "data" / "sessions" / "s" / "state"
+        external = tmp_path / "external.txt"
+        workspace.mkdir()
+        session_root.mkdir(parents=True)
+        external.write_text("external", encoding="utf-8")
+        (session_root / "link.txt").symlink_to(external)
+        policy = SandboxPolicy(
+            config={"external_write": "allow"},
+            workspace_root=workspace,
+            session_root=session_root,
+        )
+
+        assert policy.check_filesystem_access(
+            "write", {"path": "session/link.txt"}
+        )[0]["decision"] == "deny"
 
 
 class TestBubblewrapBuildArgs:
@@ -169,40 +216,51 @@ class TestBubblewrapCapabilities:
         if not policy.backend_available:
             pytest.skip("bubblewrap is not installed")
 
-        read_data = json.loads(await policy.read_file("sample.txt"))
-        readonly_data = json.loads(
-            await policy.read_file(str(readonly_path), offset=0, limit=1)
-        )
-        cached_data = json.loads(
-            await policy.read_file("session/artifacts/tool_results/cached.txt")
-        )
-        cached_list = json.loads(
-            await policy.list_dir("session/artifacts", recursive=True)
-        )
-        cached_search = json.loads(
-            await policy.search_text("cached", "session/artifacts")
-        )
-        missing_data = json.loads(await policy.read_file("missing.txt"))
-        write_data = json.loads(await policy.write_file("created.txt", "created"))
-        write_error = json.loads(await policy.write_file(str(readonly_path), "after"))
-        search_data = json.loads(await policy.search_text("alpha"))
-        list_data = json.loads(await policy.list_dir(".", recursive=True))
+        async def filesystem(operation, **args):
+            return json.loads(await policy.filesystem(operation, args))
 
-        assert read_data["content"] == "alpha\nbeta"
+        read_data = await filesystem("read", path="sample.txt")
+        readonly_data = await filesystem(
+            "read", path=str(readonly_path), offset=0, limit=1
+        )
+        cached_data = await filesystem(
+            "read", path="session/artifacts/tool_results/cached.txt"
+        )
+        cached_list = await filesystem(
+            "list", path="session/artifacts", recursive=True
+        )
+        cached_search = await filesystem(
+            "search", pattern="cached", path="session/artifacts"
+        )
+        missing_data = await filesystem("read", path="missing.txt")
+        write_data = await filesystem("write", path="created.txt", content="created")
+        write_error = await filesystem(
+            "write", path=str(readonly_path), content="after"
+        )
+        search_data = await filesystem("search", pattern="alpha", path=".")
+        list_data = await filesystem("list", path=".", recursive=True)
+
+        assert read_data["content"] == "alpha\nbeta\n"
         assert readonly_data["content"] == "before"
         assert readonly_data["returned_lines"] == 1
         assert cached_data["content"] == "cached"
         assert cached_list["entries"][0]["relative_path"] == "tool_results"
-        assert cached_search["matches"] == ["tool_results/cached.txt:1:cached"]
+        assert cached_search["matches"] == [{
+            "path": "tool_results/cached.txt",
+            "line": 1,
+            "column": 1,
+            "text": "cached",
+            "text_truncated": False,
+        }]
         assert missing_data["ok"] is False
         assert missing_data["error"]["code"] == "file_not_found"
         assert write_data["ok"] is True
         assert (workspace / "created.txt").read_text(encoding="utf-8") == "created"
         assert write_error["ok"] is False
-        assert write_error["error"]["code"] == "write_failed"
+        assert write_error["error"]["code"] == "filesystem_error"
         assert readonly_path.read_text(encoding="utf-8") == "before"
-        assert search_data["match_count"] == 1
-        assert list_data["entry_count"] >= 1
+        assert search_data["returned_matches"] == 1
+        assert list_data["returned_entries"] >= 1
         assert await policy.run_shell("printf sandbox-ok") == "sandbox-ok"
 
 

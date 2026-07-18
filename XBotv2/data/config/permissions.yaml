@@ -4,10 +4,12 @@ allow:
 - tool: (?:send_message|ask_user)
 - tool: (?:search_text|find_files)
 - tool: update_todos
-- tool: (?:filesystem_read|filesystem_list)
+- tool: (?:filesystem_read|filesystem_stat|filesystem_list)
+- tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
+  paths: ${workspace}
 - tool: shell
 ask:
-- tool: filesystem_write
+- tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
 deny:
 - tool: .*
   params:

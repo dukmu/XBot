@@ -1,6 +1,7 @@
 """Tests for PermissionSystem."""
 
 import asyncio
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from xbotv2.tools.permissions import (
 from xbotv2.api import ToolCall
 from xbotv2.config.policy import _permission_rule_for_tool_call
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.operations import update_session_policy
 from xbotv2.tools.sandbox import SandboxPolicy
 
@@ -25,13 +27,14 @@ class TestPermissionRule:
     def test_default_rule_matches_all(self):
         """Default rule matches any tool."""
         rule = PermissionRule()
-        assert PermissionSystem._rule_matches(rule, "any_tool", {})
+        assert PermissionSystem()._rule_matches(rule, "any_tool", {})
 
     def test_tool_pattern_match(self):
         """Rule matches by tool name regex."""
         rule = PermissionRule(tool_pattern="shell_.*")
-        assert PermissionSystem._rule_matches(rule, "shell_exec", {})
-        assert not PermissionSystem._rule_matches(rule, "filesystem_read", {})
+        permissions = PermissionSystem()
+        assert permissions._rule_matches(rule, "shell_exec", {})
+        assert not permissions._rule_matches(rule, "filesystem_read", {})
 
     def test_param_pattern_match(self):
         """Rule matches by parameter value regex."""
@@ -39,17 +42,18 @@ class TestPermissionRule:
             tool_pattern="filesystem_.*",
             param_patterns={"path": "/tmp/.*"},
         )
-        assert PermissionSystem._rule_matches(
+        permissions = PermissionSystem()
+        assert permissions._rule_matches(
             rule, "filesystem_read", {"path": "/tmp/test.txt"}
         )
-        assert not PermissionSystem._rule_matches(
+        assert not permissions._rule_matches(
             rule, "filesystem_read", {"path": "/etc/passwd"}
         )
 
     def test_param_missing_does_not_match(self):
         """Missing parameter causes no match."""
         rule = PermissionRule(param_patterns={"path": ".*"})
-        assert not PermissionSystem._rule_matches(rule, "tool", {})
+        assert not PermissionSystem()._rule_matches(rule, "tool", {})
 
 
 class TestPermissionSystemBasics:
@@ -131,6 +135,34 @@ class TestPermissionSystemBasics:
             "filesystem_write",
             {"path": "other.md", "content": "large private document"},
         ) == "ask"
+
+    def test_filesystem_patch_rule_does_not_record_patch_body(self):
+        rule = _permission_rule_for_tool_call(ToolCall(
+            "call-1",
+            "filesystem_patch",
+            {"path": "code.py", "patch": "private patch body"},
+        ))
+
+        assert rule == {
+            "tool": "filesystem_patch",
+            "params": {"path": "code\\.py"},
+        }
+
+    def test_filesystem_move_rule_records_both_paths_and_overwrite(self):
+        rule = _permission_rule_for_tool_call(ToolCall(
+            "call-1",
+            "filesystem_move",
+            {"source": "a.txt", "destination": "b.txt", "overwrite": True},
+        ))
+
+        assert rule == {
+            "tool": "filesystem_move",
+            "params": {
+                "destination": "b\\.txt",
+                "overwrite": "True",
+                "source": "a\\.txt",
+            },
+        }
 
 
 @pytest.mark.asyncio
@@ -217,6 +249,87 @@ class TestConfigLoading:
         assert ps.check("filesystem_read", {"path": "/tmp/ok.txt"}) == "allow"
         assert ps.check("filesystem_read", {"path": "/etc/bad"}) == ps.default_decision
 
+    def test_workspace_scope_resolves_all_filesystem_paths(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        (workspace / "link").symlink_to(outside, target_is_directory=True)
+        (workspace / "loop").symlink_to("loop")
+        permissions = PermissionSystem(
+            {
+                "allow": [{
+                    "tool": "filesystem_.*",
+                    "paths": "${workspace}",
+                }],
+            },
+            variables=RuntimeVariables({"workspace": workspace}),
+        )
+
+        assert permissions.check(
+            "filesystem_write", {"path": "notes.md"}
+        ) == "allow"
+        assert permissions.check(
+            "filesystem_write", {"path": str(workspace / "notes.md")}
+        ) == "allow"
+        assert permissions.check(
+            "filesystem_write", {"path": "../outside/notes.md"}
+        ) == "ask"
+        assert permissions.check(
+            "filesystem_write", {"path": "link/notes.md"}
+        ) == "ask"
+        assert permissions.check(
+            "filesystem_write", {"path": "loop/notes.md"}
+        ) == "ask"
+        assert permissions.check("filesystem_move", {
+            "source": "old.md",
+            "destination": "archive/new.md",
+        }) == "allow"
+        assert permissions.check("filesystem_move", {
+            "source": "old.md",
+            "destination": str(outside / "new.md"),
+        }) == "ask"
+
+    def test_path_scope_supports_regex_and_workspace_expansion(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        permissions = PermissionSystem(
+            {"allow": [{
+                "tool": "filesystem_write",
+                "paths": "${workspace}/generated/.*",
+            }]},
+            variables=RuntimeVariables({"workspace": workspace}),
+        )
+
+        assert permissions.check(
+            "filesystem_write", {"path": "generated/result.txt"}
+        ) == "allow"
+        assert permissions.check(
+            "filesystem_write", {"path": "src/result.txt"}
+        ) == "ask"
+
+        absolute = PermissionSystem({
+            "allow": [{
+                "tool": "filesystem_read",
+                "paths": re.escape(str(tmp_path)) + "/allowed/.*",
+            }],
+        })
+        assert absolute.check(
+            "filesystem_read", {"path": str(tmp_path / "allowed/file.txt")}
+        ) == "allow"
+
+    def test_unknown_path_variable_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown runtime variable"):
+            PermissionSystem({
+                "allow": [{"tool": "filesystem_write", "paths": "${unknown}"}],
+            })
+
+    def test_invalid_path_regex_is_rejected(self):
+        with pytest.raises(ValueError, match="Invalid permission path regex"):
+            PermissionSystem({
+                "allow": [{"tool": "filesystem_write", "paths": "["}],
+            })
+
     def test_empty_config(self):
         """Empty config yields no rules."""
         ps = PermissionSystem(config={})
@@ -224,13 +337,18 @@ class TestConfigLoading:
         assert len(ps._allow_rules) == 0
         assert len(ps._ask_rules) == 0
 
-    def test_shipped_policy_allows_internal_and_interaction_tools(self):
+    def test_shipped_policy_allows_internal_and_workspace_tools(self, tmp_path):
         config = yaml.safe_load(
             Path("XBotv2/data/config/permissions.yaml").read_text(
                 encoding="utf-8"
             )
         )
-        permissions = PermissionSystem(config=config)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        permissions = PermissionSystem(
+            config=config,
+            variables=RuntimeVariables({"workspace": workspace}),
+        )
 
         for tool_name in (
             "send_message",
@@ -244,7 +362,27 @@ class TestConfigLoading:
             assert permissions.check(tool_name, {}) == "allow"
 
         assert permissions.check("filesystem_read", {"path": "README.md"}) == "allow"
+        assert permissions.check("filesystem_stat", {"path": "README.md"}) == "allow"
         assert permissions.check("filesystem_list", {"path": "."}) == "allow"
-        assert permissions.check("filesystem_write", {"path": "notes.md"}) == "ask"
+        for tool_name in (
+            "filesystem_write",
+            "filesystem_edit",
+            "filesystem_patch",
+            "filesystem_delete",
+            "filesystem_mkdir",
+        ):
+            assert permissions.check(tool_name, {"path": "notes.md"}) == "allow"
+            assert permissions.check(
+                tool_name, {"path": str(tmp_path / "outside.md")}
+            ) == "ask"
+        for tool_name in ("filesystem_move", "filesystem_copy"):
+            assert permissions.check(tool_name, {
+                "source": "source.md",
+                "destination": "destination.md",
+            }) == "allow"
+            assert permissions.check(tool_name, {
+                "source": "source.md",
+                "destination": str(tmp_path / "outside.md"),
+            }) == "ask"
         assert permissions.check("shell", {"command": "echo allowed"}) == "allow"
         assert permissions.check("unknown_tool", {}) == "ask"

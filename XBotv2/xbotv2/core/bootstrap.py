@@ -37,6 +37,7 @@ from xbotv2.config.policy import (
 )
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.agents import (
     AgentRegistry,
@@ -70,11 +71,7 @@ _SUBAGENT_BLOCKED_PLUGINS = {"agents"}
 
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
-    (FILESYSTEM_TOOLS[0], "sandboxed"),  # filesystem_read
-    (FILESYSTEM_TOOLS[1], "sandboxed"),  # filesystem_write
-    (FILESYSTEM_TOOLS[2], "sandboxed"),  # filesystem_list
-    (FILESYSTEM_TOOLS[3], "sandboxed"),  # search_text
-    (FILESYSTEM_TOOLS[4], "sandboxed"),  # find_files
+    *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
     (INTERACTION_TOOLS[0], "host"),  # send_message
     (INTERACTION_TOOLS[1], "host"),  # ask_user
 ]
@@ -160,6 +157,11 @@ async def bootstrap(
         workspace_root=str(workspace_root),
         provider=provider_name,
     )
+    runtime_variables = RuntimeVariables.for_thread(
+        paths,
+        workspace_root,
+        state_store.paths,
+    )
     metadata = state_store.read_thread_metadata()
     stored_agent = str(metadata.get("agent") or "") or None
     stored_provider = str(metadata.get("provider") or "") or None
@@ -206,8 +208,12 @@ async def bootstrap(
         data_root=paths.data_dir,
         workspace_root=workspace_root,
         session_root=state_store.root,
+        variables=runtime_variables,
     )
-    permissions = PermissionSystem(agent_config.permissions)
+    permissions = PermissionSystem(
+        agent_config.permissions,
+        variables=runtime_variables,
+    )
     if parent_permission_system is not None:
         permissions = PermissionIntersection(parent_permission_system, permissions)
     background_tasks = BackgroundTaskManager(
@@ -273,6 +279,7 @@ async def bootstrap(
                 _plugin_configs,
                 agent_registry,
                 workspace_root,
+                runtime_variables,
                 disabled_plugins,
                 subagents,
             )
@@ -301,7 +308,10 @@ async def bootstrap(
             policy_base_config = startup_config.model_copy(deep=True)
             apply_agent_definition(policy_base_config, resolved_agent)
             provider_name = resolved_agent.provider or provider_name
-            permissions = PermissionSystem(agent_config.permissions)
+            permissions = PermissionSystem(
+                agent_config.permissions,
+                variables=runtime_variables,
+            )
             if parent_permission_system is not None:
                 permissions = PermissionIntersection(
                     parent_permission_system, permissions
@@ -385,6 +395,7 @@ async def bootstrap(
             context_window=agent_config.max_context_tokens,
             llm_is_override=llm_override is not None,
             user_context=user_context,
+            runtime_variables=runtime_variables,
             max_iterations=(
                 resolved_agent.max_iterations
                 if resolved_agent is not None
@@ -468,6 +479,7 @@ async def _load_plugins(
     plugin_configs: dict[str, dict[str, Any]],
     agent_registry: AgentRegistry,
     workspace_root: Path,
+    runtime_variables: RuntimeVariables,
     disabled_plugins: set[str],
     agent_runtime: Any,
 ) -> PluginLoader:
@@ -481,6 +493,7 @@ async def _load_plugins(
         plugin_configs=plugin_configs,
         agent_registry=agent_registry,
         workspace_root=workspace_root,
+        runtime_variables=runtime_variables,
         disabled_plugins=disabled_plugins,
         agent_runtime=agent_runtime,
     )

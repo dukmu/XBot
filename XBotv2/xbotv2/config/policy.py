@@ -128,6 +128,8 @@ def persist_permission_decision(
             decision=decision,
             scope=scope,
             engine=engine,
+            sandbox_path=data.get("sandbox_path"),
+            sandbox_access=data.get("sandbox_access"),
         )
         return
 
@@ -157,9 +159,15 @@ def _persist_sandbox_rule(
     decision: str,
     scope: PermissionScope,
     engine: Any | None,
+    sandbox_path: Any = None,
+    sandbox_access: Any = None,
 ) -> None:
     workspace_root = getattr(engine, "workspace_root", paths.data_dir)
-    resolved_paths = _tool_call_paths(tool_call, Path(workspace_root))
+    resolved_paths = (
+        [str(Path(sandbox_path).resolve())]
+        if isinstance(sandbox_path, str) and sandbox_path
+        else _tool_call_paths(tool_call, Path(workspace_root))
+    )
     if not resolved_paths:
         return
     path = paths.session(session_id).policy_file
@@ -167,7 +175,11 @@ def _persist_sandbox_rule(
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
     resources = sandbox.setdefault("resources", [])
-    access = "readwrite" if decision == "allow" else "deny"
+    access = (
+        str(sandbox_access)
+        if decision == "allow" and sandbox_access in {"readonly", "readwrite"}
+        else "readwrite" if decision == "allow" else "deny"
+    )
     for resolved in resolved_paths:
         rule = {"path": resolved, "access": access}
         if rule not in resources:
@@ -183,8 +195,17 @@ def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
         return {}
     rule: dict[str, Any] = {"tool": re.escape(tool_name)}
     args = tool_call.args
-    if tool_name == "filesystem_write":
-        args = {"path": args.get("path")} if isinstance(args.get("path"), str) else {}
+    if tool_name in {
+        "filesystem_write",
+        "filesystem_edit",
+        "filesystem_patch",
+        "filesystem_move",
+        "filesystem_copy",
+        "filesystem_delete",
+        "filesystem_mkdir",
+    }:
+        retained = {"path", "source", "destination", "overwrite", "recursive"}
+        args = {key: value for key, value in args.items() if key in retained}
     params = {
         key: re.escape(str(value))
         for key, value in sorted(args.items())
@@ -196,7 +217,10 @@ def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
 
 
 def _tool_call_paths(tool_call: ToolCall, workspace_root: Path) -> list[str]:
-    path_keys = {"path", "file_path", "source", "target", "dest", "directory", "dir"}
+    path_keys = {
+        "path", "file_path", "source", "destination", "target", "dest",
+        "directory", "dir",
+    }
     paths: list[str] = []
     for key in path_keys:
         value = tool_call.args.get(key)

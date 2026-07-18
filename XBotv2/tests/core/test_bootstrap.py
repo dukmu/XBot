@@ -260,8 +260,17 @@ class NormalClosePlugin(PluginBase):
         # Core tools always present
         assert "shell" in tool_names
         assert "filesystem_read" in tool_names
+        assert "filesystem_stat" in tool_names
         assert "filesystem_write" in tool_names
+        assert "filesystem_edit" in tool_names
+        assert "filesystem_patch" in tool_names
+        assert "filesystem_move" in tool_names
+        assert "filesystem_copy" in tool_names
+        assert "filesystem_delete" in tool_names
+        assert "filesystem_mkdir" in tool_names
         assert "filesystem_list" in tool_names
+        assert "search_text" in tool_names
+        assert "find_files" in tool_names
         assert "send_message" in tool_names
         assert "ask_user" in tool_names
         assert "list_tasks" in tool_names
@@ -290,6 +299,21 @@ class NormalClosePlugin(PluginBase):
         assert "ask_user" in engine.tool_registry.names()
         assert "list_tasks" in engine.tool_registry.names()
         assert "stop_task" in engine.tool_registry.names()
+        assert "search_text" in engine.tool_registry.names()
+        assert "find_files" in engine.tool_registry.names()
+        assert "filesystem" not in engine.config.tools
+        assert {
+            "filesystem_read",
+            "filesystem_stat",
+            "filesystem_list",
+            "filesystem_write",
+            "filesystem_edit",
+            "filesystem_patch",
+            "filesystem_move",
+            "filesystem_copy",
+            "filesystem_delete",
+            "filesystem_mkdir",
+        }.issubset(engine.config.tools)
         assert "plugin:compact:*" in engine.config.tools
         assert "plugin:todolist:*" in engine.config.tools
         assert "plugin:goal:*" in engine.config.tools
@@ -534,7 +558,11 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
         """The default workspace plugin injects AGENTS.md into model context."""
         (temp_workspace / "AGENTS.md").write_text(
-            "Workspace instruction: prefer concise answers.",
+            "Workspace instruction path:\n"
+            "```var\n"
+            "${workspace}\n"
+            "```\n"
+            "Keep ${workspace} and ${UNRELATED} literal.",
             encoding="utf-8",
         )
         llm = MockLLM(responses=[{"content": "ok"}])
@@ -557,7 +585,8 @@ class ConfiguredPlugin(PluginBase):
         )
         assert workspace.attrib["source"] == "AGENTS.md"
         assert workspace.text.strip() == (
-            "Workspace instruction: prefer concise answers."
+            f"Workspace instruction path:\n{temp_workspace}\n"
+            "Keep ${workspace} and ${UNRELATED} literal."
         )
 
     @pytest.mark.asyncio
@@ -749,6 +778,35 @@ class ConfiguredPlugin(PluginBase):
 
         assert engine.permission_system.check("filesystem_read", {}) == "allow"
         assert engine.sandbox_policy.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_binds_workspace_permission_scope(
+        self,
+        temp_data_dir,
+        temp_workspace,
+    ):
+        (temp_data_dir / "config" / "permissions.yaml").write_text(
+            "allow:\n"
+            "  - tool: filesystem_write\n"
+            "    paths: ${workspace}\n"
+            "ask:\n"
+            "  - tool: filesystem_write\n",
+            encoding="utf-8",
+        )
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="test-session",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.permission_system.check(
+            "filesystem_write", {"path": "notes.md"}
+        ) == "allow"
+        assert engine.permission_system.check(
+            "filesystem_write", {"path": str(temp_data_dir / "outside.md")}
+        ) == "ask"
 
 
 class TestBootstrapNoPlugins:

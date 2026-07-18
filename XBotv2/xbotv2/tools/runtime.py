@@ -329,6 +329,69 @@ def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
+async def _authorize_sandbox_tool(
+    call: ToolCall,
+    sandbox_policy: Any,
+    permission_interaction_handler: Any,
+    hook_manager: Any,
+    hook_context_factory: Any,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    issues = sandbox_policy.check_tool_access(call.name, call.args)
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[str, bool]] = set()
+    for issue in issues:
+        path = str(issue["path"])
+        write = bool(issue["write"])
+        key = (path, write)
+        if key in seen:
+            continue
+        seen.add(key)
+        decision = str(issue["decision"])
+        access = "readwrite" if write else "readonly"
+        action = "write" if write else "read"
+        reason = (
+            f"Path approval required for {action}: {path}"
+            if decision == "ask"
+            else f"Sandbox denied {action} access: {path}"
+        )
+        stage = (
+            HookStage.ON_PERMISSION_REQUEST
+            if decision == "ask"
+            else HookStage.ON_PERMISSION_DENIED
+        )
+        event = _permission_client_event(
+            stage,
+            call,
+            decision,
+            reason,
+            source="sandbox",
+        )
+        event["data"].update({
+            "sandbox_path": path,
+            "sandbox_access": access,
+        })
+        events.append(event)
+        await _emit_permission_event(
+            hook_manager,
+            hook_context_factory,
+            stage,
+            call,
+            decision,
+            reason,
+        )
+        if decision != "ask":
+            return False, events, reason
+        response = await _resolve_live_permission(
+            event,
+            permission_interaction_handler,
+            call,
+        )
+        if response.get("decision") != "allow":
+            return False, events, _permission_denial_reason(response, reason)
+        sandbox_policy.add_rule(path, access)
+    return True, events, ""
+
+
 async def _run_tool_hook(
     hook_manager: Any,
     hook_context_factory: Any,
@@ -481,11 +544,30 @@ async def _execute_one_tool(
                 observed_tool_calls.append(call)
                 return
 
-    try:
-        use_sandbox_policy = (
-            entry.sandbox_mode == "sandboxed"
-            and sandbox_policy is not None
+    use_sandbox_policy = (
+        entry.sandbox_mode == "sandboxed"
+        and sandbox_policy is not None
+    )
+    if use_sandbox_policy and sandbox_policy.enabled:
+        allowed, sandbox_events, reason = await _authorize_sandbox_tool(
+            call,
+            sandbox_policy,
+            permission_interaction_handler,
+            hook_manager,
+            hook_context_factory,
         )
+        if not allowed:
+            await _emit_tool_denied(
+                hook_manager,
+                hook_context_factory,
+                call,
+                reason,
+            )
+            results.append(_error_message(call, reason, events=sandbox_events))
+            observed_tool_calls.append(call)
+            return
+
+    try:
         result = await _invoke_tool(
             tool,
             args,

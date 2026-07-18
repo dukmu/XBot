@@ -17,6 +17,7 @@ from xbotv2.api import (
     CommandResult,
     Tool,
     ToolRegistrationOptions,
+    RuntimeVariables,
 )
 from xbotv2.core.agents import AgentRegistry
 from xbotv2.plugin.loader import (
@@ -49,13 +50,14 @@ def _make_manifest_tuple(name: str, deps: list[str] | None = None) -> tuple[Plug
     return (_make_manifest(name, deps=deps), Path(f"/fake/{name}"))
 
 
-def _setup_plugin(plugin):
+def _setup_plugin(plugin, variables=None):
     context = ContextBuilder()
     setup = _PluginSetupContext(
         plugin_name=plugin.manifest.name,
         hooks=HookManager(),
         tools=ToolRegistry(),
         context=context,
+        variables=variables or RuntimeVariables(),
     )
     plugin.setup(setup)
     return context
@@ -309,6 +311,36 @@ class TestPromptFragmentFiles:
         context = _setup_plugin(plugin)
 
         assert context.get_fragment("system_instructions", "simple") == "## Static Instructions\nUse care.\n"
+
+    def test_prompt_file_expands_shared_runtime_variables(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "simple"
+        plugin_dir.mkdir(parents=True)
+        prompt = plugin_dir / "instructions.md"
+        prompt.write_text(
+            "Results:\n"
+            "```var\n"
+            "${tool_results}\n"
+            "```\n"
+            "Keep ${tool_results} and ${OTHER}.\n"
+        )
+        manifest = PluginManifest(
+            name="simple",
+            version="1.0.0",
+            prompt_fragments=[
+                {"stage": "system_instructions", "file": "instructions.md"}
+            ],
+            plugin_dir=plugin_dir,
+        )
+        variables = RuntimeVariables({
+            "tool_results": tmp_path / "session" / "tool_results",
+        })
+
+        context = _setup_plugin(_DefaultPlugin(manifest, store=None), variables)
+
+        assert context.get_fragment("system_instructions", "simple") == (
+            f"Results:\n{tmp_path / 'session/tool_results'}\n"
+            "Keep ${tool_results} and ${OTHER}.\n"
+        )
 
     def test_plugin_base_loads_prompt_file_relative_to_plugin_dir(self, tmp_path):
         plugin_dir = tmp_path / "plugins" / "classy"

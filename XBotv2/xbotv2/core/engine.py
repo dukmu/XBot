@@ -42,6 +42,7 @@ from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 from xbotv2.api.context import ContextComponent
 from xbotv2.api.prompts import prompt_container, prompt_element
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.persistence.store import message_to_dict
 
 
@@ -204,6 +205,7 @@ class Engine:
         context_window: int = 0,
         llm_is_override: bool = False,
         user_context: Any | None = None,
+        runtime_variables: RuntimeVariables | None = None,
     ) -> None:
         self.llm = llm
         self.tool_registry = tool_registry
@@ -227,6 +229,11 @@ class Engine:
         )
         self.llm_is_override = llm_is_override
         self.user_context = user_context
+        self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
+            state_store.paths.runtime,
+            self.workspace_root,
+            state_store.paths,
+        )
 
         self.messages: list[Message] = []
         self._persisted_messages: list[dict[str, Any]] = []

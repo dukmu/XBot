@@ -19,6 +19,7 @@ from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.api.plugins import (
     PluginBase,
     PluginManifest,
@@ -96,6 +97,7 @@ class _PluginSetupContext:
     agents: AgentRegistry = field(default_factory=AgentRegistry)
     workspace_root: Path = field(default_factory=Path.cwd)
     data_root: Path = field(default_factory=Path.cwd)
+    variables: RuntimeVariables = field(default_factory=RuntimeVariables)
     agent_runtime: AgentRuntime | None = None
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
@@ -190,6 +192,7 @@ class PluginLoader:
         context_builder: ContextBuilder,
         agent_registry: AgentRegistry | None = None,
         workspace_root: Path | str | None = None,
+        runtime_variables: RuntimeVariables | None = None,
         disabled_plugins: set[str] | None = None,
         agent_runtime: AgentRuntime | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
@@ -201,6 +204,11 @@ class PluginLoader:
         self.context_builder = context_builder
         self.agent_registry = agent_registry or AgentRegistry()
         self.workspace_root = Path(workspace_root or state_store.workspace_root)
+        self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
+            state_store.paths.runtime,
+            self.workspace_root,
+            state_store.paths,
+        )
         self.disabled_plugins = disabled_plugins or set()
         self.agent_runtime = agent_runtime
         self.plugin_configs = plugin_configs or {}
@@ -362,6 +370,7 @@ class PluginLoader:
             agents=self.agent_registry,
             workspace_root=self.workspace_root,
             data_root=self.state_store.paths.runtime.data_dir,
+            variables=self.runtime_variables,
             agent_runtime=self.agent_runtime,
             commands=self._commands,
         )

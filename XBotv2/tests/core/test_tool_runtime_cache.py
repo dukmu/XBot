@@ -152,7 +152,7 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     assert all(result.status == "success" for result in results)
     assert "tool_results" in results[0].content
-    assert "tool_results/cached.txt:1:cached content" in results[1].content
+    assert "tool_results/cached.txt:1:1:cached content" in results[1].content
     assert "tool_results/cached.txt" in results[2].content
 
 
@@ -475,6 +475,101 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
         ("denied", "filesystem_write", "PermissionError"),
         ("batch", 1, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("approved\n", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        config={"external_read": "ask", "external_write": "deny"},
+        workspace_root=workspace,
+    )
+    if not sandbox.backend_available:
+        pytest.skip("bubblewrap is not installed")
+    registry = ToolRegistry()
+    registry.register(filesystem_read, sandbox_mode="sandboxed")
+    events = []
+
+    async def approve(event, **_kwargs):
+        events.append(event)
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "filesystem_read", {"path": str(external)})],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert results[0].content == "approved\n"
+    assert events[0]["data"]["source"] == "sandbox"
+    assert events[0]["data"]["sandbox_path"] == str(external.resolve())
+    assert events[0]["data"]["sandbox_access"] == "readonly"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("before\n", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        config={"external_read": "ask", "external_write": "ask"},
+        workspace_root=workspace,
+    )
+    if not sandbox.backend_available:
+        pytest.skip("bubblewrap is not installed")
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    events = []
+
+    async def approve(event, **_kwargs):
+        events.append(event)
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall(
+            "c1",
+            "filesystem_write",
+            {"path": str(external), "content": "after\n"},
+        )],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert external.read_text(encoding="utf-8") == "after\n"
+    assert events[0]["data"]["sandbox_path"] == str(external)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxPolicy(
+        config={"workspace_read": "allow", "workspace_write": "deny"},
+        workspace_root=workspace,
+    )
+    registry = ToolRegistry()
+    registry.register(filesystem_write, sandbox_mode="sandboxed")
+
+    results = await execute_tools(
+        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "error"
+    assert "Sandbox denied write access" in results[0].content
+    assert not (workspace / "blocked.txt").exists()
 
 
 @pytest.mark.asyncio

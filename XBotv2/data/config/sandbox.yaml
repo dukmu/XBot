@@ -6,13 +6,14 @@
 # external_write:  default access for writing outside workspace
 # workspace_read:  default access for reading inside workspace
 # workspace_write: default access for writing inside workspace
-# resources:       explicit per-path rules [{path, access}]
+# resources:       explicit per-path rules [{path, access}]; paths may use
+#                  built-in variables such as ${workspace} or ${tool_results}
 
 enabled: true
 network: true
 
 external_read: ask
-external_write: deny
+external_write: ask
 workspace_read: allow
 workspace_write: allow
 

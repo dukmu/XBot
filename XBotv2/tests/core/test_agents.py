@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.api import AgentDefinition
+from xbotv2.api import AgentDefinition, RuntimeVariables
 from xbotv2.core.agents import AgentRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from builtin_plugins.agents.plugin import _load_definition
@@ -37,6 +37,7 @@ def test_shipped_explorer_definition_is_read_only():
     assert definition.mode == "all"
     assert definition.tools == (
         "filesystem_read",
+        "filesystem_stat",
         "filesystem_list",
         "search_text",
         "find_files",
@@ -57,3 +58,35 @@ def test_shipped_default_definition_is_primary_capable():
     assert definition.name == "default"
     assert definition.mode == "all"
     assert definition.tools is None
+
+
+def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_path):
+    path = tmp_path / "reviewer.md"
+    path.write_text(
+        "---\n"
+        "description: Keep literal ${workspace}\n"
+        "permissions:\n"
+        "  allow:\n"
+        "    - tool: filesystem_read\n"
+        "      paths: ${workspace}\n"
+        "---\n"
+        "Inspect cached results in:\n"
+        "```var\n"
+        "${tool_results}\n"
+        "```\n"
+        "Keep literal ${workspace}.\n",
+        encoding="utf-8",
+    )
+    variables = RuntimeVariables({
+        "workspace": tmp_path / "workspace",
+        "tool_results": tmp_path / "state" / "artifacts" / "tool_results",
+    })
+
+    definition = _load_definition(path, variables)
+
+    assert definition.description == "Keep literal ${workspace}"
+    assert definition.prompt == (
+        f"Inspect cached results in:\n{tmp_path / 'state/artifacts/tool_results'}\n"
+        "Keep literal ${workspace}."
+    )
+    assert definition.permissions["allow"][0]["paths"] == "${workspace}"

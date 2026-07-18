@@ -12,6 +12,7 @@ from xbotv2.api import (
     AgentDefinition,
     PluginBase,
     PluginSetupContext,
+    RuntimeVariables,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
@@ -48,11 +49,17 @@ class AgentsPlugin(PluginBase):
     def setup(self, ctx: PluginSetupContext) -> None:
         definitions = {
             definition.name: definition
-            for definition in _load_definitions(ctx.data_root / ".agents")
+            for definition in _load_definitions(
+                ctx.data_root / ".agents",
+                ctx.variables,
+            )
         }
         definitions.update({
             definition.name: definition
-            for definition in _load_definitions(ctx.workspace_root / ".agents")
+            for definition in _load_definitions(
+                ctx.workspace_root / ".agents",
+                ctx.variables,
+            )
         })
         for definition in definitions.values():
             ctx.register_agent(definition)
@@ -114,13 +121,23 @@ class AgentsPlugin(PluginBase):
                     namespace="plugin:agents",
                 ),
             )
-def _load_definitions(directory: Path) -> list[AgentDefinition]:
+def _load_definitions(
+    directory: Path,
+    variables: RuntimeVariables | None = None,
+) -> list[AgentDefinition]:
     if not directory.is_dir():
         return []
-    return [_load_definition(path) for path in sorted(directory.glob("*.md"))]
+    return [
+        _load_definition(path, variables)
+        for path in sorted(directory.glob("*.md"))
+    ]
 
 
-def _load_definition(path: Path) -> AgentDefinition:
+def _load_definition(
+    path: Path,
+    variables: RuntimeVariables | None = None,
+) -> AgentDefinition:
+    variables = variables or RuntimeVariables()
     text = path.read_text(encoding="utf-8")
     if not text.startswith(f"{_FRONTMATTER}\n"):
         raise ValueError(f"Agent definition requires YAML frontmatter: {path}")
@@ -135,7 +152,10 @@ def _load_definition(path: Path) -> AgentDefinition:
         raise ValueError(
             f"Unknown Agent fields in {path}: {', '.join(sorted(unknown))}"
         )
-    prompt = text[marker + len(_FRONTMATTER) + 2:].strip()
+    prompt = variables.expand_markdown(
+        text[marker + len(_FRONTMATTER) + 2:].strip(),
+        source=str(path),
+    )
     tools, disabled_tools, tool_permissions = _parse_tools(
         metadata.get("tools"), path
     )

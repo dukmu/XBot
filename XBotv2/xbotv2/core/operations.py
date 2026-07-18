@@ -305,7 +305,10 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
     elif isinstance(live_permissions, PermissionSystem):
         live_permissions.replace_rules(permissions)
     else:
-        ctx.engine.permission_system = PermissionSystem(permissions)
+        ctx.engine.permission_system = PermissionSystem(
+            permissions,
+            variables=ctx.engine.runtime_variables,
+        )
     live_sandbox = ctx.engine.sandbox_policy
     if isinstance(live_sandbox, SandboxPolicy):
         live_sandbox.replace_config(sandbox)
@@ -315,6 +318,7 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
             data_root=ctx.paths.data_dir,
             workspace_root=Path(ctx.workspace_root),
             session_root=getattr(live_sandbox, "session_root", None),
+            variables=ctx.engine.runtime_variables,
         )
 
 

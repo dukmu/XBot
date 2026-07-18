@@ -17,6 +17,7 @@ from xbotv2.api.plugins import (
     ToolRegistrationOptions,
 )
 from xbotv2.api.paths import RuntimePaths, SessionPaths, ThreadPaths
+from xbotv2.api.variables import RuntimeVariables
 from xbotv2.api.tools import (
     ArtifactRef,
     ClientEvent,
@@ -64,6 +65,7 @@ __all__ = [
     "prompt_element",
     "RuntimePluginContext",
     "RuntimePaths",
+    "RuntimeVariables",
     "SessionInfo",
     "SessionPaths",
     "ThreadPaths",
