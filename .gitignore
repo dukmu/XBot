@@ -9,6 +9,7 @@ node_modules/
 
 # Web builds
 dist/
+build/
 playwright-report/
 test-results/
 *.tsbuildinfo

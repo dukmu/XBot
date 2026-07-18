@@ -18,6 +18,9 @@ the other CLI options to select a run configuration. The workspace always
 defaults to the startup directory; `XBOT_*` variables provide optional defaults
 for the other settings. Run `./xbot --help` for all modes.
 
+Web mode serves the compiled frontend through Python and automatically starts
+the API on an internal Unix socket unless `--server URL` is provided.
+
 ## Develop
 
 ```bash

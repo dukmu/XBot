@@ -31,8 +31,13 @@ local URL:
 XBOT_API_URL=http://127.0.0.1:4100 npm run dev
 ```
 
-From the repository root, `./xbot web` starts both processes and opens the
-workbench. Use `--no-open` when no desktop browser is available.
+From the repository root, `./xbot web` serves the compiled client with Python,
+starts the API over an internal Unix socket, and opens the workbench. Runtime
+Web mode does not invoke npm. Use `--server http://127.0.0.1:4096` to connect to
+an existing API server or `--no-open` when no desktop browser is available.
+The browser always uses same-origin `/api`; the Python Web process performs the
+HTTP-to-UDS or HTTP-to-HTTP proxying. `--server` and `--uds` are mutually
+exclusive, and the generated socket is removed when Web mode exits.
 
 ## Production
 
@@ -40,10 +45,11 @@ workbench. Use `--no-open` when no desktop browser is available.
 npm run build
 ```
 
-Serve `dist/` and reverse-proxy `/api/*` to the loopback XBot server while
+The build is written to `XBotv2/xbotv2/web_dist` and included in the Python
+package. `xbotv2 web` serves those files and reverse-proxies `/api/*` while
 removing the `/api` prefix. XBot currently has no remote authentication
-contract, so the API must not be exposed directly to an untrusted network.
-`VITE_XBOT_API_BASE` may select another same-origin prefix at build time.
+contract, so Web mode binds to loopback only. `VITE_XBOT_API_BASE` may select
+another same-origin prefix at build time.
 
 ## Source Layout
 

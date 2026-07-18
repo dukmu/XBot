@@ -51,3 +51,4 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "builtin_plugins" = ["**/plugin.yaml"]
+"xbotv2" = ["web_dist/index.html", "web_dist/assets/*"]

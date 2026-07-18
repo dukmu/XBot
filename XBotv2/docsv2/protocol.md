@@ -20,6 +20,22 @@ python -m xbotv2 tui --server http://..        # attach to HTTP/SSE server
 python -m xbotv2 serve                         # server-only on 127.0.0.1
 ```
 
+Local Web mode also uses a generated UDS for its API subprocess by default,
+but browsers never access that socket directly. A loopback Python Web server
+serves the compiled HTML/JS and proxies same-origin `/api/*` requests to the
+UDS after removing the `/api` prefix. Both normal JSON responses and SSE streams
+retain the API status, content type, and body. The API subprocess and socket are
+removed when Web mode exits.
+
+```bash
+python -m xbotv2 web                           # compiled Web + automatic UDS API
+python -m xbotv2 web --server http://127.0.0.1:4096
+```
+
+`--server` and `--uds` are mutually exclusive. The second form proxies an
+existing HTTP API instead of spawning one. The browser-facing server binds
+only to `127.0.0.1` while authentication is unavailable.
+
 ## Session
 
 A session is a persistent container with one main thread and zero or more

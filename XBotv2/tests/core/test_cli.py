@@ -83,7 +83,7 @@ def test_bash_entrypoint_has_valid_syntax():
     subprocess.run(["bash", "-n", str(entrypoint)], check=True)
 
 
-def test_web_runs_api_and_vite_then_cleans_up(monkeypatch):
+def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(monkeypatch):
     class Process:
         def __init__(self):
             self.returncode = None
@@ -104,24 +104,73 @@ def test_web_runs_api_and_vite_then_cleans_up(monkeypatch):
             self.returncode = -9
 
     server = Process()
-    client = Process()
-    launched = {}
-    monkeypatch.setattr(cli, "_spawn_server", lambda _args: server)
-    monkeypatch.setattr(cli, "_wait_for_health", lambda *args, **kwargs: True)
-    monkeypatch.setattr(
-        cli.subprocess,
-        "Popen",
-        lambda command, **kwargs: launched.update(command=command, kwargs=kwargs) or client,
-    )
+    spawned = {}
+    health = {}
+
+    def spawn(args):
+        spawned["uds"] = args.uds
+        return server
+
+    def wait_for_health(url, **kwargs):
+        health.update(url=url, **kwargs)
+        return True
+
+    monkeypatch.setattr(cli, "_spawn_server", spawn)
+    monkeypatch.setattr(cli, "_wait_for_health", wait_for_health)
     opened = []
     monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    import uvicorn
 
-    cli._run_web(parse(["web", "--port", "4100", "--web-port", "5180"]))
+    served = {}
+    monkeypatch.setattr(
+        uvicorn,
+        "run",
+        lambda app, **kwargs: served.update(app=app, **kwargs),
+    )
 
-    assert launched["command"][-2:] == ["--port", "5180"]
-    assert launched["kwargs"]["env"]["XBOT_API_URL"] == "http://127.0.0.1:4100"
+    cli._run_web(parse(["web", "--web-port", "5180"]))
+
+    assert spawned["uds"].startswith("/tmp/xbotv2-web-")
+    assert health["url"] == "http://localhost"
+    assert health["uds_path"] == spawned["uds"]
+    assert served["host"] == "127.0.0.1"
+    assert served["port"] == 5180
     assert opened == ["http://127.0.0.1:5180"]
     assert server.terminated
+
+
+def test_web_can_use_existing_server_without_spawning(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "_spawn_server",
+        lambda _args: pytest.fail("external Web server must not spawn an API"),
+    )
+    monkeypatch.setattr(cli.webbrowser, "open", lambda _url: None)
+    import uvicorn
+
+    served = {}
+    monkeypatch.setattr(
+        uvicorn,
+        "run",
+        lambda app, **kwargs: served.update(app=app, **kwargs),
+    )
+
+    cli._run_web(parse([
+        "web",
+        "--server", "http://127.0.0.1:4100",
+        "--no-open",
+    ]))
+
+    assert served["app"] is not None
+
+
+def test_web_server_and_uds_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        parse([
+            "web",
+            "--server", "http://localhost:4096",
+            "--uds", "/tmp/xbot.sock",
+        ])
 
 
 @pytest.mark.asyncio

@@ -108,13 +108,14 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(command="serve")
 
     web = commands.add_parser(
-        "web", parents=[common], help="run the API server and Web workbench"
+        "web", parents=[common], help="run the compiled Web workbench"
     )
-    web.add_argument(
-        "--bind", default=_env("BIND", "127.0.0.1"), help="API bind address"
+    web_api = web.add_mutually_exclusive_group()
+    web_api.add_argument(
+        "--server", default=_env("SERVER"), help="connect to an existing API URL"
     )
-    web.add_argument(
-        "--port", type=int, default=_env("PORT", "4096"), help="API port"
+    web_api.add_argument(
+        "--uds", default=_env("UDS"), help="socket for the auto-started server"
     )
     web.add_argument(
         "--web-bind",
@@ -169,7 +170,10 @@ def main(argv: list[str] | None = None):
         log_file=args.log_file,
     )
 
-    if not (args.command == "tui" and args.server):
+    if not (
+        args.command in {"tui", "web"}
+        and getattr(args, "server", None)
+    ):
         from xbotv2.config.loader import load_provider_config
 
         try:
@@ -294,56 +298,61 @@ def _run_tui(args) -> None:
 
 
 def _run_web(args) -> None:
-    """Run the existing API server and independent Vite Web client."""
-    web_dir = Path(__file__).resolve().parents[1] / "web"
-    if not (web_dir / "package.json").is_file():
-        raise SystemExit(f"Error: Web client not found at {web_dir}")
+    """Serve the compiled Web client and proxy its API requests."""
+    static_root = Path(__file__).resolve().parent / "web_dist"
+    if not (static_root / "index.html").is_file() or not (
+        static_root / "assets"
+    ).is_dir():
+        raise SystemExit(
+            f"Error: compiled Web client not found at {static_root}; "
+            "run `npm run build` in XBotv2/web"
+        )
+    if args.web_bind != "127.0.0.1":
+        raise SystemExit("Error: Web mode only supports --web-bind 127.0.0.1")
 
-    args.uds = None
-    server = _spawn_server(args)
-    api_url = f"http://{args.bind}:{args.port}"
-    if not _wait_for_health(api_url, timeout=15.0):
-        server.terminate()
-        server.wait(timeout=5)
-        raise SystemExit(f"Error: API server at {api_url} did not become healthy")
+    api_url = args.server or "http://localhost"
+    uds_path = args.uds
+    spawned_server: subprocess.Popen | None = None
+    if args.server is None:
+        if uds_path is None:
+            uds_path = f"/tmp/xbotv2-web-{os.getpid()}.sock"
+        args.uds = uds_path
+        spawned_server = _spawn_server(args)
+        if not _wait_for_health(api_url, timeout=15.0, uds_path=uds_path):
+            if spawned_server.poll() is not None:
+                _, error = spawned_server.communicate(timeout=1)
+                if error:
+                    print(error.decode("utf-8", errors="replace"), file=sys.stderr)
+            _stop_process(spawned_server)
+            _cleanup_socket(uds_path)
+            raise SystemExit(
+                f"Error: spawned server at {uds_path} did not become healthy"
+            )
 
-    env = os.environ.copy()
-    env["XBOT_API_URL"] = api_url
-    command = [
-        "npm", "run", "dev", "--",
-        "--host", args.web_bind,
-        "--port", str(args.web_port),
-    ]
     try:
-        client = subprocess.Popen(command, cwd=web_dir, env=env)
-    except FileNotFoundError as exc:
-        server.terminate()
-        server.wait(timeout=5)
-        raise SystemExit("Error: npm is required for `xbotv2 web`") from exc
+        import uvicorn
+    except ImportError as exc:
+        raise SystemExit("Error: uvicorn is required for `xbotv2 web`") from exc
+
+    from xbotv2.web_server import create_web_app
 
     web_url = f"http://{args.web_bind}:{args.web_port}"
+    app = create_web_app(static_root, api_url=api_url, uds_path=uds_path)
     try:
-        if not _wait_for_health(web_url, timeout=15.0, path="/"):
-            raise SystemExit(f"Error: Web client at {web_url} did not become healthy")
         print(f"XBot Web: {web_url}")
         if not args.no_open:
             webbrowser.open(web_url)
-        client.wait()
-    except KeyboardInterrupt:
-        pass
+        uvicorn.run(
+            app,
+            host=args.web_bind,
+            port=args.web_port,
+            log_level="warning",
+            ws="none",
+        )
     finally:
-        if client.poll() is None:
-            client.terminate()
-            try:
-                client.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                client.kill()
-        if server.poll() is None:
-            server.terminate()
-            try:
-                server.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                server.kill()
+        if spawned_server is not None:
+            _stop_process(spawned_server)
+            _cleanup_socket(uds_path)
 
 
 def _cleanup_socket(path: str | None) -> None:
@@ -352,6 +361,17 @@ def _cleanup_socket(path: str | None) -> None:
             os.unlink(path)
         except OSError:
             pass
+
+
+def _stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def _spawn_server(args) -> subprocess.Popen:

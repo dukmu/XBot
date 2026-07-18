@@ -18,6 +18,18 @@ Core defines interfaces; bootstrap wires plugins at runtime via manifests.
 `plugin_dirs=[]` disables plugin discovery (pure-core test mode).
 `--no-plugins` CLI flag equivalent.
 
+## Client Processes
+
+The TUI and Web clients use the same HTTP/SSE protocol. Local TUI mode talks
+directly to an automatically managed UDS. Local Web mode adds a small loopback
+HTTP boundary because browsers cannot open Unix sockets: it serves the compiled
+`xbotv2/web_dist` assets and proxies `/api/*` to the UDS. This Web boundary does
+not import or call Engine; it only transports public protocol requests.
+
+Vite and npm are development/build dependencies, not runtime processes.
+`npm run build` writes hashed assets into the Python package, and `xbotv2 web`
+serves those existing files without invoking Node.
+
 ## Runtime Identity
 
 ```yaml
