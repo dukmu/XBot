@@ -83,7 +83,18 @@ def test_bash_entrypoint_has_valid_syntax():
     subprocess.run(["bash", "-n", str(entrypoint)], check=True)
 
 
-def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(monkeypatch):
+def compiled_web_root(monkeypatch, tmp_path):
+    root = tmp_path / "web_dist"
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_text("<main>XBot</main>", encoding="utf-8")
+    monkeypatch.setattr(cli, "_WEB_STATIC_ROOT", root)
+
+
+def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(
+    monkeypatch,
+    tmp_path,
+):
+    compiled_web_root(monkeypatch, tmp_path)
     class Process:
         def __init__(self):
             self.returncode = None
@@ -139,7 +150,8 @@ def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(monkeypatch):
     assert server.terminated
 
 
-def test_web_can_use_existing_server_without_spawning(monkeypatch):
+def test_web_can_use_existing_server_without_spawning(monkeypatch, tmp_path):
+    compiled_web_root(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli,
         "_spawn_server",

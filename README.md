@@ -19,7 +19,8 @@ defaults to the startup directory; `XBOT_*` variables provide optional defaults
 for the other settings. Run `./xbot --help` for all modes.
 
 Web mode serves the compiled frontend through Python and automatically starts
-the API on an internal Unix socket unless `--server URL` is provided.
+the API on an internal Unix socket unless `--server URL` is provided. Run
+`npm run build` in `XBotv2/web` first when no local Web build exists.
 
 ## Develop
 

@@ -45,11 +45,12 @@ exclusive, and the generated socket is removed when Web mode exits.
 npm run build
 ```
 
-The build is written to `XBotv2/xbotv2/web_dist` and included in the Python
-package. `xbotv2 web` serves those files and reverse-proxies `/api/*` while
-removing the `/api` prefix. XBot currently has no remote authentication
-contract, so Web mode binds to loopback only. `VITE_XBOT_API_BASE` may select
-another same-origin prefix at build time.
+The ignored build output is written to `XBotv2/xbotv2/web_dist`. Run the build
+explicitly before `xbotv2 web`; runtime Web mode never invokes npm. The Python
+server serves those files and reverse-proxies `/api/*` while removing the
+`/api` prefix. XBot currently has no remote authentication contract, so Web
+mode binds to loopback only. `VITE_XBOT_API_BASE` may select another same-origin
+prefix at build time.
 
 ## Source Layout
 

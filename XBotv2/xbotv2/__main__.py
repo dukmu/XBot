@@ -17,6 +17,7 @@ from xbotv2.api.paths import RuntimePaths
 
 _COMMAND_ALIASES = {"server": "serve"}
 _COMMANDS = {"serve", "server", "tui", "web", "once", "terminal"}
+_WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -299,7 +300,7 @@ def _run_tui(args) -> None:
 
 def _run_web(args) -> None:
     """Serve the compiled Web client and proxy its API requests."""
-    static_root = Path(__file__).resolve().parent / "web_dist"
+    static_root = _WEB_STATIC_ROOT
     if not (static_root / "index.html").is_file() or not (
         static_root / "assets"
     ).is_dir():

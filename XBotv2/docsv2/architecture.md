@@ -26,9 +26,9 @@ HTTP boundary because browsers cannot open Unix sockets: it serves the compiled
 `xbotv2/web_dist` assets and proxies `/api/*` to the UDS. This Web boundary does
 not import or call Engine; it only transports public protocol requests.
 
-Vite and npm are development/build dependencies, not runtime processes.
-`npm run build` writes hashed assets into the Python package, and `xbotv2 web`
-serves those existing files without invoking Node.
+Vite and npm are build dependencies, not runtime processes. `npm run build`
+writes ignored hashed assets to `xbotv2/web_dist`; `xbotv2 web` serves an
+existing local build without invoking Node.
 
 ## Runtime Identity
 
