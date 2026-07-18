@@ -1,7 +1,7 @@
 allow:
 - tool: list_tasks
 - tool: stop_task
-- tool: (?:send_message|ask_user)
+- tool: (?:send_message|ask_user|request_permission)
 - tool: (?:search_text|find_files)
 - tool: update_todos
 - tool: (?:filesystem_read|filesystem_stat|filesystem_list)

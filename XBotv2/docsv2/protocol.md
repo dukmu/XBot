@@ -296,6 +296,12 @@ requires at least two `{label, description}` choices and returns the selected
 label; other interaction sources may request free-form input. The timeout, when
 present, is positive.
 
+The Agent-facing `request_permission` Tool emits the same
+`permission_request` event with a `permission` object containing an exact Tool
+name and full-match parameter regular expressions. It does not fabricate or
+execute a future ToolCall, and it does not define another Tool dispatch path.
+An allow-once rule is consumed by the next matching call.
+
 Because `ask_user` is a registered tool, permission policy runs first. Under an
 `ask` policy, one turn therefore carries two ordered interactions:
 `permission_request`, then `user_input_required`. The client must resolve each

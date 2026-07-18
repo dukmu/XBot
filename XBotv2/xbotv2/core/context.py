@@ -105,6 +105,7 @@ class ContextBuilder:
         instructions: str = "",
         memory: str = "",
         sandbox_summary: str = "",
+        runtime_paths: dict[str, str] | None = None,
         system_notice: str = "",
         turn_count: int = 0,
         active_subagents: int = 0,
@@ -120,6 +121,7 @@ class ContextBuilder:
             instructions=instructions,
             memory=memory,
             sandbox_summary=sandbox_summary,
+            runtime_paths=runtime_paths,
             system_notice=system_notice,
             turn_count=turn_count,
             active_subagents=active_subagents,
@@ -137,6 +139,7 @@ class ContextBuilder:
         instructions: str = "",
         memory: str = "",
         sandbox_summary: str = "",
+        runtime_paths: dict[str, str] | None = None,
         system_notice: str = "",
         turn_count: int = 0,
         active_subagents: int = 0,
@@ -150,6 +153,13 @@ class ContextBuilder:
         )]
 
         runtime_parts = [f"Human: {user_name} ({user_id})"]
+        if runtime_paths:
+            runtime_parts.append(
+                "Model-visible runtime paths:\n" + "\n".join(
+                    f"- {name}: {value}"
+                    for name, value in runtime_paths.items()
+                )
+            )
         if sandbox_summary:
             runtime_parts.append(f"Sandbox and permissions:\n{sandbox_summary}")
         if system_notice:

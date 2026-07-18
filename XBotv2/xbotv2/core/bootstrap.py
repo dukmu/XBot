@@ -63,7 +63,11 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # ------------------------------------------------------------------
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
-from xbotv2.core.builtin_tools.interaction import INTERACTION_TOOLS
+from xbotv2.core.builtin_tools.interaction import (
+    ask_user,
+    request_permission,
+    send_message,
+)
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -72,8 +76,9 @@ _SUBAGENT_BLOCKED_PLUGINS = {"agents"}
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
     *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
-    (INTERACTION_TOOLS[0], "host"),  # send_message
-    (INTERACTION_TOOLS[1], "host"),  # ask_user
+    (send_message, "host"),
+    (ask_user, "host"),
+    (request_permission, "host"),
 ]
 
 
@@ -96,6 +101,7 @@ async def bootstrap(
     parent_permission_system: Any | None = None,
     parent_thread_id: str = "",
     subagent_depth: int = 0,
+    interactive: bool = True,
 ) -> Engine:
     """Bootstrap the complete XBotv2 runtime.
 
@@ -197,6 +203,8 @@ async def bootstrap(
 
     # 4. Register core base tools (always available)
     for tool, sandbox_mode in CORE_BASE_TOOLS:
+        if not interactive and tool.name in {"ask_user", "request_permission"}:
+            continue
         tool_registry.register(
             tool,
             sandbox_mode=sandbox_mode,
@@ -243,6 +251,7 @@ async def bootstrap(
             parent_permission_system=permissions,
             parent_thread_id=thread_id,
             subagent_depth=child_depth,
+            interactive=interactive,
         )
         if parent_engine is not None:
             child.set_client_event_sink(parent_engine.client_event_sink)

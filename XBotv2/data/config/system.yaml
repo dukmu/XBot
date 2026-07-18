@@ -22,6 +22,7 @@ tools:
   - find_files
   - send_message
   - ask_user
+  - request_permission
   - plugin:compact:*
   - plugin:agents:*
   - plugin:todolist:*

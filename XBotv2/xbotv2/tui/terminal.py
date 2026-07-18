@@ -278,8 +278,12 @@ class TerminalSession:
             data = await self._transport.get_session_policy(
                 session_id=self._session_id
             )
-            section = "permissions" if command == "permission" else "sandbox"
-            return CommandOutcome(f"Session {command} policy: {data[section]}", data)
+            value = (
+                data["permissions"]
+                if command == "permission"
+                else data.get("effective_sandbox", data["sandbox"])
+            )
+            return CommandOutcome(f"Session {command} policy: {value}", data)
         if action == "set" and len(args) == 3:
             key, value = args[1], args[2].lower()
             kwargs: dict[str, Any]

@@ -19,6 +19,7 @@ Core registers these tools without plugins:
 | `filesystem_mkdir` | sandboxed, sequential | Create an empty directory |
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
+| `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
 | `list_tasks` | session runtime | List tasks or read one full result |
 | `stop_task` | session runtime | Stop one background task |
 
@@ -147,6 +148,14 @@ questions, empty choices, fewer than two choices, and non-positive timeouts are
 rejected by the Tool schema before an interaction is opened. A timeout,
 cancellation, or unsupported live client is not reported as
 a successful Tool result.
+
+`request_permission` accepts the complete model-visible Tool name, a mapping of
+parameter names to full-match regular expressions, and a reason. The Tool name
+is treated literally, not as a regular expression. It never constructs or
+executes a target ToolCall. An allow-once response installs a rule consumed by
+the next matching call; an allow-session response uses normal session policy
+persistence. Explicit deny rules and sandbox checks still take precedence.
+Non-interactive runtimes do not expose this Tool.
 
 Registered tools use one canonical string name:
 

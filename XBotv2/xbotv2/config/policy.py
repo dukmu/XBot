@@ -115,6 +115,17 @@ def persist_permission_decision(
 
     data = client_event.get("data") or {}
     source = str(data.get("source") or "permission_system")
+    if source == "request_permission":
+        rule = _requested_permission_rule(data.get("permission"))
+        if rule:
+            _persist_permission_rule(
+                paths=paths,
+                session_id=session_id,
+                rule=rule,
+                decision=decision,
+                engine=engine,
+            )
+        return
     raw_tool_call = data.get("tool_call")
     if not isinstance(raw_tool_call, dict):
         return
@@ -136,6 +147,23 @@ def persist_permission_decision(
     rule = _permission_rule_for_tool_call(tool_call)
     if not rule:
         return
+    _persist_permission_rule(
+        paths=paths,
+        session_id=session_id,
+        rule=rule,
+        decision=decision,
+        engine=engine,
+    )
+
+
+def _persist_permission_rule(
+    *,
+    paths: RuntimePaths,
+    session_id: str,
+    rule: dict[str, Any],
+    decision: str,
+    engine: Any | None,
+) -> None:
     path = paths.session(session_id).policy_file
     doc = _read_yaml(path)
     permissions = doc.setdefault("permissions", {})
@@ -146,9 +174,31 @@ def persist_permission_decision(
     _write_yaml(path, doc)
     if engine is not None:
         permission_system = getattr(engine, "permission_system", None)
-        permission_system = getattr(permission_system, "child", permission_system)
+        permission_system = getattr(
+            permission_system,
+            "child",
+            permission_system,
+        )
         if permission_system is not None:
             permission_system.add_rule(decision, rule)
+
+
+def _requested_permission_rule(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    tool = str(value.get("tool") or "").strip()
+    params = value.get("params") or {}
+    if not tool or not isinstance(params, dict):
+        return {}
+    for pattern in params.values():
+        re.compile(str(pattern))
+    rule: dict[str, Any] = {"tool": re.escape(tool)}
+    if params:
+        rule["params"] = {
+            str(name): str(pattern)
+            for name, pattern in params.items()
+        }
+    return rule
 
 
 def _persist_sandbox_rule(

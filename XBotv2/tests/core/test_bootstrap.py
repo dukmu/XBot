@@ -30,6 +30,23 @@ class TestBootstrapBasics:
         assert engine.turn_count == 0
 
     @pytest.mark.asyncio
+    async def test_noninteractive_bootstrap_hides_blocking_tools(
+        self, temp_data_dir
+    ):
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="noninteractive",
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+            interactive=False,
+        )
+
+        names = set(engine.tool_registry.names())
+        assert "send_message" in names
+        assert "ask_user" not in names
+        assert "request_permission" not in names
+
+    @pytest.mark.asyncio
     async def test_bootstrap_applies_system_tool_result_cache_limits(
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
@@ -256,7 +273,13 @@ class NormalClosePlugin(PluginBase):
             llm_override=MockLLM(responses=[]),
         )
         tool_names = set(engine.tool_registry.names())
-        assert {"shell", "filesystem_read", "ask_user", "list_tasks"} <= tool_names
+        assert {
+            "shell",
+            "filesystem_read",
+            "ask_user",
+            "request_permission",
+            "list_tasks",
+        } <= tool_names
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
@@ -281,6 +304,7 @@ class NormalClosePlugin(PluginBase):
             "ask_user",
             "filesystem_mkdir",
             "list_tasks",
+            "request_permission",
         } <= set(engine.tool_registry.names())
         assert "filesystem" not in engine.config.tools
 
@@ -610,7 +634,10 @@ class ConfiguredPlugin(PluginBase):
         _ = [event async for event in engine.run_turn("hello")]
 
         root = ET.fromstring(llm.get_call_messages(0)[0].content)
-        assert "Human: Ada (human-7)" in root.findtext("runtime_environment")
+        runtime = root.findtext("runtime_environment") or ""
+        assert "Human: Ada (human-7)" in runtime
+        assert f"- workspace: {temp_workspace}" in runtime
+        assert "- tool_results: session/artifacts/tool_results/ (read-only)" in runtime
 
     @pytest.mark.asyncio
     async def test_bootstrap_separates_configured_and_agent_instructions(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Literal
 
 from xbotv2.api.tools import ClientEvent, ToolResult
@@ -108,6 +109,55 @@ def ask_user_for_input(
     )
 
 
+async def request_tool_permission(
+    tool: str,
+    params: dict[str, str],
+    reason: str,
+) -> ToolResult:
+    """Ask the human to approve a restricted permission rule for one tool.
+
+    Use this before a sensitive operation when approval should be obtained
+    explicitly rather than discovered by attempting it. The tool name is
+    exact; each parameter pattern uses full-match regular-expression semantics. An
+    allow-once response applies only to the next matching call, while a session
+    approval is persisted by the normal permission system. This tool never
+    executes the target tool.
+
+    Args:
+        tool: Complete Tool name exactly as exposed to the model.
+        params: Parameter names mapped to full-match regular expressions. An
+            empty mapping requests permission for any arguments to this tool.
+        reason: Concise explanation of why the operation is necessary.
+    """
+    if not tool.strip():
+        raise ValueError("tool must not be empty")
+    if not reason.strip():
+        raise ValueError("reason must not be empty")
+    for name, pattern in params.items():
+        if not name.strip():
+            raise ValueError("parameter names must not be empty")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"invalid regular expression for {name}: {exc}"
+            ) from exc
+    return ToolResult(
+        content=f"Permission requested for {tool}.",
+        wait_for_user=True,
+        client_events=(ClientEvent(
+            type="permission_request",
+            data={
+                "source": "request_permission",
+                "permission": {"tool": tool, "params": params},
+                "decision": "ask",
+                "reason": reason,
+                "resume_supported": False,
+            },
+        ),),
+    )
+
+
 send_message = Tool.from_function(send_message_to_user, name="send_message")
 ask_user = Tool(
     name="ask_user",
@@ -115,5 +165,7 @@ ask_user = Tool(
     function=ask_user_for_input,
     parameters=_ASK_USER_SCHEMA,
 )
-
-INTERACTION_TOOLS = [send_message, ask_user]
+request_permission = Tool.from_function(
+    request_tool_permission,
+    name="request_permission",
+)

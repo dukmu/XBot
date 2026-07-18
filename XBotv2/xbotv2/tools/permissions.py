@@ -28,6 +28,38 @@ class PermissionRule:
     decision: PermissionDecision = "ask"
 
 
+def _matches_name_and_params(
+    rule: PermissionRule,
+    tool_name: str,
+    args: dict[str, Any],
+) -> bool:
+    if not re.fullmatch(rule.tool_pattern, tool_name):
+        return False
+    return all(
+        name in args and re.fullmatch(pattern, str(args[name]))
+        for name, pattern in rule.param_patterns.items()
+    )
+
+
+def _one_shot_rule(
+    tool_name: str,
+    param_patterns: dict[str, str],
+) -> PermissionRule:
+    if not tool_name.strip():
+        raise ValueError("Permission tool name must not be empty")
+    patterns = {
+        str(name): str(pattern)
+        for name, pattern in param_patterns.items()
+    }
+    for pattern in patterns.values():
+        re.compile(pattern)
+    return PermissionRule(
+        tool_pattern=re.escape(tool_name),
+        param_patterns=patterns,
+        decision="allow",
+    )
+
+
 class PermissionSystem:
     """Tri-state permission system for tool execution.
 
@@ -48,6 +80,7 @@ class PermissionSystem:
         self._deny_rules: list[PermissionRule] = []
         self._allow_rules: list[PermissionRule] = []
         self._ask_rules: list[PermissionRule] = []
+        self._once_grants: list[PermissionRule] = []
 
         if config is not None:
             self._load_config(config)
@@ -89,12 +122,26 @@ class PermissionSystem:
         if config is not None:
             self._load_config(config)
 
+    def grant_once(
+        self,
+        tool_name: str,
+        param_patterns: dict[str, str],
+    ) -> None:
+        """Allow the next call matching one exact-name parameter rule."""
+        self._once_grants.append(_one_shot_rule(tool_name, param_patterns))
+
     def _parse_rule(
         self,
         data: dict,
         decision: PermissionDecision,
     ) -> PermissionRule:
+        tool_pattern = str(data.get("tool", ".*"))
+        param_patterns = data.get("params", {})
         paths = data.get("paths")
+        if not isinstance(param_patterns, dict):
+            raise ValueError(
+                "Permission params must be a mapping of regular expressions"
+            )
         if paths is not None:
             if not isinstance(paths, str):
                 raise ValueError("Permission paths must be a regular expression")
@@ -105,9 +152,20 @@ class PermissionSystem:
                 ))
             except re.error as exc:
                 raise ValueError(f"Invalid permission path regex: {exc}") from exc
+        try:
+            re.compile(tool_pattern)
+            for pattern in param_patterns.values():
+                re.compile(str(pattern))
+        except re.error as exc:
+            raise ValueError(
+                f"Invalid permission regular expression: {exc}"
+            ) from exc
         return PermissionRule(
-            tool_pattern=data.get("tool", ".*"),
-            param_patterns=data.get("params", {}),
+            tool_pattern=tool_pattern,
+            param_patterns={
+                str(name): str(pattern)
+                for name, pattern in param_patterns.items()
+            },
             paths=paths,
             decision=decision,
         )
@@ -122,11 +180,25 @@ class PermissionSystem:
         Returns "allow", "deny", or "ask".
         """
         args = args or {}
+        grant_index = next(
+            (
+                index
+                for index, grant in enumerate(self._once_grants)
+                if self._rule_matches(grant, tool_name, args)
+            ),
+            None,
+        )
 
         # Deny always wins
         for rule in self._deny_rules:
             if self._rule_matches(rule, tool_name, args):
+                if grant_index is not None:
+                    self._once_grants.pop(grant_index)
                 return "deny"
+
+        if grant_index is not None:
+            self._once_grants.pop(grant_index)
+            return "allow"
 
         # Allow checked second
         for rule in self._allow_rules:
@@ -150,22 +222,11 @@ class PermissionSystem:
         tool_name: str,
         args: dict[str, Any],
     ) -> bool:
-        if not re.fullmatch(rule.tool_pattern, tool_name):
+        if not _matches_name_and_params(rule, tool_name, args):
             return False
-
-        if rule.paths is not None and not self._all_paths_match(
+        return rule.paths is None or self._all_paths_match(
             rule.paths, tool_name, args
-        ):
-            return False
-
-        for param, pattern in rule.param_patterns.items():
-            value = args.get(param)
-            if value is None:
-                return False
-            if not re.fullmatch(pattern, str(value)):
-                return False
-
-        return True
+        )
 
     def _all_paths_match(
         self,
@@ -219,18 +280,41 @@ class PermissionIntersection:
     def __init__(self, parent: Any, child: Any) -> None:
         self.parent = parent
         self.child = child
+        self._once_grants: list[PermissionRule] = []
+
+    def grant_once(
+        self,
+        tool_name: str,
+        param_patterns: dict[str, str],
+    ) -> None:
+        """Allow one matching call unless either policy explicitly denies it."""
+        self._once_grants.append(_one_shot_rule(tool_name, param_patterns))
 
     def check(
         self,
         tool_name: str,
         args: dict[str, Any] | None = None,
     ) -> PermissionDecision:
+        args = args or {}
         decisions = {
             self.parent.check(tool_name, args),
             self.child.check(tool_name, args),
         }
+        grant_index = next(
+            (
+                index
+                for index, grant in enumerate(self._once_grants)
+                if _matches_name_and_params(grant, tool_name, args)
+            ),
+            None,
+        )
         if "deny" in decisions:
+            if grant_index is not None:
+                self._once_grants.pop(grant_index)
             return "deny"
+        if grant_index is not None:
+            self._once_grants.pop(grant_index)
+            return "allow"
         if "ask" in decisions:
             return "ask"
         return "allow"

@@ -13,7 +13,10 @@ from xbotv2.tools.permissions import (
     PermissionSystem,
 )
 from xbotv2.api import ToolCall
-from xbotv2.config.policy import _permission_rule_for_tool_call
+from xbotv2.config.policy import (
+    _permission_rule_for_tool_call,
+    persist_permission_decision,
+)
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
@@ -62,6 +65,31 @@ class TestPermissionSystemBasics:
         )
         assert permissions.check("other_tool") == "allow"
 
+    def test_allow_once_is_exact_and_consumed(self):
+        permissions = PermissionSystem(default_decision="ask")
+        arguments = {"path": "report.txt", "content": "done"}
+
+        permissions.grant_once(
+            "filesystem_write",
+            {"path": r"report\.txt", "content": "done"},
+        )
+
+        assert permissions.check(
+            "filesystem_write",
+            {**arguments, "content": "other"},
+        ) == "ask"
+        assert permissions.check("filesystem_write", arguments) == "allow"
+        assert permissions.check("filesystem_write", arguments) == "ask"
+
+        denied = PermissionSystem({"deny": [{"tool": "filesystem_write"}]})
+        denied.grant_once(
+            "filesystem_write",
+            {"path": r"report\.txt", "content": "done"},
+        )
+        assert denied.check("filesystem_write", arguments) == "deny"
+        denied.replace_rules(None)
+        assert denied.check("filesystem_write", arguments) == "ask"
+
     def test_filesystem_write_session_rule_records_only_path(self):
         rule = _permission_rule_for_tool_call(ToolCall(
             "call-1",
@@ -98,6 +126,34 @@ class TestPermissionSystemBasics:
                 "source": "a\\.txt",
             },
         }
+
+    def test_requested_session_rule_is_persisted(self, tmp_path):
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        persist_permission_decision(
+            paths=paths,
+            session_id="permission-rule",
+            client_event={
+                "data": {
+                    "source": "request_permission",
+                    "permission": {
+                        "tool": "mcp__github__search",
+                        "params": {"query": r"issues/.*"},
+                    },
+                },
+            },
+            decision="allow",
+            scope="session",
+        )
+
+        policy = yaml.safe_load(
+            paths.session("permission-rule").policy_file.read_text(
+                encoding="utf-8"
+            )
+        )
+        assert policy["permissions"]["allow"] == [{
+            "tool": "mcp__github__search",
+            "params": {"query": r"issues/.*"},
+        }]
 
 
 @pytest.mark.asyncio
