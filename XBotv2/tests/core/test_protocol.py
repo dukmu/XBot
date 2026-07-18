@@ -2,6 +2,7 @@
 
 import pytest
 
+from xbotv2.api.messages import Message
 from xbotv2.api.tools import ToolCall
 from xbotv2.api.paths import RuntimePaths
 
@@ -59,11 +60,11 @@ class TestProviderConfig:
         # The API key should have been expanded
         assert llm is not None
 
-    def test_create_mock_llm(self):
-        """Mock LLM factory works."""
-        from xbotv2.llm.client import create_mock_llm
+    def test_mock_llm_response_queue(self):
+        """Mock LLM preserves its deterministic response queue."""
+        from xbotv2.llm.mock import MockLLM
 
-        llm = create_mock_llm([{"content": "test"}])
+        llm = MockLLM([{"content": "test"}])
         assert llm is not None
         assert len(llm.responses) == 1
 
@@ -89,11 +90,10 @@ class TestProviderConfig:
 
     def test_mock_llm_records_input_messages(self):
         """MockLLM call history records the actual request messages."""
-        from langchain_core.messages import HumanMessage
         from xbotv2.llm.mock import MockLLM
 
         llm = MockLLM([{"content": "ok"}])
-        response = llm.invoke([HumanMessage(content="hello")])
+        response = llm.invoke([Message(role="user", content="hello")])
 
         assert response.content == "ok"
         assert llm.call_count == 1
@@ -101,7 +101,6 @@ class TestProviderConfig:
 
     def test_mock_llm_records_normalized_tool_calls(self):
         """MockLLM call history records normalized tool calls from responses."""
-        from langchain_core.messages import HumanMessage
         from xbotv2.llm.mock import MockLLM
 
         llm = MockLLM([
@@ -110,7 +109,7 @@ class TestProviderConfig:
                 "tool_calls": [{"name": "shell", "args": {"command": "pwd"}, "id": "c1"}],
             }
         ])
-        llm.invoke([HumanMessage(content="run")])
+        llm.invoke([Message(role="user", content="run")])
 
         assert llm.verify_tool_call_made("shell")
         assert llm._mock_call_history[0]["tool_calls"] == [

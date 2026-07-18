@@ -192,7 +192,7 @@ class TestEngineBasics:
 
     @pytest.mark.asyncio
     async def test_streaming_text_deltas_precede_final_assistant_message(self, state_store, temp_workspace):
-        """Engine surfaces LangChain AIMessageChunk content as live deltas."""
+        """Engine surfaces provider chunk content as live deltas."""
         llm = MockLLM(responses=[{
             "content": "Hello world",
             "chunks": ["Hello ", "world"],
@@ -315,6 +315,44 @@ class TestEngineBasics:
         # Should have two assistant events (pre-tool and post-tool)
         assistant_events = [e for e in events if e["type"] == "assistant_message"]
         assert len(assistant_events) == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_response_after_tool_result_is_an_error(
+        self,
+        state_store,
+        temp_workspace,
+    ):
+        llm = MockLLM(responses=[
+            {
+                "tool_calls": [
+                    {"name": "echo", "args": {"message": "hello"}, "id": "call_1"},
+                ],
+            },
+            {
+                "content": "",
+                "additional_kwargs": {
+                    "reasoning_content": "<tool_call>not native ToolUse</tool_call>",
+                },
+                "response_metadata": {"stop_reason": "end_turn"},
+            },
+        ])
+        registry = ToolRegistry()
+        registry.register(echo_tool, sandbox_mode="host")
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+
+        events = [event async for event in engine.run_turn("echo hello")]
+
+        error = next(event for event in events if event["type"] == "error")
+        assert "no assistant content or ToolUse after ToolResult" in error["data"]["message"]
+        assert "stop_reason=end_turn" in error["data"]["message"]
+        assert "reasoning_chars=41" in error["data"]["message"]
+        assert llm.call_count == 2
+        assert not any(
+            message.role == "assistant"
+            and not message.content
+            and not message.tool_calls
+            for message in engine.messages
+        )
 
     @pytest.mark.asyncio
     async def test_tool_result_event_preserves_structured_fields(

@@ -682,12 +682,13 @@ async def on_turn_start(ctx):
         )
         (plugin_dir / "tools.py").write_text(
             """
-from langchain_core.tools import tool
+from xbotv2.api.tools import Tool
 
-@tool
-def plugin_tool() -> str:
+def _plugin_tool() -> str:
     \"\"\"Plugin tool.\"\"\"
     return "ok"
+
+plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
 """
         )
         (plugin_dir / "plugin.yaml").write_text(
@@ -967,12 +968,13 @@ async def on_turn_start(ctx):
         )
         (plugin_dir / "tools.py").write_text(
             """
-from langchain_core.tools import tool
+from xbotv2.api.tools import Tool
 
-@tool
-def plugin_tool() -> str:
+def _plugin_tool() -> str:
     \"\"\"Plugin tool.\"\"\"
     return "ok"
+
+plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
 """
         )
         (plugin_dir / "plugin.yaml").write_text(
@@ -1030,12 +1032,13 @@ def plugin_tool() -> str:
         (plugin_dir / "__init__.py").write_text("")
         (plugin_dir / "tools.py").write_text(
             """
-from langchain_core.tools import tool
+from xbotv2.api.tools import Tool
 
-@tool
-def plugin_tool() -> str:
+def _plugin_tool() -> str:
     \"\"\"Plugin tool.\"\"\"
     return "ok"
+
+plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
 """
         )
         (plugin_dir / "plugin.yaml").write_text(

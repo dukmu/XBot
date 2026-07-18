@@ -1,5 +1,6 @@
 """Structured synthetic message contracts."""
 
+import json
 import xml.etree.ElementTree as ET
 
 from xbotv2.api.messages import Message
@@ -11,7 +12,7 @@ from xbotv2.api.prompts import (
 from xbotv2.core.internal_messages import structure_tool_message
 
 
-def test_tool_result_uses_data_once_and_preserves_tool_role():
+def test_tool_result_keeps_matching_data_as_raw_native_content():
     payload = {"ok": True, "path": "a<&>.txt", "content": "body"}
     message = Message(
         role="tool",
@@ -22,15 +23,12 @@ def test_tool_result_uses_data_once_and_preserves_tool_role():
     )
 
     structure_tool_message(message, "filesystem_read")
-    root = ET.fromstring(message.content)
 
     assert message.role == "tool"
     assert message.tool_call_id == "call-1"
     assert message.name == "filesystem_read"
-    assert root.attrib == {"name": "filesystem_read", "status": "success"}
-    assert root.find("content") is None
-    assert root.find("data").attrib["encoding"] == "json"
-    assert "a&lt;&amp;&gt;.txt" in message.content
+    assert json.loads(message.content) == payload
+    assert "<tool_result" not in message.content
 
 
 def test_tool_result_escapes_text_and_exposes_error_metadata():
@@ -69,10 +67,11 @@ def test_cached_tool_content_remains_a_nested_element():
     structure_tool_message(message, "shell")
     root = ET.fromstring(message.content)
 
-    assert root.find("cached_content/cache_path").text.strip().startswith("session/")
+    assert root.tag == "cached_content"
+    assert root.find("cache_path").text.strip().startswith("session/")
     assert tool_result_display_content(message.content) == (
         "Tool result cached at session/artifacts/tool_results/result.txt "
         "(100 characters)."
     )
     assert structure_tool_message(message, "shell") is message
-    assert message.content.count("<tool_result") == 1
+    assert "<tool_result" not in message.content

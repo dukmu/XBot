@@ -69,3 +69,18 @@ def test_workspace_plugin_path_cannot_escape_workspace(
 
     with pytest.raises(ValueError, match="inside the workspace"):
         load_system_config(RuntimePaths.from_data_dir(temp_data_dir), temp_workspace)
+
+
+def test_tool_result_preview_cannot_exceed_inline_limit(
+    temp_data_dir, temp_workspace
+):
+    _write_yaml(
+        temp_data_dir / "config" / "system.yaml",
+        {
+            "tool_result_max_inline_chars": 100,
+            "tool_result_preview_chars": 101,
+        },
+    )
+
+    with pytest.raises(ValueError, match="tool_result_preview_chars"):
+        load_system_config(RuntimePaths.from_data_dir(temp_data_dir), temp_workspace)

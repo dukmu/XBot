@@ -15,9 +15,9 @@ Local TUI mode can spawn the same HTTP server behind a Unix domain socket.
 
 TUI transport is selectable at startup:
 ```bash
-python -m xbotv2 --mode tui                    # UDS (default)
-python -m xbotv2 --mode tui --server http://.. # attach to HTTP/SSE server
-python -m xbotv2 --mode server                 # server-only on 127.0.0.1
+python -m xbotv2 tui                           # UDS (default)
+python -m xbotv2 tui --server http://..        # attach to HTTP/SSE server
+python -m xbotv2 serve                         # server-only on 127.0.0.1
 ```
 
 ## Session

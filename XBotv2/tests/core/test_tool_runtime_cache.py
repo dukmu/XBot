@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 import pytest
-from langchain_core.tools import tool as langchain_tool
 
 from xbotv2.core.builtin_tools.filesystem import (
     filesystem_find,
@@ -46,7 +45,7 @@ failing_tool_tool = Tool.from_function(failing_tool, name="failing_tool")
 
 
 @pytest.mark.asyncio
-async def test_sync_langchain_tool_uses_invoke_not_ainvoke(monkeypatch):
+async def test_sync_tool_executes_with_structured_arguments():
     def sync_tool(message: str) -> str:
         return f"ok:{message}"
 
@@ -613,10 +612,8 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     tool_message = next(m for m in engine.messages if m.role == "tool")
 
     assert tool_event["data"]["content"].startswith("Tool result cached at session/")
-    tool_result = ET.fromstring(tool_message.content)
-    cached = tool_result.find("cached_content")
-    assert tool_result.attrib == {"name": "large_output", "status": "success"}
-    assert cached is not None
+    cached = ET.fromstring(tool_message.content)
+    assert cached.tag == "cached_content"
     assert cached.attrib["kind"] == "tool_result"
     assert "x" * 100 not in tool_message.content
     assert cached.find("preview/ending") is not None
@@ -658,11 +655,11 @@ async def test_cache_hook_externalizes_large_structured_data(state_store):
     assert data["cached"] is True
     assert data["cache_path"].startswith("session/artifacts/tool_results/")
     assert not Path(data["cache_path"]).is_absolute()
-    assert message.artifact["data_cache_path"] == data["cache_path"]
-    assert message.artifact["kind"] == "cached_tool_data"
-    assert message.content == "Short result summary."
+    assert message.artifact["cache_path"] == data["cache_path"]
+    assert message.artifact["kind"] == "cached_tool_result"
+    assert ET.fromstring(message.content).tag == "cached_content"
     cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.txt")
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*.txt")
     )
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
@@ -721,10 +718,10 @@ async def test_cache_hook_serializes_original_object_data_as_json(state_store):
     await hook(SimpleNamespace(tool_results=[message]))
 
     data = message.additional_kwargs["xbotv2_data"]
-    assert message.content == "30 files found."
+    assert ET.fromstring(message.content).tag == "cached_content"
     assert data["cached"] is True
     cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.json")
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*.json")
     )
     assert len(cache_files) == 1
     assert json.loads(cache_files[0].read_text(encoding="utf-8")) == structured
@@ -748,7 +745,7 @@ async def test_cache_hook_does_not_json_encode_string_data(state_store):
     await hook(SimpleNamespace(tool_results=[message]))
 
     cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*-data.txt")
+        (Path(state_store.artifacts_dir) / "tool_results").glob("*.txt")
     )
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == original

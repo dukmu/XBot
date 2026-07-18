@@ -10,6 +10,7 @@ import pytest
 from builtin_plugins.compact.plugin import (
     CompactPlugin,
     _compact_prefix_end,
+    _history_chars,
 )
 from xbotv2.api import (
     HookContext,
@@ -117,9 +118,11 @@ async def test_manual_tool_requests_compaction_below_threshold():
 
 @pytest.mark.asyncio
 async def test_human_command_compacts_and_persists_immediately(
+    caplog,
     state_store,
     temp_workspace,
 ):
+    caplog.set_level("INFO", logger="xbotv2.compact")
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext()
@@ -128,7 +131,14 @@ async def test_human_command_compacts_and_persists_immediately(
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     original = history(3)
     state_store.sync_messages(original)
-    llm = MockLLM(responses=[{"content": "Earlier requirements."}])
+    llm = MockLLM(responses=[{
+        "content": "Earlier requirements.",
+        "usage_metadata": {
+            "input_tokens": 30,
+            "output_tokens": 4,
+            "total_tokens": 34,
+        },
+    }])
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
@@ -159,7 +169,29 @@ async def test_human_command_compacts_and_persists_immediately(
     assert any(record.get("content") == "user 0 message" for record in records)
 
     assert result.status == "ok"
-    assert result.data == {"requested": True, "compacted": True}
+    assert result.data["requested"] is True
+    assert result.data["compacted"] is True
+    history_chars_before = _history_chars(original)
+    history_chars_after = _history_chars(engine.messages)
+    assert result.data["metrics"]["history_chars_before"] == history_chars_before
+    assert result.data["metrics"]["history_chars_after"] == history_chars_after
+    assert result.data["metrics"]["summary_chars"] == 21
+    assert result.data["metrics"]["model_usage"] == {
+        "input_tokens": 30,
+        "output_tokens": 4,
+        "total_tokens": 34,
+        "context_tokens": 30,
+    }
+    assert (
+        f"{history_chars_before} to {history_chars_after} characters"
+        in result.message
+    )
+    assert "30 input and 4 output tokens" in result.message
+    assert (
+        f"history_chars_before={history_chars_before} "
+        f"history_chars_after={history_chars_after}"
+    ) in caplog.text
+    assert "input_tokens=30 output_tokens=4 total_tokens=34" in caplog.text
     assert llm.call_count == 1
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content
@@ -458,6 +490,7 @@ async def test_unload_resets_plugin_owned_state():
     assert plugin._manual_requested is False
     assert plugin.diagnostics()["compactions"] == 0
     assert plugin.diagnostics()["last_reason"] == ""
+    assert plugin.diagnostics()["last_compaction"] == {}
 
 
 @pytest.mark.asyncio

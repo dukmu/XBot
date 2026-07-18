@@ -9,11 +9,10 @@ not use the plugin-command compatibility endpoints.
 Start the existing XBot server:
 
 ```bash
-uv run xbotv2 \
+uv run xbotv2 serve \
   --data-dir XBotv2/data \
   --workspace ./output \
-  --provider minimax \
-  --mode server
+  --provider minimax
 ```
 
 Start the Web client in another terminal:
@@ -31,6 +30,9 @@ local URL:
 ```bash
 XBOT_API_URL=http://127.0.0.1:4100 npm run dev
 ```
+
+From the repository root, `./xbot web` starts both processes and opens the
+workbench. Use `--no-open` when no desktop browser is available.
 
 ## Production
 

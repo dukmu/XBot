@@ -30,6 +30,37 @@ class TestBootstrapBasics:
         assert engine.turn_count == 0
 
     @pytest.mark.asyncio
+    async def test_bootstrap_applies_system_tool_result_cache_limits(
+        self, temp_data_dir, temp_workspace, monkeypatch
+    ):
+        (temp_data_dir / "config" / "system.yaml").write_text(
+            "tool_result_max_inline_chars: 2048\n"
+            "tool_result_preview_chars: 512\n",
+            encoding="utf-8",
+        )
+        captured = {}
+
+        def cache_hook(_state_store, **options):
+            captured.update(options)
+
+            async def apply(_ctx):
+                return None
+
+            return apply
+
+        monkeypatch.setattr("xbotv2.core.bootstrap.make_tool_result_cache_hook", cache_hook)
+
+        await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="cache-config",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert captured == {"max_inline_chars": 2048, "preview_chars": 512}
+
+    @pytest.mark.asyncio
     async def test_bootstrap_rejects_unknown_provider(self, temp_data_dir):
         with pytest.raises(ValueError, match="Unknown provider config: typo"):
             await bootstrap(
@@ -306,12 +337,13 @@ class NormalClosePlugin(PluginBase):
         (plugin_dir / "__init__.py").write_text("")
         (plugin_dir / "tools.py").write_text(
             """
-from langchain_core.tools import tool
+from xbotv2.api.tools import Tool
 
-@tool
-def plugin_tool() -> str:
+def _plugin_tool() -> str:
     \"\"\"Plugin tool.\"\"\"
     return "plugin ok"
+
+plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
 """
         )
         (plugin_dir / "plugin.yaml").write_text(
@@ -500,7 +532,7 @@ class ConfiguredPlugin(PluginBase):
 
     @pytest.mark.asyncio
     async def test_bootstrap_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
-        """The default workspace plugin injects AGENTS.md exactly once."""
+        """The default workspace plugin injects AGENTS.md into model context."""
         (temp_workspace / "AGENTS.md").write_text(
             "Workspace instruction: prefer concise answers.",
             encoding="utf-8",
@@ -527,6 +559,40 @@ class ConfiguredPlugin(PluginBase):
         assert workspace.text.strip() == (
             "Workspace instruction: prefer concise answers."
         )
+
+    @pytest.mark.asyncio
+    async def test_workspace_agents_md_reloads_between_model_requests(
+        self, temp_data_dir, temp_workspace
+    ):
+        instructions = temp_workspace / "AGENTS.md"
+        instructions.write_text("Workspace rule version one.", encoding="utf-8")
+        llm = MockLLM(responses=[
+            {"content": "first"},
+            {"content": "second"},
+            {"content": "third"},
+        ])
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="dynamic-instructions",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+
+        _ = [event async for event in engine.run_turn("first turn")]
+        instructions.write_text("Workspace rule version two.", encoding="utf-8")
+        _ = [event async for event in engine.run_turn("second turn")]
+        instructions.unlink()
+        _ = [event async for event in engine.run_turn("third turn")]
+
+        first_system = str(llm.get_call_messages(0)[0].content)
+        second_system = str(llm.get_call_messages(1)[0].content)
+        third_system = str(llm.get_call_messages(2)[0].content)
+        assert "Workspace rule version one." in first_system
+        assert "Workspace rule version two." not in first_system
+        assert "Workspace rule version two." in second_system
+        assert "Workspace rule version one." not in second_system
+        assert "Workspace rule version one." not in third_system
+        assert "Workspace rule version two." not in third_system
 
     @pytest.mark.asyncio
     async def test_bootstrap_uses_configured_human_identity(

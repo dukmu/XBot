@@ -1,23 +1,4 @@
-"""XBotv2 — Plugin-extensible AI agent runtime.
-
-Usage:
-    python main.py                              # Interactive terminal mode
-    python main.py --mode tui                   # Textual TUI (auto-spawns HTTP server)
-    python main.py --mode server                # HTTP/SSE server (default 127.0.0.1:4096)
-    python main.py attach <url>                 # Connect TUI to an existing HTTP server
-    python main.py --mode once "prompt"         # Single-shot query
-
-Options:
-    --data-dir PATH     Data directory (default: data)
-    --provider NAME     Provider config to use (default: default)
-    --workspace PATH    Workspace root (default: current directory)
-    --mode MODE         Run mode: server, terminal, tui, once, attach
-    --bind HOST         Server bind address (must be 127.0.0.1 in v1)
-    --port PORT         Server port (default: 4096)
-    --server URL        Use a specific HTTP server URL (TUI mode only)
-    --no-plugins        Disable plugin discovery for pure-core runs
-    --help              Show this help
-"""
+"""Command-line entry point for the XBot runtime and clients."""
 
 from __future__ import annotations
 
@@ -25,94 +6,160 @@ import argparse
 import asyncio
 import logging
 import os
-import signal
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
 
+from xbotv2 import __version__
 from xbotv2.api.paths import RuntimePaths
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="XBotv2 — Plugin-extensible AI agent runtime",
-        prog="xbotv2",
+_COMMAND_ALIASES = {"server": "serve"}
+_COMMANDS = {"serve", "server", "tui", "web", "once", "terminal"}
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    """Read an XBOT setting, accepting the old XBOTV2 prefix as fallback."""
+    return os.environ.get(f"XBOT_{name}", os.environ.get(f"XBOTV2_{name}", default))
+
+
+def _common_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--data-dir", default=_env("DATA_DIR", "data"),
+        help="runtime data directory (env: XBOT_DATA_DIR)",
     )
     parser.add_argument(
-        "--data-dir", default="data", help="Data directory (default: data)"
+        "--provider", default=_env("PROVIDER", "default"),
+        help="provider configuration name (env: XBOT_PROVIDER)",
     )
+    parser.add_argument("--session", default=_env("SESSION"), help="session to resume")
     parser.add_argument(
-        "--provider", default="default", help="Provider config to use"
+        "--workspace", default=None,
+        help="Agent workspace; defaults to the current directory",
     )
-    parser.add_argument(
-        "--session",
-        default=None,
-        help="Session ID to resume/connect. Defaults to a new UUID session.",
-    )
-    parser.add_argument(
-        "--workspace",
-        default=None,
-        help="Workspace root (default: current directory)",
-    )
-    parser.add_argument(
-        "--thread",
-        default="agent",
-        help="Thread ID within the session (default: agent)",
-    )
-    parser.add_argument(
-        "--agent",
-        default=None,
-        help="Registered primary Agent to use for a new thread",
-    )
+    parser.add_argument("--thread", default=_env("THREAD", "agent"), help="thread ID")
+    parser.add_argument("--agent", default=_env("AGENT"), help="Agent definition name")
     parser.add_argument(
         "--no-plugins",
         action="store_true",
-        help="Disable plugin discovery for pure-core runs",
-    )
-    parser.add_argument(
-        "--mode",
-        default="terminal",
-        choices=["server", "terminal", "tui", "once"],
-        help="Run mode (default: terminal)",
-    )
-    parser.add_argument(
-        "--bind",
-        default="127.0.0.1",
-        help="Server bind address (must be 127.0.0.1 in v1; see doc §10.5.7)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=4096,
-        help="Server port (default: 4096, matches OpenCode)",
-    )
-    parser.add_argument(
-        "--server",
-        default=None,
-        help="TUI mode only: connect to a specific HTTP server URL instead of auto-spawning",
-    )
-    parser.add_argument(
-        "--uds",
-        default=None,
-        help="Unix domain socket path (auto-generated when TUI spawns server without --server)",
-    )
-    parser.add_argument(
-        "prompt", nargs="?", default=None, help="Single-shot prompt (for --mode once) or attach URL"
+        default=str(_env("NO_PLUGINS", "")).lower() in {"1", "true", "yes"},
+        help="disable plugin discovery",
     )
     parser.add_argument(
         "--log-level",
-        default=os.environ.get("XBOTV2_LOG_LEVEL", "INFO"),
+        default=_env("LOG_LEVEL", "INFO"),
+        type=str.upper,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level (default: INFO, or $XBOTV2_LOG_LEVEL)",
+        help="runtime log level (env: XBOT_LOG_LEVEL)",
     )
     parser.add_argument(
-        "--log-file",
-        default=None,
-        help="Explicit log file path. Overrides --data-dir/logs/xbotv2.log "
-        "and $XBOTV2_LOG_FILE.",
+        "--log-file", default=_env("LOG_FILE"), help="explicit log path"
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    common = _common_parser()
+    parser = argparse.ArgumentParser(
+        prog="xbotv2",
+        description="Readable plugin-extensible client/server Agent runtime",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"xbotv2 {__version__}"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    terminal = commands.add_parser(
+        "terminal", parents=[common], help="run the basic interactive terminal"
+    )
+    terminal.set_defaults(command="terminal")
+
+    tui = commands.add_parser(
+        "tui", parents=[common], help="run the Textual client"
+    )
+    tui.add_argument(
+        "--server", default=_env("SERVER"), help="connect to an existing API URL"
+    )
+    tui.add_argument(
+        "--uds", default=_env("UDS"), help="socket for the auto-started server"
+    )
+    tui.add_argument(
+        "--bind", default=_env("BIND", "127.0.0.1"), help=argparse.SUPPRESS
+    )
+    tui.add_argument(
+        "--port", type=int, default=_env("PORT", "4096"), help=argparse.SUPPRESS
+    )
+
+    serve = commands.add_parser(
+        "serve",
+        aliases=["server"],
+        parents=[common],
+        help="run the HTTP/SSE API server",
+    )
+    serve.add_argument(
+        "--bind", default=_env("BIND", "127.0.0.1"), help="API bind address"
+    )
+    serve.add_argument(
+        "--port", type=int, default=_env("PORT", "4096"), help="API port"
+    )
+    serve.add_argument("--uds", default=_env("UDS"), help="serve over a Unix socket")
+    serve.set_defaults(command="serve")
+
+    web = commands.add_parser(
+        "web", parents=[common], help="run the API server and Web workbench"
+    )
+    web.add_argument(
+        "--bind", default=_env("BIND", "127.0.0.1"), help="API bind address"
+    )
+    web.add_argument(
+        "--port", type=int, default=_env("PORT", "4096"), help="API port"
+    )
+    web.add_argument(
+        "--web-bind",
+        default=_env("WEB_BIND", "127.0.0.1"),
+        help="Web bind address",
+    )
+    web.add_argument(
+        "--web-port", type=int, default=_env("WEB_PORT", "5173"), help="Web port"
+    )
+    web.add_argument("--no-open", action="store_true", help="do not open a browser")
+
+    once = commands.add_parser(
+        "once", parents=[common], help="run one prompt and exit"
+    )
+    once.add_argument("prompt", help="prompt to run")
+    return parser
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Translate the legacy --mode form and default to terminal mode."""
+    if argv in (["-h"], ["--help"], ["--version"]):
+        return argv
+    if "--mode" in argv:
+        index = argv.index("--mode")
+        if index + 1 >= len(argv):
+            return argv
+        command = _COMMAND_ALIASES.get(argv[index + 1], argv[index + 1])
+        return [command, *argv[:index], *argv[index + 2:]]
+    if not argv or argv[0] not in _COMMANDS:
+        return ["terminal", *argv]
+    argv[0] = _COMMAND_ALIASES.get(argv[0], argv[0])
+    return argv
+
+
+def _parse_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
+    parser = _build_parser()
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_normalize_argv(raw_args))
+    return parser, args
+
+
+def main(argv: list[str] | None = None):
+    parser, args = _parse_args(argv)
 
     from xbotv2.core.logging_config import setup_logging
 
@@ -122,11 +169,7 @@ def main():
         log_file=args.log_file,
     )
 
-    if args.prompt and args.prompt.startswith("http"):
-        # `python main.py attach http://...` style: first arg looks like a URL
-        return _run_attach(args, args.prompt)
-
-    if not (args.mode == "tui" and args.server):
+    if not (args.command == "tui" and args.server):
         from xbotv2.config.loader import load_provider_config
 
         try:
@@ -137,14 +180,16 @@ def main():
         except ValueError as exc:
             parser.exit(2, f"Error: {exc}\n")
 
-    if args.mode == "server":
+    if args.command == "serve":
         _run_server(args)
-    elif args.mode == "tui":
+    elif args.command == "tui":
         _run_tui(args)
-    elif args.mode == "terminal":
-        _run_terminal(args)
-    elif args.mode == "once":
-        _run_once(args)
+    elif args.command == "web":
+        _run_web(args)
+    elif args.command == "terminal":
+        asyncio.run(_terminal_loop(args))
+    elif args.command == "once":
+        asyncio.run(_run_once(args))
     else:
         parser.print_help()
 
@@ -158,7 +203,11 @@ def _run_server(args) -> None:
             args.data_dir, _workspace_root(args), args.provider, args.bind, args.port,
         )
         if args.bind != "127.0.0.1":
-            print(f"Error: --bind {args.bind} is not supported in v1; use 127.0.0.1 only (see docsv2 §10.5.7).", file=sys.stderr)
+            print(
+                f"Error: --bind {args.bind} is not supported in v1; "
+                "use 127.0.0.1 only (see docsv2 section 10.5.7).",
+                file=sys.stderr,
+            )
             sys.exit(2)
 
     try:
@@ -189,7 +238,12 @@ def _run_tui(args) -> None:
 
     logging.getLogger("xbotv2").info(
         "starting tui mode data_dir=%s workspace=%s provider=%s server=%s log_file=%s log_level=%s",
-        args.data_dir, _workspace_root(args), args.provider, args.server, args.log_file, args.log_level,
+        args.data_dir,
+        _workspace_root(args),
+        args.provider,
+        args.server,
+        args.log_file,
+        args.log_level,
     )
 
     server_url = args.server
@@ -239,28 +293,65 @@ def _run_tui(args) -> None:
             _cleanup_socket(uds_path)
 
 
+def _run_web(args) -> None:
+    """Run the existing API server and independent Vite Web client."""
+    web_dir = Path(__file__).resolve().parents[1] / "web"
+    if not (web_dir / "package.json").is_file():
+        raise SystemExit(f"Error: Web client not found at {web_dir}")
+
+    args.uds = None
+    server = _spawn_server(args)
+    api_url = f"http://{args.bind}:{args.port}"
+    if not _wait_for_health(api_url, timeout=15.0):
+        server.terminate()
+        server.wait(timeout=5)
+        raise SystemExit(f"Error: API server at {api_url} did not become healthy")
+
+    env = os.environ.copy()
+    env["XBOT_API_URL"] = api_url
+    command = [
+        "npm", "run", "dev", "--",
+        "--host", args.web_bind,
+        "--port", str(args.web_port),
+    ]
+    try:
+        client = subprocess.Popen(command, cwd=web_dir, env=env)
+    except FileNotFoundError as exc:
+        server.terminate()
+        server.wait(timeout=5)
+        raise SystemExit("Error: npm is required for `xbotv2 web`") from exc
+
+    web_url = f"http://{args.web_bind}:{args.web_port}"
+    try:
+        if not _wait_for_health(web_url, timeout=15.0, path="/"):
+            raise SystemExit(f"Error: Web client at {web_url} did not become healthy")
+        print(f"XBot Web: {web_url}")
+        if not args.no_open:
+            webbrowser.open(web_url)
+        client.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+
+
 def _cleanup_socket(path: str | None) -> None:
     if path and os.path.exists(path):
         try:
             os.unlink(path)
         except OSError:
             pass
-
-
-def _run_attach(args, url: str) -> None:
-    """Connect the TUI to a running HTTP server at ``url``."""
-
-    from xbotv2.tui.textual_client import TextualTuiClient
-
-    client = TextualTuiClient(
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        agent=getattr(args, "agent", None),
-        workspace_root=str(_workspace_root(args)),
-        session_mode="resume" if getattr(args, "session", None) else "new",
-        base_url=url,
-    )
-    asyncio.run(client.run())
 
 
 def _spawn_server(args) -> subprocess.Popen:
@@ -270,10 +361,10 @@ def _spawn_server(args) -> subprocess.Popen:
     env["PYTHONPATH"] = _spawn_pythonpath()
     cmd = [
         sys.executable, str(Path(__file__).resolve()),
+        "serve",
         "--data-dir", args.data_dir,
         "--provider", args.provider,
         "--workspace", str(_workspace_root(args)),
-        "--mode", "server",
         "--log-level", args.log_level,
     ]
     uds = getattr(args, "uds", None)
@@ -293,17 +384,27 @@ def _spawn_server(args) -> subprocess.Popen:
     )
 
 
-def _wait_for_health(url: str, *, timeout: float, uds_path: str | None = None) -> bool:
-    """Poll GET /health until 200 or timeout."""
+def _wait_for_health(
+    url: str,
+    *,
+    timeout: float,
+    uds_path: str | None = None,
+    path: str = "/health",
+) -> bool:
+    """Poll an HTTP endpoint until it returns 200 or timeout expires."""
 
     import httpx
     import time
 
-    client = httpx.Client(transport=httpx.HTTPTransport(uds=uds_path)) if uds_path else httpx.Client()
+    client = (
+        httpx.Client(transport=httpx.HTTPTransport(uds=uds_path))
+        if uds_path
+        else httpx.Client()
+    )
     end = time.time() + timeout
     while time.time() < end:
         try:
-            response = client.get(f"{url}/health", timeout=1.0)
+            response = client.get(f"{url}{path}", timeout=1.0)
             if response.status_code == 200:
                 client.close()
                 return True
@@ -326,11 +427,6 @@ def _workspace_root(args) -> Path:
     return Path(getattr(args, "workspace", None) or Path.cwd()).resolve()
 
 
-def _run_terminal(args):
-    """Run interactive terminal mode using direct engine."""
-    asyncio.run(_terminal_loop(args))
-
-
 async def _terminal_loop(args):
     """Direct engine terminal session — reads from stdin, prints responses."""
     from xbotv2.core.bootstrap import bootstrap
@@ -348,6 +444,7 @@ async def _terminal_loop(args):
             selected_agent=getattr(args, "agent", None),
         )
         await engine.start_session()
+        engine.set_client_event_sink(_terminal_interaction)
     except Exception as exc:
         print(f"Error starting engine: {exc}")
         return
@@ -397,38 +494,87 @@ async def _terminal_loop(args):
     await engine.close_session()
 
 
-def _run_once(args):
+async def _terminal_interaction(
+    event: dict,
+    *,
+    timeout_seconds: float | None = None,
+    tool_call_id: str = "",
+) -> dict:
+    """Resolve one live Engine interaction through stdin."""
+    del timeout_seconds, tool_call_id
+    event_type = str(event.get("type") or "")
+    data = event.get("data") or {}
+    request_id = str(data.get("request_id") or "")
+    try:
+        if event_type == "permission_request":
+            call = data.get("tool_call") or {}
+            tool = call.get("name") or "tool"
+            answer = await asyncio.to_thread(
+                input,
+                f"\nAllow {tool}? [y] once / [a] session / [N] deny: ",
+            )
+            choice = answer.strip().lower()
+            return {
+                "request_id": request_id,
+                "status": "answered",
+                "decision": "allow"
+                if choice in {"y", "yes", "a", "always"}
+                else "deny",
+                "scope": "session" if choice in {"a", "always"} else "once",
+            }
+
+        options = data.get("options") or []
+        print(f"\n{data.get('question', 'Input required')}")
+        for index, option in enumerate(options, 1):
+            label = option.get("label", "") if isinstance(option, dict) else str(option)
+            description = option.get("description", "") if isinstance(option, dict) else ""
+            suffix = f" - {description}" if description else ""
+            print(f"  {index}. {label}{suffix}")
+        answer = await asyncio.to_thread(input, "Select an option: ")
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            selected = options[int(answer) - 1]
+            answer = (
+                selected.get("label", "")
+                if isinstance(selected, dict)
+                else str(selected)
+            )
+        return {"request_id": request_id, "status": "answered", "answer": answer}
+    except (EOFError, KeyboardInterrupt):
+        return {
+            "request_id": request_id,
+            "status": "cancelled",
+            "reason": "terminal_input_cancelled",
+        }
+
+
+async def _run_once(args):
     """Run a single prompt and exit."""
     from xbotv2.core.bootstrap import bootstrap
     from xbotv2.core.session import SessionRuntime
 
-    if not args.prompt:
-        print("Error: --mode once requires a prompt argument")
-        sys.exit(1)
+    engine = await bootstrap(
+        paths=RuntimePaths.from_data_dir(args.data_dir),
+        provider_name=args.provider,
+        session_id=getattr(args, "session", None),
+        thread_id=getattr(args, "thread", "agent"),
+        workspace_root=str(_workspace_root(args)),
+        plugin_dirs=[] if args.no_plugins else None,
+        selected_agent=getattr(args, "agent", None),
+    )
+    await engine.start_session()
+    runtime = SessionRuntime(
+        session_id=engine.state_store.session_id,
+        thread_id=engine.state_store.thread_id,
+        provider_name=args.provider,
+        paths=engine.paths,
+        workspace_root=str(_workspace_root(args)),
+        no_plugins=args.no_plugins,
+        engine=engine,
+    )
+    if engine.subagents is not None:
+        engine.subagents.on_complete = None
 
-    async def single_shot():
-        engine = await bootstrap(
-            paths=RuntimePaths.from_data_dir(args.data_dir),
-            provider_name=args.provider,
-            session_id=getattr(args, "session", None),
-            thread_id=getattr(args, "thread", "agent"),
-            workspace_root=str(_workspace_root(args)),
-            plugin_dirs=[] if args.no_plugins else None,
-            selected_agent=getattr(args, "agent", None),
-        )
-        await engine.start_session()
-        runtime = SessionRuntime(
-            session_id=engine.state_store.session_id,
-            thread_id=engine.state_store.thread_id,
-            provider_name=args.provider,
-            paths=engine.paths,
-            workspace_root=str(_workspace_root(args)),
-            no_plugins=args.no_plugins,
-            engine=engine,
-        )
-        if engine.subagents is not None:
-            engine.subagents.on_complete = None
-
+    try:
         async for event in runtime.stream_message(args.prompt, "once"):
             etype = event.get("type", "")
             data = event.get("data", {})
@@ -451,10 +597,8 @@ def _run_once(args):
                 print(f"\n[question] {data.get('question', '')}")
             elif etype == "error":
                 print(f"\nError: {data.get('message', 'unknown')}")
-
+    finally:
         await runtime.close()
-
-    asyncio.run(single_shot())
 
 
 if __name__ == "__main__":

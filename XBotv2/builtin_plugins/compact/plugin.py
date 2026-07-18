@@ -39,6 +39,7 @@ class CompactPlugin(PluginBase):
         self._manual_requested = False
         self._compactions = 0
         self._last_reason = ""
+        self._last_compaction: dict[str, Any] = {}
 
     async def on_load(self, config: dict[str, Any]) -> None:
         self._automatic = bool(config.get("automatic", True))
@@ -52,6 +53,7 @@ class CompactPlugin(PluginBase):
         self._manual_requested = False
         self._compactions = 0
         self._last_reason = ""
+        self._last_compaction = {}
 
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.BEFORE_CONTEXT, self._on_before_context)
@@ -113,9 +115,13 @@ class CompactPlugin(PluginBase):
                 "Conversation history is too short to compact.",
                 data={"requested": False, "compacted": False},
             )
+        metrics = dict(self._last_compaction)
+        data: dict[str, Any] = {"requested": True, "compacted": True}
+        if metrics:
+            data["metrics"] = metrics
         return CommandResult(
-            "Conversation history compacted.",
-            data={"requested": True, "compacted": True},
+            _compact_result_message(metrics),
+            data=data,
         )
 
     async def _allow_compact(self, ctx: HookContext):
@@ -186,17 +192,37 @@ class CompactPlugin(PluginBase):
             ),
             additional_kwargs={"xbotv2_message_format": "xml-v1"},
         )
+        compacted_messages = [compacted, *messages[split:]]
+        usage = _model_usage(response.usage_metadata)
+        metrics = {
+            "history_chars_before": history_chars,
+            "history_chars_after": _history_chars(compacted_messages),
+            "summary_chars": len(summary),
+            "messages_before": len(messages),
+            "messages_after": len(compacted_messages),
+            "messages_removed": len(messages) - len(compacted_messages),
+            "model_usage": usage,
+        }
         self._compactions += 1
         self._last_reason = reason
+        self._last_compaction = metrics
         logger.info(
-            "compaction completed reason=%s turn=%d messages_before=%d messages_after=%d",
+            "compaction completed reason=%s turn=%d messages_before=%d "
+            "messages_after=%d history_chars_before=%d history_chars_after=%d "
+            "summary_chars=%d input_tokens=%d output_tokens=%d total_tokens=%d",
             reason,
             turn,
-            len(messages),
-            1 + len(messages[split:]),
+            metrics["messages_before"],
+            metrics["messages_after"],
+            metrics["history_chars_before"],
+            metrics["history_chars_after"],
+            metrics["summary_chars"],
+            usage["input_tokens"],
+            usage["output_tokens"],
+            usage["total_tokens"],
         )
         return {
-            "messages": [compacted, *messages[split:]],
+            "messages": compacted_messages,
             "compact_reason": reason,
         }
 
@@ -210,6 +236,7 @@ class CompactPlugin(PluginBase):
             "keep_recent_turns": self._keep_recent_turns,
             "compactions": self._compactions,
             "last_reason": self._last_reason,
+            "last_compaction": dict(self._last_compaction),
         }
 
 
@@ -231,6 +258,36 @@ def _latest_provider_input_tokens(messages: list[Message]) -> int | None:
             )
             return value if value > 0 else None
     return None
+
+
+def _model_usage(usage: dict[str, Any]) -> dict[str, int]:
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    result = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": int(
+            usage.get("total_tokens") or input_tokens + output_tokens
+        ),
+        "context_tokens": int(usage.get("context_tokens") or input_tokens),
+    }
+    for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        if usage.get(key) is not None:
+            result[key] = int(usage[key])
+    return result
+
+
+def _compact_result_message(metrics: dict[str, Any]) -> str:
+    if not metrics:
+        return "Conversation history compacted."
+    usage = metrics.get("model_usage") or {}
+    return (
+        "Conversation history compacted "
+        f"from {metrics.get('history_chars_before', 0)} to "
+        f"{metrics.get('history_chars_after', 0)} characters; "
+        f"summary model used {usage.get('input_tokens', 0)} input and "
+        f"{usage.get('output_tokens', 0)} output tokens."
+    )
 
 
 def _compact_prefix_end(messages: list[Message], keep_recent_turns: int) -> int:

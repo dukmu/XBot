@@ -80,6 +80,8 @@ def tool_result_display_content(content: str) -> str:
         root = ElementTree.fromstring(content)
     except ElementTree.ParseError:
         return content
+    if root.tag == "cached_content":
+        return _cached_content_display(root)
     if root.tag != "tool_result":
         return content
     text = root.findtext("content")
@@ -87,9 +89,7 @@ def tool_result_display_content(content: str) -> str:
         return _rendered_element_text(text)
     cached = root.find("cached_content")
     if cached is not None:
-        path = (cached.findtext("cache_path") or "").strip()
-        original_chars = cached.attrib.get("original_chars", "unknown")
-        return f"Tool result cached at {path} ({original_chars} characters)."
+        return _cached_content_display(cached)
     data = root.findtext("data")
     return _rendered_element_text(data) if data is not None else ""
 
@@ -98,6 +98,12 @@ def _rendered_element_text(value: str) -> str:
     if value.startswith("\n") and value.endswith("\n"):
         return value[1:-1]
     return value
+
+
+def _cached_content_display(element: ElementTree.Element) -> str:
+    path = (element.findtext("cache_path") or "").strip()
+    original_chars = element.attrib.get("original_chars", "unknown")
+    return f"Tool result cached at {path} ({original_chars} characters)."
 
 
 def _opening_tag(

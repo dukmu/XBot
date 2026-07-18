@@ -150,7 +150,8 @@ orphaned tool messages before provider conversion. See
 
 `OpenAICompatibleProvider` (OpenAI, DeepSeek, LM Studio) and `AnthropicProvider`.
 Shared configuration via `reasoning_effort` and `thinking_enabled`.
-`provider_values()` extracts all config from dict or Pydantic model via `_get_cfg`.
+`create_llm()` reads either dictionary or Pydantic provider configuration through
+the shared `_get_cfg()` compatibility boundary.
 
 `provider_messages()` converts XBot `Message` → provider format.
 Preserves `reasoning_content` for tool-call turns.

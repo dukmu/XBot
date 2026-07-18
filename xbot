@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+export XBOT_DATA_DIR="${XBOT_DATA_DIR:-$repo_root/XBotv2/data}"
+export XBOT_PROVIDER="${XBOT_PROVIDER:-default}"
+
+if [[ -x "$repo_root/.venv/bin/xbotv2" ]]; then
+    exec "$repo_root/.venv/bin/xbotv2" "$@"
+fi
+exec uv run --project "$repo_root" xbotv2 "$@"

@@ -6,9 +6,9 @@ import pytest
 
 from xbotv2.llm.client import (
     AnthropicProvider,
+    _anthropic_usage_values,
     _strip_reasoning_headers,
     anthropic_request_messages,
-    anthropic_usage,
     provider_messages,
 )
 from xbotv2.api.messages import Message
@@ -96,7 +96,7 @@ def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
     }
 
 
-def test_structured_tool_content_stays_in_the_native_tool_role():
+def test_plain_tool_content_stays_in_the_native_tool_role():
     message = Message(
         role="tool",
         content="result <data>",
@@ -121,18 +121,61 @@ def test_structured_tool_content_stays_in_the_native_tool_role():
             "content": message.content,
         }],
     }]
-    assert "<tool_result" in message.content
+    assert message.content == "result <data>"
 
 
-def test_anthropic_usage_preserves_cache_context_tokens():
-    usage = type("Usage", (), {
-        "input_tokens": 100,
-        "output_tokens": 20,
-        "cache_read_input_tokens": 700,
-        "cache_creation_input_tokens": 50,
-    })()
+def test_anthropic_marks_cancelled_tool_result_as_error():
+    _system, messages = anthropic_request_messages([
+        Message(
+            role="tool",
+            content="User cancelled the request.",
+            tool_call_id="call-1",
+            status="cancelled",
+        ),
+    ])
 
-    assert anthropic_usage(usage) == {
+    assert messages[0]["content"][0]["is_error"] is True
+
+
+def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks():
+    _system, messages = anthropic_request_messages([
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall("call-1", "sample", {})],
+        ),
+        Message(role="tool", tool_call_id="call-1", content="result"),
+        Message(role="assistant", content=""),
+        Message(role="user", content="continue"),
+    ])
+
+    assert messages == [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "call-1", "name": "sample", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "content": "result",
+                },
+                {"type": "text", "text": "continue"},
+            ],
+        },
+    ]
+
+
+def test_anthropic_usage_values_preserve_cache_context_tokens():
+    assert _anthropic_usage_values(
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_input_tokens=700,
+        cache_creation_input_tokens=50,
+    ) == {
         "input_tokens": 100,
         "output_tokens": 20,
         "total_tokens": 120,
@@ -161,9 +204,10 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
             index=0,
             delta=SimpleNamespace(type="text_delta", text="done"),
         ),
-        SimpleNamespace(type="message_delta", usage=None),
+        SimpleNamespace(type="message_delta", delta=None, usage=None),
         SimpleNamespace(
             type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
             usage=SimpleNamespace(output_tokens=3),
         ),
     ]
@@ -216,3 +260,4 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
         "context_tokens": 30,
         "cache_read_input_tokens": 20,
     }
+    assert final.response_metadata["stop_reason"] == "end_turn"

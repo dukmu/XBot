@@ -26,20 +26,30 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
     content = str(message.content or "")
     data = metadata.get("xbotv2_data")
     error = metadata.get("xbotv2_error")
+    cached = metadata.pop(CACHED_CONTENT_KEY, False)
+    status = message.status or "success"
+    message.name = tool_name or message.name
+    if cached and status == "success":
+        metadata.pop(DISPLAY_CONTENT_KEY, None)
+        metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
+        return message
+    if (
+        status == "success"
+        and error is None
+        and not message.artifact
+        and (data is None or _content_matches_data(content, data))
+    ):
+        return message
     children: list[str] = []
 
-    if metadata.pop(CACHED_CONTENT_KEY, False):
-        children.append(content)
-    elif not _content_matches_data(content, data):
-        if content:
-            children.append(prompt_element("content", content))
-
+    if not _content_matches_data(content, data) and content:
+        children.append(prompt_element("content", content))
     if data is not None:
         children.append(_json_element("data", data))
-    if error is not None:
-        children.append(_json_element("error", error))
     if message.artifact:
         children.append(_json_element("artifacts", _artifacts(message.artifact)))
+    if error is not None:
+        children.append(_json_element("error", error))
     if not children:
         children.append(prompt_element("content", ""))
 
@@ -48,10 +58,9 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
         children,
         attributes={
             "name": tool_name or "tool",
-            "status": message.status or "success",
+            "status": status,
         },
     )
-    message.name = tool_name or message.name
     metadata.pop(DISPLAY_CONTENT_KEY, None)
     metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
     return message

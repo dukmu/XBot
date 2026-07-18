@@ -32,11 +32,17 @@ owns history replacement and persistence.
 - A cancelled summary propagates cancellation. A failed manual request reports
   the error; failed automatic compaction logs the failure and continues the turn
   with the original history.
+- Each completed compaction logs model-visible history characters before and
+  after replacement, summary characters, removed message count, and the
+  provider-reported input/output/total tokens from the summary call. `/compact`
+  returns the same metrics, and plugin diagnostics retain the latest set for
+  runtime inspection. These auxiliary-call tokens also remain part of session
+  usage because they are real provider usage.
 
 Provider context usage and the character threshold are independent signals
 because cumulative token usage measures cost, not current context size. The
-character count includes message content and tool-call names and arguments; it
-makes no tokenizer-accuracy claim.
+character count includes message content and tool-call names and arguments,
+including the persisted summary envelope; it makes no tokenizer-accuracy claim.
 
 ## Configuration
 
