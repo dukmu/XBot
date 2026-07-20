@@ -8,7 +8,6 @@ from xbotv2.llm.client import (
     AnthropicProvider,
     OpenAICompatibleProvider,
     _anthropic_usage_values,
-    _strip_reasoning_headers,
     anthropic_request_messages,
     provider_messages,
 )
@@ -17,44 +16,15 @@ from xbotv2.api.tools import ToolCall
 from xbotv2.core.internal_messages import structure_tool_message
 
 
-def test_strip_reasoning_headers_no_header():
-    assert _strip_reasoning_headers("hello world") == "hello world"
-
-
-def test_strip_reasoning_headers_single_header():
-    text = "## Thinking\n\nuser wants to get weather"
-    assert _strip_reasoning_headers(text) == "user wants to get weather"
-
-
-def test_strip_reasoning_headers_chain():
-    # Pre-existing chained headers (from old session files
-    # 20260609-170727-7449) must collapse to a single block.
-    text = "## Thinking\n\n## Thinking\n\n## Thinking\n\nreal content"
-    assert _strip_reasoning_headers(text) == "real content"
-
-
-def test_strip_reasoning_headers_keeps_inline_header():
-    # The header is only stripped when it appears at the start of
-    # the reasoning block. Mid-text `## Thinking` (rare, but
-    # possible from the model itself) is preserved.
-    text = "## Thinking\n\nfirst ## Thinking inside"
-    assert _strip_reasoning_headers(text) == "first ## Thinking inside"
-
-
-def test_strip_reasoning_headers_empty():
-    assert _strip_reasoning_headers("") == ""
-
-
-def test_provider_messages_strips_reasoning_header_on_replay():
+def test_generic_openai_messages_do_not_invent_reasoning_extensions():
     msg = Message(
         role="assistant",
         content="",
         tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
-        additional_kwargs={"reasoning_content": "## Thinking\n\n## Thinking\n\nchain"},
+        additional_kwargs={"reasoning_content": "private reasoning"},
     )
     out = provider_messages([msg])
-    assert out[0]["reasoning_content"] == "chain"
-    # tool_calls and content must still be preserved.
+    assert "reasoning_content" not in out[0]
     assert out[0]["tool_calls"][0]["function"]["name"] == "shell"
     assert out[0]["content"] == ""
 
@@ -201,14 +171,42 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
             ),
         ),
         SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(
+                type="thinking", thinking="", signature=""
+            ),
+        ),
+        SimpleNamespace(
             type="content_block_delta",
             index=0,
-            delta=SimpleNamespace(type="text_delta", text="done"),
+            delta=SimpleNamespace(type="thinking_delta", thinking="check"),
         ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="signature_delta", signature="signed"),
+        ),
+        SimpleNamespace(type="content_block_stop", index=0),
+        SimpleNamespace(
+            type="content_block_start",
+            index=1,
+            content_block=SimpleNamespace(
+                type="tool_use", id="call-1", name="filesystem_read"
+            ),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=1,
+            delta=SimpleNamespace(
+                type="input_json_delta", partial_json='{"path":"notes.md"}'
+            ),
+        ),
+        SimpleNamespace(type="content_block_stop", index=1),
         SimpleNamespace(type="message_delta", delta=None, usage=None),
         SimpleNamespace(
             type="message_delta",
-            delta=SimpleNamespace(stop_reason="end_turn"),
+            delta=SimpleNamespace(stop_reason="tool_use"),
             usage=SimpleNamespace(output_tokens=3),
         ),
     ]
@@ -253,7 +251,22 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
         "reasoning_effort": "high",
         "thinking": {"type": "enabled"},
     }
-    assert final.content == "done"
+    assert final.content == ""
+    assert final.tool_calls == [
+        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+    ]
+    assert final.additional_kwargs == {
+        "reasoning_content": "check",
+        "anthropic_content": [
+            {"type": "thinking", "thinking": "check", "signature": "signed"},
+            {
+                "type": "tool_use",
+                "id": "call-1",
+                "name": "filesystem_read",
+                "input": {"path": "notes.md"},
+            },
+        ],
+    }
     assert final.usage_metadata == {
         "input_tokens": 10,
         "output_tokens": 3,
@@ -261,7 +274,34 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
         "context_tokens": 30,
         "cache_read_input_tokens": 20,
     }
-    assert final.response_metadata["stop_reason"] == "end_turn"
+    assert final.response_metadata["stop_reason"] == "tool_use"
+
+    replay_messages = [
+        Message(
+            role="assistant",
+            content=final.content,
+            tool_calls=final.tool_calls,
+            additional_kwargs=final.additional_kwargs,
+            response_metadata=final.response_metadata,
+        ),
+        Message(role="tool", tool_call_id="call-1", content="file content"),
+    ]
+    _system, replay = anthropic_request_messages(replay_messages, model="model")
+    assert replay[0]["content"] == final.additional_kwargs["anthropic_content"]
+    assert replay[1]["content"] == [{
+        "type": "tool_result",
+        "tool_use_id": "call-1",
+        "content": "file content",
+    }]
+    _system, switched = anthropic_request_messages(
+        replay_messages, model="another-model"
+    )
+    assert switched[0]["content"] == [{
+        "type": "tool_use",
+        "id": "call-1",
+        "name": "filesystem_read",
+        "input": {"path": "notes.md"},
+    }]
 
 
 @pytest.mark.asyncio
@@ -338,7 +378,22 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
     assert "max_tokens" not in captured
     assert final.content == "done"
-    assert final.additional_kwargs == {"reasoning_content": "check"}
+    assert final.additional_kwargs == {
+        "reasoning_content": "check",
+        "openai_message": {
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "filesystem_read",
+                    "arguments": '{"path": "notes.md"}',
+                },
+            }],
+            "reasoning_content": "check",
+        },
+    }
     assert final.tool_calls == [
         ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
     ]
@@ -349,3 +404,15 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         "context_tokens": 12,
         "cache_read_input_tokens": 8,
     }
+
+    replay_message = Message(
+        role="assistant",
+        content=final.content,
+        tool_calls=final.tool_calls,
+        additional_kwargs=final.additional_kwargs,
+        response_metadata=final.response_metadata,
+    )
+    replay = provider_messages([replay_message], model="model")
+    assert replay == [final.additional_kwargs["openai_message"]]
+    switched = provider_messages([replay_message], model="another-model")
+    assert "reasoning_content" not in switched[0]

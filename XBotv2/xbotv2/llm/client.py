@@ -12,6 +12,9 @@ from xbotv2.api.tools import ToolCall, ToolCallDelta
 
 logger = logging.getLogger("xbotv2.llm")
 
+_ANTHROPIC_CONTENT = "anthropic_content"
+_OPENAI_MESSAGE = "openai_message"
+
 
 class OpenAICompatibleProvider:
     def __init__(
@@ -47,7 +50,7 @@ class OpenAICompatibleProvider:
     async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": provider_messages(messages),
+            "messages": provider_messages(messages, model=self.model),
             "tools": self.bound_tools or None,
             "temperature": self.temperature,
             "stream": True,
@@ -62,10 +65,11 @@ class OpenAICompatibleProvider:
         response = await self.client.chat.completions.create(**api_kwargs)
 
         reasoning_parts: list[str] = []
+        reasoning_field = "reasoning_content"
         content_parts: list[str] = []
         tool_call_buffers: dict[int, dict[str, Any]] = {}
         final_usage: dict[str, Any] = {}
-        done = False
+        stop_reason = ""
 
         async for chunk in response:
             usage = getattr(chunk, "usage", None)
@@ -84,7 +88,12 @@ class OpenAICompatibleProvider:
             # one would compound each turn the reasoning is replayed
             # to the model and produce `## Thinking\n\n## Thinking\n\n…`
             # chains (see XBotv2/data/sessions/20260609-170727-7449).
-            rc = getattr(delta, "reasoning_content", None) or ""
+            rc = getattr(delta, "reasoning_content", None)
+            if not rc:
+                rc = getattr(delta, "reasoning", None)
+                if rc:
+                    reasoning_field = "reasoning"
+            rc = rc or ""
             if rc:
                 reasoning_parts.append(rc)
                 yield ModelChunk(content=rc, additional_kwargs={"reasoning_content": rc})
@@ -126,8 +135,8 @@ class OpenAICompatibleProvider:
 
             # Finish reason
             finish = getattr(chunk.choices[0], "finish_reason", None)
-            if finish and finish != "tool_calls":
-                done = True
+            if finish:
+                stop_reason = str(finish)
 
         full_content = "".join(content_parts)
         full_reasoning = "".join(reasoning_parts)
@@ -135,12 +144,28 @@ class OpenAICompatibleProvider:
             ToolCall(id=b["id"], name=b["name"], args=_parse_tool_args(b["args"]))
             for b in tool_call_buffers.values() if b["name"]
         ]
+        openai_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": full_content or None,
+        }
+        if tool_calls:
+            openai_message["tool_calls"] = [
+                openai_tool_call_for_request(call) for call in tool_calls
+            ]
+        if full_reasoning:
+            openai_message[reasoning_field] = full_reasoning
+        additional_kwargs: dict[str, Any] = {_OPENAI_MESSAGE: openai_message}
+        if full_reasoning:
+            additional_kwargs["reasoning_content"] = full_reasoning
         yield ModelResponse(
             content=full_content,
             tool_calls=tool_calls,
-            response_metadata={"model_name": self.model},
+            response_metadata={
+                "model_name": self.model,
+                **({"stop_reason": stop_reason} if stop_reason else {}),
+            },
             usage_metadata=final_usage,
-            additional_kwargs={"reasoning_content": full_reasoning} if full_reasoning else {},
+            additional_kwargs=additional_kwargs,
         )
 
 
@@ -176,7 +201,9 @@ class AnthropicProvider:
         return clone
 
     async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
-        system, request_messages = anthropic_request_messages(messages)
+        system, request_messages = anthropic_request_messages(
+            messages, model=self.model
+        )
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": request_messages,
@@ -200,6 +227,7 @@ class AnthropicProvider:
         # args once the block ends.
         tool_blocks: dict[int, dict[str, Any]] = {}
         tool_json: dict[int, list[str]] = {}
+        content_blocks: dict[int, dict[str, Any]] = {}
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         usage_values = {
@@ -224,22 +252,39 @@ class AnthropicProvider:
                     idx = int(getattr(event, "index", 0))
                     block_type = getattr(block, "type", "")
                     if block_type == "tool_use":
-                        tool_blocks[idx] = {
+                        tool_blocks[idx] = content_blocks[idx] = {
+                            "type": "tool_use",
                             "id": getattr(block, "id", ""),
                             "name": getattr(block, "name", ""),
+                            "input": {},
                         }
                         tool_json[idx] = []
-                    elif block_type == "text" and getattr(block, "text", ""):
-                        text = str(block.text)
-                        text_parts.append(text)
-                        yield ModelChunk(content=text)
-                    elif block_type == "thinking" and getattr(block, "thinking", ""):
-                        thinking = str(block.thinking)
-                        reasoning_parts.append(thinking)
-                        yield ModelChunk(
-                            content=thinking,
-                            additional_kwargs={"reasoning_content": thinking},
-                        )
+                    elif block_type == "text":
+                        text = str(getattr(block, "text", "") or "")
+                        content_blocks[idx] = {"type": "text", "text": text}
+                        if text:
+                            text_parts.append(text)
+                            yield ModelChunk(content=text)
+                    elif block_type == "thinking":
+                        thinking = str(getattr(block, "thinking", "") or "")
+                        content_blocks[idx] = {
+                            "type": "thinking",
+                            "thinking": thinking,
+                        }
+                        signature = str(getattr(block, "signature", "") or "")
+                        if signature:
+                            content_blocks[idx]["signature"] = signature
+                        if thinking:
+                            reasoning_parts.append(thinking)
+                            yield ModelChunk(
+                                content=thinking,
+                                additional_kwargs={"reasoning_content": thinking},
+                            )
+                    elif block_type == "redacted_thinking":
+                        content_blocks[idx] = {
+                            "type": "redacted_thinking",
+                            "data": str(getattr(block, "data", "") or ""),
+                        }
                 elif event_type == "content_block_delta":
                     idx = int(getattr(event, "index", 0))
                     delta = getattr(event, "delta", None)
@@ -253,15 +298,30 @@ class AnthropicProvider:
                     elif delta_type == "text_delta":
                         text = getattr(delta, "text", "")
                         if text:
+                            content_blocks.setdefault(
+                                idx, {"type": "text", "text": ""}
+                            )["text"] += text
                             text_parts.append(text)
                             yield ModelChunk(content=text)
                     elif delta_type == "thinking_delta":
                         thinking = getattr(delta, "thinking", "")
                         if thinking:
+                            content_blocks.setdefault(
+                                idx, {"type": "thinking", "thinking": ""}
+                            )["thinking"] += thinking
                             reasoning_parts.append(thinking)
                             yield ModelChunk(
                                 content=thinking,
                                 additional_kwargs={"reasoning_content": thinking},
+                            )
+                    elif delta_type == "signature_delta":
+                        signature = getattr(delta, "signature", "")
+                        if signature:
+                            thinking_block = content_blocks.setdefault(
+                                idx, {"type": "thinking", "thinking": ""}
+                            )
+                            thinking_block["signature"] = (
+                                str(thinking_block.get("signature") or "") + signature
                             )
                 elif event_type == "content_block_stop":
                     idx = int(getattr(event, "index", 0))
@@ -272,7 +332,7 @@ class AnthropicProvider:
                             args = json.loads(raw) if raw else {}
                         except json.JSONDecodeError:
                             args = {}
-                        meta["args"] = args
+                        meta["input"] = args
                         yield ModelChunk(
                             tool_calls=[ToolCall(
                                 id=meta.get("id", ""),
@@ -299,7 +359,7 @@ class AnthropicProvider:
             ToolCall(
                 id=str(meta.get("id") or ""),
                 name=str(meta.get("name") or ""),
-                args=dict(meta.get("args") or {}),
+                args=dict(meta.get("input") or {}),
             )
             for meta in tool_blocks.values()
             if meta.get("name")
@@ -307,14 +367,19 @@ class AnthropicProvider:
         response_metadata = {"model_name": response_model}
         if stop_reason:
             response_metadata["stop_reason"] = stop_reason
+        additional_kwargs: dict[str, Any] = {
+            _ANTHROPIC_CONTENT: [
+                content_blocks[index] for index in sorted(content_blocks)
+            ]
+        }
+        if reasoning_parts:
+            additional_kwargs["reasoning_content"] = "".join(reasoning_parts)
         yield ModelResponse(
             content="".join(text_parts),
             tool_calls=final_tool_calls,
             response_metadata=response_metadata,
             usage_metadata=final_usage,
-            additional_kwargs={
-                "reasoning_content": "".join(reasoning_parts)
-            } if reasoning_parts else {},
+            additional_kwargs=additional_kwargs,
         )
 
 
@@ -369,29 +434,9 @@ def require_api_key(provider: str, model: str, api_key: str) -> None:
         )
 
 
-_REASONING_HEADER = "## Thinking\n\n"
-
-
-def _strip_reasoning_headers(text: str) -> str:
-    """Collapse leading ``## Thinking\n\n`` repetitions.
-
-    Older sessions persisted multiple ``## Thinking`` headers (one
-    per round-trip) when reasoning was re-emitted to the model. The
-    chain would compound each turn, producing
-    ``## Thinking\n\n## Thinking\n\n…`` with 4-20 nested headers
-    after a few rounds. Strip them so the model sees a single clean
-    block, and any pre-existing chain collapses to one.
-    """
-
-    if not text:
-        return text
-    changed = True
-    while changed and text.startswith(_REASONING_HEADER):
-        text = text[len(_REASONING_HEADER):]
-    return text
-
-
-def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
+def provider_messages(
+    messages: list[Any], *, model: str | None = None
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     system_parts = [
         str(getattr(message, "content", ""))
@@ -413,15 +458,20 @@ def provider_messages(messages: list[Any]) -> list[dict[str, Any]]:
                 "tool_call_id": getattr(message, "tool_call_id", ""),
             })
         else:
+            native = (getattr(message, "additional_kwargs", {}) or {}).get(
+                _OPENAI_MESSAGE
+            )
+            if (
+                role == "assistant"
+                and isinstance(native, dict)
+                and _same_response_model(message, model)
+            ):
+                result.append(dict(native))
+                continue
             item: dict[str, Any] = {"role": role, "content": str(content)}
             tool_calls = getattr(message, "tool_calls", None)
             if tool_calls:
                 item["tool_calls"] = [openai_tool_call_for_request(tc) for tc in tool_calls]
-                reasoning = (
-                    getattr(message, "additional_kwargs", {}) or {}
-                ).get("reasoning_content")
-                if reasoning:
-                    item["reasoning_content"] = _strip_reasoning_headers(str(reasoning))
             result.append(item)
     return result
 
@@ -480,6 +530,8 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
 
 def anthropic_request_messages(
     messages: list[Any],
+    *,
+    model: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system = "\n\n".join(
         str(getattr(message, "content", ""))
@@ -487,10 +539,12 @@ def anthropic_request_messages(
         if message_role(message) == "system"
         and str(getattr(message, "content", "")).strip()
     )
-    return system, anthropic_messages(messages)
+    return system, anthropic_messages(messages, model=model)
 
 
-def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
+def anthropic_messages(
+    messages: list[Any], *, model: str | None = None
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for msg in messages:
         role = getattr(msg, "role", "user")
@@ -509,14 +563,20 @@ def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
                 block["is_error"] = True
             blocks.append(block)
         elif role == "assistant":
-            if content:
-                blocks.append({"type": "text", "text": content})
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls:
-                blocks.extend(
-                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
-                    for tc in tool_calls
-                )
+            native = (getattr(msg, "additional_kwargs", {}) or {}).get(
+                _ANTHROPIC_CONTENT
+            )
+            if isinstance(native, list) and _same_response_model(msg, model):
+                blocks.extend(dict(block) for block in native)
+            else:
+                if content:
+                    blocks.append({"type": "text", "text": content})
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    blocks.extend(
+                        {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
+                        for tc in tool_calls
+                    )
         elif content:
             blocks.append({"type": "text", "text": content})
         if not blocks:
@@ -526,6 +586,15 @@ def anthropic_messages(messages: list[Any]) -> list[dict[str, Any]]:
         else:
             result.append({"role": target_role, "content": blocks})
     return result
+
+
+def _same_response_model(message: Any, model: str | None) -> bool:
+    if model is None:
+        return True
+    response_model = (getattr(message, "response_metadata", {}) or {}).get(
+        "model_name"
+    )
+    return response_model == model
 
 
 def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:

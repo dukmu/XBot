@@ -93,6 +93,13 @@ parameter. Both retain structured Tool content in the provider's native Tool
 result role. Provider conversion does not reinterpret XML priority and does not
 move Tool or file content into the system context.
 
+Assistant responses retain their provider-native replay state. Anthropic keeps
+the ordered `thinking`, `redacted_thinking`, `text`, and `tool_use` blocks,
+including thinking signatures. OpenAI-compatible Chat Completions keeps the
+native assistant message and any reasoning field returned by that provider.
+Tool-result continuation replays this state without parsing reasoning text or
+reconstructing provider blocks from display content.
+
 ## Extension Rules
 
 - Prefer protocol roles and Tool schemas before adding another XML envelope.
