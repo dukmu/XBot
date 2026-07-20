@@ -14,6 +14,7 @@ class FakeEngine:
         self.enqueue_mailbox = None
         self.client_event_sink = None
         self.closed = False
+        self.close_count = 0
 
     def set_client_event_sink(self, sink):
         previous = self.client_event_sink
@@ -40,6 +41,7 @@ class FakeEngine:
 
     async def close_session(self):
         self.closed = True
+        self.close_count += 1
 
 
 def runtime(tmp_path) -> SessionRuntime:
@@ -94,6 +96,7 @@ async def test_idle_user_turn_bypasses_mailbox_and_general_uses_session_events(
     ] == ["continued"]
     await session.close()
     assert session.engine.closed is True
+    assert session.engine.close_count == 1
 
 
 @pytest.mark.asyncio

@@ -115,7 +115,9 @@ records; Compact replay starts at the last checkpoint for bounded reconstruction
 There is no separate `events.jsonl` or `state.yaml`.
 
 `SessionRuntime` (`core/session.py`) owns live-only turn, Mailbox, interaction,
-and event-stream state. It is shared by HTTP and once mode, while resume still
+and event-stream state for one thread. Engine owns the task managers registered
+in its Tool registry and closes them once after the Runtime has stopped active
+delivery. The Runtime is shared by HTTP and once mode, while resume still
 reconstructs only persisted Engine and plugin state. Mailbox queues and pending
 interaction waiters are never replayed. Started deliveries remain journal audit
 records separate from reconstructed provider Messages.

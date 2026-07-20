@@ -18,7 +18,7 @@ from xbotv2.api.tools import ToolResult
 from xbotv2.core.agents import AgentRegistry
 
 
-ChildEngineFactory = Callable[[AgentDefinition, str, int], Awaitable[Any]]
+ChildEngineFactory = Callable[[AgentDefinition, str, bool], Awaitable[Any]]
 TaskCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _TERMINAL_STATES = {"completed", "failed", "stopped"}
 
@@ -69,14 +69,12 @@ class SubagentManager:
         session_paths: SessionPaths,
         parent_thread_id: str,
         engine_factory: ChildEngineFactory,
-        depth: int = 0,
         max_concurrency: int = 4,
     ) -> None:
         self.registry = registry
         self.session_paths = session_paths
         self.parent_thread_id = parent_thread_id
         self.engine_factory = engine_factory
-        self.depth = depth
         self.max_concurrency = max_concurrency
         self.on_update: TaskCallback | None = None
         self.on_complete: TaskCallback | None = None
@@ -96,11 +94,6 @@ class SubagentManager:
             return ToolResult.failure("agent_not_found", f"Unknown subagent: {agent}")
         if not prompt.strip():
             return ToolResult.failure("invalid_prompt", "Subagent prompt cannot be empty")
-        if self.depth > 0:
-            return ToolResult.failure(
-                "nested_subagent_disabled",
-                "Subagents cannot create other subagents",
-            )
         if self._closing:
             return ToolResult.failure("session_closing", "Session is closing")
         if background and self.on_complete is None:
@@ -215,7 +208,7 @@ class SubagentManager:
         child = None
         try:
             child = await self.engine_factory(
-                definition, task.thread_id, self.depth + 1
+                definition, task.thread_id, task.background
             )
             await child.start_session()
             async for event in child.run_turn(task.prompt):
@@ -303,7 +296,6 @@ class SubagentManager:
             "agent": task.agent,
             "task_id": task.id,
             "background": task.background,
-            "depth": self.depth + 1,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if error:

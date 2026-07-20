@@ -267,24 +267,9 @@ class Engine:
 
     async def start_session(self) -> None:
         """Create a new session. Runs ON_SESSION_START hooks."""
-        self.session = SessionInfo(
-            session_id=self.state_store.session_id,
-            thread_id=self.state_store.thread_id,
-            workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
-        )
+        self.session = self._session_info()
         if self.state_store.has_existing_session():
-            self.messages = self.state_store.read_messages()
-            self._restore_usage()
-            self._persisted_messages = self._message_snapshot()
-            self._close_interrupted_tool_calls("session_restarted")
-            self.turn_count = max(
-                sum(1 for m in self.messages if m.role == "user"), 0
-            )
-            self.session.turn_count = self.turn_count
-            ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
-            await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
-            await self.save_messages()
+            await self._resume_from_store()
         else:
             self._restore_usage()
             ctx = self._make_hook_context(HookStage.ON_SESSION_START)
@@ -292,6 +277,18 @@ class Engine:
 
     async def resume_session(self) -> None:
         """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
+        self.session = self._session_info()
+        await self._resume_from_store()
+
+    def _session_info(self) -> SessionInfo:
+        return SessionInfo(
+            session_id=self.state_store.session_id,
+            thread_id=self.state_store.thread_id,
+            workspace_root=self.workspace_root,
+            provider=str(getattr(self.config, "provider", "default")),
+        )
+
+    async def _resume_from_store(self) -> None:
         self.messages = self.state_store.read_messages()
         self._restore_usage()
         self._persisted_messages = self._message_snapshot()
@@ -299,13 +296,8 @@ class Engine:
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
         )
-        self.session = SessionInfo(
-            session_id=self.state_store.session_id,
-            thread_id=self.state_store.thread_id,
-            workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
-            turn_count=self.turn_count,
-        )
+        assert self.session is not None
+        self.session.turn_count = self.turn_count
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
         await self.save_messages()
@@ -379,7 +371,6 @@ class Engine:
                 "Context maintenance was rejected by a hook.",
             )
             raise RuntimeError(message)
-        await self.save_messages()
         return True
 
     async def _prepare_tool_calls(

@@ -197,10 +197,12 @@ and description. A Tool namespace is never interpreted as a slash-command path.
 ### HTTP/SSE (`xbotv2/protocol/http_server.py`)
 
 FastAPI app with SSE streaming. `SessionManager` owns one core `SessionRuntime`
-per live session. `SessionRuntime` owns the Engine, runtime-only Mailbox, turn
-task, interaction sink, and event stream; HTTP only maps that lifecycle to wire
-requests. Once mode uses the same runtime so immediate Goal continuations are
-not lost after the first model turn.
+per live thread, grouped by session ID. `SessionRuntime` owns the Engine,
+runtime-only Mailbox, turn task, interaction sink, and event stream; HTTP only
+maps that lifecycle to wire requests. The Runtime is bound before Engine start
+and stops active delivery before Engine-owned task managers and plugins close.
+Once mode uses the same runtime so immediate Goal continuations are not lost
+after the first model turn.
 Wire DTOs are owned by `protocol/models.py`; `api/` contains no transport types.
 The HTTP bridge owns the Engine async stream and closes it when the SSE
 consumer completes or disconnects.

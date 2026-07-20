@@ -444,7 +444,7 @@ def _register_routes(app: FastAPI) -> None:
                 llm_override=app.state.llm_override.get("value"),
                 parent_thread_id=parent_thread_id,
                 parent_permission_system=parent.engine.permission_system,
-                subagent_depth=1,
+                is_subagent=True,
             )
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc

@@ -418,7 +418,7 @@ async def test_subagent_runtime_does_not_load_agents_plugin(
         thread_id="worker-1",
         workspace_root=temp_workspace,
         agent_definition=definition,
-        subagent_depth=1,
+        is_subagent=True,
         llm_override=MockLLM(responses=[]),
     )
 
@@ -494,30 +494,6 @@ async def test_subagent_manager_rejects_unknown_and_primary_agents(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_subagent_manager_rejects_nested_dispatch(tmp_path):
-    registry = AgentRegistry()
-    registry.register(
-        AgentDefinition(name="worker", description="Focused worker"),
-        owner="test",
-    )
-
-    async def unused_factory(*_args):
-        raise AssertionError("factory must not run")
-
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        parent_thread_id="child",
-        engine_factory=unused_factory,
-        depth=1,
-    )
-
-    result = await manager.run("worker", "nested work")
-
-    assert result.error.code == "nested_subagent_disabled"
-
-
-@pytest.mark.asyncio
 async def test_background_subagent_requires_live_mailbox(tmp_path):
     registry = AgentRegistry()
     registry.register(
@@ -588,8 +564,11 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
     registry.register(definition, owner="test")
     release = asyncio.Event()
     child = _ChildEngine(wait=release)
+    background_mode = None
 
-    async def factory(*_args):
+    async def factory(_definition, _thread_id, background):
+        nonlocal background_mode
+        background_mode = background
         return child
 
     manager = SubagentManager(
@@ -612,6 +591,7 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
     assert task["output"] == "background result"
     assert task["usage"] == {"total_tokens": 12}
     assert child.closed is True
+    assert background_mode is True
 
 
 @pytest.mark.asyncio

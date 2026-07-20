@@ -208,12 +208,6 @@ class SessionRuntime:
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
-        background_tasks = getattr(self.engine, "background_tasks", None)
-        if background_tasks is not None:
-            await background_tasks.close()
-        subagents = getattr(self.engine, "subagents", None)
-        if subagents is not None:
-            await subagents.close()
         await self.mailbox.close(reason)
         worker = self.mailbox_worker
         if worker is not None and not worker.done() and worker is not asyncio.current_task():

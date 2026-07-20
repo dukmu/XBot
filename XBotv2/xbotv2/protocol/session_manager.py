@@ -64,7 +64,7 @@ class SessionManager:
         llm_override: Any | None = None,
         parent_thread_id: str = "",
         parent_permission_system: Any | None = None,
-        subagent_depth: int = 0,
+        is_subagent: bool = False,
     ) -> SessionRuntime:
         async with self._lock:
             mode = (mode or "new").lower().strip()
@@ -99,9 +99,8 @@ class SessionManager:
                 selected_agent=selected_agent,
                 parent_thread_id=parent_thread_id,
                 parent_permission_system=parent_permission_system,
-                subagent_depth=subagent_depth,
+                is_subagent=is_subagent,
             )
-            await engine.start_session()
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
@@ -113,6 +112,11 @@ class SessionManager:
                 no_plugins=no_plugins,
                 engine=engine,
             )
+            try:
+                await engine.start_session()
+            except BaseException:
+                await ctx.close("session_start_failed")
+                raise
             self._sessions[key] = ctx
             return ctx
 
