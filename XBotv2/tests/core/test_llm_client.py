@@ -6,6 +6,7 @@ import pytest
 
 from xbotv2.llm.client import (
     AnthropicProvider,
+    OpenAICompatibleProvider,
     _anthropic_usage_values,
     _strip_reasoning_headers,
     anthropic_request_messages,
@@ -261,3 +262,90 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
         "cache_read_input_tokens": 20,
     }
     assert final.response_metadata["stop_reason"] == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
+    def chunk(*, content=None, reasoning=None, tool_calls=None, usage=None):
+        choices = [] if usage else [SimpleNamespace(
+            delta=SimpleNamespace(
+                content=content,
+                reasoning_content=reasoning,
+                tool_calls=tool_calls or [],
+            ),
+            finish_reason="tool_calls" if tool_calls else None,
+        )]
+        return SimpleNamespace(choices=choices, usage=usage)
+
+    events = [
+        chunk(reasoning="check"),
+        chunk(content="done", tool_calls=[SimpleNamespace(
+            index=0,
+            id="call-1",
+            function=SimpleNamespace(
+                name="filesystem_read",
+                arguments='{"path":',
+            ),
+        )]),
+        chunk(tool_calls=[SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name=None, arguments='"notes.md"}'),
+        )]),
+        chunk(usage=SimpleNamespace(
+            prompt_tokens=12,
+            completion_tokens=3,
+            total_tokens=15,
+            prompt_cache_hit_tokens=8,
+        )),
+    ]
+
+    class FakeResponse:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not events:
+                raise StopAsyncIteration
+            return events.pop(0)
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse()
+
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.model = "model"
+    provider.temperature = 0.2
+    provider.max_output_tokens = None
+    provider.reasoning_effort = "high"
+    provider.thinking_enabled = True
+    provider.bound_tools = [{"type": "function"}]
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+
+    chunks = [chunk async for chunk in provider.astream([
+        Message(role="system", content="instructions"),
+        Message(role="user", content="work"),
+    ])]
+    final = chunks[-1]
+
+    assert captured["stream_options"] == {"include_usage": True}
+    assert captured["reasoning_effort"] == "high"
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "max_tokens" not in captured
+    assert final.content == "done"
+    assert final.additional_kwargs == {"reasoning_content": "check"}
+    assert final.tool_calls == [
+        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+    ]
+    assert final.usage_metadata == {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "total_tokens": 15,
+        "context_tokens": 12,
+        "cache_read_input_tokens": 8,
+    }

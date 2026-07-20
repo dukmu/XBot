@@ -12,8 +12,14 @@ Generate current coverage instead of recording a count that drifts with every
 iteration:
 
 ```bash
-uv run pytest XBotv2/tests --cov=xbotv2 --cov-report=term-missing -q
+uv run coverage erase
+uv run coverage run -m pytest XBotv2/tests -q
+uv run coverage report -m
 ```
+
+Coverage is limited by `pyproject.toml` to the `xbotv2` and `builtin_plugins`
+packages. Tests and temporary workspace Hooks, Tools, and Plugins are exercised
+but are not counted as product source.
 
 ## Test Structure
 
@@ -105,5 +111,6 @@ pytest XBotv2/tests/core/test_skills.py XBotv2/tests/core/test_mcp.py -v
 pytest XBotv2/tests/integration/ -v
 
 # With coverage
-pytest XBotv2/tests --cov=xbotv2 --cov-report=term-missing -q
+coverage run -m pytest XBotv2/tests -q
+coverage report -m
 ```

@@ -47,6 +47,9 @@ markers = [
     "integration: marks tests as integration tests",
 ]
 
+[tool.coverage.run]
+source = ["xbotv2", "builtin_plugins"]
+
 [tool.setuptools.packages.find]
 where = ["XBotv2"]
 include = ["xbotv2*", "builtin_plugins*"]

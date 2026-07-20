@@ -55,3 +55,45 @@ async def test_web_fetch_extracts_readable_html():
     assert result.data["content_type"] == "text/html"
     assert result.data["url"].endswith("/article")
     assert result.data["untrusted"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_follows_redirects_and_limits_response_size():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/final")
+                self.end_headers()
+                return
+            body = b"redirect complete" if self.path == "/final" else b"x" * 128
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    access = WebAccess(NetworkOptions(max_response_bytes=64, allow_private=True))
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        redirected = await access.fetch(f"{base_url}/redirect")
+        oversized = await access.fetch(f"{base_url}/large")
+    finally:
+        await access.close()
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert redirected.status == "success"
+    assert redirected.data["url"].endswith("/final")
+    assert "redirect complete" in redirected.content
+    assert oversized.status == "error"
+    assert oversized.error is not None
+    assert oversized.error.code == "fetch_failed"
+    assert "size limit" in oversized.error.message
