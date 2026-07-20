@@ -18,6 +18,12 @@ from xbotv2.api.paths import RuntimePaths
 _COMMAND_ALIASES = {"server": "serve"}
 _COMMANDS = {"serve", "server", "tui", "web", "once", "terminal"}
 _WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
+# $HOME/.local/state/xbotv2 is the default state dir on Linux
+# on Windows, it will be %LOCALAPPDATA%\xbotv2\state
+if sys.platform == "win32":
+    _DEFAULT_STATE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "xbotv2" / "state"
+else:
+    _DEFAULT_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "xbotv2" / "state"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -262,7 +268,7 @@ def _run_tui(args) -> None:
 
     if server_url is None:
         if uds_path is None:
-            uds_path = f"/tmp/xbotv2-{os.getpid()}.sock"
+            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-{os.getpid()}.sock"
         server_url = "http://localhost"
         args.uds = uds_path
         spawned_server = _spawn_server(args)
@@ -321,7 +327,7 @@ def _run_web(args) -> None:
     spawned_server: subprocess.Popen | None = None
     if args.server is None:
         if uds_path is None:
-            uds_path = f"/tmp/xbotv2-web-{os.getpid()}.sock"
+            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-web-{os.getpid()}.sock"
         args.uds = uds_path
         spawned_server = _spawn_server(args)
         if not _wait_for_health(api_url, timeout=15.0, uds_path=uds_path):
