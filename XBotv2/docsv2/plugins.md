@@ -208,6 +208,13 @@ config_schema:
 
 ## Built-in Plugins
 
+### BrowserPlugin (`builtin_plugins/browser/`)
+
+Provides live `web_search` and `web_fetch` research tools plus one lazily
+started, isolated Chromium page for rendered interaction. Read-only operations
+are separate from state-changing browser actions, which remain subject to the
+normal permission policy. See [Browser plugin](browser.md).
+
 ### CompactPlugin (`builtin_plugins/compact/`)
 
 Compacts a completed history prefix through the public `BEFORE_CONTEXT`
