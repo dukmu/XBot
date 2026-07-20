@@ -46,7 +46,7 @@ a workaround for a fixed foreground timeout.
 Hooks, and permission rules as foreground shell execution. Background mode is
 not a permission alias or a second execution path around `shell` policy.
 
-`SystemConfig.tools` may narrow this registry after plugin initialization. The
+`RuntimeConfig.tools` may narrow this registry after plugin initialization. The
 shipped configuration keeps both client-interaction tools visible so an agent
 can send progress and ask for missing information without a custom tool list.
 
@@ -78,11 +78,11 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
-Tool results larger than `tool_result_max_inline_chars` (12,000 by default) are
+Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
 stored under the session's `state/artifacts/tool_results` directory before
-history persistence and SSE emission. `tool_result_preview_chars` controls the
+history persistence and SSE emission. `tool_results.preview_chars` controls the
 bounded beginning and ending preview (4,000 characters by default). Both are
-system-level settings in `data/config/system.yaml`, and the preview may not
+global settings in `data/config/config.yaml`, and the preview may not
 exceed the inline threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;

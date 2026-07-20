@@ -44,16 +44,17 @@ async def http_app(tmp_path: Path):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
     (data_dir / "config" / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
+        "default: default\nproviders:\n  default:\n    provider: openai\n"
+        "    model: test\n    base_url: http://test\n    api_key: test\n"
+        "    max_context_tokens: 4096\n",
         encoding="utf-8",
     )
     (data_dir / "config" / "user.yaml").write_text(
         "user_id: bench\nuser_name: Bench\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "system.yaml").write_text(
-        "agent_name: BenchBot\nagent_role: bench\nprovider: default\n"
-        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+    (data_dir / "config" / "config.yaml").write_text(
+        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )

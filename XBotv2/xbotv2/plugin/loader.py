@@ -344,6 +344,29 @@ class PluginLoader:
             raise unload_error
         return True
 
+    async def reload(self, plugin_name: str) -> bool:
+        """Reload one active plugin from its existing manifest."""
+        record = self._records.get(plugin_name)
+        if record is None:
+            return False
+        manifest = record.plugin.manifest
+        plugin_dir = manifest.plugin_dir
+        await self.unload(plugin_name)
+        plugin = instantiate_plugin(
+            manifest,
+            PluginStore(self.state_store, manifest.name),
+        )
+        try:
+            config = dict(self.plugin_configs.get(manifest.name, {}))
+            manifest.validate_config(config)
+            self._ensure_importable(manifest, plugin_dir or Path.cwd())
+            await plugin.on_load(config)
+            self._records[manifest.name] = self._register(plugin)
+        except BaseException:
+            await plugin.on_unload()
+            raise
+        return True
+
     async def unload_all(self) -> list[str]:
         """Unload all loaded plugins in reverse load order."""
         unloaded: list[str] = []

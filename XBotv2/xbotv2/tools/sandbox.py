@@ -43,6 +43,8 @@ class SandboxPolicy:
         workspace_write: str = "allow",
         variables: RuntimeVariables | None = None,
     ) -> None:
+        if hasattr(config, "model_dump"):
+            config = config.model_dump()
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
@@ -378,7 +380,7 @@ class SandboxPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the live sandbox config back to the format
-        used by sandbox.yaml and sessions/<id>/policy.yaml."""
+        used by global, session, and workspace configuration."""
         d: dict[str, Any] = {
             "enabled": self.enabled,
             "network": self._network,

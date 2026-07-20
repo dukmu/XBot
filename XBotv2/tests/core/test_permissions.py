@@ -146,7 +146,7 @@ class TestPermissionSystemBasics:
         )
 
         policy = yaml.safe_load(
-            paths.session("permission-rule").policy_file.read_text(
+            paths.session("permission-rule").config_file.read_text(
                 encoding="utf-8"
             )
         )
@@ -179,6 +179,15 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
                 sandbox={},
             ),
             config=SimpleNamespace(permissions={}, sandbox={}),
+            state_store=SimpleNamespace(
+                read_thread_metadata=lambda: {
+                    "agent_definition": {
+                        "name": thread_id,
+                        "description": "test agent",
+                        "permissions": base_permissions,
+                    }
+                }
+            ),
         )
         return SimpleNamespace(
             session_id="s",
@@ -314,10 +323,10 @@ class TestConfigLoading:
 
     def test_shipped_policy_allows_internal_and_workspace_tools(self, tmp_path):
         config = yaml.safe_load(
-            Path("XBotv2/data/config/permissions.yaml").read_text(
+            Path("XBotv2/data/config/config.yaml").read_text(
                 encoding="utf-8"
             )
-        )
+        )["permissions"]
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         permissions = PermissionSystem(

@@ -111,6 +111,29 @@ async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
     }
 
 
+async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
+    """Reload Agent definitions and reapply the active primary Agent."""
+    _require_idle(ctx, "reload Agents")
+    loader = getattr(ctx.engine, "plugin_loader", None)
+    if loader is None:
+        raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
+    active = str(getattr(ctx.engine.config, "agent_name", "default"))
+    async with ctx.turn_lock:
+        if not await loader.reload("agents"):
+            raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
+        definition = ctx.engine.agent_registry.get(active)
+        if definition is None or definition.mode == "subagent":
+            raise OperationError(
+                "agent_not_found",
+                f"Active Agent definition no longer exists: {active}",
+            )
+        await _activate_agent(ctx, definition)
+    return {
+        "active": active,
+        "agents": ctx.engine.agent_registry.definitions(),
+    }
+
+
 async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
     from xbotv2.config.loader import load_provider_config, load_provider_names
@@ -128,6 +151,8 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
             ctx.engine.llm = create_llm(config)
         ctx.engine.model = config.model
         ctx.engine.model_mode = config.model_mode
+        ctx.engine.context_window = config.max_context_tokens
+        ctx.engine.config.max_context_tokens = config.max_context_tokens
         ctx.provider_name = name
         ctx.engine.config.provider = name
         ctx.engine.state_store.provider = name
@@ -138,6 +163,7 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
             "provider": name,
             "model": config.model,
             "model_mode": config.model_mode,
+            "context_window": config.max_context_tokens,
         })
         ctx.engine.state_store.write_thread_metadata(metadata)
     return {
@@ -228,7 +254,7 @@ async def update_session_policy(
 async def _activate_agent(
     ctx: SessionRuntime, definition: AgentDefinition
 ) -> None:
-    from xbotv2.config.loader import load_provider_config, load_system_config
+    from xbotv2.config.loader import load_provider_config, load_runtime_config
     from xbotv2.core.agents import (
         apply_agent_definition,
         apply_agent_provider,
@@ -236,12 +262,17 @@ async def _activate_agent(
     )
     from xbotv2.llm.client import create_llm
 
-    config = load_system_config(ctx.paths, Path(ctx.workspace_root))
+    config = load_runtime_config(
+        ctx.paths, Path(ctx.workspace_root), ctx.session_id
+    )
     apply_agent_definition(config, definition)
     provider_name = definition.provider or ctx.provider_name
     config.provider = provider_name
     provider = load_provider_config(ctx.paths, provider_name)
     apply_agent_provider(provider, definition)
+    config.max_context_tokens = (
+        definition.context_window or provider.max_context_tokens
+    )
     llm = (
         ctx.engine.llm
         if getattr(ctx.engine, "llm_is_override", False)
@@ -250,7 +281,7 @@ async def _activate_agent(
 
     ctx.engine.config = config
     ctx.engine.startup_config = config.model_copy(deep=True)
-    reload_live_policies(ctx)
+    _apply_live_policies(ctx, config)
     ctx.engine.llm = llm
     ctx.engine.model = provider.model
     ctx.engine.model_mode = provider.model_mode
@@ -276,27 +307,37 @@ async def _activate_agent(
 
 def reload_live_policies(ctx: SessionRuntime) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
-    from xbotv2.config.loader import load_system_config
-    from xbotv2.config.policy import (
-        load_session_policy,
-        merge_permission_config,
-        merge_sandbox_config,
+    from xbotv2.config.loader import load_runtime_config
+    from xbotv2.core.agents import apply_agent_definition
+
+    base_config = load_runtime_config(
+        ctx.paths, Path(ctx.workspace_root), ctx.session_id
     )
+    state_store = getattr(ctx.engine, "state_store", None)
+    metadata = (
+        state_store.read_thread_metadata() if state_store is not None else {}
+    )
+    stored_definition = metadata.get("agent_definition")
+    if isinstance(stored_definition, dict):
+        apply_agent_definition(
+            base_config,
+            AgentDefinition(**{
+                key: tuple(value) if key in {"tools", "disabled_tools"}
+                and isinstance(value, list) else value
+                for key, value in stored_definition.items()
+            }),
+        )
+    ctx.engine.startup_config = base_config.model_copy(deep=True)
+    _apply_live_policies(ctx, base_config)
+
+
+def _apply_live_policies(ctx: SessionRuntime, config: Any) -> None:
+    """Apply one already-resolved policy to live runtime objects."""
     from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
     from xbotv2.tools.sandbox import SandboxPolicy
 
-    base_config = getattr(ctx.engine, "startup_config", None)
-    if base_config is None:
-        base_config = load_system_config(ctx.paths, Path(ctx.workspace_root))
-    session_policy = load_session_policy(ctx.paths, ctx.session_id)
-    permissions = merge_permission_config(
-        base_config.permissions,
-        session_policy.get("permissions"),
-    )
-    sandbox = merge_sandbox_config(
-        base_config.sandbox,
-        session_policy.get("sandbox"),
-    )
+    permissions = config.permissions
+    sandbox = config.sandbox
     ctx.engine.config.permissions = permissions
     ctx.engine.config.sandbox = sandbox
     live_permissions = ctx.engine.permission_system
@@ -341,6 +382,7 @@ __all__ = [
     "clear_history",
     "fork_persisted_session",
     "fork_session",
+    "reload_agents",
     "reload_live_policies",
     "require_forkable",
     "select_agent",

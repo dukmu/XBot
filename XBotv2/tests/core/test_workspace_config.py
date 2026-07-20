@@ -1,10 +1,10 @@
-"""Startup-only workspace configuration tests."""
+"""Unified configuration overlay behavior."""
 
 import pytest
 import yaml
 
 from xbotv2.api import RuntimePaths
-from xbotv2.config.loader import load_system_config
+from xbotv2.config.loader import load_runtime_config
 
 
 def _write_yaml(path, value):
@@ -12,50 +12,39 @@ def _write_yaml(path, value):
     path.write_text(yaml.safe_dump(value), encoding="utf-8")
 
 
-def test_workspace_files_overlay_policy_plugins_and_hooks(
+def test_workspace_overrides_session_and_global_config(
     temp_data_dir, temp_workspace
 ):
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
     (temp_workspace / "extensions").mkdir()
-    _write_yaml(
-        temp_data_dir / "config" / "system.yaml",
-        {
-            "plugins": {"sample": {"origin": "global"}},
-            "hooks": [{"stage": "on_turn_start", "target": "global:hook"}],
+    _write_yaml(paths.config_file, {
+        "provider": "global",
+        "plugins": {"sample": {"config": {"source": "global"}}},
+        "permissions": {"ask": [{"tool": ".*"}]},
+    })
+    _write_yaml(paths.session("session").config_file, {
+        "provider": "session",
+        "plugins": {"sample": {"config": {"source": "session"}}},
+    })
+    _write_yaml(temp_workspace / ".xbot" / "config.yaml", {
+        "provider": "workspace",
+        "plugin_paths": ["extensions"],
+        "plugins": {
+            "sample": {"config": {"source": "workspace"}},
+            "disabled": {"enabled": False},
         },
-    )
-    _write_yaml(
-        temp_data_dir / "config" / "permissions.yaml",
-        {"ask": [{"tool": ".*"}]},
-    )
-    _write_yaml(
-        temp_workspace / ".xbot" / "policy.yaml",
-        {"permissions": {"allow": [{"tool": "filesystem_read"}]}},
-    )
-    _write_yaml(
-        temp_workspace / ".xbot" / "plugins.yaml",
-        {
-            "paths": ["extensions"],
-            "plugins": {
-                "sample": {"config": {"origin": "workspace"}},
-                "disabled": {"enabled": False},
-            },
-        },
-    )
-    _write_yaml(
-        temp_workspace / ".xbot" / "hooks.yaml",
-        {"hooks": [{"stage": "on_session_init", "target": "local:hook"}]},
-    )
+        "hooks": [{"stage": "on_session_init", "target": "local:hook"}],
+        "permissions": {"allow": [{"tool": "filesystem_read"}]},
+    })
 
-    config = load_system_config(
-        RuntimePaths.from_data_dir(temp_data_dir), temp_workspace
-    )
+    config = load_runtime_config(paths, temp_workspace, "session")
 
-    assert config.permissions["allow"] == [{"tool": "filesystem_read"}]
-    assert config.permissions["ask"] == [{"tool": ".*"}]
-    assert config.plugins["sample"] == {"origin": "workspace"}
+    assert config.provider == "workspace"
+    assert config.permissions.allow[0].tool == "filesystem_read"
+    assert config.permissions.ask[0].tool == ".*"
+    assert config.plugins["sample"].config == {"source": "workspace"}
     assert config.disabled_plugins == ["disabled"]
     assert config.plugin_paths == [str(temp_workspace / "extensions")]
-    assert [hook.target for hook in config.hooks] == ["local:hook"]
     assert config.hooks[0].base_dir == temp_workspace / ".xbot"
 
 
@@ -63,24 +52,24 @@ def test_workspace_plugin_path_cannot_escape_workspace(
     temp_data_dir, temp_workspace
 ):
     _write_yaml(
-        temp_workspace / ".xbot" / "plugins.yaml",
-        {"paths": ["../external"]},
+        temp_workspace / ".xbot" / "config.yaml",
+        {"plugin_paths": ["../external"]},
     )
 
     with pytest.raises(ValueError, match="inside the workspace"):
-        load_system_config(RuntimePaths.from_data_dir(temp_data_dir), temp_workspace)
+        load_runtime_config(RuntimePaths.from_data_dir(temp_data_dir), temp_workspace)
 
 
-def test_tool_result_preview_cannot_exceed_inline_limit(
+def test_config_rejects_unknown_fields_and_invalid_tool_result_limits(
     temp_data_dir, temp_workspace
 ):
-    _write_yaml(
-        temp_data_dir / "config" / "system.yaml",
-        {
-            "tool_result_max_inline_chars": 100,
-            "tool_result_preview_chars": 101,
-        },
-    )
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    _write_yaml(paths.config_file, {
+        "tool_results": {"max_inline_chars": 100, "preview_chars": 101},
+    })
+    with pytest.raises(ValueError, match="preview_chars"):
+        load_runtime_config(paths, temp_workspace)
 
-    with pytest.raises(ValueError, match="tool_result_preview_chars"):
-        load_system_config(RuntimePaths.from_data_dir(temp_data_dir), temp_workspace)
+    _write_yaml(paths.config_file, {"agent_name": "legacy"})
+    with pytest.raises(ValueError, match="agent_name"):
+        load_runtime_config(paths, temp_workspace)

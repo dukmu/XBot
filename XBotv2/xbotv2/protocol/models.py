@@ -85,7 +85,8 @@ class ProviderInfo(WireModel):
     name: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    max_tokens: int = Field(ge=1)
+    max_context_tokens: int = Field(ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str = ""
     thinking_enabled: bool = False
 

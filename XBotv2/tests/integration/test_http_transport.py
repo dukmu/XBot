@@ -117,7 +117,7 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         transport=ASGITransport(app=http_app),
     ) as sdk:
         await sdk.open_session(session_id="sdk-policy", thread_id="main")
-        policy_path = http_app.state.paths.session("sdk-policy").policy_file
+        policy_path = http_app.state.paths.session("sdk-policy").config_file
         policy_path.write_text(
             yaml.safe_dump({
                 "permissions": {
@@ -329,16 +329,17 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     # Minimal providers.yaml so bootstrap can pick a default
     (data_dir / "config" / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
+        "default: default\nproviders:\n  default:\n    provider: openai\n"
+        "    model: test\n    base_url: http://test\n    api_key: test\n"
+        "    max_context_tokens: 4096\n",
         encoding="utf-8",
     )
     (data_dir / "config" / "user.yaml").write_text(
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "system.yaml").write_text(
-        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
-        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+    (data_dir / "config" / "config.yaml").write_text(
+        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
@@ -412,7 +413,8 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
             "name": "default",
             "provider": "openai",
             "model": "test",
-            "max_tokens": 4096,
+            "max_context_tokens": 4096,
+            "max_output_tokens": None,
             "reasoning_effort": "",
             "thinking_enabled": False,
         }],
@@ -610,7 +612,8 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         "---\ndescription: Build changes\nmode: primary\ntools: []\n---\nBuild.",
         encoding="utf-8",
     )
-    (agents_dir / "Explorer.md").write_text(
+    explorer_path = agents_dir / "Explorer.md"
+    explorer_path.write_text(
         "---\n"
         "description: Read-only exploration\n"
         "mode: all\n"
@@ -668,6 +671,25 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert ctx.engine.context_window == 64000
         assert ctx.engine.state_store.read_thread_metadata()["agent"] == "Explorer"
 
+        explorer_path.write_text(
+            "---\ndescription: Reloaded exploration\nmode: all\n"
+            "model: default/explorer-model\ncontext_window: 48000\n"
+            "tools:\n  - filesystem_read\n  - filesystem_list\n"
+            "permission:\n  filesystem_write: deny\n  shell: deny\n"
+            "---\nExplore updated.",
+            encoding="utf-8",
+        )
+        reloaded = await ac.post(
+            "/sessions/switch-primary/threads/main/agents/reload"
+        )
+        assert reloaded.status_code == 200
+        assert ctx.engine.context_window == 48000
+        assert any(
+            item["description"] == "Reloaded exploration"
+            for item in reloaded.json()["agents"]
+            if item["name"] == "Explorer"
+        )
+
         child_only = await ac.put(
             "/sessions/switch-primary/threads/main/agent",
             json={"name": "worker"},
@@ -701,7 +723,7 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
     assert resumed.status_code == 200
     assert resumed.json()["agent_name"] == "Explorer"
     assert resumed.json()["model"] == "explorer-model"
-    assert resumed.json()["context_window"] == 64000
+    assert resumed.json()["context_window"] == 48000
     assert [item["content"] for item in resumed.json()["history"]] == [
         "keep this history",
         "existing answer",
@@ -901,7 +923,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert source_records[-1]["record_type"] == "history_undo"
     (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
     (source.artifacts_dir / "cached.txt").write_text("cached")
-    source_session.policy_file.write_text("permissions: {}\n")
+    source_session.config_file.write_text("permissions: {}\n")
     forked = await client.post("/sessions/history/fork")
     fork_id = forked.json()["session_id"]
     fork_session = http_app.state.paths.session(fork_id)
@@ -909,7 +931,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
 
     assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
     assert (fork_paths.artifacts_dir / "cached.txt").read_text() == "cached"
-    assert fork_session.policy_file.read_text() == "permissions: {}\n"
+    assert fork_session.config_file.read_text() == "permissions: {}\n"
     assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
     resumed = await client.post(
         "/sessions",
@@ -1025,11 +1047,11 @@ async def test_typed_provider_selection_persists_across_resume(
     providers_file = http_app.state.paths.config_dir / "providers.yaml"
     providers_file.write_text(
         providers_file.read_text(encoding="utf-8")
-        + "alternate:\n"
-        "  provider: openai\n"
-        "  model: alternate-model\n"
-        "  base_url: http://alternate\n"
-        "  api_key: test\n",
+        + "  alternate:\n"
+        "    provider: openai\n"
+        "    model: alternate-model\n"
+        "    base_url: http://alternate\n"
+        "    api_key: test\n",
         encoding="utf-8",
     )
     await client.post(
@@ -1337,16 +1359,16 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
     (data_dir / "config" / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n",
+        "default: default\nproviders:\n  default:\n    provider: openai\n"
+        "    model: test\n    base_url: http://test\n",
         encoding="utf-8",
     )
     (data_dir / "config" / "user.yaml").write_text(
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "system.yaml").write_text(
-        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
-        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+    (data_dir / "config" / "config.yaml").write_text(
+        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
@@ -1974,8 +1996,9 @@ async def _real_terminal_session(
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
     (config_dir / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n"
-        "  base_url: http://test\n  api_key: test\n",
+        "default: default\nproviders:\n  default:\n    provider: openai\n"
+        "    model: test\n    base_url: http://test\n    api_key: test\n"
+        "    max_context_tokens: 4096\n",
         encoding="utf-8",
     )
     (config_dir / "user.yaml").write_text(
@@ -1984,9 +2007,8 @@ async def _real_terminal_session(
         encoding="utf-8",
     )
     sandbox = "true" if sandbox_enabled else "false"
-    (config_dir / "system.yaml").write_text(
-        "agent_name: TestBot\nagent_role: You are a test bot.\n"
-        "provider: default\nmax_context_tokens: 4096\n"
+    (config_dir / "config.yaml").write_text(
+        "provider: default\n"
         "tools: []\nplugins: {}\nhooks: []\n"
         f"sandbox:\n  enabled: {sandbox}\n  resources: []\n",
         encoding="utf-8",
@@ -2284,16 +2306,17 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
     (data_dir / "config" / "providers.yaml").write_text(
-        "default:\n  provider: openai\n  model: test\n  base_url: http://test\n  api_key: test\n",
+        "default: default\nproviders:\n  default:\n    provider: openai\n"
+        "    model: test\n    base_url: http://test\n    api_key: test\n"
+        "    max_context_tokens: 4096\n",
         encoding="utf-8",
     )
     (data_dir / "config" / "user.yaml").write_text(
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "system.yaml").write_text(
-        "agent_name: TestBot\nagent_role: You are a test bot.\nprovider: default\n"
-        "max_context_tokens: 4096\ntools: []\nplugins: {}\nhooks: []\n"
+    (data_dir / "config" / "config.yaml").write_text(
+        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
@@ -2529,7 +2552,7 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
         "/sessions", json={"session_id": "sandbox-persist", "thread_id": "t"}
     )
     assert open_resp.status_code == 200
-    policy_path = http_app.state.paths.session("sandbox-persist").policy_file
+    policy_path = http_app.state.paths.session("sandbox-persist").config_file
     kept_resources = [{"path": "/tmp/approved", "access": "readwrite"}]
     policy_path.write_text(
         yaml.safe_dump({"sandbox": {"resources": kept_resources}}),
@@ -2554,7 +2577,7 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     assert ctx.engine.sandbox_policy.network is False
     assert ctx.engine.sandbox_policy.external_read == "deny"
 
-    # policy.yaml file was written
+    # The session configuration was updated.
     assert policy_path.exists()
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     assert doc["sandbox"]["network"] is False

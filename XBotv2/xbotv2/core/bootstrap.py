@@ -29,12 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from xbotv2.config.loader import load_provider_config, load_system_config, load_user_context
-from xbotv2.config.policy import (
-    load_session_policy,
-    merge_permission_config,
-    merge_sandbox_config,
-)
+from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.variables import RuntimeVariables
@@ -127,7 +122,7 @@ async def bootstrap(
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    startup_config = load_system_config(paths, workspace_root)
+    startup_config = load_runtime_config(paths, workspace_root, session_id)
     agent_config = startup_config.model_copy(deep=True)
     resolved_agent = agent_definition
     if resolved_agent is not None:
@@ -137,19 +132,9 @@ async def bootstrap(
     policy_base_config = agent_config.model_copy(deep=True)
     user_context = load_user_context(paths)
 
-    session_policy = load_session_policy(paths, session_id)
-    agent_config.permissions = merge_permission_config(
-        agent_config.permissions,
-        session_policy.get("permissions"),
-    )
-    agent_config.sandbox = merge_sandbox_config(
-        agent_config.sandbox,
-        session_policy.get("sandbox"),
-    )
-
     # Merge plugin configs from system config
     if agent_config.plugins:
-        _plugin_configs = {**_plugin_configs, **agent_config.plugins}
+        _plugin_configs = {**_plugin_configs, **agent_config.plugin_configs}
 
     # Ensure session state directory
     session_paths = paths.session(session_id)
@@ -195,8 +180,8 @@ async def bootstrap(
         HookStage.AFTER_TOOLS,
         make_tool_result_cache_hook(
             state_store,
-            max_inline_chars=agent_config.tool_result_max_inline_chars,
-            preview_chars=agent_config.tool_result_preview_chars,
+            max_inline_chars=agent_config.tool_results.max_inline_chars,
+            preview_chars=agent_config.tool_results.preview_chars,
         ),
     )
     _register_configured_hooks(agent_config, hook_manager)
@@ -333,6 +318,13 @@ async def bootstrap(
         provider_config = load_provider_config(paths, provider_name)
         if resolved_agent is not None:
             apply_agent_provider(provider_config, resolved_agent)
+        agent_config.max_context_tokens = (
+            resolved_agent.context_window
+            if resolved_agent is not None
+            and resolved_agent.context_window is not None
+            else provider_config.max_context_tokens
+        )
+        policy_base_config.max_context_tokens = agent_config.max_context_tokens
         state_store.write_thread_metadata({
             "agent": resolved_agent.name if resolved_agent is not None else "",
             "agent_definition": (

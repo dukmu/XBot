@@ -337,6 +337,7 @@ def test_openapi_uses_typed_request_contracts():
         "/sessions/{session_id}/threads/{thread_id}",
         "/sessions/{session_id}/threads/{thread_id}/agent",
         "/sessions/{session_id}/threads/{thread_id}/agents",
+        "/sessions/{session_id}/threads/{thread_id}/agents/reload",
         "/sessions/{session_id}/threads/{thread_id}/close",
         "/sessions/{session_id}/threads/{thread_id}/events",
         "/sessions/{session_id}/threads/{thread_id}/history/clear",

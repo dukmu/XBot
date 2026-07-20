@@ -20,8 +20,8 @@ from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
 async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     temp_data_dir, temp_workspace
 ):
-    (temp_data_dir / "config" / "permissions.yaml").write_text(
-        "allow:\n  - tool: task\n",
+    (temp_data_dir / "config" / "config.yaml").write_text(
+        "permissions:\n  allow:\n    - tool: task\n",
         encoding="utf-8",
     )
     agents_dir = temp_workspace / ".agents"
@@ -103,8 +103,8 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
 async def test_blocking_subagent_can_ask_user_through_parent_session(
     temp_data_dir, temp_workspace
 ):
-    (temp_data_dir / "config" / "permissions.yaml").write_text(
-        "allow:\n  - tool: task\n  - tool: ask_user\n",
+    (temp_data_dir / "config" / "config.yaml").write_text(
+        "permissions:\n  allow:\n    - tool: task\n    - tool: ask_user\n",
         encoding="utf-8",
     )
     agents_dir = temp_workspace / ".agents"
@@ -185,8 +185,9 @@ async def test_blocking_subagent_can_ask_user_through_parent_session(
 async def test_blocking_subagent_can_request_permission_through_parent_session(
     temp_data_dir, temp_workspace
 ):
-    (temp_data_dir / "config" / "permissions.yaml").write_text(
-        "allow:\n  - tool: task\nask:\n  - tool: filesystem_read\n",
+    (temp_data_dir / "config" / "config.yaml").write_text(
+        "permissions:\n  allow:\n    - tool: task\n"
+        "  ask:\n    - tool: filesystem_read\n",
         encoding="utf-8",
     )
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")

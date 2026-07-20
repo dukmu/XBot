@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.tools import ToolCall
+from xbotv2.config.models import config_dict
 
 
 PermissionScope = str
@@ -18,7 +19,7 @@ _PERMISSION_DECISIONS = ("deny", "allow", "ask")
 
 def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
     """Load optional session-local policy overlay."""
-    return _read_yaml(paths.session(session_id).policy_file)
+    return _read_yaml(paths.session(session_id).config_file)
 
 
 def patch_session_policy(
@@ -31,7 +32,7 @@ def patch_session_policy(
     remove_sandbox: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Apply one session policy patch while preserving unrelated rules."""
-    path = paths.session(session_id).policy_file
+    path = paths.session(session_id).config_file
     doc = _read_yaml(path)
     permission_config = doc.setdefault("permissions", {})
     for tool in (*remove_permissions, *(permissions or {})):
@@ -63,10 +64,11 @@ def merge_permission_config(
 ) -> dict[str, Any]:
     """Merge permission rules, preserving deny/allow/ask precedence in PermissionSystem."""
     merged: dict[str, Any] = {
-        key: list((base or {}).get(key, []))
+        key: list(config_dict(base).get(key, []))
         for key in _PERMISSION_DECISIONS
     }
     if overlay:
+        overlay = config_dict(overlay)
         for key in _PERMISSION_DECISIONS:
             merged[key] = list(overlay.get(key, [])) + merged[key]
     return {key: value for key, value in merged.items() if value}
@@ -83,8 +85,8 @@ def merge_sandbox_config(
     per-session approvals take priority over the baseline config.
     """
 
-    base = dict(base or {})
-    overlay = dict(overlay or {})
+    base = config_dict(base)
+    overlay = config_dict(overlay)
     overrides = dict(overrides or {})
     resources = list(overlay.get("resources", [])) + list(base.get("resources", []))
     merged = {**base, **overlay, **overrides}
@@ -106,7 +108,7 @@ def persist_permission_decision(
 
     ``scope`` is one of:
     - ``once``: do not persist
-    - ``session``: write sessions/<session>/policy.yaml
+    - ``session``: write the session configuration overlay
     """
     decision = decision.lower().strip()
     scope = (scope or "once").lower().strip()
@@ -164,7 +166,7 @@ def _persist_permission_rule(
     decision: str,
     engine: Any | None,
 ) -> None:
-    path = paths.session(session_id).policy_file
+    path = paths.session(session_id).config_file
     doc = _read_yaml(path)
     permissions = doc.setdefault("permissions", {})
     _remove_rule(permissions, rule)
@@ -220,7 +222,7 @@ def _persist_sandbox_rule(
     )
     if not resolved_paths:
         return
-    path = paths.session(session_id).policy_file
+    path = paths.session(session_id).config_file
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
@@ -293,7 +295,11 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else {}
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a mapping")
+    return data
 
 
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:

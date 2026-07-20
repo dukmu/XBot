@@ -1,0 +1,53 @@
+provider: default
+max_concurrent_subagents: 4
+
+tool_results:
+  max_inline_chars: 12000
+  preview_chars: 4000
+
+plugins:
+  agents:
+    enabled: true
+  compact:
+    enabled: true
+  goal:
+    enabled: true
+  mcp:
+    enabled: true
+  skills:
+    enabled: true
+  todolist:
+    enabled: true
+  token_manager:
+    enabled: true
+  workspace_instructions:
+    enabled: true
+
+hooks: []
+
+permissions:
+  allow:
+    - tool: list_tasks
+    - tool: stop_task
+    - tool: (?:send_message|ask_user|request_permission)
+    - tool: (?:search_text|find_files)
+    - tool: update_todos
+    - tool: (?:filesystem_read|filesystem_stat|filesystem_list)
+    - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
+      paths: ${workspace}
+    - tool: shell
+  ask:
+    - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
+  deny:
+    - tool: .*
+      params:
+        command: rm -rf /.*
+
+sandbox:
+  enabled: true
+  network: true
+  external_read: ask
+  external_write: ask
+  workspace_read: allow
+  workspace_write: allow
+  resources: []

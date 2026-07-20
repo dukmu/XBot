@@ -86,7 +86,7 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
     "agent": CommandSpec(
         name="agent", kind="client",
         description="List or switch the active primary Agent",
-        usage="/agent [status|list|use <name>|<name>]",
+        usage="/agent [status|list|reload|use <name>|<name>]",
         raw="/agent",
     ),
     "clear": CommandSpec(

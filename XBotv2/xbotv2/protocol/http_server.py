@@ -68,12 +68,13 @@ from xbotv2.api.paths import RuntimePaths
 from xbotv2.config.loader import (
     load_provider_config,
     load_provider_names,
-    load_system_config,
+    load_runtime_config,
 )
 from xbotv2.core.operations import (
     OperationError,
     clear_history,
     fork_persisted_session,
+    reload_agents,
     require_forkable,
     select_agent,
     select_provider,
@@ -85,7 +86,6 @@ from xbotv2.core.operations import (
 )
 from xbotv2.config.policy import (
     load_session_policy,
-    merge_sandbox_config,
 )
 from xbotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
 from xbotv2.persistence.store import CoreStateStore
@@ -229,7 +229,8 @@ def _register_routes(app: FastAPI) -> None:
                 name=name,
                 provider=config.provider,
                 model=config.model,
-                max_tokens=config.max_tokens,
+                max_context_tokens=config.max_context_tokens,
+                max_output_tokens=config.max_output_tokens,
                 reasoning_effort=config.reasoning_effort or "",
                 thinking_enabled=config.thinking_enabled,
             ))
@@ -315,7 +316,7 @@ def _register_routes(app: FastAPI) -> None:
         return _session_policy_response(
             session_id,
             policy,
-            await _effective_sandbox(manager, session_id, policy),
+            await _effective_sandbox(manager, session_id),
         )
 
     @app.patch(
@@ -345,7 +346,7 @@ def _register_routes(app: FastAPI) -> None:
         return _session_policy_response(
             session_id,
             policy,
-            await _effective_sandbox(manager, session_id, policy),
+            await _effective_sandbox(manager, session_id),
         )
 
     @app.post(
@@ -507,6 +508,32 @@ def _register_routes(app: FastAPI) -> None:
             model=data["model"],
             model_mode=data["model_mode"],
             context_window=data["context_window"],
+        )
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/agents/reload",
+        operation_id="reload_agents",
+    )
+    async def reload_agents_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> AgentListResponse:
+        ctx = await manager.get(session_id, thread_id)
+        data = await reload_agents(ctx)
+        return AgentListResponse(
+            active=data["active"],
+            agents=[
+                AgentInfo(
+                    name=definition.name,
+                    description=definition.description,
+                    mode=definition.mode,
+                    provider=definition.provider or "",
+                    model=definition.model or "",
+                    context_window=definition.context_window or 0,
+                )
+                for definition in data["agents"]
+                if not definition.hidden
+            ],
         )
 
     @app.put(
@@ -1056,7 +1083,6 @@ def _session_policy_response(
 async def _effective_sandbox(
     manager: SessionManager,
     session_id: str,
-    policy: dict[str, Any],
 ) -> dict[str, Any]:
     active = await manager.active_threads()
     contexts = [
@@ -1079,8 +1105,8 @@ async def _effective_sandbox(
         )
         metadata = store.read_thread_metadata()
         workspace = Path(metadata.get("workspace_root") or workspace)
-    config = load_system_config(manager.paths, workspace)
-    return merge_sandbox_config(config.sandbox, policy.get("sandbox"))
+    config = load_runtime_config(manager.paths, workspace, session_id)
+    return config.sandbox.model_dump()
 
 
 async def _resolve_interaction(

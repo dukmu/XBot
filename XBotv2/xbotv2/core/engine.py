@@ -192,7 +192,7 @@ class Engine:
         context_builder: Any,  # ContextBuilder
         sandbox_policy: Any,  # SandboxPolicy
         permission_system: Any,  # PermissionSystem
-        config: Any,  # SystemConfig
+        config: Any,  # RuntimeConfig
         workspace_root: str | None = None,
         max_iterations: int = 50,
         plugin_loader: Any | None = None,
@@ -995,11 +995,7 @@ class Engine:
             "agent_role": getattr(self.config, "agent_role", ""),
             "user_name": getattr(self.user_context, "user_name", "User"),
             "user_id": getattr(self.user_context, "user_id", "default-user"),
-            "developer_instructions": getattr(
-                self.config,
-                "effective_instructions",
-                getattr(self.config, "instructions", ""),
-            ),
+            "developer_instructions": getattr(self.config, "instructions", ""),
             "instructions": getattr(self.config, "agent_instructions", ""),
             "memory": getattr(self.config, "memory", ""),
             "sandbox_summary": (

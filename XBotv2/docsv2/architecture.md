@@ -42,19 +42,18 @@ provider: current-provider
 Configuration:
 
 ```text
-data/config/system.yaml
+data/config/config.yaml
 data/config/providers.yaml
-data/config/permissions.yaml
-data/config/sandbox.yaml
+data/sessions/<session-id>/config.yaml
 <workspace_root>/AGENTS.md       # reloaded for each model context build
 <workspace_root>/.agents/*.md    # workspace Agent definitions
-<workspace_root>/.xbot/*.yaml    # startup-only workspace overlays
+<workspace_root>/.xbot/config.yaml
 ```
 
-Without `providers.yaml`, the `default` provider name uses the built-in OpenAI
-configuration. Any other name, or a name missing from an existing provider
-file, fails at bootstrap and reports the configured names; provider selection
-never silently falls back to a different model.
+The runtime configuration priority is workspace, then session, then global.
+Provider definitions are global and use explicit `max_context_tokens` and
+`max_output_tokens`. Any unknown provider name fails at bootstrap; provider
+selection never silently falls back to a different model.
 
 ## Core Components
 
@@ -232,7 +231,7 @@ model and MCP Tools do not become slash commands.
 
 ```
 data/sessions/<sid>/
-├── policy.yaml             # policy shared by threads in the session
+├── config.yaml             # session configuration and approvals
 ├── threads.jsonl           # parent/child Agent lifecycle journal
 └── threads/<thread-id>/
     ├── thread.yaml         # selected Agent, Provider, and parent thread

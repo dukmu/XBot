@@ -30,7 +30,7 @@ subagent execution has a distinct thread ID within that session:
 
 ```text
 data/sessions/<session-id>/
-├── policy.yaml
+├── config.yaml
 ├── threads.jsonl
 └── threads/<thread-id>/
     ├── thread.yaml

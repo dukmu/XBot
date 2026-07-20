@@ -227,6 +227,14 @@ class TerminalSession:
 
     async def _agent_command(self, args: list[str]) -> CommandOutcome:
         action = args[0].lower() if args else "status"
+        if action == "reload" and len(args) == 1:
+            data = await self._transport.reload_agents(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+            )
+            return CommandOutcome(
+                f"Reloaded {len(data['agents'])} Agent definitions.", data
+            )
         if action in {"status", "list"} and len(args) <= 1:
             data = await self._transport.list_agents(
                 session_id=self._session_id,
@@ -243,7 +251,9 @@ class TerminalSession:
         if len(args) == 1 and action not in {"status", "list", "use"}:
             target = args[0]
         if target is None:
-            raise ValueError("Usage: /agent [status|list|use <name>|<name>]")
+            raise ValueError(
+                "Usage: /agent [status|list|reload|use <name>|<name>]"
+            )
         data = await self._transport.select_agent(
             session_id=self._session_id,
             thread_id=self._thread_id,
