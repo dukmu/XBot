@@ -149,6 +149,11 @@ def load_runtime_config(
             hook.model_copy(update={"base_dir": workspace_config.parent})
             for hook in config.hooks
         ]
+    if layers[-1].workspace_tools is not None:
+        config.workspace_tools = [
+            tool.model_copy(update={"base_dir": workspace_config.parent})
+            for tool in config.workspace_tools
+        ]
     if paths.memory_file.exists():
         config.memory = paths.memory_file.read_text(encoding="utf-8")
     return config

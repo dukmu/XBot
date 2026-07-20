@@ -27,7 +27,10 @@ plugins:
     enabled: false
 
 plugin_paths:
-  - extensions
+  - .xbot/plugins
+
+workspace_tools:
+  - target: tools/release.py:TOOLS
 
 hooks:
   - stage: before_tool_call
@@ -52,9 +55,21 @@ sandbox:
 ```
 
 Workspace `plugin_paths` are relative to the workspace and may not escape it.
-Workspace hook script paths are relative to `.xbot`. Configuration is loaded
-when a thread starts; session policy changes are reloaded explicitly by the
-policy API.
+The standard workspace plugin root is `.xbot/plugins`; additional roots remain
+supported when explicitly configured.
+
+`workspace_tools` explicitly loads trusted Tool exports from `.xbot/tools`.
+Each target uses `tools/module.py:export` syntax. The export is either one
+`xbotv2.api.Tool` or a non-empty list/tuple of Tools, conventionally named
+`TOOLS`. They enter the normal ToolRegistry, permission, Hook, result-cache,
+and ToolResult execution path under the `workspace` namespace. No ordinary
+functions are scanned implicitly.
+
+Workspace Hook targets use `hooks/module.py:callback` and must stay inside
+`.xbot/hooks`. A Hook remains explicitly associated with a stage in `hooks`;
+filenames do not imply lifecycle stages or ordering. Workspace Tool and Hook
+modules are trusted startup code. Configuration is loaded when a thread starts;
+session policy changes are reloaded explicitly by the policy API.
 
 ## Providers
 

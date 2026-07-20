@@ -16,7 +16,7 @@ def test_workspace_overrides_session_and_global_config(
     temp_data_dir, temp_workspace
 ):
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    (temp_workspace / "extensions").mkdir()
+    (temp_workspace / ".xbot" / "plugins").mkdir(parents=True)
     _write_yaml(paths.config_file, {
         "provider": "global",
         "plugins": {"sample": {"config": {"source": "global"}}},
@@ -31,7 +31,8 @@ def test_workspace_overrides_session_and_global_config(
     })
     _write_yaml(temp_workspace / ".xbot" / "config.yaml", {
         "provider": "workspace",
-        "plugin_paths": ["extensions"],
+        "plugin_paths": [".xbot/plugins"],
+        "workspace_tools": [{"target": "tools/example.py:TOOLS"}],
         "plugins": {
             "sample": {"config": {"source": "workspace"}},
             "disabled": {"enabled": False},
@@ -48,7 +49,8 @@ def test_workspace_overrides_session_and_global_config(
     assert config.permissions.ask[0].tool == ".*"
     assert config.plugins["sample"].config == {"source": "workspace"}
     assert config.disabled_plugins == ["disabled"]
-    assert config.plugin_paths == [str(temp_workspace / "extensions")]
+    assert config.plugin_paths == [str(temp_workspace / ".xbot" / "plugins")]
+    assert config.workspace_tools[0].base_dir == temp_workspace / ".xbot"
     assert config.hooks[0].base_dir == temp_workspace / ".xbot"
 
 
