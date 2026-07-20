@@ -305,6 +305,15 @@ class GoalPlugin(PluginBase):
             goal["status"] = "paused"
             await self.store.set("goal", goal)
             return
+        item = ctx.mailbox_message
+        if getattr(item, "kind", None) == "general":
+            message = getattr(item, "message", None)
+            if not (
+                isinstance(message, dict)
+                and message.get("source") == "goal"
+                and message.get("event") == "continue"
+            ):
+                return
         await self.start(ctx.enqueue_mailbox)
 
     async def start(self, enqueue_mailbox) -> None:

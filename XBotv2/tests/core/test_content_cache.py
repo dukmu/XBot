@@ -35,15 +35,10 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
     bounded = bound_context_messages([message], state_store)[0]
 
     assert bounded is not message
-    cached_values = [
-        bounded.content,
-        bounded.tool_calls[0].args["value"],
-        bounded.additional_kwargs["reasoning_content"],
-    ]
+    cached_values = [bounded.content, bounded.additional_kwargs["reasoning_content"]]
     roots = [ET.fromstring(value) for value in cached_values]
     assert [root.attrib["kind"] for root in roots] == [
         "assistant_content",
-        "tool_argument",
         "reasoning_content",
     ]
     assert all(
@@ -59,9 +54,22 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
     cached = sorted((Path(state_store.artifacts_dir) / "context").glob("*.txt"))
     assert {path.read_text(encoding="utf-8") for path in cached} == {
         content,
-        argument,
         reasoning,
     }
+
+
+def test_never_externalizes_tool_call_arguments(state_store):
+    argument = "argument:" + "b" * MAX_USER_INLINE_CHARS
+    message = Message(
+        role="assistant",
+        tool_calls=[ToolCall("call-1", "filesystem_write", {"content": argument})],
+    )
+
+    bounded = bound_context_messages([message], state_store)[0]
+
+    assert bounded is message
+    assert bounded.tool_calls[0].args["content"] == argument
+    assert not (Path(state_store.artifacts_dir) / "context").exists()
 
 
 def test_reuses_relative_content_cache_reference(state_store):

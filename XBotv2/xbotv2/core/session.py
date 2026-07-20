@@ -62,6 +62,7 @@ class SessionRuntime:
 
     async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
         await self.enqueue_general({
+            "source": "background_task",
             "event": "background_task_finished",
             "content": (
                 f"Background task {task['task_id']} {task['status']}: "

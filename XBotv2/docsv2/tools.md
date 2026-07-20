@@ -37,6 +37,11 @@ the client is connected without polling. Starting a background task confirms
 only that it was accepted. After the completion notification, the Agent reads
 `list_tasks(task_id)` before using its output or reporting command success.
 
+Foreground Shell execution has no default time limit. It waits for process
+completion and is terminated when the current turn is cancelled. Use background
+mode when other Agent work should continue before the command finishes, not as
+a workaround for a fixed foreground timeout.
+
 `shell(background=true)` uses the same canonical Tool name, command arguments,
 Hooks, and permission rules as foreground shell execution. Background mode is
 not a permission alias or a second execution path around `shell` policy.
