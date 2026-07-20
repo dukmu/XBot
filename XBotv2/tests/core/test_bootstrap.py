@@ -474,6 +474,51 @@ hooks:
         assert engine.messages[0].content == "hello from workspace"
 
     @pytest.mark.asyncio
+    async def test_workspace_config_registers_direct_tools(
+        self, temp_data_dir, temp_workspace
+    ):
+        config_dir = temp_workspace / ".xbot"
+        tools_dir = config_dir / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "greeting.py").write_text(
+            "from xbotv2.api import Tool\n\n"
+            "async def workspace_greeting(name: str) -> str:\n"
+            "    '''Greet one person from a workspace Tool.'''\n"
+            "    return f'hello {name}'\n\n"
+            "TOOLS = (Tool.from_function(workspace_greeting),)\n",
+            encoding="utf-8",
+        )
+        (config_dir / "config.yaml").write_text(
+            "workspace_tools:\n"
+            "  - target: tools/greeting.py:TOOLS\n"
+            "permissions:\n"
+            "  allow:\n"
+            "    - tool: workspace_greeting\n",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[
+            {"tool_calls": [{
+                "id": "call_greeting",
+                "name": "workspace_greeting",
+                "args": {"name": "Ada"},
+            }]},
+            {"content": "done"},
+        ])
+
+        engine = await bootstrap(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="workspace-tool",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=llm,
+        )
+        events = [event async for event in engine.run_turn("greet Ada")]
+
+        result = next(event for event in events if event["type"] == "tool_result")
+        assert result["data"]["content"] == "hello Ada"
+        assert "workspace:workspace_greeting" in engine.tool_registry.names()
+
+    @pytest.mark.asyncio
     async def test_bootstrap_passes_external_plugin_configs(
         self, temp_data_dir, tmp_path, monkeypatch
     ):

@@ -69,6 +69,21 @@ class HookConfig(StrictModel):
         return value
 
 
+class WorkspaceToolConfig(StrictModel):
+    """One explicit Tool export from the workspace's ``.xbot/tools`` directory."""
+
+    target: str
+    base_dir: Path | None = Field(default=None, exclude=True)
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, value: str) -> str:
+        source, separator, export = value.partition(":")
+        if not separator or not source or not export:
+            raise ValueError("target must use tools/module.py:export syntax")
+        return value
+
+
 class PluginConfig(StrictModel):
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
@@ -119,6 +134,7 @@ class ConfigOverlay(StrictModel):
     max_concurrent_subagents: int | None = Field(default=None, ge=1)
     tool_results: ToolResultConfig | None = None
     tools: list[str] | None = None
+    workspace_tools: list[WorkspaceToolConfig] | None = None
     hooks: list[HookConfig] | None = None
     plugins: dict[str, PluginConfig] | None = None
     plugin_paths: list[str] | None = None
@@ -134,6 +150,7 @@ class RuntimeConfig(StrictModel):
     max_concurrent_subagents: int = Field(default=4, ge=1)
     tool_results: ToolResultConfig = Field(default_factory=ToolResultConfig)
     tools: list[str] | None = None
+    workspace_tools: list[WorkspaceToolConfig] = Field(default_factory=list)
     hooks: list[HookConfig] = Field(default_factory=list)
     plugins: dict[str, PluginConfig] = Field(default_factory=dict)
     plugin_paths: list[str] = Field(default_factory=list)
@@ -179,5 +196,6 @@ __all__ = [
     "RuntimeConfig",
     "ToolResultConfig",
     "UserContext",
+    "WorkspaceToolConfig",
     "config_dict",
 ]

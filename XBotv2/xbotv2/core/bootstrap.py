@@ -4,7 +4,7 @@ Sequence:
 1. Load global configuration and startup-only workspace overlays
 2. Create CoreStateStore
 3. Create empty HookManager, ToolRegistry, ContextBuilder
-4. Register core base tools
+4. Register core and configured workspace tools
 5. Create SandboxPolicy + PermissionSystem
 6. Discover and load plugins
 7. Register plugin hooks, tools, prompt fragments, and Agent definitions
@@ -32,6 +32,7 @@ from typing import Any
 from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.tools import Tool
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.agents import (
@@ -200,6 +201,7 @@ async def bootstrap(
             tool,
             sandbox_mode=sandbox_mode,
         )
+    _register_workspace_tools(agent_config, tool_registry)
 
     # 5. Create SandboxPolicy + PermissionSystem
     sandbox = SandboxPolicy(
@@ -522,37 +524,68 @@ def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> 
         hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl))
 
 
+def _register_workspace_tools(agent_config: Any, tool_registry: ToolRegistry) -> None:
+    """Register Tool exports explicitly declared by workspace configuration."""
+    for declaration in getattr(agent_config, "workspace_tools", ()):
+        exported = _resolve_workspace_target(declaration, directory="tools")
+        tools = exported if isinstance(exported, (list, tuple)) else (exported,)
+        if not tools:
+            raise ValueError(f"Workspace Tool export is empty: {declaration.target}")
+        for tool in tools:
+            if not isinstance(tool, Tool):
+                raise TypeError(
+                    f"Workspace Tool export {declaration.target!r} must contain "
+                    "xbotv2.api.Tool values"
+                )
+            tool_registry.register(tool, namespace="workspace", sandbox_mode="host")
+
+
 def _resolve_hook_target(declaration: Any) -> Any:
     """Resolve a module or workspace script target without changing sys.path."""
     source, attr_name = declaration.target.split(":", 1)
     if source.endswith(".py") or "/" in source or "\\" in source:
-        base_dir = getattr(declaration, "base_dir", None)
-        if base_dir is None:
-            raise ValueError(
-                f"Relative hook script {source!r} requires a workspace hooks file"
-            )
-        path = (Path(base_dir) / source).resolve()
-        try:
-            path.relative_to(Path(base_dir).resolve())
-        except ValueError as exc:
-            raise ValueError("Hook script paths must stay inside .xbot") from exc
-        if not path.is_file():
-            raise FileNotFoundError(f"Hook script not found: {path}")
-        spec = importlib.util.spec_from_file_location(
-            f"xbotv2_workspace_hook_{abs(hash(path))}", path
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load hook script: {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        callback = _resolve_workspace_target(declaration, directory="hooks")
     else:
         module = importlib.import_module(source)
-    try:
-        callback = getattr(module, attr_name)
-    except AttributeError as exc:
-        raise ImportError(
-            f"Hook target {declaration.target!r} does not exist"
-        ) from exc
+        try:
+            callback = getattr(module, attr_name)
+        except AttributeError as exc:
+            raise ImportError(
+                f"Hook target {declaration.target!r} does not exist"
+            ) from exc
     if not callable(callback):
         raise TypeError(f"Hook target {declaration.target!r} is not callable")
     return callback
+
+
+def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
+    """Load one declared export from a standard workspace extension directory."""
+    source, attr_name = declaration.target.split(":", 1)
+    base_dir = getattr(declaration, "base_dir", None)
+    if base_dir is None:
+        raise ValueError(
+            f"Workspace {directory} target {source!r} must be declared in .xbot/config.yaml"
+        )
+    extension_dir = (Path(base_dir) / directory).resolve()
+    path = (Path(base_dir) / source).resolve()
+    try:
+        path.relative_to(extension_dir)
+    except ValueError as exc:
+        raise ValueError(
+            f"Workspace {directory} scripts must stay inside .xbot/{directory}"
+        ) from exc
+    if not path.is_file():
+        raise FileNotFoundError(f"Workspace {directory} script not found: {path}")
+    spec = importlib.util.spec_from_file_location(
+        f"xbotv2_workspace_{directory}_{abs(hash(path))}", path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load workspace {directory} script: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ImportError(
+            f"Workspace target {declaration.target!r} does not exist"
+        ) from exc
