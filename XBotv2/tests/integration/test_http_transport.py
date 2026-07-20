@@ -1117,6 +1117,10 @@ async def test_http_policy_api_updates_live_session_policy(
     assert cached_result.status == "success"
     assert "cached after policy reload" in cached_result.content
     assert status_response.json()["permissions"]["allow"] == [{"tool": "shell"}]
+    assert [
+        rule["tool"]
+        for rule in status_response.json()["effective_permissions"]["allow"]
+    ] == ["shell"]
     assert status_response.json()["sandbox"] == {"external_read": "ask"}
     assert status_response.json()["effective_sandbox"]["external_read"] == "ask"
     assert (

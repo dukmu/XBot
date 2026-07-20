@@ -1,6 +1,9 @@
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":1,"type":"assistant_message","data":{"content":"done","tool_calls":[]}}
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":2,"type":"assistant_message_delta","data":{"content":"partial"}}
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":3,"type":"client_message","data":{"message":"notice","level":"info","source":"send_message","tool_call_id":"call-1"}}
+{"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":4,"type":"compaction_completed","data":{"reason":"automatic","metrics":{"history_chars_before":1000,"history_chars_after":200},"usage":{"input_tokens":500,"output_tokens":50,"total_tokens":550,"context_tokens":500,"requests":1}}}
+{"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":5,"type":"compaction_failed","data":{"reason":"automatic","message":"summary failed"}}
+{"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":6,"type":"compaction_started","data":{"reason":"manual","messages_before":12,"history_chars_before":1000}}
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":4,"type":"end","data":{"status":"ok"}}
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":5,"type":"error","data":{"code":"turn_failed","message":"turn failed"}}
 {"protocol_version":"xbotv2.v3","session_id":"contract","thread_id":"agent","request_id":"req-contract","sequence":6,"type":"message_queued","data":{"message_id":"mail-1","position":1}}

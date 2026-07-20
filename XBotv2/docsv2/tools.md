@@ -101,8 +101,9 @@ general virtual filesystem. Policy updates preserve the mount, and cached-result
 metadata survives restoration.
 
 Provider-bound context uses a 48,000-character boundary for user messages and a
-12,000-character boundary for other message content, string values inside
-historical ToolCall arguments, and assistant reasoning content. Oversized values are stored under
+12,000-character boundary for assistant content, Tool results, and assistant
+reasoning content. Model-authored ToolCall arguments are passed through
+unchanged. Oversized values are stored under
 `session/artifacts/context/`; only a beginning/ending preview, digest, size, and
 session-relative `cache_path` are sent to the provider. This projection does
 not mutate persisted messages, so resume retains the exact original input. The

@@ -316,7 +316,7 @@ def _register_routes(app: FastAPI) -> None:
         return _session_policy_response(
             session_id,
             policy,
-            await _effective_sandbox(manager, session_id),
+            await _effective_runtime_policy(manager, session_id),
         )
 
     @app.patch(
@@ -346,7 +346,7 @@ def _register_routes(app: FastAPI) -> None:
         return _session_policy_response(
             session_id,
             policy,
-            await _effective_sandbox(manager, session_id),
+            await _effective_runtime_policy(manager, session_id),
         )
 
     @app.post(
@@ -1070,32 +1070,31 @@ async def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
 def _session_policy_response(
     session_id: str,
     policy: dict[str, Any],
-    effective_sandbox: dict[str, Any],
+    effective: tuple[dict[str, Any], dict[str, Any]],
 ) -> SessionPolicyResponse:
+    effective_permissions, effective_sandbox = effective
     return SessionPolicyResponse(
         session_id=session_id,
         permissions=policy.get("permissions") or {},
+        effective_permissions=effective_permissions,
         sandbox=policy.get("sandbox") or {},
         effective_sandbox=effective_sandbox,
     )
 
 
-async def _effective_sandbox(
+async def _effective_runtime_policy(
     manager: SessionManager,
     session_id: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     active = await manager.active_threads()
     contexts = [
         ctx
         for (active_session_id, _), ctx in active.items()
         if active_session_id == session_id
     ]
-    if contexts:
-        return contexts[0].engine.sandbox_policy.to_dict()
-
+    workspace = Path(contexts[0].workspace_root) if contexts else Path.cwd()
     thread_ids = persisted_thread_ids(manager.paths, session_id)
-    workspace = Path.cwd()
-    if thread_ids:
+    if not contexts and thread_ids:
         thread_id = "agent" if "agent" in thread_ids else thread_ids[0]
         store = CoreStateStore(
             manager.paths.session(session_id),
@@ -1106,7 +1105,7 @@ async def _effective_sandbox(
         metadata = store.read_thread_metadata()
         workspace = Path(metadata.get("workspace_root") or workspace)
     config = load_runtime_config(manager.paths, workspace, session_id)
-    return config.sandbox.model_dump()
+    return config.permissions.model_dump(), config.sandbox.model_dump()
 
 
 async def _resolve_interaction(

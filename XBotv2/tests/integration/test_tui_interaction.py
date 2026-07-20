@@ -835,10 +835,13 @@ async def test_slash_clear_resets_state_not_session(scripted_session) -> None:
         # Seed some history before clearing.
         app.state.append_message("user", "first")
         app.state.notices.append(_make_notice("client_message", "hello"))
+        await app._render_new_transcript_entries()
+        assert app.query_one("#transcript").children
         composer = app.query_one("#input")
         composer.load_text("/clear-screen")
         await app.submit_composer()
         await pilot.pause()
+        assert not app.query_one("#transcript").children
 
     assert app.state.messages == []
     assert app.state.notices == []

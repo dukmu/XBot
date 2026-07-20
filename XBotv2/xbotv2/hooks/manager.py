@@ -28,7 +28,9 @@ _RESULT_KEYS: dict[HookStage, frozenset[str]] = {
     HookStage.BEFORE_USER_MESSAGE_ACCEPT: frozenset({
         "user_input", "event", "turn_complete",
     }),
-    HookStage.BEFORE_CONTEXT: frozenset({"messages", "compact_reason"}),
+    HookStage.BEFORE_CONTEXT: frozenset({
+        "messages", "compact_reason", "compact_metrics",
+    }),
     HookStage.PRE_COMPACT: frozenset({"messages", "compact_reason"}),
     HookStage.BEFORE_CONTEXT_BUILD: frozenset({
         "messages", "context_kwargs", "event", "turn_complete",

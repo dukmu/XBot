@@ -20,7 +20,10 @@ def test_workspace_overrides_session_and_global_config(
     _write_yaml(paths.config_file, {
         "provider": "global",
         "plugins": {"sample": {"config": {"source": "global"}}},
-        "permissions": {"ask": [{"tool": ".*"}]},
+        "permissions": {
+            "allow": [{"tool": "todo"}],
+            "ask": [{"tool": ".*"}],
+        },
     })
     _write_yaml(paths.session("session").config_file, {
         "provider": "session",
@@ -41,6 +44,7 @@ def test_workspace_overrides_session_and_global_config(
 
     assert config.provider == "workspace"
     assert config.permissions.allow[0].tool == "filesystem_read"
+    assert config.permissions.allow[1].tool == "todo"
     assert config.permissions.ask[0].tool == ".*"
     assert config.plugins["sample"].config == {"source": "workspace"}
     assert config.disabled_plugins == ["disabled"]

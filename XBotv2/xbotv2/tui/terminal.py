@@ -289,7 +289,7 @@ class TerminalSession:
                 session_id=self._session_id
             )
             value = (
-                data["permissions"]
+                data.get("effective_permissions", data["permissions"])
                 if command == "permission"
                 else data.get("effective_sandbox", data["sandbox"])
             )

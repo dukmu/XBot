@@ -83,6 +83,10 @@ Slash dispatch rules:
 Server command results render as transcript notices but do not enter LLM message
 history.
 
+`/clear`, `/undo`, and `/clear-screen` replace the mounted transcript widgets,
+not only the client-side history model. Server history mutations redraw from
+the authoritative history returned by the command.
+
 Policy commands validate keys and values. `set` and `reset` both update the
 session overrides and the live in-memory session policy. Sandbox reset removes
 only the selected override, preserving independent resource approvals, and the

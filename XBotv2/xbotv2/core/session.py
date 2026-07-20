@@ -47,6 +47,7 @@ class SessionRuntime:
             self.paths.session(self.session_id).thread(self.thread_id).mailbox_log
         )
         self.engine.enqueue_mailbox = self.enqueue_general
+        self.engine.runtime_event_sink = self._publish_runtime_event
         background_tasks = getattr(self.engine, "background_tasks", None)
         if background_tasks is not None:
             background_tasks.on_update = self._publish_task_update
@@ -59,6 +60,10 @@ class SessionRuntime:
     async def _publish_task_update(self, task: dict[str, Any]) -> None:
         if self.session_events is not None:
             await self.session_events.put({"type": "task_updated", "data": task})
+
+    def _publish_runtime_event(self, event: dict[str, Any]) -> None:
+        if self.session_events is not None:
+            self.session_events.put_nowait(event)
 
     async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
         await self.enqueue_general({

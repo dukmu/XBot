@@ -128,6 +128,7 @@ class TuiState:
     errors: list[str] = field(default_factory=list)
     turn: int = 0
     turn_active: bool = False
+    compaction_active: bool = False
     pending_user_input_payload: dict[str, Any] | None = None
     pending_permission_payload: dict[str, Any] | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
@@ -170,11 +171,13 @@ class TuiState:
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self.compaction_active = False
             self._clear_pending_interactions(tool_status="cancelled")
             self._refresh_status()
         elif event_type == "turn_cancelled":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self.compaction_active = False
             self._clear_pending_interactions(tool_status="cancelled")
             self.status = "Interrupted"
             self._refresh_status()
@@ -263,6 +266,33 @@ class TuiState:
                 )
         elif event_type == "usage":
             self._apply_usage(data)
+        elif event_type == "compaction_started":
+            self.compaction_active = True
+            self._refresh_status()
+        elif event_type == "compaction_completed":
+            self.compaction_active = False
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                self._apply_usage({"total": usage})
+            self._refresh_status(reset_terminal=True)
+            if data.get("reason") == "automatic":
+                metrics = data.get("metrics") or {}
+                self.append_notice(
+                    "compact",
+                    "Conversation compacted "
+                    f"({metrics.get('history_chars_before', 0)} to "
+                    f"{metrics.get('history_chars_after', 0)} characters).",
+                    payload=data,
+                )
+        elif event_type == "compaction_failed":
+            self.compaction_active = False
+            self._refresh_status(reset_terminal=True)
+            if data.get("reason") == "automatic":
+                self.append_notice(
+                    "compact",
+                    f"Automatic compaction failed: {data.get('message') or 'unknown error'}",
+                    payload=data,
+                )
         elif event_type == "status":
             self.status = str(data.get("text") or data.get("message") or self.status)
         elif event_type == "client_message":
@@ -338,6 +368,7 @@ class TuiState:
                 self._changed_tool_ids.add(tool.tool_call_id)
         elif event_type == "error":
             self._clear_pending_interactions(tool_status="failed")
+            self.compaction_active = False
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
@@ -423,6 +454,8 @@ class TuiState:
             self.status = "Approval required"
         elif self.pending_user_input_payload is not None:
             self.status = "Waiting for user"
+        elif self.compaction_active:
+            self.status = "Compacting"
         elif self.turn_active:
             self.status = "Running"
         else:

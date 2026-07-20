@@ -153,6 +153,8 @@ async def test_human_command_compacts_and_persists_immediately(
         config=None,
     )
     await engine.start_session()
+    runtime_events = []
+    engine.runtime_event_sink = runtime_events.append
     command_ctx = SimpleNamespace(turn_lock=asyncio.Lock(), engine=engine)
 
     result = await setup.commands["compact"].handler(command_ctx, "")
@@ -182,6 +184,11 @@ async def test_human_command_compacts_and_persists_immediately(
         "total_tokens": 34,
         "context_tokens": 30,
     }
+    assert [event["type"] for event in runtime_events] == [
+        "compaction_started",
+        "compaction_completed",
+    ]
+    assert runtime_events[-1]["data"]["usage"]["total_tokens"] == 34
     assert (
         f"{history_chars_before} to {history_chars_after} characters"
         in result.message

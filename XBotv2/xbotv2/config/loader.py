@@ -16,6 +16,7 @@ from xbotv2.config.models import (
     RuntimeConfig,
     UserContext,
 )
+from xbotv2.config.policy import merge_permission_config, merge_sandbox_config
 
 
 _ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
@@ -131,7 +132,17 @@ def load_runtime_config(
     merged: dict[str, Any] = {}
     for layer in layers:
         values = layer.model_dump(exclude_unset=True, exclude_none=True)
+        permissions = values.pop("permissions", None)
+        sandbox = values.pop("sandbox", None)
         merged = _merge(merged, values)
+        if permissions is not None:
+            merged["permissions"] = merge_permission_config(
+                merged.get("permissions"), permissions
+            )
+        if sandbox is not None:
+            merged["sandbox"] = merge_sandbox_config(
+                merged.get("sandbox"), sandbox
+            )
     config = RuntimeConfig.model_validate(merged)
     if layers[-1].hooks is not None:
         config.hooks = [

@@ -212,6 +212,9 @@ class SessionPolicyPatch(WireModel):
 class SessionPolicyResponse(WireModel):
     session_id: str = Field(min_length=1)
     permissions: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    effective_permissions: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     sandbox: dict[str, Any] = Field(default_factory=dict)
     effective_sandbox: dict[str, Any] = Field(default_factory=dict)
 
@@ -372,6 +375,9 @@ ServerEventType = Literal[
     "assistant_message",
     "assistant_message_delta",
     "client_message",
+    "compaction_completed",
+    "compaction_failed",
+    "compaction_started",
     "end",
     "error",
     "message_queued",
@@ -478,6 +484,23 @@ class ClientMessageData(WireModel):
     tool_call_id: str = Field(min_length=1)
 
 
+class CompactionStartedData(WireModel):
+    reason: Literal["manual", "automatic"]
+    messages_before: int = Field(ge=0)
+    history_chars_before: int = Field(ge=0)
+
+
+class CompactionCompletedData(WireModel):
+    reason: str = Field(min_length=1)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    usage: UsageData = Field(default_factory=_empty_usage)
+
+
+class CompactionFailedData(WireModel):
+    reason: Literal["manual", "automatic"]
+    message: str = Field(min_length=1)
+
+
 class MessageQueuedData(WireModel):
     message_id: str = Field(min_length=1)
     position: int = Field(ge=1)
@@ -561,6 +584,9 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "assistant_message": AssistantMessageData,
     "assistant_message_delta": AssistantMessageDeltaData,
     "client_message": ClientMessageData,
+    "compaction_completed": CompactionCompletedData,
+    "compaction_failed": CompactionFailedData,
+    "compaction_started": CompactionStartedData,
     "end": EndData,
     "error": ErrorEventData,
     "message_queued": MessageQueuedData,
@@ -635,6 +661,9 @@ __all__ = [
     "AgentInfo",
     "AgentListResponse",
     "ClientMessageData",
+    "CompactionCompletedData",
+    "CompactionFailedData",
+    "CompactionStartedData",
     "CloseResponse",
     "CommandInfo",
     "CommandListResponse",

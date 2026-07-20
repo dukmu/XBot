@@ -520,6 +520,9 @@ class XBotTextualApp(App[None]):
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
 
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is not None:
+            await stream.remove_children()
         self.state.transcript.clear()
         self.state.messages.clear()
         self.state.tools.clear()

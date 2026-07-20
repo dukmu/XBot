@@ -243,6 +243,7 @@ class Engine:
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
+        self.runtime_event_sink: Callable[[dict[str, Any]], None] | None = None
         self.enqueue_mailbox: (
             Callable[[str | dict[str, Any]], Awaitable[Any]] | None
         ) = None
@@ -455,6 +456,10 @@ class Engine:
         previous = self.client_event_sink
         self.client_event_sink = sink
         return previous
+
+    def emit_runtime_event(self, event: dict[str, Any]) -> None:
+        if self.runtime_event_sink is not None:
+            self.runtime_event_sink(event)
 
     def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
         return self.user_input_waiter.answer(request_id, answer=answer)
@@ -1398,6 +1403,14 @@ class Engine:
         await self.save_messages(
             history_operation=(f"compact:{compact_reason}", 0)
         )
+        self.emit_runtime_event({
+            "type": "compaction_completed",
+            "data": {
+                "reason": compact_reason,
+                "metrics": dict(short_circuit.get("compact_metrics") or {}),
+                "usage": dict(self.session_usage),
+            },
+        })
         return None
 
     # ------------------------------------------------------------------
@@ -1644,6 +1657,7 @@ class Engine:
             invoke_model=self._invoke_model,
             request_user_input=self._request_user_input,
             enqueue_mailbox=self.enqueue_mailbox,
+            emit=self.emit_runtime_event,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,

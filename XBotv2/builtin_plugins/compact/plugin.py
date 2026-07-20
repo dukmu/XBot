@@ -164,6 +164,14 @@ class CompactPlugin(PluginBase):
             len(messages),
             history_chars,
         )
+        ctx.emit({
+            "type": "compaction_started",
+            "data": {
+                "reason": reason,
+                "messages_before": len(messages),
+                "history_chars_before": history_chars,
+            },
+        })
         try:
             response = await ctx.invoke_model(
                 _summary_request(messages[:split], self._summary_max_chars)
@@ -174,8 +182,16 @@ class CompactPlugin(PluginBase):
             if not summary:
                 raise RuntimeError("Compaction model returned an empty summary")
         except asyncio.CancelledError:
+            ctx.emit({
+                "type": "compaction_failed",
+                "data": {"reason": reason, "message": "Compaction cancelled."},
+            })
             raise
-        except Exception:
+        except Exception as exc:
+            ctx.emit({
+                "type": "compaction_failed",
+                "data": {"reason": reason, "message": str(exc)},
+            })
             if manual:
                 raise
             logger.exception(
@@ -224,6 +240,7 @@ class CompactPlugin(PluginBase):
         return {
             "messages": compacted_messages,
             "compact_reason": reason,
+            "compact_metrics": metrics,
         }
 
     def diagnostics(self) -> dict[str, Any]:
