@@ -8,6 +8,8 @@ tool_results:
 plugins:
   agents:
     enabled: true
+  browser:
+    enabled: true
   compact:
     enabled: true
   goal:
@@ -31,12 +33,14 @@ permissions:
     - tool: stop_task
     - tool: (?:send_message|ask_user|request_permission)
     - tool: (?:search_text|find_files)
+    - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
     - tool: update_todos
     - tool: (?:filesystem_read|filesystem_stat|filesystem_list)
     - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
       paths: ${workspace}
     - tool: shell
   ask:
+    - tool: (?:browser_click|browser_fill|browser_press|browser_select)
     - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
   deny:
     - tool: .*
