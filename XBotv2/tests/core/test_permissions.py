@@ -155,6 +155,51 @@ class TestPermissionSystemBasics:
             "params": {"query": r"issues/.*"},
         }]
 
+    def test_sandbox_session_approval_persists_and_applies_path(self, tmp_path):
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        sandbox = SandboxPolicy(
+            {},
+            data_root=paths.data_dir,
+            workspace_root=workspace,
+        )
+        engine = SimpleNamespace(
+            workspace_root=workspace,
+            sandbox_policy=sandbox,
+        )
+
+        persist_permission_decision(
+            paths=paths,
+            session_id="sandbox-rule",
+            client_event={"data": {
+                "source": "sandbox",
+                "tool_call": {
+                    "id": "call-1",
+                    "name": "filesystem_write",
+                    "args": {"path": str(outside / "report.txt")},
+                },
+                "sandbox_path": str(outside),
+                "sandbox_access": "readwrite",
+            }},
+            decision="allow",
+            scope="session",
+            engine=engine,
+        )
+
+        policy = yaml.safe_load(
+            paths.session("sandbox-rule").config_file.read_text(encoding="utf-8")
+        )
+        assert policy["sandbox"] == {
+            "enabled": True,
+            "resources": [{"path": str(outside), "access": "readwrite"}],
+        }
+        assert sandbox.check_tool_access(
+            "filesystem_write", {"path": str(outside / "report.txt")}
+        ) == []
+
 
 @pytest.mark.asyncio
 async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):

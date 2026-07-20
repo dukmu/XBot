@@ -155,8 +155,10 @@ Shared configuration via `reasoning_effort` and `thinking_enabled`.
 `create_llm()` reads either dictionary or Pydantic provider configuration through
 the shared `_get_cfg()` compatibility boundary.
 
-`provider_messages()` converts XBot `Message` → provider format.
-Preserves `reasoning_content` for tool-call turns.
+Provider conversion preserves the complete native assistant response needed by
+ToolResult continuation. `reasoning_content` remains a display view; Anthropic
+content blocks and OpenAI-compatible assistant fields are replayed in their
+original protocol shape.
 
 ## Startup (`core/bootstrap.py`)
 

@@ -94,6 +94,11 @@ requests when absent. Anthropic Messages requires it, so Anthropic-compatible
 providers must set it explicitly. Missing environment variables and unknown
 provider names fail closed.
 
+`thinking_enabled` is an explicit capability of a provider/model combination.
+Verify it across a Tool call and the following response before enabling it;
+XBot neither promotes reasoning blocks to assistant content nor silently falls
+back to another thinking mode.
+
 ## Agent Definitions
 
 `data/.agents/*.md` and `<workspace>/.agents/*.md` define Agents. Workspace
