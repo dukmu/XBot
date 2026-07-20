@@ -37,11 +37,16 @@ the client is connected without polling. Starting a background task confirms
 only that it was accepted. After the completion notification, the Agent reads
 `list_tasks(task_id)` before using its output or reporting command success.
 
+Foreground Shell execution has no default time limit. It waits for process
+completion and is terminated when the current turn is cancelled. Use background
+mode when other Agent work should continue before the command finishes, not as
+a workaround for a fixed foreground timeout.
+
 `shell(background=true)` uses the same canonical Tool name, command arguments,
 Hooks, and permission rules as foreground shell execution. Background mode is
 not a permission alias or a second execution path around `shell` policy.
 
-`SystemConfig.tools` may narrow this registry after plugin initialization. The
+`RuntimeConfig.tools` may narrow this registry after plugin initialization. The
 shipped configuration keeps both client-interaction tools visible so an agent
 can send progress and ask for missing information without a custom tool list.
 
@@ -73,11 +78,11 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
-Tool results larger than `tool_result_max_inline_chars` (12,000 by default) are
+Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
 stored under the session's `state/artifacts/tool_results` directory before
-history persistence and SSE emission. `tool_result_preview_chars` controls the
+history persistence and SSE emission. `tool_results.preview_chars` controls the
 bounded beginning and ending preview (4,000 characters by default). Both are
-system-level settings in `data/config/system.yaml`, and the preview may not
+global settings in `data/config/config.yaml`, and the preview may not
 exceed the inline threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
@@ -96,8 +101,9 @@ general virtual filesystem. Policy updates preserve the mount, and cached-result
 metadata survives restoration.
 
 Provider-bound context uses a 48,000-character boundary for user messages and a
-12,000-character boundary for other message content, string values inside
-historical ToolCall arguments, and assistant reasoning content. Oversized values are stored under
+12,000-character boundary for assistant content, Tool results, and assistant
+reasoning content. Model-authored ToolCall arguments are passed through
+unchanged. Oversized values are stored under
 `session/artifacts/context/`; only a beginning/ending preview, digest, size, and
 session-relative `cache_path` are sent to the provider. This projection does
 not mutate persisted messages, so resume retains the exact original input. The

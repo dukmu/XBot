@@ -73,12 +73,14 @@ non-persisted Goal snapshot for that turn. ReAct iterations reuse that stable
 snapshot. Terminal and paused Goals remain available to the command and Tools,
 but are not injected into unrelated model calls.
 
-At `ON_TURN_END`, an active Goal places at most one wake-only `general` message
-in the Core mailbox; the objective remains authoritative in `PluginStore` and is
-not duplicated in the mailbox payload. Delivery clears the pending marker
-before the next turn. ESC pauses the Goal and schedules no successor. `/goal
-resume` activates it and schedules continuation again. Mailbox entries and
-turn snapshots are not restored by session resume.
+After a human or Goal-owned turn, `ON_TURN_END` places at most one wake-only
+`general` message in the Core mailbox while the Goal remains active. Unrelated
+runtime turns, including background-task and subagent notifications, do not
+drive the Goal state machine. The objective remains authoritative in
+`PluginStore` and is not duplicated in the mailbox payload. Delivery clears the
+pending marker before the next turn. ESC pauses the Goal and schedules no
+successor. `/goal resume` activates it and schedules continuation again.
+Mailbox entries and turn snapshots are not restored by session resume.
 
 Goal does not infer objectives from ordinary conversation and does not create
 TodoList items.

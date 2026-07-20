@@ -20,7 +20,7 @@ class TestProviderConfig:
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "test-key",
             "temperature": 0.7,
-            "max_tokens": 8192,
+            "max_output_tokens": 8192,
         }
         llm = create_llm(config)
         assert llm is not None
@@ -37,7 +37,7 @@ class TestProviderConfig:
             "base_url": "http://localhost:1234/v1",
             "api_key": "lm-studio",
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_output_tokens": 4096,
         }
         llm = create_llm(config)
         assert llm is not None
@@ -130,16 +130,17 @@ class TestProviderConfigLoader:
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
-default:
-  provider: deepseek
-  model: deepseek-chat
-  base_url: https://api.deepseek.com/v1
-  api_key: ${TEST_API_KEY}
-
-openai:
-  provider: openai
-  model: gpt-4o
-  api_key: sk-openai-xxx
+default: deepseek
+providers:
+  deepseek:
+    provider: deepseek
+    model: deepseek-chat
+    base_url: https://api.deepseek.com/v1
+    api_key: ${TEST_API_KEY}
+  openai:
+    provider: openai
+    model: gpt-4o
+    api_key: sk-openai-xxx
 """)
 
         # Load default → should get deepseek
@@ -167,6 +168,7 @@ providers:
     provider: anthropic
     model: MiniMax-M3
     api_key: test-key
+    max_output_tokens: 8192
     reasoning_effort: high
     thinking_enabled: true
 """)
@@ -186,18 +188,20 @@ providers:
         assert ProviderConfig().model_mode == ""
         assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
 
-    def test_provider_names_support_direct_mapping(self, tmp_path):
+    def test_provider_names(self, tmp_path):
         from xbotv2.config.loader import load_provider_names
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
-default:
-  provider: openai
-  model: test
-other:
-  provider: anthropic
-  model: other
+default: default
+providers:
+  default:
+    provider: openai
+    model: test
+  other:
+    provider: anthropic
+    model: other
 """)
 
         assert load_provider_names(RuntimePaths.from_data_dir(tmp_path)) == (
@@ -214,30 +218,33 @@ other:
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
-test:
-  provider: openai
-  model: gpt-4
-  api_key: ${MY_KEY}
+default: test
+providers:
+  test:
+    provider: openai
+    model: gpt-4
+    api_key: ${MY_KEY}
 """)
 
         c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
         assert c.api_key == "expanded-value"
 
-    def test_missing_env_var_becomes_empty(self, tmp_path):
-        """Unset env vars expand to empty string."""
+    def test_missing_env_var_is_rejected(self, tmp_path):
         from xbotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
-test:
-  provider: openai
-  model: gpt-4
-  api_key: ${NONEXISTENT_VAR}
+default: test
+providers:
+  test:
+    provider: openai
+    model: gpt-4
+    api_key: ${NONEXISTENT_VAR}
 """)
 
-        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
-        assert c.api_key == ""
+        with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
+            load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
 
     def test_unknown_provider_is_rejected(self, tmp_path):
         from xbotv2.config.loader import load_provider_config
@@ -245,9 +252,11 @@ test:
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
         (config_subdir / "providers.yaml").write_text("""
-default:
-  provider: openai
-  model: fallback-model
+default: default
+providers:
+  default:
+    provider: openai
+    model: fallback-model
 """)
 
         with pytest.raises(

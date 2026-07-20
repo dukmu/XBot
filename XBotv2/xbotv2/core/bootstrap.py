@@ -29,12 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from xbotv2.config.loader import load_provider_config, load_system_config, load_user_context
-from xbotv2.config.policy import (
-    load_session_policy,
-    merge_permission_config,
-    merge_sandbox_config,
-)
+from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.variables import RuntimeVariables
@@ -71,7 +66,13 @@ from xbotv2.core.builtin_tools.interaction import (
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_SUBAGENT_BLOCKED_PLUGINS = {"agents"}
+NON_INTERACTIVE_FORBIDDEN_TOOLS = frozenset({"ask_user", "request_permission"})
+SUBAGENT_FORBIDDEN_TOOLS = frozenset({
+    "task",
+    "list_agent_tasks",
+    "stop_agent_task",
+})
+SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
@@ -100,7 +101,7 @@ async def bootstrap(
     agent_definition: AgentDefinition | None = None,
     parent_permission_system: Any | None = None,
     parent_thread_id: str = "",
-    subagent_depth: int = 0,
+    is_subagent: bool = False,
     interactive: bool = True,
 ) -> Engine:
     """Bootstrap the complete XBotv2 runtime.
@@ -127,7 +128,7 @@ async def bootstrap(
     _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    startup_config = load_system_config(paths, workspace_root)
+    startup_config = load_runtime_config(paths, workspace_root, session_id)
     agent_config = startup_config.model_copy(deep=True)
     resolved_agent = agent_definition
     if resolved_agent is not None:
@@ -137,19 +138,9 @@ async def bootstrap(
     policy_base_config = agent_config.model_copy(deep=True)
     user_context = load_user_context(paths)
 
-    session_policy = load_session_policy(paths, session_id)
-    agent_config.permissions = merge_permission_config(
-        agent_config.permissions,
-        session_policy.get("permissions"),
-    )
-    agent_config.sandbox = merge_sandbox_config(
-        agent_config.sandbox,
-        session_policy.get("sandbox"),
-    )
-
     # Merge plugin configs from system config
     if agent_config.plugins:
-        _plugin_configs = {**_plugin_configs, **agent_config.plugins}
+        _plugin_configs = {**_plugin_configs, **agent_config.plugin_configs}
 
     # Ensure session state directory
     session_paths = paths.session(session_id)
@@ -195,15 +186,15 @@ async def bootstrap(
         HookStage.AFTER_TOOLS,
         make_tool_result_cache_hook(
             state_store,
-            max_inline_chars=agent_config.tool_result_max_inline_chars,
-            preview_chars=agent_config.tool_result_preview_chars,
+            max_inline_chars=agent_config.tool_results.max_inline_chars,
+            preview_chars=agent_config.tool_results.preview_chars,
         ),
     )
     _register_configured_hooks(agent_config, hook_manager)
 
     # 4. Register core base tools (always available)
     for tool, sandbox_mode in CORE_BASE_TOOLS:
-        if not interactive and tool.name in {"ask_user", "request_permission"}:
+        if not interactive and tool.name in NON_INTERACTIVE_FORBIDDEN_TOOLS:
             continue
         tool_registry.register(
             tool,
@@ -236,7 +227,7 @@ async def bootstrap(
     async def create_child_engine(
         definition: Any,
         child_thread_id: str,
-        child_depth: int,
+        background: bool,
     ) -> Engine:
         child = await bootstrap(
             paths=paths,
@@ -250,20 +241,23 @@ async def bootstrap(
             agent_definition=definition,
             parent_permission_system=permissions,
             parent_thread_id=thread_id,
-            subagent_depth=child_depth,
-            interactive=interactive,
+            is_subagent=True,
+            interactive=interactive and not background,
         )
-        if parent_engine is not None:
+        if parent_engine is not None and not background:
             child.set_client_event_sink(parent_engine.client_event_sink)
         return child
 
-    subagents = SubagentManager(
-        registry=agent_registry,
-        session_paths=session_paths,
-        parent_thread_id=thread_id,
-        engine_factory=create_child_engine,
-        depth=subagent_depth,
-        max_concurrency=agent_config.max_concurrent_subagents,
+    subagents = (
+        None
+        if is_subagent
+        else SubagentManager(
+            registry=agent_registry,
+            session_paths=session_paths,
+            parent_thread_id=thread_id,
+            engine_factory=create_child_engine,
+            max_concurrency=agent_config.max_concurrent_subagents,
+        )
     )
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
@@ -274,8 +268,8 @@ async def bootstrap(
     )
     plugin_loader: PluginLoader | None = None
     disabled_plugins = set(agent_config.disabled_plugins)
-    if subagent_depth > 0:
-        disabled_plugins.update(_SUBAGENT_BLOCKED_PLUGINS)
+    if is_subagent:
+        disabled_plugins.update(SUBAGENT_FORBIDDEN_PLUGINS)
 
     try:
         if resolved_plugin_dirs:
@@ -302,7 +296,7 @@ async def bootstrap(
             registered_agent = agent_registry.get(selected_agent)
             if resolved_agent is None:
                 if registered_agent is None or (
-                    registered_agent.mode == "subagent" and subagent_depth == 0
+                    registered_agent.mode == "subagent" and not is_subagent
                 ):
                     raise ValueError(f"Unknown primary agent: {selected_agent}")
                 resolved_agent = registered_agent
@@ -311,7 +305,7 @@ async def bootstrap(
                     f"Stored Agent {resolved_agent.name!r} does not match "
                     f"{selected_agent!r}"
                 )
-            elif resolved_agent.mode == "subagent" and subagent_depth == 0:
+            elif resolved_agent.mode == "subagent" and not is_subagent:
                 raise ValueError(f"Unknown primary agent: {selected_agent}")
             apply_agent_definition(agent_config, resolved_agent)
             policy_base_config = startup_config.model_copy(deep=True)
@@ -333,6 +327,13 @@ async def bootstrap(
         provider_config = load_provider_config(paths, provider_name)
         if resolved_agent is not None:
             apply_agent_provider(provider_config, resolved_agent)
+        agent_config.max_context_tokens = (
+            resolved_agent.context_window
+            if resolved_agent is not None
+            and resolved_agent.context_window is not None
+            else provider_config.max_context_tokens
+        )
+        policy_base_config.max_context_tokens = agent_config.max_context_tokens
         state_store.write_thread_metadata({
             "agent": resolved_agent.name if resolved_agent is not None else "",
             "agent_definition": (
@@ -382,6 +383,11 @@ async def bootstrap(
             apply_agent_tools(tool_registry, agent_config, resolved_agent)
         elif agent_config.tools:
             tool_registry.restrict(agent_config.tools)
+        if is_subagent:
+            for tool_name in SUBAGENT_FORBIDDEN_TOOLS:
+                entry = tool_registry.get(tool_name)
+                if entry is not None:
+                    tool_registry.unregister(entry.registered_name)
 
         # 9. Build engine
         engine = Engine(

@@ -8,18 +8,17 @@ import signal
 import subprocess
 import tempfile
 
-from xbotv2.api.tools import ToolResult
-from xbotv2.api.tools import Tool
+from xbotv2.api.tools import Tool, ToolResult
 
 async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -> ToolResult:
-    """Execute a short non-interactive shell command and wait for completion.
+    """Execute a non-interactive shell command and wait for completion.
 
-    Use this for inspection, tests, and commands that should finish within 30
-    seconds. Standard error is merged into standard output. A non-zero exit,
-    timeout, or sandbox failure returns a structured Tool error. Large output is
-    cached by the common Tool-result pipeline and remains available through its
-    session-relative artifact path. Use ``background=true`` for long-running
-    processes.
+    Standard error is merged into standard output. A non-zero exit or sandbox
+    failure returns a structured Tool error. Large output is cached by the
+    common Tool-result pipeline and remains available through its
+    session-relative artifact path. Use ``background=true`` only when useful
+    work can continue before the command finishes. Foreground execution has no
+    default time limit and remains cancellable by the current turn.
 
     Args:
         command: Complete shell command to execute.
@@ -30,11 +29,9 @@ async def execute_shell(command: str, cwd: str | None = None, *, sandbox=None) -
     try:
         return ToolResult.success(
             await run_shell_command(
-                command, cwd=cwd, sandbox=sandbox, timeout_seconds=30
+                command, cwd=cwd, sandbox=sandbox, timeout_seconds=0
             )
         )
-    except asyncio.TimeoutError:
-        return ToolResult.failure("command_timeout", "Command timed out after 30 seconds")
     except Exception as exc:
         return ToolResult.failure("command_failed", str(exc))
 
@@ -44,7 +41,7 @@ async def run_shell_command(
     *,
     cwd: str | None = None,
     sandbox=None,
-    timeout_seconds: float | None = 30,
+    timeout_seconds: float | None = 0,
 ) -> str:
     """Run a shell command with cancellation-safe process cleanup."""
     if sandbox is not None and sandbox.enabled:

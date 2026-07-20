@@ -9,7 +9,6 @@ from typing import Any
 
 from xbotv2.api.messages import Message
 from xbotv2.api.prompts import cached_content_prompt
-from xbotv2.api.tools import ToolCall
 
 MAX_INLINE_CHARS = 12_000
 MAX_USER_INLINE_CHARS = 48_000
@@ -59,19 +58,6 @@ def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
             kind=content_kind,
         )
     )
-    bounded_calls = [
-        ToolCall(
-            id=call.id,
-            name=call.name,
-            args=_bound_value(
-                call.args,
-                state_store,
-                limit,
-                kind="tool_argument",
-            ),
-        )
-        for call in message.tool_calls
-    ]
     bounded_kwargs = dict(message.additional_kwargs)
     reasoning = bounded_kwargs.get("reasoning_content")
     if isinstance(reasoning, str):
@@ -83,38 +69,14 @@ def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
         )
     if (
         bounded_content == content
-        and bounded_calls == message.tool_calls
         and bounded_kwargs == message.additional_kwargs
     ):
         return message
     return replace(
         message,
         content=bounded_content,
-        tool_calls=bounded_calls,
         additional_kwargs=bounded_kwargs,
     )
-
-
-def _bound_value(
-    value: Any,
-    state_store: Any,
-    limit: int,
-    *,
-    kind: str,
-) -> Any:
-    if isinstance(value, str):
-        return _externalize(value, state_store, limit, kind=kind)
-    if isinstance(value, dict):
-        return {
-            key: _bound_value(item, state_store, limit, kind=kind)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _bound_value(item, state_store, limit, kind=kind)
-            for item in value
-        ]
-    return value
 
 
 def _externalize(

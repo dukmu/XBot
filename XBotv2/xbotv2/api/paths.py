@@ -44,20 +44,12 @@ class RuntimePaths:
         return self.data_dir / "logs"
 
     @property
-    def system_config(self) -> Path:
-        return self.config_dir / "system.yaml"
+    def config_file(self) -> Path:
+        return self.config_dir / "config.yaml"
 
     @property
     def providers_config(self) -> Path:
         return self.config_dir / "providers.yaml"
-
-    @property
-    def permissions_config(self) -> Path:
-        return self.config_dir / "permissions.yaml"
-
-    @property
-    def sandbox_config(self) -> Path:
-        return self.config_dir / "sandbox.yaml"
 
     @property
     def user_config(self) -> Path:
@@ -87,8 +79,8 @@ class SessionPaths:
         return self.runtime.sessions_dir / self.session_id
 
     @property
-    def policy_file(self) -> Path:
-        return self.root / "policy.yaml"
+    def config_file(self) -> Path:
+        return self.root / "config.yaml"
 
     @property
     def threads_dir(self) -> Path:

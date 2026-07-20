@@ -234,7 +234,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     provider = AnthropicProvider.__new__(AnthropicProvider)
     provider.model = "model"
     provider.temperature = 0.2
-    provider.max_tokens = 100
+    provider.max_output_tokens = 100
     provider.reasoning_effort = "high"
     provider.thinking_enabled = True
     provider.bound_tools = []

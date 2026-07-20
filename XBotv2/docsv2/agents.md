@@ -30,7 +30,7 @@ subagent execution has a distinct thread ID within that session:
 
 ```text
 data/sessions/<session-id>/
-├── policy.yaml
+├── config.yaml
 ├── threads.jsonl
 └── threads/<thread-id>/
     ├── thread.yaml
@@ -113,9 +113,9 @@ background children are cancelled when the live session closes.
 
 A blocking child shares the parent turn's live interaction sink, so its
 `ask_user` and permission requests use the normal ordered C/S interaction flow.
-A background child may use that sink only while the originating turn remains
-connected; later interactive requests fail closed instead of waiting without a
-client owner.
+Background children are non-interactive: they do not inherit the parent turn's
+temporary sink, do not expose interaction tools, and permission decisions that
+still require a human fail closed.
 
 The shipped `Explorer` definition has `mode: all` and exposes only read, list,
 search, and `ask_user` tools. It can be selected as a primary Agent or delegated

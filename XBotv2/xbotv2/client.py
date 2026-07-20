@@ -252,6 +252,15 @@ class XBotClient:
             AgentSelectionRequest(name=name),
         )
 
+    async def reload_agents(
+        self, session_id: str, thread_id: str
+    ) -> AgentListResponse:
+        return await self._request(
+            "POST",
+            f"{_thread_path(session_id, thread_id)}/agents/reload",
+            AgentListResponse,
+        )
+
     async def select_provider(
         self, session_id: str, thread_id: str, name: str
     ) -> ProviderSelectionResponse:

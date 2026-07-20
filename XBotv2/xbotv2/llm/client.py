@@ -17,7 +17,7 @@ class OpenAICompatibleProvider:
     def __init__(
         self, *,
         model: str, api_key: str, base_url: str | None,
-        temperature: float, max_tokens: int,
+        temperature: float, max_output_tokens: int | None,
         reasoning_effort: str | None = None, thinking_enabled: bool = False,
     ):
         from openai import AsyncOpenAI
@@ -25,7 +25,7 @@ class OpenAICompatibleProvider:
         self.model_name = model
         self.model = model
         self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
         self.bound_tools: list[dict[str, Any]] = []
@@ -38,7 +38,7 @@ class OpenAICompatibleProvider:
         clone = self.__class__(
             model=self.model, api_key=self.client.api_key,
             base_url=str(self.client.base_url) if self.client.base_url else None,
-            temperature=self.temperature, max_tokens=self.max_tokens,
+            temperature=self.temperature, max_output_tokens=self.max_output_tokens,
             reasoning_effort=self.reasoning_effort, thinking_enabled=self.thinking_enabled,
         )
         clone.bound_tools = list(tools)
@@ -50,10 +50,11 @@ class OpenAICompatibleProvider:
             "messages": provider_messages(messages),
             "tools": self.bound_tools or None,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if self.max_output_tokens is not None:
+            api_kwargs["max_tokens"] = self.max_output_tokens
         if self.reasoning_effort:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
         if self.thinking_enabled:
@@ -147,7 +148,7 @@ class AnthropicProvider:
     def __init__(
         self, *,
         model: str, api_key: str, base_url: str | None,
-        temperature: float, max_tokens: int,
+        temperature: float, max_output_tokens: int,
         reasoning_effort: str | None = None, thinking_enabled: bool = False,
     ):
         from anthropic import AsyncAnthropic
@@ -155,7 +156,7 @@ class AnthropicProvider:
         self.model_name = model
         self.model = model
         self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
         self.bound_tools: list[dict[str, Any]] = []
@@ -168,7 +169,7 @@ class AnthropicProvider:
         clone = self.__class__(
             model=self.model, api_key=self.client.api_key,
             base_url=getattr(self.client, "base_url", None),
-            temperature=self.temperature, max_tokens=self.max_tokens,
+            temperature=self.temperature, max_output_tokens=self.max_output_tokens,
             reasoning_effort=self.reasoning_effort, thinking_enabled=self.thinking_enabled,
         )
         clone.bound_tools = [anthropic_tool_schema(tool) for tool in tools]
@@ -180,7 +181,7 @@ class AnthropicProvider:
             "model": self.model,
             "messages": request_messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self.max_output_tokens,
         }
         if system:
             api_kwargs["system"] = system
@@ -323,7 +324,7 @@ def create_llm(provider_config: Any) -> Any:
     base_url = _get_cfg(provider_config, "base_url")
     api_key = _get_cfg(provider_config, "api_key", "")
     temperature = _get_cfg(provider_config, "temperature", 0.7)
-    max_tokens = _get_cfg(provider_config, "max_tokens", 4096)
+    max_output_tokens = _get_cfg(provider_config, "max_output_tokens")
     reasoning_effort = _get_cfg(provider_config, "reasoning_effort")
     thinking_enabled = _get_cfg(provider_config, "thinking_enabled", False)
     api_key = expand_env(api_key) if api_key else ""
@@ -338,15 +339,17 @@ def create_llm(provider_config: Any) -> Any:
         logger.info("creating openai-compatible provider=%s model=%s", provider, model)
         return OpenAICompatibleProvider(
             model=model, api_key=api_key, base_url=base_url,
-            temperature=temperature, max_tokens=max_tokens,
+            temperature=temperature, max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort, thinking_enabled=thinking_enabled,
         )
     if provider in ("anthropic", "lmstudio"):
+        if max_output_tokens is None:
+            raise ValueError("Anthropic providers require max_output_tokens")
         require_api_key(provider, model, api_key)
         logger.info("creating anthropic provider=%s model=%s", provider, model)
         return AnthropicProvider(
             model=model, api_key=api_key, base_url=base_url,
-            temperature=temperature, max_tokens=max_tokens,
+            temperature=temperature, max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort, thinking_enabled=thinking_enabled,
         )
     raise ValueError(f"Unknown provider: {provider!r}")

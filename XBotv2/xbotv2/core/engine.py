@@ -192,7 +192,7 @@ class Engine:
         context_builder: Any,  # ContextBuilder
         sandbox_policy: Any,  # SandboxPolicy
         permission_system: Any,  # PermissionSystem
-        config: Any,  # SystemConfig
+        config: Any,  # RuntimeConfig
         workspace_root: str | None = None,
         max_iterations: int = 50,
         plugin_loader: Any | None = None,
@@ -243,6 +243,7 @@ class Engine:
         self.user_input_waiter = InteractionWaiter()
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
+        self.runtime_event_sink: Callable[[dict[str, Any]], None] | None = None
         self.enqueue_mailbox: (
             Callable[[str | dict[str, Any]], Awaitable[Any]] | None
         ) = None
@@ -266,24 +267,9 @@ class Engine:
 
     async def start_session(self) -> None:
         """Create a new session. Runs ON_SESSION_START hooks."""
-        self.session = SessionInfo(
-            session_id=self.state_store.session_id,
-            thread_id=self.state_store.thread_id,
-            workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
-        )
+        self.session = self._session_info()
         if self.state_store.has_existing_session():
-            self.messages = self.state_store.read_messages()
-            self._restore_usage()
-            self._persisted_messages = self._message_snapshot()
-            self._close_interrupted_tool_calls("session_restarted")
-            self.turn_count = max(
-                sum(1 for m in self.messages if m.role == "user"), 0
-            )
-            self.session.turn_count = self.turn_count
-            ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
-            await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
-            await self.save_messages()
+            await self._resume_from_store()
         else:
             self._restore_usage()
             ctx = self._make_hook_context(HookStage.ON_SESSION_START)
@@ -291,6 +277,18 @@ class Engine:
 
     async def resume_session(self) -> None:
         """Explicit resume: load persisted messages and run ON_SESSION_RESUME hooks."""
+        self.session = self._session_info()
+        await self._resume_from_store()
+
+    def _session_info(self) -> SessionInfo:
+        return SessionInfo(
+            session_id=self.state_store.session_id,
+            thread_id=self.state_store.thread_id,
+            workspace_root=self.workspace_root,
+            provider=str(getattr(self.config, "provider", "default")),
+        )
+
+    async def _resume_from_store(self) -> None:
         self.messages = self.state_store.read_messages()
         self._restore_usage()
         self._persisted_messages = self._message_snapshot()
@@ -298,13 +296,8 @@ class Engine:
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
         )
-        self.session = SessionInfo(
-            session_id=self.state_store.session_id,
-            thread_id=self.state_store.thread_id,
-            workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
-            turn_count=self.turn_count,
-        )
+        assert self.session is not None
+        self.session.turn_count = self.turn_count
         ctx = self._make_hook_context(HookStage.ON_SESSION_RESUME)
         await self.hook_manager.run(HookStage.ON_SESSION_RESUME, ctx, short_circuit=False)
         await self.save_messages()
@@ -378,7 +371,6 @@ class Engine:
                 "Context maintenance was rejected by a hook.",
             )
             raise RuntimeError(message)
-        await self.save_messages()
         return True
 
     async def _prepare_tool_calls(
@@ -455,6 +447,10 @@ class Engine:
         previous = self.client_event_sink
         self.client_event_sink = sink
         return previous
+
+    def emit_runtime_event(self, event: dict[str, Any]) -> None:
+        if self.runtime_event_sink is not None:
+            self.runtime_event_sink(event)
 
     def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
         return self.user_input_waiter.answer(request_id, answer=answer)
@@ -995,11 +991,7 @@ class Engine:
             "agent_role": getattr(self.config, "agent_role", ""),
             "user_name": getattr(self.user_context, "user_name", "User"),
             "user_id": getattr(self.user_context, "user_id", "default-user"),
-            "developer_instructions": getattr(
-                self.config,
-                "effective_instructions",
-                getattr(self.config, "instructions", ""),
-            ),
+            "developer_instructions": getattr(self.config, "instructions", ""),
             "instructions": getattr(self.config, "agent_instructions", ""),
             "memory": getattr(self.config, "memory", ""),
             "sandbox_summary": (
@@ -1402,6 +1394,14 @@ class Engine:
         await self.save_messages(
             history_operation=(f"compact:{compact_reason}", 0)
         )
+        self.emit_runtime_event({
+            "type": "compaction_completed",
+            "data": {
+                "reason": compact_reason,
+                "metrics": dict(short_circuit.get("compact_metrics") or {}),
+                "usage": dict(self.session_usage),
+            },
+        })
         return None
 
     # ------------------------------------------------------------------
@@ -1648,6 +1648,7 @@ class Engine:
             invoke_model=self._invoke_model,
             request_user_input=self._request_user_input,
             enqueue_mailbox=self.enqueue_mailbox,
+            emit=self.emit_runtime_event,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,

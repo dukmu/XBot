@@ -50,9 +50,8 @@ class TestBootstrapBasics:
     async def test_bootstrap_applies_system_tool_result_cache_limits(
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
-        (temp_data_dir / "config" / "system.yaml").write_text(
-            "tool_result_max_inline_chars: 2048\n"
-            "tool_result_preview_chars: 512\n",
+        (temp_data_dir / "config" / "config.yaml").write_text(
+            "tool_results:\n  max_inline_chars: 2048\n  preview_chars: 512\n",
             encoding="utf-8",
         )
         captured = {}
@@ -283,12 +282,12 @@ class NormalClosePlugin(PluginBase):
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
-    async def test_shipped_tool_filter_keeps_client_interaction_tools(
+    async def test_shipped_config_does_not_duplicate_tool_registry(
         self,
         temp_data_dir,
     ):
-        shipped = Path("XBotv2/data/config/system.yaml")
-        (temp_data_dir / "config" / "system.yaml").write_text(
+        shipped = Path("XBotv2/data/config/config.yaml")
+        (temp_data_dir / "config" / "config.yaml").write_text(
             shipped.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
@@ -306,12 +305,12 @@ class NormalClosePlugin(PluginBase):
             "list_tasks",
             "request_permission",
         } <= set(engine.tool_registry.names())
-        assert "filesystem" not in engine.config.tools
+        assert engine.config.tools is None
 
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
         """System tool selectors restrict tools passed to the model."""
-        system = temp_data_dir / "config" / "system.yaml"
+        system = temp_data_dir / "config" / "config.yaml"
         system.write_text("tools:\n  - filesystem_read\n", encoding="utf-8")
 
         engine = await bootstrap(
@@ -328,7 +327,7 @@ class NormalClosePlugin(PluginBase):
     @pytest.mark.asyncio
     async def test_bootstrap_unknown_tool_filter_silently_ignored(self, temp_data_dir):
         """Unknown tool selectors are silently ignored (no tools enabled)."""
-        system = temp_data_dir / "config" / "system.yaml"
+        system = temp_data_dir / "config" / "config.yaml"
         system.write_text("tools:\n  - no_such_tool\n", encoding="utf-8")
 
         engine = await bootstrap(
@@ -369,7 +368,7 @@ plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
         )
         monkeypatch.syspath_prepend(str(plugins_root))
 
-        system = temp_data_dir / "config" / "system.yaml"
+        system = temp_data_dir / "config" / "config.yaml"
         system.write_text("tools:\n  - plugin_tool\n", encoding="utf-8")
 
         engine = await bootstrap(
@@ -399,7 +398,7 @@ async def before_user_message(ctx):
         )
         monkeypatch.syspath_prepend(str(hook_dir))
 
-        system = temp_data_dir / "config" / "system.yaml"
+        system = temp_data_dir / "config" / "config.yaml"
         system.write_text(
             """
 hooks:
@@ -425,7 +424,7 @@ hooks:
     @pytest.mark.asyncio
     async def test_bootstrap_invalid_system_hook_raises(self, temp_data_dir):
         """Broken system hook declarations fail loudly."""
-        system = temp_data_dir / "config" / "system.yaml"
+        system = temp_data_dir / "config" / "config.yaml"
         system.write_text(
             """
 hooks:
@@ -455,7 +454,7 @@ hooks:
             "    return {'user_input': ctx.user_input + ' from workspace'}\n",
             encoding="utf-8",
         )
-        (config_dir / "hooks.yaml").write_text(
+        (config_dir / "config.yaml").write_text(
             "hooks:\n"
             "  - stage: before_user_message_accept\n"
             "    target: hooks/rewrite.py:rewrite\n",
@@ -643,7 +642,7 @@ class ConfiguredPlugin(PluginBase):
     async def test_bootstrap_separates_configured_and_agent_instructions(
         self, temp_data_dir, temp_workspace
     ):
-        (temp_data_dir / "config" / "system.yaml").write_text(
+        (temp_data_dir / "config" / "config.yaml").write_text(
             "instructions: Configured rule.\n",
             encoding="utf-8",
         )
@@ -673,7 +672,7 @@ class ConfiguredPlugin(PluginBase):
     ):
         (temp_workspace / "AGENTS.md").write_text("must not appear", encoding="utf-8")
         (temp_workspace / ".xbot").mkdir()
-        (temp_workspace / ".xbot" / "plugins.yaml").write_text(
+        (temp_workspace / ".xbot" / "config.yaml").write_text(
             "plugins:\n  workspace_instructions:\n    enabled: false\n",
             encoding="utf-8",
         )
@@ -694,8 +693,8 @@ class ConfiguredPlugin(PluginBase):
     @pytest.mark.asyncio
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
-        (temp_data_dir / "config" / "permissions.yaml").write_text(
-            "allow:\n  - tool: shell\n",
+        (temp_data_dir / "config" / "config.yaml").write_text(
+            "permissions:\n  allow:\n    - tool: shell\n",
             encoding="utf-8",
         )
         llm = MockLLM(responses=[
@@ -746,12 +745,9 @@ class ConfiguredPlugin(PluginBase):
     @pytest.mark.asyncio
     async def test_system_json_policy_files_are_ignored(self, temp_data_dir):
         """System policy has YAML sources of truth."""
-        (temp_data_dir / "config" / "permissions.yaml").write_text(
-            "allow:\n  - tool: filesystem_read\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "config" / "sandbox.yaml").write_text(
-            "enabled: true\n",
+        (temp_data_dir / "config" / "config.yaml").write_text(
+            "permissions:\n  allow:\n    - tool: filesystem_read\n"
+            "sandbox:\n  enabled: true\n",
             encoding="utf-8",
         )
         (temp_data_dir / "config" / "permissions.json").write_text(
@@ -778,12 +774,13 @@ class ConfiguredPlugin(PluginBase):
         temp_data_dir,
         temp_workspace,
     ):
-        (temp_data_dir / "config" / "permissions.yaml").write_text(
-            "allow:\n"
-            "  - tool: filesystem_write\n"
-            "    paths: ${workspace}\n"
-            "ask:\n"
-            "  - tool: filesystem_write\n",
+        (temp_data_dir / "config" / "config.yaml").write_text(
+            "permissions:\n"
+            "  allow:\n"
+            "    - tool: filesystem_write\n"
+            "      paths: ${workspace}\n"
+            "  ask:\n"
+            "    - tool: filesystem_write\n",
             encoding="utf-8",
         )
         engine = await bootstrap(
@@ -840,7 +837,7 @@ class TestBootstrapNoPlugins:
 class TestMemoryLoading:
     @pytest.mark.asyncio
     async def test_memory_md_loaded_from_data_memory(self, temp_data_dir):
-        """MEMORY.md in data/memory/ is loaded into SystemConfig.memory."""
+        """MEMORY.md in data/memory/ is loaded into RuntimeConfig.memory."""
         (temp_data_dir / "memory").mkdir()
         (temp_data_dir / "memory" / "MEMORY.md").write_text("# Custom Memory\n\nImportant facts.\n")
 

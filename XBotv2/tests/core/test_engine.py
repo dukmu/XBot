@@ -2015,6 +2015,8 @@ class TestEngineState:
         hook_manager.register(HookStage.ON_SESSION_START, record_call)
         hook_manager.register(HookStage.ON_SESSION_CLOSE, record_call)
         plugin_loader = AsyncMock()
+        background_tasks = AsyncMock()
+        subagents = AsyncMock()
 
         engine = Engine(
             llm=llm,
@@ -2026,6 +2028,8 @@ class TestEngineState:
             permission_system=PermissionSystem(default_decision="allow"),
             config=None,
             plugin_loader=plugin_loader,
+            background_tasks=background_tasks,
+            subagents=subagents,
         )
         await engine.start_session()
         await engine.close_session()
@@ -2033,6 +2037,8 @@ class TestEngineState:
         assert "on_session_start" in calls
         assert "on_session_close" in calls
         plugin_loader.unload_all.assert_awaited_once()
+        background_tasks.close.assert_awaited_once()
+        subagents.close.assert_awaited_once()
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio

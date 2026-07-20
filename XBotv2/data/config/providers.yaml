@@ -7,7 +7,7 @@ providers:
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     temperature: 0.7
-    max_tokens: 8192
+    max_context_tokens: 1048576
     reasoning_effort: high        # or max
     thinking_enabled: true
 
@@ -17,7 +17,8 @@ providers:
     base_url: https://api.minimaxi.com/anthropic
     api_key_env: MINIMAX_API_TOKEN
     temperature: 0.2
-    max_tokens: 32768
+    max_context_tokens: 204800
+    max_output_tokens: 32768
     reasoning_effort: high        # or max
     thinking_enabled: true
 
@@ -27,7 +28,7 @@ providers:
     base_url: http://localhost:1234/v1
     api_key: lm-studio
     temperature: 0.2
-    max_tokens: 32768
+    max_context_tokens: 32768
     reasoning_effort: high        # or max
     thinking_enabled: true
 
@@ -37,7 +38,8 @@ providers:
     base_url: http://10.106.21.164:1234/
     api_key: lm-studio
     temperature: 0.2
-    max_tokens: 128000
+    max_context_tokens: 128000
+    max_output_tokens: 32768
     reasoning_effort: high        # or max
     thinking_enabled: true
 
@@ -47,11 +49,12 @@ providers:
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
     temperature: 0.7
-    max_tokens: 4096
+    max_context_tokens: 128000
 
   anthropic:
     provider: anthropic
     model: claude-sonnet-4-20250514
     api_key_env: ANTHROPIC_API_KEY
     temperature: 0.7
-    max_tokens: 4096
+    max_context_tokens: 200000
+    max_output_tokens: 64000

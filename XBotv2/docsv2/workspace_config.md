@@ -1,30 +1,118 @@
-# Workspace Startup Configuration
+# Configuration
 
-XBot reads `.xbot/*.yaml` configuration once while bootstrapping a thread. It
-does not watch those files or reread them between turns. Start a new runtime to
-apply configuration changes. `AGENTS.md` is the exception described below.
+XBot resolves one validated runtime configuration from these UTF-8 YAML files:
+
+1. `data/config/config.yaml` - global defaults
+2. `data/sessions/<session-id>/config.yaml` - session choices and approvals
+3. `<workspace>/.xbot/config.yaml` - workspace policy
+
+Later layers have higher priority. Mappings merge recursively; scalar values and
+lists replace the lower-layer value. An explicit empty list therefore clears a
+lower-layer list. Unknown fields and invalid values stop startup instead of
+being silently ignored.
+
+```yaml
+provider: default
+max_concurrent_subagents: 4
+
+tool_results:
+  max_inline_chars: 12000
+  preview_chars: 4000
+
+plugins:
+  agents:
+    enabled: true
+    config: {}
+  sample:
+    enabled: false
+
+plugin_paths:
+  - extensions
+
+hooks:
+  - stage: before_tool_call
+    target: hooks/check_tool.py:check_tool
+
+permissions:
+  allow:
+    - tool: filesystem_(?:read|write)
+      paths: ${workspace}
+  ask:
+    - tool: .*
+  deny: []
+
+sandbox:
+  enabled: true
+  network: false
+  workspace_read: allow
+  workspace_write: allow
+  external_read: ask
+  external_write: deny
+  resources: []
+```
+
+Workspace `plugin_paths` are relative to the workspace and may not escape it.
+Workspace hook script paths are relative to `.xbot`. Configuration is loaded
+when a thread starts; session policy changes are reloaded explicitly by the
+policy API.
+
+## Providers
+
+Provider definitions live only in `data/config/providers.yaml`. Runtime config
+selects one by name; it does not duplicate model limits.
+
+```yaml
+default: minimax
+providers:
+  minimax:
+    provider: anthropic
+    model: MiniMax-M3
+    base_url: https://example.invalid/anthropic
+    api_key_env: MINIMAX_API_KEY
+    max_context_tokens: 200000
+    max_output_tokens: 32768 # required by the Anthropic Messages protocol
+```
+
+`max_context_tokens` is required model capacity used for context accounting and
+compaction. `max_output_tokens` is optional and is omitted from OpenAI-compatible
+requests when absent. Anthropic Messages requires it, so Anthropic-compatible
+providers must set it explicitly. Missing environment variables and unknown
+provider names fail closed.
+
+## Agent Definitions
+
+`data/.agents/*.md` and `<workspace>/.agents/*.md` define Agents. Workspace
+definitions with the same filename override built-ins. Agent frontmatter may
+select a provider/model and override generation or context limits; these values
+do not belong in runtime `config.yaml`.
+
+Agent definitions are immutable during a turn. Run `/agent reload` while the
+thread is idle to reload the Agent plugin and reapply the active definition.
+`/agent list` and `/agent use <name>` operate on the loaded definitions.
+
+`<workspace>/AGENTS.md` is different: the `workspace_instructions` plugin reads
+it before every context build, so edits apply to the next model request without
+an Agent reload.
 
 ## Runtime Variables
 
-Each thread receives one immutable runtime-variable mapping. Paths are absolute
-and cannot be changed by plugins or configuration after bootstrap.
+Each thread receives one immutable runtime-variable mapping:
 
 | Variable | Value |
 |---|---|
 | `${workspace}` | Active workspace root |
 | `${data_dir}` | Runtime data root |
-| `${config_dir}` | Built-in configuration directory under `data_dir` |
+| `${config_dir}` | Global configuration directory |
 | `${custom_config_dir}` | Workspace `.xbot` directory |
 | `${session_dir}` | Shared session directory |
 | `${thread_dir}` | Current thread directory |
 | `${state_dir}` | Current thread state directory |
-| `${plugin_states}` | Current thread plugin-state directory |
-| `${artifacts}` | Current thread artifact directory |
+| `${plugin_states}` | Plugin-state directory |
+| `${artifacts}` | Thread artifact directory |
 | `${tool_results}` | Cached Tool-result directory |
 
-Permission `paths` expressions and sandbox resource paths reject unknown
-variables. Markdown prompt sources expand a variable only when it is the sole
-content of an explicit `var` fenced block:
+Permission paths and sandbox resources expand these variables. Markdown prompt
+sources expand a variable only when it is the sole content of a `var` fence:
 
 ````markdown
 ```var
@@ -32,73 +120,5 @@ ${workspace}
 ```
 ````
 
-The fence is replaced by the variable value. References outside `var` blocks
-remain literal Markdown, including known variables and shell expressions such
-as `${HOME}`. An unknown or malformed explicit `var` block fails loading.
-
-## AGENTS.md
-
-The built-in `workspace_instructions` plugin reads `<workspace>/AGENTS.md`
-before every model context build. Edits and deletion therefore apply to the
-next model request, including the next Tool loop within the current turn. The
-content is a temporary source-tagged `system_instructions` component; it is not
-added to message history or the mailbox. Disable the behavior through
-`.xbot/plugins.yaml` when a workspace does not want project instructions.
-Agent definitions are separate files under `.agents/<name>.md`; `AGENTS.md`
-frontmatter is not interpreted as runtime configuration.
-
-## .xbot/policy.yaml
-
-```yaml
-permissions:
-  allow:
-    - tool: filesystem_(?:write|edit|patch|move|copy|delete|mkdir)
-      paths: ${workspace}
-sandbox:
-  network: false
-```
-
-`paths: ${workspace}` is a special permission variable, not a regular
-expression. It matches a filesystem Tool call only when all of its declared
-path arguments,
-including `source` and `destination`, resolve inside the active workspace.
-Other `paths` values are regular expressions matched against each resolved
-absolute path. The workspace variable can be embedded in a regex, for example
-`paths: '${workspace}/generated/.*'`.
-
-Workspace rules overlay the global permission and sandbox baseline. Mutable
-session approvals remain in `data/sessions/<session-id>/policy.yaml` and take
-precedence at runtime.
-
-## .xbot/plugins.yaml
-
-```yaml
-paths:
-  - extensions
-plugins:
-  workspace_instructions:
-    enabled: true
-  sample:
-    config:
-      strict: true
-```
-
-Paths are relative to the workspace and may not escape it. A workspace entry
-replaces the global config for the same plugin. `enabled: false` prevents a
-discovered plugin from loading.
-
-## .xbot/hooks.yaml
-
-```yaml
-hooks:
-  - stage: before_tool_call
-    target: hooks/check_tool.py:check_tool
-```
-
-When the file exists, its hook list replaces the global hook list. A script path
-is relative to `.xbot` and cannot escape that directory. Normal
-`package.module:handler` targets remain available for installed modules.
-Targets are trusted Python code imported once at startup. Invalid stages,
-imports, paths, or attributes fail bootstrap rather than silently omitting
-policy behavior. Standalone hooks are Core startup configuration; they are not
-plugins and do not participate in plugin discovery.
+References outside such a fence remain literal Markdown. Unknown variables fail
+loading.

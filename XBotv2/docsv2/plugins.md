@@ -338,15 +338,16 @@ the XBot log, and form/URL elicitation uses the existing live
 on disconnect. Non-text sampling and sampling tool execution return protocol
 errors instead of silently losing content.
 
-**Configuration** (in `system.yaml` plugins section):
+**Configuration** (in a runtime `config.yaml` plugin entry):
 ```yaml
 plugins:
   mcp:
-    servers:
-      github:
-        type: local
-        command: ["npx", "-y", "@modelcontextprotocol/server-github"]
-        enabled: true
+    config:
+      servers:
+        github:
+          type: local
+          command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+          enabled: true
 ```
 
 ### TokenManagerPlugin (`builtin_plugins/token_manager/`)

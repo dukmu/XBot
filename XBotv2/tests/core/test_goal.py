@@ -172,6 +172,29 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
 
 
 @pytest.mark.asyncio
+async def test_runtime_notification_does_not_drive_active_goal(state_store):
+    plugin = make_plugin(state_store)
+    await plugin.create_goal("iterate until complete")
+    queued = []
+
+    await plugin._on_turn_end(HookContext(
+        stage=HookStage.ON_TURN_END,
+        session=SimpleNamespace(),
+        stop_reason="completed",
+        enqueue_mailbox=queued.append,
+        mailbox_message=SimpleNamespace(
+            kind="general",
+            message={
+                "source": "background_task",
+                "event": "background_task_finished",
+            },
+        ),
+    ))
+
+    assert queued == []
+
+
+@pytest.mark.asyncio
 async def test_goal_exposes_compact_status_slot(state_store):
     plugin = make_plugin(state_store)
 

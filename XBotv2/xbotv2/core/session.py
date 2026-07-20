@@ -47,6 +47,7 @@ class SessionRuntime:
             self.paths.session(self.session_id).thread(self.thread_id).mailbox_log
         )
         self.engine.enqueue_mailbox = self.enqueue_general
+        self.engine.runtime_event_sink = self._publish_runtime_event
         background_tasks = getattr(self.engine, "background_tasks", None)
         if background_tasks is not None:
             background_tasks.on_update = self._publish_task_update
@@ -60,8 +61,13 @@ class SessionRuntime:
         if self.session_events is not None:
             await self.session_events.put({"type": "task_updated", "data": task})
 
+    def _publish_runtime_event(self, event: dict[str, Any]) -> None:
+        if self.session_events is not None:
+            self.session_events.put_nowait(event)
+
     async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
         await self.enqueue_general({
+            "source": "background_task",
             "event": "background_task_finished",
             "content": (
                 f"Background task {task['task_id']} {task['status']}: "
@@ -202,12 +208,6 @@ class SessionRuntime:
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
-        background_tasks = getattr(self.engine, "background_tasks", None)
-        if background_tasks is not None:
-            await background_tasks.close()
-        subagents = getattr(self.engine, "subagents", None)
-        if subagents is not None:
-            await subagents.close()
         await self.mailbox.close(reason)
         worker = self.mailbox_worker
         if worker is not None and not worker.done() and worker is not asyncio.current_task():

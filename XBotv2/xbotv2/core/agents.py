@@ -58,7 +58,7 @@ def apply_agent_provider(provider: Any, definition: AgentDefinition) -> None:
     if definition.temperature is not None:
         provider.temperature = definition.temperature
     if definition.max_output_tokens is not None:
-        provider.max_tokens = definition.max_output_tokens
+        provider.max_output_tokens = definition.max_output_tokens
 
 
 def apply_agent_tools(registry: Any, config: Any, definition: AgentDefinition) -> None:

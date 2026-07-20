@@ -1,37 +1,46 @@
-"""Configuration data models for XBotv2."""
+"""Validated configuration values and overlays."""
 
 from __future__ import annotations
 
-from typing import Any
-
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from xbotv2.api.hooks import HookStage
 
 
-class UserContext(BaseModel):
-    """User identity from user.yaml."""
-
-    user_id: str = Field(default="default-user")
-    user_name: str = Field(default="User")
-    platform: str = Field(default="terminal")
-    session_type: str = Field(default="interactive")
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class ProviderConfig(BaseModel):
-    """LLM provider configuration from providers.yaml."""
+class UserContext(StrictModel):
+    user_id: str = "default-user"
+    user_name: str = "User"
+    platform: str = "terminal"
+    session_type: str = "interactive"
 
-    provider: str = Field(default="openai")
-    model: str = Field(default="gpt-4")
-    base_url: str | None = Field(default=None)
-    api_key: str | None = Field(default=None)
-    temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=4096)
-    reasoning_effort: str | None = Field(default=None)
-    thinking_enabled: bool = Field(default=False)
+
+class ProviderConfig(StrictModel):
+    provider: str = "openai"
+    model: str = "gpt-4"
+    base_url: str | None = None
+    api_key: str | None = None
+    temperature: float = 0.7
+    max_context_tokens: int = Field(default=32_000, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    reasoning_effort: str | None = None
+    thinking_enabled: bool = False
     mock_responses: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_anthropic_output_limit(self) -> "ProviderConfig":
+        if (
+            self.provider in {"anthropic", "lmstudio"}
+            and self.max_output_tokens is None
+        ):
+            raise ValueError("Anthropic providers require max_output_tokens")
+        return self
 
     @property
     def model_mode(self) -> str:
@@ -40,13 +49,9 @@ class ProviderConfig(BaseModel):
         )
 
 
-class HookConfig(BaseModel):
-    """A system-configured hook."""
-
-    model_config = ConfigDict(extra="forbid")
-
+class HookConfig(StrictModel):
     stage: str
-    target: str  # "module:function"
+    target: str
     base_dir: Path | None = Field(default=None, exclude=True)
 
     @field_validator("stage")
@@ -64,55 +69,115 @@ class HookConfig(BaseModel):
         return value
 
 
-class WorkspacePluginConfig(BaseModel):
-    """One plugin entry in workspace .xbot/plugins.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-
+class PluginConfig(StrictModel):
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class SystemConfig(BaseModel):
-    """Runtime configuration after startup-only workspace overlays."""
+class PermissionRuleConfig(StrictModel):
+    tool: str = ".*"
+    params: dict[str, str] = Field(default_factory=dict)
+    paths: str | None = None
 
-    agent_name: str = Field(default="XBotv2")
-    agent_role: str = Field(default="General-purpose agent")
-    system_prompt: str = Field(default="")
-    provider: str = Field(default="default")
-    max_context_tokens: int = Field(default=32000)
-    tool_result_max_inline_chars: int = Field(default=12000, ge=1)
-    tool_result_preview_chars: int = Field(default=4000, ge=0)
-    max_concurrent_subagents: int = Field(default=4, ge=1)
-    tools: list[str] = Field(default_factory=list)
-    hooks: list[HookConfig] = Field(default_factory=list)
-    plugins: dict[str, dict] = Field(default_factory=dict)
-    plugin_paths: list[str] = Field(default_factory=list)
-    disabled_plugins: list[str] = Field(default_factory=list)
-    instructions: str = Field(default="")
-    agent_instructions: str = Field(default="")
-    memory: str = Field(default="")
-    sandbox: dict = Field(default_factory=lambda: {
-        "enabled": True,
-        "external_read": "ask",
-        "external_write": "deny",
-        "workspace_read": "allow",
-        "workspace_write": "allow",
-    })
-    permissions: dict = Field(default_factory=lambda: {
-        "ask": [{"tool": ".*"}],
-    })
+
+class PermissionConfig(StrictModel):
+    deny: list[PermissionRuleConfig] = Field(default_factory=list)
+    allow: list[PermissionRuleConfig] = Field(default_factory=list)
+    ask: list[PermissionRuleConfig] = Field(default_factory=list)
+
+
+class SandboxResourceConfig(StrictModel):
+    path: str
+    access: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "readonly"
+
+
+class SandboxConfig(StrictModel):
+    enabled: bool = True
+    network: bool = True
+    external_read: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "ask"
+    external_write: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "deny"
+    workspace_read: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "allow"
+    workspace_write: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "allow"
+    resources: list[SandboxResourceConfig] = Field(default_factory=list)
+
+
+class ToolResultConfig(StrictModel):
+    max_inline_chars: int = Field(default=12_000, ge=1)
+    preview_chars: int = Field(default=4_000, ge=0)
 
     @model_validator(mode="after")
-    def _validate_tool_result_limits(self) -> "SystemConfig":
-        if self.tool_result_preview_chars > self.tool_result_max_inline_chars:
-            raise ValueError(
-                "tool_result_preview_chars cannot exceed "
-                "tool_result_max_inline_chars"
-            )
+    def _validate_preview(self) -> "ToolResultConfig":
+        if self.preview_chars > self.max_inline_chars:
+            raise ValueError("preview_chars cannot exceed max_inline_chars")
         return self
 
+
+class ConfigOverlay(StrictModel):
+    """One partial global, session, or workspace configuration layer."""
+
+    provider: str | None = None
+    max_concurrent_subagents: int | None = Field(default=None, ge=1)
+    tool_results: ToolResultConfig | None = None
+    tools: list[str] | None = None
+    hooks: list[HookConfig] | None = None
+    plugins: dict[str, PluginConfig] | None = None
+    plugin_paths: list[str] | None = None
+    permissions: PermissionConfig | None = None
+    sandbox: SandboxConfig | None = None
+    instructions: str | None = None
+
+
+class RuntimeConfig(StrictModel):
+    """Complete runtime configuration resolved from all configuration layers."""
+
+    provider: str = "default"
+    max_concurrent_subagents: int = Field(default=4, ge=1)
+    tool_results: ToolResultConfig = Field(default_factory=ToolResultConfig)
+    tools: list[str] | None = None
+    hooks: list[HookConfig] = Field(default_factory=list)
+    plugins: dict[str, PluginConfig] = Field(default_factory=dict)
+    plugin_paths: list[str] = Field(default_factory=list)
+    permissions: PermissionConfig = Field(default_factory=lambda: PermissionConfig(
+        ask=[PermissionRuleConfig(tool=".*")]
+    ))
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    instructions: str = ""
+    memory: str = ""
+    agent_name: str = Field(default="XBotv2", exclude=True)
+    agent_role: str = Field(default="", exclude=True)
+    agent_instructions: str = ""
+    max_context_tokens: int = Field(default=32_000, ge=1, exclude=True)
+
     @property
-    def effective_instructions(self) -> str:
-        parts = [self.system_prompt, self.instructions]
-        return "\n\n".join(part for part in parts if part.strip())
+    def plugin_configs(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: entry.config
+            for name, entry in self.plugins.items()
+            if entry.enabled
+        }
+
+    @property
+    def disabled_plugins(self) -> list[str]:
+        return [name for name, entry in self.plugins.items() if not entry.enabled]
+
+def config_dict(value: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    return dict(value)
+
+
+__all__ = [
+    "ConfigOverlay",
+    "HookConfig",
+    "PermissionConfig",
+    "PermissionRuleConfig",
+    "PluginConfig",
+    "ProviderConfig",
+    "SandboxConfig",
+    "RuntimeConfig",
+    "ToolResultConfig",
+    "UserContext",
+    "config_dict",
+]

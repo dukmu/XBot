@@ -78,11 +78,13 @@ success. Fork also rejects pending or running background tasks.
 
 Session policy patches update exact top-level Tool decisions and sparse sandbox
 keys. They preserve parameter-specific permission rules and sandbox resource
-approvals. The server persists the patch to `policy.yaml` and reloads every
+approvals. The server persists the patch to the session `config.yaml` and reloads every
 active thread without replacing parent/child permission intersections.
 The policy response keeps session-local overrides in `permissions` and
-`sandbox`; `effective_sandbox` reports the merged live state used by execution.
-The TUI `/sandbox status` command displays the effective value. `/sandbox set
+`sandbox`; `effective_permissions` and `effective_sandbox` report the merged
+global, session, and workspace policy. Agent definitions and inherited
+subagent restrictions may narrow those base permissions. The TUI `/permission
+status` and `/sandbox status` commands display the effective values. `/sandbox set
 enabled false` disables isolation between turns, but Tool permissions continue
 to apply.
 
@@ -96,6 +98,9 @@ call typed SDK methods. Only plugin-owned commands use the compatibility route.
 `POST .../messages` returns the events for one submitted turn as SSE.
 `GET .../events` is the single-consumer stream for server-initiated turns and
 task notifications. Both streams carry validated `ServerEvent` envelopes.
+Compaction remains a foreground, session-busy operation. Its lifecycle is
+reported through `compaction_started`, `compaction_completed`, and
+`compaction_failed`; completion carries metrics and updated session usage.
 
 Generated clients may need a small transport adapter for SSE because OpenAPI
 describes the endpoint but not incremental event iteration. Clients should use
