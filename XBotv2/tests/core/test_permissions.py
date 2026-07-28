@@ -181,12 +181,14 @@ class TestPermissionSystemBasics:
                     "name": "filesystem_write",
                     "args": {"path": str(outside / "report.txt")},
                 },
-                "sandbox_path": str(outside),
-                "sandbox_access": "readwrite",
             }},
             decision="allow",
             scope="session",
             engine=engine,
+            sandbox_rules=[{
+                "path": str(outside),
+                "access": "readwrite",
+            }],
         )
 
         policy = yaml.safe_load(

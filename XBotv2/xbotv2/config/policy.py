@@ -103,6 +103,7 @@ def persist_permission_decision(
     decision: str,
     scope: PermissionScope,
     engine: Any | None = None,
+    sandbox_rules: list[dict[str, str]] | None = None,
 ) -> None:
     """Persist a live approval/denial when scope requests it.
 
@@ -128,23 +129,21 @@ def persist_permission_decision(
                 engine=engine,
             )
         return
+    if source == "sandbox":
+        _persist_sandbox_rules(
+            paths=paths,
+            session_id=session_id,
+            decision=decision,
+            scope=scope,
+            engine=engine,
+            sandbox_rules=sandbox_rules,
+        )
+        return
+
     raw_tool_call = data.get("tool_call")
     if not isinstance(raw_tool_call, dict):
         return
     tool_call = ToolCall.from_dict(raw_tool_call)
-
-    if source == "sandbox":
-        _persist_sandbox_rule(
-            paths=paths,
-            session_id=session_id,
-            tool_call=tool_call,
-            decision=decision,
-            scope=scope,
-            engine=engine,
-            sandbox_path=data.get("sandbox_path"),
-            sandbox_access=data.get("sandbox_access"),
-        )
-        return
 
     rule = _permission_rule_for_tool_call(tool_call)
     if not rule:
@@ -203,41 +202,41 @@ def _requested_permission_rule(value: Any) -> dict[str, Any]:
     return rule
 
 
-def _persist_sandbox_rule(
+def _persist_sandbox_rules(
     *,
     paths: RuntimePaths,
     session_id: str,
-    tool_call: ToolCall,
     decision: str,
     scope: PermissionScope,
     engine: Any | None,
-    sandbox_path: Any = None,
-    sandbox_access: Any = None,
+    sandbox_rules: list[dict[str, str]] | None,
 ) -> None:
-    workspace_root = getattr(engine, "workspace_root", paths.data_dir)
-    resolved_paths = (
-        [str(Path(sandbox_path).resolve())]
-        if isinstance(sandbox_path, str) and sandbox_path
-        else _tool_call_paths(tool_call, Path(workspace_root))
-    )
-    if not resolved_paths:
+    if not sandbox_rules:
         return
     path = paths.session(session_id).config_file
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
     resources = sandbox.setdefault("resources", [])
-    access = (
-        str(sandbox_access)
-        if decision == "allow" and sandbox_access in {"readonly", "readwrite"}
-        else "readwrite" if decision == "allow" else "deny"
-    )
-    for resolved in resolved_paths:
-        rule = {"path": resolved, "access": access}
+    for item in sandbox_rules:
+        path_value = item.get("path")
+        if not path_value:
+            continue
+        resolved_path = str(Path(path_value).resolve())
+        access = (
+            str(item.get("access"))
+            if decision == "allow"
+            and item.get("access") in {"readonly", "readwrite"}
+            else "readwrite" if decision == "allow" else "deny"
+        )
+        rule = {"path": resolved_path, "access": access}
         if rule not in resources:
             resources.insert(0, rule)
-        if engine is not None and getattr(engine, "sandbox_policy", None) is not None:
-            engine.sandbox_policy.add_rule(resolved, access)
+        if (
+            engine is not None
+            and getattr(engine, "sandbox_policy", None) is not None
+        ):
+            engine.sandbox_policy.add_rule(resolved_path, access)
     _write_yaml(path, doc)
 
 
@@ -266,22 +265,6 @@ def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
     if params:
         rule["params"] = params
     return rule
-
-
-def _tool_call_paths(tool_call: ToolCall, workspace_root: Path) -> list[str]:
-    path_keys = {
-        "path", "file_path", "source", "destination", "target", "dest",
-        "directory", "dir",
-    }
-    paths: list[str] = []
-    for key in path_keys:
-        value = tool_call.args.get(key)
-        if not isinstance(value, str):
-            continue
-        path = Path(value)
-        resolved = path.resolve() if path.is_absolute() else (workspace_root / path).resolve()
-        paths.append(str(resolved))
-    return paths
 
 
 def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:

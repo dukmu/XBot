@@ -75,8 +75,13 @@ class SandboxPolicy:
     def backend_available(self) -> bool:
         return backend_available()
 
-    def add_rule(self, path: str, access: PathAccess) -> None:
-        self._rules.insert(0, SandboxResourceRule(path=path, access=access))
+    def add_rule(self, path: str, access: PathAccess) -> SandboxResourceRule:
+        rule = SandboxResourceRule(path=path, access=access)
+        self._rules.insert(0, rule)
+        return rule
+
+    def remove_rule(self, rule: SandboxResourceRule) -> None:
+        self._rules = [item for item in self._rules if item is not rule]
 
     def replace_config(self, config: dict[str, Any]) -> None:
         """Replace policy state without invalidating runtime references."""

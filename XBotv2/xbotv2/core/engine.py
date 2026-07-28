@@ -1609,12 +1609,15 @@ class Engine:
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
+        sandbox_rules: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         return await self._handle_client_interaction(
             client_event, self.permission_waiter, ("decision", "scope"),
             timeout_seconds=timeout_seconds,
             on_sink_result=lambda result: self.record_permission_decision(
-                client_event, result
+                client_event,
+                result,
+                sandbox_rules=sandbox_rules,
             ),
         )
 
@@ -1622,6 +1625,8 @@ class Engine:
         self,
         client_event: dict[str, Any],
         result: dict[str, Any],
+        *,
+        sandbox_rules: list[dict[str, str]] | None = None,
     ) -> None:
         decision = str(result.get("decision") or "")
         if decision not in {"allow", "deny"}:
@@ -1651,6 +1656,7 @@ class Engine:
                 decision=str(result.get("decision") or ""),
                 scope="session",
                 engine=self,
+                sandbox_rules=sandbox_rules,
             )
         except Exception:
             logger.exception("permission persistence failed")
