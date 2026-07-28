@@ -130,6 +130,20 @@ def test_user_input_event_preserves_structured_options() -> None:
     ]
 
 
+def test_runtime_client_message_does_not_require_a_tool_call() -> None:
+    event = server_event(
+        type="client_message",
+        data={
+            "message": "Retrying model request.",
+            "level": "warning",
+            "source": "runtime",
+            "tool_call_id": "",
+        },
+    )
+
+    assert event.data["tool_call_id"] == ""
+
+
 def test_encoder_rejects_line_breaks_in_event_type() -> None:
     event = server_event(type="message\ninjected", sequence=1)
 
@@ -249,7 +263,7 @@ def test_server_event_rejects_invalid_turn_and_assistant_payloads(
     [
         (
             "client_message",
-            {"message": "notice", "level": "info", "source": "send_message"},
+            {"message": "notice", "level": "info", "source": ""},
         ),
         (
             "permission_denied",
