@@ -16,7 +16,7 @@ from xbotv2.api.paths import RuntimePaths
 
 
 _COMMAND_ALIASES = {"server": "serve"}
-_COMMANDS = {"serve", "server", "tui", "web", "once", "terminal"}
+_COMMANDS = {"serve", "server", "tui", "web", "once", "terminal", "acp"}
 _WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
 # $HOME/.local/state/xbotv2 is the default state dir on Linux
 # on Windows, it will be %LOCALAPPDATA%\xbotv2\state
@@ -143,6 +143,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "once", parents=[common], help="run one prompt and exit"
     )
     once.add_argument("prompt", help="prompt to run")
+
+    acp = commands.add_parser(
+        "acp", parents=[common], help="run the Agent Client Protocol adapter"
+    )
+    acp.set_defaults(command="acp")
     return parser
 
 
@@ -206,6 +211,15 @@ def main(argv: list[str] | None = None):
         asyncio.run(_terminal_loop(args))
     elif args.command == "once":
         asyncio.run(_run_once(args))
+    elif args.command == "acp":
+        from xbotv2.acp import run_acp
+
+        asyncio.run(run_acp(
+            data_dir=args.data_dir,
+            provider_name=args.provider,
+            no_plugins=args.no_plugins,
+            selected_agent=args.agent,
+        ))
     else:
         parser.print_help()
 

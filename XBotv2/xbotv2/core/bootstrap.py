@@ -141,7 +141,7 @@ async def bootstrap(
 
     # Merge plugin configs from system config
     if agent_config.plugins:
-        _plugin_configs = {**_plugin_configs, **agent_config.plugin_configs}
+        _plugin_configs = {**agent_config.plugin_configs, **_plugin_configs}
 
     # Ensure session state directory
     session_paths = paths.session(session_id)
