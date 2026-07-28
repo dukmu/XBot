@@ -484,7 +484,7 @@ class ClientMessageData(WireModel):
     message: str
     level: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
+    tool_call_id: str = ""
 
 
 class CompactionStartedData(WireModel):
