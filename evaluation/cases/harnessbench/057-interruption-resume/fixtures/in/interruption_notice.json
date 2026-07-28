@@ -1,0 +1,4 @@
+{
+  "interrupt_after_id": "C-103",
+  "message": "Simulated runner interruption after the third case. Persist recoverable state and stop round 1."
+}

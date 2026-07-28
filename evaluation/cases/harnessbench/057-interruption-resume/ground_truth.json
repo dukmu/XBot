@@ -1,0 +1,11 @@
+{
+  "completed_after_round1": ["C-101", "C-102", "C-103"],
+  "completed_final": ["C-101", "C-102", "C-103", "C-104", "C-105"],
+  "risk_scores": {"C-101": 15, "C-102": 8, "C-103": 16, "C-104": 15, "C-105": 8},
+  "escalations": ["C-101", "C-103", "C-104"],
+  "monitor_ids": ["C-102", "C-105"],
+  "aggregate_risk_score": 62,
+  "applied_patch_ids": ["P-1", "P-2"],
+  "ignored_patch_ids": ["P-2", "P-3"],
+  "audit_terms": ["preserved", "P-1", "P-2", "duplicate", "C-999", "idempotent"]
+}

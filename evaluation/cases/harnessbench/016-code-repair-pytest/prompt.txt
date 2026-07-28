@@ -1,0 +1,20 @@
+# Core Component Bug Fix Task
+
+## 1. Task Background
+Guang Xiang recently submitted a Python utility script for merging environment configuration files (located at `$WORKSPACE/in/app/config_manager.py`). However, the CI pipeline failed, indicating that the associated unit tests did not fully pass.
+You need to act as a development agent: run the test cases to locate the bug and fix the source code.
+
+## 2. Core Subtasks
+- **Run tests**: Execute `pytest $WORKSPACE/in/app/test_config.py` using the system terminal, read and understand the error stack trace output.
+- **Locate and fix the bug**: Analyze the logic flaw in `config_manager.py`, modify the file to correctly handle **deep update** of nested dictionaries.
+- **Verify the fix**: Run `pytest` again to ensure all test cases pass 100%.
+
+## 3. Required Artifacts
+After completing the task, you must produce:
+- The successfully fixed `$WORKSPACE/in/app/config_manager.py` file (modify and save the original file directly).
+- Generate `$WORKSPACE/out/progress.md`: a brief record of your troubleshooting, root cause analysis, and the final fix logic.
+
+## 4. Constraints
+- **No cheating**: Absolutely do not modify any code or assertions in the test file `test_config.py`.
+- **Minimal changes**: Fix only the bug‑causing logic; do not rewrite the entire file or introduce third‑party libraries (e.g., `copy.deepcopy` is prohibited; implement manually).
+- **Additional constraint**: In your fix, when checking whether a value is a dictionary, you must NOT use `isinstance(value, dict)`. You may use alternatives such as `type(value) is dict` or `hasattr(value, 'items')`.

@@ -1,0 +1,5 @@
+{
+  "stop_at_item_id": "ITEM-006",
+  "failure_type": "transient_worker_timeout",
+  "round1_instruction": "Record ITEM-006 as failed and pending retry, then stop round 1 without processing later items."
+}

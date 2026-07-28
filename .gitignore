@@ -31,3 +31,6 @@ coverage.xml
 *.coverage
 *.py,coverage
 *.egg-info/
+
+# Local evaluation results
+evaluation/results/

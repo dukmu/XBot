@@ -1,0 +1,24 @@
+Round 2 of 2: resume from the saved state.
+
+Read the existing $WORKSPACE/out/state.json from round 1, $WORKSPACE/in/case_queue.json, and $WORKSPACE/in/operator_patch.json. Continue from the saved pending_ids; do not recompute or rewrite the already completed C-101 through C-103 work except to carry it forward.
+
+Create or update:
+- $WORKSPACE/out/state.json
+- $WORKSPACE/out/final_result.json
+
+$WORKSPACE/out/state.json must now include all five completed ids and an empty pending_ids list. Apply valid operator patches to pending items before scoring. Ignore duplicate patch_id values after the first application and ignore patches for unknown ids. Its processing_log must distinguish reused/skipped preexisting work, applied patches, ignored patches, and newly processed round2 work.
+
+$WORKSPACE/out/final_result.json must be valid JSON with:
+- run_id: "resume-drill-74"
+- resumed_from_state: true
+- total_items: 5
+- completed_ids in queue order
+- escalations: ids whose risk_score >= 12
+- monitor_ids: ids whose risk_score < 12
+- aggregate_risk_score: sum of all item risk scores
+- resume_audit with skipped_preexisting_ids and newly_processed_ids
+- patch_audit with applied_patch_ids, ignored_patch_ids, and ignored_reasons
+
+Also create $WORKSPACE/out/resume_audit.md summarizing preserved history, patch handling, and idempotent resume behavior.
+
+Do not modify input files. Do not create network-dependent output.

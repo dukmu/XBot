@@ -1,0 +1,22 @@
+Round 1 of 2: start the interrupted case review.
+
+Input files are under $WORKSPACE/in:
+- case_queue.json lists all review items in their required order.
+- interruption_notice.json tells you where the simulated interruption happens.
+
+Create $WORKSPACE/out/state.json only. Do not create $WORKSPACE/out/final_result.json in this round.
+
+Process exactly the first three queue items, C-101 through C-103. For each processed item, compute:
+- risk_score = impact * likelihood
+- action = "escalate" when risk_score >= 12, otherwise "monitor"
+
+$WORKSPACE/out/state.json must be valid JSON with:
+- schema_version: 1
+- run_id: "resume-drill-74"
+- completed_ids: ["C-101", "C-102", "C-103"]
+- pending_ids for the remaining queue items in order
+- per_item_results for the three completed items
+- processing_log with one entry per completed item; each entry must include id, step: "round1", and source_file: "case_queue.json"
+- interrupted_after_id: "C-103"
+
+Do not modify input files.

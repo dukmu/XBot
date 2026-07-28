@@ -1,0 +1,2 @@
+request_id=BG-204
+purpose=verify session-owned background shell completion

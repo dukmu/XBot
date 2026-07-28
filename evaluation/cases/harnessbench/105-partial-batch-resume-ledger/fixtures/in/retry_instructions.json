@@ -1,0 +1,10 @@
+{
+  "retryable_ids": ["ITEM-006"],
+  "non_retryable_rejections": [
+    {
+      "id": "ITEM-008",
+      "reason": "missing required documents after retry window"
+    }
+  ],
+  "continue_pending_ids": ["ITEM-007", "ITEM-009", "ITEM-010"]
+}

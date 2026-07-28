@@ -1,0 +1,20 @@
+task_id: "105-partial-batch-resume-ledger"
+title: "Resume a Partially Failed Batch Without Reprocessing"
+class: "Long-running Autonomy & State Adaptation"
+prompt_files:
+  - "prompt_round1.txt"
+  - "prompt_round2.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+difficulty: "hard"
+tags:
+  - "long-running-autonomy"
+  - "multi-round"
+  - "resume"
+  - "batch-processing"
+  - "idempotency"
+  - "state-management"
+  - "audit"
+  - "deterministic"

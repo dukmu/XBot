@@ -1,0 +1,10 @@
+The workspace is `$WORKSPACE`.
+
+Run `python3 in/build_report.py` as a background shell task. Do not replace it
+with a foreground command. While it runs, read `in/request.txt`. Wait for the
+background completion notification, inspect the completed task with
+`list_tasks`, and then write `out/run_report.md`.
+
+The report must state the request id, the background task id, and whether the
+task completed successfully. Do not report success before inspecting the
+terminal task state. Do not modify files under `in/`.

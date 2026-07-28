@@ -1,0 +1,25 @@
+Round 2 of 2: resume the partially failed batch.
+
+Read:
+- $WORKSPACE/out/state.json
+- $WORKSPACE/out/partial_results.json
+- $WORKSPACE/in/batch_items.json
+- $WORKSPACE/in/processing_rules.md
+- $WORKSPACE/in/retry_instructions.json
+- $WORKSPACE/in/idempotency_policy.md
+
+Create:
+- $WORKSPACE/out/final_results.json
+- $WORKSPACE/out/retry_ledger.csv
+- $WORKSPACE/out/resume_report.md
+- update $WORKSPACE/out/state.json
+
+Requirements:
+- Resume from state. Do not reprocess ITEM-001 through ITEM-005.
+- Retry ITEM-006 exactly once and classify it with the processing rules.
+- Process ITEM-007, ITEM-009, and ITEM-010 as new pending items.
+- Reject ITEM-008 according to retry_instructions.json and record the rejection reason.
+- retry_ledger.csv must distinguish skipped_preexisting, retried, processed_new, and rejected rows.
+- final_results.json must include completed_ids, rejected_ids, aggregate_priority_score, per_item_results, and resume_audit.
+- attempt_counts for ITEM-001 through ITEM-005 must remain 1.
+- Do not modify input files. Do not use network access.
