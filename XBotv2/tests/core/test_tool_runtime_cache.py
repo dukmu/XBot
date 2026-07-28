@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from xbotv2.core.builtin_tools.filesystem import (
+    filesystem_copy,
     filesystem_find,
     filesystem_list,
     filesystem_read,
@@ -20,6 +21,7 @@ from xbotv2.core.context import ContextBuilder
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
 from xbotv2.api.messages import Message
+from xbotv2.protocol.models import PermissionRequestData
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -383,16 +385,27 @@ async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
     assert results[0].status == "success"
     assert results[0].content == "approved\n"
     assert events[0]["data"]["source"] == "sandbox"
-    assert events[0]["data"]["sandbox_path"] == str(external.resolve())
-    assert events[0]["data"]["sandbox_access"] == "readonly"
+    assert "sandbox_path" not in events[0]["data"]
+    assert "sandbox_access" not in events[0]["data"]
+    PermissionRequestData.model_validate(events[0]["data"])
+
+    await execute_tools(
+        [ToolCall("c2", "filesystem_read", {"path": str(external)})],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+    assert len(events) == 2
 
 
 @pytest.mark.asyncio
-async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
+async def test_sandbox_copy_checks_both_paths_with_one_approval(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    external = tmp_path / "external.txt"
-    external.write_text("before\n", encoding="utf-8")
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("copy me\n", encoding="utf-8")
     sandbox = SandboxPolicy(
         config={"external_read": "ask", "external_write": "ask"},
         workspace_root=workspace,
@@ -400,7 +413,7 @@ async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
     if not sandbox.backend_available:
         pytest.skip("bubblewrap is not installed")
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_copy, sandbox_mode="sandboxed")
     events = []
 
     async def approve(event, **_kwargs):
@@ -410,8 +423,11 @@ async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
     results = await execute_tools(
         [ToolCall(
             "c1",
-            "filesystem_write",
-            {"path": str(external), "content": "after\n"},
+            "filesystem_copy",
+            {
+                "source": str(source),
+                "destination": str(destination),
+            },
         )],
         registry,
         sandbox_policy=sandbox,
@@ -420,8 +436,10 @@ async def test_sandbox_path_approval_supports_atomic_external_write(tmp_path):
     )
 
     assert results[0].status == "success"
-    assert external.read_text(encoding="utf-8") == "after\n"
-    assert events[0]["data"]["sandbox_path"] == str(external)
+    assert destination.read_text(encoding="utf-8") == "copy me\n"
+    assert len(events) == 1
+    assert str(source) in events[0]["data"]["reason"]
+    assert str(destination) in events[0]["data"]["reason"]
 
 
 @pytest.mark.asyncio
