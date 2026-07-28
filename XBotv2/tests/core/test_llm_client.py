@@ -4,13 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from xbotv2.llm.client import (
+from xbotv2.llm.anthropic import (
     AnthropicProvider,
-    OpenAICompatibleProvider,
-    _anthropic_usage_values,
     anthropic_request_messages,
-    provider_messages,
+    normalize_anthropic_usage,
 )
+from xbotv2.llm.openai import OpenAICompatibleProvider, openai_messages
 from xbotv2.api.messages import Message
 from xbotv2.api.tools import ToolCall
 from xbotv2.core.internal_messages import structure_tool_message
@@ -23,14 +22,14 @@ def test_generic_openai_messages_do_not_invent_reasoning_extensions():
         tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
         additional_kwargs={"reasoning_content": "private reasoning"},
     )
-    out = provider_messages([msg])
+    out = openai_messages([msg])
     assert "reasoning_content" not in out[0]
     assert out[0]["tool_calls"][0]["function"]["name"] == "shell"
     assert out[0]["content"] == ""
 
 
-def test_provider_messages_moves_all_system_content_before_history():
-    out = provider_messages([
+def test_openai_messages_move_all_system_content_before_history():
+    out = openai_messages([
         Message(role="system", content="base"),
         Message(role="user", content="hello"),
         Message(role="system", content="goal"),
@@ -76,7 +75,7 @@ def test_plain_tool_content_stays_in_the_native_tool_role():
     )
     structure_tool_message(message, "sample")
 
-    openai = provider_messages([message])
+    openai = openai_messages([message])
     _system, anthropic = anthropic_request_messages([message])
 
     assert openai == [{
@@ -141,7 +140,7 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
 
 
 def test_anthropic_usage_values_preserve_cache_context_tokens():
-    assert _anthropic_usage_values(
+    assert normalize_anthropic_usage(
         input_tokens=100,
         output_tokens=20,
         cache_read_input_tokens=700,
@@ -150,6 +149,7 @@ def test_anthropic_usage_values_preserve_cache_context_tokens():
         "input_tokens": 100,
         "output_tokens": 20,
         "total_tokens": 120,
+        "requests": 1,
         "context_tokens": 850,
         "cache_read_input_tokens": 700,
         "cache_creation_input_tokens": 50,
@@ -271,6 +271,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
         "input_tokens": 10,
         "output_tokens": 3,
         "total_tokens": 13,
+        "requests": 1,
         "context_tokens": 30,
         "cache_read_input_tokens": 20,
     }
@@ -401,6 +402,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         "input_tokens": 12,
         "output_tokens": 3,
         "total_tokens": 15,
+        "requests": 1,
         "context_tokens": 12,
         "cache_read_input_tokens": 8,
     }
@@ -412,7 +414,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         additional_kwargs=final.additional_kwargs,
         response_metadata=final.response_metadata,
     )
-    replay = provider_messages([replay_message], model="model")
+    replay = openai_messages([replay_message], model="model")
     assert replay == [final.additional_kwargs["openai_message"]]
-    switched = provider_messages([replay_message], model="another-model")
+    switched = openai_messages([replay_message], model="another-model")
     assert "reasoning_content" not in switched[0]

@@ -67,7 +67,9 @@ Thread status and history remain queryable after its runtime closes.
   human status displays. It appears on open/thread responses and turn-finished
   events. The Goal plugin exposes its current state as the `goal` slot.
 - `OpenSessionResponse.usage` restores cumulative session token totals and the
-  latest provider-reported `context_tokens`. Live `usage` events are per-model-
+  latest main-Agent provider-reported `context_tokens`. Auxiliary model calls
+  contribute to cumulative session usage without replacing it. Live `usage`
+  events are per-model-
   call deltas; clients add them to the restored totals.
   Core persists these totals independently in `state/usage.yaml`, so compact,
   clear, and undo do not erase token accounting.
@@ -258,7 +260,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `permission_response_recorded` | `{request_id, status, decision, scope, answer, pending_interactions}` |
 | `user_input_required` | `{request_id, source, tool_call_id, question, options, timeout_seconds, resume_supported}` |
 | `user_input_recorded` | `{request_id, status, decision, scope, answer, pending_interactions}` |
-| `usage` | `{input_tokens, output_tokens, total_tokens, requests, context_tokens}` |
+| `usage` | `{input_tokens, output_tokens, total_tokens, requests, context_tokens, cache_read_input_tokens, cache_creation_input_tokens, prompt_cache_write_tokens}` |
 | `error` | `{code, message, details?, retryable?, stage?}` |
 | `end` | `{status}` |
 

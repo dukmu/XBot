@@ -103,12 +103,20 @@ analysis, but are never requeued on resume.
 
 ### LLM Provider (`xbotv2/llm/`)
 
+- `BaseProvider`: common Provider configuration, immutable Tool binding, and
+  normalized streaming contract.
 - `OpenAICompatibleProvider`: streaming (`stream=True`) with `reasoning_effort` and
-  `thinking_enabled` config. Yields per-token deltas including reasoning content.
-- `AnthropicProvider`: same interface for Anthropic models.
+  `thinking_enabled` config. Owns OpenAI message, Tool call, and usage conversion.
+- `AnthropicProvider`: owns Anthropic message blocks, Tool schemas, streaming
+  events, and usage conversion behind the same interface.
+- `client.py`: Provider configuration factory only.
 - `MockLLM`: deterministic test provider, supports chunk streaming with
   `additional_kwargs`.
 - `Message` dataclass (`api/messages.py`): XBot-owned, persisted to `messages.jsonl`.
+
+Core accumulates normalized usage across a session and decides whether a call
+updates the active context reading. Persistence stores Provider-neutral
+messages; neither layer interprets native Provider payloads.
 
 ### Context Builder (`xbotv2/core/context.py`)
 

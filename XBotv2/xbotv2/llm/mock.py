@@ -6,15 +6,20 @@ from typing import Any, AsyncIterator
 
 from xbotv2.api.messages import ModelChunk, ModelResponse
 from xbotv2.api.tools import ToolCall, ToolCallDelta
+from xbotv2.llm.base import BaseProvider
 
 
-class MockLLM:
+class MockLLM(BaseProvider):
     """Deterministic provider with the same public test helpers as the old mock."""
 
     def __init__(self, responses: list[dict[str, Any]] | None = None, **kwargs):
+        super().__init__(
+            model="mock",
+            temperature=0,
+            max_output_tokens=None,
+        )
         self.responses = responses or []
         self.call_count = 0
-        self.bound_tools: list[Any] = []
         self.call_history: list[dict[str, Any]] = []
         self._mock_call_history = self.call_history
 

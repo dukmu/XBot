@@ -12,17 +12,24 @@ owns history replacement and persistence.
   session is idle. During an active turn, the command waits for the first idle
   boundary and then runs without requiring another model turn; it never
   interrupts an in-flight model or Tool stream.
-- Automatic compaction uses the latest provider-reported effective context
-  tokens for the current history. It triggers at `trigger_ratio` of
-  `max_context_tokens` after reserving `output_reservation` tokens. The
-  independent `trigger_chars` threshold also protects providers that omit or
-  under-report usage.
+- Automatic compaction runs after the complete provider context has been built,
+  oversized content has been externalized, and the visible Tool set is known.
+  The latest provider-reported context size calibrates the current estimate, so
+  the unchanged system prefix and Tool schemas are not repeatedly guessed.
+- The trigger is the smaller of `trigger_ratio * max_context_tokens` and
+  `max_context_tokens - output_reservation`. When the plugin setting omits
+  `output_reservation`, the active provider's configured `max_output_tokens` is
+  used; providers without an output cap rely on the ratio.
 - The split normally preserves recent human-user boundaries. A long Goal
   iteration with no human input uses assistant boundaries while preserving
   the configured number of recent assistant/tool iterations.
 - Automatic compaction may run again in the same long Goal turn after the
   compacted history grows past a threshold again.
-- The auxiliary model receives no tools and must return summary text only.
+- The auxiliary model receives no tools and must return summary text only. Its
+  request starts with the same stable system context as a normal model request,
+  allowing provider prefix caches to be reused. The summary instruction retains
+  requirements, decisions, feedback, verified results, current state, remaining
+  work, and known unknowns while distinguishing evidence from plans.
 - The summary becomes a system history message. The Engine runs the existing
   `PRE_COMPACT` and `POST_COMPACT` Hooks and appends a `history_checkpoint`
   record. Earlier raw records remain available, while resume starts replay at
@@ -32,31 +39,30 @@ owns history replacement and persistence.
 - A cancelled summary propagates cancellation. A failed manual request reports
   the error; failed automatic compaction logs the failure and continues the turn
   with the original history.
-- Each completed compaction logs model-visible history characters before and
-  after replacement, summary characters, removed message count, and the
-  provider-reported input/output/total tokens from the summary call. `/compact`
-  returns the same metrics, and plugin diagnostics retain the latest set for
-  runtime inspection. These auxiliary-call tokens also remain part of session
-  usage because they are real provider usage.
+- Each completed compaction logs estimated context tokens before and after,
+  estimate source, threshold, history characters, summary characters, removed
+  message count, and provider usage from the summary call. Auxiliary calls
+  remain part of cumulative session usage, but do not replace the latest
+  main-Agent `context_tokens`.
 
-Provider context usage and the character threshold are independent signals
-because cumulative token usage measures cost, not current context size. The
-character count includes message content and tool-call names and arguments,
-including the persisted summary envelope; it makes no tokenizer-accuracy claim.
+`context_tokens` means the input size of the latest main-Agent provider request.
+Session input/output/total fields are cumulative. Character counts are
+diagnostic only and never trigger compaction.
 
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `automatic` | `true` | Enable threshold-triggered compaction. |
-| `trigger_chars` | `80000` | Independent history-size safety threshold. |
-| `output_reservation` | `4096` | Context tokens reserved for model output. |
-| `trigger_ratio` | `0.8` | Fraction of the remaining input budget that triggers compaction. |
+| `output_reservation` | provider output cap | Optional override for context tokens reserved for model output. |
+| `trigger_ratio` | `0.8` | Fraction of the full context window that triggers compaction. |
 | `keep_recent_turns` | `4` | Recent input turns or Goal iterations preserved verbatim. |
 | `summary_max_chars` | `8000` | Maximum persisted summary length. |
 
 Configuration is validated before plugin import. Schema defaults remain
 documentation; `CompactPlugin.on_load()` owns the runtime defaults.
+The former `trigger_chars` setting was removed because a fixed character count
+cannot represent 32K, 200K, and 1M provider windows consistently.
 
 ## Boundaries
 
@@ -72,3 +78,5 @@ preapproves that Tool request at `BEFORE_TOOL_CALL`. The human command acquires
 the session turn lock and immediately runs the same `BEFORE_CONTEXT`,
 `PRE_COMPACT`, `POST_COMPACT`, and persistence path without starting a model
 turn. If another turn owns the lock, the command runs as soon as that turn ends.
+Automatic requests are evaluated at `BEFORE_MODEL_REQUEST`; a successful replacement
+causes Core to rebuild context before issuing any provider request.

@@ -21,6 +21,9 @@ from xbotv2.api import (
     Tool,
     ToolRegistrationOptions,
     ToolResult,
+    calibrated_context_tokens,
+    context_token_limit,
+    estimate_messages_tokens,
     prompt_element,
 )
 
@@ -31,8 +34,7 @@ class CompactPlugin(PluginBase):
     def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
         super().__init__(manifest, store)
         self._automatic = True
-        self._trigger_chars = 80_000
-        self._output_reservation = 4_096
+        self._output_reservation: int | None = None
         self._trigger_ratio = 0.8
         self._keep_recent_turns = 4
         self._summary_max_chars = 8_000
@@ -43,8 +45,10 @@ class CompactPlugin(PluginBase):
 
     async def on_load(self, config: dict[str, Any]) -> None:
         self._automatic = bool(config.get("automatic", True))
-        self._trigger_chars = int(config.get("trigger_chars", 80_000))
-        self._output_reservation = int(config.get("output_reservation", 4_096))
+        reservation = config.get("output_reservation")
+        self._output_reservation = (
+            int(reservation) if reservation is not None else None
+        )
         self._trigger_ratio = float(config.get("trigger_ratio", 0.8))
         self._keep_recent_turns = int(config.get("keep_recent_turns", 4))
         self._summary_max_chars = int(config.get("summary_max_chars", 8_000))
@@ -57,6 +61,10 @@ class CompactPlugin(PluginBase):
 
     def setup(self, ctx: PluginSetupContext) -> None:
         ctx.register_hook(HookStage.BEFORE_CONTEXT, self._on_before_context)
+        ctx.register_hook(
+            HookStage.BEFORE_MODEL_REQUEST,
+            self._on_before_model_request,
+        )
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
@@ -132,37 +140,123 @@ class CompactPlugin(PluginBase):
             )
 
     async def _on_before_context(self, ctx: HookContext):
+        if not self._manual_requested:
+            return None
         messages = list(ctx.state.get("messages") or [])
-        manual = self._manual_requested
-        turn = ctx.session.turn_count
-        provider_input = _latest_provider_input_tokens(messages)
-        max_context = int(getattr(ctx.config, "max_context_tokens", 32_000))
-        token_trigger = int(
-            max(1, max_context - self._output_reservation) * self._trigger_ratio
+        self._manual_requested = False
+        return await self._compact(
+            ctx,
+            messages,
+            reason="manual",
+            context_tokens_before=estimate_messages_tokens(messages),
+            estimate_source="estimated_history",
         )
-        history_chars = _history_chars(messages)
-        threshold_reached = (
-            provider_input is not None and provider_input >= token_trigger
-        ) or history_chars >= self._trigger_chars
-        automatic = self._automatic and threshold_reached
-        if not manual and not automatic:
+
+    async def _on_before_model_request(self, ctx: HookContext):
+        if not self._automatic:
+            return None
+        messages = list(ctx.state.get("messages") or [])
+        request = ctx.model_request or {}
+        context_messages = list(request.get("messages") or [])
+        tools = list(request.get("tools") or [])
+        max_context = int(getattr(ctx.config, "max_context_tokens", 32_000))
+        context_tokens, request_estimate, estimate_source = (
+            calibrated_context_tokens(
+                context_messages,
+                tools,
+                messages,
+                provider=str(getattr(ctx.session, "provider", "") or ""),
+                context_window=max_context,
+            )
+        )
+        configured_output = int(
+            getattr(ctx.config, "max_output_tokens", 0) or 0
+        )
+        output_reservation = (
+            self._output_reservation
+            if self._output_reservation is not None
+            else configured_output
+        )
+        token_trigger = context_token_limit(
+            max_context,
+            trigger_ratio=self._trigger_ratio,
+            output_reservation=output_reservation,
+        )
+        if context_tokens < token_trigger:
             return None
 
+        stable_prefix = next(
+            (
+                message
+                for message in context_messages
+                if getattr(message, "role", "") == "system"
+            ),
+            None,
+        )
+        split = _compact_prefix_end(messages, self._keep_recent_turns)
+        provider_history = [
+            message
+            for message in context_messages
+            if getattr(message, "role", "") != "system"
+        ]
+        prefix_messages = messages[:split]
+        provider_prefix_count = sum(
+            message.role != "system" for message in prefix_messages
+        )
+        removable_estimate = estimate_messages_tokens(
+            provider_history[:provider_prefix_count]
+        ) + estimate_messages_tokens([
+            message
+            for message in prefix_messages
+            if message.role == "system"
+        ])
+        return await self._compact(
+            ctx,
+            messages,
+            reason="automatic",
+            context_tokens_before=context_tokens,
+            estimate_source=estimate_source,
+            request_estimate=request_estimate,
+            context_limit=token_trigger,
+            max_context_tokens=max_context,
+            output_reservation=output_reservation,
+            stable_prefix=stable_prefix,
+            removable_estimate=removable_estimate,
+        )
+
+    async def _compact(
+        self,
+        ctx: HookContext,
+        messages: list[Message],
+        *,
+        reason: str,
+        context_tokens_before: int,
+        estimate_source: str,
+        request_estimate: int | None = None,
+        context_limit: int | None = None,
+        max_context_tokens: int | None = None,
+        output_reservation: int | None = None,
+        stable_prefix: Message | None = None,
+        removable_estimate: int | None = None,
+    ):
         split = _compact_prefix_end(messages, self._keep_recent_turns)
         if split == 0:
-            self._manual_requested = False
             return None
         if ctx.invoke_model is None:
             raise RuntimeError("CompactPlugin requires HookContext.invoke_model")
 
-        reason = "manual" if manual else "automatic"
-        self._manual_requested = False
+        turn = ctx.session.turn_count
+        history_chars = _history_chars(messages)
         logger.info(
-            "compaction started reason=%s turn=%d messages=%d history_chars=%d",
+            "compaction started reason=%s turn=%d messages=%d history_chars=%d "
+            "context_tokens=%d context_limit=%s estimate_source=%s",
             reason,
             turn,
             len(messages),
             history_chars,
+            context_tokens_before,
+            context_limit,
+            estimate_source,
         )
         ctx.emit({
             "type": "compaction_started",
@@ -170,11 +264,24 @@ class CompactPlugin(PluginBase):
                 "reason": reason,
                 "messages_before": len(messages),
                 "history_chars_before": history_chars,
+                "context_tokens_before": context_tokens_before,
+                "context_limit": context_limit,
             },
         })
         try:
+            summary_messages = messages[:split]
+            if stable_prefix is not None:
+                summary_messages = [
+                    message
+                    for message in summary_messages
+                    if message.role != "system"
+                ]
             response = await ctx.invoke_model(
-                _summary_request(messages[:split], self._summary_max_chars)
+                _summary_request(
+                    summary_messages,
+                    self._summary_max_chars,
+                    stable_prefix=stable_prefix,
+                )
             )
             if response.tool_calls:
                 raise RuntimeError("Compaction model must not call tools")
@@ -192,13 +299,17 @@ class CompactPlugin(PluginBase):
                 "type": "compaction_failed",
                 "data": {"reason": reason, "message": str(exc)},
             })
-            if manual:
+            if reason == "manual":
                 raise
             logger.exception(
                 "automatic compaction failed; continuing with original history"
             )
             return None
-        summary = _strip_summary_heading(summary)[:self._summary_max_chars]
+        summary = _strip_summary_heading(summary)
+        summary, summary_truncated = _limit_summary(
+            summary,
+            self._summary_max_chars,
+        )
         compacted = Message(
             role="system",
             content=prompt_element(
@@ -210,10 +321,43 @@ class CompactPlugin(PluginBase):
         )
         compacted_messages = [compacted, *messages[split:]]
         usage = _model_usage(response.usage_metadata)
+        removed_estimate = (
+            removable_estimate
+            if removable_estimate is not None
+            else estimate_messages_tokens(messages[:split])
+        )
+        summary_estimate = estimate_messages_tokens([compacted])
+        context_tokens_after = max(
+            1,
+            context_tokens_before - removed_estimate + summary_estimate,
+        )
+        if reason == "automatic" and context_tokens_after >= context_tokens_before:
+            message = (
+                "Automatic compaction would not reduce the estimated context; "
+                "the retained prefix or tool schemas dominate the request."
+            )
+            logger.warning(message)
+            ctx.emit({
+                "type": "compaction_failed",
+                "data": {"reason": reason, "message": message},
+            })
+            return None
         metrics = {
+            "context_tokens_before": context_tokens_before,
+            "context_tokens_after_estimate": context_tokens_after,
+            "context_tokens_released_estimate": max(
+                0,
+                context_tokens_before - context_tokens_after,
+            ),
+            "context_limit": context_limit,
+            "max_context_tokens": max_context_tokens,
+            "output_reservation": output_reservation,
+            "request_estimate": request_estimate,
+            "estimate_source": estimate_source,
             "history_chars_before": history_chars,
             "history_chars_after": _history_chars(compacted_messages),
             "summary_chars": len(summary),
+            "summary_truncated": summary_truncated,
             "messages_before": len(messages),
             "messages_after": len(compacted_messages),
             "messages_removed": len(messages) - len(compacted_messages),
@@ -225,6 +369,7 @@ class CompactPlugin(PluginBase):
         logger.info(
             "compaction completed reason=%s turn=%d messages_before=%d "
             "messages_after=%d history_chars_before=%d history_chars_after=%d "
+            "context_tokens_before=%d context_tokens_after_estimate=%d "
             "summary_chars=%d input_tokens=%d output_tokens=%d total_tokens=%d",
             reason,
             turn,
@@ -232,6 +377,8 @@ class CompactPlugin(PluginBase):
             metrics["messages_after"],
             metrics["history_chars_before"],
             metrics["history_chars_after"],
+            metrics["context_tokens_before"],
+            metrics["context_tokens_after_estimate"],
             metrics["summary_chars"],
             usage["input_tokens"],
             usage["output_tokens"],
@@ -247,7 +394,6 @@ class CompactPlugin(PluginBase):
         return {
             "status": "ready",
             "automatic": self._automatic,
-            "trigger_chars": self._trigger_chars,
             "output_reservation": self._output_reservation,
             "trigger_ratio": self._trigger_ratio,
             "keep_recent_turns": self._keep_recent_turns,
@@ -264,17 +410,6 @@ def _history_chars(messages: list[Message]) -> int:
         for call in message.tool_calls or []:
             total += len(call.name) + len(str(call.args))
     return total
-
-
-def _latest_provider_input_tokens(messages: list[Message]) -> int | None:
-    for message in reversed(messages):
-        usage = message.usage_metadata or {}
-        if "context_tokens" in usage or "input_tokens" in usage:
-            value = int(
-                usage.get("context_tokens") or usage.get("input_tokens") or 0
-            )
-            return value if value > 0 else None
-    return None
 
 
 def _model_usage(usage: dict[str, Any]) -> dict[str, int]:
@@ -300,8 +435,8 @@ def _compact_result_message(metrics: dict[str, Any]) -> str:
     usage = metrics.get("model_usage") or {}
     return (
         "Conversation history compacted "
-        f"from {metrics.get('history_chars_before', 0)} to "
-        f"{metrics.get('history_chars_after', 0)} characters; "
+        f"from about {metrics.get('context_tokens_before', 0)} to "
+        f"{metrics.get('context_tokens_after_estimate', 0)} context tokens; "
         f"summary model used {usage.get('input_tokens', 0)} input and "
         f"{usage.get('output_tokens', 0)} output tokens."
     )
@@ -326,14 +461,24 @@ def _compact_prefix_end(messages: list[Message], keep_recent_turns: int) -> int:
     return 0
 
 
-def _summary_request(messages: list[Message], max_chars: int) -> list[Message]:
+def _summary_request(
+    messages: list[Message],
+    max_chars: int,
+    *,
+    stable_prefix: Message | None = None,
+) -> list[Message]:
     instruction = (
-        "Summarize the conversation for a future agent. Preserve user requirements, "
-        "decisions, file paths, commands, tool outcomes, errors, and unresolved work. "
-        "Do not continue the task or call tools. Return only the summary, using no more "
-        f"than {max_chars} characters."
+        "Summarize only the supplied older conversation for a future agent. Preserve "
+        "the user's objective and exact constraints; confirmed decisions and reasons; "
+        "important feedback and corrections; verified results, file paths, commands, "
+        "errors, and current repository state; remaining work, active plans, and known "
+        "unknowns. Clearly distinguish completed work from intentions or unverified "
+        "claims. Omit repetitive chatter and raw detail that does not affect future "
+        "decisions. Do not continue the task or call tools. Return only the summary in "
+        "compact Markdown with sections for Requirements, Decisions, Current State, "
+        f"and Remaining Work, using no more than {max_chars} characters."
     )
-    return [
+    request = [
         Message(
             role="system",
             content=prompt_element("summary_instructions", instruction),
@@ -347,6 +492,9 @@ def _summary_request(messages: list[Message], max_chars: int) -> list[Message]:
             ),
         ),
     ]
+    if stable_prefix is not None:
+        request.insert(0, stable_prefix)
+    return request
 
 
 def _strip_summary_heading(summary: str) -> str:
@@ -354,3 +502,13 @@ def _strip_summary_heading(summary: str) -> str:
     while summary.startswith(heading):
         summary = summary[len(heading):].lstrip(" \r\n")
     return summary
+
+
+def _limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
+    if len(summary) <= max_chars:
+        return summary, False
+    marker = "\n\n[Middle of overlong summary omitted]\n\n"
+    remaining = max(0, max_chars - len(marker))
+    head = remaining * 2 // 3
+    tail = remaining - head
+    return summary[:head].rstrip() + marker + summary[-tail:].lstrip(), True

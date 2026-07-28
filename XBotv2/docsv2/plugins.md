@@ -359,13 +359,11 @@ plugins:
 
 ### TokenManagerPlugin (`builtin_plugins/token_manager/`)
 
-Uses public model-request, model-response, tool-call, and turn Hooks to estimate
-request size and collect usage. It is the template for observation/policy
-plugins that do not need runtime internals. Diagnostics explicitly report
-`mode: observe_only`: threshold violations are logged but do not compact,
-filter, reject, or otherwise alter the request. In-memory statistics are reset
-on unload. See [Token manager plugin](token_manager.md) for its current
-contract and remaining behavior gaps.
+Uses public model-request and model-response Hooks to expose the latest
+provider-calibrated context estimate and provider usage. Engine owns cumulative
+session accounting and Compact owns the automatic threshold; TokenManager does
+not duplicate either policy. Its ephemeral observation resets on unload. See
+[Token manager plugin](token_manager.md).
 
 ## Tool Namespace Convention
 

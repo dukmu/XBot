@@ -42,6 +42,10 @@ type-only import inside XBotv2 itself.
 | `PluginManifest` | pydantic model | Validated plugin manifest. |
 | `PluginStore` | protocol | Per-plugin persistent key-value storage. |
 | `PromptFragmentStage` | type alias | Supported plugin prompt insertion stages. |
+| `calibrated_context_tokens` | function | Calibrate the next request estimate from the latest provider context measurement. |
+| `context_token_limit` | function | Resolve one context threshold from window, ratio, and output reservation. |
+| `estimate_messages_tokens` | function | Conservatively estimate provider-neutral messages. |
+| `estimate_request_tokens` | function | Conservatively estimate messages and visible Tool schemas. |
 | `prompt_container` | function | Wrap pre-rendered prompt elements in a validated XML container. |
 | `prompt_element` | function | Render one XML prompt element with escaped content and attributes. |
 | `RuntimePluginContext` | protocol | Runtime hook capabilities owned by a plugin record. |

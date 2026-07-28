@@ -301,6 +301,9 @@ class CoreStateStore:
                 "total_tokens",
                 "requests",
                 "context_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "prompt_cache_write_tokens",
             )
         }
 

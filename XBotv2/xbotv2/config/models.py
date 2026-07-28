@@ -164,6 +164,7 @@ class RuntimeConfig(StrictModel):
     agent_role: str = Field(default="", exclude=True)
     agent_instructions: str = ""
     max_context_tokens: int = Field(default=32_000, ge=1, exclude=True)
+    max_output_tokens: int | None = Field(default=None, ge=1, exclude=True)
 
     @property
     def plugin_configs(self) -> dict[str, dict[str, Any]]:

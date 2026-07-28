@@ -40,12 +40,12 @@ receive an empty value.
 | `post_compact` | observer | no | no | `compact_reason`, message count state | None | after history replacement |
 | `before_context_build` | transform | default | no | `state.messages`, context build inputs | `{messages}`, `{context_kwargs}`, or event dict | before context builder |
 | `after_context_components_build` | observer | no | no | `context_components: list[ContextComponent]` | replace `ctx.context_components`; return ignored | after immutable source-tagged components, before provider conversion |
-| `after_context` | transform | default | no | `context_messages` | `{context_messages}`, `{messages}`, or event dict | after provider messages exist |
+| `after_context` | transform | default | no | `context_messages` | `{context_messages}`, `{messages}`, or event dict | after provider messages exist and long content is externalized |
 | `after_context_build` | observer | no | no | `context_messages` | None | after final context build |
 | `before_agent` | guard | default | no | `context_messages`, `session` | event/messages dict, `HookDecision`, or stop | before model/tool agent step |
 | `before_tool_schema_bind` | transform | default | no | `context_messages`, `model_request` | `{tools}`, `{messages}`, or event dict | before provider tool binding |
 | `after_tool_schema_bind` | observer | no | no | `context_messages`, `model_request` | None | after provider tool binding |
-| `before_model_request` | transform | default | no | `context_messages`, `model_request` | `{messages}`, `{tools}`, `{llm}`, or event dict | before LLM call |
+| `before_model_request` | transform | default | no | `context_messages`, final `model_request` | request replacement, compaction result, or event dict | after Tool selection, before LLM call |
 | `after_model_response` | observer | no | no | `model_request`, `model_response`, `agent_response` | None | after full model response |
 | `on_model_request_error` | observer | no | no | `model_request`, `error` | None | LLM error path |
 | `after_agent` | transform | default | no | `agent_response` | `{messages}`, `{event, turn_complete}`, or stop | after assistant response |

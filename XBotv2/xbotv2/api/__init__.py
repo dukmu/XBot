@@ -37,6 +37,12 @@ from xbotv2.api.hooks import (
 )
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 from xbotv2.api.prompts import prompt_container, prompt_element
+from xbotv2.api.tokens import (
+    calibrated_context_tokens,
+    context_token_limit,
+    estimate_messages_tokens,
+    estimate_request_tokens,
+)
 
 __all__ = [
     "ArtifactRef",
@@ -61,6 +67,10 @@ __all__ = [
     "PluginManifest",
     "PluginStore",
     "PromptFragmentStage",
+    "calibrated_context_tokens",
+    "context_token_limit",
+    "estimate_messages_tokens",
+    "estimate_request_tokens",
     "prompt_container",
     "prompt_element",
     "RuntimePluginContext",
