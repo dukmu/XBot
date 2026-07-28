@@ -1,0 +1,21 @@
+Round 1 of 2: process the first part of the batch and stop at the simulated transient failure.
+
+Read:
+- $WORKSPACE/in/batch_items.json
+- $WORKSPACE/in/processing_rules.md
+- $WORKSPACE/in/expected_failure_marker.json
+- $WORKSPACE/in/idempotency_policy.md
+
+Create:
+- $WORKSPACE/out/partial_results.json
+- $WORKSPACE/out/state.json
+- $WORKSPACE/out/batch_audit.log
+
+Requirements:
+- Process items in queue order.
+- Complete ITEM-001 through ITEM-005.
+- When you reach ITEM-006, record it as a transient failure and stop. Do not process ITEM-007 through ITEM-010 in round 1.
+- state.json must include run_id, completed_ids, pending_ids, failed_ids, rejected_ids, per_item_results, attempt_counts, resume_from_round, and idempotency_keys.
+- batch_audit.log must record completed items and the stop reason.
+- Do not create final_results.json, retry_ledger.csv, or resume_report.md yet.
+- Do not modify input files. Do not use network access.

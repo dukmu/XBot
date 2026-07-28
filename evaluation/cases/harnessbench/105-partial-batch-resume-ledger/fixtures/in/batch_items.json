@@ -1,0 +1,15 @@
+{
+  "run_id": "batch-resume-105",
+  "items": [
+    {"id": "ITEM-001", "customer_tier": "enterprise", "amount_usd": 1200, "age_hours": 9, "has_docs": true},
+    {"id": "ITEM-002", "customer_tier": "standard", "amount_usd": 80, "age_hours": 4, "has_docs": true},
+    {"id": "ITEM-003", "customer_tier": "enterprise", "amount_usd": 500, "age_hours": 30, "has_docs": true},
+    {"id": "ITEM-004", "customer_tier": "standard", "amount_usd": 250, "age_hours": 14, "has_docs": true},
+    {"id": "ITEM-005", "customer_tier": "enterprise", "amount_usd": 60, "age_hours": 2, "has_docs": true},
+    {"id": "ITEM-006", "customer_tier": "standard", "amount_usd": 900, "age_hours": 44, "has_docs": true},
+    {"id": "ITEM-007", "customer_tier": "enterprise", "amount_usd": 300, "age_hours": 8, "has_docs": true},
+    {"id": "ITEM-008", "customer_tier": "standard", "amount_usd": 700, "age_hours": 12, "has_docs": false},
+    {"id": "ITEM-009", "customer_tier": "enterprise", "amount_usd": 1100, "age_hours": 20, "has_docs": true},
+    {"id": "ITEM-010", "customer_tier": "standard", "amount_usd": 40, "age_hours": 50, "has_docs": true}
+  ]
+}

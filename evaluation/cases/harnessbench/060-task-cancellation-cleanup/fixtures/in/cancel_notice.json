@@ -1,0 +1,6 @@
+{
+  "request_id": "cancel-77",
+  "cancelled_by": "ops-director@example.com",
+  "reason": "Legal hold on renewal outreach data",
+  "required_retention": "audit_only"
+}

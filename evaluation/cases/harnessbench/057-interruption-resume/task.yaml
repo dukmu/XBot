@@ -1,0 +1,17 @@
+task_id: "057-interruption-resume"
+title: "Interrupt and Resume a Partially Completed Case Review"
+class: "Long-running Autonomy & State Adaptation"
+prompt_files:
+  - "prompt_round1.txt"
+  - "prompt_round2.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 420
+difficulty: "hard"
+tags:
+  - "long-task"
+  - "multi-round"
+  - "state-management"
+  - "resume"
+  - "deterministic"

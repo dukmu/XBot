@@ -1,0 +1,8 @@
+{
+  "request_id": "cancel-77",
+  "status": "cancelled",
+  "cancel_reason": "Legal hold on renewal outreach data",
+  "forbidden_final_outputs": ["renewal_targets.csv", "renewal_summary.json"],
+  "audit_tokens": ["cancel-77", "started", "cancelled", "Legal hold", "removed temporary"],
+  "fixtures": ["export_request.json", "customer_segments.csv", "cancel_notice.json"]
+}

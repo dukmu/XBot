@@ -1,0 +1,10 @@
+{
+  "run_id": "resume-drill-74",
+  "items": [
+    {"id": "C-101", "customer": "Aster Foods", "impact": 5, "likelihood": 3, "signal": "payment API timeout"},
+    {"id": "C-102", "customer": "Boreal Health", "impact": 2, "likelihood": 4, "signal": "delayed CSV export"},
+    {"id": "C-103", "customer": "Cinder Logistics", "impact": 4, "likelihood": 4, "signal": "warehouse sync failures"},
+    {"id": "C-104", "customer": "DriftBank", "impact": 3, "likelihood": 3, "signal": "support queue spike"},
+    {"id": "C-105", "customer": "Evergreen Labs", "impact": 5, "likelihood": 2, "signal": "audit evidence gap"}
+  ]
+}

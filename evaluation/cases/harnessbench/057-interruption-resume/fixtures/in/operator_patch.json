@@ -1,0 +1,8 @@
+{
+  "patches": [
+    {"patch_id": "P-1", "id": "C-104", "likelihood": 5, "priority": "urgent", "reason": "new support evidence"},
+    {"patch_id": "P-2", "id": "C-105", "impact": 4, "reason": "audit evidence partially received"},
+    {"patch_id": "P-2", "id": "C-105", "impact": 4, "reason": "duplicate patch should be ignored"},
+    {"patch_id": "P-3", "id": "C-999", "impact": 9, "reason": "invalid id should be ignored"}
+  ]
+}

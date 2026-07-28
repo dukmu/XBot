@@ -1,0 +1,10 @@
+Round 1 of 2: start the export preparation.
+
+Read $WORKSPACE/in/export_request.json and $WORKSPACE/in/customer_segments.csv. Create:
+- $WORKSPACE/out/state.json
+- $WORKSPACE/out/tmp/export_manifest_draft.json
+- $WORKSPACE/out/audit.log
+
+The state should indicate status "running", request_id "cancel-77", and list planned artifacts. The tmp draft should contain a segment count and planned output names, but do not create final export files.
+
+Do not modify input files.

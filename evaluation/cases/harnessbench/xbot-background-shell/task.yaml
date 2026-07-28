@@ -1,0 +1,11 @@
+task_id: "xbot-background-shell"
+title: "Background Shell Completion And Notification"
+class: "Long-running Autonomy & State Adaptation"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 180
+tags:
+  - "background-task"
+  - "shell"
+  - "notification"

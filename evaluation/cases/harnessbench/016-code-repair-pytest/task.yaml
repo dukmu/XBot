@@ -1,0 +1,8 @@
+task_id: "016-code-repair-pytest"
+title: "Deep Dictionary Merge Bug Fix with Pytest Closure"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 1200

@@ -1,0 +1,7 @@
+{
+  "request_id": "cancel-77",
+  "requester": "ops@example.com",
+  "export_name": "Q2 Renewal Outreach",
+  "planned_outputs": ["renewal_targets.csv", "renewal_summary.json"],
+  "segments_required": ["enterprise", "midmarket", "public_sector"]
+}
