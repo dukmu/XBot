@@ -10,6 +10,7 @@ uv run xbot tui --workspace ./output
 uv run xbot once --provider minimax "Hello"
 uv run xbot serve
 uv run xbot web
+uv run xbot acp
 ```
 
 `once` submits one input and runs its complete Agent/Tool loop to the final
@@ -22,6 +23,10 @@ directory and the provider defaults to `default`. Use `--data-dir`,
 `--workspace`, `--provider`, or the corresponding `XBOT_*` variables to select
 a run configuration. Run `uv run xbot --help` for all modes. Installed packages
 provide `xbot` through the standard Python console entrypoint.
+
+ACP mode exposes XBot as an Agent Client Protocol v1 process over stdin/stdout.
+The ACP client supplies the workspace when it creates or resumes a session.
+See the [ACP compatibility matrix](XBotv2/docsv2/acp_compatibility.md).
 
 Web mode serves the compiled frontend through Python and automatically starts
 the API on an internal Unix socket unless `--server URL` is provided. Run
