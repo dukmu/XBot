@@ -153,6 +153,7 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
         ctx.engine.model_mode = config.model_mode
         ctx.engine.context_window = config.max_context_tokens
         ctx.engine.config.max_context_tokens = config.max_context_tokens
+        ctx.engine.config.max_output_tokens = config.max_output_tokens
         ctx.provider_name = name
         ctx.engine.config.provider = name
         ctx.engine.state_store.provider = name
@@ -273,6 +274,7 @@ async def _activate_agent(
     config.max_context_tokens = (
         definition.context_window or provider.max_context_tokens
     )
+    config.max_output_tokens = provider.max_output_tokens
     llm = (
         ctx.engine.llm
         if getattr(ctx.engine, "llm_is_override", False)

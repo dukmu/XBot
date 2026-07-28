@@ -44,9 +44,10 @@ BEFORE_STATE_PERSIST, AFTER_STATE_PERSIST, ON_STOP) caught with BaseException.
 
 ### Compaction
 
-`_handle_compaction()` method: BEFORE_CONTEXT short-circuit → PRE_COMPACT
-hook → message replacement → POST_COMPACT hook. Depth-4 nesting extracted
-to dedicated method.
+`_handle_compaction()` accepts manual rewrites from `BEFORE_CONTEXT` and
+provider-context-aware automatic rewrites from `BEFORE_MODEL_REQUEST`, then runs
+`PRE_COMPACT` → message replacement → `POST_COMPACT` → persistence. Automatic
+replacement rebuilds the final context before any provider request.
 
 ## Tools
 
@@ -148,12 +149,13 @@ use separate structured transient inputs. Runtime Tool results are stored as
 orphaned tool messages before provider conversion. See
 [Prompt assembly](prompts.md).
 
-## LLM Provider (`llm/client.py`)
+## LLM Providers (`llm/`)
 
-`OpenAICompatibleProvider` (OpenAI, DeepSeek, LM Studio) and `AnthropicProvider`.
-Shared configuration via `reasoning_effort` and `thinking_enabled`.
-`create_llm()` reads either dictionary or Pydantic provider configuration through
-the shared `_get_cfg()` compatibility boundary.
+`BaseProvider` defines shared model configuration, Tool binding, and the
+normalized stream contract. `OpenAICompatibleProvider` and
+`AnthropicProvider` each own native message conversion, Tool schema and call
+assembly, reasoning replay data, and per-request usage normalization.
+`llm/client.py` only selects and constructs the configured Provider.
 
 Provider conversion preserves the complete native assistant response needed by
 ToolResult continuation. `reasoning_content` remains a display view; Anthropic

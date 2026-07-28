@@ -43,7 +43,8 @@ _RESULT_KEYS: dict[HookStage, frozenset[str]] = {
         "tools", "messages", "event", "turn_complete",
     }),
     HookStage.BEFORE_MODEL_REQUEST: frozenset({
-        "messages", "tools", "llm", "event", "turn_complete",
+        "messages", "tools", "llm", "compact_reason", "compact_metrics",
+        "event", "turn_complete",
     }),
     HookStage.AFTER_AGENT: frozenset({"messages", "event", "turn_complete"}),
     HookStage.BEFORE_TOOL_CALL: frozenset({

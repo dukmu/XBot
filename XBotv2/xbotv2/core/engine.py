@@ -41,6 +41,12 @@ from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import Message, ModelChunk, ModelResponse
 from xbotv2.api.context import ContextComponent
 from xbotv2.api.prompts import prompt_container, prompt_element
+from xbotv2.api.tokens import (
+    REQUEST_CONTEXT_WINDOW_KEY,
+    REQUEST_ESTIMATE_KEY,
+    REQUEST_PROVIDER_KEY,
+    estimate_request_tokens,
+)
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.persistence.store import message_to_dict
@@ -65,6 +71,7 @@ class _ModelRequestResult:
     request: dict[str, Any] | None = None
     event: dict[str, Any] | None = None
     turn_complete: bool | None = None
+    rebuild: bool = False
 
 
 @dataclass(slots=True)
@@ -590,25 +597,32 @@ class Engine:
         while not turn_complete and iteration < self.max_iterations:
             iteration += 1
 
-            context_build = await self._build_turn_context()
-            if context_build.event is not None:
-                yield context_build.event
-            if context_build.turn_complete is not None:
-                turn_complete = context_build.turn_complete
+            while True:
+                context_build = await self._build_turn_context()
+                if context_build.event is not None:
+                    yield context_build.event
+                if context_build.turn_complete is not None:
+                    turn_complete = context_build.turn_complete
+                    break
+                assert context_build.messages is not None
+                context_messages = context_build.messages
+                model_preparation = await self._prepare_model_request(
+                    context_messages
+                )
+                if model_preparation.event is not None:
+                    yield model_preparation.event
+                if model_preparation.turn_complete is not None:
+                    turn_complete = model_preparation.turn_complete
+                    break
+                if model_preparation.rebuild:
+                    continue
+                assert model_preparation.request is not None
+                model_request = model_preparation.request
+                context_messages = model_request["messages"]
+                llm_with_tools = model_request["llm"]
                 break
-            assert context_build.messages is not None
-            context_messages = context_build.messages
-
-            model_preparation = await self._prepare_model_request(context_messages)
-            if model_preparation.event is not None:
-                yield model_preparation.event
-            if model_preparation.turn_complete is not None:
-                turn_complete = model_preparation.turn_complete
+            if turn_complete:
                 break
-            assert model_preparation.request is not None
-            model_request = model_preparation.request
-            context_messages = model_request["messages"]
-            llm_with_tools = model_request["llm"]
             try:
                 response = None
                 async for model_event in self._stream_model_response(
@@ -667,12 +681,24 @@ class Engine:
                     f"LLM returned no assistant content or ToolUse{context} "
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
+            response_metadata = dict(
+                getattr(response, "response_metadata", None) or {}
+            )
+            response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
+                context_messages,
+                list(model_request.get("tools") or []),
+            )
+            response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.context_window
+            response_metadata[REQUEST_PROVIDER_KEY] = str(
+                getattr(self.session, "provider", "")
+                or getattr(self.config, "provider", "")
+            )
             response_msg = Message(
                 role="assistant",
                 content=content,
                 tool_calls=getattr(response, "tool_calls", None) or [],
                 usage_metadata=getattr(response, "usage_metadata", None) or {},
-                response_metadata=getattr(response, "response_metadata", None) or {},
+                response_metadata=response_metadata,
                 additional_kwargs=getattr(response, "additional_kwargs", None) or {},
             )
             self.messages.append(response_msg)
@@ -685,11 +711,10 @@ class Engine:
                     "tool_calls": [call.to_dict() for call in response.tool_calls],
                 },
             }
-            usage = self._extract_usage(response)
-            if usage:
+            if response_msg.usage_metadata:
                 yield {
                     "type": "usage",
-                    "data": usage,
+                    "data": response_msg.usage_metadata,
                 }
 
             # ON_ASSISTANT_MESSAGE hook
@@ -1048,6 +1073,10 @@ class Engine:
         else:
             context_messages = self.context_builder.build(**context_kwargs)
 
+        context_messages = bound_context_messages(
+            context_messages,
+            self.state_store,
+        )
         after_ctx = self._make_hook_context(
             HookStage.AFTER_CONTEXT,
             context_messages=context_messages,
@@ -1073,6 +1102,10 @@ class Engine:
                 turn_complete=True,
             )
 
+        context_messages = bound_context_messages(
+            context_messages,
+            self.state_store,
+        )
         complete_ctx = self._make_hook_context(
             HookStage.AFTER_CONTEXT_BUILD,
             context_messages=context_messages,
@@ -1174,14 +1207,30 @@ class Engine:
         request_ctx = self._make_hook_context(
             HookStage.BEFORE_MODEL_REQUEST,
             context_messages=context_messages,
-            model_request=model_request,
+            model_request={
+                **model_request,
+                "messages": bound_context_messages(
+                    model_request["messages"],
+                    self.state_store,
+                ),
+            },
         )
+        model_request = request_ctx.model_request
+        assert model_request is not None
         request_result = await self.hook_manager.run(
             HookStage.BEFORE_MODEL_REQUEST,
             request_ctx,
             short_circuit=True,
         )
         if isinstance(request_result, dict):
+            if "compact_reason" in request_result:
+                event = await self._handle_compaction(request_result)
+                if event is not None:
+                    return _ModelRequestResult(
+                        event=event,
+                        turn_complete=True,
+                    )
+                return _ModelRequestResult(rebuild=True)
             if "messages" in request_result:
                 model_request["messages"] = request_result["messages"]
             if "tools" in request_result:
@@ -1330,6 +1379,7 @@ class Engine:
 
     async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
         """Run one unbound auxiliary model call for a Hook."""
+        messages = bound_context_messages(messages, self.state_store)
         for attempt in range(1, _MODEL_REQUEST_ATTEMPTS + 1):
             aggregate: ModelResponse | None = None
             try:
@@ -1354,7 +1404,7 @@ class Engine:
                 continue
             if aggregate is None:
                 raise RuntimeError("LLM stream produced no chunks")
-            self._record_usage(aggregate.usage_metadata)
+            self._record_usage(aggregate.usage_metadata, update_context=False)
             return aggregate
         raise RuntimeError("Model request retry loop ended unexpectedly")
 
@@ -1746,6 +1796,9 @@ class Engine:
             "total_tokens": 0,
             "requests": 0,
             "context_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "prompt_cache_write_tokens": 0,
         }
 
     def _restore_usage(self) -> None:
@@ -1757,14 +1810,25 @@ class Engine:
             self.state_store.write_usage(usage)
         self.session_usage = usage
 
-    def _record_usage(self, usage: dict[str, Any] | None) -> None:
-        if self._add_usage(self.session_usage, usage):
+    def _record_usage(
+        self,
+        usage: dict[str, Any] | None,
+        *,
+        update_context: bool = True,
+    ) -> None:
+        if self._add_usage(
+            self.session_usage,
+            usage,
+            update_context=update_context,
+        ):
             self.state_store.write_usage(self.session_usage)
 
     @staticmethod
     def _add_usage(
         total: dict[str, int],
         usage: dict[str, Any] | None,
+        *,
+        update_context: bool = True,
     ) -> bool:
         if not isinstance(usage, dict):
             return False
@@ -1778,26 +1842,15 @@ class Engine:
             usage.get("total_tokens") or input_tokens + output_tokens
         )
         total["requests"] += int(usage.get("requests") or 1)
-        total["context_tokens"] = int(
-            usage.get("context_tokens") or input_tokens
-        )
+        if update_context:
+            total["context_tokens"] = int(
+                usage.get("context_tokens") or input_tokens
+            )
+        for key in (
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "prompt_cache_write_tokens",
+        ):
+            if usage.get(key) is not None:
+                total[key] = int(total.get(key, 0)) + int(usage[key])
         return True
-
-    @staticmethod
-    def _extract_usage(response: Any) -> dict[str, int] | None:
-        usage_dict = getattr(response, "usage_metadata", None)
-        if not isinstance(usage_dict, dict):
-            return None
-        input_tokens = int(usage_dict.get("input_tokens") or 0)
-        output_tokens = int(usage_dict.get("output_tokens") or 0)
-        if not input_tokens and not output_tokens:
-            return None
-        return {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": int(usage_dict.get("total_tokens") or input_tokens + output_tokens),
-            "requests": int(usage_dict.get("requests") or 1),
-            "context_tokens": int(
-                usage_dict.get("context_tokens") or input_tokens
-            ),
-        }

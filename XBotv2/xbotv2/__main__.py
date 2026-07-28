@@ -242,7 +242,14 @@ def _run_server(args) -> None:
     )
     uds = getattr(args, "uds", None)
     if uds:
-        uvicorn.run(app, uds=uds, log_level="warning", ws="none")
+        uds_path = Path(uds).expanduser()
+        uds_path.parent.mkdir(parents=True, exist_ok=True)
+        uvicorn.run(
+            app,
+            uds=str(uds_path),
+            log_level="warning",
+            ws="none",
+        )
     else:
         uvicorn.run(
             app, host=args.bind, port=args.port, log_level="warning", ws="none"

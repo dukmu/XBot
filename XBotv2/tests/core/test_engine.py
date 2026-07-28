@@ -158,6 +158,8 @@ class TestEngineBasics:
                     "output_tokens": 7,
                     "total_tokens": 18,
                     "requests": 1,
+                    "context_tokens": 11,
+                    "cache_read_input_tokens": 5,
                 },
             }
         ])
@@ -176,6 +178,7 @@ class TestEngineBasics:
                     "total_tokens": 18,
                     "requests": 1,
                     "context_tokens": 11,
+                    "cache_read_input_tokens": 5,
                 },
             }
         ]
@@ -185,6 +188,9 @@ class TestEngineBasics:
             "total_tokens": 18,
             "requests": 1,
             "context_tokens": 11,
+            "cache_read_input_tokens": 5,
+            "cache_creation_input_tokens": 0,
+            "prompt_cache_write_tokens": 0,
         }
 
         await engine.replace_history([])

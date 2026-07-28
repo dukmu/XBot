@@ -266,8 +266,8 @@ class TestPluginManifest:
             ("skills", {}, {"unknown": True}),
             (
                 "token_manager",
-                {"max_context_tokens": 8192, "soft_limit_ratio": 0.75},
-                {"soft_limit_ratio": 2},
+                {},
+                {"max_context_tokens": 8192},
             ),
             (
                 "mcp",

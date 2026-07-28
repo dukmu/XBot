@@ -1,6 +1,7 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -133,7 +134,9 @@ def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(
 
     cli._run_web(parse(["web", "--web-port", "5180"]))
 
-    assert spawned["uds"].startswith("/tmp/xbotv2-web-")
+    uds_path = Path(spawned["uds"])
+    assert uds_path.parent == cli._DEFAULT_STATE_DIR
+    assert uds_path.name.startswith("xbotv2-web-")
     assert health["url"] == "http://localhost"
     assert health["uds_path"] == spawned["uds"]
     assert served["host"] == "127.0.0.1"
@@ -175,6 +178,25 @@ def test_web_server_and_uds_are_mutually_exclusive():
             "--server", "http://localhost:4096",
             "--uds", "/tmp/xbot.sock",
         ])
+
+
+def test_server_creates_uds_parent(monkeypatch, tmp_path):
+    socket_path = tmp_path / "missing" / "xbot.sock"
+    import uvicorn
+    from xbotv2.protocol import http_server
+
+    monkeypatch.setattr(http_server, "create_app", lambda **_kwargs: object())
+    served = {}
+    monkeypatch.setattr(
+        uvicorn,
+        "run",
+        lambda app, **kwargs: served.update(app=app, **kwargs),
+    )
+
+    cli._run_server(parse(["serve", "--uds", str(socket_path)]))
+
+    assert socket_path.parent.is_dir()
+    assert served["uds"] == str(socket_path)
 
 
 @pytest.mark.asyncio

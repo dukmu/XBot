@@ -19,6 +19,11 @@ from xbotv2.api import (
     ModelResponse,
     PluginManifest,
     ToolCall,
+    estimate_request_tokens,
+)
+from xbotv2.api.tokens import (
+    REQUEST_CONTEXT_WINDOW_KEY,
+    REQUEST_ESTIMATE_KEY,
 )
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
@@ -189,10 +194,8 @@ async def test_human_command_compacts_and_persists_immediately(
         "compaction_completed",
     ]
     assert runtime_events[-1]["data"]["usage"]["total_tokens"] == 34
-    assert (
-        f"{history_chars_before} to {history_chars_after} characters"
-        in result.message
-    )
+    assert runtime_events[-1]["data"]["usage"]["context_tokens"] == 0
+    assert "context tokens" in result.message
     assert "30 input and 4 output tokens" in result.message
     assert (
         f"history_chars_before={history_chars_before} "
@@ -269,174 +272,107 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 
 
 @pytest.mark.asyncio
-async def test_automatic_compaction_can_run_again_after_history_grows():
+async def test_large_context_does_not_use_fixed_character_threshold():
     plugin = make_plugin()
-    await plugin.on_load({
-        "trigger_chars": 1000,
-        "keep_recent_turns": 1,
-        "summary_max_chars": 500,
-    })
-    calls = 0
+    await plugin.on_load({"keep_recent_turns": 1})
+    original = history(3, content="x" * 13_500)
+    context = [Message(role="system", content="x" * 80_000), *original]
+
+    result = await plugin._on_before_model_request(HookContext(
+        stage=HookStage.BEFORE_MODEL_REQUEST,
+        state={"messages": original},
+        model_request={"messages": context, "tools": []},
+        config=SimpleNamespace(
+            max_context_tokens=1_048_576,
+            max_output_tokens=None,
+        ),
+        session=SimpleNamespace(turn_count=3),
+    ))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_automatic_threshold_uses_provider_window_and_output_limit():
+    plugin = make_plugin()
+    await plugin.on_load({"keep_recent_turns": 1})
+    original = history(3, content="x" * 5_000)
+    context = [Message(role="system", content="stable"), *original]
+    request_estimate = estimate_request_tokens(context)
+    original[-1].response_metadata[REQUEST_ESTIMATE_KEY] = request_estimate
+    original[-1].response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = 200_000
+    original[-1].usage_metadata["context_tokens"] = 136_000
 
     async def invoke_model(messages):
-        nonlocal calls
-        calls += 1
-        return ModelResponse(content="summary")
+        assert messages[0].content == "stable"
+        assert ET.fromstring(messages[1].content).tag == "summary_instructions"
+        return ModelResponse(content=(
+            "## Requirements\nKeep constraints.\n\n"
+            "## Decisions\nUse evidence.\n\n"
+            "## Current State\nOlder work done.\n\n"
+            "## Remaining Work\nContinue."
+        ))
 
-    original = history(3, content="x" * 300)
-    ctx = HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
+    result = await plugin._on_before_model_request(HookContext(
+        stage=HookStage.BEFORE_MODEL_REQUEST,
         state={"messages": original},
-        session=SimpleNamespace(turn_count=4),
-        invoke_model=invoke_model,
-    )
-
-    first = await plugin._on_before_context(ctx)
-    ctx.state["messages"] = first["messages"]
-    second = await plugin._on_before_context(ctx)
-
-    assert first["compact_reason"] == "automatic"
-    assert second is None
-    assert calls == 1
-
-    ctx.state["messages"] = [
-        *first["messages"],
-        *history(3, content="y" * 300),
-    ]
-    third = await plugin._on_before_context(ctx)
-
-    assert third["compact_reason"] == "automatic"
-    assert calls == 2
-
-
-@pytest.mark.asyncio
-async def test_automatic_compaction_uses_latest_provider_context_usage():
-    plugin = make_plugin()
-    await plugin.on_load({
-        "trigger_chars": 10_000,
-        "output_reservation": 100,
-        "trigger_ratio": 0.8,
-        "keep_recent_turns": 1,
-    })
-    original = history(3, content="x" * 300)
-    original[-1].usage_metadata = {"input_tokens": 700}
-    calls = 0
-
-    async def invoke_model(_messages):
-        nonlocal calls
-        calls += 1
-        return ModelResponse(content="summary")
-
-    ctx = HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
-        state={"messages": original},
-        config=SimpleNamespace(max_context_tokens=1000),
-        session=SimpleNamespace(turn_count=4),
-        invoke_model=invoke_model,
-    )
-
-    assert await plugin._on_before_context(ctx) is None
-    assert calls == 0
-
-    original[-1].usage_metadata = {"input_tokens": 720}
-    result = await plugin._on_before_context(ctx)
-
-    assert result["compact_reason"] == "automatic"
-    assert calls == 1
-
-
-@pytest.mark.asyncio
-async def test_character_threshold_is_only_used_without_provider_usage():
-    plugin = make_plugin()
-    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
-    original = history(3, content="x" * 300)
-
-    async def invoke_model(_messages):
-        return ModelResponse(content="summary")
-
-    ctx = HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
-        state={"messages": original},
-        session=SimpleNamespace(turn_count=4),
-        invoke_model=invoke_model,
-    )
-
-    result = await plugin._on_before_context(ctx)
-
-    assert result["compact_reason"] == "automatic"
-
-
-@pytest.mark.asyncio
-async def test_character_threshold_overrides_underreported_provider_usage():
-    plugin = make_plugin()
-    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
-    original = history(3, content="x" * 300)
-    original[-1].usage_metadata = {"input_tokens": 10}
-
-    async def invoke_model(_messages):
-        return ModelResponse(content="summary")
-
-    result = await plugin._on_before_context(HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
-        state={"messages": original},
-        session=SimpleNamespace(turn_count=1),
+        model_request={"messages": context, "tools": []},
+        config=SimpleNamespace(
+            max_context_tokens=200_000,
+            max_output_tokens=64_000,
+        ),
+        session=SimpleNamespace(turn_count=3),
         invoke_model=invoke_model,
     ))
 
     assert result["compact_reason"] == "automatic"
+    assert result["compact_metrics"]["context_limit"] == 136_000
+    assert result["compact_metrics"]["estimate_source"] == "provider_calibrated"
+    assert result["compact_metrics"]["context_tokens_after_estimate"] < 136_000
 
 
 @pytest.mark.asyncio
-async def test_long_mailbox_turn_compacts_without_user_messages():
+async def test_automatic_compaction_preserves_recent_tool_iterations():
     plugin = make_plugin()
-    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 2})
-    original = [Message(role="system", content="Mailbox message: continue goal")]
+    await plugin.on_load({"keep_recent_turns": 2, "trigger_ratio": 0.01})
+    original = [Message(role="system", content="Goal continuation")]
     for index in range(6):
+        call_id = f"call-{index}"
         original.extend([
-            Message(role="assistant", content=f"step {index} " + "x" * 200),
-            Message(role="tool", content="result " + "x" * 200),
+            Message(
+                role="assistant",
+                content=f"step {index}",
+                tool_calls=[ToolCall(call_id, "echo", {"value": index})],
+            ),
+            Message(role="tool", content=f"result {index}", tool_call_id=call_id),
         ])
 
-    async def invoke_model(messages):
-        assert messages[1].role == "system"
-        return ModelResponse(content="Earlier goal progress")
+    async def invoke_model(_messages):
+        return ModelResponse(content=(
+            "## Requirements\nContinue goal.\n\n"
+            "## Decisions\nNone.\n\n"
+            "## Current State\nFour steps summarized.\n\n"
+            "## Remaining Work\nTwo steps remain."
+        ))
 
-    result = await plugin._on_before_context(HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
+    result = await plugin._on_before_model_request(HookContext(
+        stage=HookStage.BEFORE_MODEL_REQUEST,
         state={"messages": original},
+        model_request={
+            "messages": [Message(role="system", content="stable"), *original],
+            "tools": [],
+        },
+        config=SimpleNamespace(
+            max_context_tokens=100,
+            max_output_tokens=None,
+        ),
         session=SimpleNamespace(turn_count=1),
         invoke_model=invoke_model,
     ))
 
-    assert result["compact_reason"] == "automatic"
-    assert ET.fromstring(result["messages"][0].content).tag == (
-        "conversation_summary"
-    )
     assert [message.role for message in result["messages"][1:]] == [
         "assistant", "tool", "assistant", "tool",
     ]
-
-
-@pytest.mark.asyncio
-async def test_zero_provider_usage_uses_character_fallback():
-    plugin = make_plugin()
-    await plugin.on_load({"trigger_chars": 1000, "keep_recent_turns": 1})
-    original = history(3, content="x" * 300)
-    original[-1].usage_metadata = {"input_tokens": 0, "output_tokens": 10}
-
-    async def invoke_model(_messages):
-        return ModelResponse(content="summary")
-
-    result = await plugin._on_before_context(
-        HookContext(
-            stage=HookStage.BEFORE_CONTEXT,
-            state={"messages": original},
-            session=SimpleNamespace(turn_count=4),
-            invoke_model=invoke_model,
-        )
-    )
-
-    assert result["compact_reason"] == "automatic"
 
 
 @pytest.mark.asyncio
@@ -467,20 +403,28 @@ async def test_failed_summary_leaves_history_untouched():
 @pytest.mark.asyncio
 async def test_failed_automatic_summary_continues_with_original_history():
     plugin = make_plugin()
-    await plugin.on_load({"trigger_chars": 100, "keep_recent_turns": 1})
-    original = history(3, content="x" * 100)
+    await plugin.on_load({"trigger_ratio": 0.1, "keep_recent_turns": 1})
+    original = history(3, content="x" * 1_000)
 
     async def fail(_messages):
         raise ConnectionError("summary provider unavailable")
 
     ctx = HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
+        stage=HookStage.BEFORE_MODEL_REQUEST,
         state={"messages": original},
+        model_request={
+            "messages": [Message(role="system", content="stable"), *original],
+            "tools": [],
+        },
+        config=SimpleNamespace(
+            max_context_tokens=1_000,
+            max_output_tokens=None,
+        ),
         session=SimpleNamespace(turn_count=2),
         invoke_model=fail,
     )
 
-    assert await plugin._on_before_context(ctx) is None
+    assert await plugin._on_before_model_request(ctx) is None
     assert ctx.state["messages"] == original
     assert plugin.diagnostics()["compactions"] == 0
 
@@ -579,3 +523,62 @@ async def test_compact_tool_rewrites_and_persists_history(
     await resumed.start_session()
 
     assert resumed.messages == persisted
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_rebuilds_context_before_provider_call(
+    state_store,
+    temp_workspace,
+):
+    plugin = make_plugin()
+    await plugin.on_load({"keep_recent_turns": 1, "trigger_ratio": 0.8})
+    setup = SetupContext()
+    plugin.setup(setup)
+    hooks = HookManager()
+    hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
+    hooks.register(
+        HookStage.BEFORE_MODEL_REQUEST,
+        setup.hooks[HookStage.BEFORE_MODEL_REQUEST],
+    )
+    state_store.sync_messages(history(3, content="x" * 5_000))
+    llm = MockLLM(responses=[
+        {"content": (
+            "## Requirements\nPreserve the request.\n\n"
+            "## Decisions\nKeep recent work.\n\n"
+            "## Current State\nOlder work summarized.\n\n"
+            "## Remaining Work\nAnswer the user."
+        )},
+        {
+            "content": "Done",
+            "usage_metadata": {
+                "input_tokens": 2_000,
+                "output_tokens": 4,
+                "context_tokens": 2_000,
+            },
+        },
+    ])
+    engine = Engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        hook_manager=hooks,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=SimpleNamespace(
+            max_context_tokens=10_000,
+            max_output_tokens=None,
+        ),
+    )
+    await engine.start_session()
+
+    events = [event async for event in engine.run_turn("continue")]
+
+    assert llm.call_count == 2
+    assert any(event["type"] == "assistant_message" for event in events)
+    assert engine.messages[0].role == "system"
+    assert ET.fromstring(engine.messages[0].content).tag == "conversation_summary"
+    assert engine.session_usage["context_tokens"] == 2_000

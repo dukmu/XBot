@@ -335,7 +335,9 @@ async def bootstrap(
             and resolved_agent.context_window is not None
             else provider_config.max_context_tokens
         )
+        agent_config.max_output_tokens = provider_config.max_output_tokens
         policy_base_config.max_context_tokens = agent_config.max_context_tokens
+        policy_base_config.max_output_tokens = agent_config.max_output_tokens
         state_store.write_thread_metadata({
             "agent": resolved_agent.name if resolved_agent is not None else "",
             "agent_definition": (

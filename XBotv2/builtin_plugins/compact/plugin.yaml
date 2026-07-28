@@ -8,9 +8,6 @@ config_schema:
   properties:
     automatic:
       type: boolean
-    trigger_chars:
-      type: integer
-      minimum: 1000
     output_reservation:
       type: integer
       minimum: 0
