@@ -99,6 +99,19 @@ Verify it across a Tool call and the following response before enabling it;
 XBot neither promotes reasoning blocks to assistant content nor silently falls
 back to another thinking mode.
 
+Transient provider connection failures, timeouts, HTTP 408/409/429 responses,
+and HTTP 5xx responses are retried with exponential backoff before any response
+chunk is emitted. Retries are unlimited by default. These process-level
+controls deliberately do not belong to YAML configuration:
+
+- `XBOT_PROVIDER_MAX_RETRIES`: retry count after the initial request; unset,
+  `none`, or `infinite` means unlimited.
+- `XBOT_PROVIDER_RETRY_BACKOFF_FACTOR`: delay factor in seconds, default `0.5`;
+  retry `n` waits `factor * 2^(n-1)`.
+
+Once a response chunk has been emitted, a stream failure is returned to Core
+instead of replaying partial output.
+
 ## Agent Definitions
 
 `data/.agents/*.md` and `<workspace>/.agents/*.md` define Agents. Workspace

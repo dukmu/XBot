@@ -36,7 +36,11 @@ class MockLLM(BaseProvider):
     async def ainvoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
         return self.invoke(messages, **kwargs)
 
-    async def astream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[ModelChunk]:
+    async def _astream_once(
+        self,
+        messages: list[Any],
+        **kwargs: Any,
+    ) -> AsyncIterator[ModelChunk]:
         response = self.next_response()
         result = self.to_response(response)
         self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
