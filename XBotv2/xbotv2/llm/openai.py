@@ -28,6 +28,8 @@ class OpenAICompatibleProvider(BaseProvider):
         max_output_tokens: int | None,
         reasoning_effort: str | None = None,
         thinking_enabled: bool = False,
+        max_retries: int | None = None,
+        retry_backoff_factor: float = 0.5,
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -37,13 +39,15 @@ class OpenAICompatibleProvider(BaseProvider):
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
             thinking_enabled=thinking_enabled,
+            max_retries=max_retries,
+            retry_backoff_factor=retry_backoff_factor,
         )
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         self.client = AsyncOpenAI(**kwargs)
 
-    async def astream(
+    async def _astream_once(
         self,
         messages: list[Any],
         **_kwargs: Any,

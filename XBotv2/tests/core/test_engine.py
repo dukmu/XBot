@@ -14,6 +14,7 @@ from xbotv2.api.hooks import HookStage
 from xbotv2.llm.mock import MockLLM
 from xbotv2.api import ContextComponent
 from xbotv2.api.messages import Message, ModelResponse
+from xbotv2.llm.base import BaseProvider
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -1012,28 +1013,32 @@ class TestEngineHooks:
         temp_workspace,
         monkeypatch,
     ):
-        class FlakyLLM:
+        class FlakyLLM(BaseProvider):
             def __init__(self):
+                super().__init__(
+                    model="flaky",
+                    temperature=0,
+                    max_output_tokens=None,
+                    max_retries=2,
+                    retry_backoff_factor=0.25,
+                )
                 self.calls = 0
 
-            async def astream(self, messages):
+            async def _astream_once(self, messages, **kwargs):
                 self.calls += 1
-                if self.calls == 1:
+                if self.calls <= 2:
                     raise ConnectionError("temporary disconnect")
                 yield ModelResponse(content="recovered")
 
         llm = FlakyLLM()
-        monkeypatch.setattr("xbotv2.core.engine.asyncio.sleep", AsyncMock())
+        sleep = AsyncMock()
+        monkeypatch.setattr("xbotv2.llm.base.asyncio.sleep", sleep)
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test")]
 
-        assert llm.calls == 2
-        assert any(
-            event["type"] == "client_message"
-            and "retrying" in event["data"]["message"]
-            for event in events
-        )
+        assert llm.calls == 3
+        assert [call.args[0] for call in sleep.await_args_list] == [0.25, 0.5]
         assert any(
             event["type"] == "assistant_message"
             and event["data"]["content"] == "recovered"

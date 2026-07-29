@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from abc import ABC, abstractmethod
 from copy import copy
 from typing import Any, AsyncIterator
 
+import httpx
+
 from xbotv2.api.messages import ModelChunk
+
+logger = logging.getLogger("xbotv2.llm")
 
 
 class BaseProvider(ABC):
@@ -20,13 +26,21 @@ class BaseProvider(ABC):
         max_output_tokens: int | None,
         reasoning_effort: str | None = None,
         thinking_enabled: bool = False,
+        max_retries: int | None = None,
+        retry_backoff_factor: float = 0.5,
     ) -> None:
+        if max_retries is not None and max_retries < 0:
+            raise ValueError("max_retries must be non-negative or None")
+        if retry_backoff_factor < 0:
+            raise ValueError("retry_backoff_factor must be non-negative")
         self.model_name = model
         self.model = model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
+        self.max_retries = max_retries
+        self.retry_backoff_factor = retry_backoff_factor
         self.bound_tools: list[dict[str, Any]] = []
 
     def bind_tools(
@@ -44,14 +58,64 @@ class BaseProvider(ABC):
     ) -> list[dict[str, Any]]:
         return list(tools)
 
-    @abstractmethod
-    def astream(
+    async def astream(
         self,
         messages: list[Any],
         **kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
-        """Stream normalized chunks followed by the complete response."""
+        """Retry transient failures until output begins or the limit is reached."""
+        retries = 0
+        while True:
+            emitted = False
+            try:
+                async for chunk in self._astream_once(messages, **kwargs):
+                    emitted = True
+                    yield chunk
+                return
+            except Exception as exc:
+                if emitted or not retryable_provider_error(exc):
+                    raise
+                if (
+                    self.max_retries is not None
+                    and retries >= self.max_retries
+                ):
+                    raise
+                delay = self.retry_backoff_factor * (2**retries)
+                retries += 1
+                logger.warning(
+                    "provider request failed; retrying model=%s retry=%d "
+                    "delay=%.1fs error=%s",
+                    self.model,
+                    retries,
+                    delay,
+                    exc,
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+
+    @abstractmethod
+    def _astream_once(
+        self,
+        messages: list[Any],
+        **kwargs: Any,
+    ) -> AsyncIterator[ModelChunk]:
+        """Perform one provider request."""
         raise NotImplementedError
+
+
+def retryable_provider_error(error: Exception) -> bool:
+    """Return whether a provider transport failure is safe to retry."""
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in {408, 409, 429} or status_code >= 500
+    return isinstance(
+        error,
+        (ConnectionError, TimeoutError, httpx.TransportError),
+    ) or type(error).__name__ in {
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+    }
 
 
 def usage_metadata(

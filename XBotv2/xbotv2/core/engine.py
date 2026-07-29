@@ -81,24 +81,6 @@ class _ToolBatchResult:
 
 logger = logging.getLogger("xbotv2.engine")
 
-# Maximum time a single LLM provider call may take before the engine
-# cancels the turn.  On timeout the engine yields an ``error`` event
-# and saves state — the user can retry or switch providers.
-_LLM_DISPATCH_TIMEOUT = 120.0  # seconds
-_MODEL_REQUEST_ATTEMPTS = 2
-
-
-def _retryable_model_error(error: Exception) -> bool:
-    status_code = getattr(error, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code == 429 or status_code >= 500
-    return isinstance(error, (ConnectionError, TimeoutError)) or type(error).__name__ in {
-        "APIConnectionError",
-        "APITimeoutError",
-        "RateLimitError",
-    }
-
-
 def merge_xbot_chunk(
     aggregate: ModelResponse | None,
     chunk: ModelChunk,
@@ -1307,106 +1289,59 @@ class Engine:
         context_messages: list[Any],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""
-        for attempt in range(1, _MODEL_REQUEST_ATTEMPTS + 1):
-            aggregate: ModelResponse | None = None
-            tool_stream_ids: dict[int, str] = {}
-            model_output_emitted = False
-            try:
-                async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
-                    async for chunk in llm.astream(context_messages):
-                        if isinstance(chunk, ModelChunk):
-                            aggregate = merge_xbot_chunk(aggregate, chunk)
-                            if chunk.content:
-                                model_output_emitted = True
-                                is_reasoning = bool(
-                                    (chunk.additional_kwargs or {}).get(
-                                        "reasoning_content"
-                                    )
-                                )
-                                key = "reasoning" if is_reasoning else "content"
-                                yield {
-                                    "type": "assistant_message_delta",
-                                    "data": {key: chunk.content},
-                                }
-                            for tool_delta in xbot_tool_call_deltas(
-                                chunk, tool_stream_ids
-                            ):
-                                model_output_emitted = True
-                                yield {
-                                    "type": "tool_call_delta",
-                                    "data": tool_delta,
-                                }
-                            continue
-                        if isinstance(chunk, ModelResponse):
-                            aggregate = chunk
-                            continue
-                        logger.warning(
-                            "_stream_model_response: unexpected chunk type %s",
-                            type(chunk).__name__,
+        aggregate: ModelResponse | None = None
+        tool_stream_ids: dict[int, str] = {}
+        async for chunk in llm.astream(context_messages):
+            if isinstance(chunk, ModelChunk):
+                aggregate = merge_xbot_chunk(aggregate, chunk)
+                if chunk.content:
+                    is_reasoning = bool(
+                        (chunk.additional_kwargs or {}).get(
+                            "reasoning_content"
                         )
-            except Exception as exc:
-                if (
-                    model_output_emitted
-                    or attempt == _MODEL_REQUEST_ATTEMPTS
-                    or not _retryable_model_error(exc)
+                    )
+                    key = "reasoning" if is_reasoning else "content"
+                    yield {
+                        "type": "assistant_message_delta",
+                        "data": {key: chunk.content},
+                    }
+                for tool_delta in xbot_tool_call_deltas(
+                    chunk, tool_stream_ids
                 ):
-                    raise
-                delay = 0.5 * attempt
-                logger.warning(
-                    "model request failed before output; retrying attempt=%d error=%s",
-                    attempt,
-                    exc,
-                )
-                yield {
-                    "type": "client_message",
-                    "data": {
-                        "message": (
-                            "Model request failed before producing output; "
-                            f"retrying in {delay:.1f}s."
-                        ),
-                        "level": "warning",
-                        "source": "runtime",
-                        "tool_call_id": "",
-                    },
-                }
-                await asyncio.sleep(delay)
+                    yield {
+                        "type": "tool_call_delta",
+                        "data": tool_delta,
+                    }
                 continue
-
-            if aggregate is None:
-                raise RuntimeError("LLM stream produced no chunks")
-            yield {"type": "_model_response", "data": {"response": aggregate}}
-            return
+            if isinstance(chunk, ModelResponse):
+                aggregate = chunk
+                continue
+            logger.warning(
+                "_stream_model_response: unexpected chunk type %s",
+                type(chunk).__name__,
+            )
+        if aggregate is None:
+            raise RuntimeError("LLM stream produced no chunks")
+        yield {"type": "_model_response", "data": {"response": aggregate}}
 
     async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
         """Run one unbound auxiliary model call for a Hook."""
         messages = bound_context_messages(messages, self.state_store)
-        for attempt in range(1, _MODEL_REQUEST_ATTEMPTS + 1):
-            aggregate: ModelResponse | None = None
-            try:
-                async with asyncio.timeout(_LLM_DISPATCH_TIMEOUT):
-                    async for chunk in self.llm.astream(messages):
-                        if isinstance(chunk, ModelChunk):
-                            aggregate = merge_xbot_chunk(aggregate, chunk)
-                        elif isinstance(chunk, ModelResponse):
-                            aggregate = chunk
-                        else:
-                            logger.warning(
-                                "_invoke_model: unexpected chunk type %s",
-                                type(chunk).__name__,
-                            )
-            except Exception as exc:
-                if (
-                    attempt == _MODEL_REQUEST_ATTEMPTS
-                    or not _retryable_model_error(exc)
-                ):
-                    raise
-                await asyncio.sleep(0.5 * attempt)
-                continue
-            if aggregate is None:
-                raise RuntimeError("LLM stream produced no chunks")
-            self._record_usage(aggregate.usage_metadata, update_context=False)
-            return aggregate
-        raise RuntimeError("Model request retry loop ended unexpectedly")
+        aggregate: ModelResponse | None = None
+        async for chunk in self.llm.astream(messages):
+            if isinstance(chunk, ModelChunk):
+                aggregate = merge_xbot_chunk(aggregate, chunk)
+            elif isinstance(chunk, ModelResponse):
+                aggregate = chunk
+            else:
+                logger.warning(
+                    "_invoke_model: unexpected chunk type %s",
+                    type(chunk).__name__,
+                )
+        if aggregate is None:
+            raise RuntimeError("LLM stream produced no chunks")
+        self._record_usage(aggregate.usage_metadata, update_context=False)
+        return aggregate
 
     async def _handle_compaction(self, short_circuit: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(short_circuit, dict) or "messages" not in short_circuit:

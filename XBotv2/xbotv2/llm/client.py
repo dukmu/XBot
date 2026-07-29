@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from xbotv2.config.loader import expand_env
@@ -26,6 +27,7 @@ def create_llm(provider_config: Any) -> BaseProvider:
         "thinking_enabled",
         False,
     )
+    max_retries, retry_backoff_factor = _retry_settings()
     api_key = expand_env(api_key) if api_key else ""
     base_url = expand_env(base_url) if base_url else None
 
@@ -50,6 +52,8 @@ def create_llm(provider_config: Any) -> BaseProvider:
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
             thinking_enabled=thinking_enabled,
+            max_retries=max_retries,
+            retry_backoff_factor=retry_backoff_factor,
         )
     if provider in ("anthropic", "lmstudio"):
         if max_output_tokens is None:
@@ -68,6 +72,8 @@ def create_llm(provider_config: Any) -> BaseProvider:
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
             thinking_enabled=thinking_enabled,
+            max_retries=max_retries,
+            retry_backoff_factor=retry_backoff_factor,
         )
     raise ValueError(f"Unknown provider: {provider!r}")
 
@@ -88,6 +94,21 @@ def _require_api_key(provider: str, model: str, api_key: str) -> None:
             f"Provider {provider!r} for model {model!r} requires api_key. "
             "Set the configured environment variable or providers.yaml api_key."
         )
+
+
+def _retry_settings() -> tuple[int | None, float]:
+    retries = os.environ.get("XBOT_PROVIDER_MAX_RETRIES", "").strip().lower()
+    max_retries = None if retries in {"", "none", "infinite"} else int(retries)
+    backoff = float(
+        os.environ.get("XBOT_PROVIDER_RETRY_BACKOFF_FACTOR", "0.5")
+    )
+    if max_retries is not None and max_retries < 0:
+        raise ValueError("XBOT_PROVIDER_MAX_RETRIES must be non-negative")
+    if backoff < 0:
+        raise ValueError(
+            "XBOT_PROVIDER_RETRY_BACKOFF_FACTOR must be non-negative"
+        )
+    return max_retries, backoff
 
 
 __all__ = ["create_llm"]
