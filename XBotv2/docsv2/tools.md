@@ -113,9 +113,12 @@ History compaction remains responsible for semantic summaries across many
 messages; context caching is deterministic externalization, not a second model
 summarizer.
 
-Filesystem operations use one implementation with or without bwrap. Complete
-writes, exact edits, and patches accept an optional `expected_sha256` guard and
-write atomically. Non-text reads return MIME, size, hash, and recognized image
+Filesystem operations use one implementation with or without bwrap and write
+atomically. The runtime records the version of each file returned by read or
+stat. A later write, edit, or patch is guarded against external changes without
+exposing hashes in the Agent-facing Tool schema. A repeated read reports when
+the file changed since its previous observation. Non-text reads return MIME,
+size, hash, and recognized image
 metadata without placing binary content in context. Text must be valid UTF-8
 and must not contain binary control data. Existing files are read before
 mutation, complete content is sent only to `filesystem_write`, and relevant
@@ -123,6 +126,12 @@ ranges are read again before a change is reported as verified.
 
 Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
+
+Bubblewrap inherits the environment of the XBot process by default, including
+`PATH`, provider variables, proxy settings, and active virtual-environment
+variables. The Python environment running XBot is mounted read-only so commands
+resolved through the inherited `PATH` remain available. Filesystem, network,
+and permission isolation remain controlled by the sandbox policy.
 
 A session-scoped approval for a mutating filesystem tool records only its Tool
 name, source/destination paths, and destructive flags such as `recursive` or

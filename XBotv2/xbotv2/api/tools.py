@@ -239,7 +239,12 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
     if origin in {tuple, set}:
         return {"type": "object"}
     if origin is not None and type(None) in args:
-        return _annotation_schema(next(arg for arg in args if arg is not type(None)))
+        non_null = [
+            _annotation_schema(arg)
+            for arg in args
+            if arg is not type(None)
+        ]
+        return {"anyOf": [*non_null, {"type": "null"}]}
     return {
         str: {"type": "string"},
         int: {"type": "integer"},

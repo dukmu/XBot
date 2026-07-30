@@ -51,6 +51,8 @@ from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.persistence.store import message_to_dict
 
+DEFAULT_MAX_ITERATIONS = 200
+
 
 @dataclass(slots=True)
 class _TurnStartResult:
@@ -183,7 +185,7 @@ class Engine:
         permission_system: Any,  # PermissionSystem
         config: Any,  # RuntimeConfig
         workspace_root: str | None = None,
-        max_iterations: int = 50,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
         plugin_loader: Any | None = None,
         background_tasks: Any | None = None,
         subagents: Any | None = None,
@@ -575,9 +577,16 @@ class Engine:
         # 4. ReAct loop
         iteration = 0
         turn_complete = False
+        iteration_limit_reached = False
 
-        while not turn_complete and iteration < self.max_iterations:
-            iteration += 1
+        while not turn_complete:
+            finalizing = iteration >= self.max_iterations
+            if finalizing:
+                if iteration_limit_reached:
+                    break
+                iteration_limit_reached = True
+            else:
+                iteration += 1
 
             while True:
                 context_build = await self._build_turn_context()
@@ -587,7 +596,21 @@ class Engine:
                     turn_complete = context_build.turn_complete
                     break
                 assert context_build.messages is not None
-                context_messages = context_build.messages
+                context_messages = list(context_build.messages)
+                if finalizing:
+                    notice_at = (
+                        1
+                        if context_messages
+                        and context_messages[0].role == "system"
+                        else 0
+                    )
+                    context_messages.insert(
+                        notice_at,
+                        Message(
+                            role="system",
+                            content=self._iteration_limit_notice(),
+                        ),
+                    )
                 model_preparation = await self._prepare_model_request(
                     context_messages
                 )
@@ -600,6 +623,9 @@ class Engine:
                     continue
                 assert model_preparation.request is not None
                 model_request = model_preparation.request
+                if finalizing:
+                    model_request["tools"] = []
+                    model_request["llm"] = self._llm_without_tools()
                 context_messages = model_request["messages"]
                 llm_with_tools = model_request["llm"]
                 break
@@ -640,6 +666,12 @@ class Engine:
                 )
                 raise
             content = response.content if hasattr(response, "content") else str(response)
+            if finalizing and response.tool_calls:
+                names = ", ".join(call.name for call in response.tool_calls)
+                raise RuntimeError(
+                    "LLM requested tools after the iteration budget was "
+                    f"exhausted: {names}"
+                )
             if not str(content).strip() and not response.tool_calls:
                 reasoning = str(
                     (getattr(response, "additional_kwargs", None) or {}).get(
@@ -753,9 +785,10 @@ class Engine:
                 turn_complete = batch_result.turn_complete
                 break
 
-        yield await self._finish_turn(
-            "completed" if turn_complete else "max_iterations"
+        stop_reason = (
+            "max_iterations" if iteration_limit_reached else "completed"
         )
+        yield await self._finish_turn(stop_reason)
 
     async def _run_tool_batch(
         self,
@@ -1282,6 +1315,20 @@ class Engine:
             return self.llm.bind_tools(schemas)
         except NotImplementedError:
             return self.llm
+
+    def _llm_without_tools(self) -> Any:
+        try:
+            return self.llm.bind_tools([])
+        except NotImplementedError:
+            return self.llm
+
+    def _iteration_limit_notice(self) -> str:
+        return (
+            f"Iteration limit: the tool iteration budget of "
+            f"{self.max_iterations} has been exhausted. Do not call more "
+            "tools. Give the human a concise status, clearly identify "
+            "unfinished work, and state the next required action."
+        )
 
     async def _stream_model_response(
         self,

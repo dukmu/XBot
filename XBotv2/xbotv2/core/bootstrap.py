@@ -43,7 +43,7 @@ from xbotv2.core.agents import (
 )
 from xbotv2.core.subagents import SubagentManager
 from xbotv2.core.background_tasks import BackgroundTaskManager
-from xbotv2.core.engine import Engine
+from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.persistence.store import CoreStateStore
@@ -419,7 +419,7 @@ async def bootstrap(
                 resolved_agent.max_iterations
                 if resolved_agent is not None
                 and resolved_agent.max_iterations is not None
-                else 50
+                else DEFAULT_MAX_ITERATIONS
             ),
         )
         parent_engine = engine
