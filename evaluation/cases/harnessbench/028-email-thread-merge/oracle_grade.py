@@ -56,15 +56,16 @@ def score_workspace(workspace: Path, *, ground_truth_path: Path | None = None) -
 
     if isinstance(timeline, str):
         try:
-            timeline = json.loads(timeline)   # 将字符串转为列表
+            timeline = json.loads(timeline)
         except json.JSONDecodeError:
-            timeline = []                     # 解析失败则置空列表
+            timeline = []
 
     timeline_text = json.dumps(timeline)
     add("timeline_has_exact_timestamps", all(ts in timeline_text for ts in gt["northwind_timeline"]), timeline_text)
-    # add("timeline_sorted", gt["northwind_timeline"] == [ts for ts in gt["northwind_timeline"] if ts in timeline_text])
-    # timeline = north.get("timeline") if isinstance(north, dict) else []
-    actual_timestamps = [entry.get("timestamp") for entry in timeline] if isinstance(timeline, list) else []
+    actual_timestamps = [
+        entry.get("timestamp") if isinstance(entry, dict) else entry
+        for entry in timeline
+    ] if isinstance(timeline, list) else []
     add("timeline_sorted", actual_timestamps == gt["northwind_timeline"], actual_timestamps)
     todos_text = json.dumps(north.get("final_todos", []) if isinstance(north, dict) else [], ensure_ascii=False).lower()
     add("final_todos_complete", all(todo in todos_text for todo in gt["final_todos"]), todos_text)
