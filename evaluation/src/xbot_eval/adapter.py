@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import os
+import shutil
+import socket
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import yaml
 from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
 from acp.schema import AllowedOutcome, ClientCapabilities, RequestPermissionResponse
+from inspect_ai.agent import AgentState, sandbox_agent_bridge
 from inspect_ai.model import ModelOutput, ModelUsage
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.util import sandbox
+
+
+_BRIDGE_PORTS: set[int] = set()
 
 
 class _InspectACPClient:
@@ -181,16 +188,15 @@ def xbot_agent(
 
 
 @solver
-def xbot_server_agent(
+def xbot_bridge_agent(
     *,
-    uds_path: str,
+    command: str,
+    data_dir: str,
     agent: str | None = None,
 ) -> Solver:
-    """Run each Inspect sample as a session on one shared XBot server."""
+    """Run XBot through Inspect's standard external-agent model bridge."""
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        from xbotv2.client import XBotClient
-
         workspace_result = await sandbox().exec(["pwd"])
         if not workspace_result.success:
             raise RuntimeError(
@@ -212,148 +218,149 @@ def xbot_server_agent(
             )
             runtime.prepare()
 
-        messages: list[str] = []
-        turns: list[dict[str, Any]] = []
-        events: list[dict[str, Any]] = []
-        resolved_interactions: set[str] = set()
+        bridge_state = AgentState(messages=list(state.messages))
+        bridge_port = _allocate_bridge_port()
+        bridge_data = sandbox_root / ".xbot-eval"
+        client = _InspectACPClient(workspace)
+        responses = []
         session_id = ""
-        provider = ""
-        model = ""
-        usage = None
-        async with XBotClient(
-            base_url="http://localhost",
-            timeout=60.0,
-            uds_path=uds_path,
-        ) as client:
-            opened = await client.open_session(
-                workspace_root=str(workspace),
-                agent=agent,
-            )
-            session_id = opened.session_id
-            provider = opened.provider
-            model = opened.model
-            try:
-                prompts = [
-                    state.input_text,
-                    *state.metadata.get("followups", []),
-                ]
-                for round_index, prompt in enumerate(prompts):
-                    rendered = (
-                        runtime.render(str(prompt))
-                        if runtime
-                        else str(prompt).replace(
-                            "$WORKSPACE", str(workspace)
-                        )
-                    )
-                    turn_messages: list[str] = []
-                    turn_events: list[str] = []
-                    async for event in client.send_message(
-                        session_id,
-                        opened.thread_id,
-                        rendered,
-                    ):
-                        event_data = event.model_dump(
-                            mode="json", exclude_none=True
-                        )
-                        events.append(_trace_value(event_data))
-                        turn_events.append(event.type)
-                        if event.type == "assistant_message":
-                            content = str(event.data.get("content") or "")
-                            if content:
-                                messages.append(content)
-                                turn_messages.append(content)
-                        elif event.type == "permission_request":
-                            request_id = event.data["request_id"]
-                            if request_id in resolved_interactions:
-                                continue
-                            call = event.data.get("tool_call") or {}
-                            permission = event.data.get("permission") or {}
-                            tool = str(
-                                call.get("name")
-                                or permission.get("tool")
-                                or ""
-                            )
-                            args = (
-                                call.get("args")
-                                if isinstance(call.get("args"), dict)
-                                else permission.get("params")
-                            )
-                            decision = (
-                                "deny"
-                                if _external_path(tool, args, workspace)
-                                else "allow"
-                            )
-                            await client.respond_permission(
-                                session_id,
-                                opened.thread_id,
-                                request_id=request_id,
-                                decision=decision,
-                                scope="once",
-                            )
-                            resolved_interactions.add(request_id)
-                        elif event.type == "user_input_required":
-                            request_id = event.data["request_id"]
-                            if request_id in resolved_interactions:
-                                continue
-                            options = event.data.get("options") or []
-                            answer = (
-                                options[0].get("label", "")
-                                if options else ""
-                            )
-                            await client.respond_user_input(
-                                session_id,
-                                opened.thread_id,
-                                request_id=request_id,
-                                answer=answer,
-                            )
-                            resolved_interactions.add(request_id)
-                        elif event.type == "error":
-                            raise RuntimeError(
-                                event.data.get("message")
-                                or "XBot turn failed"
-                            )
-                    turns.append({
-                        "events": turn_events,
-                        "output": "".join(turn_messages),
-                    })
-                    if runtime:
-                        runtime.after_round(
-                            round_index,
-                            session_id,
-                            "".join(turn_messages),
-                        )
-                summary = await client.get_thread(
-                    session_id, opened.thread_id
+        try:
+            async with sandbox_agent_bridge(
+                bridge_state,
+                sandbox="local",
+                port=bridge_port,
+                forward_generation_config=True,
+            ) as bridge:
+                _prepare_bridge_data(
+                    Path(data_dir).resolve(),
+                    bridge_data,
+                    bridge.port,
                 )
-                usage = summary.usage
-            finally:
-                if runtime:
-                    runtime.cleanup()
-                await client.close_session(session_id)
+                args = [
+                    "acp",
+                    "--data-dir",
+                    str(bridge_data),
+                    "--provider",
+                    "inspect",
+                ]
+                if agent:
+                    args.extend(["--agent", agent])
+                child_env = {
+                    "PYTHONUTF8": "1",
+                    "WORKSPACE": str(workspace),
+                    **(runtime.variables if runtime else {}),
+                }
+                async with spawn_agent_process(
+                    client,
+                    str(Path(command).resolve()),
+                    *args,
+                    cwd=str(workspace),
+                    env=child_env,
+                ) as (connection, process):
+                    try:
+                        await connection.initialize(
+                            protocol_version=PROTOCOL_VERSION,
+                            client_capabilities=ClientCapabilities(),
+                        )
+                    except ConnectionError as exc:
+                        stderr = (
+                            (await process.stderr.read()).decode(
+                                encoding="utf-8", errors="replace"
+                            )
+                            if process.stderr else ""
+                        )
+                        raise RuntimeError(
+                            f"XBot ACP process exited during initialization:\n{stderr}"
+                        ) from exc
+                    session = await connection.new_session(
+                        cwd=str(workspace),
+                        mcp_servers=[],
+                    )
+                    session_id = session.session_id
+                    prompts = [
+                        state.input_text,
+                        *state.metadata.get("followups", []),
+                    ]
+                    for round_index, prompt in enumerate(prompts):
+                        start = len(client.message_parts)
+                        rendered = (
+                            runtime.render(str(prompt))
+                            if runtime
+                            else str(prompt).replace(
+                                "$WORKSPACE", str(workspace)
+                            )
+                        )
+                        responses.append(await connection.prompt(
+                            session_id=session_id,
+                            prompt=[text_block(rendered)],
+                        ))
+                        if runtime:
+                            runtime.after_round(
+                                round_index,
+                                session_id,
+                                "".join(client.message_parts[start:]),
+                            )
+                bridge_state = bridge.state
+        finally:
+            if runtime:
+                runtime.cleanup()
 
-        state.output = ModelOutput.from_content(
-            model=f"xbot/{provider}/{model}".rstrip("/"),
-            content="\n".join(messages),
-        )
-        if usage is not None:
-            state.output.usage = ModelUsage(
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                total_tokens=usage.total_tokens,
-                input_tokens_cache_read=usage.cache_read_input_tokens,
-                input_tokens_cache_write=(
-                    usage.cache_creation_input_tokens
-                    + usage.prompt_cache_write_tokens
-                ),
-            )
+        state.messages = bridge_state.messages
+        state.output = bridge_state.output
         state.metadata["xbot"] = {
             "session_id": session_id,
-            "turns": turns,
-            "events": events,
+            "turns": [
+                {
+                    "stop_reason": response.stop_reason,
+                    "usage": (
+                        response.usage.model_dump()
+                        if response.usage else None
+                    ),
+                }
+                for response in responses
+            ],
+            "acp_events": client.events,
         }
         return state
 
     return solve
+
+
+def _prepare_bridge_data(source: Path, target: Path, port: int) -> None:
+    target.mkdir()
+    for name in ("config", ".agents", "memory"):
+        path = source / name
+        if path.exists():
+            shutil.copytree(path, target / name)
+    providers = {
+        "default": "inspect",
+        "providers": {
+            "inspect": {
+                "provider": "anthropic",
+                "model": "inspect",
+                "base_url": f"http://127.0.0.1:{port}",
+                "api_key": "inspect",
+                "max_context_tokens": 1_000_000,
+                "max_output_tokens": 32_768,
+            }
+        },
+    }
+    config_dir = target / "config"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "providers.yaml").write_text(
+        yaml.safe_dump(providers, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _allocate_bridge_port() -> int:
+    while True:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        if port not in _BRIDGE_PORTS:
+            _BRIDGE_PORTS.add(port)
+            return port
 
 
 def selected_environment(*names: str) -> dict[str, str]:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from inspect_ai import Task, task
 
-from xbot_eval.adapter import xbot_server_agent
+from xbot_eval.adapter import xbot_bridge_agent
 from xbot_eval.harnessbench import load_cases, workspace_oracle
 
 
@@ -23,12 +23,15 @@ def xbot_harnessbench_full() -> Task:
     """Run all 106 official HarnessBench tasks through XBot."""
     return Task(
         dataset=load_cases(CASES, TASK_IDS),
-        solver=xbot_server_agent(
-            uds_path=os.environ["XBOT_EVAL_UDS"],
+        solver=xbot_bridge_agent(
+            command=os.environ["XBOT_EVAL_COMMAND"],
+            data_dir=os.environ["XBOT_EVAL_DATA_DIR"],
             agent=os.environ.get("XBOT_EVAL_AGENT"),
         ),
         scorer=workspace_oracle(),
         sandbox="local",
         time_limit=2400,
         continue_on_fail=True,
+        tags=["xbot", "harnessbench", "full"],
+        metadata={"adapter": "inspect-agent-bridge"},
     )
