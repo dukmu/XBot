@@ -18,6 +18,7 @@ from xbotv2.core.builtin_tools.filesystem import (
     read_file,
     search_text,
     stat_path,
+    filesystem_write,
     write_file,
 )
 from xbotv2.tools.sandbox import SandboxPolicy
@@ -169,23 +170,29 @@ class TestFilesystemDiscovery:
 
 class TestFilesystemMutation:
     @pytest.mark.asyncio
-    async def test_write_is_atomic_and_hash_guarded(self, tmp_path):
+    async def test_runtime_guards_files_read_before_mutation(self, tmp_path):
         path = tmp_path / "code.py"
-        created = await write_file(str(path), "value = 1\n")
+        path.write_text("value = 1\n", encoding="utf-8")
+        policy = SandboxPolicy(workspace_root=tmp_path, enabled=False)
+
+        assert "expected_sha256" not in filesystem_write.parameters["properties"]
+        await read_file("code.py", sandbox=policy)
+        path.write_text("value = external\n", encoding="utf-8")
 
         rejected = await write_file(
-            str(path), "value = 2\n", expected_sha256="stale"
+            "code.py", "value = agent\n", sandbox=policy
         )
-        updated = await write_file(
-            str(path),
-            "value = 2\n",
-            expected_sha256=created.data["sha256"],
-        )
-
         assert rejected.status == "error"
         assert rejected.error.code == "content_changed"
+        reread = await read_file("code.py", sandbox=policy)
+        updated = await write_file(
+            "code.py", "value = agent\n", sandbox=policy
+        )
+
+        assert reread.data["changed_since_last_observation"] is True
+        assert reread.content.startswith("File changed since the previous read.")
         assert updated.data["changed"] is True
-        assert path.read_text(encoding="utf-8") == "value = 2\n"
+        assert path.read_text(encoding="utf-8") == "value = agent\n"
 
     @pytest.mark.asyncio
     async def test_exact_edit_rejects_ambiguous_match(self, tmp_path):

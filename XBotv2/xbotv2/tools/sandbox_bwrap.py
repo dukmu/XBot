@@ -12,6 +12,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +44,37 @@ class BubblewrapBackend:
         if not bwrap:
             raise RuntimeError("Sandbox enabled but bubblewrap (bwrap) is not installed")
 
+        python_prefix = _active_python_prefix()
+        mounts = list(mount_specs)
+        if python_prefix is not None:
+            base_prefix = Path(sys.base_prefix).resolve()
+            python_mounts = (
+                (python_prefix,)
+                if (
+                    base_prefix == python_prefix
+                    or base_prefix.is_relative_to("/usr")
+                )
+                else (python_prefix, base_prefix)
+            )
+            mounts = [
+                mount for mount in mounts
+                if mount.target not in python_mounts
+            ]
+            mounts.extend(
+                SandboxMountSpec(
+                    source=prefix,
+                    target=prefix,
+                    access="readonly",
+                    kind="dir",
+                )
+                for prefix in python_mounts
+                if prefix.is_dir()
+            )
+
         return [
             bwrap,
             *_build_args(
-                mount_specs,
+                mounts,
                 self.network,
                 cwd or str(self.workspace_root),
             ),
@@ -132,7 +160,11 @@ def _read_output(file: BinaryIO) -> str:
     return file.read().decode("utf-8", errors="replace")
 
 
-def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str) -> list[str]:
+def _build_args(
+    mount_specs: Iterable[SandboxMountSpec],
+    network: bool,
+    cwd: str,
+) -> list[str]:
     args = [
         "--die-with-parent",
         "--unshare-user-try",
@@ -141,8 +173,6 @@ def _build_args(mount_specs: Iterable[SandboxMountSpec], network: bool, cwd: str
         "--unshare-uts",
         "--unshare-cgroup",
         "--new-session",
-        "--clearenv",
-        "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "--proc", "/proc",
         "--dev", "/dev",
         "--tmpfs", "/tmp",
@@ -255,3 +285,10 @@ def _is_under(path: Path, parent: Path) -> bool:
 
 def backend_available() -> bool:
     return shutil.which("bwrap") is not None
+
+
+def _active_python_prefix() -> Path | None:
+    prefix = Path(sys.prefix).resolve()
+    if sys.prefix == sys.base_prefix or not (prefix / "bin").is_dir():
+        return None
+    return prefix

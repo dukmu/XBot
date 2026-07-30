@@ -442,14 +442,15 @@ class TestEngineBasics:
 
     @pytest.mark.asyncio
     async def test_max_iterations_limit(self, state_store, temp_workspace):
-        """Engine stops after max_iterations."""
-        # Infinite loop of tool calls
-        responses = []
-        for i in range(10):
-            responses.append({
+        """Engine asks for a tool-free summary after max_iterations."""
+        responses = [
+            {
                 "content": f"Call {i}",
                 "tool_calls": [{"name": "echo", "args": {"message": str(i)}, "id": f"call_{i}"}],
-            })
+            }
+            for i in range(3)
+        ]
+        responses.append({"content": "Budget exhausted; work remains."})
         llm = MockLLM(responses=responses)
         registry = ToolRegistry()
         registry.register(echo_tool, sandbox_mode="host")
@@ -458,9 +459,18 @@ class TestEngineBasics:
         engine.max_iterations = 3  # Small limit
         events = [e async for e in engine.run_turn("loop")]
 
-        # Should have stopped at max_iterations
         assistant_events = [e for e in events if e["type"] == "assistant_message"]
-        assert len(assistant_events) <= 3
+        assert len(assistant_events) == 4
+        assert assistant_events[-1]["data"]["content"] == (
+            "Budget exhausted; work remains."
+        )
+        final_context = llm.get_call_messages(3)
+        assert any(
+            message.role == "system"
+            and "tool iteration budget of 3 has been exhausted" in message.content
+            for message in final_context
+        )
+        assert llm.bound_tools == []
 
 
 class TestEngineHooks:

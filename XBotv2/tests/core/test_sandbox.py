@@ -1,6 +1,8 @@
 """Tests for SandboxPolicy with BubblewrapBackend."""
 
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -131,7 +133,8 @@ class TestBubblewrapBuildArgs:
 
 class TestBubblewrapCapabilities:
     @pytest.mark.asyncio
-    async def test_real_session_mount_and_shell(self, tmp_path):
+    async def test_real_session_mount_and_shell(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XBOT_SANDBOX_TEST_ENV", "from-host")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         session_root = tmp_path / ".data" / "sessions" / "s" / "state"
@@ -154,6 +157,16 @@ class TestBubblewrapCapabilities:
 
         assert cached["content"] == "cached"
         assert await policy.run_shell("printf sandbox-ok") == "sandbox-ok"
+        assert (
+            await policy.run_shell('printf %s "$XBOT_SANDBOX_TEST_ENV"')
+            == "from-host"
+        )
+        assert (
+            await policy.run_shell(
+                f"{shlex.quote(sys.executable)} "
+                "-c 'import sys; print(sys.prefix)'"
+            )
+        ).strip() == str(Path(sys.prefix).resolve())
 
 
 class TestSandboxPolicySerialisation:

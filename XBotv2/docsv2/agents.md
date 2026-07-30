@@ -77,6 +77,12 @@ as `bash` or `edit`. A `model` value may use `provider/model-id`. Credentials,
 provider URLs, plugin configuration, sandbox roots, and Hook paths do not belong
 in Agent Markdown.
 
+The default Tool iteration budget is 200. When an Agent definition sets
+`max_iterations`, that value replaces the default. Exhausting the budget
+triggers one final model request with Tools disabled and a runtime notice so the
+Agent can report incomplete work and the next action; it is not treated as
+ordinary completion.
+
 `AGENTS.md` remains a standard workspace instruction file. It is reloaded for
 each primary-agent and subagent model request and is never parsed as an Agent
 definition.

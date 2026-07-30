@@ -491,8 +491,16 @@ def _existing_text(path: Path) -> str | None:
 def _check_hash(path: Path, content: str | None, expected: str | None) -> None:
     if expected is None:
         return
+    if re.fullmatch(r"[0-9a-fA-F]{64}", expected) is None:
+        raise FilesystemError(
+            "invalid_hash",
+            "expected_sha256 must be a 64-character hexadecimal SHA-256; "
+            "omit it when no concurrency guard is required",
+            path=str(path),
+            expected_sha256=expected,
+        )
     actual = _sha256_bytes(content.encode("utf-8")) if content is not None else None
-    if actual != expected:
+    if actual != expected.lower():
         raise FilesystemError(
             "content_changed",
             f"File changed since it was read: {path}",
