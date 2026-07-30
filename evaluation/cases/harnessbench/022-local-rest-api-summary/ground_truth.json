@@ -1,0 +1,13 @@
+{
+  "project_count": 4,
+  "active_budget_usd": 26800,
+  "open_incidents": 5,
+  "projects": [
+    {"id": "p-100", "name": "Atlas Migration", "owner_name": "Mira Chen", "team": "Platform", "status": "active", "budget_usd": 12500, "open_incident_count": 1, "highest_open_severity": "high"},
+    {"id": "p-200", "name": "Beacon Cleanup", "owner_name": "Owen Patel", "team": "Operations", "status": "paused", "budget_usd": 4300, "open_incident_count": 1, "highest_open_severity": "medium"},
+    {"id": "p-300", "name": "Cipher Audit", "owner_name": "Mira Chen", "team": "Platform", "status": "active", "budget_usd": 8100, "open_incident_count": 2, "highest_open_severity": "high"},
+    {"id": "p-400", "name": "Delta Launch", "owner_name": null, "team": null, "status": "active", "budget_usd": 6200, "open_incident_count": 0, "highest_open_severity": null}
+  ],
+  "required_endpoints": ["/projects", "/users", "/incidents"],
+  "quality_terms": ["duplicate", "p-300", "missing owner", "u-404", "orphan", "p-999", "429", "503"]
+}

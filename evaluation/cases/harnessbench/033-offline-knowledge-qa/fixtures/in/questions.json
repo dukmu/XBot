@@ -1,0 +1,7 @@
+[
+  {"question_id": "Q1", "question": "What is the official release date and region of HarborPilot v2?"},
+  {"question_id": "Q2", "question": "How long are raw sensor logs retained before being converted to summary tables?"},
+  {"question_id": "Q3", "question": "Who is the duty escalation contact for the Rivergate pilot?"},
+  {"question_id": "Q4", "question": "Did the project disclose the name of the chief financial officer approver?"},
+  {"question_id": "Q5", "question": "When is the weekly routine maintenance window scheduled?"}
+]

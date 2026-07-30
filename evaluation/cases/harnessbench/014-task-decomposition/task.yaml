@@ -1,0 +1,9 @@
+task_id: "014-task-decomposition"
+title: "Autonomous Task Decomposition And Execution"
+class: "Long-running Autonomy & State Adaptation"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 2400
+tags: ["planning", "decomposition", "execution-monitoring", "complex"]

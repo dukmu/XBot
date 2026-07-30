@@ -1,0 +1,54 @@
+Build customer-level revenue metrics and a reconciliation note from local tables.
+
+Inputs copied to the workspace root:
+- $WORKSPACE/in/customers.csv
+- $WORKSPACE/in/orders.csv
+- $WORKSPACE/in/payments.csv
+- $WORKSPACE/in/refunds.csv
+- $WORKSPACE/in/fx_rates.csv
+- $WORKSPACE/in/chargebacks.csv
+
+Create:
+- $WORKSPACE/out/customer_metrics.csv
+- $WORKSPACE/out/region_summary.json
+- $WORKSPACE/out/reconciliation_audit.json
+- $WORKSPACE/out/reconciliation_notes.md
+
+customer_metrics.csv columns, in this exact order:
+canonical_customer_id,name,region,order_count,gross_revenue_usd,refund_amount_usd,chargeback_amount_usd,net_revenue_usd,segment
+Rows must be sorted by canonical_customer_id ascending.
+
+Business rules:
+1. Do not modify input files.
+2. Roll up aliases using customers.csv canonical_customer_id. Output one row per canonical customer, including canonical customers with no valid revenue.
+3. `order_count` counts distinct `order_id` values whose `order_status` is paid and that have at least one captured payment. Multiple captured payment rows for the same order still count as one order.
+4. Gross revenue comes from captured payments, not from order_amount. Ignore duplicate payment rows only when `(order_id, amount, currency, status)` all match; captured payments for the same order with different amounts are additive.
+5. Convert payments, refunds, and chargebacks to USD using fx_rates.csv.
+6. Captured payments that reference a missing order_id are orphan payments. Do not count them as revenue, but list them in reconciliation_notes.md.
+7. Refunds count only when they reference an order that is both paid and included through captured payment revenue. Orphan refunds, refunds for cancelled orders, and refunds for orders without captured revenue are anomalies, not revenue deductions.
+8. Chargebacks count only when they reference an included paid/captured order and status is won_by_customer. won_by_merchant chargebacks are reconciliation notes but not revenue deductions.
+9. Net revenue = gross revenue - refunds - chargebacks.
+10. Format money fields with exactly two decimals.
+11. Segment canonical customers as:
+   - platinum when net_revenue_usd >= 500
+   - gold when net_revenue_usd >= 250 and < 500
+   - silver when net_revenue_usd > 0 and < 250
+   - dormant when net_revenue_usd == 0
+
+region_summary.json requirements:
+- Valid JSON object keyed by region.
+- Each region entry must include canonical_customer_count, gross_revenue_usd, net_revenue_usd.
+
+reconciliation_notes.md requirements:
+- Explain the revenue basis.
+- List duplicate payments, orphan payments, orphan refunds, refunds against cancelled/no-captured orders, and chargebacks.
+- Mention the canonical customer merge.
+
+reconciliation_audit.json requirements:
+- Valid JSON with keys: duplicate_payment_ids, orphan_payment_ids, refund_anomaly_ids, included_chargeback_ids, excluded_chargeback_ids, alias_customer_ids.
+- Each value must be an array of IDs sorted ascending.
+- duplicate_payment_ids are duplicate captured payment rows ignored by the tuple rule.
+- refund_anomaly_ids include orphan refunds, refunds for cancelled orders, and refunds for orders without captured revenue.
+- excluded_chargeback_ids include chargebacks that are not deducted because the order is not included or the chargeback status is not won_by_customer.
+
+Do not use network access. Do not add extra columns to customer_metrics.csv.

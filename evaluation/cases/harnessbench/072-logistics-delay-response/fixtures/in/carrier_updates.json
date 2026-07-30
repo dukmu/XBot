@@ -1,0 +1,6 @@
+[
+  {"shipment_id": "S-7001", "estimated_delivery": "2026-06-08", "status": "weather delay"},
+  {"shipment_id": "S-7002", "estimated_delivery": "2026-06-06", "status": "on schedule"},
+  {"shipment_id": "S-7003", "estimated_delivery": "2026-06-10", "status": "sort center backlog"},
+  {"shipment_id": "S-7004", "estimated_delivery": "2026-06-09", "status": "missed linehaul"}
+]

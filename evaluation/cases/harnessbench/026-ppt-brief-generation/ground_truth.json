@@ -1,0 +1,6 @@
+{
+  "titles_in_order": ["Executive snapshot", "Customer pain", "What is launching", "Proof points", "Renewal expansion angle", "Ask and next steps"],
+  "metric_ids": ["M-ONBOARD", "M-TICKET", "M-ADMIN", "M-RENEW"],
+  "speaker_note_terms": ["faster onboarding", "lower ticket volume", "enterprise controls", "renewal expansion"],
+  "forbidden_terms": ["AI auto-remediation", "unreleased"]
+}

@@ -13,7 +13,8 @@ from inspect_ai.util import sandbox
 
 
 class _InspectACPClient:
-    def __init__(self) -> None:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
         self.message_parts: list[str] = []
         self.events: list[dict[str, Any]] = []
 
@@ -30,17 +31,22 @@ class _InspectACPClient:
 
     async def request_permission(self, **kwargs: Any) -> RequestPermissionResponse:
         tool_call = kwargs["tool_call"]
+        option_id = (
+            "deny"
+            if _external_path(tool_call.title, tool_call.raw_input, self.workspace)
+            else "allow_once"
+        )
         self.events.append({
             "session_update": "permission_request",
             "tool_call_id": tool_call.tool_call_id,
             "title": tool_call.title,
             "raw_input": tool_call.raw_input,
-            "decision": "deny",
+            "decision": option_id,
         })
         return RequestPermissionResponse(
             outcome=AllowedOutcome(
                 outcome="selected",
-                option_id="deny",
+                option_id=option_id,
             )
         )
 
@@ -64,7 +70,22 @@ def xbot_agent(
             raise RuntimeError(
                 f"Cannot resolve Inspect workspace: {workspace_result.stderr}"
             )
-        workspace = Path(workspace_result.stdout.strip()).resolve()
+        sandbox_root = Path(workspace_result.stdout.strip()).resolve()
+        workspace = sandbox_root / state.metadata.get("workspace_dir", "")
+        workspace = workspace.resolve()
+        runtime = None
+        case_dir = state.metadata.get("case_dir")
+        if case_dir:
+            from .harnessbench import HarnessBenchRuntime
+
+            runtime = HarnessBenchRuntime(
+                Path(case_dir),
+                sandbox_root,
+                workspace,
+            )
+            runtime_variables = runtime.prepare()
+        else:
+            runtime_variables = {}
 
         args = [
             "acp",
@@ -79,36 +100,49 @@ def xbot_agent(
             args.append("--no-plugins")
         args.extend(extra_args)
 
-        client = _InspectACPClient()
+        client = _InspectACPClient(workspace)
         child_env = dict(env or {})
+        child_env.update(runtime_variables)
         child_env.setdefault("PYTHONUTF8", "1")
         child_env["WORKSPACE"] = str(workspace)
         responses = []
-        async with spawn_agent_process(
-            client,
-            str(Path(command).resolve()),
-            *args,
-            cwd=str(workspace),
-            env=child_env,
-        ) as (connection, _process):
-            await connection.initialize(
-                protocol_version=PROTOCOL_VERSION,
-                client_capabilities=ClientCapabilities(),
-            )
-            session = await connection.new_session(
+        try:
+            async with spawn_agent_process(
+                client,
+                str(Path(command).resolve()),
+                *args,
                 cwd=str(workspace),
-                mcp_servers=[],
-            )
-            prompts = [state.input_text, *state.metadata.get("followups", [])]
-            for prompt in prompts:
-                rendered_prompt = str(prompt).replace(
-                    "$WORKSPACE",
-                    str(workspace),
+                env=child_env,
+            ) as (connection, _process):
+                await connection.initialize(
+                    protocol_version=PROTOCOL_VERSION,
+                    client_capabilities=ClientCapabilities(),
                 )
-                responses.append(await connection.prompt(
-                    session_id=session.session_id,
-                    prompt=[text_block(rendered_prompt)],
-                ))
+                session = await connection.new_session(
+                    cwd=str(workspace),
+                    mcp_servers=[],
+                )
+                prompts = [state.input_text, *state.metadata.get("followups", [])]
+                for round_index, prompt in enumerate(prompts):
+                    start = len(client.message_parts)
+                    rendered_prompt = (
+                        runtime.render(str(prompt))
+                        if runtime
+                        else str(prompt).replace("$WORKSPACE", str(workspace))
+                    )
+                    responses.append(await connection.prompt(
+                        session_id=session.session_id,
+                        prompt=[text_block(rendered_prompt)],
+                    ))
+                    if runtime:
+                        runtime.after_round(
+                            round_index,
+                            session.session_id,
+                            "".join(client.message_parts[start:]),
+                        )
+        finally:
+            if runtime:
+                runtime.cleanup()
 
         content = "".join(client.message_parts)
         state.output = ModelOutput.from_content(
@@ -146,6 +180,182 @@ def xbot_agent(
     return solve
 
 
+@solver
+def xbot_server_agent(
+    *,
+    uds_path: str,
+    agent: str | None = None,
+) -> Solver:
+    """Run each Inspect sample as a session on one shared XBot server."""
+
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        from xbotv2.client import XBotClient
+
+        workspace_result = await sandbox().exec(["pwd"])
+        if not workspace_result.success:
+            raise RuntimeError(
+                f"Cannot resolve Inspect workspace: {workspace_result.stderr}"
+            )
+        sandbox_root = Path(workspace_result.stdout.strip()).resolve()
+        workspace = (
+            sandbox_root / state.metadata.get("workspace_dir", "")
+        ).resolve()
+        runtime = None
+        case_dir = state.metadata.get("case_dir")
+        if case_dir:
+            from .harnessbench import HarnessBenchRuntime
+
+            runtime = HarnessBenchRuntime(
+                Path(case_dir),
+                sandbox_root,
+                workspace,
+            )
+            runtime.prepare()
+
+        messages: list[str] = []
+        turns: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+        resolved_interactions: set[str] = set()
+        session_id = ""
+        provider = ""
+        model = ""
+        usage = None
+        async with XBotClient(
+            base_url="http://localhost",
+            timeout=60.0,
+            uds_path=uds_path,
+        ) as client:
+            opened = await client.open_session(
+                workspace_root=str(workspace),
+                agent=agent,
+            )
+            session_id = opened.session_id
+            provider = opened.provider
+            model = opened.model
+            try:
+                prompts = [
+                    state.input_text,
+                    *state.metadata.get("followups", []),
+                ]
+                for round_index, prompt in enumerate(prompts):
+                    rendered = (
+                        runtime.render(str(prompt))
+                        if runtime
+                        else str(prompt).replace(
+                            "$WORKSPACE", str(workspace)
+                        )
+                    )
+                    turn_messages: list[str] = []
+                    turn_events: list[str] = []
+                    async for event in client.send_message(
+                        session_id,
+                        opened.thread_id,
+                        rendered,
+                    ):
+                        event_data = event.model_dump(
+                            mode="json", exclude_none=True
+                        )
+                        events.append(_trace_value(event_data))
+                        turn_events.append(event.type)
+                        if event.type == "assistant_message":
+                            content = str(event.data.get("content") or "")
+                            if content:
+                                messages.append(content)
+                                turn_messages.append(content)
+                        elif event.type == "permission_request":
+                            request_id = event.data["request_id"]
+                            if request_id in resolved_interactions:
+                                continue
+                            call = event.data.get("tool_call") or {}
+                            permission = event.data.get("permission") or {}
+                            tool = str(
+                                call.get("name")
+                                or permission.get("tool")
+                                or ""
+                            )
+                            args = (
+                                call.get("args")
+                                if isinstance(call.get("args"), dict)
+                                else permission.get("params")
+                            )
+                            decision = (
+                                "deny"
+                                if _external_path(tool, args, workspace)
+                                else "allow"
+                            )
+                            await client.respond_permission(
+                                session_id,
+                                opened.thread_id,
+                                request_id=request_id,
+                                decision=decision,
+                                scope="once",
+                            )
+                            resolved_interactions.add(request_id)
+                        elif event.type == "user_input_required":
+                            request_id = event.data["request_id"]
+                            if request_id in resolved_interactions:
+                                continue
+                            options = event.data.get("options") or []
+                            answer = (
+                                options[0].get("label", "")
+                                if options else ""
+                            )
+                            await client.respond_user_input(
+                                session_id,
+                                opened.thread_id,
+                                request_id=request_id,
+                                answer=answer,
+                            )
+                            resolved_interactions.add(request_id)
+                        elif event.type == "error":
+                            raise RuntimeError(
+                                event.data.get("message")
+                                or "XBot turn failed"
+                            )
+                    turns.append({
+                        "events": turn_events,
+                        "output": "".join(turn_messages),
+                    })
+                    if runtime:
+                        runtime.after_round(
+                            round_index,
+                            session_id,
+                            "".join(turn_messages),
+                        )
+                summary = await client.get_thread(
+                    session_id, opened.thread_id
+                )
+                usage = summary.usage
+            finally:
+                if runtime:
+                    runtime.cleanup()
+                await client.close_session(session_id)
+
+        state.output = ModelOutput.from_content(
+            model=f"xbot/{provider}/{model}".rstrip("/"),
+            content="\n".join(messages),
+        )
+        if usage is not None:
+            state.output.usage = ModelUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                input_tokens_cache_read=usage.cache_read_input_tokens,
+                input_tokens_cache_write=(
+                    usage.cache_creation_input_tokens
+                    + usage.prompt_cache_write_tokens
+                ),
+            )
+        state.metadata["xbot"] = {
+            "session_id": session_id,
+            "turns": turns,
+            "events": events,
+        }
+        return state
+
+    return solve
+
+
 def selected_environment(*names: str) -> dict[str, str]:
     """Return explicitly selected host variables for the XBot subprocess."""
     return {name: os.environ[name] for name in names if name in os.environ}
@@ -159,3 +369,16 @@ def _trace_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_trace_value(item) for item in value]
     return value
+
+
+def _external_path(tool: str | None, args: Any, workspace: Path) -> bool:
+    if not tool or not tool.startswith("filesystem_") or not isinstance(args, dict):
+        return False
+    for key in ("path", "source", "destination"):
+        value = args.get(key)
+        if not isinstance(value, str):
+            continue
+        path = Path(value)
+        if path.is_absolute() and not path.resolve().is_relative_to(workspace):
+            return True
+    return False

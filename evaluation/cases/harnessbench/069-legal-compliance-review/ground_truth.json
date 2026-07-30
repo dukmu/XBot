@@ -1,0 +1,53 @@
+{
+  "report_path": "out/compliance_report.csv",
+  "revised_path": "out/revised_copy.md",
+  "rationale_path": "out/change_rationale.md",
+  "hit_audit_path": "out/term_hit_audit.json",
+  "marketing_copy_source": "in/marketing_copy.md",
+  "report_header": "term,risk_level,location,policy_basis,recommended_fix",
+  "terms": {
+    "always converts": {"risk_level": "high", "policy_basis": "CLAIM-1"},
+    "clinic-approved": {"risk_level": "medium", "policy_basis": "CLAIM-6"},
+    "cure": {"risk_level": "high", "policy_basis": "CLAIM-3"},
+    "double repeat purchases": {"risk_level": "medium", "policy_basis": "CLAIM-1"},
+    "every single time": {"risk_level": "high", "policy_basis": "CLAIM-1"},
+    "FDA approved": {"risk_level": "high", "policy_basis": "CLAIM-2"},
+    "faster": {"risk_level": "medium", "policy_basis": "CLAIM-4"},
+    "guaranteed": {"risk_level": "high", "policy_basis": "CLAIM-1"},
+    "guaranteed_delivery_flag": {"risk_level": "low", "policy_basis": "CLAIM-5"},
+    "never fails": {"risk_level": "high", "policy_basis": "CLAIM-1"},
+    "risk-free": {"risk_level": "high", "policy_basis": "CLAIM-1"},
+    "risk_free_returns_schema": {"risk_level": "low", "policy_basis": "CLAIM-5"},
+    "zero platform fees forever": {"risk_level": "high", "policy_basis": "CLAIM-7"}
+  },
+  "benign_literals": ["guaranteed_delivery_flag", "risk_free_returns_schema"],
+  "forbidden_revised_phrases": [
+    "guaranteed",
+    "risk-free",
+    "FDA approved",
+    "cure",
+    "never fails",
+    "guaranteed way",
+    "always converts",
+    "every single time",
+    "clinic-approved",
+    "zero platform fees forever"
+  ],
+  "required_product": "BrightCart",
+  "required_rationale_terms": [
+    "CLAIM-1",
+    "CLAIM-2",
+    "CLAIM-3",
+    "CLAIM-4",
+    "CLAIM-5",
+    "CLAIM-6",
+    "CLAIM-7",
+    "INTERNAL-1",
+    "fda_clearance_document_present",
+    "internal escalation",
+    "evidence_manifest",
+    "soften",
+    "remove",
+    "benign"
+  ]
+}

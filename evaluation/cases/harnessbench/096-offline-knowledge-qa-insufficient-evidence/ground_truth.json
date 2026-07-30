@@ -1,0 +1,26 @@
+{
+  "answers": {
+    "Q01": {"status": "answered", "facts": ["aes-256-gcm"], "sources": ["kb/product_manual.md"], "evidence_tokens": ["AES-256-GCM", "snapshots"], "missing": []},
+    "Q02": {"status": "answered", "facts": ["200 mb"], "sources": ["kb/release_notes.md"], "evidence_tokens": ["200 MB", "attachments"], "missing": []},
+    "Q03": {"status": "answered", "facts": ["blocked", "admin"], "sources": ["kb/security_bulletin.md"], "evidence_tokens": ["blocked", "admin accounts"], "missing": []},
+    "Q04": {"status": "answered", "facts": ["self-service", "support-assisted"], "sources": ["kb/product_manual.md"], "evidence_tokens": ["two recovery channels", "support-assisted"], "missing": []},
+    "Q05": {"status": "answered", "facts": ["skips unchanged", "checksum"], "sources": ["kb/release_notes.md"], "evidence_tokens": ["skips unchanged", "checksum marker"], "missing": []},
+    "Q06": {"status": "answered", "facts": ["basic", "do not", "sso"], "sources": ["kb/product_manual.md"], "evidence_tokens": ["Basic", "do not have SSO"], "missing": []},
+    "Q07": {"status": "partial", "facts": ["180 days", "enterprise"], "sources": ["kb/support_faq.md"], "evidence_tokens": ["180 days", "Enterprise"], "missing": ["basic", "pro"]},
+    "Q08": {"status": "insufficient_evidence", "facts": [], "sources": [], "evidence_tokens": [], "missing": ["price", "pro"]},
+    "Q09": {"status": "answered", "facts": ["us-east-1", "eu-central-1"], "sources": ["kb/release_notes.md"], "evidence_tokens": ["us-east-1", "eu-central-1"], "missing": []},
+    "Q10": {"status": "partial", "facts": ["enterprise administrators"], "sources": ["kb/support_faq.md"], "evidence_tokens": ["Enterprise administrators"], "missing": ["uptime", "service level"]},
+    "Q11": {"status": "answered", "facts": ["security platform", "90 days"], "sources": ["kb/product_manual.md", "kb/security_bulletin.md"], "evidence_tokens": ["Security Platform", "90 days"], "missing": []},
+    "Q12": {"status": "insufficient_evidence", "facts": [], "sources": [], "evidence_tokens": [], "missing": ["phone", "telephone"]},
+    "Q13": {"status": "answered", "facts": ["blocked", "admin"], "sources": ["kb/security_bulletin.md"], "evidence_tokens": ["blocked", "admin accounts"], "missing": []},
+    "Q14": {"status": "insufficient_evidence", "facts": [], "sources": ["kb/support_faq.md"], "evidence_tokens": ["omits", "telephone"], "missing": ["approved", "phone", "placeholder"]}
+  },
+  "forbidden_answer_tokens": {
+    "Q08": ["$", "usd", "19", "29", "49"],
+    "Q12": ["555", "+1", "phone:"],
+    "Q14": ["555", "0134", "+1", "phone:"],
+    "Q03": ["allowed", "allow legacy"],
+    "Q13": ["still use", "temporarily allowed", "allowed for admin"]
+  },
+  "scoring": {"thresholds": {"pass": 0.70, "good": 0.85, "excellent": 0.95}}
+}

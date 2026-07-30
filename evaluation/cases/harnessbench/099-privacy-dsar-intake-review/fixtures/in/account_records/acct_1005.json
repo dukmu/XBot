@@ -1,0 +1,13 @@
+{
+  "account_id": "acct_1005",
+  "account_email": "noah.singh@example.com",
+  "phone": "+1-646-555-0177",
+  "status": "active",
+  "retention_flags": [],
+  "household_member": {
+    "name": "Priya Singh",
+    "email": "priya.singh@example.com",
+    "phone": "+1-646-555-0111"
+  },
+  "internal_risk_note": "household link is not authority to delete Priya's records"
+}

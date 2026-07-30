@@ -1,0 +1,8 @@
+{
+  "expected_ordered_titles": [
+    "[Practice] Bilibili-style nav bar and section tour",
+    "Mock zone: dynamic list rendering in offline HTML",
+    "Tip: treating a local port as your \"space home\""
+  ],
+  "_comment": "Must match the three title spans in fixtures/www/index.html; update together when the page changes."
+}

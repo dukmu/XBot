@@ -1,0 +1,5 @@
+| record_id | name | quantity | active | tags | note |
+|---|---:|---:|---|---|---|
+| A-001 | Alpha MD | 12 | true | blue;fragile | pipe \| safe |
+| B-007 | Beta | 7 | false | green |  |
+| C-010 | Gamma | 0 | true |  | from markdown |

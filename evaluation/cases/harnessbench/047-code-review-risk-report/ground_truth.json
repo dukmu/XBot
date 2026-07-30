@@ -1,0 +1,82 @@
+{
+  "expected_findings": [
+    {
+      "id": "auth_bypass",
+      "file": "app/api.py",
+      "severity": "critical",
+      "terms": ["x-user-id", "auth", "session", "trust", "header"],
+      "recommendation_terms": ["require_session", "verify", "session", "do not trust", "remove"],
+      "test_terms": ["forged", "x-user-id", "session"]
+    },
+    {
+      "id": "sql_injection",
+      "file": "app/db.py",
+      "severity": "high",
+      "terms": ["sql", "injection", "f-string", "customer_id", "parameter"],
+      "recommendation_terms": ["parameter", "placeholder", "?", "bind"],
+      "test_terms": ["malicious", "customer_id", "parameter"]
+    },
+    {
+      "id": "token_logging",
+      "file": "app/logging.py",
+      "severity": "high",
+      "terms": ["authorization", "token", "secret", "log", "header"],
+      "recommendation_terms": ["redact", "remove", "mask", "do not log"],
+      "test_terms": ["authorization", "redact", "log"]
+    },
+    {
+      "id": "archived_data_regression",
+      "file": "app/api.py",
+      "severity": "medium",
+      "terms": ["include_archived", "archived", "debugcount", "regression", "orders"],
+      "recommendation_terms": ["remove", "false", "default", "do not include", "test"],
+      "test_terms": ["archived", "excluded", "orders"]
+    },
+    {
+      "id": "tenant_filter_regression",
+      "file": "app/billing.py",
+      "severity": "critical",
+      "terms": ["tenant", "tenant_id", "invoice", "customer_id", "cross-tenant"],
+      "recommendation_terms": ["tenant_id", "filter", "scope", "where", "isolate"],
+      "test_terms": ["tenant", "invoice", "isolation"]
+    },
+    {
+      "id": "webhook_idempotency_regression",
+      "file": "app/webhooks.py",
+      "severity": "high",
+      "terms": ["idempot", "duplicate", "event", "capture", "payment"],
+      "recommendation_terms": ["seen", "mark", "idempotency", "duplicate", "event id"],
+      "test_terms": ["duplicate", "event", "capture"]
+    },
+    {
+      "id": "cache_scope_regression",
+      "file": "app/cache.py",
+      "severity": "high",
+      "terms": ["cache", "user_id", "customer_id", "include_archived", "cross-user"],
+      "recommendation_terms": ["user_id", "include_archived", "cache key", "scope", "tenant"],
+      "test_terms": ["cache", "user_id", "cross-user"]
+    },
+    {
+      "id": "admin_query_escalation",
+      "file": "app/admin.py",
+      "severity": "critical",
+      "terms": ["admin", "query", "role", "request.args", "privilege"],
+      "recommendation_terms": ["require_role", "server-side", "authorization", "do not trust", "remove"],
+      "test_terms": ["admin", "query", "privilege"]
+    },
+    {
+      "id": "audit_export_tenant_leak",
+      "file": "app/export.py",
+      "severity": "critical",
+      "terms": ["audit", "export", "tenant_id", "created_at", "cross-tenant"],
+      "recommendation_terms": ["tenant_id", "filter", "scope", "where", "isolate"],
+      "test_terms": ["tenant", "audit", "export"]
+    }
+  ],
+  "expected_files": ["app/api.py", "app/db.py", "app/logging.py", "app/billing.py", "app/webhooks.py", "app/cache.py", "app/admin.py", "app/export.py"],
+  "false_positive_terms": ["rename variable", "formatting", "style only", "line length"],
+  "scoring": {
+    "weights": {"json_shape": 0.18, "finding_coverage": 0.56, "actionability": 0.16, "fixture_integrity": 0.10},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

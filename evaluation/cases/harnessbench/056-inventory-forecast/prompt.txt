@@ -1,0 +1,34 @@
+Create a two-week inventory reorder plan from local sales and stock files.
+
+Inputs:
+- $WORKSPACE/in/sales_history.csv
+- $WORKSPACE/in/stock.json
+
+Create:
+- $WORKSPACE/out/reorder_plan.csv
+- $WORKSPACE/out/inventory_exceptions.json
+- $WORKSPACE/out/forecast_notes.md
+
+reorder_plan.csv columns, in this exact order:
+sku,avg_weekly_sales,forecast_14d,current_stock,safety_stock,reorder_qty,risk_level
+
+Rules:
+1. Do not modify fixtures.
+2. Include every SKU in stock.json, even if it has no sales_history rows.
+3. For each sku, avg_weekly_sales is the average units_sold across all history rows for that sku. If a SKU has no sales history, avg_weekly_sales is 0.00 and forecast_14d is 0.00; mention it in forecast_notes.md.
+4. Ignore sales_history rows for SKUs not present in stock.json, and mention them as skipped if any exist.
+5. forecast_14d = avg_weekly_sales * 2.
+6. target_stock = forecast_14d + safety_stock.
+7. reorder_qty = max(0, target_stock - current_stock), rounded up to the next multiple of the sku pack_size from stock.json. Never round down or to nearest.
+8. risk_level is high when current_stock < target_stock, medium when current_stock is equal to target_stock or up to exactly one pack_size above target_stock, otherwise low.
+9. Format avg_weekly_sales and forecast_14d with exactly two decimals. current_stock, safety_stock, and reorder_qty must be integer strings.
+10. forecast_notes.md must mention the forecast window, high-risk SKUs, any missing-history SKU, and the pack-size rounding rule.
+
+inventory_exceptions.json requirements:
+- Valid JSON with keys: high_risk_skus, missing_history_skus, skipped_history_skus, medium_boundary_skus, more_than_one_pack_low_skus, pack_rounding_cases.
+- high_risk_skus, missing_history_skus, skipped_history_skus, medium_boundary_skus, and more_than_one_pack_low_skus must be arrays sorted ascending.
+- more_than_one_pack_low_skus must include only SKUs whose current stock is more than exactly one pack_size above target_stock. Do not include every low-risk SKU unless it satisfies that boundary case.
+- pack_rounding_cases must be an object mapping each SKU with a nonzero reorder_qty to its reorder_qty string.
+- This file is an audit artifact; it must be consistent with reorder_plan.csv and forecast_notes.md.
+
+Do not use network access or external APIs.

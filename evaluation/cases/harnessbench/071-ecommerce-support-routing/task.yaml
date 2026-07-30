@@ -1,0 +1,9 @@
+task_id: "071-ecommerce-support-routing"
+title: "E-commerce support ticket routing and reply templates"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "hard"
+tags: ["customer-support", "ecommerce", "routing", "professional-workflow", "deterministic-oracle"]

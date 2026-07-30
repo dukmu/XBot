@@ -1,0 +1,9 @@
+task_id: "072-logistics-delay-response"
+title: "Logistics delay identification and customer response"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "medium"
+tags: ["logistics", "customer-operations", "planning", "deterministic-oracle"]

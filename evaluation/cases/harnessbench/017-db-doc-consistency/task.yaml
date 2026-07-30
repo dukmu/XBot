@@ -1,0 +1,8 @@
+task_id: "017-db-doc-consistency"
+title: "System Configuration and Deployment Documentation Consistency Audit"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 1800

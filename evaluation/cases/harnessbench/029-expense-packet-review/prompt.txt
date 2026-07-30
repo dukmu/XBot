@@ -1,0 +1,20 @@
+Review the reimbursement packet for policy issues and missing documentation.
+
+Inputs:
+- $WORKSPACE/in/receipts.csv
+- $WORKSPACE/in/policy.md
+- $WORKSPACE/in/receipt_texts/*.txt
+
+Outputs:
+- $WORKSPACE/out/reimbursement_audit.csv
+- $WORKSPACE/out/missing_docs.md
+
+reimbursement_audit.csv requirements:
+- CSV header: receipt_id,employee,amount,category,issue,allowed_amount,recommended_action
+- Include every receipt with a policy issue, duplicate, or missing/invalid attachment.
+- Use numeric amounts without currency symbols.
+
+missing_docs.md requirements:
+- List every receipt that lacks a usable attachment and the reason.
+- Include the total claimed amount and total allowed amount after policy caps.
+- Do not modify input files.

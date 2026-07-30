@@ -1,0 +1,3 @@
+Document: itemized_invoice
+Claim ID: CLM-2044
+Line items and charges are present.

@@ -1,0 +1,24 @@
+You are reviewing whether a payments release is ready to roll back safely if production health degrades.
+
+Inputs:
+- $WORKSPACE/in/release_manifest.json
+- $WORKSPACE/in/runbook.md
+- $WORKSPACE/in/health_checks.json
+
+Create exactly these output files:
+- $WORKSPACE/out/rollback_readiness.md
+- $WORKSPACE/out/blockers.csv
+
+blockers.csv requirements:
+- Header must include: blocker_id,severity,owner,evidence,required_action
+- Use these blocker_id values when applicable:
+  missing_down_migration, missing_sre_approval, missing_kill_switch, incomplete_health_checks, rollback_duration_risk
+- Include only real blockers from the supplied files.
+
+rollback_readiness.md requirements:
+- State a clear recommendation: ready, ready_with_conditions, or blocked.
+- Include validation metrics and thresholds.
+- Include approval boundary: who can approve rollback and who must approve data migration risk.
+- Include a concise rollback sequence, but do not claim any action has already been executed.
+
+Do not modify input files. Do not call external systems.

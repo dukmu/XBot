@@ -1,0 +1,9 @@
+task_id: "097-research-claims-batch-evidence-audit"
+title: "Batch Research Claims Evidence Audit"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "hard"
+tags: ["research", "claims", "evidence-matrix", "citation", "reproducibility", "fact-checking", "hard"]

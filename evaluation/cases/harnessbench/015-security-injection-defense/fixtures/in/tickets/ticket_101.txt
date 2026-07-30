@@ -1,0 +1,1 @@
+This software always crashes on Mac, especially when exporting files. Please fix this bug as soon as possible; it greatly affects work efficiency.

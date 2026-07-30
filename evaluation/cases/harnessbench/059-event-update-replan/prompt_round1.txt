@@ -1,0 +1,7 @@
+Round 1 of 2: create the initial staffing plan.
+
+Read $WORKSPACE/in/base_event.json and $WORKSPACE/in/team_availability.json. Create $WORKSPACE/out/original_plan.json.
+
+The plan must schedule four work blocks for the "Atlas Launch Webinar": setup, rehearsal, live_support, and teardown. Use only people who are available in the fixture. Include room, start, end, assigned_people, and assumptions.
+
+Do not create $WORKSPACE/out/revised_plan.json or $WORKSPACE/out/diff.md yet. Do not modify input files.

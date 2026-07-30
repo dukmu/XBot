@@ -1,0 +1,11 @@
+customer_id,canonical_customer_id,name,region,signup_date
+C001,C001,Ada Chen,North,2024-10-11
+C006,C001,Ada Chen - legacy portal,North,2024-09-15
+C002,C002,Ben Ortiz,West,2024-11-03
+C003,C003,Cleo Singh,East,2024-12-18
+C004,C004,Dara Moore,South,2025-01-04
+C005,C005,Eli Park,North,2025-01-15
+C007,C003,Cleo Singh - marketplace,East,2025-01-20
+C008,C008,Faye Liu,Central,2025-02-01
+C009,C009,Gus Rivera,West,2025-02-07
+C010,C001,Ada Chen - wholesale,North,2025-02-09

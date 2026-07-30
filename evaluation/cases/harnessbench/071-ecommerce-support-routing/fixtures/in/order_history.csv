@@ -1,0 +1,7 @@
+order_id,customer_id,status,delivered_days_ago,item,prior_failures
+O-501,C-11,delivered,2,ceramic mug,0
+O-502,C-12,processing,0,linen tote,0
+O-503,C-13,in_transit,8,desk lamp,2
+O-504,C-14,fraud_hold,0,wireless charger,0
+O-505,C-15,delivered,5,blanket,1
+O-506,C-16,delivered,4,noise-canceling earbuds,0

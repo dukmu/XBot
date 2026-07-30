@@ -1,0 +1,14 @@
+task_id: "063-alert-dedup-noise"
+title: "Alert deduplication and noise reduction from topology-aware alerts"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "sre"
+  - "incident-response"
+  - "alerting"
+  - "deduplication"
+  - "topology"

@@ -1,0 +1,30 @@
+You are evaluating whether a canary release should continue, pause, or roll back using offline metric snapshots.
+
+Inputs:
+- $WORKSPACE/in/baseline_metrics.csv
+- $WORKSPACE/in/canary_metrics.csv
+- $WORKSPACE/in/thresholds.json
+
+Create exactly this output file:
+- $WORKSPACE/out/canary_decision.json
+- $WORKSPACE/out/metric_evidence.csv
+
+canary_decision.json requirements:
+- Top-level object with: release_id, decision, breached_metrics, calculations, rationale, next_actions.
+- decision must be one of: continue, pause, rollback.
+- breached_metrics must list metric names that exceeded thresholds.
+- calculations must include baseline_value, canary_value, delta, threshold, direction, sample_count, and evidence_status for each evaluated metric.
+- Average all available rows for the same metric before calculating deltas.
+- Apply direction correctly:
+  - increase_bad means canary - baseline is bad when above threshold.
+  - decrease_bad means baseline - canary is bad when above threshold.
+- If a metric from thresholds.json is missing from either baseline or canary, mark evidence_status as missing_data, do not count it as breached, and include a caveat.
+- If sample_count is below min_sample_count in thresholds.json, mark evidence_status as low_sample and include a caveat.
+- next_actions must be safe operational recommendations; do not claim you executed a rollback.
+
+metric_evidence.csv requirements:
+- Exact header:
+  metric,baseline_value,canary_value,delta,threshold,direction,severity,evidence_status,breached
+- Include one row for every metric in thresholds.json.
+
+Evaluate every metric in thresholds.json. Do not modify input files. Do not call monitoring APIs or use live data.

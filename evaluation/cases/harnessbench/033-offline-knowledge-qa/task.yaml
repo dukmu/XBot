@@ -1,0 +1,9 @@
+task_id: "033-offline-knowledge-qa"
+title: "Offline Knowledge Base QA with Evidence Attribution"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "easy"
+tags: ["information-retrieval", "offline-qa", "citation", "fact-checking", "easy"]

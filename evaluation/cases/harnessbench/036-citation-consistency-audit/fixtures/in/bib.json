@@ -1,0 +1,39 @@
+{
+  "Lin2022": {
+    "authors": ["Mei Lin", "Ravi Rao"],
+    "year": 2022,
+    "title": "Regional Cache Hints for Tail Latency"
+  },
+  "Gomez2020": {
+    "authors": ["Elena Gomez"],
+    "year": 2020,
+    "title": "Operational Drills for Cache Invalidation"
+  },
+  "Singh2022": {
+    "authors": ["Arjun Singh"],
+    "year": 2022,
+    "title": "Repeatable Load Test Intervals"
+  },
+  "Chen2024": {
+    "authors": ["Lena Chen"],
+    "year": "2024",
+    "title": "Adaptive Cache Prewarming",
+    "doi": "10.1000/cache-prewarm"
+  },
+  "Chen2024Duplicate": {
+    "authors": ["Lena Chen"],
+    "year": "2024",
+    "title": "Edge Operations Retrospective",
+    "doi": "10.1000/wrong-doi"
+  },
+  "Vega2019": {
+    "authors": ["Sofia Vega"],
+    "year": 2019,
+    "title": "Legacy CDN Routing"
+  },
+  "Ortega2018": {
+    "authors": ["Inez Ortega"],
+    "year": 2020,
+    "title": "Rollback Drills for Edge Services"
+  }
+}

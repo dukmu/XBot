@@ -1,0 +1,8 @@
+Atlas launch sync part 1, 2026-06-03.
+
+Mina: The pricing FAQ is still open from last week. Sales feedback arrived late, so the final FAQ should move to 2026-06-07.
+Rita: I can take ownership of the pricing FAQ because I have the sales notes.
+Owen: I can prepare the sandbox access checklist, but the partner sandbox is slower than planned.
+Jules: The privacy review is not done yet. I will confirm DPA language with legal unless legal says it is already covered.
+Mina: I will collect two customer quotes for the launch brief by 2026-06-09.
+Rita: The dashboard screenshot request from PM is done; no follow-up needed.

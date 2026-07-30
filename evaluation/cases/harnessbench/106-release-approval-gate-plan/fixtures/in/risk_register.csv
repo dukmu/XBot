@@ -1,0 +1,6 @@
+risk_id,severity,owner_role,summary,mitigation_status
+RR-DB-REV,critical,database_owner,DB migration reversal is not tested,open
+RR-CANARY,critical,sre_lead,Canary error rate exceeds checkout threshold,open
+RR-SEC,high,security_reviewer,Customer-facing reason code requires security approval,open
+RR-FREEZE,critical,incident_commander,Target start overlaps a freeze window,open
+RR-INCIDENT,high,sre_lead,Related checkout incident occurred within 14 days,open

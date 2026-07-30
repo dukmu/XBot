@@ -1,0 +1,5 @@
+Support Metrics Note
+
+The triage playbook launched on 2025-06-03. Median customer support first-response time fell from 6.4 hours in the prior two weeks to 3.1 hours in the following two weeks.
+
+The note does not evaluate District 9 expansion.

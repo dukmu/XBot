@@ -1,0 +1,23 @@
+{
+  "priority_order": [
+    "emergency_addendum_2025-03.md when effective and scoped to the case",
+    "regional_addendum_france_2025-02.md when effective and scoped to France client-facing meals",
+    "expense_policy_2025-02.md",
+    "hr_exception_memo_2025-01.md when scoped to remote engineering equipment",
+    "expense_policy_2024-09.md",
+    "expense_policy_2024-01.md"
+  ],
+  "effective_dates": {
+    "expense_policy_2024-01.md": "2024-01-01",
+    "expense_policy_2024-09.md": "2024-09-01",
+    "expense_policy_2025-02.md": "2025-02-01",
+    "hr_exception_memo_2025-01.md": "2025-01-15",
+    "emergency_addendum_2025-03.md": "2025-03-10",
+    "regional_addendum_france_2025-02.md": "2025-02-10"
+  },
+  "scopes": {
+    "hr_exception_memo_2025-01.md": "remote engineering employees buying approved ergonomic chairs through 2025-06-30 only",
+    "emergency_addendum_2025-03.md": "storm response travel from 2025-03-10 through 2025-04-30 only",
+    "regional_addendum_france_2025-02.md": "France office employees hosting client-facing dinners in France from 2025-02-10 through 2025-03-31 only"
+  }
+}

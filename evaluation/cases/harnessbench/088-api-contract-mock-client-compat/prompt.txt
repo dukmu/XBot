@@ -1,0 +1,27 @@
+Use only the task-provided mock API at `$MOCK_API_BASE`. It may be exposed through a public tunnel to a local benchmark server. Do not use any other internet resources.
+
+The Python client in `$WORKSPACE/in/apiclient/client.py` is incompatible with the current API contract.
+
+Read:
+- `$WORKSPACE/in/apiclient/contract.md`
+- `$WORKSPACE/in/apiclient/sample_requests.json`
+
+Your job:
+- Fix `$WORKSPACE/in/apiclient/client.py`.
+- Run `python -m pytest tests` from `$WORKSPACE/in/apiclient`.
+- Exercise the mock API at `$MOCK_API_BASE` while validating your fix.
+- Write `$WORKSPACE/out/compat_report.md` describing v1/v2 mapping, pagination, retry, nullable fields, and error handling.
+
+Required behavior:
+- Support `/v1/users` page-number responses and `/v2/users` cursor responses.
+- Normalize both user shapes to `{id, name, email, plan}`.
+- Treat missing or null email as `None`.
+- Retry local HTTP 429 responses with a short backoff.
+- Convert API error envelopes into `ApiError` with status and message.
+- Do not hard-code the mock fixture answers or base URL.
+
+Constraints:
+- Do not modify `contract.md`, `sample_requests.json`, `tests`, or `../mock_api`.
+- Do not use network requests except the task-provided mock API URL.
+- Do not remove retry or error handling.
+- Do not introduce external dependencies such as requests.

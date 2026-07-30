@@ -1,0 +1,3 @@
+Safety Audit Closure
+
+The June safety audit recorded zero unresolved high-severity findings. Three medium-severity documentation items remained open for the July compliance review.

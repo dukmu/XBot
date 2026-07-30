@@ -1,0 +1,7 @@
+Atlas launch sync part 3, 2026-06-05.
+
+Mina: The customer quotes are taking longer because one customer requested legal review of their quote. Moving to 2026-06-11.
+Rita: Pricing FAQ is in final review with Sales VP. Should be done by 2026-06-07 as planned.
+Owen: Sandbox checklist is still blocked — partner credentials delayed again. If pricing FAQ slips, I need another 3 days per dependency rules.
+Sam: Compliance signoff is on track for 2026-06-12. I also need to prepare the security audit brief by 2026-06-13.
+Alex (new PM): I will coordinate the partner onboarding session once Owen finishes the sandbox checklist. Target 2026-06-14.

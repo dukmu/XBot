@@ -1,0 +1,3 @@
+Region: North
+Amount: 1200
+Currency: USD

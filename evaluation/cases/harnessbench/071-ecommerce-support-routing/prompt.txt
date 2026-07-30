@@ -1,0 +1,39 @@
+You are routing ecommerce support tickets.
+
+Read:
+- $WORKSPACE/in/tickets.json
+- $WORKSPACE/in/order_history.csv
+- $WORKSPACE/in/policy.md
+
+Each ticket includes optional fields such as `vip_flag`, `prior_ticket_refs`. Honor VIP-1: VIP speeds **information_request** (`priority=high`) but never skips INFO-1 evidence rules or fraud holds.
+
+Create:
+- $WORKSPACE/out/routing_decisions.json
+- $WORKSPACE/out/reply_templates.md
+
+Requirements for routing_decisions.json:
+- Valid JSON array with **exactly one object per ticket id** present in tickets.json (same ids, same ordering not required).
+- Each object **must** include these keys (use empty string `""` when no order id is supplied): ticket_id, action, policy_basis, order_id, priority, customer_reply_key.
+- action ∈ { refund, reship, escalate_human, information_request }.
+- policy_basis must include the governing clause token (REFUND-1, SHIP-1, ESC-1, INFO-1, FRAUD-1, CONFLICT-1, DISPUTE-1). Multiple citations allowed via semicolon text but must contain the listed primary clause id string for tooling checks.
+- Resolve conflicts conservatively: fraud holds, carrier/system contradictions vs warehouse facts, delivered-status POD disputes inside DISPUTE-1 window — escalate_human even if VIP asks otherwise.
+- Missing verification → information_request + INFO-1.
+- priority ∈ { high, normal }. Use **high** for every escalate_human ticket and for VIP-backed INFO-1 threads lacking verification (policy VIP-1).
+- customer_reply_key must be exactly one stable snake_case identifier per ticket (templates reference the same key).
+
+Requirements for reply_templates.md:
+- Provide **one section per ticket**, headed exactly: `### Template <ticket_id>` (example: `### Template T-1001`).
+- Body content must stay empathetic and non-binding on outcomes already routed away from automation.
+- Never promise refunds/reships/hold removals unless action already guarantees automation handled it — keep language conditional when escalating.
+
+Create also:
+- $WORKSPACE/out/escalation_notes.csv  
+  First row must be exactly: ticket_id,reason,policy_basis,human_team  
+  One row per escalate_human ticket only; concise reason (≥8 chars); policy_basis consistent with routing_decisions.json; human_team must be exactly one of:
+  - T-1003 → Logistics Escalations  
+  - T-1005 → Fraud Review  
+  - T-1006 → Trust and Safety  
+  - T-1008 → Carrier Claims  
+  - T-1009 → Logistics Integrity  
+
+Do not use the network. Do not modify input files.

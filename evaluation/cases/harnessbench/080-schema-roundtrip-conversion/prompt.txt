@@ -1,0 +1,23 @@
+Convert and reconcile records from Markdown, CSV, JSON, and YAML while preserving the schema in $WORKSPACE/in/schema.json.
+
+Inputs:
+- $WORKSPACE/in/records.md
+- $WORKSPACE/in/records.csv
+- $WORKSPACE/in/records.json
+- $WORKSPACE/in/records.yaml
+- $WORKSPACE/in/schema.json
+
+Create:
+- $WORKSPACE/out/canonical_records.json
+- $WORKSPACE/out/canonical_records.yaml
+- $WORKSPACE/out/canonical_records.csv
+- $WORKSPACE/out/conversion_report.json
+
+Rules:
+- Sort canonical records by record_id.
+- Preserve string identifiers such as "007"; do not coerce them to numbers.
+- Preserve null as JSON/YAML null; in CSV use an empty field only for null notes.
+- Preserve arrays as arrays in JSON/YAML; in CSV join tags with semicolons.
+- Markdown cells may contain escaped pipes.
+- YAML uses anchors/aliases.
+- If sources conflict, schema priority is JSON > YAML > CSV > Markdown and the conflict must be reported.

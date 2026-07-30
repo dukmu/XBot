@@ -1,0 +1,40 @@
+Task: OpenClaw Multi‑Provider API Routing and Failover Audit
+
+You are given a set of offline materials in `$WORKSPACE/in/` that simulate real runtime records of OpenClaw connecting to three model providers: OpenAI, Anthropic, and Gemini. Do not go online; complete the analysis solely based on the local files.
+
+Input files:
+- `provider_capabilities.json`: Provider capabilities and known limitations.
+- `workload_catalog.json`: Six OpenClaw workload types and their hard requirements.
+- `gateway_config.json`: Current OpenClaw routing configuration draft.
+- `traces/*.jsonl`: Simulated usage / cache / tool‑call / error records.
+- `incident_notes.md`: Online incident notes and cost anomaly remarks.
+- `monthly_cost_report.csv`: Per‑model per‑thousand token cost (input/output) for the last month.
+
+Produce the following artifacts, all written to `$WORKSPACE/out/`:
+
+1. `provider_scorecard.json`
+   - Top‑level fields must include `workloads`, `provider_health`, `recommended_defaults`.
+   - `workloads` is an object; each workload id maps to:
+     - `primary_provider`: Recommended primary provider.
+     - `fallback_provider`: Recommended fallback provider.
+     - `reason_codes`: Array of strings, at least 2 reasons.
+     - `risk_notes`: Array of strings, at least 1 risk.
+   - Must cover all six workloads: `long_context_research`, `strict_json_tools`, `vision_pdf_triage`, `low_latency_alerts`, `cache_heavy_followups`, `cost_guarded_bulk`.
+
+2. `openclaw_config_patch.json`
+   - Provide a human‑readable JSON patch draft; it does not need to strictly follow RFC 6902, but must be a JSON object.
+   - Must include, using nested object paths: `agents.defaults.model.primary`, `agents.defaults.model.fallbacks`, `agents.defaults.models`, `diagnostics.cacheTrace.enabled`; do not write as flat dotted‑key strings.
+   - Must explicitly enable cache trace, and configure different `cacheRetention` (or equivalent comment) for at least two providers/models.
+
+3. `failover_playbook.md`
+   - Write mitigation strategies for scenarios where the primary provider experiences timeout, structured output errors, cache hit drop, or vision task failure.
+   - Must include a statement: “Do not use a single cross‑provider cache hit rate threshold.”
+   - Must include a table listing workload, primary, fallback, and verification signal.
+
+4. `audit_notes.md`
+   - Use short bullet points to list the current configuration issues you identified, the evidence source files, and recommended changes.
+
+Scoring focus:
+- Ability to differentiate cache, tool calling, structured output, and multimodal differences across API providers.
+- Ability to connect offline traces to OpenClaw configuration change recommendations.
+- Ability to form an actionable, auditable, rollback‑able failover strategy.

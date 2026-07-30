@@ -1,0 +1,1 @@
+DSAR-002: requester wrote from jules.work@example.net, while the account record shows a different email. Do not reveal the account email. Ask for account login verification or token.

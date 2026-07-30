@@ -1,0 +1,28 @@
+{
+  "expected_users": [
+    ["u1", "ada@example.com", "Ada", "2024-01-02T10:00:00Z", "active"],
+    ["u2", "lin@example.com", "Lin", "2024-02-03T11:30:00Z", "active"],
+    ["u3", "grace@example.com", "Grace", "2024-03-04T09:15:00Z", "active"],
+    ["u4", "ada+u4@example.com", "Ada Legacy", "2023-12-01T08:00:00Z", "active"],
+    ["u5", "missing+u5@example.invalid", "Null Email Legacy", "2023-11-05T12:00:00Z", "active"],
+    ["u6", "missing+u6@example.invalid", "Blank Email Legacy", "2023-10-06T07:45:00Z", "active"]
+  ],
+  "expected_orders": [
+    ["o1", "u1", 1299, "2024-04-01T09:00:00Z"],
+    ["o2", "u4", 4599, "2024-04-02T10:30:00Z"],
+    ["o3", "u5", 799, "2024-04-03T11:45:00Z"],
+    ["o4", "u6", 1599, "2024-04-04T12:10:00Z"]
+  ],
+  "fixture_hashes": {
+    "schema.sql": "ca179d023a6b2573102142f0b2770cf8",
+    "migration_policy.md": "f85c0677271342e2c4f5612ecc33a56c"
+  },
+  "required_sql_terms": ["create table", "status", "unique", "not null", "check", "insert into", "drop table", "begin", "commit"],
+  "postcheck_terms": ["select", "users", "orders", "count", "u4", "u5", "u6", "status", "email"],
+  "migration_report_terms": ["strategy", "duplicate", "null", "blank", "idempotent", "rollback", "postcheck", "orders"],
+  "forbidden_sql_terms": ["delete from users", "drop database"],
+  "scoring": {
+    "weights": {"migration_executes": 0.13, "data_preserved": 0.20, "orders_preserved": 0.08, "constraints": 0.17, "sql_quality": 0.09, "preflight": 0.06, "rollback": 0.06, "postcheck": 0.06, "migration_report": 0.04, "idempotent": 0.07, "fixture_integrity": 0.04},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

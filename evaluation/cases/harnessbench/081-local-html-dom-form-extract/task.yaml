@@ -1,0 +1,15 @@
+task_id: "081-local-html-dom-form-extract"
+title: "Local HTML DOM Form Text Extract"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "medium"
+tags:
+  - "workspace-tooling"
+  - "local-html"
+  - "form"
+  - "dom-extraction"
+  - "no-vision"
+hooks_module: "hooks.py"

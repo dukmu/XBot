@@ -1,0 +1,21 @@
+Create a structured slide brief for the HelioDesk Q3 product update. Do not create a pptx.
+
+Inputs:
+- $WORKSPACE/in/product_notes.md
+- $WORKSPACE/in/metrics.csv
+- $WORKSPACE/in/template_outline.md
+
+Outputs:
+- $WORKSPACE/out/slides_outline.json
+- $WORKSPACE/out/speaker_notes.md
+
+slides_outline.json requirements:
+- JSON object with a "slides" array of exactly 6 slides.
+- Each slide has: slide_number, title, bullets, metric_refs.
+- Follow the six sections in template_outline.md in order.
+- Cite metric IDs from metrics.csv in metric_refs when a slide uses a metric.
+
+speaker_notes.md requirements:
+- Include notes for all 6 slides.
+- Cover the main value propositions: faster onboarding, lower ticket volume, enterprise controls, and renewal expansion.
+- Do not invent metrics or customer names.

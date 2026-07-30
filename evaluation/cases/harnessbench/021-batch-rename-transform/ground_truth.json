@@ -1,0 +1,36 @@
+{
+  "source_hashes": {
+    "fixtures/in/raw/2024 FEB revenue.TXT": "ed12e6cd6160b756c7b613665c640f62a9103c963a5b44a6841f77760ea1c881",
+    "fixtures/in/raw/Customer Export 01.csv": "1919380529fcd603c49925181d345a7057db256ca07c93a7c3b6ae6fbf6cd219",
+    "fixtures/in/raw/README.keep": "153784d7b07565451abb3d466490a9fe784b98e5bf215dbb8c62a7b86ce21100",
+    "fixtures/in/raw/bad revenue.txt": "501d664681fe62d72b814755df7a97fe2cf5ba4c4bfb76f616e1b28f0515a853",
+    "fixtures/in/raw/image.png": "e88ab6c815eebe0cebaeba1f059b8018d1c5f6f977a08026738079ebca4be367",
+    "fixtures/in/raw/mixed-case inventory.JSON": "24f8e572dd9ba7cb3c40cbfc9a30d8322694571449dac9087e7d67610e9d6ece",
+    "fixtures/in/raw/nested/2024 mar revenue.txt": "2187baeb22e53514a0d051f780ec06ffa4c262ed8317e118732d6e0d4845fe76",
+    "fixtures/in/raw/nested/customer export 01.csv": "7a6db9aa76dcd540362c2af3ebd95905a114dabcc9e94281b675d88a69f7210b"
+  },
+  "outputs": {
+    "out/normalized/revenue_2024_02.json": {"region": "North", "amount": 1200, "currency": "USD"},
+    "out/normalized/revenue_2024_03.json": {"region": "South", "amount": 950.5, "currency": "USD"},
+    "out/normalized/customer_export_01.json": [
+      {"name": "Ada Lovelace", "email": "ada@example.test", "spend": 42.5},
+      {"name": "Grace Hopper", "email": "grace@example.test", "spend": 77.0}
+    ],
+    "out/normalized/customer_export_01__2.json": [
+      {"name": "Katherine Johnson", "email": "katherine@example.test", "spend": 88.25}
+    ],
+    "out/normalized/inventory_west.csv": "sku,qty\na-100,5\nb-200,2\n"
+  },
+  "rename_log_rows": [
+    {"source": "in/raw/2024 FEB revenue.TXT", "target": "out/normalized/revenue_2024_02.json", "action": "txt_to_json"},
+    {"source": "in/raw/Customer Export 01.csv", "target": "out/normalized/customer_export_01.json", "action": "csv_to_json"},
+    {"source": "in/raw/mixed-case inventory.JSON", "target": "out/normalized/inventory_west.csv", "action": "json_to_csv"},
+    {"source": "in/raw/nested/2024 mar revenue.txt", "target": "out/normalized/revenue_2024_03.json", "action": "txt_to_json"},
+    {"source": "in/raw/nested/customer export 01.csv", "target": "out/normalized/customer_export_01__2.json", "action": "csv_to_json"}
+  ],
+  "error_rows": [
+    {"source": "in/raw/Customer Export 01.csv", "row_or_record": "2", "error_type": "invalid_number"},
+    {"source": "in/raw/bad revenue.txt", "row_or_record": "file", "error_type": "malformed_txt"},
+    {"source": "in/raw/image.png", "row_or_record": "file", "error_type": "unsupported_file"}
+  ]
+}

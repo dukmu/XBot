@@ -1,0 +1,38 @@
+You are reviewing moderation appeals against a platform policy bundle.
+
+**Mandatory execution constraint:** After you finish reading inputs, you **must** write **all three** deliverables to disk under `$WORKSPACE/out/`—**non‑negotiable**—before your run ends:
+1. `appeal_decisions.csv`
+2. `explanations.md`
+3. `redaction_audit.csv`
+
+Use file-writing tools or shell redirection so these paths exist with real content; **do not** only describe them in chat. Create `$WORKSPACE/out/` if missing, then write the files.
+
+Read every input below before deciding:
+- $WORKSPACE/in/moderation_policy.md
+- $WORKSPACE/in/policy_amendments.md
+- $WORKSPACE/in/case_files/*.json
+
+Amendments apply to appeals filed **2026-01-01** or later where noted; when case JSON includes **`appeal_filed`** before that date, **META-2** blocks PRECVIO-1 even if `prior_harass_strikes` is elevated—apply EDGE-1 for qualifying harassment-tier appeals.
+
+Create:
+- $WORKSPACE/out/appeal_decisions.csv
+- $WORKSPACE/out/explanations.md
+
+Requirements for appeal_decisions.csv:
+- Header row columns exactly (names and order): case_id,decision,final_action,policy_basis,confidence
+- Exactly one row per case JSON file present under case_files/.
+- decision must be one of: uphold, overturn, downgrade.
+- final_action must be consistent with the decision and policy bundle (including amendments).
+- policy_basis must include every applicable clause ID; separate multiple IDs with semicolons (e.g. PRECVIO-1;EDGE-1). IDs must match the policy documents.
+- confidence must match calibration **exactly** per row using only **high**, **medium**, or **low**: clear-cut hate/counterspeech → **high**; compromise narratives, EDGE/PRECVIO/MISLABEL interplay, PRECVIO vs EDGE/META-2 date logic, or advisory automation conflicts → typically **medium**; genuinely ambiguous fact patterns → **low**.
+
+Requirements for explanations.md:
+- Cover **every** case id using **one Markdown section each**, headed exactly: `### Case <case_id>` (example: `### Case A-01`).
+- Inside **each** section: cite **every** clause ID listed for that case in `appeal_decisions.csv`, summarize facts (including advisory automation where relevant), and include **rather than** or **instead of** in **every** section (not only once in the whole file).
+
+Create also:
+- $WORKSPACE/out/redaction_audit.csv
+  Header columns exactly (names and order): case_id,redacted_field,redaction_reason
+  Provide enough rows so sensitive payload paths are explicit—when a case JSON contains multiple sensitive keys (`reporter`, `reporter_email`, `reporter_alias`, …), use **separate rows** naming those paths (minimum **one row per case id**, more when multiple fields apply).
+
+Do not use the network. Do not modify input files.

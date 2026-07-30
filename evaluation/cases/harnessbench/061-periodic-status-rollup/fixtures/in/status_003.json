@@ -1,0 +1,8 @@
+{
+  "update_id": "u-003",
+  "timestamp": "2026-04-20T09:27:00Z",
+  "component": "billing",
+  "status": "healthy",
+  "message": "invoice jobs caught up",
+  "severity": "info"
+}

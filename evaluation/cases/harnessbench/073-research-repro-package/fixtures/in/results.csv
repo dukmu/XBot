@@ -1,0 +1,4 @@
+metric,value
+conversion_lift,0.124
+retention_lift,0.031
+subgroup_equity_claim_flag,pending_manual_review

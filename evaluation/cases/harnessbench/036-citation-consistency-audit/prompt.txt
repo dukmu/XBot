@@ -1,0 +1,34 @@
+Task: Citation Consistency Audit
+
+Inputs:
+- `$WORKSPACE/in/paper_draft.md`
+- `$WORKSPACE/in/bib.json`
+
+Audit consistency between in-text citations and the bibliography, and create these outputs:
+
+1. `$WORKSPACE/out/citation_errors.csv`
+   - Header must be `error_type,citation_key,details,expected_fix,evidence_span`.
+   - Cover at least: citations present in the draft but missing from `bib.json`, bibliography entries not cited in the draft, author mismatches, and year mismatches.
+   - Also cover: same-author same-year suffix needs such as 2024a/2024b, duplicate or conflicting bibliography keys, and title/DOI inconsistencies.
+   - `error_type` must use this enum: `missing_bib`, `orphan_bib`, `author_mismatch`, `year_mismatch`, `suffix_needed`, `duplicate_key`, `doi_title_mismatch`.
+   - Put each error point on its own row; do not merge multiple `citation_key` values into one row.
+   - `evidence_span` must contain a short span from the draft or bibliography supporting the error judgment; do not use only a filename.
+
+2. `$WORKSPACE/out/corrected_bib.json`
+   - Must be valid JSON.
+   - Correct author/year errors that can be determined from the draft.
+   - Remove orphan bibliography entries and add draft citations that are missing from `bib.json`; fields that cannot be determined may use `"UNKNOWN"`.
+   - Do not create a separate bibliography entry for the indirect Rao mention unless the draft reference list explicitly lists one.
+
+3. `$WORKSPACE/out/audit_notes.md`
+   - Explain the basis for each error type.
+   - Clearly state which fields use `UNKNOWN`, and state that no internet lookup was used.
+   - Explain the ordering basis for the 2024a/2024b suffixes and why Rao should not become a standalone bibliography entry.
+
+4. `$WORKSPACE/out/citation_graph.json`
+   - JSON object with keys `in_text_citations`, `bibliography_entries`, and `key_renames`.
+   - `in_text_citations` must map each draft citation signal to the corrected bibliography key or to a missing/orphan/error status.
+   - `bibliography_entries` must identify whether each original bibliography entry was kept, renamed, removed, or split.
+   - `key_renames` must explicitly include the Lin, Ortega, and Chen key changes.
+
+Forbidden: do not use the internet; do not modify fixtures; do not write `citation_errors.csv` as a Markdown table.

@@ -1,0 +1,28 @@
+Task: Batch Research Claims Evidence Audit
+
+Use only the offline materials in `$WORKSPACE/in`.
+
+Inputs:
+- `$WORKSPACE/in/claims/claims.csv`
+- `$WORKSPACE/in/sources/*`
+
+Audit every claim and create:
+
+1. `$WORKSPACE/out/claim_audit.csv`
+   - Header exactly:
+     `claim_id,claim_text,status,primary_source,evidence_location,evidence_signal,secondary_sources,rationale`
+   - `status` must be exactly one of:
+     `supported`, `contradicted`, `overstated`, `unsupported`, `not_reproducible`
+   - Include exactly one row per claim.
+   - For numeric claims, identify the source row, metric, cohort, field, or section used.
+   - For multi-source claims, list secondary sources separated by semicolons.
+
+2. `$WORKSPACE/out/evidence_matrix.json`
+   - Top level object with key `claims`.
+   - Each item must include `claim_id`, `status`, `evidence`, and `reproducibility_note`.
+   - Each evidence item must include `source_file`, `location`, `supports_or_refutes`, and `signal`.
+
+Rules:
+- Do not run internet search.
+- Do not fabricate rerun logs or claim a reproduction succeeded unless the shipped package supports it.
+- Distinguish unsupported, contradicted, overstated, and not reproducible.

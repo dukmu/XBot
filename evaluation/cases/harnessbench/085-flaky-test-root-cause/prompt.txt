@@ -1,0 +1,15 @@
+The pytest suite in `$WORKSPACE/in/flakyqueue` is flaky. The failures are symptoms of production code nondeterminism, not bad tests.
+
+Your job:
+- Run `python -m pytest tests` from `$WORKSPACE/in/flakyqueue`.
+- Identify and fix the root cause in the implementation.
+- Make task ordering and retry scheduling deterministic when a clock/random source is injected.
+- Write `$WORKSPACE/out/root_cause.md` describing the flaky behavior, the root cause, and the verification you ran.
+
+Constraints:
+- Do not modify files under `$WORKSPACE/in/flakyqueue/tests`.
+- Do not skip, xfail, or weaken tests.
+- Do not add long sleeps or retry loops around pytest.
+- Do not delete retry jitter; make it injectable/deterministic.
+- Do not hard-code fixture task ids.
+- Do not add third-party dependencies.

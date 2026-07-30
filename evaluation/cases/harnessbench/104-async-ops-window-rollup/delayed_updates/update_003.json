@@ -1,0 +1,8 @@
+{
+  "update_id": "UP-003",
+  "timestamp": "2026-05-04T01:13:00Z",
+  "component": "inventory-db",
+  "status": "degraded",
+  "severity": "critical",
+  "message": "Inventory database lock wait p95 exceeded blocker threshold."
+}

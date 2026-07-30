@@ -1,0 +1,11 @@
+task_id: 087-cli-parser-bug-tests
+title: Fix a CLI Parsing Bug and Add Regression Tests
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - cli
+  - python
+  - pytest
+timeout_sec: 600
+difficulty: medium-hard

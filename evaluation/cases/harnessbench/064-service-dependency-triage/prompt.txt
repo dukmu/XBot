@@ -1,0 +1,26 @@
+You are triaging a production checkout incident from offline evidence.
+
+Inputs:
+- $WORKSPACE/in/topology.json
+- $WORKSPACE/in/metrics/service_metrics.csv
+- $WORKSPACE/in/logs/checkout-web.log
+- $WORKSPACE/in/logs/payment-api.log
+- $WORKSPACE/in/logs/auth-gateway.log
+- $WORKSPACE/in/logs/orders-db.log
+
+Create exactly these output files:
+- $WORKSPACE/out/root_cause.json
+- $WORKSPACE/out/triage_notes.md
+
+root_cause.json requirements:
+- Top-level object with: incident_id, root_cause_service, root_cause_change_id, confidence, affected_services, evidence, excluded_red_herrings, recommended_next_steps.
+- evidence must be a list of objects with source_file and observation.
+- excluded_red_herrings must name misleading signals and why they are not the primary cause.
+
+triage_notes.md requirements:
+- Summarize the dependency path from user impact to root cause.
+- Cite at least three fixture files by path.
+- Include immediate mitigation and verification steps.
+- Explicitly mark inferences vs directly observed facts.
+
+Do not modify input files. Do not use live services or external APIs.

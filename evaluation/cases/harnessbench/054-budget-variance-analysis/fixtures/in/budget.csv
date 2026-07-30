@@ -1,0 +1,10 @@
+department,category,budget_amount
+Marketing,Ads,50000.00
+Marketing,Events,30000.00
+Operations,Cloud,40000.00
+Operations,Logistics,25000.00
+R&D,Tools,20000.00
+G&A,Training,10000.00
+Support,Escalations,0.00
+Security,Tools,15000.00
+Sales,Travel,10000.00

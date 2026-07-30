@@ -1,0 +1,3 @@
+Cafe Receipt BF-2201
+Employee: Noah Reed
+Breakfast amount: 42.00

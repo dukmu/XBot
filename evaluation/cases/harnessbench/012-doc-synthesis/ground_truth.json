@@ -1,0 +1,46 @@
+{
+  "total_docs": 5,
+  "expected_trust_scores": {
+    "doc1_news_site_a.md": 6,
+    "doc2_news_site_b.md": 4,
+    "doc3_social_media.md": 2,
+    "doc4_official_statement.md": 9,
+    "doc5_expert_analysis.md": 7
+  },
+  "key_contradictions": [
+    {
+      "claim": "event date",
+      "docs_involved": ["doc1", "doc2", "doc4"],
+      "resolution": "Official statement anchors March 14 discovery / March 16 publication"
+    },
+    {
+      "claim": "affected users",
+      "docs_involved": ["doc1", "doc2", "doc5"],
+      "resolution": "Expert analysis estimates ~100k; figures diverge widely across outlets"
+    },
+    {
+      "claim": "sensitive data",
+      "docs_involved": ["doc1", "doc3", "doc4"],
+      "resolution": "Official: no real PII; mainly test emails; payment cards not confirmed"
+    }
+  ],
+  "required_elements_in_report": [
+    "official statement",
+    "social media",
+    "contradiction",
+    "credible",
+    "timeline"
+  ],
+  "scoring": {
+    "weights": {
+      "trust_assessment": 0.25,
+      "contradiction_detection": 0.35,
+      "report_quality": 0.40
+    },
+    "thresholds": {
+      "excellent": 0.90,
+      "good": 0.75,
+      "pass": 0.60
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "query": {"order_id": "A-1042", "region": "emea"},
+  "marker": "FORM_LOOKUP_OK",
+  "confirm_marker": "FORM_CONFIRM_OK",
+  "result": {
+    "order_id": "A-1042",
+    "region": "emea",
+    "customer": "Nadia Rossi",
+    "status": "ready_for_invoice",
+    "total_usd": 1842.75,
+    "line_count": 3
+  },
+  "required_paths": ["/", "/lookup", "/confirm"],
+  "trace_terms": ["homepage", "csrf", "hidden", "lookup", "confirm", "FORM_CONFIRM_OK"]
+}

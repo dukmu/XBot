@@ -1,0 +1,3 @@
+Document: internal_escalation_memo
+Claim ID: CLM-2044
+Internal routing note: Expedited completeness screening requested by Operations. Internal escalation cannot waive policy-required payer correspondence when secondary payer data is populated on the intake JSON. Reviewers must still apply required_docs_policy.md in full for administrative completeness only.

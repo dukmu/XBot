@@ -1,0 +1,14 @@
+{
+  "window_start": "2026-04-20T09:00:00Z",
+  "window_end": "2026-04-20T10:00:00Z",
+  "seen_ids": ["u-001", "u-002", "u-003", "u-004"],
+  "duplicate_ids": ["u-002"],
+  "ignored_ids": ["u-old", "u-late"],
+  "components": {
+    "api": "degraded",
+    "worker": "blocked",
+    "billing": "healthy",
+    "search": "degraded"
+  },
+  "required_rollup_tokens": ["incidents", "blockers", "healthy components", "ignored updates", "u-001", "u-002", "u-003", "u-004", "u-old", "u-late"]
+}

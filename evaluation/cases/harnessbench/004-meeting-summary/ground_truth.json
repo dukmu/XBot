@@ -1,0 +1,15 @@
+{
+  "summary_path": "out/meeting_summary.txt",
+  "summary_min_chars": 500,
+  "summary_max_chars": 2800,
+  "required_phrases": [
+    "Q2",
+    "budget",
+    "milestone",
+    "OpenClaw",
+    "M1",
+    "risk",
+    "gateway",
+    "action"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "day": "Day 3",
+  "updates": [
+    {"type": "security", "id": "R-security", "detail": "security signoff required for production data export"},
+    {"type": "scope", "detail": "executive sponsor removes in-app experimentation from pilot scope"},
+    {"type": "decision_reversal", "reverses": "Day 1 tentative experiment scope", "detail": "experimentation remains logged as reversed, not deleted"},
+    {"type": "dependency", "detail": "connector sandbox can arrive by Day 12 if procurement approves the expedited order"}
+  ],
+  "final_decision": "conditional_go"
+}

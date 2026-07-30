@@ -1,0 +1,7 @@
+timestamp,service,http_5xx_rate,http_401_rate,p95_ms,cpu_pct,notes
+2026-03-22T14:00:00Z,checkout-web,0.2,0.1,410,48,baseline
+2026-03-22T14:10:00Z,checkout-web,0.4,18.7,2400,52,checkout submits rejected after payment auth
+2026-03-22T14:10:00Z,payment-api,0.5,21.2,1800,49,auth dependency returning invalid issuer
+2026-03-22T14:10:00Z,auth-gateway,0.1,28.4,230,41,jwks cache miss and issuer mismatch
+2026-03-22T14:10:00Z,orders-db,0.0,0.0,35,86,cpu spike but query latency normal
+2026-03-22T14:10:00Z,cdn-edge,4.8,0.0,120,33,static asset 5xx isolated to images

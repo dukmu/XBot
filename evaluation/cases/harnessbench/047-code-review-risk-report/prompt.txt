@@ -1,0 +1,23 @@
+Review the proposed change using `$WORKSPACE/in/review/diff.patch` and the snippets under `$WORKSPACE/in/review/snippets`.
+
+Create `$WORKSPACE/out/review_findings.json` with this shape:
+
+{
+  "findings": [
+    {
+      "id": "short-stable-id",
+      "severity": "critical|high|medium|low",
+      "file": "relative/path",
+      "line_hint": "string or number",
+      "risk": "what can go wrong",
+      "recommendation": "what should change",
+      "test": "specific regression or security test to add",
+      "evidence": "quote or concise reference"
+    }
+  ],
+  "summary": "brief review summary"
+}
+
+Do not modify fixture files. Focus on concrete correctness/security/regression risks, not style-only comments.
+Only report evidence-supported issues. Do not flag harmless naming/style changes or the existing parameterized helper snippets as risks unless the diff makes them risky.
+Use critical only for direct auth bypass or cross-tenant data exposure. Use high for injection, payment duplication, sensitive data leakage, or cross-user cache leakage. Use medium for data-inclusion regressions without direct privilege escalation.

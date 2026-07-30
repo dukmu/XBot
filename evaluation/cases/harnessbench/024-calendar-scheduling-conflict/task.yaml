@@ -1,0 +1,14 @@
+task_id: "024-calendar-scheduling-conflict"
+title: "Resolve A Cross-Time-Zone Calendar Scheduling Conflict"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags:
+  - "office"
+  - "calendar"
+  - "scheduling"
+  - "timezone"
+  - "deterministic"

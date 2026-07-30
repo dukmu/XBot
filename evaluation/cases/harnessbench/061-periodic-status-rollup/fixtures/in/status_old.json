@@ -1,0 +1,8 @@
+{
+  "update_id": "u-old",
+  "timestamp": "2026-04-20T08:55:00Z",
+  "component": "api",
+  "status": "healthy",
+  "message": "pre-window heartbeat",
+  "severity": "info"
+}

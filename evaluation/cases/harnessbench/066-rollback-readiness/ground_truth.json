@@ -1,0 +1,14 @@
+{
+  "expected_blockers": {
+    "missing_down_migration": {"severity": "critical", "keywords": ["ledger_entries_v4", "down", "migration"]},
+    "missing_sre_approval": {"severity": "high", "keywords": ["SRE", "approval", "missing"]},
+    "missing_kill_switch": {"severity": "high", "keywords": ["payment_routing_v2", "kill", "flag"]},
+    "incomplete_health_checks": {"severity": "medium", "keywords": ["auth_401_rate", "threshold", "missing"]},
+    "rollback_duration_risk": {"severity": "medium", "keywords": ["18", "15", "duration"]}
+  },
+  "readiness_keywords": ["blocked", "p95_latency_ms", "error_rate_pct", "auth_401_rate", "incident commander", "database owner", "do not execute"],
+  "scoring": {
+    "weights": {"blockers": 0.72, "readiness_doc": 0.22, "source_unchanged": 0.06},
+    "thresholds": {"pass": 0.70, "good": 0.84, "excellent": 0.94}
+  }
+}

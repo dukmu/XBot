@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["id", "customer_id", "customer_name", "items", "ship_to"],
+  "properties": {
+    "id": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "customer_name": {"type": "string"},
+    "items": {"type": "array"},
+    "ship_to": {"type": "object"}
+  }
+}

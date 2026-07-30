@@ -1,0 +1,4 @@
+Document type: nonprofit_registration
+Customer: River Pantry
+Registration number: NP-44109
+Status: active

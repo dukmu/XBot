@@ -1,0 +1,10 @@
+task_id: 085-flaky-test-root-cause
+title: Stabilize a Flaky Test by Fixing the Root Cause
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - flaky-tests
+  - pytest
+  - determinism
+timeout_sec: 600

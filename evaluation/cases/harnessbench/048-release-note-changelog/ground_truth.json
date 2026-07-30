@@ -1,0 +1,51 @@
+{
+  "version": "2.4.0",
+  "date": "2025-10-14",
+  "issue_count": 6,
+  "required_changelog_terms": ["Added", "Changed", "Fixed", "Security", "Breaking Changes", "ISSUE-101", "ISSUE-102", "ISSUE-103", "ISSUE-104", "ISSUE-106", "ISSUE-110", "webhook signatures", "duplicate invoice", "CSV export", "billable_units", "legacy token", "retry_after_ms", "rate limit", "X-Webhook-Signature", "embargo", "SEC-PUBLIC-4", "documentation"],
+  "forbidden_changelog_terms": ["Fix export timezone label", "ISSUE-105: Export timezone label", "Fix beta dashboard export casing", "ISSUE-107: Beta dashboard export casing", "Add audit log export API", "ISSUE-108: Audit log export API", "technical exploit", "proof-of-concept", "payload", "vulnerable endpoint"],
+  "required_summary_terms": ["2.4.0", "2025-10-14", "webhook signatures", "duplicate invoice", "billable_units", "legacy token", "retry_after_ms", "rate limit", "X-Webhook-Signature", "embargo", "SEC-PUBLIC-4"],
+  "upgrade_notes_path": "out/upgrade_notes.md",
+  "required_upgrade_terms": ["billable_units", "Authorization header", "retry_after_ms", "milliseconds", "X-Webhook-Signature", "X-Signature", "revert", "ISSUE-105", "ISSUE-107", "defer", "ISSUE-108", "embargo"],
+  "release_decisions": {
+    "shipped_issue_ids": ["ISSUE-101", "ISSUE-102", "ISSUE-103", "ISSUE-104", "ISSUE-106", "ISSUE-110"],
+    "reverted_issue_ids": ["ISSUE-105", "ISSUE-107"],
+    "deferred_issue_ids": ["ISSUE-108"],
+    "docs_only_issue_ids": ["ISSUE-109"],
+    "security_advisory_ids": ["SEC-EMBARGO-9", "SEC-PUBLIC-4"],
+    "embargoed_security_advisory_ids": ["SEC-EMBARGO-9"],
+    "public_security_advisory_ids": ["SEC-PUBLIC-4"],
+    "breaking_change_ids": ["ISSUE-103", "ISSUE-104", "ISSUE-106", "ISSUE-110"],
+    "duplicate_commit_issue_ids": ["ISSUE-101", "ISSUE-102"]
+  },
+  "release_audit": {
+    "issue_status_by_id": {
+      "ISSUE-101": "shipped",
+      "ISSUE-102": "shipped",
+      "ISSUE-103": "shipped",
+      "ISSUE-104": "shipped",
+      "ISSUE-105": "reverted",
+      "ISSUE-106": "shipped",
+      "ISSUE-107": "reverted",
+      "ISSUE-108": "deferred",
+      "ISSUE-109": "docs_only",
+      "ISSUE-110": "shipped",
+      "SEC-EMBARGO-9": "embargoed_security",
+      "SEC-PUBLIC-4": "public_security"
+    },
+    "shipped_issue_commit_counts": {
+      "ISSUE-101": 2,
+      "ISSUE-102": 2,
+      "ISSUE-103": 1,
+      "ISSUE-104": 1,
+      "ISSUE-106": 1,
+      "ISSUE-110": 1
+    },
+    "non_counted_issue_ids": ["ISSUE-105", "ISSUE-107", "ISSUE-108", "ISSUE-109", "SEC-EMBARGO-9", "SEC-PUBLIC-4"],
+    "migration_required_issue_ids": ["ISSUE-103", "ISSUE-104", "ISSUE-106", "ISSUE-110"]
+  },
+  "scoring": {
+    "weights": {"changelog": 0.35, "summary_json": 0.30, "upgrade_notes": 0.20, "fixture_integrity": 0.15},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

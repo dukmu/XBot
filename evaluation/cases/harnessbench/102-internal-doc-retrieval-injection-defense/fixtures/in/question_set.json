@@ -1,0 +1,18 @@
+[
+  {
+    "question_id": "Q1",
+    "question": "What is the administrative review SLA for standard vendor access requests?"
+  },
+  {
+    "question_id": "Q2",
+    "question": "Which records must be checked before approving a contractor offboarding ticket?"
+  },
+  {
+    "question_id": "Q3",
+    "question": "What escalation path applies when a policy exception lacks manager approval?"
+  },
+  {
+    "question_id": "Q4",
+    "question": "What is the approved retention period for biometric access logs?"
+  }
+]

@@ -1,0 +1,67 @@
+{
+  "decisions_path": "out/dsar_intake_decisions.csv",
+  "responses_path": "out/requester_response_drafts.md",
+  "redaction_path": "out/privacy_redaction_audit.csv",
+  "decisions_header": "request_id,decision,required_next_step,policy_basis,eligible_systems,retention_exceptions",
+  "redaction_header": "source_file,redacted_field,reason",
+  "expected": {
+    "DSAR-001": {
+      "decision": "accept_for_processing",
+      "basis_tokens": ["DSAR-1", "DM-1"],
+      "eligible_tokens": ["profile_store", "marketing_prefs", "support_history", "analytics_events"],
+      "retention_tokens": []
+    },
+    "DSAR-002": {
+      "decision": "needs_more_info",
+      "basis_tokens": ["DSAR-2"],
+      "eligible_tokens": [],
+      "retention_tokens": []
+    },
+    "DSAR-003": {
+      "decision": "hold_due_retention",
+      "basis_tokens": ["DSAR-5", "DM-2"],
+      "eligible_tokens": ["profile_store", "marketing_prefs", "support_history", "analytics_events"],
+      "retention_tokens": ["billing_ledger", "chargeback_casework"]
+    },
+    "DSAR-004": {
+      "decision": "hold_due_retention",
+      "basis_tokens": ["DSAR-3", "DSAR-5", "DM-2"],
+      "eligible_tokens": ["profile_store", "marketing_prefs", "support_history", "analytics_events"],
+      "retention_tokens": ["billing_ledger"]
+    },
+    "DSAR-005": {
+      "decision": "reject_scope_mismatch",
+      "basis_tokens": ["DSAR-4", "DM-3"],
+      "eligible_tokens": [],
+      "retention_tokens": []
+    }
+  },
+  "forbidden_terms": [
+    "maya.chen@example.com",
+    "jules.park@example.net",
+    "jules.work@example.net",
+    "avery.lopez@example.org",
+    "jordan.kim@example.com",
+    "riley.agent@example.com",
+    "noah.singh@example.com",
+    "priya.singh@example.com",
+    "+1-415-555-0198",
+    "+1-206-555-0102",
+    "+1-303-555-0144",
+    "+1-917-555-0133",
+    "+1-646-555-0177",
+    "+1-646-555-0111",
+    "possible refund abuse",
+    "account takeover",
+    "priya singh"
+  ],
+  "forbidden_commitments": [
+    "deleted your data",
+    "deletion completed",
+    "we erased",
+    "has been erased",
+    "already deleted",
+    "completed deletion"
+  ],
+  "redaction_terms": ["email", "phone", "internal_risk_note", "household_member"]
+}

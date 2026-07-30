@@ -1,0 +1,14 @@
+task_id: "067-canary-release-check"
+title: "Canary release gate decision from baseline and canary metrics"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 750
+difficulty: "easy"
+tags:
+  - "sre"
+  - "canary"
+  - "release-engineering"
+  - "metrics"
+  - "deterministic-oracle"

@@ -1,0 +1,12 @@
+task_id: "009-git-pr-merge"
+title: "Review A Git PR Branch Then Merge And Push It"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+tags:
+  - "git"
+  - "pr"
+  - "merge"

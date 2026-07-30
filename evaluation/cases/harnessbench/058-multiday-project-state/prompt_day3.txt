@@ -1,0 +1,23 @@
+Day 3 of 3: finalize the plan.
+
+Read the current outputs plus $WORKSPACE/in/day3_update.json. Produce final versions of:
+- $WORKSPACE/out/project_log.md
+- $WORKSPACE/out/final_plan.json
+
+The final plan must absorb all Day 1, Day 2, and Day 3 information. It must include:
+- status_by_day for Day 1, Day 2, and Day 3
+- change_history with exactly three day-level entries
+- milestones adjusted for the vendor delay and security signoff
+- risk_register including R-connect-delay, R-budget, R-compliance, and R-security
+- final_budget: 92000
+- launch_recommendation: "conditional_go"
+- conditions for compliance review, security signoff, and connector sandbox delivery
+- decision_register.csv with header: decision_id,day,decision,status,reverses,source
+- preserve reversed decisions in the audit trail rather than deleting them
+
+Do not modify input files. Do not use external services.
+
+CRITICAL INSTRUCTIONS TO AVOID TIMEOUT AND SCORE FAILURES:
+1. You MUST generate all file writes in a single, combined tool call response to prevent connection timeouts. Do not write one file, wait, and then write another.
+2. In `final_plan.json`, you MUST strictly include a root-level key exactly named `"owners"` mapped to a dictionary (e.g., `"owners": {"WS-data": "Priya", ...}`).
+3. In `final_plan.json`, you MUST strictly include a root-level key exactly named `"conditions"` mapped to a list of strings.

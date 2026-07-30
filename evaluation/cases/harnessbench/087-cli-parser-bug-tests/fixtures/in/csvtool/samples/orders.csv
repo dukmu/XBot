@@ -1,0 +1,4 @@
+id,status,total,created_at,customer
+o1,paid,1200,2024-01-03,"Ava, Inc"
+o2,pending,500,2024-01-04,"Beta LLC"
+o3,paid,750,2024-01-02,"Core, Labs"

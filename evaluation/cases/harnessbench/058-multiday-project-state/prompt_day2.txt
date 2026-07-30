@@ -1,0 +1,12 @@
+Day 2 of 3: absorb new information while preserving Day 1 history.
+
+Read the existing $WORKSPACE/out/project_log.md and $WORKSPACE/out/final_plan.json, then read $WORKSPACE/in/day2_update.json. Update both outputs.
+
+The Day 2 update must record:
+- vendor delay for the analytics connector
+- budget reduction to 92000
+- new compliance review requirement
+- owner change for data migration to Priya
+- stakeholder conflict about in-app experimentation
+
+Append to change_history; do not erase the Day 1 entry. Do not modify input files.

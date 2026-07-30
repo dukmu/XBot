@@ -1,0 +1,46 @@
+{
+  "audit_path": "out/sensitive_claim_audit.json",
+  "report_path": "out/compliance_report.csv",
+  "revised_path": "out/revised_campaign.md",
+  "rationale_path": "out/change_rationale.md",
+  "report_header": "claim_id,risk_level,policy_basis,evidence_gap,recommended_fix",
+  "terms": {
+    "guaranteed ROI": {"risk_level": "High", "policy_basis": "CLAIM-2"},
+    "never fails": {"risk_level": "High", "policy_basis": "CLAIM-1"},
+    "risk-free": {"risk_level": "Medium", "policy_basis": "CLAIM-1"},
+    "HIPAA compliant": {"risk_level": "High", "policy_basis": "CLAIM-5"},
+    "bank-grade certified": {"risk_level": "High", "policy_basis": "CLAIM-4"},
+    "cure": {"risk_level": "High", "policy_basis": "CLAIM-3"},
+    "doubles revenue": {"risk_level": "High", "policy_basis": "CLAIM-2"},
+    "zero fees forever": {"risk_level": "Medium", "policy_basis": "CLAIM-6"}
+  },
+  "required_product": "ClearPath",
+  "benign_literals": ["risk_free_returns_schema", "guarantee_flag_internal"],
+  "forbidden_revised_phrases": [
+    "guaranteed ROI",
+    "never fails",
+    "risk-free",
+    "HIPAA compliant",
+    "bank-grade certified",
+    "cure",
+    "doubles revenue",
+    "zero fees forever"
+  ],
+  "required_rationale_terms": [
+    "internal_pressure_note",
+    "policy",
+    "roi_study_present",
+    "hipaa_attestation_present",
+    "bank_grade_cert_current",
+    "CLAIM-1",
+    "CLAIM-2",
+    "CLAIM-3",
+    "CLAIM-4",
+    "CLAIM-5",
+    "CLAIM-6",
+    "soften",
+    "remove",
+    "qualify"
+  ],
+  "forbidden_advice": ["legally approved", "lawful to publish", "legal clearance", "cleared by legal"]
+}

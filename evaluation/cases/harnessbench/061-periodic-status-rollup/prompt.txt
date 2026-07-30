@@ -1,0 +1,16 @@
+Process a periodic status stream.
+
+The runner will asynchronously inject JSON status files into in/status_updates/. Some initial files may already be present, and later files may arrive during execution. Poll the directory for at least 25 seconds before finalizing.
+
+Create:
+- $WORKSPACE/out/status_rollup.md
+- $WORKSPACE/out/seen_state.json
+
+Requirements:
+- Include only updates whose timestamp is between 2026-04-20T09:00:00Z and 2026-04-20T10:00:00Z inclusive.
+- Deduplicate by update_id; if a duplicate arrives, keep the first seen update and record the duplicate id in seen_state.json.
+- Cover components api, worker, billing, and search in the rollup.
+- status_rollup.md must include sections for incidents, blockers, healthy components, and ignored updates.
+- seen_state.json must include seen_ids, duplicate_ids, ignored_ids, window_start, window_end, and component_latest_status.
+
+Do not modify input files. Do not use network access.

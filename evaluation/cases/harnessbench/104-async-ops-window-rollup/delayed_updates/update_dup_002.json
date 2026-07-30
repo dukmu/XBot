@@ -1,0 +1,8 @@
+{
+  "update_id": "UP-002",
+  "timestamp": "2026-05-04T01:15:00Z",
+  "component": "checkout-api",
+  "status": "degraded",
+  "severity": "warning",
+  "message": "Duplicate resend of checkout API dependency timeout update."
+}

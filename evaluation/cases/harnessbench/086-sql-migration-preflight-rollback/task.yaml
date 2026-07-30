@@ -1,0 +1,10 @@
+task_id: 086-sql-migration-preflight-rollback
+title: Add SQL Migration Preflight Checks and Rollback Safety
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - sql
+  - migration
+  - rollback
+timeout_sec: 600

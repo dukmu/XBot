@@ -1,0 +1,9 @@
+task_id: "037-policy-clause-retrieval"
+title: "Policy Clause Retrieval and Case Rulings"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags: ["information-retrieval", "policy", "clause-retrieval", "decision-support", "missing-information", "hard"]

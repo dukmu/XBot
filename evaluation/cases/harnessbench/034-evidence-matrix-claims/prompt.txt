@@ -1,0 +1,17 @@
+Task: Generate Evidence Matrix for Claims
+
+Inputs:
+- `$WORKSPACE/in/claims.csv`
+- `$WORKSPACE/in/sources/*.txt`
+
+Check each claim in claims.csv one by one, and output `$WORKSPACE/out/evidence_matrix.csv`.
+
+The CSV must include the following header:
+`claim_id,claim,classification,source_file,evidence_phrase`
+
+Constraints:
+- `classification` must be exactly `support`, `contradict`, or `unclear`.
+- `source_file` must use the relative path `sources/filename.txt`. If the classification is `unclear`, you may fill in the most relevant source that is insufficient to reach a conclusion.
+- `evidence_phrase` must be a short evidence signal that explains why the claim is supported, contradicted, or cannot be determined.
+- Must cover every claim_id from claims.csv; do not add extra claim_ids.
+- Do not modify fixtures, do not go online.

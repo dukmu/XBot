@@ -1,0 +1,8 @@
+{
+  "claim_id": "CLM-2044",
+  "member_id": "DEID-88",
+  "plan_id": "PLAN-A",
+  "service_date": "2026-03-14",
+  "claim_type": "outpatient procedure reimbursement",
+  "secondary_payer": "OTHER-PAYER-992"
+}

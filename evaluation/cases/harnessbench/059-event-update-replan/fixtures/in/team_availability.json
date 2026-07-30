@@ -1,0 +1,8 @@
+{
+  "people": [
+    {"name": "Ava", "available": [["09:00", "15:30"]], "skills": ["av", "accessibility"]},
+    {"name": "Ben", "available": [["09:00", "12:00"], ["13:00", "15:30"]], "skills": ["ops"]},
+    {"name": "Chen", "available": [["09:00", "15:30"]], "skills": ["speaker-support", "ops"]},
+    {"name": "Dia", "available": [["12:30", "15:30"]], "skills": ["support", "notes"]}
+  ]
+}

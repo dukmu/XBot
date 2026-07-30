@@ -1,0 +1,37 @@
+Task: Research Brief Synthesis
+
+Inputs:
+- `$WORKSPACE/in/reports/*.md`
+- `$WORKSPACE/in/stats.csv`
+
+Create a research brief for a city transportation team using only the offline materials. Do not use the internet and do not introduce external data.
+
+Outputs:
+
+1. `$WORKSPACE/out/research_brief.md`
+   - Must contain these five sections: `Executive Summary`, `Key Metrics`, `Evidence`, `Risks and Caveats`, and `Recommendation`.
+   - Must include these key metrics: weekday ridership change, complaint rate change, pilot cost, survey support, and on-time performance.
+   - Must cover every source in `reports/` and `stats.csv`.
+   - Clearly distinguish facts, inferences, and caveats. Do not treat low-confidence claims as established facts.
+   - Preserve source conflicts instead of smoothing them over. Higher-confidence local `stats.csv`, operations, finance, and survey sources outrank an unmethoded press note.
+   - Clearly mark uncertain or limited information as caveats.
+
+2. `$WORKSPACE/out/source_notes.csv`
+   - Header must be `source_file,used_for,key_signal`.
+   - Cover all offline reports and `stats.csv`.
+
+3. `$WORKSPACE/out/evidence_matrix.csv`
+   - Header must be `claim,type,supporting_sources,confidence,caveat,source_rows,calculation`.
+   - `type` must use `fact`, `inference`, or `caveat`.
+   - Cover at least the key metrics, material conflicts, and rollout risks.
+   - For calculated metrics, `calculation` must include a short formula. For metrics from `stats.csv`, `source_rows` must state the rows or fields used.
+
+4. `$WORKSPACE/out/assumptions.json`
+   - JSON array. Each item must include `assumption_id`, `claim_id`, `assumption`, `risk_if_wrong`, and `supporting_sources`.
+   - Tie assumptions to claims in `evidence_matrix.csv` using stable claim identifiers or exact claim text.
+   - Include assumptions for at least late-evening data limitations, fare revenue limits, maintenance/night-work risk, and press-note uncertainty.
+
+Forbidden:
+- Do not claim to use external research, internet search, or current-date information.
+- Do not modify fixtures.
+- Do not write the brief as JSON.

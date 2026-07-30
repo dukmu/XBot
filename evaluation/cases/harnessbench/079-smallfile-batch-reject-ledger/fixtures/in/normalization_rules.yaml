@@ -1,0 +1,3 @@
+statuses: [active, inactive, open, closed, pending]
+currencies: [USD, EUR]
+output_name: "{record_type}_{record_id}.json"

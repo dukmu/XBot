@@ -1,0 +1,7 @@
+{
+  "items": [
+    {"sku": "b-200", "qty": 2},
+    {"sku": "a-100", "qty": 5}
+  ],
+  "warehouse": "west"
+}

@@ -1,0 +1,3 @@
+Taxi Receipt TX-9007
+Passenger: Noah Reed
+Amount: 48.50

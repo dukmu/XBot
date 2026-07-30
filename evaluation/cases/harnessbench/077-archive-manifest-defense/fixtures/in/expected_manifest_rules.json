@@ -1,0 +1,19 @@
+{
+  "allowed_extensions": [
+    ".csv",
+    ".json",
+    ".md",
+    ".txt",
+    ".yaml"
+  ],
+  "max_size_bytes": 200,
+  "reject_reasons": [
+    "path_traversal",
+    "absolute_path",
+    "control_character",
+    "segment_whitespace",
+    "duplicate_logical_path",
+    "unsupported_extension",
+    "size_limit"
+  ]
+}

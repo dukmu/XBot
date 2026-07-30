@@ -1,0 +1,9 @@
+task_id: "046-performance-regression"
+title: "Performance Regression Repair"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1200
+difficulty: "hard"
+tags: ["software-engineering", "performance", "python", "benchmark", "deterministic"]

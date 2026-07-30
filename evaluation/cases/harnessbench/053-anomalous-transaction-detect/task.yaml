@@ -1,0 +1,13 @@
+task_id: "053-anomalous-transaction-detect"
+title: "Rule-based anomalous transaction detection"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "hard"
+tags:
+  - data-analysis
+  - anomaly-detection
+  - compliance
+  - csv

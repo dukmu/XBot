@@ -1,0 +1,101 @@
+[
+  {
+    "case_id": "C-001",
+    "date": "2025-02-18",
+    "employee_group": "sales",
+    "expense_type": "meal",
+    "amount_usd": 72,
+    "location": "New York",
+    "question": "Can the dinner reimbursement be approved?"
+  },
+  {
+    "case_id": "C-002",
+    "date": "2025-03-12",
+    "employee_group": "field operations",
+    "expense_type": "storm hotel",
+    "amount_usd": 289,
+    "location": "Austin",
+    "question": "Can the emergency storm lodging be approved?"
+  },
+  {
+    "case_id": "C-003",
+    "date": "2025-05-04",
+    "employee_group": "field operations",
+    "expense_type": "storm hotel",
+    "amount_usd": 289,
+    "location": "Austin",
+    "question": "Can the same storm lodging be approved after the addendum window?"
+  },
+  {
+    "case_id": "C-004",
+    "date": "2025-02-05",
+    "employee_group": "remote engineering",
+    "expense_type": "ergonomic chair",
+    "amount_usd": 410,
+    "location": "Remote",
+    "question": "Can the chair reimbursement be approved?"
+  },
+  {
+    "case_id": "C-005",
+    "date": "2025-02-05",
+    "employee_group": "remote sales",
+    "expense_type": "ergonomic chair",
+    "amount_usd": 410,
+    "location": "Remote",
+    "question": "Can the chair reimbursement be approved for a sales employee?"
+  },
+  {
+    "case_id": "C-006",
+    "date": "2025-02-20",
+    "employee_group": "engineering",
+    "expense_type": "software subscription",
+    "amount_usd": 1200,
+    "location": "Remote",
+    "question": "Is the annual software subscription approvable without finance pre-approval?"
+  },
+  {
+    "case_id": "C-007",
+    "date": "2024-10-02",
+    "employee_group": "marketing",
+    "expense_type": "meal",
+    "amount_usd": 68,
+    "location": "Chicago",
+    "question": "Can the dinner reimbursement be approved under the policy in effect then?"
+  },
+  {
+    "case_id": "C-008",
+    "date": "2025-02-11",
+    "employee_group": "sales",
+    "expense_type": "client gift",
+    "amount_usd": 95,
+    "location": "Boston",
+    "question": "Can this client gift be approved?"
+  },
+  {
+    "case_id": "C-009",
+    "date": "2025-02-18",
+    "employee_group": "France office sales",
+    "expense_type": "client-facing dinner",
+    "amount_usd": 82,
+    "location": "Paris, France",
+    "question": "Can the France client-facing dinner be approved?"
+  },
+  {
+    "case_id": "C-010",
+    "date": "2025-02-18",
+    "employee_group": "France office sales",
+    "expense_type": "internal team dinner",
+    "amount_usd": 82,
+    "location": "Paris, France",
+    "question": "Can the France internal team dinner use the regional addendum?"
+  },
+  {
+    "case_id": "C-011",
+    "date": "2025-04-02",
+    "employee_group": "France office sales",
+    "expense_type": "client-facing dinner",
+    "amount_usd": 82,
+    "location": "Paris, France",
+    "question": "Can the France client-facing dinner still be approved after the regional addendum window?"
+  }
+]

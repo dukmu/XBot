@@ -1,0 +1,9 @@
+DROP TABLE users;
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

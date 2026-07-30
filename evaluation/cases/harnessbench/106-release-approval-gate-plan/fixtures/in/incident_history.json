@@ -1,0 +1,20 @@
+{
+  "incidents": [
+    {
+      "incident_id": "INC-2026-04-29-17",
+      "service": "checkout-api",
+      "severity": 2,
+      "started_at": "2026-04-29T11:20:00Z",
+      "resolved_at": "2026-04-29T13:05:00Z",
+      "summary": "Checkout API elevated errors during refund workflow migration rehearsal."
+    },
+    {
+      "incident_id": "INC-2026-04-01-02",
+      "service": "catalog-api",
+      "severity": 3,
+      "started_at": "2026-04-01T09:00:00Z",
+      "resolved_at": "2026-04-01T09:30:00Z",
+      "summary": "Unrelated catalog cache issue."
+    }
+  ]
+}

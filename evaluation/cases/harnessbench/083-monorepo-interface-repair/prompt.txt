@@ -1,0 +1,17 @@
+The monorepo at `$WORKSPACE/in/shopmono` has a cross-package interface regression.
+
+`catalog` recently migrated product prices from the old integer `price_cents` field to a `Money(amount_cents, currency)` object. The `orders` and `reports` packages still contain old assumptions and the integration tests fail.
+
+Your job:
+- Run `python -m pytest tests` from `$WORKSPACE/in/shopmono`.
+- Repair the cross-package compatibility issue while preserving the new `catalog` model.
+- Keep support for legacy product dictionaries that still contain `price_cents`.
+- Preserve currency validation: mixed currencies in one order must raise a clear error.
+- Write `$WORKSPACE/out/interface_fix_report.md` with the root cause, changed files, and verification command.
+
+Constraints:
+- Do not modify files under `$WORKSPACE/in/shopmono/tests`.
+- Do not hard-code fixture SKUs, order ids, or customer names.
+- Do not remove the `Money` model or flatten all prices back into bare integers.
+- Do not ignore currency values or silently coerce every currency to USD.
+- Do not add third-party dependencies.

@@ -1,0 +1,133 @@
+{
+  "manifest_files": [
+    {
+      "archive_chain": [
+        "incoming_a.zip"
+      ],
+      "logical_path": "incoming_a/data/customers.csv",
+      "media_type": "text/csv",
+      "sha256": "c5ef5fc634c3ddd9dcd4493f551cf02382f05d4cdaf8c75ae9de8f62dc2aaaed",
+      "size_bytes": 22
+    },
+    {
+      "archive_chain": [
+        "incoming_a.zip"
+      ],
+      "logical_path": "incoming_a/docs/readme.md",
+      "media_type": "text/markdown",
+      "sha256": "d2fb3d2c7ec1031721eee2ac400d611e3d1cd57a2342fc7bce813bb14fd08c3e",
+      "size_bytes": 12
+    },
+    {
+      "archive_chain": [
+        "incoming_a.zip",
+        "nested/payload.tar.gz"
+      ],
+      "logical_path": "incoming_a/nested_payload/safe/config.json",
+      "media_type": "application/json",
+      "sha256": "3abab18d3fcd44f6932e2b7f18a7a619a3387a6b91fa71074144594604d8e0ee",
+      "size_bytes": 27
+    },
+    {
+      "archive_chain": [
+        "incoming_a.zip",
+        "nested/payload.tar.gz"
+      ],
+      "logical_path": "incoming_a/nested_payload/safe/reports/q1.csv",
+      "media_type": "text/csv",
+      "sha256": "98e0445a284f84e07e5c0e5aa478ccac726e96c88434879e8ca0c3c133fddba6",
+      "size_bytes": 23
+    },
+    {
+      "archive_chain": [
+        "incoming_b.tar"
+      ],
+      "logical_path": "incoming_b/metadata.yaml",
+      "media_type": "application/yaml",
+      "sha256": "4eebd9a883afefb638c9f1dc1a611322e1423fc1347e73f7de9e4cafcf7cb6dc",
+      "size_bytes": 24
+    },
+    {
+      "archive_chain": [
+        "incoming_b.tar"
+      ],
+      "logical_path": "incoming_b/notes/summary.txt",
+      "media_type": "text/plain",
+      "sha256": "55f35818d8884246a0bbb958c9f00dac9be4e11cc95b6f3bd3faabc4bf264bcd",
+      "size_bytes": 11
+    },
+    {
+      "archive_chain": [
+        "incoming_b.tar"
+      ],
+      "logical_path": "incoming_b/reports/q2.csv",
+      "media_type": "text/csv",
+      "sha256": "918a7435e61809b69f3c770d873d383766e34e2d3ce7c48d6ed629aecd579bec",
+      "size_bytes": 16
+    }
+  ],
+  "rejected_entries": [
+    {
+      "archive_chain": "incoming_a.zip",
+      "normalized_candidate": "incoming_a/bin/run.exe",
+      "raw_name": "bin/run.exe",
+      "reason": "unsupported_extension"
+    },
+    {
+      "archive_chain": "incoming_a.zip>nested/payload.tar.gz",
+      "normalized_candidate": "",
+      "raw_name": "../../escape.txt",
+      "reason": "path_traversal"
+    },
+    {
+      "archive_chain": "incoming_a.zip>nested/payload.tar.gz",
+      "normalized_candidate": "",
+      "raw_name": "/abs/secret.txt",
+      "reason": "absolute_path"
+    },
+    {
+      "archive_chain": "incoming_a.zip>nested/payload.tar.gz",
+      "normalized_candidate": "incoming_a/nested_payload/safe/ trailing.txt",
+      "raw_name": "safe/ trailing.txt",
+      "reason": "segment_whitespace"
+    },
+    {
+      "archive_chain": "incoming_a.zip>nested/payload.tar.gz",
+      "normalized_candidate": "incoming_a/nested_payload/safe/bad\\nname.txt",
+      "raw_name": "safe/bad\\nname.txt",
+      "reason": "control_character"
+    },
+    {
+      "archive_chain": "incoming_a.zip>nested/payload.tar.gz",
+      "normalized_candidate": "incoming_a/nested_payload/safe/large.txt",
+      "raw_name": "safe/large.txt",
+      "reason": "size_limit"
+    },
+    {
+      "archive_chain": "incoming_b.tar",
+      "normalized_candidate": "incoming_b/reports/q2.csv",
+      "raw_name": "reports/Q2.csv",
+      "reason": "duplicate_logical_path"
+    }
+  ],
+  "required_summary_terms": [
+    "path traversal",
+    "absolute",
+    "duplicate",
+    "size",
+    "control"
+  ],
+  "safe_files": {
+    "incoming_a/data/customers.csv": "c5ef5fc634c3ddd9dcd4493f551cf02382f05d4cdaf8c75ae9de8f62dc2aaaed",
+    "incoming_a/docs/readme.md": "d2fb3d2c7ec1031721eee2ac400d611e3d1cd57a2342fc7bce813bb14fd08c3e",
+    "incoming_a/nested_payload/safe/config.json": "3abab18d3fcd44f6932e2b7f18a7a619a3387a6b91fa71074144594604d8e0ee",
+    "incoming_a/nested_payload/safe/reports/q1.csv": "98e0445a284f84e07e5c0e5aa478ccac726e96c88434879e8ca0c3c133fddba6",
+    "incoming_b/metadata.yaml": "4eebd9a883afefb638c9f1dc1a611322e1423fc1347e73f7de9e4cafcf7cb6dc",
+    "incoming_b/notes/summary.txt": "55f35818d8884246a0bbb958c9f00dac9be4e11cc95b6f3bd3faabc4bf264bcd",
+    "incoming_b/reports/q2.csv": "918a7435e61809b69f3c770d873d383766e34e2d3ce7c48d6ed629aecd579bec"
+  },
+  "source_hashes": {
+    "in/incoming_a.zip": "50093cd9265fa923adf4610f20ed930af72a18172fc25fb77d4fddd0c5005d8b",
+    "in/incoming_b.tar": "430cba1fc2403753e62e2b63d666d708d0abfd75f1d42e1f647a730c413c05b5"
+  }
+}

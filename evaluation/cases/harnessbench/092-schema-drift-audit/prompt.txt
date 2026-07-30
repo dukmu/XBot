@@ -1,0 +1,29 @@
+Audit daily extracts for schema drift and row-level data-quality rejects using only local files.
+
+Inputs:
+- $WORKSPACE/in/contracts/customer_events_schema.json
+- $WORKSPACE/in/extracts/*/events.csv
+- $WORKSPACE/in/source_change_log.md
+
+Create:
+- $WORKSPACE/out/schema_drift_report.csv
+- $WORKSPACE/out/rejected_rows.csv
+- $WORKSPACE/out/drift_summary.json
+- $WORKSPACE/out/audit_notes.md
+
+Rules:
+1. Do not modify fixtures.
+2. Compare each extract header and values against the approved JSON schema.
+3. schema_drift_report.csv exact header:
+   extract_date,field_name,drift_type,expected,observed,severity
+4. rejected_rows.csv exact header:
+   extract_date,source_row,record_id,reason,notes
+   source_row is 1-based data row number excluding the header.
+5. Drift types must be one of:
+   missing_required_field,new_unapproved_field,type_change,enum_expansion,nullability_violation,date_format_drift
+6. Row rejects must use one of:
+   missing_required,invalid_enum,invalid_type,invalid_timestamp
+7. drift_summary.json must contain: extract_dates, drift_count_by_date, high_severity_count, rejected_row_count, changelog_mismatches.
+8. audit_notes.md must distinguish schema drift from row-level bad data and mention any source change log mismatch.
+
+Do not use network access or external APIs.

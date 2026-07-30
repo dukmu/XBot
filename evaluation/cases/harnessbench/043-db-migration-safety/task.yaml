@@ -1,0 +1,9 @@
+task_id: "043-db-migration-safety"
+title: "SQLite Migration Safety Repair"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1200
+difficulty: "hard"
+tags: ["software-engineering", "database", "migration", "sqlite", "deterministic"]

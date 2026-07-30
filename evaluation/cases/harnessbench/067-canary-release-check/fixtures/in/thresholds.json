@@ -1,0 +1,16 @@
+{
+  "release_id": "checkout-api-2026.04.21-canary",
+  "min_sample_count": 100,
+  "decision_policy": {
+    "rollback_if_any_critical_breach": true,
+    "pause_if_only_warning_breach": true
+  },
+  "metrics": {
+    "error_rate_pct": {"direction": "increase_bad", "max_abs_delta": 1.0, "severity": "critical"},
+    "p95_latency_ms": {"direction": "increase_bad", "max_pct_delta": 20.0, "severity": "critical"},
+    "checkout_success_pct": {"direction": "decrease_bad", "max_abs_delta": 1.5, "severity": "critical"},
+    "cpu_pct": {"direction": "increase_bad", "max_abs_delta": 15.0, "severity": "warning"},
+    "payment_success_pct": {"direction": "decrease_bad", "max_abs_delta": 1.0, "severity": "critical"},
+    "search_latency_ms": {"direction": "increase_bad", "max_pct_delta": 30.0, "severity": "warning"}
+  }
+}

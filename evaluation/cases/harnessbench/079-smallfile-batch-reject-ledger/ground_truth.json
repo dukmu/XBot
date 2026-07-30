@@ -1,0 +1,386 @@
+{
+  "index_rows": [
+    {
+      "record_id": "C-001",
+      "record_type": "customer",
+      "source_path": "in/dropbox/customers/customers_01.csv",
+      "status": "active",
+      "target_path": "out/normalized/customer_C-001.json"
+    },
+    {
+      "record_id": "C-002",
+      "record_type": "customer",
+      "source_path": "in/dropbox/customers/customers_01.csv",
+      "status": "inactive",
+      "target_path": "out/normalized/customer_C-002.json"
+    },
+    {
+      "source_path": "in/dropbox/customers/customers_extra.csv",
+      "target_path": "out/normalized/customer_C-003.json",
+      "record_type": "customer",
+      "record_id": "C-003",
+      "status": "pending"
+    },
+    {
+      "record_id": "CASE-500",
+      "record_type": "note",
+      "source_path": "in/dropbox/notes/case_500.txt",
+      "status": "open",
+      "target_path": "out/normalized/note_CASE-500.json"
+    },
+    {
+      "record_id": "CASE-501",
+      "record_type": "note",
+      "source_path": "in/dropbox/notes/case_501.txt",
+      "status": "closed",
+      "target_path": "out/normalized/note_CASE-501.json"
+    },
+    {
+      "source_path": "in/dropbox/notes/case_502.txt",
+      "target_path": "out/normalized/note_CASE-502.json",
+      "record_type": "note",
+      "record_id": "CASE-502",
+      "status": "pending"
+    },
+    {
+      "record_id": "O-100",
+      "record_type": "order",
+      "source_path": "in/dropbox/orders/2026/order_100.json",
+      "status": "active",
+      "target_path": "out/normalized/order_O-100.json"
+    },
+    {
+      "record_id": "O-101",
+      "record_type": "order",
+      "source_path": "in/dropbox/orders/2026/order_101.JSON",
+      "status": "active",
+      "target_path": "out/normalized/order_O-101.json"
+    },
+    {
+      "source_path": "in/dropbox/orders/2026/order_102.json",
+      "target_path": "out/normalized/order_O-102.json",
+      "record_type": "order",
+      "record_id": "O-102",
+      "status": "active"
+    }
+  ],
+  "outputs": {
+    "customer_C-001.json": {
+      "email": "ada@example.com",
+      "name": "Ada Lovelace",
+      "record_id": "C-001",
+      "record_type": "customer",
+      "status": "active"
+    },
+    "customer_C-002.json": {
+      "email": "lin@example.com",
+      "name": "Lin Chen",
+      "record_id": "C-002",
+      "record_type": "customer",
+      "status": "inactive"
+    },
+    "note_CASE-500.json": {
+      "owner": "ana",
+      "record_id": "CASE-500",
+      "record_type": "note",
+      "status": "open"
+    },
+    "note_CASE-501.json": {
+      "owner": "bo",
+      "record_id": "CASE-501",
+      "record_type": "note",
+      "status": "closed"
+    },
+    "order_O-100.json": {
+      "amount": 120.5,
+      "currency": "USD",
+      "customer_id": "C-001",
+      "record_id": "O-100",
+      "record_type": "order",
+      "status": "active"
+    },
+    "order_O-101.json": {
+      "amount": 88.0,
+      "currency": "EUR",
+      "customer_id": "C-002",
+      "record_id": "O-101",
+      "record_type": "order",
+      "status": "active"
+    },
+    "customer_C-003.json": {
+      "email": "mira@example.com",
+      "name": "Mira Patel",
+      "record_id": "C-003",
+      "record_type": "customer",
+      "status": "pending"
+    },
+    "note_CASE-502.json": {
+      "owner": "cy",
+      "record_id": "CASE-502",
+      "record_type": "note",
+      "status": "pending"
+    },
+    "order_O-102.json": {
+      "amount": 42.75,
+      "currency": "USD",
+      "customer_id": "C-003",
+      "record_id": "O-102",
+      "record_type": "order",
+      "status": "active"
+    }
+  },
+  "reject_rows": [
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_01.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_02.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_03.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_04.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_05.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_06.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_07.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_08.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_09.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_10.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_11.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_12.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_13.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_14.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_15.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_16.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_17.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_18.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_19.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_20.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_21.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_22.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_23.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_24.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_25.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_26.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_27.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_28.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_29.bak"
+    },
+    {
+      "details": ".bak",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/bulk_unsupported/legacy_30.bak"
+    },
+    {
+      "details": "C-003",
+      "error_type": "invalid_status",
+      "source_path": "in/dropbox/customers/customers_bad.csv"
+    },
+    {
+      "details": "C-004 email",
+      "error_type": "missing_required_field",
+      "source_path": "in/dropbox/customers/customers_bad.csv"
+    },
+    {
+      "source_path": "in/dropbox/customers/customers_extra.csv",
+      "error_type": "duplicate_record_id",
+      "details": "C-002"
+    },
+    {
+      "details": ".md",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/misc/empty.md"
+    },
+    {
+      "details": ".png",
+      "error_type": "unsupported_extension",
+      "source_path": "in/dropbox/misc/image.png"
+    },
+    {
+      "details": "Case",
+      "error_type": "missing_required_field",
+      "source_path": "in/dropbox/notes/case_bad.txt"
+    },
+    {
+      "details": "O-102",
+      "error_type": "invalid_amount",
+      "source_path": "in/dropbox/orders/2026/order_bad.json"
+    },
+    {
+      "details": "O-100",
+      "error_type": "duplicate_record_id",
+      "source_path": "in/dropbox/orders/2026/order_dup.json"
+    },
+    {
+      "source_path": "in/dropbox/orders/2026/order_missing_currency.json",
+      "error_type": "missing_required_field",
+      "details": "currency"
+    }
+  ],
+  "source_hashes": {
+    "in/dropbox/bulk_unsupported/legacy_01.bak": "8de8b6cf6efb165148e7e135d38a6b416de3e8815270a6ef21671987ca4d6a63",
+    "in/dropbox/bulk_unsupported/legacy_02.bak": "34327a115c9998ca75b75dc5818cfe0c436b5dca91c369b175f9b86a75f79530",
+    "in/dropbox/bulk_unsupported/legacy_03.bak": "24be900b7bf0484957d79a53d2059b70210fe9a9667ad620d88a8dc3d236d76a",
+    "in/dropbox/bulk_unsupported/legacy_04.bak": "d581e6ab6ead42337a19e688b8b65905df42c7a9b7a6cee185f81058d801de12",
+    "in/dropbox/bulk_unsupported/legacy_05.bak": "ef016504399a0f077e0eec4c480f73f52ff727b56b830f16fe0794722d67e2c7",
+    "in/dropbox/bulk_unsupported/legacy_06.bak": "74d834be0f92c394558b399af53145d148e674647facb31a8b2bd984c25a055c",
+    "in/dropbox/bulk_unsupported/legacy_07.bak": "1120c8b46115de68ac9ea38ddcdf63a2fbc9c957458cb2f449ddb189a1f774b4",
+    "in/dropbox/bulk_unsupported/legacy_08.bak": "b9a38cde2f62d3ded3935a95f1e6d49c11b5cbce6e38f026782528591c8e5e91",
+    "in/dropbox/bulk_unsupported/legacy_09.bak": "b81ee6edb3355be4dced8861103dbc089fbd14d5611138575d004cea6ccd6828",
+    "in/dropbox/bulk_unsupported/legacy_10.bak": "ab620c5e6c9fd4207767db4b9eba98209abfa638c3f09df50c4ea3a5d1db1b0d",
+    "in/dropbox/bulk_unsupported/legacy_11.bak": "8f21e33f15f58d69b81359f365492cae37f5afc7006e9988ab130ff0585f3afe",
+    "in/dropbox/bulk_unsupported/legacy_12.bak": "5f3c45ee1ec26793c0b809ce7cf879cc00ad3782d0160e05d20cf264f7da333f",
+    "in/dropbox/bulk_unsupported/legacy_13.bak": "3e0abdebe53b08a186e8aaac13b2e7100e8e53b5ad743c44638bd6c519f286d3",
+    "in/dropbox/bulk_unsupported/legacy_14.bak": "48b2cbe57b8d43d2c1a60a3f8bd3576b76fec631233d3ae0484713edd6172c3f",
+    "in/dropbox/bulk_unsupported/legacy_15.bak": "e922ebcd1cb28b43c6acf1021c9cbcd0c9b509874c92502c69617b9634d3c9c2",
+    "in/dropbox/bulk_unsupported/legacy_16.bak": "009bf2bd8535475c48265e99b57980e57c144152ba738fb0a96a34e04d46232b",
+    "in/dropbox/bulk_unsupported/legacy_17.bak": "a67d5f6d2bdd3fba98708cb0d92ca98150612a6aefd2c3bbdb365049845ab8fa",
+    "in/dropbox/bulk_unsupported/legacy_18.bak": "8e4f7c6c3a6cd3a283cfa3cc5936c9cb6dfb2d7213edf1ea963a3af80320c0ce",
+    "in/dropbox/bulk_unsupported/legacy_19.bak": "cc093c21a28937116321cbe52c5ef9102d0228fa00e1a7535b91a71bcf079b3f",
+    "in/dropbox/bulk_unsupported/legacy_20.bak": "39d6dba10d2509a5355d843ab04b6b272ff98f0bdb04cda1e908d0767ba848ad",
+    "in/dropbox/bulk_unsupported/legacy_21.bak": "8b375aae904692f95e69218d5f494f27a7cef2c8c97496d05866a2d5f640ff35",
+    "in/dropbox/bulk_unsupported/legacy_22.bak": "7fa041bf23847bd0aa8b49246fddfc1fc5597986fcb5b4a28077c75ffb33fc34",
+    "in/dropbox/bulk_unsupported/legacy_23.bak": "3f3aac0170b69a250d161cf756b5e58187c35b6ec469f09a74366c04d9169a4e",
+    "in/dropbox/bulk_unsupported/legacy_24.bak": "15b7876ec40a7148bef30be67295e0a807f0c06555a31f30eabe1a594cc03324",
+    "in/dropbox/bulk_unsupported/legacy_25.bak": "91080ab7b4fb4ad07409c47aee232998a73a92d5e42ccd3fb44895ee7dbda832",
+    "in/dropbox/bulk_unsupported/legacy_26.bak": "d4101b67f309a90adbe653c6a7c309d4373a6ab78abbfbd614618ae004d63959",
+    "in/dropbox/bulk_unsupported/legacy_27.bak": "1f06061aa83e90db91347700fc113087dc336ad0943a1b6f9be96df9feae5d71",
+    "in/dropbox/bulk_unsupported/legacy_28.bak": "4b39c5cfd32b5b6a5351d6f999ac58508e50d7cfaba7417e9a7217dd6e53f85c",
+    "in/dropbox/bulk_unsupported/legacy_29.bak": "158dfbca6d3c0c2f167f3cdbda0bcee86a7cca08f37471561ea7162d6762a959",
+    "in/dropbox/bulk_unsupported/legacy_30.bak": "550c29130ee9ffd3fb89c6407d5c277bcff688aec6943557e26a138ba2d2591a",
+    "in/dropbox/customers/customers_01.csv": "44d4a2a4781827c5403b118016ccfaedcbce3b6703467781ae06c34793b06388",
+    "in/dropbox/customers/customers_bad.csv": "d60a0d2cea3738e21ddbd3ab5c71f2549c509f93f2fe9eeb3498678d079bf629",
+    "in/dropbox/customers/customers_extra.csv": "43776e710c925f8925f4f83a0ba6c0f311b218ed8193acb7da15842b265733b3",
+    "in/dropbox/misc/empty.md": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "in/dropbox/misc/image.png": "823ceb99fcef5252333ede1b2202341c3b287b6d47571963e6b0ddf393a24f82",
+    "in/dropbox/notes/case_500.txt": "2153ba4799a8c5e47bca9294cf8990e0e85d0c9f541596378f647b4680779812",
+    "in/dropbox/notes/case_501.txt": "abe39dc3f5a3ee0ee1fa310d5dffe8ebeaf068e4548f3a6e06680a490577a6ac",
+    "in/dropbox/notes/case_502.txt": "c50e147a220e0a464bc97b56ab20b7fae52853abcb5c4f6fb192996b8d2391fa",
+    "in/dropbox/notes/case_bad.txt": "d74fec6d931bebff30cb6c59d12e867b9374e9d0790652c0b8d1ecee4fb6a1a7",
+    "in/dropbox/orders/2026/order_100.json": "6eefbeb14faf7650f9cbfe356dbe766f004bba3902f245ccad21e47d39f54877",
+    "in/dropbox/orders/2026/order_101.JSON": "f6fe2322b7279840b19157999efee8c68654f594b5d9e934eafabb4809b68a71",
+    "in/dropbox/orders/2026/order_102.json": "10a1dc8f882cf577a2aea68e8f7afcbf60793fe5a6e90c365f9a4e3f772ebfe6",
+    "in/dropbox/orders/2026/order_bad.json": "adb62ee1ff26a833fea1526f6b2805fa1c58028ed21e69b74e94994411d0a19a",
+    "in/dropbox/orders/2026/order_dup.json": "a976a0b9cc4cb752b0d44597ec48ab6f93d874d5706ecd3ccaeed61520671a1e",
+    "in/dropbox/orders/2026/order_missing_currency.json": "95708df25e4515b1b054f685861294ea771cca635ed370f5c1bb37927533d60b",
+    "in/normalization_rules.yaml": "62ff13524368bab2e99ab499d9e7ffd11c7733e2e1939c11200bd4027229a081"
+  },
+  "summary": {
+    "by_type": {
+      "customer": 3,
+      "note": 3,
+      "order": 3
+    },
+    "reject_count": 39,
+    "success_count": 9
+  }
+}

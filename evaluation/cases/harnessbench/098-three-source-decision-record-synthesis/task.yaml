@@ -1,0 +1,9 @@
+task_id: "098-three-source-decision-record-synthesis"
+title: "Three-Source Decision Record from Meeting, Email, and Documents"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "hard"
+tags: ["decision-record", "multi-source-synthesis", "email", "meeting", "citation", "conflict-resolution", "hard"]

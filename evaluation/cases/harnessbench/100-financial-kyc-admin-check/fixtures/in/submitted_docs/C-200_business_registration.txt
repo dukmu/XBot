@@ -1,0 +1,4 @@
+Document type: business_registration
+Customer: Blue Kite LLC
+Registration number: TX-778812
+Status: active

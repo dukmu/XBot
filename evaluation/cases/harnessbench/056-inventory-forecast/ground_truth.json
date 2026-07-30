@@ -1,0 +1,29 @@
+{
+  "outputs": {
+    "csv": "out/reorder_plan.csv",
+    "exceptions": "out/inventory_exceptions.json",
+    "notes": "out/forecast_notes.md"
+  },
+  "fixture_hashes": {
+    "sales_history.csv": "329cdaf3e8c598b9f5352c07e9e8e628278c58302e0f4359826f3b4816ccbda9",
+    "stock.json": "00f95204a59a640ccecb8b25840d24ae6c15226128ecfdb633929921cea7d51b"
+  },
+  "header": ["sku", "avg_weekly_sales", "forecast_14d", "current_stock", "safety_stock", "reorder_qty", "risk_level"],
+  "rows": [
+    {"sku": "SKU-A", "avg_weekly_sales": "21.00", "forecast_14d": "42.00", "current_stock": "30", "safety_stock": "10", "reorder_qty": "30", "risk_level": "high"},
+    {"sku": "SKU-B", "avg_weekly_sales": "6.50", "forecast_14d": "13.00", "current_stock": "50", "safety_stock": "8", "reorder_qty": "0", "risk_level": "low"},
+    {"sku": "SKU-C", "avg_weekly_sales": "43.00", "forecast_14d": "86.00", "current_stock": "70", "safety_stock": "20", "reorder_qty": "40", "risk_level": "high"},
+    {"sku": "SKU-D", "avg_weekly_sales": "12.00", "forecast_14d": "24.00", "current_stock": "34", "safety_stock": "6", "reorder_qty": "0", "risk_level": "medium"},
+    {"sku": "SKU-E", "avg_weekly_sales": "0.00", "forecast_14d": "0.00", "current_stock": "8", "safety_stock": "8", "reorder_qty": "0", "risk_level": "medium"},
+    {"sku": "SKU-F", "avg_weekly_sales": "9.00", "forecast_14d": "18.00", "current_stock": "25", "safety_stock": "2", "reorder_qty": "0", "risk_level": "medium"},
+    {"sku": "SKU-G", "avg_weekly_sales": "8.00", "forecast_14d": "16.00", "current_stock": "26", "safety_stock": "4", "reorder_qty": "0", "risk_level": "low"},
+    {"sku": "SKU-H", "avg_weekly_sales": "13.50", "forecast_14d": "27.00", "current_stock": "26", "safety_stock": "8", "reorder_qty": "14", "risk_level": "high"},
+    {"sku": "SKU-I", "avg_weekly_sales": "4.00", "forecast_14d": "8.00", "current_stock": "8", "safety_stock": "3", "reorder_qty": "3", "risk_level": "high"}
+  ],
+  "high_risk_skus": ["SKU-A", "SKU-C", "SKU-H", "SKU-I"],
+  "missing_history_skus": ["SKU-E"],
+  "skipped_history_skus": ["SKU-Z"],
+  "medium_boundary_skus": ["SKU-D", "SKU-E", "SKU-F"],
+  "more_than_one_pack_low_skus": ["SKU-G"],
+  "pack_rounding_cases": {"SKU-A": "30", "SKU-C": "40", "SKU-H": "14", "SKU-I": "3"}
+}

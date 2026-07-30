@@ -1,0 +1,14 @@
+{
+  "topic": "Northwind renewal risk review",
+  "account": "Northwind Traders",
+  "duration_minutes": 45,
+  "timezone": "America/New_York",
+  "window_start": "2026-05-12T09:00",
+  "window_end": "2026-05-13T17:00",
+  "required_participants": [
+    {"name": "Alex Chen", "email": "alex@example.com", "timezone": "America/New_York", "working_hours": ["09:00", "17:00"]},
+    {"name": "Priya Rao", "email": "priya@example.com", "timezone": "Europe/London", "working_hours": ["14:00", "20:00"]},
+    {"name": "Marco Silva", "email": "marco@example.com", "timezone": "America/Sao_Paulo", "working_hours": ["10:00", "18:00"]},
+    {"name": "Dana Morris", "email": "dana@northwind.example", "timezone": "America/Chicago", "working_hours": ["08:30", "16:30"]}
+  ]
+}

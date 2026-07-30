@@ -1,0 +1,5 @@
+{
+  "v1_users": "/v1/users?page=1",
+  "v2_users": "/v2/users",
+  "bad_cursor": "/v2/users?cursor=bad"
+}

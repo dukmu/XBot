@@ -1,0 +1,5 @@
+shipment_id,customer_id,promised_date,carrier
+S-7001,C-201,2026-06-05,NorthRoad
+S-7002,C-202,2026-06-06,ParcelJet
+S-7003,C-203,2026-06-05,NorthRoad
+S-7004,C-204,2026-06-07,MetroShip

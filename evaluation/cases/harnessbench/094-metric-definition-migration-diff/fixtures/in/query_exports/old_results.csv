@@ -1,0 +1,6 @@
+metric_name,value
+arr,100000.0000
+activation_rate,0.4000
+retention_rate,0.7000
+support_sla,0.9500
+gross_margin,0.5500

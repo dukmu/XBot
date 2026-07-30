@@ -1,0 +1,21 @@
+{
+  "claims": {
+    "CL-01": {"status": "contradicted", "primary_source": "sources/errata.md", "tokens": ["8.2", "7.4", "corrected"], "secondary_sources": ["sources/results_table.csv"], "location_tokens": ["ERR-1"]},
+    "CL-02": {"status": "contradicted", "primary_source": "sources/results_table.csv", "tokens": ["partner", "-1.0"], "secondary_sources": ["sources/peer_review_notes.md"], "location_tokens": ["retention_lift", "partner"]},
+    "CL-03": {"status": "contradicted", "primary_source": "sources/methods_appendix.md", "tokens": ["primary", "activation", "secondary"], "secondary_sources": [], "location_tokens": ["M-1"]},
+    "CL-04": {"status": "supported", "primary_source": "sources/study_summary.md", "tokens": ["2400"], "secondary_sources": [], "location_tokens": ["SUM-1"]},
+    "CL-05": {"status": "not_reproducible", "primary_source": "sources/repro_readme.md", "tokens": ["subgroup_ablation.csv", "does not contain"], "secondary_sources": [], "location_tokens": ["results/subgroup_ablation.csv"]},
+    "CL-06": {"status": "supported", "primary_source": "sources/results_table.csv", "tokens": ["support_ticket_change", "-12"], "secondary_sources": [], "location_tokens": ["support_ticket_change"]},
+    "CL-07": {"status": "unsupported", "primary_source": "sources/peer_review_notes.md", "tokens": ["adverse-event", "not supplied"], "secondary_sources": [], "location_tokens": ["R2-1"]},
+    "CL-08": {"status": "not_reproducible", "primary_source": "sources/repro_readme.md", "tokens": ["raw/events.parquet", "analysis_config.yaml", "run_analysis.py"], "secondary_sources": [], "location_tokens": ["raw/events.parquet"]},
+    "CL-09": {"status": "supported", "primary_source": "sources/results_table.csv", "tokens": ["mobile", "9.1"], "secondary_sources": ["sources/peer_review_notes.md"], "location_tokens": ["retention_lift", "mobile"]},
+    "CL-10": {"status": "supported", "primary_source": "sources/errata.md", "tokens": ["7.4", "corrected"], "secondary_sources": ["sources/results_table.csv"], "location_tokens": ["ERR-1"]},
+    "CL-11": {"status": "contradicted", "primary_source": "sources/results_table.csv", "tokens": ["south", "-0.4"], "secondary_sources": ["sources/methods_appendix.md"], "location_tokens": ["activation_lift", "south"]},
+    "CL-12": {"status": "supported", "primary_source": "sources/results_table.csv", "tokens": ["p_value", "0.031"], "secondary_sources": [], "location_tokens": ["p_value"]},
+    "CL-13": {"status": "overstated", "primary_source": "sources/study_summary.md", "tokens": ["does not prove", "all customers"], "secondary_sources": ["sources/errata.md", "sources/peer_review_notes.md"], "location_tokens": ["SUM-3"]},
+    "CL-14": {"status": "supported", "primary_source": "sources/methods_appendix.md", "tokens": ["trial accounts", "excluded"], "secondary_sources": ["sources/study_summary.md"], "location_tokens": ["M-2"]}
+  },
+  "repro_gap_tokens": ["raw/events.parquet", "analysis_config.yaml", "run_analysis.py", "subgroup_ablation.csv"],
+  "overstatement_tokens": ["enterprise", "observed", "not prove", "all customers"],
+  "scoring": {"thresholds": {"pass": 0.70, "good": 0.85, "excellent": 0.95}}
+}

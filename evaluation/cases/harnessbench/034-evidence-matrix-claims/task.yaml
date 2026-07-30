@@ -1,0 +1,9 @@
+task_id: "034-evidence-matrix-claims"
+title: "Multi-Source Claims Evidence Matrix Generation"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 700
+difficulty: "medium"
+tags: ["information-retrieval", "evidence-matrix", "claims", "fact-checking", "medium"]

@@ -1,0 +1,13 @@
+{
+  "request_id": "PCR-2026-05-REFUND-17",
+  "policy_name": "Enterprise Refund Exception Policy",
+  "target_regions": ["AMER", "EU", "APAC"],
+  "requested_effective_date": "2026-05-20",
+  "summary": "Refund exceptions over USD 500 require documented reason codes, supervisor review, and customer-facing wording updates.",
+  "required_workstreams": ["legal_review", "support_training", "customer_comms", "launch_gate"],
+  "global_constraints": {
+    "legal_review_must_finish_before_training": true,
+    "customer_comms_must_precede_launch_gate": true,
+    "launch_gate_requires_support_training": true
+  }
+}

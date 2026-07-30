@@ -1,0 +1,21 @@
+Revise the Markdown draft using the style guide and legal comments.
+
+Inputs:
+- $WORKSPACE/in/draft.md
+- $WORKSPACE/in/style_guide.md
+- $WORKSPACE/in/legal_comments.md
+
+Outputs:
+- $WORKSPACE/out/revised_draft.md
+- $WORKSPACE/out/change_log.csv
+
+revised_draft.md requirements:
+- Preserve the "Data Processing Addendum" section and the "No Warranty Expansion" clause.
+- Replace banned hype language with factual wording.
+- Add the required legal disclaimer in the pilot description.
+- Keep Markdown headings.
+
+change_log.csv requirements:
+- CSV header: section,change_type,source_comment,summary
+- Map each required edit to either style_guide or legal_comments.
+- Do not modify input files.

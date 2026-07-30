@@ -1,0 +1,13 @@
+{
+  "required_checks": [
+    {"metric": "p95_latency_ms", "threshold": 850, "window": "5m", "direction": "below"},
+    {"metric": "error_rate_pct", "threshold": 1.5, "window": "5m", "direction": "below"},
+    {"metric": "auth_401_rate", "threshold": null, "window": "5m", "direction": "below"},
+    {"metric": "ledger_write_success_pct", "threshold": 99.95, "window": "10m", "direction": "above"}
+  ],
+  "post_rollback_verification": [
+    "p95_latency_ms",
+    "error_rate_pct",
+    "ledger_write_success_pct"
+  ]
+}

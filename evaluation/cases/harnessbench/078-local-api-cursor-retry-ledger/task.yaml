@@ -1,0 +1,15 @@
+task_id: "078-local-api-cursor-retry-ledger"
+title: "Local API Cursor Retry Ledger"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "hard"
+tags:
+  - "workspace-tooling"
+  - "local-api"
+  - "pagination"
+  - "retry"
+  - "ledger"
+hooks_module: "hooks.py"

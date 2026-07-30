@@ -1,0 +1,11 @@
+task_id: "004-meeting-summary"
+title: "Summarize A Meeting Transcript Into An English Memo"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+tags:
+  - "writing"
+  - "summary"
+  - "documents"

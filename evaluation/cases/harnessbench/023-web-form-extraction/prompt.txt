@@ -1,0 +1,32 @@
+Use the local web page provided in the MOCK_FORM_URL environment variable. Do not use the public internet.
+
+Task:
+1. Open the local page.
+2. Extract the CSRF token and hidden fields from the form.
+3. Submit the lookup form with:
+   - order_id: A-1042
+   - region: emea
+4. Follow the confirmation step if returned.
+5. Save the extracted result to $WORKSPACE/out/form_result.json and write $WORKSPACE/out/interaction_trace.md.
+
+Required JSON format:
+{
+  "query": {"order_id": "A-1042", "region": "emea"},
+  "marker": "FORM_LOOKUP_OK",
+  "result": {
+    "order_id": "A-1042",
+    "region": "emea",
+    "customer": "Nadia Rossi",
+    "status": "ready_for_invoice",
+    "total_usd": 1842.75,
+    "line_count": 3
+  }
+}
+
+Rules:
+- The marker must come from the lookup result page or response.
+- Include `confirm_marker: "FORM_CONFIRM_OK"` from the confirmation response.
+- Do not include unrelated page text, HTML, or the full index page in $WORKSPACE/out/form_result.json.
+- Numeric values must be numbers, not strings.
+- Do not modify $WORKSPACE/in/www/index.html.
+- interaction_trace.md must mention the homepage visit, CSRF token, hidden field, lookup submission, confirmation step, and final marker.

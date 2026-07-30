@@ -1,0 +1,41 @@
+{
+  "outputs": {
+    "json": "out/funnel_metrics.json",
+    "insights": "out/dropoff_insights.md",
+    "cohort": "out/cohort_comparison.csv",
+    "stage_user_sets": "out/stage_user_sets.json"
+  },
+  "fixture_hashes": {
+    "events.jsonl": "c7397be0ccc0fde36b5d4e5bc4208c3787901b332baaeb0f90ef65342b06d0fb"
+  },
+  "stages": [
+    {"stage": "visit", "users": 14, "conversion_from_visit": 1.0, "conversion_from_previous": 1.0, "dropoff_from_previous": 0, "dropoff_rate_from_previous": 0.0},
+    {"stage": "signup", "users": 11, "conversion_from_visit": 0.7857, "conversion_from_previous": 0.7857, "dropoff_from_previous": 3, "dropoff_rate_from_previous": 0.2143},
+    {"stage": "verify_email", "users": 9, "conversion_from_visit": 0.6429, "conversion_from_previous": 0.8182, "dropoff_from_previous": 2, "dropoff_rate_from_previous": 0.1818},
+    {"stage": "trial_start", "users": 8, "conversion_from_visit": 0.5714, "conversion_from_previous": 0.8889, "dropoff_from_previous": 1, "dropoff_rate_from_previous": 0.1111},
+    {"stage": "purchase", "users": 5, "conversion_from_visit": 0.3571, "conversion_from_previous": 0.625, "dropoff_from_previous": 3, "dropoff_rate_from_previous": 0.375}
+  ],
+  "largest_dropoff": {"from_stage": "trial_start", "to_stage": "purchase", "lost_users": 3, "dropoff_rate": 0.375},
+  "excluded_bot_users": ["BOT01", "BOT02"],
+  "data_quality": {"ignored_order_events": 3, "deduplicated_stage_events": 3},
+  "cohort_header": ["cohort", "visit_users", "purchase_users", "purchase_rate", "largest_dropoff_transition"],
+  "cohort_rows": [
+    {"cohort": "beta", "visit_users": "2", "purchase_users": "0", "purchase_rate": "0.0000", "largest_dropoff_transition": "trial_start->purchase"},
+    {"cohort": "control", "visit_users": "6", "purchase_users": "3", "purchase_rate": "0.5000", "largest_dropoff_transition": "trial_start->purchase"},
+    {"cohort": "variant", "visit_users": "6", "purchase_users": "2", "purchase_rate": "0.3333", "largest_dropoff_transition": "trial_start->purchase"}
+  ],
+  "required_insight_terms": ["trial_start", "purchase", "control", "variant", "beta", "sample", "order"]
+  ,
+  "stage_user_sets": {
+    "stage_users": {
+      "visit": ["U001", "U002", "U003", "U004", "U005", "U006", "U007", "U008", "U009", "U010", "U011", "U012", "U013", "U014"],
+      "signup": ["U001", "U002", "U003", "U004", "U006", "U007", "U008", "U010", "U011", "U012", "U013"],
+      "verify_email": ["U001", "U002", "U003", "U006", "U007", "U008", "U010", "U011", "U013"],
+      "trial_start": ["U001", "U002", "U003", "U007", "U008", "U010", "U011", "U013"],
+      "purchase": ["U001", "U002", "U007", "U010", "U011"]
+    },
+    "largest_dropoff_lost_user_ids": ["U003", "U008", "U013"],
+    "ignored_order_user_ids": ["U006", "U010", "U012"],
+    "deduplicated_stage_user_ids": ["U002", "U011"]
+  }
+}

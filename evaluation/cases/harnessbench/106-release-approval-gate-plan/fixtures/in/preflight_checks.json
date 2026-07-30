@@ -1,0 +1,10 @@
+{
+  "release_id": "REL-2026-05-CHECKOUT-88",
+  "checks": [
+    {"check_id": "PF-UNIT", "name": "unit_tests", "status": "pass", "evidence": "ci/local-unit-2026-05-03"},
+    {"check_id": "PF-CANARY-ERR", "name": "checkout_canary_error_rate", "status": "fail", "value": 2.3, "threshold": 1.5, "unit": "percent"},
+    {"check_id": "PF-CAPACITY", "name": "capacity_headroom", "status": "pass", "value": 32, "threshold": 20, "unit": "percent"},
+    {"check_id": "PF-SEC", "name": "security_approval", "status": "missing", "required_role": "security_reviewer"},
+    {"check_id": "PF-DB-REV", "name": "db_reversal_tested", "status": "missing", "required_role": "database_owner"}
+  ]
+}

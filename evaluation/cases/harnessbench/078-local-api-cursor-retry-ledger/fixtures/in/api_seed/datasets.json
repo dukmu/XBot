@@ -1,0 +1,17 @@
+[
+  {
+    "dataset_id": "ds-001",
+    "name": "Northwind Orders",
+    "owner": "ana"
+  },
+  {
+    "dataset_id": "ds-002",
+    "name": "Support Tickets",
+    "owner": "bo"
+  },
+  {
+    "dataset_id": "ds-003",
+    "name": "Ledger Export",
+    "owner": null
+  }
+]

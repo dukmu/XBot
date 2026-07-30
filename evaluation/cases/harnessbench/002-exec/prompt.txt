@@ -1,0 +1,12 @@
+Under **`$WORKSPACE`**, use the **terminal** to complete the steps below. The harness has already created an empty **`out/`** directory; if you see `AGENTS.md`, `.git`, etc. at the repo root, those come from the runtime—**ignore them** and only write outputs under **`out/`**.
+
+Each step’s artifact must be **single-line text** (first line counts; no extra leading/trailing whitespace), as you would produce with typical CLI usage:
+
+1. **Arithmetic expansion**: Write **`42`** to **`out/step1.txt`** (must be produced by the shell, e.g. `echo $((6*7))` or an equivalent redirect).
+
+2. **`basename`**: First create a file under a deep path, e.g.  
+   `mkdir -p out/a/b` and `touch out/a/b/c.txt`, then write that path’s **filename** (no directories) to **`out/step2.txt`** (e.g. `basename` or equivalent; expected single line **`c.txt`**).
+
+3. **Pipeline and `tr`**: Write **`hello`** to **`out/step3.txt`** (e.g. `printf 'HELLO\n' | tr '[:upper:]' '[:lower:]'` redirected, or an equivalent pipeline).
+
+Do not rely on external resources or the network beyond what the prompt provides.

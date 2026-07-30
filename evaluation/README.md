@@ -83,3 +83,48 @@ runtime state belong in the system temporary directory.
 
 This first adapter supports Inspect's local sandbox only. Container and remote
 sandbox path mapping are intentionally outside the smoke scope.
+
+## Full HarnessBench
+
+The full task loads all 106 official task directories, including binary
+fixtures, task lifecycle hooks, multi-round prompt state, local mock services,
+and asynchronous fixture injection. Each sample receives an isolated Inspect
+workspace and a distinct session on one persistent XBot server.
+
+Run four samples concurrently:
+
+```bash
+MINIMAX_API_TOKEN=... \
+uv run --project evaluation python evaluation/run_harnessbench.py -j 4
+```
+
+The runner starts one XBot HTTP/SSE server over a Unix socket and lets Inspect
+schedule four samples concurrently. Every worker opens its own XBot session
+with the sample workspace as its workspace root. Runtime state and server logs
+are retained with Inspect logs under one
+`evaluation/results/<name>/` directory:
+
+```text
+evaluation/results/<name>/
+├── data/
+├── logs/
+└── server.log
+```
+
+Because the Agent and task hooks run on the same host, the runner maps
+HarnessBench public mock URLs directly to their loopback URLs. Set
+`HARNESSBENCH_PUBLIC_URL_TEMPLATE` or `HARNESSBENCH_TUNNEL_CMD` explicitly to
+exercise a tunnel instead.
+
+Use `--limit` for a bounded validation without changing the task definition:
+
+```bash
+MINIMAX_API_TOKEN=... \
+uv run --project evaluation python evaluation/run_harnessbench.py \
+  --name smoke-j4 -j 4 --limit 4
+```
+
+Additional arguments are passed to `inspect eval`. `--continue-on-fail`
+prevents one task-level adapter error from discarding the remaining benchmark.
+Oracle failures are recorded as zero scores with their exception in the sample
+result.

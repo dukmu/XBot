@@ -1,0 +1,14 @@
+task_id: "062-k8s-config-audit"
+title: "Kubernetes configuration audit for a checkout deployment"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "sre"
+  - "devops"
+  - "kubernetes"
+  - "configuration-audit"
+  - "deterministic-oracle"

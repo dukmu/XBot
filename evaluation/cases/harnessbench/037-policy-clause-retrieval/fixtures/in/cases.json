@@ -1,0 +1,22 @@
+[
+  {"case_id": "T100", "type": "lodging", "location": "domestic", "amount_usd": 199, "receipt": "itemized", "manager_preapproval": false, "notes": "conference hotel"},
+  {"case_id": "T101", "type": "lodging", "location": "international", "amount_usd": 330, "receipt": "itemized", "manager_preapproval": true, "notes": "client workshop"},
+  {"case_id": "T102", "type": "meal", "amount_usd": 48, "contains_alcohol": true, "receipt": "itemized", "notes": "team dinner"},
+  {"case_id": "T103", "type": "equipment", "amount_usd": 450, "receipt": "yes", "business_purpose": "monitor for assigned analytics work"},
+  {"case_id": "T104", "type": "lodging", "location": "domestic", "amount_usd": 180, "receipt": "summary only", "notes": "hotel portal shows total but no itemization"},
+  {"case_id": "T105", "type": "meal", "amount_usd": 82, "contains_alcohol": false, "receipt": "itemized", "client_attendee_list": true, "notes": "customer onsite dinner"},
+  {"case_id": "T106", "type": "equipment", "amount_usd": 520, "receipt": "yes", "department_approval": true, "business_purpose": "replacement field tablet for assigned installation work"},
+  {"case_id": "T107", "type": "lodging", "location": "domestic", "amount_usd": 225, "receipt": "itemized", "notes": "employee says finance pre-approved a conference overflow rate, but no approval record is attached"},
+  {"case_id": "T108", "type": "meal", "amount_usd": 82, "contains_alcohol": false, "receipt": "itemized", "client_attendee_list": false, "notes": "customer onsite dinner; attendee list promised later"},
+  {"case_id": "T109", "type": "equipment", "amount_usd": 520, "receipt": "yes", "department_approval": false, "business_purpose": "field tablet; request text does not identify assigned project or approver"},
+  {
+    "case_id": "T110",
+    "type": "mixed_packet",
+    "notes": "One packet combines a conference hotel, client dinner, and monitor purchase.",
+    "line_items": [
+      {"line_id": "L1", "type": "lodging", "location": "domestic", "amount_usd": 235, "receipt": "itemized", "finance_preapproval_attached": true, "notes": "conference overflow hotel"},
+      {"line_id": "L2", "type": "meal", "amount_usd": 88, "contains_alcohol": false, "receipt": "itemized", "client_attendee_list": false, "notes": "client dinner, attendee list promised later"},
+      {"line_id": "L3", "type": "equipment", "amount_usd": 540, "receipt": "yes", "department_approval": true, "business_purpose": "spare monitor for office pool; no assigned project named"}
+    ]
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "workloads": [
+    {
+      "id": "long_context_research",
+      "description": "45‑minute continuous research on the same codebase and nine specification documents, requiring consistent cross‑turn references.",
+      "hard_requirements": ["long_context", "multi_step_tool_use", "stable_followups"]
+    },
+    {
+      "id": "strict_json_tools",
+      "description": "Call 12 tools and output strict JSON schema; disallow extra fields or enum drift.",
+      "hard_requirements": ["strict_structured_output", "tool_argument_accuracy"]
+    },
+    {
+      "id": "vision_pdf_triage",
+      "description": "Read invoice scan images and PDFs, extract amount, payee, and abnormal signatures.",
+      "hard_requirements": ["vision", "pdf", "fast_triage"]
+    },
+    {
+      "id": "low_latency_alerts",
+      "description": "Classify alerts and write notifications within 20 seconds after a heartbeat trigger.",
+      "hard_requirements": ["low_latency", "short_context", "high_availability"]
+    },
+    {
+      "id": "cache_heavy_followups",
+      "description": "Repeated follow‑up questions about large tool catalogs and subsequent tasks under long system prompts in the same session.",
+      "hard_requirements": ["prompt_cache", "cache_diagnostics", "history_reuse"]
+    },
+    {
+      "id": "cost_guarded_bulk",
+      "description": "Batch process 800 low‑priority emails, requiring cost control and stable JSON output.",
+      "hard_requirements": ["cost_control", "batch_processing", "structured_output"]
+    }
+  ]
+}

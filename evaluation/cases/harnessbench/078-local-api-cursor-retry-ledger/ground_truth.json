@@ -1,0 +1,45 @@
+{
+  "artifact_count": 4,
+  "dataset_count": 3,
+  "datasets": [
+    {
+      "artifact_count": 2,
+      "dataset_id": "ds-001",
+      "job_count": 2,
+      "latest_job_status": "failed",
+      "name": "Northwind Orders",
+      "orphan_artifact_count": 0,
+      "owner": "ana"
+    },
+    {
+      "artifact_count": 1,
+      "dataset_id": "ds-002",
+      "job_count": 1,
+      "latest_job_status": "running",
+      "name": "Support Tickets",
+      "orphan_artifact_count": 0,
+      "owner": "bo"
+    },
+    {
+      "artifact_count": 1,
+      "dataset_id": "ds-003",
+      "job_count": 1,
+      "latest_job_status": "succeeded",
+      "name": "Ledger Export",
+      "orphan_artifact_count": 0,
+      "owner": null
+    }
+  ],
+  "jobs_by_status": {
+    "failed": 1,
+    "running": 1,
+    "succeeded": 2
+  },
+  "quality_terms": [
+    "duplicate",
+    "orphan",
+    "cursor",
+    "429",
+    "503"
+  ]
+}

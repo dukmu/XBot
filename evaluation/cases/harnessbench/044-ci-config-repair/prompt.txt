@@ -1,0 +1,25 @@
+The fixture project has a broken GitHub Actions workflow at `$WORKSPACE/in/project/.github/workflows/ci.yml`.
+
+Read `$WORKSPACE/in/project/CI_NOTES.md` before editing. It contains required event safety, action version, caching, and path-filter constraints.
+
+Your job:
+- Edit the workflow YAML so it is syntactically valid and runs the local Python tests.
+- Do not edit application code or tests.
+- Do not edit `CI_NOTES.md`.
+- Keep the workflow offline-friendly: no deployment, no secrets, no external service calls.
+- Include checkout, Python setup, dependency install from `requirements.txt`, and `python -m pytest`.
+- Use pinned major versions `actions/checkout@v4` and `actions/setup-python@v5`.
+- Include a small Python version matrix for 3.10 and 3.11.
+- Include dependency caching for pip.
+- Add path filters so the workflow is relevant to app code, tests, requirements, and workflow changes.
+- Path filters must also include `CI_NOTES.md`.
+- Run both `python -m pytest` and a lightweight smoke command that imports `normalize_percent` from `app.mathutil` and calls it once.
+- Use `push`, `pull_request`, and `workflow_dispatch`, but do not use `pull_request_target`.
+
+Also write `$WORKSPACE/in/project/ci_design_notes.md` explaining:
+- why the workflow is safe for pull requests,
+- why each path filter is included,
+- what the smoke command imports and calls,
+- why deployment/secrets/external service calls are intentionally absent.
+
+The oracle will parse the YAML and run the configured local test command.

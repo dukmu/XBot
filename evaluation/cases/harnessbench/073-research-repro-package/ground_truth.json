@@ -1,0 +1,47 @@
+{
+  "report_path": "out/reproducibility_report.md",
+  "missing_path": "out/missing_steps.csv",
+  "missing_steps_header": "item,type,impact,recommended_fix",
+  "can_reproduce_main_result": false,
+  "claim_ids": ["CLAIM-1", "CLAIM-2", "CLAIM-3", "CLAIM-4"],
+  "required_terms": [
+    "results.csv",
+    "analyze_main.py",
+    "cannot be reproduced",
+    "subgroup_ablation.csv",
+    "CLAIM-4",
+    "retention_lift",
+    "0.031",
+    "0.038"
+  ],
+  "forbidden_success_phrases": [
+    "successfully reproduced",
+    "can be reproduced",
+    "full reproducibility",
+    "package is complete",
+    "fully reproducible",
+    "no issues found"
+  ],
+  "missing_expectations": [
+    {
+      "label": "raw_trials_asset",
+      "item_needles": ["raw"],
+      "type_needles": ["missing", "absent", "data"]
+    },
+    {
+      "label": "analysis_driver_unusable",
+      "item_needles": ["analyze"],
+      "type_needles": ["syntax", "broken", "error", "parse", "unusable", "invalid", "command"]
+    },
+    {
+      "label": "retention_lift_mismatch",
+      "item_needles": ["retention"],
+      "type_needles": ["mismatch", "discrepancy", "delta"]
+    },
+    {
+      "label": "subgroup_table_missing",
+      "item_needles": ["subgroup"],
+      "type_needles": ["missing", "absent", "artifact"]
+    }
+  ]
+}

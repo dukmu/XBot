@@ -1,0 +1,16 @@
+metric_name,dashboard_formula,owner,widget_id
+Gross Revenue,"SUM(CASE WHEN status IN ('paid','shipped') THEN order_amount ELSE 0 END)",Finance,W-101
+Net Revenue,SUM(order_amount),Finance,W-102
+Signup Conversion Rate,activated_users / (total_signups - ineligible_signups),Growth,W-210
+Average Fulfillment Time,AVG(shipped_at - created_at),Operations,W-330
+Active Customers,COUNTD(customer_id) WHERE last_activity_days < 31,Product,W-410
+Support SLA Breach Rate,breached_tickets / open_tickets,Support,W-515
+Trial Conversion Rate,paid_trials / started_trials,Growth,W-211
+Rolling Active Users,COUNT(DISTINCT user_id) WHERE activity_date >= report_date - 30 days,Product,W-411
+Marketing Opt-in Rate,email_opted_in_users / eligible_users,Marketing,W-610
+Inventory Stockout Count,COUNT(DISTINCT sku) WHERE stockout_hours > 0,Ops,W-720
+Refund Rate,refunded_orders / total_orders,Finance,W-730
+Qualified Pipeline,"SUM(CASE WHEN stage = 'qualified' OR stage = 'proposal' THEN deal_value ELSE 0 END)",Sales,W-810
+P95 API Latency,"PERCENTILE(latency_ms, 95) WHERE route_type != 'internal'",Platform,W-910
+Seven Day Retention,retained_users_day_7 / total_signups,Growth,W-212
+Enterprise ARR,SUM(contract_value),Finance,W-103

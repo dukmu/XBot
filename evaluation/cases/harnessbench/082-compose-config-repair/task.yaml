@@ -1,0 +1,11 @@
+task_id: 082-compose-config-repair
+title: Repair Offline Docker Compose Service Configuration
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - compose
+  - devops
+  - offline
+timeout_sec: 600
+difficulty: medium-hard

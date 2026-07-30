@@ -1,0 +1,10 @@
+task_id: 083-monorepo-interface-repair
+title: Repair Cross-Package Interface Break in a Python Monorepo
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - monorepo
+  - interface-compat
+  - pytest
+timeout_sec: 600

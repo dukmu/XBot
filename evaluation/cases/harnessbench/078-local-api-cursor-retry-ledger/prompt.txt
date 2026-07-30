@@ -1,0 +1,34 @@
+Use only the task-provided mock API at $MOCK_API_BASE. It may be exposed through a public tunnel to a local benchmark server. Do not use any other internet resources.
+
+Read the contract at $WORKSPACE/in/api_contract.md, then fetch all datasets, jobs, and artifacts.
+The API uses cursor pagination and may return 429, 503, and one cursor_expired response. Retry transient
+failures locally. If a cursor expires, use the checkpoint endpoint described in the contract and continue.
+
+Create:
+- $WORKSPACE/out/api_inventory.json
+- $WORKSPACE/out/retry_ledger.csv
+- $WORKSPACE/out/data_quality_report.md
+
+api_inventory.json format:
+{
+  "source_base_url": "the exact base URL",
+  "dataset_count": 3,
+  "artifact_count": 5,
+  "jobs_by_status": {"failed": 1, "running": 1, "succeeded": 2},
+  "datasets": [
+    {
+      "dataset_id": "ds-001",
+      "name": "Northwind Orders",
+      "owner": "ana",
+      "job_count": 2,
+      "artifact_count": 2,
+      "latest_job_status": "succeeded",
+      "orphan_artifact_count": 0
+    }
+  ]
+}
+
+Sort datasets by dataset_id. Exclude duplicate artifact ids from artifact_count, but mention duplicates in data_quality_report.md.
+Exclude orphan artifacts from per-dataset artifact_count, but mention them in data_quality_report.md.
+
+retry_ledger.csv header must be: endpoint,cursor_or_page,status_code,action,attempts

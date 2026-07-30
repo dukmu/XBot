@@ -1,0 +1,46 @@
+Prepare a budget-vs-actuals variance report.
+
+Inputs:
+- $WORKSPACE/in/budget.csv
+- $WORKSPACE/in/actuals.csv
+
+Create:
+- $WORKSPACE/out/variance_report.csv
+- $WORKSPACE/out/department_rollup.csv
+- $WORKSPACE/out/review_reasons.json
+- $WORKSPACE/out/summary.md
+
+variance_report.csv columns, in this exact order:
+department,category,budget_amount,actual_amount,variance_amount,variance_pct,flag
+
+Rules:
+1. Do not modify fixtures.
+2. Use a full outer join across budget.csv and actuals.csv by department and category.
+   - If a budget row has no matching actual row, set actual_amount to 0.00.
+   - If an actual row has no matching budget row, include it as an unplanned item with budget_amount 0.00.
+3. variance_amount = actual_amount - budget_amount.
+4. variance_pct = variance_amount / budget_amount * 100.
+   - If budget_amount is 0.00 and actual_amount is nonzero, set variance_pct to N/A and flag review.
+   - If both budget_amount and actual_amount are 0.00, set variance_pct to 0.00 and flag ok.
+5. Format amount fields with exactly two decimals and variance_pct with exactly two decimals.
+6. flag must be review when absolute variance_pct is strictly greater than 10.00, otherwise ok. Exactly 10.00 is ok.
+7. summary.md must name every review item and the largest overrun by variance_amount.
+8. summary.md must mention any unplanned actuals, zero-budget rows, or missing actuals.
+
+department_rollup.csv requirements:
+- Exact header:
+  department,budget_amount,actual_amount,variance_amount,variance_pct,review_item_count,rollup_flag
+- Sum all variance_report.csv rows by department after the full outer join logic.
+- variance_pct is department variance_amount / department budget_amount * 100.
+- If department budget_amount is 0.00 and actual_amount is nonzero, variance_pct is N/A.
+- review_item_count is the number of category rows in that department with flag=review.
+- rollup_flag is review when review_item_count > 0, otherwise ok.
+- Sort rows by department ascending.
+
+review_reasons.json requirements:
+- Valid JSON object keyed by each review item as `"Department Category"`.
+- Each value must contain reason_type and primary_driver.
+- reason_type must be one of: overrun_pct, underrun_pct, unplanned_actual, missing_actual, zero_budget_actual.
+- primary_driver should briefly identify the rule that caused the review flag, such as `variance_pct > 10`, `variance_pct < -10`, `budget missing`, `actual missing`, or `budget is zero with actual spend`.
+
+Do not use network access or external APIs.

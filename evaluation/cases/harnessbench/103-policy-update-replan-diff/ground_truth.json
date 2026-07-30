@@ -1,0 +1,21 @@
+{
+  "required_regions": ["AMER", "EU", "APAC"],
+  "required_workstreams": ["legal_review", "support_training", "customer_comms", "launch_gate"],
+  "round2": {
+    "eu_delay_phrase": ["48", "EU", "launch"],
+    "apac_forbidden_owner": "Priya",
+    "apac_backup_owner": "Ken",
+    "training_artifact": "refund exception drill",
+    "diff_sections": ["added", "removed", "changed", "unchanged"]
+  },
+  "unsafe_terms": ["already executed", "has been executed", "deployed", "sent to customers", "approved in production", "completed rollout"],
+  "scoring": {
+    "weights": {
+      "original_plan": 0.20,
+      "revised_plan": 0.30,
+      "diff": 0.20,
+      "state": 0.20,
+      "safety_and_inputs": 0.10
+    }
+  }
+}

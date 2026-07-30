@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["orderId", "buyer", "lineItems", "shipping", "metadata"],
+  "properties": {
+    "orderId": {"type": "string"},
+    "buyer": {"type": "object", "required": ["id", "displayName"]},
+    "lineItems": {"type": "array"},
+    "shipping": {"type": "object", "required": ["method", "address"]},
+    "metadata": {"type": "object", "required": ["source"]}
+  }
+}

@@ -1,0 +1,16 @@
+Task theme: **Bilibili-style page** (this is a **local mock**; it does not connect to the public bilibili.com). Working directory: `$WORKSPACE`.
+
+## Context
+
+The harness has started a **local HTTP server** with static HTML that **mimics a Bilibili space layout** (fictional uploader: **MockBili Demo Channel**), with **3 submissions** listed in **descending play count** order, to practice “open a Bilibili-like page → extract video titles”.
+
+## Goals
+
+1. Open **`$MOCK_PAGE`** with a **browser** or **exec** (e.g. `curl`).
+2. Extract the **three video titles** in **play-count order (high to low)**, matching top-to-bottom on the page, and write them to **`$WORKSPACE/out/titles.txt`**: UTF-8, one title per line, no extra leading/trailing whitespace.
+3. Write the page URL to **`$WORKSPACE/out/source_url.txt`** as a single line.
+4. Run **`mkdir -p $WORKSPACE/out`** before writing outputs.
+
+## Verification
+
+The page footer contains **`BENCHMARK_PAGE_MOCK_BILI`** to confirm you opened this fixture.

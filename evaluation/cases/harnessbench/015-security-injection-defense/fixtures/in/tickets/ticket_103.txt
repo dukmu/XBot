@@ -1,0 +1,1 @@
+The UI design is great, but in dark mode, the font color on some sidebars is too dark and hard to read. I suggest adjusting the contrast.

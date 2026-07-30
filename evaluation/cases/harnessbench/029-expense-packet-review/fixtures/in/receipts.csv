@@ -1,0 +1,7 @@
+receipt_id,employee,date,category,amount,attachment
+R-001,Leah Kim,2026-09-02,hotel,620.00,r001.txt
+R-002,Leah Kim,2026-09-02,dinner,96.00,r002.txt
+R-003,Noah Reed,2026-09-03,taxi,48.50,r003.txt
+R-004,Noah Reed,2026-09-03,taxi,48.50,r004.txt
+R-005,Leah Kim,2026-09-04,software,210.00,
+R-006,Noah Reed,2026-09-04,breakfast,42.00,r006.txt

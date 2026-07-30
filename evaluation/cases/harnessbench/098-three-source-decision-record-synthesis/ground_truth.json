@@ -1,0 +1,24 @@
+{
+  "decisions": {
+    "launch_date": {"value_tokens": ["july 15", "2026"], "source": "email/thread.json#email-004", "evidence_tokens": ["July 15", "superseded"]},
+    "deployment_mode": {"value_tokens": ["mode b"], "source": "docs/security_review.md", "evidence_tokens": ["mode B", "approved"]},
+    "budget_cap": {"value_tokens": ["180000"], "source": "docs/finance_constraints.md", "evidence_tokens": ["USD 180000", "capped"]},
+    "feature_scope": {"value_tokens": ["standard sync", "admin reporting", "exclude", "real-time export"], "source": "docs/legal_notes.md", "evidence_tokens": ["must not be included", "first launch"]},
+    "approval_gate": {"value_tokens": ["security", "finance", "legal"], "source": "docs/product_requirements.md", "evidence_tokens": ["security approval", "finance", "legal"]}
+  },
+  "rejected_options": {
+    "mode_a": {"tokens": ["mode a", "blocked"], "source": "docs/security_review.md"},
+    "june_launch": {"tokens": ["june 20", "superseded"], "source": "email/thread.json#email-004"},
+    "real_time_export": {"tokens": ["real-time export", "must not be included"], "source": "docs/legal_notes.md"}
+  },
+  "open_questions": ["support rotation", "staffing decision"],
+  "actions": {
+    "customer_notice": {"owner": "Sam", "due": "2026-06-05", "source": "email/thread.json#email-006", "tokens": ["customer notice", "June 5"]},
+    "mode_b_checklist": {"owner": "Morgan", "due": "2026-05-20", "source": "docs/security_review.md", "tokens": ["mode B", "checklist"]},
+    "budget_memo": {"owner": "Omar", "due": "2026-05-15", "source": "docs/finance_constraints.md", "tokens": ["budget clearance", "memo"]},
+    "legal_addendum": {"owner": "Lena", "due": "2026-06-01", "source": "docs/legal_notes.md", "tokens": ["data-processing", "addendum"]}
+  },
+  "conflict_terms": ["launch_date", "deployment_mode", "feature_scope", "budget_cap", "june 20", "mode a", "real-time export", "finance"],
+  "forbidden_final_tokens": ["June 20", "mode A", "real-time export included", "real-time export approved", "24/7 launch rotation approved"],
+  "scoring": {"thresholds": {"pass": 0.70, "good": 0.85, "excellent": 0.95}}
+}

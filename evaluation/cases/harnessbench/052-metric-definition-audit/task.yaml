@@ -1,0 +1,13 @@
+task_id: "052-metric-definition-audit"
+title: "Metric definition audit against dashboard export"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "hard"
+tags:
+  - data-analysis
+  - metrics
+  - audit
+  - bi

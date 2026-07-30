@@ -1,0 +1,4 @@
+Hotel Folio HF-7781
+Guest: Leah Kim
+Amount: 620.00
+Nights: 1

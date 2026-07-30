@@ -1,0 +1,13 @@
+{
+  "outputs": ["out/launch_plan.md", "out/content_pack.json", "out/launch_checklist.csv"],
+  "approved_total_usd": 5800,
+  "segments": ["ops_directors", "product_marketers", "it_admins", "agency_partners"],
+  "available_segments": ["ops_directors", "product_marketers", "it_admins"],
+  "segment_names": ["Operations Directors", "Product Marketers", "IT Admins", "Agency Partners"],
+  "required_dates": ["2026-05-01", "2026-05-10", "2026-05-15", "2026-05-20"],
+  "required_sections": ["Objectives", "Audience", "Budget", "Timeline", "Dependencies", "Compliance", "Risks"],
+  "required_phrase": "offline webinar",
+  "required_plan_terms": ["compliance_review", "claims list", "webinar registration", "not target", "agency", "mobile app"],
+  "required_checklist_terms": ["compliance", "webinar", "claims", "sales enablement", "launch day"],
+  "forbidden_early_availability": ["available now", "generally available now", "launches today", "is live today", "mobile app integration"]
+}

@@ -1,0 +1,35 @@
+{
+  "outputs": {
+    "json": "out/query_results.json",
+    "audit": "out/query_audit.json",
+    "analysis": "out/analysis.md"
+  },
+  "fixture_hashes": {
+    "schema_data.sql": "57bc94305a8460fde78688fb71fb6cb3a76fc95024baf0736d29dd412228ae12"
+  },
+  "query_results": {
+    "top_products_by_revenue": [
+      {"product_id": "P1", "product_name": "Atlas Laptop", "revenue": 1140.0},
+      {"product_id": "P2", "product_name": "Nova Monitor", "revenue": 1140.0},
+      {"product_id": "P4", "product_name": "USB-C Dock", "revenue": 600.0}
+    ],
+    "revenue_by_region": [
+      {"region": "East", "order_count": 2, "revenue": 900.0},
+      {"region": "North", "order_count": 2, "revenue": 1590.0},
+      {"region": "South", "order_count": 1, "revenue": 250.0},
+      {"region": "West", "order_count": 1, "revenue": 840.0}
+    ],
+    "category_summary": [
+      {"category": "Furniture", "units_sold": 3, "revenue": 700.0},
+      {"category": "Hardware", "units_sold": 10, "revenue": 2880.0}
+    ]
+  },
+  "analysis_terms": ["Atlas Laptop", "Nova Monitor", "tie", "North", "paid", "returned", "O1010", "2025-01-01", "2025-03-31", "2024-12-31", "2025-04-01"],
+  "query_audit": {
+    "included_order_ids": ["O1001", "O1002", "O1005", "O1006", "O1007", "O1011"],
+    "excluded_status_order_ids": ["O1003", "O1010"],
+    "excluded_out_of_window_order_ids": ["O1004", "O1008", "O1009"],
+    "boundary_included_order_ids": ["O1006", "O1007"],
+    "top_product_tie_order": ["P1", "P2"]
+  }
+}

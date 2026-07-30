@@ -1,0 +1,55 @@
+{
+  "output": "out/metric_audit.csv",
+  "equivalence_audit": "out/equivalence_audit.json",
+  "fixture_hashes": {
+    "dashboard_export.csv": "0d433ec841b2ce891ca5abc45789fcf5aad9cffbf5f961372355384aa11c6297",
+    "metric_definitions.md": "30894b9a026a688936aad571b62b5a31897edc8cffc59262e6f89601cfb63b6b"
+  },
+  "header": ["metric_name", "dashboard_formula", "approved_formula", "affected_field", "severity"],
+  "rows": [
+    {"metric_name": "Average Fulfillment Time", "dashboard_formula": "AVG(shipped_at - created_at)", "approved_formula": "AVG(delivered_at - paid_at) FOR delivered_orders", "affected_field": "delivered_at,paid_at,status", "severity": "medium"},
+    {"metric_name": "Inventory Stockout Count", "dashboard_formula": "COUNT(DISTINCT sku) WHERE stockout_hours > 0", "approved_formula": "COUNT(sku) WHERE stockout_hours > 0", "affected_field": "sku", "severity": "low"},
+    {"metric_name": "Marketing Opt-in Rate", "dashboard_formula": "email_opted_in_users / eligible_users", "approved_formula": "opted_in_users / eligible_users", "affected_field": "opted_in_users,email_opted_in_users", "severity": "low"},
+    {"metric_name": "Net Revenue", "dashboard_formula": "SUM(order_amount)", "approved_formula": "SUM(order_amount) - SUM(refund_amount)", "affected_field": "order_amount,refund_amount", "severity": "high"},
+    {"metric_name": "Enterprise ARR", "dashboard_formula": "SUM(contract_value)", "approved_formula": "SUM(contract_value) WHERE contract_status = 'active'", "affected_field": "contract_value,contract_status", "severity": "high"},
+    {"metric_name": "Refund Rate", "dashboard_formula": "refunded_orders / total_orders", "approved_formula": "refunded_orders / eligible_orders", "affected_field": "refunded_orders,eligible_orders", "severity": "low"},
+    {"metric_name": "Rolling Active Users", "dashboard_formula": "COUNT(DISTINCT user_id) WHERE activity_date >= report_date - 30 days", "approved_formula": "COUNT(DISTINCT user_id) WHERE activity_date >= report_date - 28 days", "affected_field": "user_id,activity_date,report_date", "severity": "medium"},
+    {"metric_name": "Seven Day Retention", "dashboard_formula": "retained_users_day_7 / total_signups", "approved_formula": "retained_users_day_7 / activated_users_cohort", "affected_field": "retained_users_day_7,activated_users_cohort", "severity": "high"},
+    {"metric_name": "Support SLA Breach Rate", "dashboard_formula": "breached_tickets / open_tickets", "approved_formula": "breached_tickets / closed_tickets", "affected_field": "breached_tickets,closed_tickets", "severity": "medium"},
+    {"metric_name": "Trial Conversion Rate", "dashboard_formula": "paid_trials / started_trials", "approved_formula": "paid_trials / eligible_trials", "affected_field": "paid_trials,eligible_trials", "severity": "high"}
+  ],
+  "matching_metrics": ["Gross Revenue", "Signup Conversion Rate", "Active Customers", "Qualified Pipeline", "P95 API Latency"],
+  "equivalence_audit_expected": {
+    "mismatched_metrics": ["Average Fulfillment Time", "Enterprise ARR", "Inventory Stockout Count", "Marketing Opt-in Rate", "Net Revenue", "Refund Rate", "Rolling Active Users", "Seven Day Retention", "Support SLA Breach Rate", "Trial Conversion Rate"],
+    "semantically_matching_metrics": ["Active Customers", "Gross Revenue", "P95 API Latency", "Qualified Pipeline", "Signup Conversion Rate"],
+    "severity_by_metric": {
+      "Average Fulfillment Time": "medium",
+      "Enterprise ARR": "high",
+      "Inventory Stockout Count": "low",
+      "Marketing Opt-in Rate": "low",
+      "Net Revenue": "high",
+      "Refund Rate": "low",
+      "Rolling Active Users": "medium",
+      "Seven Day Retention": "high",
+      "Support SLA Breach Rate": "medium",
+      "Trial Conversion Rate": "high"
+    },
+    "reason_class_by_metric": {
+      "Active Customers": "semantically_equivalent",
+      "Average Fulfillment Time": "time_basis_mismatch",
+      "Enterprise ARR": "missing_filter",
+      "Gross Revenue": "semantically_equivalent",
+      "Inventory Stockout Count": "distinctness_mismatch",
+      "Marketing Opt-in Rate": "field_mismatch",
+      "Net Revenue": "revenue_formula_mismatch",
+      "P95 API Latency": "semantically_equivalent",
+      "Qualified Pipeline": "semantically_equivalent",
+      "Refund Rate": "denominator_mismatch",
+      "Rolling Active Users": "window_mismatch",
+      "Seven Day Retention": "denominator_mismatch",
+      "Signup Conversion Rate": "semantically_equivalent",
+      "Support SLA Breach Rate": "denominator_mismatch",
+      "Trial Conversion Rate": "denominator_mismatch"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "fda_clearance_document_present": false,
+  "published_comparative_study_present": false,
+  "notes": "Marketing claims must align with these booleans; absence means no clearance-backed regulatory wording and no cite-able comparative efficacy packets."
+}

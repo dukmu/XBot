@@ -1,0 +1,45 @@
+Analyze the product funnel from local event logs with cohort comparison and data-quality caveats.
+
+Input:
+- $WORKSPACE/in/events.jsonl
+
+Create:
+- $WORKSPACE/out/funnel_metrics.json
+- $WORKSPACE/out/dropoff_insights.md
+- $WORKSPACE/out/cohort_comparison.csv
+- $WORKSPACE/out/stage_user_sets.json
+
+Funnel stages, in order:
+visit, signup, verify_email, trial_start, purchase
+
+Rules:
+1. Do not modify fixtures.
+2. Exclude bot traffic case-insensitively where user_agent contains "bot", "crawler", or "synthetic". If any event for a user is bot traffic, exclude the entire user and list that user_id in excluded_bot_users.
+3. Sort each user's non-bot events by timestamp before evaluating the funnel. CSV/JSONL row order is not guaranteed.
+4. Count unique users who reached each stage in the required order. Ignore stage events that occur before the user has reached the previous stage, but allow a later valid event for the same stage to count.
+5. Deduplicate repeated valid stage events for the same user.
+6. funnel_metrics.json must contain:
+   - stages: array of objects with stage, users, conversion_from_visit, conversion_from_previous, dropoff_from_previous, dropoff_rate_from_previous
+   - largest_dropoff: object with from_stage, to_stage, lost_users, dropoff_rate
+   - excluded_bot_users: array of excluded bot user ids
+   - data_quality: object with ignored_order_events and deduplicated_stage_events
+     ignored_order_events counts event records ignored because they appeared before the prerequisite stage was reached.
+     deduplicated_stage_events counts repeated valid stage event records ignored after the first valid event for that user and stage.
+7. For visit, conversion_from_previous must be 1.0 and dropoff fields must be 0.
+8. Round rates to four decimals.
+9. largest_dropoff is the stage transition with the largest dropoff_rate_from_previous.
+10. For cohort metrics, assign each user to the cohort on their first valid non-bot visit. Include every observed non-bot cohort.
+11. cohort_comparison.csv must have header:
+   cohort,visit_users,purchase_users,purchase_rate,largest_dropoff_transition
+   Include one row per cohort.
+   Sort rows by cohort name ascending.
+12. dropoff_insights.md must identify the largest dropoff transition, compare cohorts, and include at least one caveat about sample size or ordering noise.
+
+stage_user_sets.json requirements:
+- Valid JSON with keys: stage_users, largest_dropoff_lost_user_ids, ignored_order_user_ids, deduplicated_stage_user_ids.
+- stage_users must map each funnel stage to the sorted list of non-bot user_ids that reached that stage in order.
+- largest_dropoff_lost_user_ids must be the sorted user_ids lost at the largest_dropoff transition.
+- ignored_order_user_ids must list users with at least one event ignored because it appeared before the prerequisite stage.
+- deduplicated_stage_user_ids must list users with at least one repeated valid stage event ignored after the first valid event for that user and stage.
+
+Do not use network access or external APIs.

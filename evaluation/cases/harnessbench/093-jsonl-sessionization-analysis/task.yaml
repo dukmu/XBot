@@ -1,0 +1,14 @@
+task_id: "093-jsonl-sessionization-analysis"
+title: "JSONL clickstream sessionization with identity stitching"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "hard"
+tags:
+  - jsonl
+  - sessionization
+  - product-analytics
+  - data-quality
+  - deterministic

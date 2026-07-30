@@ -1,0 +1,16 @@
+[
+  {"question_id": "Q01", "question": "Which encryption algorithm does Vault Sync use for stored snapshots?"},
+  {"question_id": "Q02", "question": "What is the maximum attachment size for Vault Export jobs after release 3.4?"},
+  {"question_id": "Q03", "question": "Does the security bulletin still allow legacy API tokens for admin accounts?"},
+  {"question_id": "Q04", "question": "What are the two supported recovery channels for Rivergate workspaces?"},
+  {"question_id": "Q05", "question": "What changed in release 3.5 for Delta Indexing?"},
+  {"question_id": "Q06", "question": "Can Basic plan customers enable SSO?"},
+  {"question_id": "Q07", "question": "What is the retention period for audit logs?"},
+  {"question_id": "Q08", "question": "What is the exact monthly price of the Pro plan?"},
+  {"question_id": "Q09", "question": "Which regions are supported for the private beta of Vault Sync?"},
+  {"question_id": "Q10", "question": "What evidence exists for Vault Export availability and what is missing?"},
+  {"question_id": "Q11", "question": "Which team owns customer-managed keys and what rotation interval is stated?"},
+  {"question_id": "Q12", "question": "What is the phone number for after-hours support?"},
+  {"question_id": "Q13", "question": "Can admin accounts still use legacy API tokens if an archived migration note says they were temporarily allowed?"},
+  {"question_id": "Q14", "question": "What approved after-hours support phone number should be used if an archived note lists a draft placeholder?"}
+]

@@ -1,0 +1,14 @@
+{
+  "required_output": {
+    "orderId": "A100",
+    "buyer": {"id": "C-7", "displayName": "Mina Park"},
+    "lineItems": [{"sku": "PEN", "quantity": 3, "unitPriceCents": 129}],
+    "shipping": {"method": "standard", "address": {"country": "US", "postalCode": "02139"}},
+    "metadata": {"source": "legacy-v1"}
+  },
+  "required_terms": ["orderId", "buyer", "lineItems", "unitPriceCents", "postalCode", "metadata", "convert_many", "unknownFields", "conversion_audit", "path"],
+  "scoring": {
+    "weights": {"pytest": 0.25, "direct_mapping": 0.60, "fixture_integrity": 0.15},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

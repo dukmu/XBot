@@ -1,0 +1,30 @@
+Build an offline batch normalization pipeline using only local files.
+
+Input:
+- $WORKSPACE/in/dropbox/
+- $WORKSPACE/in/normalization_rules.yaml
+
+Recursively scan all files. Convert supported valid records into one normalized JSON file per input under
+$WORKSPACE/out/normalized/. Write deterministic ledgers.
+
+Supported formats:
+- customer CSV files with columns id,name,email,status
+- order JSON files with order_id, customer_id, amount, currency
+- note TXT files containing lines like Case: C-100, Owner: ana, Status: open
+
+Create:
+- $WORKSPACE/out/normalized/
+- $WORKSPACE/out/index.csv
+- $WORKSPACE/out/reject_ledger.csv
+- $WORKSPACE/out/batch_summary.json
+
+index.csv header: source_path,target_path,record_type,record_id,status
+reject_ledger.csv header: source_path,error_type,details
+
+Rules:
+- Use workspace-relative source paths such as in/dropbox/customers_01.csv.
+- Sort index rows and reject rows by source_path.
+- If one input file contains multiple valid records, create one normalized JSON file per valid record.
+- Treat record ids as globally unique across all supported files; later duplicate ids must be rejected.
+- Do not modify or delete input files.
+- Unknown extensions, malformed files, missing required fields, invalid status, invalid amount, and duplicate record ids must be recorded in reject_ledger.csv.

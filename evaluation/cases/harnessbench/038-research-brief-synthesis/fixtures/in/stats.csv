@@ -1,0 +1,5 @@
+metric,before,after,unit
+weekday_ridership,48200,53100,riders_per_weekday
+complaint_rate,14.2,9.8,complaints_per_100k_riders
+on_time_performance,81,88,percent
+average_wait,11.5,9.4,minutes

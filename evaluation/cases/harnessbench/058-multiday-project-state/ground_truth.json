@@ -1,0 +1,12 @@
+{
+  "required_days": ["Day 1", "Day 2", "Day 3"],
+  "required_risks": ["R-connect-delay", "R-budget", "R-compliance", "R-security"],
+  "required_conditions": ["compliance review", "security signoff", "connector sandbox"],
+  "final_budget": 92000,
+  "launch_recommendation": "conditional_go",
+  "owner": {"WS-data": "Priya"},
+  "removed_scope": "in-app experimentation",
+  "decision_register": "out/decision_register.csv",
+  "decision_terms": ["reversed", "Day 1", "Day 3", "in-app experimentation", "conditional_go"],
+  "conflict_terms": ["stakeholder", "sales", "privacy", "conflict"]
+}

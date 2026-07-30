@@ -1,0 +1,55 @@
+{
+  "outputs": {
+    "cleaned_csv": "out/cleaned_sales.csv",
+    "report": "out/cleaning_report.md",
+    "reject_ledger": "out/reject_ledger.csv",
+    "reject_summary": "out/reject_summary.json"
+  },
+  "input_counts": {
+    "messy_sales": 25,
+    "customer_dictionary": 8,
+    "fx_rates": 3
+  },
+  "cleaned_header": ["order_id", "order_date", "customer_id", "customer_name", "sku", "quantity", "amount_usd", "status"],
+  "cleaned_rows": [
+    {"order_id": "S1001", "order_date": "2025-01-05", "customer_id": "C001", "customer_name": "Ada Chen", "sku": "A-10", "quantity": "2", "amount_usd": "39.98", "status": "complete"},
+    {"order_id": "S1002", "order_date": "2025-01-07", "customer_id": "C002", "customer_name": "Ben Ortiz", "sku": "B-20", "quantity": "1", "amount_usd": "21.45", "status": "complete"},
+    {"order_id": "S1004", "order_date": "2025-01-09", "customer_id": "C003", "customer_name": "Cleo Singh", "sku": "C-30", "quantity": "3", "amount_usd": "49.50", "status": "complete"},
+    {"order_id": "S1005", "order_date": "2025-01-10", "customer_id": "C004", "customer_name": "Dara Moore", "sku": "A-10", "quantity": "1", "amount_usd": "-19.99", "status": "refunded"},
+    {"order_id": "S1006", "order_date": "2025-01-11", "customer_id": "C002", "customer_name": "Ben Ortiz", "sku": "D-40", "quantity": "2", "amount_usd": "120.00", "status": "complete"},
+    {"order_id": "S1009", "order_date": "2025-01-12", "customer_id": "C007", "customer_name": "Gio Rossi", "sku": "F-60", "quantity": "1", "amount_usd": "27.50", "status": "complete"},
+    {"order_id": "S1017", "order_date": "2025-01-17", "customer_id": "C006", "customer_name": "Faye Lin", "sku": "H-85", "quantity": "1", "amount_usd": "15.00", "status": "complete"},
+    {"order_id": "S1018", "order_date": "2025-01-18", "customer_id": "C006", "customer_name": "Faye Lin", "sku": "H-86", "quantity": "1", "amount_usd": "1234.50", "status": "complete"},
+    {"order_id": "S1019", "order_date": "2025-01-19", "customer_id": "C007", "customer_name": "Gio Rossi", "sku": "H-87", "quantity": "2", "amount_usd": "-11.00", "status": "returned"},
+    {"order_id": "S1020", "order_date": "2025-01-20", "customer_id": "C003", "customer_name": "Cleo Singh", "sku": "I-10", "quantity": "1", "amount_usd": "1358.02", "status": "complete"},
+    {"order_id": "S1021", "order_date": "2025-01-21", "customer_id": "C001", "customer_name": "Ada Chen", "sku": "I-11", "quantity": "1", "amount_usd": "1234.56", "status": "complete"},
+    {"order_id": "S1022", "order_date": "2025-01-22", "customer_id": "C007", "customer_name": "Gio Rossi", "sku": "I-12", "quantity": "1", "amount_usd": "-11.00", "status": "refunded"},
+    {"order_id": "S1023", "order_date": "2025-01-23", "customer_id": "C004", "customer_name": "Dara Moore", "sku": "I-13", "quantity": "1", "amount_usd": "-11.00", "status": "returned"}
+  ],
+  "reject_header": ["order_id", "reason", "source_row", "notes"],
+  "reject_rows": [
+    {"order_id": "S1003", "reason": "missing_amount", "source_row": "3"},
+    {"order_id": "S1001", "reason": "duplicate_order_id", "source_row": "4"},
+    {"order_id": "S1007", "reason": "inactive_customer", "source_row": "8"},
+    {"order_id": "S1008", "reason": "invalid_quantity", "source_row": "9"},
+    {"order_id": "S1010", "reason": "unknown_customer", "source_row": "11"},
+    {"order_id": "S1011", "reason": "unsupported_currency", "source_row": "12"},
+    {"order_id": "S1012", "reason": "invalid_date", "source_row": "13"},
+    {"order_id": "S1013", "reason": "invalid_date", "source_row": "14"},
+    {"order_id": "S1014", "reason": "invalid_date", "source_row": "15"},
+    {"order_id": "S1015", "reason": "missing_amount", "source_row": "16"},
+    {"order_id": "S1016", "reason": "unsupported_currency", "source_row": "17"},
+    {"order_id": "S1017", "reason": "invalid_date", "source_row": "19"}
+  ],
+  "reject_summary_expected": {
+    "missing_amount": {"count": 2, "source_rows": [3, 16], "order_ids": ["S1003", "S1015"]},
+    "unsupported_currency": {"count": 2, "source_rows": [12, 17], "order_ids": ["S1011", "S1016"]},
+    "invalid_quantity": {"count": 1, "source_rows": [9], "order_ids": ["S1008"]},
+    "inactive_customer": {"count": 1, "source_rows": [8], "order_ids": ["S1007"]},
+    "unknown_customer": {"count": 1, "source_rows": [11], "order_ids": ["S1010"]},
+    "invalid_date": {"count": 4, "source_rows": [13, 14, 15, 19], "order_ids": ["S1012", "S1013", "S1014", "S1017"]},
+    "duplicate_order_id": {"count": 1, "source_rows": [4], "order_ids": ["S1001"]}
+  },
+  "total_amount_usd": "4047.52",
+  "required_report_terms": ["valid row count", "rejected row count", "duplicate", "locale", "fx", "de_de", "invalid_date", "unsupported_currency", "4047.52"]
+}

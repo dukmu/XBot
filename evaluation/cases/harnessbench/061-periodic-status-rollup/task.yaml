@@ -1,0 +1,16 @@
+task_id: "061-periodic-status-rollup"
+title: "Periodic Status Rollup with Asynchronous State Injections"
+class: "Long-running Autonomy & State Adaptation"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 180
+difficulty: "hard"
+tags:
+  - "long-running"
+  - "async"
+  - "polling"
+  - "status-rollup"
+  - "dedupe"
+  - "state-management"

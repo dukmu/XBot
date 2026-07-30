@@ -1,0 +1,4 @@
+deploy_id,service,region,start_ts,end_ts,version
+D-441,checkout,us-east,2026-04-20T09:55:00Z,2026-04-20T10:20:00Z,checkout-2.8.1
+D-443,checkout,us-east,2026-04-20T11:20:00Z,2026-04-20T11:45:00Z,checkout-2.8.2
+D-442,profile,global,2026-04-20T10:00:00Z,2026-04-20T10:30:00Z,profile-1.4.0

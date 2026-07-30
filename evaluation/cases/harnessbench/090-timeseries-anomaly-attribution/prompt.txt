@@ -1,0 +1,31 @@
+Detect metric anomalies and attribute likely causes using only local files.
+
+Inputs:
+- $WORKSPACE/in/hourly_metrics.csv
+- $WORKSPACE/in/deployments.csv
+- $WORKSPACE/in/incident_calendar.csv
+- $WORKSPACE/in/detection_rules.md
+
+Create:
+- $WORKSPACE/out/anomalies.csv
+- $WORKSPACE/out/attribution_summary.json
+- $WORKSPACE/out/reconciliation_notes.md
+
+Rules:
+1. Do not modify fixtures.
+2. Use the expected_baseline_* columns in hourly_metrics.csv as the approved baseline for this benchmark.
+3. Flag rows where:
+   - error_rate z_score >= 3.0 and requests >= 500
+   - latency_p95_ms z_score >= 3.0 and requests >= 500
+   - requests z_score <= -3.0 and requests >= 300
+4. z_score columns are already provided. Do not flag low-volume rows below the request thresholds.
+5. anomalies.csv must have exact header:
+   anomaly_id,timestamp,service,region,metric,observed,expected,z_score,severity,attributed_cause
+6. Use severity high for z-score absolute value >= 6, otherwise medium.
+7. Attribute in this order: deployment overlap, third-party incident overlap, marketing/calendar overlap, otherwise unattributed.
+   If more than one event overlaps an anomaly, still choose exactly one cause using this priority order and mention the overlap in reconciliation_notes.md.
+8. attribution_summary.json must contain: anomaly_ids, cause_counts, high_severity_count, total_revenue_impact_usd, unattributed_anomaly_ids.
+9. total_revenue_impact_usd is the sum of revenue_impact_usd for all flagged anomalies, rounded to two decimals.
+10. reconciliation_notes.md must mention low-volume suppression, overlapping attribution uncertainty, and that correlation is not proof of causation.
+
+Do not use network access or external APIs.

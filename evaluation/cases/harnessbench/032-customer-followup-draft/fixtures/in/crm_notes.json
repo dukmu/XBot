@@ -1,0 +1,12 @@
+{
+  "account": "Brightline Labs",
+  "contact": "Elena Vargas",
+  "email": "elena@brightline.example",
+  "plan_requested": "Professional",
+  "seats": 42,
+  "stage": "security review",
+  "competitor": "TaskHive",
+  "blockers": ["SSO timing", "legal redlines", "budget approval"],
+  "approved_next_step": "schedule a 30-minute security review with solutions engineering",
+  "owner": "Maya"
+}

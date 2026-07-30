@@ -1,0 +1,10 @@
+task_id: 084-js-state-type-bug
+title: Fix JavaScript State and Runtime Type Bugs
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - javascript
+  - state-management
+  - node
+timeout_sec: 600

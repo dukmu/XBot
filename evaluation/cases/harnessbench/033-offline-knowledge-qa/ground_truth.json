@@ -1,0 +1,10 @@
+{
+  "answers": {
+    "Q1": {"facts": ["2025-02-14", "North Pier"], "source_file": "docs/operations.md", "quote_tokens": ["entered production", "North Pier"]},
+    "Q2": {"facts": ["18 months"], "source_file": "docs/operations.md", "quote_tokens": ["Raw sensor logs", "18 months"]},
+    "Q3": {"facts": ["Maya Chen"], "source_file": "docs/rivergate.md", "quote_tokens": ["Maya Chen", "duty coordinator"]},
+    "Q4": {"insufficient": true, "missing_signal": "finance approver"},
+    "Q5": {"facts": ["Sunday", "02:00-04:00 UTC"], "source_file": "docs/operations.md", "quote_tokens": ["maintenance window", "Sunday"]}
+  },
+  "scoring": {"thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}}
+}

@@ -1,0 +1,21 @@
+Review the draft contract against company policy.
+
+Inputs:
+- $WORKSPACE/in/contract.md
+- $WORKSPACE/in/company_policy.md
+
+Outputs:
+- $WORKSPACE/out/contract_summary.md
+- $WORKSPACE/out/risk_clauses.csv
+
+risk_clauses.csv requirements:
+- CSV header: clause_id,risk_type,quote,recommended_action,severity
+- Include each clause that conflicts with company_policy.md.
+- quote must contain exact text from contract.md.
+- severity must be High, Medium, or Low.
+
+contract_summary.md requirements:
+- Summarize parties, term, renewal, payment, data/security, liability, and termination.
+- Include a short "Policy risks" section.
+- Do not provide legal advice beyond recommended business review actions.
+- Do not modify input files.

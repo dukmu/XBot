@@ -1,0 +1,33 @@
+{
+  "resolved": {
+    "project_status": {"value_tokens": ["limited commercial service"], "source_file": "briefs/signed_regulator_notice.md"},
+    "approved_budget_musd": {"value": 42.5, "source_file": "briefs/audited_finance_extract.md"},
+    "launch_date": {"value_tokens": ["2025-09-01"], "source_file": "briefs/signed_regulator_notice.md"},
+    "customer_count": {"value": 1240, "source_file": "briefs/operations_log.md"},
+    "primary_vendor": {"value_tokens": ["Northstar Mobility"], "source_file": "briefs/signed_regulator_notice.md"},
+    "service_scope": {"value_tokens": ["East Market", "corridor"], "source_file": "briefs/signed_regulator_notice.md"},
+    "scope_exception": {"value_tokens": ["airport connector", "separate", "certification"], "source_file": "briefs/signed_regulator_notice.md"}
+  },
+  "uncertainties": ["outage duration", "customer-notice template", "insurance endorsement"],
+  "rejected_signals": ["2025-08-25", "cancelled", "39 million", "Altair Transit replaced", "all customers", "airport connector trips"],
+  "evidence_quote_terms": {
+    "project_status": ["limited commercial service"],
+    "approved_budget_musd": ["42.5"],
+    "launch_date": ["2025-09-01"],
+    "customer_count": ["1240"],
+    "primary_vendor": ["Northstar Mobility"],
+    "service_scope": ["East Market", "corridor"],
+    "scope_exception": ["airport connector", "separate", "certification"]
+  },
+  "scoped_field_rules": {
+    "service_scope": {"required": ["East Market", "corridor"], "forbidden": ["airport connector", "all customers"]},
+    "scope_exception": {"required": ["airport connector", "separate", "certification"], "forbidden": ["authorized launch-day", "approved launch-day"]}
+  },
+  "conflict_matrix": {
+    "required_columns": ["fact_key", "winning_source", "losing_sources", "resolution_rationale", "coverage_scope"],
+    "required_terms": ["launch", "budget", "vendor", "customer", "scope", "signed_regulator_notice", "audited_finance_extract", "operations_log", "launch-day", "contract"]
+  },
+  "source_reliability_terms": ["signed_regulator_notice", "audited_finance_extract", "operations_log", "press_release", "social_digest", "priority_rank", "coverage_scope", "rejected_claims"],
+  "decision_log_terms": ["launch-day", "contract", "rumor", "low-priority", "scope", "airport connector"],
+  "scoring": {"thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}}
+}

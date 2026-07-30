@@ -1,0 +1,12 @@
+{
+  "release_id": "REL-2026-05-CHECKOUT-88",
+  "service": "checkout-api",
+  "target_start": "2026-05-07T03:00:00Z",
+  "changes": [
+    {"change_id": "CH-API-1", "type": "api", "summary": "Add refund exception reason code to checkout API."},
+    {"change_id": "CH-DB-1", "type": "database_migration", "summary": "Add refund_exception_reason column and backfill open refund rows."},
+    {"change_id": "CH-FLAG-1", "type": "feature_flag", "summary": "Enable refund-exception-v2 for 10 percent canary."}
+  ],
+  "declared_approvals": ["release_manager"],
+  "declared_rollback_ready": true
+}

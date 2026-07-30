@@ -1,0 +1,31 @@
+Prepare the month-end financial close reconciliation using only local files.
+
+Inputs:
+- $WORKSPACE/in/invoices.csv
+- $WORKSPACE/in/payments.csv
+- $WORKSPACE/in/refunds.csv
+- $WORKSPACE/in/fx_rates.csv
+- $WORKSPACE/in/bank_statement.csv
+- $WORKSPACE/in/close_policy.md
+
+Create:
+- $WORKSPACE/out/close_reconciliation.csv
+- $WORKSPACE/out/reject_ledger.csv
+- $WORKSPACE/out/reconciliation_summary.json
+- $WORKSPACE/out/close_notes.md
+
+Rules:
+1. Do not modify fixtures.
+2. Convert all invoice, payment, refund, and bank fee amounts to USD using fx_rates.csv on the transaction date.
+3. Round USD amounts to exactly two decimals.
+4. Void invoices are excluded from recognized invoice totals but must still be noted if cash exists.
+5. Missing FX rates, refunds without a valid invoice, and bank payments without an invoice must be recorded.
+6. close_reconciliation.csv exact header:
+   invoice_id,customer_id,invoice_usd,payment_usd,refund_usd,bank_fee_usd,net_cash_usd,reconciliation_status
+7. Include one row for each reconcilable invoice and one synthetic row for each missing-invoice bank payment using invoice_id MISSING_INVOICE:<payment_id>.
+8. reject_ledger.csv exact header:
+   item_id,item_type,reason,notes
+9. reconciliation_summary.json must contain: total_invoice_usd, total_payment_usd, total_refund_usd, total_bank_fee_usd, total_net_cash_usd, unreconciled_count, missing_invoice_payment_ids, rejected_invoice_ids.
+10. close_notes.md must mention refunds, FX assumptions, missing invoices, and void invoice caveats.
+
+Do not use network access or external APIs.

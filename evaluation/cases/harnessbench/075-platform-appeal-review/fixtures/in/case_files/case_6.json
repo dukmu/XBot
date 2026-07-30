@@ -1,0 +1,11 @@
+{
+  "case_id": "A-06",
+  "appeal_filed": "2026-03-05",
+  "original_action": "removal + warning",
+  "content_summary": "Post quotes a slur used against the author, frames it as abuse they received, and asks the community to report the attacker.",
+  "quoted_context": "Slur appears inside quotation marks attributed to a third party; author condemns the abuse.",
+  "automated_scores": {"hatespeech": 0.93},
+  "appeal": "The word was quoted only to document harassment targeting me.",
+  "reporter": "private_user_444",
+  "reporter_alias": "mod_watch_team_internal"
+}

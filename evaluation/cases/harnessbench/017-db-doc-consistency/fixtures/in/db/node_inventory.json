@@ -1,0 +1,94 @@
+{
+  "cluster_name": "openclaw-prod",
+  "last_updated": "2026-04-29T22:00:00Z",
+  "nodes": [
+    {
+      "node_id": "web-01",
+      "role": "web",
+      "hardware": {
+        "cpu_cores": 8,
+        "memory_gb": 16,
+        "disk_gb": 200
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "web-02",
+      "role": "web",
+      "hardware": {
+        "cpu_cores": 8,
+        "memory_gb": 16,
+        "disk_gb": 200
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "api-01",
+      "role": "api",
+      "hardware": {
+        "cpu_cores": 16,
+        "memory_gb": 32,
+        "disk_gb": 500
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "api-02",
+      "role": "api",
+      "hardware": {
+        "cpu_cores": 16,
+        "memory_gb": 32,
+        "disk_gb": 500
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "db-master",
+      "role": "database",
+      "hardware": {
+        "cpu_cores": 32,
+        "memory_gb": 64,
+        "disk_gb": 2000
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "db-replica-01",
+      "role": "database",
+      "hardware": {
+        "cpu_cores": 16,
+        "memory_gb": 32,
+        "disk_gb": 1000
+      },
+      "region": "us-west-2",
+      "status": "active"
+    },
+    {
+      "node_id": "cache-01",
+      "role": "cache",
+      "hardware": {
+        "cpu_cores": 16,
+        "memory_gb": 128,
+        "disk_gb": 100
+      },
+      "region": "us-east-1",
+      "status": "active"
+    },
+    {
+      "node_id": "worker-01",
+      "role": "worker",
+      "hardware": {
+        "cpu_cores": 16,
+        "memory_gb": 64,
+        "disk_gb": 500
+      },
+      "region": "us-west-2",
+      "status": "active"
+    }
+  ]
+}

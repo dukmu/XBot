@@ -1,0 +1,32 @@
+You are planning launch-window capacity for multiple services using only offline data.
+
+Inputs:
+- $WORKSPACE/in/traffic_history.csv
+- $WORKSPACE/in/instance_types.json
+
+Create exactly these output files:
+- $WORKSPACE/out/capacity_plan.json
+- $WORKSPACE/out/cost_notes.md
+- $WORKSPACE/out/risk_tradeoffs.csv
+
+Rules:
+- For each service in instance_types.json, forecast launch peak RPS as max peak_rps from that service's most recent 7 rows multiplied by that service's launch_multiplier.
+- Required capacity is forecast_peak_rps multiplied by (1 + required_headroom_pct).
+- Choose the lowest hourly cost compatible instance plan that meets required capacity, region, min_zones, and service budget constraints.
+- checkout-api must use on-demand only. pricing-worker may use a spot/on-demand mix, but spot cannot exceed spot_max_share.
+- The combined hourly cost must stay under total_hourly_budget_usd.
+- Only use instance types where compatible is true.
+- Round monetary values to 3 decimal places or fewer.
+
+capacity_plan.json requirements:
+- Top-level object with: total_hourly_cost_usd, services, assumptions.
+- Each service entry must include: service, forecast_peak_rps, required_headroom_pct, required_capacity_rps, selected_instance_type, on_demand_count, spot_count, provided_capacity_rps, hourly_cost_usd, slo_headroom_rps.
+
+cost_notes.md requirements:
+- Explain each service peak calculation, headroom, selected instance count, hourly cost, budget check, and at least one rejected alternative.
+
+risk_tradeoffs.csv requirements:
+- Header: service,tradeoff,risk,mitigation
+- Include budget, spot availability, incompatible instance, and SLO headroom tradeoffs.
+
+Do not modify input files. Do not use current date, network APIs, or cloud pricing APIs.

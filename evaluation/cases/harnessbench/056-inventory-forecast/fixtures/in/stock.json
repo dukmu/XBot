@@ -1,0 +1,11 @@
+{
+  "SKU-A": {"current_stock": 30, "safety_stock": 10, "pack_size": 10},
+  "SKU-B": {"current_stock": 50, "safety_stock": 8, "pack_size": 5},
+  "SKU-C": {"current_stock": 70, "safety_stock": 20, "pack_size": 20},
+  "SKU-D": {"current_stock": 34, "safety_stock": 6, "pack_size": 6},
+  "SKU-E": {"current_stock": 8, "safety_stock": 8, "pack_size": 4},
+  "SKU-F": {"current_stock": 25, "safety_stock": 2, "pack_size": 5},
+  "SKU-G": {"current_stock": 26, "safety_stock": 4, "pack_size": 5},
+  "SKU-H": {"current_stock": 26, "safety_stock": 8, "pack_size": 7},
+  "SKU-I": {"current_stock": 8, "safety_stock": 3, "pack_size": 3}
+}

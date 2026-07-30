@@ -1,0 +1,22 @@
+The project in `$WORKSPACE/in/schema_migration` converts legacy order payloads to a new API shape. The schemas have changed and `client.py` is incomplete.
+
+Before editing, read `migration_notes.md`, `pii_policy.md`, and `sample_payloads.jsonl`; they define version-specific field mappings, PII exclusions, and dirty sample records.
+
+Your job:
+- Update `$WORKSPACE/in/schema_migration/client.py`.
+- Do not edit `old_schema.json`, `new_schema.json`, `migration_notes.md`, `pii_policy.md`, `sample_payloads.jsonl`, or files under `tests/`.
+- Make `python -m pytest $WORKSPACE/in/schema_migration/tests` pass.
+- Preserve backward compatibility with legacy payloads and produce the new schema fields exactly.
+- Support both legacy v1 payloads and already-v2 payloads.
+- Support legacy v1.1 and v1.2 payloads described in `migration_notes.md`, including nested `customer`, `lines`, `shipTo`, `order_ref`, and `unit_price_cents`.
+- Preserve unknown v2 metadata fields under metadata.unknownFields.
+- For legacy payloads, preserve unmapped extra fields under metadata.unknownFields, except obvious PII-like keys such as `ssn` or `credit_card`.
+- Default blank or null shipping methods to "standard".
+- Add error aggregation via convert_many(payloads), returning at least `(converted, errors)` without stopping on the first bad payload. Each error must include `index`, `path`, and `error`.
+- If warnings are generated, return them as a third item or include them in a compatible result object. Each warning must include `index`, `path`, and `warning`.
+- Write `$WORKSPACE/in/schema_migration/conversion_audit.json` when convert_many is called, summarizing converted_count, error_count, warning_count, pii_dropped_count, and unknown_fields_count.
+- Already-v2 payloads must be idempotent: do not drop metadata.unknownFields or rewrite valid line items.
+- Add CLI support so `python -m client input.jsonl output.json` reads JSONL payloads, writes the converted records as JSON, and writes the audit file next to `client.py`.
+- Hidden checks include multiple line items, alternate legacy shipping postal fields, and error records with useful paths such as `customer_id` or `items[0].qty`.
+
+Do not call external APIs. Do not replace the converter with hard-coded fixture-only output.

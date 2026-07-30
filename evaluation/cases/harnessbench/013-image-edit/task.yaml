@@ -1,0 +1,9 @@
+task_id: "013-image-edit"
+title: "Image Editing: Style Transfer And Scene Extension"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+tags: ["multimodal", "image-generation", "image-editing"]

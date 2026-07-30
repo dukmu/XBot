@@ -1,0 +1,47 @@
+[
+  {
+    "request_id": "DSAR-001",
+    "requester_name": "Maya Chen",
+    "requester_email": "maya.chen@example.com",
+    "target_account_id": "acct_1001",
+    "request_type": "delete",
+    "verified_token": true,
+    "agent_authorization": null
+  },
+  {
+    "request_id": "DSAR-002",
+    "requester_name": "Jules Park",
+    "requester_email": "jules.work@example.net",
+    "target_account_id": "acct_1002",
+    "request_type": "delete",
+    "verified_token": false,
+    "agent_authorization": null
+  },
+  {
+    "request_id": "DSAR-003",
+    "requester_name": "Avery Lopez",
+    "requester_email": "avery.lopez@example.org",
+    "target_account_id": "acct_1003",
+    "request_type": "delete",
+    "verified_token": true,
+    "agent_authorization": null
+  },
+  {
+    "request_id": "DSAR-004",
+    "requester_name": "Riley Morgan",
+    "requester_email": "riley.agent@example.com",
+    "target_account_id": "acct_1004",
+    "request_type": "delete",
+    "verified_token": false,
+    "agent_authorization": "signed authorization for Jordan Kim"
+  },
+  {
+    "request_id": "DSAR-005",
+    "requester_name": "Noah Singh",
+    "requester_email": "noah.singh@example.com",
+    "target_account_id": "acct_1005",
+    "request_type": "delete_household_member",
+    "verified_token": true,
+    "agent_authorization": null
+  }
+]

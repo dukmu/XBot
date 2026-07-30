@@ -1,0 +1,45 @@
+{
+  "dom_extract": {
+    "confirmation_code": "CONF-204-OK",
+    "owner": "Mira Chen",
+    "priority": "P1",
+    "result_rows": [
+      {
+        "status": "passed",
+        "step": "validate"
+      },
+      {
+        "status": "queued",
+        "step": "export"
+      }
+    ],
+    "selected_case_id": "CASE-204",
+    "submitted_filters": {
+      "priority": "P1",
+      "queue": "ops"
+    },
+    "tags": [
+      "billing",
+      "export"
+    ],
+    "visible_title": "Invoice export stalled"
+  },
+  "forbidden_terms": [
+    "CASE-999",
+    "hidden template",
+    "<html"
+  ],
+  "required_paths": [
+    "/",
+    "/detail",
+    "/search",
+    "/confirm"
+  ],
+  "trace_terms": [
+    "csrf-local-204",
+    "session_hint",
+    "queue",
+    "priority",
+    "confirm"
+  ]
+}

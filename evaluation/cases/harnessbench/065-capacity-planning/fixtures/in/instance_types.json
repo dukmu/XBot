@@ -1,0 +1,18 @@
+{
+  "service": "checkout-api",
+  "services": [
+    {"service": "checkout-api", "region": "us-east", "launch_multiplier": 1.22, "required_headroom_pct": 0.30, "min_zones": 2, "max_hourly_budget_usd": 0.60},
+    {"service": "pricing-worker", "region": "us-east", "launch_multiplier": 1.15, "required_headroom_pct": 0.20, "min_zones": 1, "max_hourly_budget_usd": 0.20}
+  ],
+  "total_hourly_budget_usd": 0.78,
+  "spot_allowed_for_pricing_worker": true,
+  "spot_max_share": 0.5,
+  "launch_multiplier": 1.22,
+  "required_headroom_pct": 0.30,
+  "instance_types": [
+    {"type": "c7g.large", "capacity_rps": 620, "hourly_cost_usd": 0.076, "spot_hourly_cost_usd": 0.032, "compatible": true, "regions": ["us-east"], "notes": "arm64 image is available"},
+    {"type": "m7i.large", "capacity_rps": 700, "hourly_cost_usd": 0.096, "compatible": true, "notes": "x86 default"},
+    {"type": "c7g.xlarge", "capacity_rps": 1220, "hourly_cost_usd": 0.152, "compatible": true, "notes": "larger arm64"},
+    {"type": "t3.large", "capacity_rps": 390, "hourly_cost_usd": 0.083, "compatible": false, "notes": "burstable not approved for launch checkout workload"}
+  ]
+}

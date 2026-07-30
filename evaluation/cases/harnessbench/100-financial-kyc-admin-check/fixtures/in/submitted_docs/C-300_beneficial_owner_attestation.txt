@@ -1,0 +1,5 @@
+Document type: beneficial_owner_attestation
+Customer: River Pantry
+Officers:
+- Ana Reed, ownership percentage: not applicable
+Missing: attestations for controlling officers

@@ -1,0 +1,14 @@
+task_id: "091-financial-close-reconciliation"
+title: "Financial close reconciliation with FX, refunds, and missing invoices"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "hard"
+tags:
+  - finance
+  - reconciliation
+  - csv
+  - fx
+  - deterministic

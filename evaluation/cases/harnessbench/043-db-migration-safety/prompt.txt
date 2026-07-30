@@ -1,0 +1,23 @@
+The SQLite migration draft at `$WORKSPACE/in/db/migration.sql` is unsafe. It loses data while trying to add account status and email constraints.
+
+Read `$WORKSPACE/in/db/migration_policy.md` before editing. It defines the required dirty-data cleanup, dependent order preservation, transaction, idempotency, and rollback expectations.
+
+Your job:
+- Edit only `$WORKSPACE/in/db/migration.sql`.
+- Do not edit `$WORKSPACE/in/db/schema.sql` or `$WORKSPACE/in/db/migration_policy.md`.
+- Preserve all existing users from `$WORKSPACE/in/db/schema.sql`.
+- Preserve all existing orders and their `user_id` references.
+- Add a non-null `status` column with default `active`.
+- Enforce unique, non-null email addresses for future writes.
+- Keep historical `created_at` values.
+- Existing dirty rows include duplicate, null, and blank emails. Preserve those users by assigning deterministic migrated email values, and document the cleanup.
+- Also create `$WORKSPACE/in/db/preflight_report.md` describing duplicate/null email issues before migration.
+- The preflight report must also mention dependent orders for dirty users `u4`, `u5`, and `u6`.
+- Also create `$WORKSPACE/in/db/rollback.sql` that can restore the pre-migration schema shape with id, email, name, created_at.
+- The rollback script must be executable after the migration and must restore the old schema shape.
+- Also create `$WORKSPACE/in/db/postcheck.sql` with verification queries that can be executed after the migration. It must check row counts, dependent order preservation, cleaned dirty-user emails, and email/status constraints.
+- Also create `$WORKSPACE/in/db/migration_report.md` summarizing the migration strategy, dirty-data cleanup, idempotency approach, rollback limitation/behavior, and the postcheck queries to run.
+- The migration should run inside an explicit transaction and should be idempotent: running it a second time must not corrupt or duplicate user data.
+- Use deterministic cleanup values exactly: duplicate `u4` becomes `ada+u4@example.com`; null email `u5` becomes `missing+u5@example.invalid`; blank email `u6` becomes `missing+u6@example.invalid`.
+
+The migration must run offline in SQLite. Do not use external tools or services.

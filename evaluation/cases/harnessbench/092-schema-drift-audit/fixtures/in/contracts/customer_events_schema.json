@@ -1,0 +1,11 @@
+{
+  "required": ["event_id", "customer_id", "event_type", "event_ts", "amount_usd"],
+  "fields": {
+    "event_id": {"type": "string", "nullable": false},
+    "customer_id": {"type": "string", "nullable": false},
+    "event_type": {"type": "enum", "values": ["signup", "purchase", "cancel"], "nullable": false},
+    "event_ts": {"type": "timestamp_iso", "nullable": false},
+    "amount_usd": {"type": "decimal", "nullable": false},
+    "source": {"type": "string", "nullable": true}
+  }
+}

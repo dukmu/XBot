@@ -1,0 +1,9 @@
+Day 1 of 3: initialize project state.
+
+Read $WORKSPACE/in/day1_brief.json. Create or update:
+- $WORKSPACE/out/project_log.md
+- $WORKSPACE/out/final_plan.json
+
+For Day 1, capture the baseline scope, owners, milestones, risks, tentative decisions, and open questions. $WORKSPACE/out/final_plan.json must include a change_history array with a Day 1 entry and a decisions array. Mark any pilot scope that is tentative so later days can reverse it without losing audit history. Do not invent dates beyond the fixture; use the fixture's relative day labels.
+
+Do not modify input files.

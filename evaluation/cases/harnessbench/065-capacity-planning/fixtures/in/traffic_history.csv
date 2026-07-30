@@ -1,0 +1,17 @@
+date,service,peak_rps,p95_rps,notes
+2026-03-02,checkout-api,1710,1405,normal weekday
+2026-03-03,checkout-api,1765,1450,normal weekday
+2026-03-04,checkout-api,1820,1495,normal weekday
+2026-03-05,checkout-api,1880,1512,partner email campaign
+2026-03-06,checkout-api,1960,1620,payday lift
+2026-03-07,checkout-api,1715,1390,weekend
+2026-03-08,checkout-api,1680,1365,weekend
+2026-03-09,checkout-api,1905,1588,normal weekday
+2026-03-02,pricing-worker,410,330,normal weekday
+2026-03-03,pricing-worker,435,352,normal weekday
+2026-03-04,pricing-worker,455,366,normal weekday
+2026-03-05,pricing-worker,470,372,partner email campaign
+2026-03-06,pricing-worker,495,388,payday lift
+2026-03-07,pricing-worker,430,340,weekend
+2026-03-08,pricing-worker,420,335,weekend
+2026-03-09,pricing-worker,500,390,normal weekday

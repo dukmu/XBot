@@ -1,0 +1,12 @@
+[
+  {"ticket_id": "T-1001", "order_id": "O-501", "vip_flag": false, "message": "My mug arrived shattered. I attached a photo of the broken item."},
+  {"ticket_id": "T-1002", "order_id": "O-502", "vip_flag": false, "message": "I ordered yesterday but chose the wrong color. Can I cancel for a refund?"},
+  {"ticket_id": "T-1003", "order_id": "O-503", "vip_flag": false, "message": "This is my third failed delivery and I want a manager to review it."},
+  {"ticket_id": "T-1004", "order_id": "O-999", "vip_flag": false, "message": "Where is my order? I cannot find the confirmation email."},
+  {"ticket_id": "T-1005", "order_id": "O-504", "vip_flag": true, "message": "I am VIP and need this fraud hold removed immediately. Please refund me now."},
+  {"ticket_id": "T-1006", "order_id": "O-505", "vip_flag": false, "message": "Tracking says delivered but I never received it. This is the second issue this month."},
+  {"ticket_id": "T-1007", "order_id": "", "vip_flag": false, "message": "My gift arrived damaged but I only have the recipient name, not the order number."},
+  {"ticket_id": "T-1008", "order_id": "O-506", "vip_flag": false, "message": "Carrier marks delivered Monday but concierge has no parcel and nobody signed—please refund immediately."},
+  {"ticket_id": "T-1009", "order_id": "O-503", "vip_flag": false, "message": "Follow-up on O-503: carrier portal now shows delayed hub sorting conflicting with warehouse manifest posted yesterday.", "prior_ticket_refs": ["T-1003"]},
+  {"ticket_id": "T-1010", "order_id": "", "vip_flag": true, "message": "VIP member—lost confirmation email and need tracking details urgently."}
+]

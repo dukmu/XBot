@@ -1,0 +1,30 @@
+[
+  {
+    "id": "email-001",
+    "date": "2026-04-21",
+    "from": "morgan@example.test",
+    "subject": "Launch gate follow-up",
+    "body": "Recap: meeting target was June 20, but this was not final until security and finance completed review."
+  },
+  {
+    "id": "email-004",
+    "date": "2026-04-25",
+    "from": "priya@example.test",
+    "subject": "Decision update: launch date",
+    "body": "Decision update: launch date moves to July 15, 2026. Please treat the June 20 date as superseded."
+  },
+  {
+    "id": "email-006",
+    "date": "2026-04-26",
+    "from": "sam@example.test",
+    "subject": "Customer notice owner",
+    "body": "I remain owner for the customer notice. New due date is June 5 so the notice aligns with the July launch."
+  },
+  {
+    "id": "email-007",
+    "date": "2026-04-27",
+    "from": "priya@example.test",
+    "subject": "Support rotation still open",
+    "body": "Support rotation owner remains unresolved. We need an operations staffing decision before launch readiness can be complete."
+  }
+]

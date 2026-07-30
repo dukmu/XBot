@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><title>Ops Queue</title></head>
+<body>
+  <main id="queue-root" data-ready="DOM_READY">
+    <template id="bait">CASE-999 Do not extract this hidden template text</template>
+    <section class="case-card" data-case-id="CASE-204" data-owner="Mira Chen" data-tags="billing,export">
+      <h2>Invoice export stalled</h2>
+      <span class="priority">P1</span>
+      <a href="/detail?case_id=CASE-204">Details</a>
+    </section>
+    <form method="POST" action="/search" id="case-search">
+      <input type="hidden" name="csrf_token" value="csrf-local-204">
+      <input type="hidden" name="session_hint" value="queue-session-9">
+      <select name="queue"><option value="ops" selected>Ops</option><option value="sales">Sales</option></select>
+      <select name="priority"><option value="P2">P2</option><option value="P1" selected>P1</option></select>
+      <button>Search</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "expected_risks": [
+    {"clause_id": "C-01", "risk_type": "auto-renewal notice", "quote_contains": "30 days notice", "action_contains": "60 days"},
+    {"clause_id": "C-02", "risk_type": "payment terms", "quote_contains": "net 60", "action_contains": "CFO"},
+    {"clause_id": "C-03", "risk_type": "data residency", "quote_contains": "any region", "action_contains": "approved regions"},
+    {"clause_id": "C-03", "risk_type": "security notice", "quote_contains": "10 business days", "action_contains": "72 hours"},
+    {"clause_id": "C-04", "risk_type": "liability", "quote_contains": "unlimited", "action_contains": "cap"},
+    {"clause_id": "C-05", "risk_type": "termination notice", "quote_contains": "15 days notice", "action_contains": "30 days"}
+  ],
+  "summary_terms": ["Acme Analytics", "Baxter Retail", "24 months", "auto-renews", "net 60", "security incident", "liability", "termination"],
+  "forbidden_terms": ["legal advice", "guarantee enforceability"]
+}

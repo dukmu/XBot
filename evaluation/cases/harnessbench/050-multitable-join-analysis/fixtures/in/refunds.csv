@@ -1,0 +1,7 @@
+refund_id,order_id,refund_date,refund_amount,currency,reason
+R9001,O1002,2025-02-11,20.00,EUR,partial_refund
+R9002,O1003,2025-02-12,80.00,USD,cancelled_order
+R9003,O9999,2025-02-18,10.00,USD,orphan_refund
+R9004,O1007,2025-02-25,10.00,EUR,partial_refund
+R9005,O1008,2025-02-27,50.00,USD,partial_refund
+R9006,O1010,2025-03-01,15.00,USD,no_captured_payment

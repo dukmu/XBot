@@ -1,0 +1,21 @@
+defaults: &defaults
+  active: true
+  tags: []
+records:
+  - <<: *defaults
+    record_id: A-001
+    name: Alpha YAML
+    quantity: 12
+    tags: [blue, fragile]
+    note: pipe | safe
+  - record_id: B-007
+    name: Beta
+    quantity: 7
+    active: false
+    tags: [green]
+    note:
+  - <<: *defaults
+    record_id: C-010
+    name: Gamma
+    quantity: 0
+    note: from yaml

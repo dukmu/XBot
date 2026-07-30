@@ -1,0 +1,45 @@
+You are building a small offline file-standardization pipeline. Use only local files.
+
+Input directory:
+- $WORKSPACE/in/raw/
+
+Create:
+- $WORKSPACE/out/normalized/
+- $WORKSPACE/out/rename_log.csv
+- $WORKSPACE/out/error_report.csv
+
+Supported transformations:
+1. TXT "Key: Value" revenue files
+   - Convert valid region/amount/currency records into JSON.
+   - Output filename format: revenue_<yyyy>_<mm>.json.
+2. Customer CSV exports
+   - Convert valid rows to a JSON array.
+   - Normalize keys to name,email,spend.
+   - Spend must be numeric.
+   - Skip bad rows and report them in error_report.csv.
+3. Inventory JSON files
+   - Convert the items array to CSV with columns sku,qty sorted by sku.
+   - Output filename format: inventory_<warehouse>.csv.
+
+Filename rules:
+- Recursively scan $WORKSPACE/in/raw/.
+- Supported extensions are .txt, .csv, and .json, case-insensitive.
+- Do not process unsupported files.
+- Normalize output filenames to lowercase snake_case.
+- If two supported inputs would produce the same output name, keep the first sorted source path as the base name and append __2, __3, etc. to later conflicting output names.
+
+CSV log requirements:
+- rename_log.csv exact header: source,target,action
+- Include one row for every successfully transformed supported input.
+- Sort rows by source path.
+- Use workspace-relative paths such as in/raw/...
+
+error_report.csv requirements:
+- Exact header: source,row_or_record,error_type,details
+- Include malformed supported records and unsupported files.
+- Unsupported files must be reported but not copied into out/normalized.
+
+Rules:
+- Do not modify or delete input files.
+- Do not create extra files in $WORKSPACE/out/normalized/.
+- JSON outputs must be valid UTF-8 JSON.
