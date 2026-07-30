@@ -64,13 +64,10 @@ def workspace_oracle() -> Scorer:
         workspace = Path(result.stdout.strip()) / state.metadata.get(
             "workspace_dir", ""
         )
-        try:
-            outcome = await asyncio.to_thread(
-                _oracle(case_dir).score_workspace,
-                workspace,
-            )
-        except Exception as exc:
-            return Score(value=0, explanation=f"Oracle failed: {exc}")
+        outcome = await asyncio.to_thread(
+            _oracle(case_dir).score_workspace,
+            workspace,
+        )
         value = float(outcome.get("outcome_score", outcome.get("score", 0)))
         if case_dir.name == "xbot-background-shell":
             process = _background_process_checks(state)
