@@ -1,0 +1,15 @@
+{
+  "owners": {
+    "Marta": {"role": "regional_ops", "regions": ["AMER"], "capacity_hours": 12},
+    "Lena": {"role": "legal_ops", "regions": ["EU"], "capacity_hours": 10},
+    "Priya": {"role": "regional_ops", "regions": ["APAC"], "capacity_hours": 8},
+    "Noah": {"role": "support_enablement", "regions": ["AMER", "EU", "APAC"], "capacity_hours": 18},
+    "Iris": {"role": "communications", "regions": ["AMER", "EU", "APAC"], "capacity_hours": 14},
+    "Ken": {"role": "regional_ops", "regions": ["APAC"], "capacity_hours": 9}
+  },
+  "backup_rules": {
+    "APAC": ["Ken"],
+    "EU": ["Lena", "Noah"],
+    "AMER": ["Marta", "Iris"]
+  }
+}

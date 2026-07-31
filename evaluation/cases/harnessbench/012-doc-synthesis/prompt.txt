@@ -1,0 +1,41 @@
+Task: multi-document synthesis and contradiction detection
+
+You have five documents about the same incident under `$WORKSPACE/in/`:
+- doc1_news_site_a.md (NewsSite A article)
+- doc2_news_site_b.md (NewsSite B article)
+- doc3_social_media.md (social posts / rumors)
+- doc4_official_statement.md (official statement)
+- doc5_expert_analysis.md (expert analysis)
+
+They conflict and may contain errors or bias.
+
+Complete the following; write everything under `$WORKSPACE/out/`:
+
+1. Per-document trust scores (**trustworthiness.json**)
+   Score each document 0–10 with a short rationale (e.g. source authority, internal consistency, evidence chain).
+   Shape:
+   {
+     "doc1_news_site_a.md": {"score": 6, "reason": "specific numbers but sensational tone"},
+     ...
+   }
+
+2. Contradictions (**contradictions.json**)
+   List key contradictions (at least 3), citing which documents are involved and representative quotes/snippets.
+   Shape:
+   {
+     "contradictions": [
+       {
+         "claim": "example axis of disagreement",
+         "documents": ["doc1", "doc2", "doc4"],
+         "quotes": ["...", "...", "..."],
+         "resolution": "your best-supported resolution"
+       }
+     ]
+   }
+
+3. Final narrative (**final_report.md**)
+   - Most credible account based on cross-checking (about 1200–3500 characters of prose in English).
+   - An **Uncertainty / disputes** section.
+   - Evidence pointers using `[filename]` tags.
+
+Scoring emphasizes reasonable trust scores, thorough contradiction coverage, and a logical, evidence-backed final report.

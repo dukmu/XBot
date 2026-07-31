@@ -1,0 +1,73 @@
+{
+  "decisions_path": "out/appeal_decisions.csv",
+  "explanations_path": "out/explanations.md",
+  "redaction_path": "out/redaction_audit.csv",
+  "decisions_header": "case_id,decision,final_action,policy_basis,confidence",
+  "redaction_header": "case_id,redacted_field,redaction_reason",
+  "valid_clause_ids": ["HATE-1", "HARASS-1", "SPAM-1", "SAFE-1", "EDGE-1", "META-1", "META-2", "PRECVIO-1", "MISLABEL-1"],
+  "expected": {
+    "A-01": {
+      "decision": "uphold",
+      "final_action_contains": "7-day",
+      "policy_basis_tokens": ["HATE-1"],
+      "confidence": "high"
+    },
+    "A-02": {
+      "decision": "overturn",
+      "final_action_contains": "restore",
+      "policy_basis_tokens": ["SAFE-1"],
+      "confidence": "high"
+    },
+    "A-03": {
+      "decision": "downgrade",
+      "final_action_contains": "warning",
+      "policy_basis_tokens": ["SPAM-1"],
+      "confidence": "medium"
+    },
+    "A-04": {
+      "decision": "downgrade",
+      "final_action_contains": "warning",
+      "policy_basis_tokens": ["EDGE-1"],
+      "confidence": "medium"
+    },
+    "A-05": {
+      "decision": "uphold",
+      "final_action_contains": "3-day",
+      "policy_basis_tokens": ["PRECVIO-1", "EDGE-1"],
+      "confidence": "medium"
+    },
+    "A-06": {
+      "decision": "overturn",
+      "final_action_contains": "restore",
+      "policy_basis_tokens": ["SAFE-1", "MISLABEL-1"],
+      "confidence": "medium"
+    },
+    "A-07": {
+      "decision": "downgrade",
+      "final_action_contains": "warning",
+      "policy_basis_tokens": ["META-2", "EDGE-1"],
+      "confidence": "medium"
+    }
+  },
+  "forbidden_terms": [
+    "private_user_778",
+    "private_user_314",
+    "private_user_502",
+    "private_user_909",
+    "private_user_111",
+    "private_user_444",
+    "private_user_717",
+    "reporter909@example.invalid",
+    "mod_watch_team_internal"
+  ],
+  "redaction_cases": ["A-01", "A-02", "A-03", "A-04", "A-05", "A-06", "A-07"],
+  "redaction_fields_min": {
+    "A-01": ["reporter"],
+    "A-02": ["reporter"],
+    "A-03": ["reporter"],
+    "A-04": ["reporter", "reporter_email"],
+    "A-05": ["reporter"],
+    "A-06": ["reporter", "reporter_alias"],
+    "A-07": ["reporter"]
+  }
+}

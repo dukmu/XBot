@@ -1,0 +1,14 @@
+The fixture package in `$WORKSPACE/in/depsvc` must be updated for a small dependency compatibility requirement.
+
+Your job:
+- Edit `$WORKSPACE/in/depsvc/requirements.txt` and, if needed, `$WORKSPACE/in/depsvc/slugger.py`.
+- Follow `$WORKSPACE/in/depsvc/compat_notes.md`.
+- Keep the upgrade minimal: only the `python-slugify` pin should change.
+- Make `python -m pytest $WORKSPACE/in/depsvc/tests` pass.
+- Write `$WORKSPACE/in/depsvc/compat_decision.md` explaining the minimal upgrade, behavior risks, and why no unrelated dependencies were added.
+- Write `$WORKSPACE/in/depsvc/compat_matrix.json` listing behavior cases considered during the upgrade. It must include cases for default ASCII output, Unicode preservation, custom separators, invalid separators, empty input, non-string input, and repeated punctuation/whitespace collapse.
+- Write `$WORKSPACE/in/depsvc/compat_risks.md` summarizing behavior risks, accepted compatibility assumptions, rollback plan, and the exact commands/tests used to verify the upgrade.
+- Preserve the public `make_slug(title, preserve_unicode=False, separator="-")` signature.
+- Hidden checks will exercise Unicode preservation, invalid separators, empty input, no-argument/default behavior, non-string input, repeated punctuation, and explicit forwarding of `allow_unicode`/`separator` into the upgraded dependency.
+
+Do not remove tests, do not add network calls, and do not vendor dependencies.

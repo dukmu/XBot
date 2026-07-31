@@ -1,0 +1,36 @@
+Use the offline SQL fixture to produce a small BI report.
+
+Input:
+- $WORKSPACE/in/schema_data.sql
+
+Create:
+- $WORKSPACE/out/query_results.json
+- $WORKSPACE/out/analysis.md
+- $WORKSPACE/out/query_audit.json
+
+Requirements:
+1. Load schema_data.sql into a local SQLite database or otherwise execute equivalent SQL locally.
+2. Consider only orders where status = 'paid' and order_date is from 2025-01-01 through 2025-03-31 inclusive.
+3. query_results.json must be valid JSON with exactly these top-level keys:
+   - top_products_by_revenue
+   - revenue_by_region
+   - category_summary
+4. top_products_by_revenue must contain the top 3 products by revenue, descending, with fields:
+   product_id, product_name, revenue
+   Break revenue ties by product_id ascending.
+5. revenue_by_region must contain one row per customer region with fields:
+   region, order_count, revenue
+   Sort region rows by region ascending.
+6. category_summary must contain one row per product category with fields:
+   category, units_sold, revenue
+   Sort category rows by category ascending.
+7. Revenue values must be numbers or numeric strings rounded to two decimal places.
+8. analysis.md must briefly identify the top product, highest revenue region, tie handling if any, and excluded records rule.
+9. The date window includes 2025-01-01 and 2025-03-31. Exclude returned, cancelled, and out-of-window orders even if they have large order_items.
+
+query_audit.json requirements:
+- Valid JSON with keys: included_order_ids, excluded_status_order_ids, excluded_out_of_window_order_ids, boundary_included_order_ids, top_product_tie_order.
+- The first four keys must be arrays of order_id strings sorted ascending.
+- top_product_tie_order must list the product_ids that are tied by revenue in the exact output order used for top_products_by_revenue.
+
+Do not modify fixtures. Do not use network access or external APIs.

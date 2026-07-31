@@ -1,0 +1,30 @@
+You are given a small Python service repository at `$WORKSPACE/in/repo`.
+
+Create exactly these deliverables:
+
+1. `$WORKSPACE/out/module_map.json`
+   - JSON object with keys: `modules`, `entry_points`, `dependency_edges`, `key_functions`.
+   - `modules` must be an array of module objects with at least `name`, `path`, and `purpose`.
+   - `entry_points` must list executable/API entry points using canonical `module:function` identifiers where applicable, including `minisvc.cli:main` and `minisvc.api.routes:register_routes`.
+   - `dependency_edges` must contain directed edges as objects with `from`, `to`, and `type`; `type` should be one of `imports`, `calls`, `instantiates`, `reads_config`, or `persists_to`.
+   - `key_functions` must describe important functions and methods.
+   - Include a `runtime_flows` array describing at least the CLI startup flow and the HTTP create-order flow as ordered steps.
+2. `$WORKSPACE/out/architecture.md`
+   - Markdown architecture summary for a new engineer.
+   - Include modules, entry points, data flow, storage, and risks/extension points.
+   - Call out any important runtime flow and avoid treating package marker files as business logic modules.
+3. `$WORKSPACE/out/doc_code_discrepancies.csv`
+   - CSV with header `claim,doc_source,code_evidence,assessment,risk`.
+   - Compare README/design notes against the actual implementation.
+   - At minimum, cover readonly enforcement, retry behavior, and audit persistence if they differ from code.
+   - `assessment` should be one of `confirmed`, `contradicted`, or `unsupported`.
+4. `$WORKSPACE/out/risk_register.csv`
+   - CSV with header `risk_id,area,evidence,impact,mitigation,owner_hint`.
+   - Cover at least storage/data durability, audit behavior, configuration/runtime environment, and API input validation.
+   - Each row must cite concrete code evidence such as a module, function, or filename.
+5. `$WORKSPACE/out/onboarding_plan.md`
+   - A concise onboarding plan for a new engineer.
+   - Include a recommended read order, local run/test commands, first debugging breakpoint or trace point, and two safe first changes.
+   - The plan must distinguish active runtime code from package marker/dead-simple files.
+
+Do not modify anything under `$WORKSPACE/in/repo`. Do not use internet access. Use only the files in the fixture repository.

@@ -1,0 +1,15 @@
+task_id: "018-provider-failover-audit"
+title: "OpenClaw Multi‑Provider API Routing and Failover Audit"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 1200
+tags:
+  - "openclaw"
+  - "provider-routing"
+  - "tool-use"
+  - "cache"
+  - "structured-output"
+  - "api-evaluation"

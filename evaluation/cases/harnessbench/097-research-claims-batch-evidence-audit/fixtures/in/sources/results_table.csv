@@ -1,0 +1,9 @@
+metric,cohort,value,unit,p_value
+retention_lift,overall,7.4,percentage_points,0.031
+retention_lift,mobile,9.1,percentage_points,0.018
+retention_lift,desktop,6.2,percentage_points,0.044
+retention_lift,partner,-1.0,percentage_points,0.410
+support_ticket_change,overall,-12,percent,0.022
+activation_lift,north,3.0,percentage_points,0.050
+activation_lift,south,-0.4,percentage_points,0.690
+activation_lift,west,2.1,percentage_points,0.120

@@ -1,0 +1,9 @@
+{
+  "account_id": "acct_1004",
+  "account_email": "jordan.kim@example.com",
+  "phone": "+1-917-555-0133",
+  "status": "active",
+  "retention_flags": ["tax_retention"],
+  "household_member": null,
+  "internal_risk_note": "agent authorization accepted; retention still applies"
+}

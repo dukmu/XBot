@@ -1,0 +1,30 @@
+Detect suspicious transactions using the local rulebook.
+
+Inputs:
+- $WORKSPACE/in/transactions.csv
+- $WORKSPACE/in/rules.md
+
+Create:
+- $WORKSPACE/out/suspicious_transactions.csv
+- $WORKSPACE/out/rule_audit.json
+- $WORKSPACE/out/case_notes.md
+
+suspicious_transactions.csv columns, in this exact order:
+transaction_id,customer_id,rule_id,risk_level,reason
+
+Rules:
+1. Do not modify fixtures.
+2. Apply only the rules in rules.md.
+3. Include every transaction that triggers at least one rule.
+4. If a transaction triggers multiple rules, use the highest-risk rule and mention other triggered rule ids in reason.
+5. Do not include transactions that do not trigger any rule.
+6. For card velocity, evaluate transactions by timestamp, not CSV row order.
+7. case_notes.md must summarize the number of suspicious transactions and mention each triggered rule_id.
+
+rule_audit.json requirements:
+- Valid JSON with keys: suspicious_transaction_ids, non_suspicious_transaction_ids, rule_counts, secondary_rule_ids.
+- suspicious_transaction_ids and non_suspicious_transaction_ids must be sorted arrays.
+- rule_counts maps each rule_id to the number of suspicious transactions whose primary rule_id is that rule.
+- secondary_rule_ids maps only multi-rule transaction_ids to sorted arrays of the other triggered rule ids mentioned in the CSV reason.
+
+Do not use network access or external APIs.

@@ -1,0 +1,25 @@
+Use only the task-provided mock site at $MOCK_SITE_BASE. It may be exposed through a public tunnel to a local benchmark server. Do not use screenshots, OCR, or any other internet resources.
+
+Read the HTML/DOM text, hidden fields, form actions, data attributes, and form responses. Submit the
+correct local form flow and write:
+- $WORKSPACE/out/dom_extract.json
+- $WORKSPACE/out/interaction_trace.md
+- $WORKSPACE/out/source_urls.txt
+
+Required dom_extract.json fields:
+{
+  "selected_case_id": "CASE-204",
+  "visible_title": "Invoice export stalled",
+  "owner": "Mira Chen",
+  "priority": "P1",
+  "tags": ["billing", "export"],
+  "submitted_filters": {"queue": "ops", "priority": "P1"},
+  "confirmation_code": "CONF-204-OK",
+  "result_rows": [
+    {"step": "validate", "status": "passed"},
+    {"step": "export", "status": "queued"}
+  ]
+}
+
+Avoid copying the whole HTML page or hidden template bait into the JSON.
+source_urls.txt should contain the key mock-site URLs you used, one per line.

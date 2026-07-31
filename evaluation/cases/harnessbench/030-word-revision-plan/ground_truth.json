@@ -1,0 +1,12 @@
+{
+  "must_contain": [
+    "Pilot results are informational and do not constitute compliance certification.",
+    "## Data Processing Addendum",
+    "Customer data will be processed under the signed DPA. No production data may be used until the DPA is active.",
+    "## No Warranty Expansion",
+    "Nothing in this brief expands warranties or service levels beyond the signed agreement."
+  ],
+  "forbidden_terms": ["revolutionary", "guarantees", "effortless", "transform compliance"],
+  "change_log_sources": ["style_guide", "legal_comments"],
+  "required_comments": ["LC-1", "LC-2", "LC-3", "LC-4"]
+}

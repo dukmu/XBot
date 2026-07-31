@@ -1,0 +1,15 @@
+task_id: "027-contract-summary-risk"
+title: "Summarize Contract Terms And Extract Policy Risks"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags:
+  - "office"
+  - "legal"
+  - "contract"
+  - "risk"
+  - "csv"
+  - "deterministic"

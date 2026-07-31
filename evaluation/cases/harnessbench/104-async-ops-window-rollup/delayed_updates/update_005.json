@@ -1,0 +1,8 @@
+{
+  "update_id": "UP-005",
+  "timestamp": "2026-05-04T01:44:00Z",
+  "component": "notification-worker",
+  "status": "healthy",
+  "severity": "info",
+  "message": "Notification worker recovered after downstream checkout stabilization."
+}

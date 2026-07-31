@@ -1,0 +1,10 @@
+{
+  "components": ["edge", "checkout-api", "payment-worker", "inventory-db", "notification-worker"],
+  "dependencies": [
+    {"from": "checkout-api", "to": "payment-worker"},
+    {"from": "checkout-api", "to": "inventory-db"},
+    {"from": "notification-worker", "to": "checkout-api"},
+    {"from": "edge", "to": "checkout-api"}
+  ],
+  "root_cause_hint": "If inventory-db is degraded and checkout-api reports dependency timeouts, classify inventory-db as likely root and checkout-api as downstream symptom."
+}

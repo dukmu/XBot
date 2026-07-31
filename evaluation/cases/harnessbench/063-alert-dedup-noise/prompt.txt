@@ -1,0 +1,23 @@
+You are reducing an offline alert storm into actionable incidents.
+
+Inputs:
+- $WORKSPACE/in/alerts.jsonl
+- $WORKSPACE/in/topology.json
+
+Create exactly these output files:
+- $WORKSPACE/out/deduped_incidents.json
+- $WORKSPACE/out/noise_report.md
+
+deduped_incidents.json requirements:
+- Top-level object with key incidents.
+- incidents must be a list of objects.
+- Each incident must include: incident_id, root_alert_id, root_service, cluster_alert_ids, impact_services, summary, evidence.
+- cluster_alert_ids must include the root alert and downstream symptom alerts.
+- impact_services must name customer-facing or dependent services affected by the same root problem.
+
+noise_report.md requirements:
+- List alerts filtered as noise and explain why.
+- Distinguish duplicates/downstream symptoms from true noise.
+- Mention maintenance windows, synthetic heartbeat flaps, and staging-only alerts when applicable.
+
+Do not modify input files. Do not use external services. Base the result only on the supplied alerts and topology.

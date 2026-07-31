@@ -1,0 +1,16 @@
+task_id: "023-web-form-extraction"
+title: "Local web form extraction"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+difficulty: "easy"
+tags:
+  - "browser"
+  - "http"
+  - "local-web"
+  - "form"
+  - "extraction"
+  - "easy"

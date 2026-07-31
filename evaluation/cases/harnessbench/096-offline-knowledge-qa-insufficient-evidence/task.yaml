@@ -1,0 +1,9 @@
+task_id: "096-offline-knowledge-qa-insufficient-evidence"
+title: "Offline Knowledge QA with Explicit Unanswerable Detection"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "medium"
+tags: ["offline-qa", "retrieval", "insufficient-evidence", "citation", "knowledge-grounding", "medium"]

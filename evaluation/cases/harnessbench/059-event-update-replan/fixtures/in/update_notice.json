@@ -1,0 +1,9 @@
+{
+  "notice_id": "evt-update-76",
+  "constraints": [
+    "live_support must be in Room B",
+    "Chen is unavailable after 13:00",
+    "rehearsal must end before 11:00",
+    "add accessibility_check for 15 minutes immediately before live_support"
+  ]
+}

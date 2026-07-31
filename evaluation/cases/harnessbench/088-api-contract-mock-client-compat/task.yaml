@@ -1,0 +1,10 @@
+task_id: 088-api-contract-mock-client-compat
+title: Repair Client Compatibility Against a Mock API Contract
+class: "Software Engineering & Codebase Maintenance"
+tags:
+  - software-engineering
+  - codebase-maintenance
+  - api-contract
+  - local-service
+  - python
+timeout_sec: 600

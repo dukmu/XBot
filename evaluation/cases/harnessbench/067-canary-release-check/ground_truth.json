@@ -1,0 +1,25 @@
+{
+  "expected": {
+    "release_id": "checkout-api-2026.04.21-canary",
+    "decision": "rollback",
+    "breached_metrics": ["error_rate_pct", "p95_latency_ms", "checkout_success_pct"],
+    "non_breached_metrics": ["cpu_pct", "payment_success_pct", "search_latency_ms"],
+    "missing_data_metrics": ["payment_success_pct"],
+    "low_sample_metrics": ["search_latency_ms"],
+    "expected_values": {
+      "error_rate_pct": {"baseline": 0.50, "canary": 2.37, "status": "ok"},
+      "p95_latency_ms": {"baseline": 420.0, "canary": 590.0, "status": "ok"},
+      "checkout_success_pct": {"baseline": 99.20, "canary": 96.60, "status": "ok"},
+      "cpu_pct": {"baseline": 54.0, "canary": 61.0, "status": "ok"},
+      "payment_success_pct": {"baseline": 98.8, "canary": null, "status": "missing_data"},
+      "search_latency_ms": {"baseline": 210.0, "canary": 260.0, "status": "low_sample"}
+    }
+  },
+  "evidence_csv": "out/metric_evidence.csv",
+  "evidence_header": ["metric", "baseline_value", "canary_value", "delta", "threshold", "direction", "severity", "evidence_status", "breached"],
+  "action_keywords": ["rollback", "stop", "canary", "notify", "investigate", "missing", "sample"],
+  "scoring": {
+    "weights": {"decision_json": 0.74, "evidence_csv": 0.20, "source_unchanged": 0.06},
+    "thresholds": {"pass": 0.70, "good": 0.84, "excellent": 0.94}
+  }
+}

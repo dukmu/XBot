@@ -1,0 +1,17 @@
+Task: Offline Document QA with Evidence Attribution
+
+You may only use the offline materials in `$WORKSPACE/in/docs/*.md` and `$WORKSPACE/in/questions.json`. Do not go online, and do not use common knowledge to fill in information not present in the materials.
+
+Read all questions from `questions.json` and write the answers to `$WORKSPACE/out/answers.json`.
+
+Output format:
+- The top level must be a JSON array, each element corresponding to one question.
+- Each element must include: `question_id`, `answer`, `source_file`, `quote_or_signal`.
+- If there is insufficient evidence in the materials to answer the question, `answer` must be `insufficient_evidence`, `source_file` must be `null` or an empty string, and `quote_or_signal` must explain what type of evidence is missing.
+- For answerable questions, `source_file` must be a relative path under `docs/`, e.g., `docs/operations.md`.
+- `quote_or_signal` must provide a short quote or locating signal that supports the answer; do not write only “see document”.
+
+Prohibitions:
+- Do not modify any files in fixtures.
+- Do not output extra Markdown wrapping.
+- Do not fabricate answers for unanswerable questions.

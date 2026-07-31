@@ -1,0 +1,13 @@
+task_id: "051-sql-query-report"
+title: "SQL query report from offline sales database"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "medium"
+tags:
+  - data-analysis
+  - sql
+  - sqlite
+  - reporting

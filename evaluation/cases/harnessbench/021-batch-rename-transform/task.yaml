@@ -1,0 +1,15 @@
+task_id: "021-batch-rename-transform"
+title: "Batch rename and format transform"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "medium"
+tags:
+  - "files"
+  - "terminal"
+  - "batch"
+  - "rename"
+  - "format-conversion"
+  - "medium"

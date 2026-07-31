@@ -1,0 +1,53 @@
+You are cleaning a messy sales export for a finance reconciliation review. Use only local files.
+
+Inputs copied to the workspace root:
+- $WORKSPACE/in/messy_sales.csv
+- $WORKSPACE/in/customer_dictionary.csv
+- $WORKSPACE/in/fx_rates.csv
+
+Create exactly these outputs:
+- $WORKSPACE/out/cleaned_sales.csv
+- $WORKSPACE/out/reject_ledger.csv
+- $WORKSPACE/out/reject_summary.json
+- $WORKSPACE/out/cleaning_report.md
+
+Cleaning rules:
+1. Do not modify input files.
+2. Validate customer_id against customer_dictionary.csv. Reject rows whose customer_id is unknown or inactive.
+3. Parse order_date using the row locale:
+   - en_US dates are month/day/year.
+   - en_GB and de_DE dates are day/month/year.
+   - ISO dates are already year-month-day.
+   - Dates with month names such as "10-Jan-2025" are valid.
+4. Normalize status to lowercase. Refund/returned rows must keep a negative amount_usd.
+5. Normalize amount to USD using fx_rates.csv. The amount field is already the row total, not a unit price. Strip currency symbols and accounting parentheses. For en_US/en_GB, comma is the thousands separator and dot is the decimal separator. For de_DE, dot is the thousands separator and comma is the decimal separator. Round amount_usd to exactly two decimals.
+6. Quantity must be a positive integer.
+7. Deduplicate by order_id after validation. Keep the first valid occurrence in input order and reject later valid duplicates with reason duplicate_order_id. Invalid rows are rejected for their validation reason rather than duplicate_order_id.
+8. Reject rows with invalid dates, unsupported currency, missing/non-numeric amounts, invalid quantities, unknown/inactive customers, or duplicates.
+9. If a row has multiple reject reasons, record the first applicable reason in this priority order:
+   missing_amount, unsupported_currency, invalid_quantity, inactive_customer, unknown_customer, invalid_date, duplicate_order_id.
+10. Refund/returned rows must produce a negative amount_usd exactly once: a positive returned amount becomes negative, and an already-negative returned amount stays negative.
+
+cleaned_sales.csv requirements:
+- Exact header:
+  order_id,order_date,customer_id,customer_name,sku,quantity,amount_usd,status
+- Rows must be sorted by order_date then order_id.
+- Do not include extra columns.
+
+reject_ledger.csv requirements:
+- Exact header:
+  order_id,reason,source_row,notes
+- Include one row per rejected input row. source_row is 1-based data-row number from messy_sales.csv, excluding the header.
+- Use one of the reason codes listed in rule 9.
+
+reject_summary.json requirements:
+- Valid JSON object keyed by every reason code in rule 9, including zero-count reasons if any.
+- Each reason entry must contain count, source_rows, and order_ids.
+- source_rows must be numeric arrays in ascending input order.
+
+cleaning_report.md requirements:
+- Summarize valid row count, rejected row count, duplicate count, and total amount_usd.
+- Explain each reject reason category.
+- Mention any locale or FX assumptions used.
+
+Do not use network access or external APIs.

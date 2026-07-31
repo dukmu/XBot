@@ -1,0 +1,27 @@
+Task: autonomous decomposition and execution
+
+Goal: plan and run a **virtual product launch** for the **ClawMind AI assistant**.
+
+Do the following; keep all artifacts under `$WORKSPACE/`:
+
+1. **Decomposition**
+   - Create a `subtasks/` directory.
+   - Break the goal into **at least 3** subtasks (e.g. market research, event planning, promotional copy, budget, timeline).
+   - One `.md` file per subtask (e.g. `subtask_01_research.md`), each containing:
+     * objective
+     * concrete steps or deliverables
+     * status line: `## STATUS: pending` initially, then `## STATUS: done` when finished
+
+2. **Execution and tracking**
+   - Execute subtasks in order; you may update statuses as you go.
+   - Create `progress.md` with start/end times and a short note per subtask.
+   - If you replan, explain why in `progress.md`.
+
+3. **Final rollup**
+   - Write `final_report.md` including:
+     * overall launch plan (time, venue/format, audience)
+     * at least one full promotional piece (copy)
+     * budget estimate with major line items
+     * success metrics (how you measure impact)
+
+You may use any tools available (browser, editing, scripts). Scoring emphasizes sensible decomposition, completed subtasks, report quality, and accurate progress tracking.

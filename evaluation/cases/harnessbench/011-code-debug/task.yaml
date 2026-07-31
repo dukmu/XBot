@@ -1,0 +1,14 @@
+task_id: "011-code-debug"
+title: "Iterative Code Repair And Verification"
+class: "Software Engineering & Codebase Maintenance"
+prompt_files:
+  - "prompt.txt"
+  - "prompt.txt"
+  - "prompt.txt"
+  - "prompt.txt"
+  - "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+tags: ["code-debugging", "iterative-repair", "multi-layer", "error-recovery"]

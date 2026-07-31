@@ -1,0 +1,14 @@
+task_id: "030-word-revision-plan"
+title: "Revise A Draft Against Style And Legal Comments"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "office"
+  - "document"
+  - "revision"
+  - "legal"
+  - "deterministic"

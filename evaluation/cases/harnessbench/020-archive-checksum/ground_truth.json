@@ -1,0 +1,17 @@
+{
+  "archive_hashes": {
+    "fixtures/in/bundle_a.zip": "461221eda6fc3cf195089bd0e8dc51a5a2a38699334762ff0f15b9d9a2fedfb5",
+    "fixtures/in/bundle_b.tar": "33699d35beec8c82cc97680ceecc22cdd648b193534e47dd8ba4d497b6789fdc"
+  },
+  "manifest_files": [
+    {"archive": "bundle_a.zip", "path": "data/metrics.csv", "size": 49, "sha256": "09c822ecdba3b36fda3497a0ff66ba407ef4f4e6301d0d5f1e4f8e0282a17be9"},
+    {"archive": "bundle_a.zip", "path": "docs/readme.txt", "size": 76, "sha256": "2d9f42e64c237466f1d4b739e284d3d3e85c0ee459615e248df947d840852559"},
+    {"archive": "bundle_a.zip", "path": "docs/tampered.txt", "size": 60, "sha256": "453be6709101c38da378f150185d308bf56bbfaededef4c36c1f9ea77f8bf8cf"},
+    {"archive": "bundle_b.tar", "path": "notes/ops.txt", "size": 63, "sha256": "c930cb7fc94a0912b85d103f5ef78d2791267c840f262ed904aa7d1f00a93c82"},
+    {"archive": "bundle_b.tar", "path": "reports/q1.json", "size": 66, "sha256": "5bcf66a97b00bf0a67f5177b7f0ec91ec95e72a10d4e0f3bef5edf6bf5a13135"}
+  ],
+  "mismatches": [
+    "bundle_a.zip,docs/tampered.txt,checksum_mismatch",
+    "bundle_b.tar,notes/retired.txt,missing"
+  ]
+}

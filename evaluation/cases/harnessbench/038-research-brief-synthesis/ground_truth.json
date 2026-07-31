@@ -1,0 +1,53 @@
+{
+  "brief_required_terms": [
+    "Executive Summary",
+    "Key Metrics",
+    "Evidence",
+    "Risks and Caveats",
+    "Recommendation",
+    "10.2%",
+    "31.0%",
+    "USD 1.8 million",
+    "62%",
+    "81%",
+    "88%",
+    "East Market",
+    "after 20:00",
+    "fare revenue",
+    "20%",
+    "preliminary",
+    "96%",
+    "71%",
+    "18",
+    "two-week",
+    "night-work"
+  ],
+  "source_files": ["reports/operations.md", "reports/survey.md", "reports/finance.md", "reports/press_note.md", "reports/maintenance.md", "stats.csv"],
+  "evidence_matrix_path": "out/evidence_matrix.csv",
+  "evidence_terms": ["ridership", "complaint", "cost", "survey", "late", "press", "maintenance", "night-work"],
+  "type_terms": ["fact", "inference", "caveat"],
+  "matrix_required_columns": ["claim", "type", "supporting_sources", "confidence", "caveat", "source_rows", "calculation"],
+  "calculation_terms": ["10.2", "31.0", "81", "88"],
+  "source_signal_expectations": {
+    "stats.csv": ["weekday_ridership", "48200", "53100", "complaint_rate", "14.2", "9.8", "81", "88"],
+    "reports/operations.md": ["after 20:00", "71%", "96%", "East Market", "weekend"],
+    "reports/survey.md": ["62%", "21%", "17%", "after 20:00"],
+    "reports/finance.md": ["USD 1.8", "USD 4.9", "preliminary", "fare revenue"],
+    "reports/press_note.md": ["20%", "methodology", "conflicts"],
+    "reports/maintenance.md": ["18", "12", "two-week", "night-work"]
+  },
+  "matrix_claim_expectations": [
+    {"id": "ridership", "type": "fact", "tokens": ["ridership", "10.2", "48200", "53100"], "sources": ["stats.csv"], "calculation": ["53100", "48200"]},
+    {"id": "complaints", "type": "fact", "tokens": ["complaint", "31.0", "14.2", "9.8"], "sources": ["stats.csv"], "calculation": ["9.8", "14.2"]},
+    {"id": "cost", "type": "fact", "tokens": ["USD 1.8 million"], "sources": ["finance.md"], "calculation": []},
+    {"id": "survey", "type": "fact", "tokens": ["62%", "support"], "sources": ["survey.md"], "calculation": []},
+    {"id": "on_time", "type": "fact", "tokens": ["81%", "88%"], "sources": ["stats.csv"], "calculation": ["88", "81"]},
+    {"id": "press_conflict", "type": "caveat", "tokens": ["press", "20%", "10.2"], "sources": ["press_note.md", "stats.csv"], "calculation": []},
+    {"id": "late_evening", "type": "caveat", "tokens": ["after 20:00", "71%", "96%"], "sources": ["operations.md"], "calculation": []},
+    {"id": "fare_revenue", "type": "caveat", "tokens": ["fare revenue"], "sources": ["finance.md"], "calculation": []},
+    {"id": "maintenance", "type": "inference", "tokens": ["two-week", "night-work"], "sources": ["maintenance.md"], "calculation": []}
+  ],
+  "assumption_terms": ["late-evening", "fare revenue", "maintenance", "night-work", "press", "risk_if_wrong", "supporting_sources"],
+  "forbidden_terms": ["web search", "internet", "external study", "current data", "today"],
+  "scoring": {"thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}}
+}

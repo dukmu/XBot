@@ -1,0 +1,9 @@
+{
+  "account_id": "acct_1003",
+  "account_email": "avery.lopez@example.org",
+  "phone": "+1-303-555-0144",
+  "status": "active",
+  "retention_flags": ["open_billing_dispute", "active_chargeback"],
+  "household_member": null,
+  "internal_risk_note": "chargeback team owns retention; do not promise erase"
+}

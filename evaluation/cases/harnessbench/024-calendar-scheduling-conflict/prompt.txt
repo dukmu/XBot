@@ -1,0 +1,23 @@
+You are scheduling a customer escalation review using only the files in this task.
+
+Inputs:
+- $WORKSPACE/in/meeting_request.json
+- $WORKSPACE/in/calendars/alex.json
+- $WORKSPACE/in/calendars/priya.json
+- $WORKSPACE/in/calendars/marco.json
+- $WORKSPACE/in/calendars/customer.json
+
+Write exactly these outputs:
+- $WORKSPACE/out/proposed_slots.json
+- $WORKSPACE/out/invite_draft.txt
+
+Requirements:
+- proposed_slots.json must be a JSON object with a "slots" array of exactly 3 candidate slots.
+- Each slot must include: start, end, timezone, participants, rationale.
+- Use ISO-like local timestamps in America/New_York, for example "2026-05-12T10:30".
+- The meeting duration is 45 minutes.
+- All required participants must be available for every proposed slot.
+- Only propose slots inside the scheduling window and inside each attendee's working hours after timezone conversion.
+- Do not modify input files.
+- invite_draft.txt must name the meeting topic, all required participants, the customer account, and the 45 minute duration.
+- Do not mention unsupported promises such as final pricing, legal approval, or guaranteed delivery dates.

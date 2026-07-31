@@ -1,0 +1,17 @@
+task_id: "106-release-approval-gate-plan"
+title: "Release Approval Gate with Blockers and Pending Actions"
+class: "Long-running Autonomy & State Adaptation"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 540
+difficulty: "hard"
+tags:
+  - "long-running-autonomy"
+  - "release-ops"
+  - "approval-flow"
+  - "blocker-detection"
+  - "safety"
+  - "audit"
+  - "deterministic"

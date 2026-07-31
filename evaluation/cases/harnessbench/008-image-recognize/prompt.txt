@@ -1,0 +1,14 @@
+Working directory: `$WORKSPACE`.
+
+Absolute paths to two images (keep them in the message so vision-capable models can load them):
+
+Image 1: `$IMAGE1_ABS_PATH`  
+Image 2: `$IMAGE2_ABS_PATH`
+
+Tasks:
+1. **Inspect each image** and answer from what you see (**short English**; you may join a few very short phrases on one line with commas—do not need to cover everything, but avoid single-word non-answers).
+   - **Image 1**: besides the geometric shape, include **main color** and **background**.
+   - **Image 2**: besides species/object, include **main colors**, and **at least one** of foreground or background cues you can see.
+2. Write the answer for image 1 to **`$WORKSPACE/out/image1_answer.txt`**: **exactly one line**.
+3. Write the answer for image 2 to **`$WORKSPACE/out/image2_answer.txt`**: **exactly one line**.
+4. If missing: `mkdir -p $WORKSPACE/out`.

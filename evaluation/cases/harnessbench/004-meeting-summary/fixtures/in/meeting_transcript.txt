@@ -1,0 +1,28 @@
+Topic: OpenClaw product line — 2026 Q2 planning and resource alignment
+Time: 2026-04-01 10:00–11:30
+Attendees: Product (Zhang Min), Engineering (Li), Finance (Wang), Operations (Chen)
+
+[Opening]
+Zhang Min states the goal: confirm Q2 milestones, align on budget framing, and capture risks and action items.
+
+[Product]
+Zhang Min: Q2 focuses on improving workspace rules and the handoff experience, plus stabilizing the evaluation pipeline. External milestones split into two checkpoints: clear all P0 defects by April 30; ship an externally demo-ready milestone by May 15 (codename: M1). If schedule slips, protect the core path; non-core scope may slip to Q3.
+
+[Engineering]
+Li: Main risk is regressions from differences between the gateway and local embedded mode; plan to add smoke tests and nightly batches. Staffing: two backend and one frontend full-time; Operations must supply a batch of declassified sample tasks. If hiring freeze continues with no new headcount, M1 must drop the optional “multimodal plugin pack” sub-feature.
+
+[Finance]
+Wang: R&D budget for the quarter is locked at Q1 levels; extra asks require the change process. Marketing spend is a separate line and cannot use R&D budget codes. Travel is frozen by default; exceptions need VP approval.
+
+[Operations]
+Chen will deliver 20 typical user task descriptions (declassified) within two weeks for the regression set, and draft FAQ updates for the help center.
+
+[Action items]
+1) Zhang Min: refresh the roadmap and broadcast to all hands (by this Friday).
+2) Li: publish risk list and test-case priorities (by next Wednesday).
+3) Chen: sample task pack due April 18.
+
+[Open issues]
+Whether the hiring freeze runs through end of Q2 is pending HR next week; if it continues, Product must trim M1 scope.
+
+Adjourned.

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Local Order Lookup</title>
+</head>
+<body>
+  <main>
+    <h1>Order Lookup</h1>
+    <form action="/lookup" method="post">
+      <input type="hidden" name="csrf_token" value="local-csrf-742">
+      <input type="hidden" name="request_source" value="invoice_portal">
+      <label>Order ID <input name="order_id" value=""></label>
+      <label>Region <select name="region"><option value="na">NA</option><option value="emea">EMEA</option></select></label>
+      <button type="submit">Search</button>
+    </form>
+    <p id="marker">FORM_PORTAL_READY</p>
+  </main>
+</body>
+</html>

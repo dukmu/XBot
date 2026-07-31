@@ -1,0 +1,21 @@
+You are grading short student responses with a fixed rubric.
+
+Read:
+- $WORKSPACE/in/rubric.md
+- $WORKSPACE/in/submissions/*.txt
+
+Create:
+- $WORKSPACE/out/grades.csv
+- $WORKSPACE/out/feedback/*.md
+
+Requirements for $WORKSPACE/out/grades.csv:
+- Header must be: submission_id,concept_score,evidence_score,clarity_score,total_score
+- Include one row for each submission.
+- Scores must follow rubric.md. concept_score max 4, evidence_score max 3, clarity_score max 3, total max 10.
+
+Requirements for $WORKSPACE/out/feedback/*.md:
+- Create one feedback markdown file per submission id, e.g. $WORKSPACE/out/feedback/submission_1.md.
+- Each file must mention at least one strength and one improvement.
+- Feedback must be specific to that submission.
+
+Do not use the network. Do not modify input files.

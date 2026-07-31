@@ -1,0 +1,41 @@
+services:
+  api:
+    image: ghcr.io/example/composeapp-api:latest
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "postgresql://composeapp:composeapp-dev@db:5432/composeapp"
+      REDIS_DSN: "${REDIS_URL:-redis://cache:6379/0}"
+      QUEUE_NAME: "default"
+      APP_DATA_DIR: "/tmp/data"
+    volumes:
+      - api-data:/var/lib/composeapp
+    depends_on:
+      - db
+      - cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/status"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+  worker:
+    image: ghcr.io/example/composeapp-worker:1.4.2
+    environment:
+      DATABASE_URL: "postgresql://composeapp:composeapp-dev@db:5432/composeapp"
+      REDIS_URL: "${REDIS_URL:-redis://cache:6379/0}"
+      QUEUE_NAME: "default"
+    depends_on:
+      db:
+        condition: service_started
+      cache:
+        condition: service_started
+  db:
+    image: postgres:16.2-alpine
+    environment:
+      POSTGRES_DB: composeapp
+      POSTGRES_USER: composeapp
+      POSTGRES_PASSWORD: composeapp-dev
+  cache:
+    image: redis:7.2-alpine
+volumes:
+  api-data:

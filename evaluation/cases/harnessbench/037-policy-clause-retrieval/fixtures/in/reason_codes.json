@@ -1,0 +1,21 @@
+{
+  "approve": [
+    "domestic_with_receipt",
+    "equipment_under_500_with_receipt",
+    "equipment_over_500_department_approved",
+    "packet_all_lines_approved"
+  ],
+  "needs_review": [
+    "international_over_cap",
+    "missing_itemized_receipt",
+    "client_meal_over_cap_review",
+    "domestic_over_cap_approval_missing",
+    "equipment_over_cap_unclear_purpose",
+    "mixed_packet_has_review_line"
+  ],
+  "deny": [
+    "alcohol_not_reimbursable",
+    "client_meal_over_cap_no_attendee_list",
+    "mixed_packet_has_denied_line"
+  ]
+}

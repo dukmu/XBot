@@ -1,0 +1,37 @@
+Task: Policy Version Conflict Resolution
+
+Use only the offline materials in `$WORKSPACE/in`. Do not use the internet or outside policy knowledge.
+
+Inputs:
+- `$WORKSPACE/in/version_rules.json`
+- `$WORKSPACE/in/cases/policy_questions.json`
+- `$WORKSPACE/in/policy_versions/*.md`
+
+Resolve each case by applying the version priority, effective dates, and scoped exceptions in `version_rules.json`.
+
+Create:
+
+1. `$WORKSPACE/out/policy_rulings.json`
+   - Top level must be a JSON array.
+   - Include exactly one item per `case_id`.
+   - Each item must include:
+     - `case_id`
+     - `decision`: exactly `approved`, `denied`, `needs_review`, or `insufficient_evidence`
+     - `applicable_policy`: relative path under `policy_versions/`, or empty/null for true insufficient evidence
+     - `evidence_id`: clause id or other location signal
+     - `quote_or_signal`: short evidence text
+     - `conflict_resolution`: object with `superseded_sources` array and `reason`
+     - `coverage_scope`
+     - `caveat`
+   - If evidence is insufficient, `decision` must be `insufficient_evidence`, and `caveat` must explain the missing policy fact.
+
+2. `$WORKSPACE/out/conflict_audit.csv`
+   - Header must be exactly:
+     `case_id,claim_axis,winning_source,losing_sources,priority_rule,coverage_scope`
+   - Cover all cases where an older policy, scoped memo, or addendum conflicts with another source.
+
+Rules:
+- Do not modify files under `$WORKSPACE/in`.
+- Do not fabricate policy terms.
+- Do not treat a scoped exception as global policy.
+- Do not use stale policy text when a newer effective source governs the case.

@@ -1,0 +1,9 @@
+task_id: "039-repo-architecture-map"
+title: "Repository Architecture Map"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1000
+difficulty: "hard"
+tags: ["software-engineering", "repo-understanding", "architecture", "doc-code-consistency", "deterministic", "hard"]

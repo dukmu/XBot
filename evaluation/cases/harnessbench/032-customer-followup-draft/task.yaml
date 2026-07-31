@@ -1,0 +1,14 @@
+task_id: "032-customer-followup-draft"
+title: "Draft A Customer Follow-Up Within Pricing And Commitment Boundaries"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "easy"
+tags:
+  - "office"
+  - "email"
+  - "crm"
+  - "sales"
+  - "deterministic"

@@ -1,0 +1,25 @@
+Task: image editing
+
+You have a photo of a cat at `$WORKSPACE/in/cat.jpg`.
+
+Using an image-generation tool (if available) or other means, produce two new images:
+
+1. **Style transfer:** render the cat in a clearly different art style (e.g. cartoon, oil, watercolor, pixel art).
+   Output: `$WORKSPACE/out/cat_styled.png`
+
+2. **Scene change:** place the cat in a new background/scene (e.g. moon surface, beach, space, study), keeping the cat recognizable.
+   Output: `$WORKSPACE/out/cat_scene.png`
+
+Also write `$WORKSPACE/out/description.txt` briefly covering:
+- which style/scene you used for each image
+- tools or prompts used (if any)
+
+After all three files exist, **end the conversation immediately**.
+
+Autograding focuses on:
+- both outputs exist and differ clearly from the source
+- style transfer visibly changes style
+- scene image changes background while preserving the cat
+- description.txt is substantive
+
+If `cat_styled.png`, `cat_scene.png`, and `description.txt` are present and meet the brief, stop—no extra tool chatter.

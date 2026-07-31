@@ -1,0 +1,7 @@
+[
+  {"id": "p-100", "name": "Atlas Migration", "owner_id": "u-1", "status": "active", "budget_usd": 12500},
+  {"id": "p-200", "name": "Beacon Cleanup", "owner_id": "u-2", "status": "paused", "budget_usd": 4300},
+  {"id": "p-300", "name": "Cipher Audit", "owner_id": "u-1", "status": "active", "budget_usd": 8100},
+  {"id": "p-300", "name": "Cipher Audit Duplicate", "owner_id": "u-1", "status": "active", "budget_usd": 8100},
+  {"id": "p-400", "name": "Delta Launch", "owner_id": "u-404", "status": "active", "budget_usd": 6200}
+]

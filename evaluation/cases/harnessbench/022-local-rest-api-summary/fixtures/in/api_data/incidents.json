@@ -1,0 +1,8 @@
+[
+  {"project_id": "p-100", "severity": "high", "open": true},
+  {"project_id": "p-100", "severity": "low", "open": false},
+  {"project_id": "p-200", "severity": "medium", "open": true},
+  {"project_id": "p-300", "severity": "high", "open": true},
+  {"project_id": "p-300", "severity": "medium", "open": true},
+  {"project_id": "p-999", "severity": "high", "open": true}
+]

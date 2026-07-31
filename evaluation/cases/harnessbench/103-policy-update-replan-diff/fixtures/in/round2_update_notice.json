@@ -1,0 +1,21 @@
+{
+  "notice_id": "PCR-2026-05-REFUND-17-LATE-2",
+  "received_at": "2026-05-16T08:30:00Z",
+  "changes": [
+    {
+      "change_id": "CHG-EU-DELAY",
+      "scope": "EU",
+      "constraint": "Move EU launch_gate at least 48 hours later than the original EU launch_gate. Move EU customer communications with it."
+    },
+    {
+      "change_id": "CHG-APAC-OWNER",
+      "scope": "APAC",
+      "constraint": "Priya is unavailable for this rollout. Use an approved APAC backup owner."
+    },
+    {
+      "change_id": "CHG-TRAINING-DRILL",
+      "scope": "ALL",
+      "constraint": "Every support_training decision must include the artifact refund exception drill."
+    }
+  ]
+}

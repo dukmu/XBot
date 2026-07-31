@@ -1,0 +1,23 @@
+The CSV filtering CLI in `$WORKSPACE/in/csvtool` has parsing bugs around quoted fields, empty results, and descending sort.
+
+Your job:
+- Run `python -m pytest tests` from `$WORKSPACE/in/csvtool`.
+- Fix the CLI implementation.
+- Add focused regression tests for the bug. A good place is `$WORKSPACE/in/csvtool/tests/test_cli_regression.py`.
+- Verify the full test suite passes.
+
+Required CLI behavior:
+- `python -m csvtool.cli samples/orders.csv --where status=paid --select id,total --sort -created_at`
+- Repeating `--where` applies all predicates with AND semantics, for example `--where status=paid --where total=750`.
+- CSV parsing and writing must preserve quoted commas correctly.
+- Empty result sets should still print the selected header and exit 0.
+- `--sort -field` means descending; `--sort field` means ascending. Numeric-looking values should sort numerically.
+- Bad `--where` expressions should exit non-zero with a clear message.
+- Selecting, sorting, or filtering on a missing field should exit non-zero with a clear message.
+
+Constraints:
+- Do not modify existing tests in `tests/test_cli_existing.py`.
+- Do not hard-code sample rows or fixture file paths.
+- Do not introduce pandas, click, or other external dependencies.
+- Do not parse CSV by splitting lines on commas.
+- Do not remove CLI options or bypass filtering.

@@ -1,0 +1,3 @@
+Restaurant Receipt DR-4410
+Employee: Leah Kim
+Dinner amount: 96.00

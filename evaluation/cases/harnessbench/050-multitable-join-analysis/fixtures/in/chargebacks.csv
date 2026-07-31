@@ -1,0 +1,5 @@
+chargeback_id,order_id,chargeback_date,amount,currency,status
+CB7001,O1004,2025-02-22,30.00,GBP,won_by_customer
+CB7002,O1007,2025-03-02,5.00,EUR,won_by_customer
+CB7003,O1010,2025-03-03,60.00,USD,won_by_customer
+CB7004,O1008,2025-03-04,25.00,USD,won_by_merchant

@@ -1,0 +1,43 @@
+You are the project coordinator for the Atlas launch.
+
+Inputs:
+- $WORKSPACE/in/transcript.txt
+- $WORKSPACE/in/transcript_part2.txt
+- $WORKSPACE/in/transcript_part3.txt
+- $WORKSPACE/in/followup_emails.md
+- $WORKSPACE/in/previous_actions.csv
+- $WORKSPACE/in/project_dependencies.json
+
+Write exactly these outputs:
+- $WORKSPACE/out/action_items.csv
+- $WORKSPACE/out/owner_followups.md
+- $WORKSPACE/out/merge_rationale.md
+
+action_items.csv requirements:
+- CSV header: action_id,owner,task,deadline,status,source
+- Include new actions from transcripts/emails and carry forward previous incomplete actions that remain open.
+- Merge updates into an existing incomplete action when it is the same work item.
+- Preserve existing action_id values for carried-forward or updated previous actions. Use NEW-<short-id> for genuinely new actions.
+- Apply explicit cancellation, completion, reassignment, and deadline changes from later sources. Source recency is: previous_actions.csv < transcript.txt < transcript_part2.txt < followup_emails.md < transcript_part3.txt.
+- Do not include previous completed actions as open work.
+- Use ISO dates YYYY-MM-DD.
+- Do not include cancelled or newly completed actions in action_items.csv.
+- For new actions introduced in the transcripts, use these IDs: compliance signoff checklist → NEW-01, security audit brief → NEW-02, customer quotes for launch brief → NEW-03.
+
+owner_followups.md requirements:
+- Group follow-ups by owner.
+- Mention each owner with open work and their deadlines.
+- For any action with status "pending" due to a dependency, explicitly note what it is blocked by.
+
+merge_rationale.md requirements:
+- Explain which previous actions were carried forward, updated, cancelled, reassigned, or completed.
+- Cite the source file for each decision.
+- Explain dependency-driven deadline changes and bulk reassignments/cancellations explicitly.
+- Do not modify input files.
+
+Additional requirements:
+- Read $WORKSPACE/in/project_dependencies.json and apply dependency rules.
+- If an action is blocked_by another open action, apply the specified rule (extend deadline or set status to pending).
+- Handle bulk updates (e.g., owner rolling off) by cancelling affected open actions. Reassign only if another owner has explicitly taken over the same work item in a later source.
+- When resource conflicts exist for an owner with multiple deadlines, apply the resolution rule only if all affected actions remain open and their deadlines fall within the conflicting window. If any affected action is completed or cancelled, the conflict does not apply.
+- The source field should record the file that made the last substantive change to the action. If the change was driven by a dependency rule or bulk update, you may use "project_dependencies.json" as the source.

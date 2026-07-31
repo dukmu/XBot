@@ -1,0 +1,30 @@
+Compare old and new metric definitions and report migration differences using only local files.
+
+Inputs:
+- $WORKSPACE/in/old_metric_definitions.md
+- $WORKSPACE/in/new_metric_definitions.md
+- $WORKSPACE/in/dashboard_before.csv
+- $WORKSPACE/in/dashboard_after.csv
+- $WORKSPACE/in/query_exports/old_results.csv
+- $WORKSPACE/in/query_exports/new_results.csv
+- $WORKSPACE/in/migration_policy.md
+
+Create:
+- $WORKSPACE/out/metric_migration_diff.csv
+- $WORKSPACE/out/regression_ledger.csv
+- $WORKSPACE/out/migration_summary.json
+- $WORKSPACE/out/caveats.md
+
+Rules:
+1. Do not modify fixtures.
+2. Compare every metric in old_results.csv or new_results.csv.
+3. metric_migration_diff.csv exact header:
+   metric_name,old_value,new_value,absolute_diff,relative_diff,expected_direction,classification
+4. Format values and diffs with exactly four decimals where numeric. Use blank for missing numeric values.
+5. classification must be one of: expected_definition_change, unexpected_regression, no_material_change, requires_review.
+6. regression_ledger.csv exact header:
+   metric_name,bad_field,policy_clause,severity
+7. migration_summary.json must contain: total_metrics, expected_definition_change_count, unexpected_regression_count, no_material_change_count, requires_review_count, largest_relative_diff_metric.
+8. caveats.md must mention non-comparable trend caveats for ARR and activation rate, and explain why retention is an unexpected regression.
+
+Do not use network access or external APIs.

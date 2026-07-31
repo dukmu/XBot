@@ -1,0 +1,20 @@
+Round 1 of 2: create the initial policy rollout plan.
+
+Read:
+- $WORKSPACE/in/policy_change_request.json
+- $WORKSPACE/in/regional_constraints.csv
+- $WORKSPACE/in/team_capacity.json
+- $WORKSPACE/in/communications_matrix.csv
+
+Create:
+- $WORKSPACE/out/original_plan.json
+- $WORKSPACE/out/state.json
+
+Requirements:
+- Plan the rollout for all regions in the request.
+- Use stable decision IDs so round 2 can revise only what changed.
+- Include workstreams for legal_review, support_training, customer_comms, and launch_gate.
+- Include owner, region, planned_start, planned_end, channel_or_artifact, dependencies, and evidence_refs for each decision.
+- Do not create $WORKSPACE/out/revised_plan.json or $WORKSPACE/out/diff.md in this round.
+- Do not modify input files.
+- This is a planning task only. Do not claim that notices, approvals, training, or production changes have already been executed.

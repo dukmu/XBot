@@ -1,0 +1,11 @@
+release_id,metric,value,window,sample_count
+checkout-api-2026.04.21-canary,error_rate_pct,0.48,30m,1800
+checkout-api-2026.04.21-canary,error_rate_pct,0.52,60m,3600
+checkout-api-2026.04.21-canary,p95_latency_ms,415,30m,1800
+checkout-api-2026.04.21-canary,p95_latency_ms,425,60m,3600
+checkout-api-2026.04.21-canary,checkout_success_pct,99.1,30m,1800
+checkout-api-2026.04.21-canary,checkout_success_pct,99.3,60m,3600
+checkout-api-2026.04.21-canary,cpu_pct,53,30m,1800
+checkout-api-2026.04.21-canary,cpu_pct,55,60m,3600
+checkout-api-2026.04.21-canary,payment_success_pct,98.8,60m,3600
+checkout-api-2026.04.21-canary,search_latency_ms,210,30m,40

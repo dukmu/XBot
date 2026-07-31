@@ -1,0 +1,9 @@
+term,risk_level,policy_basis,safe_rewrite_hint
+guaranteed ROI,High,CLAIM-2,qualify financial outcome
+never fails,High,CLAIM-1,remove absolute commitment
+risk-free,Medium,CLAIM-1,soften to low-friction
+HIPAA compliant,High,CLAIM-5,remove compliance claim
+bank-grade certified,High,CLAIM-4,remove certification claim
+cure,High,CLAIM-3,remove health outcome
+doubles revenue,High,CLAIM-2,qualify growth claim
+zero fees forever,Medium,CLAIM-6,remove permanent pricing promise

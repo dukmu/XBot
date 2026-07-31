@@ -1,0 +1,4 @@
+Document type: proof_of_address
+Customer: Blue Kite LLC
+Address: 90 Market Ave, Austin, TX
+Statement date: 2026-04-01

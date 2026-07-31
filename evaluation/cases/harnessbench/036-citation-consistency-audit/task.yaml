@@ -1,0 +1,9 @@
+task_id: "036-citation-consistency-audit"
+title: "Citation and Bibliography Consistency Audit"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 700
+difficulty: "medium"
+tags: ["information-retrieval", "citation-audit", "data-cleaning", "fact-checking", "medium"]

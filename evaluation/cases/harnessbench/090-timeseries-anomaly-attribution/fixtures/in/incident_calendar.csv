@@ -1,0 +1,4 @@
+event_id,event_type,service,region,start_ts,end_ts,description
+I-19,third_party,payments,eu-west,2026-04-20T09:45:00Z,2026-04-20T10:30:00Z,card processor latency
+I-20,third_party,checkout,us-east,2026-04-20T11:25:00Z,2026-04-20T11:50:00Z,cdn edge latency
+M-07,marketing,search,global,2026-04-20T10:45:00Z,2026-04-20T11:30:00Z,campaign tracking outage

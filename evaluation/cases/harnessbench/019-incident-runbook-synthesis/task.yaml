@@ -1,0 +1,15 @@
+task_id: "019-incident-runbook-synthesis"
+title: "Multi‑Source Production Incident Analysis and Safe Runbook Synthesis"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 1200
+tags:
+  - "incident-response"
+  - "runbook"
+  - "multi-document"
+  - "safety"
+  - "evidence-synthesis"
+  - "ops"

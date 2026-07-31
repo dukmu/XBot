@@ -1,0 +1,3 @@
+event_id,event_type,event_ts,amount_usd,source
+E007,purchase,2026-04-30T09:00:00Z,99.00,web
+E008,signup,2026-04-30T09:30:00Z,zero,web

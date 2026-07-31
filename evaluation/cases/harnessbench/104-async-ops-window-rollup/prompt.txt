@@ -1,0 +1,24 @@
+Process an asynchronous operations update stream.
+
+The runner will asynchronously inject JSON update files into $WORKSPACE/in/ops_updates/. Some initial files may already be present, and later files may arrive during execution. Poll $WORKSPACE/in/ops_updates/ for at least 30 seconds before finalizing.
+
+Read:
+- $WORKSPACE/in/window.json
+- $WORKSPACE/in/service_topology.json
+- JSON files appearing under $WORKSPACE/in/ops_updates/
+
+Create:
+- $WORKSPACE/out/ops_rollup.md
+- $WORKSPACE/out/seen_state.json
+- $WORKSPACE/out/update_ledger.csv
+
+Requirements:
+- Include only updates whose timestamp is within the inclusive window in $WORKSPACE/in/window.json.
+- Deduplicate by update_id. If a duplicate arrives, keep the first seen update and record the duplicate update_id.
+- Track ignored updates outside the time window.
+- Use service_topology.json to distinguish likely root components from downstream symptoms.
+- ops_rollup.md must include sections for incidents, blockers, healthy components, ignored updates, and duplicate updates.
+- seen_state.json must include window_start, window_end, seen_update_ids, duplicate_update_ids, ignored_update_ids, latest_by_component, poll_started_at, poll_finished_at, and minimum_poll_seconds_met.
+- update_ledger.csv must include update_id, component, timestamp, classification, status, and reason.
+- Do not modify input files. Do not use network access.
+- This is an analysis and recommendation task only. Do not claim that production actions were executed.

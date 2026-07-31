@@ -1,0 +1,12 @@
+{
+  "expected_issues": [
+    {"receipt_id": "R-001", "issue_contains": "hotel cap", "allowed_amount": "300.00"},
+    {"receipt_id": "R-002", "issue_contains": "dinner cap", "allowed_amount": "75.00"},
+    {"receipt_id": "R-004", "issue_contains": "duplicate", "allowed_amount": "0.00"},
+    {"receipt_id": "R-005", "issue_contains": "missing", "allowed_amount": "0.00"},
+    {"receipt_id": "R-006", "issue_contains": "breakfast cap", "allowed_amount": "25.00"}
+  ],
+  "missing_doc_receipts": ["R-005"],
+  "total_claimed": "1065.00",
+  "total_allowed": "448.50"
+}

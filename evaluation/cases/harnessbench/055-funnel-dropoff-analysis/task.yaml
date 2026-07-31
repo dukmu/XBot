@@ -1,0 +1,13 @@
+task_id: "055-funnel-dropoff-analysis"
+title: "Product funnel dropoff analysis from JSONL events"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "medium"
+tags:
+  - data-analysis
+  - jsonl
+  - funnel
+  - product-analytics

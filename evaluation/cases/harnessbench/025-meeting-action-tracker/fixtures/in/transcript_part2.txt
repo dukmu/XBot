@@ -1,0 +1,6 @@
+Atlas launch sync part 2, 2026-06-04.
+
+Owen: The sandbox checklist depends on partner credentials. Please move that deadline to 2026-06-10; I still own it.
+Jules: Legal confirmed the DPA language is already covered in the standard addendum, so cancel the privacy review action.
+Sam: The launch blog draft is finished and merged into the content pack.
+Sam: I will prepare the compliance signoff checklist by 2026-06-12.

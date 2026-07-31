@@ -1,0 +1,41 @@
+Task: Resolve Conflicting Sources
+
+The files in `$WORKSPACE/in/briefs/` contain multiple briefs about Project Kestrel. Some facts conflict. Use only the offline materials to resolve the launch-readiness facts.
+
+In general, apply the following source-priority order. If a higher-priority source only covers a local or scoped fact, use it only within that coverage scope:
+
+1. signed_regulator_notice
+2. audited_finance_extract
+3. operations_log
+4. signed vendor/contract addenda
+5. press_release
+6. social_digest
+
+Create these outputs:
+
+1. `$WORKSPACE/out/resolved_facts.json`
+   - Required fields: `project_status`, `approved_budget_musd`, `launch_date`, `customer_count`, `primary_vendor`, `service_scope`, `scope_exception`, and `evidence`.
+   - `evidence` must be an array. Each item must contain `fact_key`, `source_file`, `quote_or_signal`, and `priority_reason`.
+   - `source_file` must use a strict relative path from `$WORKSPACE/in/`, such as `briefs/signed_regulator_notice.md`; do not use only the filename.
+   - When a lower-priority source conflicts with a higher-priority source, use the higher-priority source.
+   - For `service_scope`, distinguish the contract-planned scope from the regulator-authorized launch-day scope. If a higher-priority source only covers launch-day authorization, the final fact must reflect that scoped coverage.
+
+2. `$WORKSPACE/out/uncertainties.md`
+   - Clearly list facts that cannot be confirmed.
+   - Include at least three entries and explain why the available materials are insufficient.
+
+3. `$WORKSPACE/out/conflict_matrix.csv`
+   - Header must be `fact_key,winning_source,losing_sources,resolution_rationale,coverage_scope`.
+   - Cover at least five conflict or scoped-coverage areas: launch date, budget, vendor, customer count, and service scope.
+   - `coverage_scope` must explain whether the winning source covers a global fact, a budget fact, launch-day authorization, contract-planned scope, or another specific scope.
+
+4. `$WORKSPACE/out/source_reliability.json`
+   - JSON array, one item per source used or rejected.
+   - Each item must include `source_file`, `priority_rank`, `coverage_scope`, `used_for`, `rejected_claims`, and `reliability_note`.
+   - Explain scoped authority clearly, especially where regulator authorization and contract-planned service differ.
+
+5. `$WORKSPACE/out/decision_log.md`
+   - A concise chronological explanation of how conflicts were resolved.
+   - Include at least one paragraph on launch-day scope versus contract-planned scope, and one paragraph on why low-priority rumors were rejected.
+
+Forbidden: do not use the internet; do not modify fixtures; do not adopt lower-priority rumors as final facts.

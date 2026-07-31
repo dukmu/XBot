@@ -1,0 +1,32 @@
+[
+  {
+    "artifact_id": "art-1",
+    "dataset_id": "ds-001",
+    "kind": "csv"
+  },
+  {
+    "artifact_id": "art-2",
+    "dataset_id": "ds-001",
+    "kind": "json"
+  },
+  {
+    "artifact_id": "art-3",
+    "dataset_id": "ds-002",
+    "kind": "csv"
+  },
+  {
+    "artifact_id": "art-3",
+    "dataset_id": "ds-002",
+    "kind": "csv"
+  },
+  {
+    "artifact_id": "art-4",
+    "dataset_id": "ds-999",
+    "kind": "log"
+  },
+  {
+    "artifact_id": "art-5",
+    "dataset_id": "ds-003",
+    "kind": "yaml"
+  }
+]

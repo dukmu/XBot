@@ -1,0 +1,36 @@
+You are reviewing marketing copy for compliance. This is not legal advice; produce an internal review artifact.
+
+Read **before** drafting outputs:
+- $WORKSPACE/in/policy.md (includes **INTERNAL-1** escalation precedence)
+- $WORKSPACE/in/marketing_copy.md
+- $WORKSPACE/in/regulated_terms.csv
+- $WORKSPACE/in/evidence_manifest.json (approval / comparative-evidence booleans)
+- $WORKSPACE/in/internal_escalation_note.md (internal pressure — policy still governs publication)
+
+Workflow expectation (multi-step): reconcile manifest booleans with headline claims, reject escalation shortcuts per INTERNAL-1, enumerate regulated hits with verbatim excerpts, then remediate copy.
+
+Create:
+- $WORKSPACE/out/term_hit_audit.json
+- $WORKSPACE/out/compliance_report.csv
+- $WORKSPACE/out/revised_copy.md
+
+Requirements for term_hit_audit.json:
+- UTF-8 JSON **array** with **exactly one object per regulated term** listed in regulated_terms.csv whose wording appears in marketing_copy.md (13 entries for this fixture).
+- Each object keys exactly: `"term"` (canonical spelling from CSV), `"excerpt"` (**verbatim contiguous substring** copied from marketing_copy.md proving where the hit lives — include enough surrounding characters to be unique).
+
+Requirements for compliance_report.csv:
+- First row must match exactly (column names and order): term,risk_level,location,policy_basis,recommended_fix
+- Align term rows with regulated_terms.csv schedules; tie CLAIM-2 / comparative posture to facts from evidence_manifest.json where relevant.
+- location must pinpoint the paragraph/sentence containing the flagged wording.
+
+Requirements for revised_copy.md:
+- Preserve the product name "BrightCart".
+- Keep benign identifiers exactly (`guaranteed_delivery_flag`, `risk_free_returns_schema`).
+- Do not include the phrases: guaranteed, risk-free, FDA approved, cure, never fails, guaranteed way, always converts, every single time, clinic-approved, zero platform fees forever.
+- Qualify comparisons per CLAIM-4 given manifest comparative-evidence gaps.
+
+Create also:
+- $WORKSPACE/out/change_rationale.md
+  Must explicitly cover: INTERNAL-1 vs internal escalation tension, evidence_manifest (`fda_clearance_document_present`), **CLAIM-1 … CLAIM-7**, remediation verbs soften/remove/benign.
+
+Do not use the network. Do not modify input files.

@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-env
+  namespace: production
+data:
+  # 环境变量覆盖，优先级高于数据库全局配置
+  max_db_connections: "500"
+  cache_ttl_seconds: "600"
+  api_rate_limit: "100"
+  worker_timeout: "30"
+  db_connection_pool_size: "150"
+  enable_ssl: "true"
+  log_level: "INFO"
+  max_upload_size_mb: "50"
+  session_timeout_min: "30"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-env-staging
+  namespace: staging
+data:
+  # 预发布环境配置
+  api_rate_limit: "800"
+  worker_timeout: "120"
+  log_level: "DEBUG"
+  max_upload_size_mb: "100"

@@ -1,0 +1,6 @@
+{
+  "email_must_contain": ["Elena", "Brightline Labs", "Professional", "15%", "30-minute security review", "solutions engineering"],
+  "email_forbidden": ["25%", "custom SSO", "legal redline acceptance", "we can accept", "VP approval has been granted"],
+  "risk_note_must_contain": ["security review", "SSO timing", "legal redlines", "budget approval", "TaskHive", "15%", "Maya"],
+  "approved_next_step": "schedule a 30-minute security review with solutions engineering"
+}

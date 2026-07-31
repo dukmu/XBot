@@ -1,0 +1,1 @@
+DSAR-003: verified requester. Billing dispute BD-7781 and chargeback CB-920 remain open. Internal analyst note: possible refund abuse pattern. Do not disclose this note.

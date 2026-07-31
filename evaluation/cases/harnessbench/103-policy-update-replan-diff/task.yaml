@@ -1,0 +1,19 @@
+task_id: "103-policy-update-replan-diff"
+title: "Policy Rollout Plan Revision with Diff"
+class: "Long-running Autonomy & State Adaptation"
+prompt_files:
+  - "prompt_round1.txt"
+  - "prompt_round2.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 540
+difficulty: "hard"
+tags:
+  - "long-running-autonomy"
+  - "multi-round"
+  - "state-management"
+  - "replanning"
+  - "diff"
+  - "operations"
+  - "deterministic"

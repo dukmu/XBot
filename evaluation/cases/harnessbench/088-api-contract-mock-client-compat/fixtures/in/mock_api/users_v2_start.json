@@ -1,0 +1,1 @@
+{"data":[{"userId":"u1","profile":{"displayName":"Ada Lovelace","email":"ada@example.com"},"subscription":{"plan":"pro"}},{"userId":"u2","profile":{"displayName":"Noor Khan","email":null},"subscription":{"plan":"free"}}],"nextCursor":"c2"}

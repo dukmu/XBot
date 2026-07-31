@@ -1,0 +1,14 @@
+term,risk_level,policy_basis
+always converts,high,CLAIM-1
+clinic-approved,medium,CLAIM-6
+cure,high,CLAIM-3
+double repeat purchases,medium,CLAIM-1
+every single time,high,CLAIM-1
+FDA approved,high,CLAIM-2
+faster,medium,CLAIM-4
+guaranteed,high,CLAIM-1
+guaranteed_delivery_flag,low,CLAIM-5
+never fails,high,CLAIM-1
+risk-free,high,CLAIM-1
+risk_free_returns_schema,low,CLAIM-5
+zero platform fees forever,high,CLAIM-7

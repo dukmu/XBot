@@ -1,0 +1,102 @@
+{
+  "expected_actions": [
+    {
+      "action_id": "AT-101",
+      "owner": "Rita",
+      "task_contains": "pricing FAQ",
+      "deadline": "2026-06-07",
+      "status": "open",
+      "source_matches": [
+        "followup_emails.md",
+        "transcript_part3.txt",
+        "transcript.txt"
+      ]
+    },
+    {
+      "action_id": "AT-104",
+      "owner": "Owen",
+      "task_contains": "sandbox access checklist",
+      "deadline": "2026-06-13",
+      "status": "open",
+      "source_matches": [
+        "project_dependencies.json",
+        "transcript_part3.txt",
+        "transcript_part2.txt"
+      ]
+    },
+    {
+      "action_id": "NEW-01",
+      "owner": "Sam",
+      "task_contains": "compliance signoff checklist",
+      "deadline": "2026-06-12",
+      "status": "open",
+      "source_matches": [
+        "transcript_part2.txt",
+        "followup_emails.md",
+        "transcript_part3.txt"
+      ]
+    },
+    {
+      "action_id": "NEW-02",
+      "owner": "Sam",
+      "task_contains": "security audit brief",
+      "deadline": "2026-06-13",
+      "status": "open",
+      "source_matches": [
+        "transcript_part3.txt"
+      ]
+    },
+    {
+      "action_id": "NEW-03",
+      "owner": "Mina",
+      "task_contains": "customer quotes",
+      "deadline": "2026-06-11",
+      "status": "open",
+      "source_matches": [
+        "transcript_part3.txt",
+        "transcript.txt"
+      ]
+    },
+    {
+      "action_id": "AT-106",
+      "owner": "Alex",
+      "task_contains": "partner onboarding session",
+      "deadline": "2026-06-14",
+      "status": "pending",
+      "source_matches": [
+        "transcript_part3.txt",
+        "project_dependencies.json"
+      ]
+    }
+  ],
+  "forbidden_task_contains": [
+    "dashboard screenshot",
+    "privacy review",
+    "DPA language",
+    "launch blog"
+  ],
+  "owners": [
+    "Rita",
+    "Owen",
+    "Mina",
+    "Sam",
+    "Alex"
+  ],
+  "rationale_terms": [
+    "AT-101",
+    "reassign",
+    "AT-103",
+    "cancel",
+    "AT-104",
+    "deadline",
+    "AT-105",
+    "complete",
+    "followup_emails.md",
+    "dependency",
+    "blocked",
+    "Jules",
+    "bulk",
+    "AT-106",
+    "pending"
+  ]
+}

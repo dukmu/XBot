@@ -1,0 +1,30 @@
+Task: Policy Clause Retrieval and Case Rulings
+
+Inputs:
+- `$WORKSPACE/in/policy_manual.md`
+- `$WORKSPACE/in/cases.json`
+- `$WORKSPACE/in/policy_amendment.md`
+- `$WORKSPACE/in/reason_codes.json`
+
+Use the policy manual, amendment, and canonical reason-code registry to rule on every case, and write `$WORKSPACE/out/case_rulings.json`.
+The amendment supersedes the base manual where it is more specific. Mixed packets must be ruled at both line-item and case levels.
+
+Output format:
+- The top level must be a JSON array.
+- Each element must contain: `case_id`, `applicable_clause`, `decision`, `reason_code`, `quote_or_signal`, `secondary_clauses`, `blocking_condition`, and `missing_information`.
+- `applicable_clause` must use a clause number from the manual, such as `TR-2`.
+- `secondary_clauses` must be an array. If an exception clause also affects the ruling, include that clause number; otherwise use an empty array.
+- `decision` must be one of `approve`, `deny`, or `needs_review`.
+- `reason_code` must be a short machine-readable code, such as `domestic_with_receipt`.
+- Use the canonical reason codes; do not invent synonymous codes.
+- `blocking_condition` must explain the key condition causing a `deny` or `needs_review` decision; for `approve`, it may be an empty string.
+- `missing_information` must be an array. If the ruling depends on missing or conflicting approval, receipt, attendee-list, or business-purpose information, list the missing items; otherwise use an empty array.
+- For cases with `line_items`, include `line_item_rulings`, an array where each item has `line_id`, `applicable_clause`, `decision`, `reason_code`, `quote_or_signal`, `secondary_clauses`, `blocking_condition`, and `missing_information`.
+- For mixed packets, the case-level decision must follow AM-2 aggregation, while each line item must preserve its own applicable clause and reason code.
+
+Also write `$WORKSPACE/out/ruling_summary.csv` with header:
+`case_id,case_decision,denied_lines,review_lines,approved_lines,controlling_clause,summary_reason`
+
+The summary must include every case, including single-line cases. Use zero counts where a case has no explicit `line_items`.
+
+Forbidden: do not use the internet; do not modify fixtures; do not ignore exception clauses.

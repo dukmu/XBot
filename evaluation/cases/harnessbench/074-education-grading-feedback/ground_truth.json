@@ -1,0 +1,10 @@
+{
+  "grades_path": "out/grades.csv",
+  "feedback_dir": "out/feedback",
+  "expected_scores": {
+    "submission_1": {"concept_score": 4, "evidence_score": 3, "clarity_score": 3, "total_score": 10},
+    "submission_2": {"concept_score": 1, "evidence_score": 1, "clarity_score": 2, "total_score": 4},
+    "submission_3": {"concept_score": 2, "evidence_score": 2, "clarity_score": 2, "total_score": 6}
+  },
+  "feedback_required_terms": ["strength", "improvement"]
+}

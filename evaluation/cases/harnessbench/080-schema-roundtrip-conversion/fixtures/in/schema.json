@@ -1,0 +1,25 @@
+{
+  "fields": {
+    "active": "boolean",
+    "name": "string",
+    "note": "string|null",
+    "quantity": "integer",
+    "record_id": "string",
+    "tags": "array[string]"
+  },
+  "required": [
+    "record_id",
+    "name",
+    "quantity",
+    "active",
+    "tags",
+    "note"
+  ],
+  "sort_by": "record_id",
+  "source_priority": [
+    "json",
+    "yaml",
+    "csv",
+    "markdown"
+  ]
+}

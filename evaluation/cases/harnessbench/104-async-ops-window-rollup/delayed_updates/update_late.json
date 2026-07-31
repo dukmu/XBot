@@ -1,0 +1,8 @@
+{
+  "update_id": "UP-LATE",
+  "timestamp": "2026-05-04T02:05:00Z",
+  "component": "notification-worker",
+  "status": "degraded",
+  "severity": "warning",
+  "message": "Late post-window notification lag."
+}

@@ -1,0 +1,36 @@
+You are the launch operations lead for a small B2B product release.
+
+Read these offline input files:
+- $WORKSPACE/in/product.md
+- $WORKSPACE/in/budget.csv
+- $WORKSPACE/in/audience.json
+
+Create exactly these outputs:
+- $WORKSPACE/out/launch_plan.md
+- $WORKSPACE/out/content_pack.json
+- $WORKSPACE/out/launch_checklist.csv
+
+Requirements for $WORKSPACE/out/launch_plan.md:
+- Include sections named: Objectives, Audience, Budget, Timeline, Dependencies, Compliance, Risks.
+- Mention all three audience segments from audience.json.
+- Include a timeline with these milestone dates: 2026-05-01, 2026-05-10, 2026-05-15, 2026-05-20.
+- Keep total planned spend at or below the approved budget in budget.csv.
+- Include the phrase "offline webinar" and do not promise live product availability before 2026-05-20.
+- Reserve budget for compliance_review before expanding paid social.
+- Do not target unavailable audience segments except to explain why they are excluded.
+- Do not promise the mobile app integration or general availability before the release date.
+
+Requirements for $WORKSPACE/out/content_pack.json:
+- Valid JSON object with keys: tagline, email_subjects, social_posts, webinar_agenda, segment_messages.
+- email_subjects must contain at least 3 strings.
+- social_posts must contain at least 3 strings.
+- webinar_agenda must contain at least 4 agenda items.
+- segment_messages must include one message for each segment id from audience.json.
+- For unavailable segments, segment_messages must mark the segment excluded or not targeted rather than inventing launch copy.
+
+Requirements for $WORKSPACE/out/launch_checklist.csv:
+- Header: item,owner,due_date,dependency,status
+- Include compliance approval, webinar registration page, claims list, sales enablement, and launch day readiness.
+- Dependencies must reflect the offline source constraints.
+
+Do not use the network. Do not modify input files.

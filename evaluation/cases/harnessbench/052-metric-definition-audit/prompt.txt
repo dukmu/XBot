@@ -1,0 +1,31 @@
+Audit a dashboard export against the approved metric definitions.
+
+Inputs:
+- $WORKSPACE/in/metric_definitions.md
+- $WORKSPACE/in/dashboard_export.csv
+
+Create:
+- $WORKSPACE/out/metric_audit.csv
+- $WORKSPACE/out/equivalence_audit.json
+
+Output columns, in this exact order:
+metric_name,dashboard_formula,approved_formula,affected_field,severity
+
+Rules:
+1. Do not modify fixtures.
+2. Include only metrics whose dashboard formula conflicts with the approved definition.
+3. Do not flag metrics that match the approved definition semantically. Apply the equivalent formula notes in metric_definitions.md before deciding a metric conflicts.
+4. severity must be high for revenue, conversion, or cohort-retention denominator errors; medium for average/latency/window or operational SLA denominator errors; and low otherwise.
+5. Copy `dashboard_formula`, `approved_formula`, and `affected_field` text directly from the source files for conflicting metrics.
+6. metric_audit.csv must be valid CSV. Quote fields that contain commas.
+
+equivalence_audit.json requirements:
+- Valid JSON with keys: mismatched_metrics, semantically_matching_metrics, severity_by_metric, reason_class_by_metric.
+- mismatched_metrics must be the sorted metric names included in metric_audit.csv.
+- semantically_matching_metrics must be the sorted metric names that appear in the dashboard export but should not be flagged because they match semantically after applying equivalence notes.
+- severity_by_metric must map each mismatched metric name to its severity.
+- reason_class_by_metric must map every metric in the dashboard export, including semantically matching metrics, to exactly one of these labels:
+  semantically_equivalent, revenue_formula_mismatch, denominator_mismatch, time_basis_mismatch, window_mismatch, field_mismatch, distinctness_mismatch, missing_filter.
+- Use `time_basis_mismatch` when an average, latency, or duration metric measures the wrong lifecycle interval by substituting timestamp fields, even though this also changes field names. Reserve `field_mismatch` for non-time fields such as opted_in_users versus email_opted_in_users.
+
+Do not use network access or external APIs.

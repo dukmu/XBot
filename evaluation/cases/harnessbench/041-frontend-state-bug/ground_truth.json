@@ -1,0 +1,9 @@
+{
+  "expected_exports": ["createCart", "addItem", "updateQuantity", "removeItem", "getSubtotal", "undo", "redo", "serializeCart", "restoreCart", "createSubtotalSelector", "applyCoupon"],
+  "required_state_terms": ["schemaVersion", "coupon", "discount", "history", "future", "applyCoupon"],
+  "forbidden_terms": ["JSON.parse(JSON.stringify", "lodash", "immer", "fetch(", "axios"],
+  "scoring": {
+    "weights": {"node_tests": 0.30, "hidden_state_invariants": 0.40, "implementation_quality": 0.15, "test_integrity": 0.15},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "version": "2.4.0",
+  "date": "2025-10-14",
+  "commits": [
+    {"hash": "a1b2c3d", "type": "added", "issue": "ISSUE-101", "message": "Add webhook signatures for outbound events"},
+    {"hash": "b2c3d4e", "type": "fixed", "issue": "ISSUE-102", "message": "Fix duplicate invoice rows in CSV export"},
+    {"hash": "c3d4e5f", "type": "changed", "issue": "ISSUE-103", "message": "Rename usage endpoint response field from units to billable_units"},
+    {"hash": "d4e5f6a", "type": "security", "issue": "ISSUE-104", "message": "Stop accepting legacy token query parameter"},
+    {"hash": "e5f6a7b", "type": "added", "issue": "ISSUE-101", "message": "Document webhook signature verification examples"},
+    {"hash": "f6a7b8c", "type": "fixed", "issue": "ISSUE-105", "message": "Fix export timezone label"},
+    {"hash": "a7b8c9d", "type": "revert", "issue": "ISSUE-105", "message": "Revert export timezone label fix before release"},
+    {"hash": "c9d0e1f", "type": "changed", "issue": "ISSUE-106", "message": "Rename rate limit reset field from retryAfter to retry_after_ms"},
+    {"hash": "d0e1f2a", "type": "fixed", "issue": "ISSUE-107", "message": "Fix beta dashboard export casing"},
+    {"hash": "e1f2a3b", "type": "revert", "issue": "ISSUE-107", "message": "Revert beta dashboard export casing before release"},
+    {"hash": "b8c9d0e", "type": "security", "issue": "SEC-EMBARGO-9", "message": "Security hardening details embargoed until advisory publication"},
+    {"hash": "f2a3b4c", "type": "added", "issue": "ISSUE-108", "message": "Add audit log export API"},
+    {"hash": "a3b4c5d", "type": "defer", "issue": "ISSUE-108", "message": "Defer audit log export API to 2.5.0 after release-candidate validation"},
+    {"hash": "b4c5d6e", "type": "docs", "issue": "ISSUE-109", "message": "Document usage endpoint migration examples"},
+    {"hash": "c5d6e7f", "type": "changed", "issue": "ISSUE-110", "message": "Rename webhook signature header to X-Webhook-Signature"},
+    {"hash": "d6e7f8a", "type": "fixed", "issue": "ISSUE-102", "message": "Add regression test for duplicate invoice CSV rows"},
+    {"hash": "e7f8a9b", "type": "security", "issue": "SEC-PUBLIC-4", "message": "Publish public advisory for session fixation mitigation"}
+  ]
+}

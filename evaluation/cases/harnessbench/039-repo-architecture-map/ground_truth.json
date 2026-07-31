@@ -1,0 +1,66 @@
+{
+  "expected_modules": [
+    "minisvc.cli",
+    "minisvc.api.handlers",
+    "minisvc.api.routes",
+    "minisvc.storage.repo",
+    "minisvc.models",
+    "minisvc.config",
+    "minisvc.audit"
+  ],
+  "expected_entry_points": ["minisvc.cli:main", "minisvc.api.routes:register_routes"],
+  "expected_edges": [
+    ["minisvc.cli", "minisvc.config"],
+    ["minisvc.cli", "minisvc.storage.repo"],
+    ["minisvc.api.routes", "minisvc.api.handlers"],
+    ["minisvc.api.handlers", "minisvc.storage.repo"],
+    ["minisvc.api.handlers", "minisvc.audit"],
+    ["minisvc.storage.repo", "minisvc.models"]
+  ],
+  "expected_typed_edges": [
+    {"from": "minisvc.cli", "to": "minisvc.config", "types": ["imports", "calls", "reads_config"]},
+    {"from": "minisvc.cli", "to": "minisvc.storage.repo", "types": ["imports", "instantiates", "calls"]},
+    {"from": "minisvc.api.routes", "to": "minisvc.api.handlers", "types": ["imports", "calls"]},
+    {"from": "minisvc.api.handlers", "to": "minisvc.storage.repo", "types": ["imports", "instantiates", "calls"]},
+    {"from": "minisvc.api.handlers", "to": "minisvc.audit", "types": ["imports", "calls", "persists_to"]},
+    {"from": "minisvc.storage.repo", "to": "minisvc.models", "types": ["imports"]}
+  ],
+  "expected_functions": [
+    "main",
+    "load_settings",
+    "register_routes",
+    "create_order",
+    "get_order",
+    "order_event",
+    "OrderRepository.save",
+    "OrderRepository.get"
+  ],
+  "expected_edge_types": ["imports", "calls", "instantiates", "reads_config", "persists_to"],
+  "required_runtime_flow_terms": ["cli", "load_settings", "init_schema", "post /orders", "create_order", "repo.save", "order_event"],
+  "runtime_flow_sequences": [
+    ["cli", "load_settings", "init_schema"],
+    ["post /orders", "create_order", "repo.save", "order_event"]
+  ],
+  "required_markdown_terms": ["entry point", "data flow", "OrderRepository", "SQLite", "create_order", "register_routes", "runtime flow", "audit"],
+  "discrepancy_required_columns": ["claim", "doc_source", "code_evidence", "assessment", "risk"],
+  "discrepancy_terms": ["readonly", "retry", "audit", "contradicted", "unsupported", "handlers.py", "repo.py"],
+  "discrepancy_expectations": [
+    {"claim_terms": ["readonly"], "assessment": "contradicted", "evidence_terms": ["repo.py"]},
+    {"claim_terms": ["retry"], "assessment": "contradicted", "evidence_terms": ["repo.py"]},
+    {"claim_terms": ["audit"], "assessment": "contradicted", "evidence_terms": ["audit.py"]}
+  ],
+  "risk_register_required_columns": ["risk_id", "area", "evidence", "impact", "mitigation", "owner_hint"],
+  "risk_register_terms": ["storage", "audit", "config", "validation", "repo.py", "handlers.py", "audit.py", "mitigation"],
+  "onboarding_terms": ["read order", "local", "test", "debug", "breakpoint", "safe first", "runtime", "__init__"],
+  "scoring": {
+    "weights": {
+      "module_map": 0.35,
+      "architecture_md": 0.18,
+      "doc_code_discrepancies": 0.14,
+      "risk_register": 0.13,
+      "onboarding_plan": 0.08,
+      "fixture_integrity": 0.12
+    },
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

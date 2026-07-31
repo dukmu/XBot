@@ -1,0 +1,18 @@
+In **`$WORKSPACE`**, work with CSV, PDF, and Word template inputs and produce a **JSON rollup** and a **formal Word report**.
+
+**Inputs (already at workspace root):**
+
+- **`sales.csv`**: columns `region`, `category`, `amount`, `status` (`amount` is a positive integer).
+- **`policy.pdf`**: aggregation rules (read and follow).
+- **`template.docx`**: notes and reference wording (optional; final report layout may differ).
+
+**Required:**
+
+1. Read **`policy.pdf`** and apply **POLICY-2024-Q3** to **`sales.csv`**: exclude rows whose `status` is **`return`** from regional totals; for remaining rows, sum **`amount`** by **`region`**.
+2. Create **`$WORKSPACE/out`**.
+3. Write **`$WORKSPACE/out/summary.json`** (UTF-8 JSON object) with fields:
+   - **`policy_id`**: string matching the policy id in `policy.pdf`.
+   - **`exclude_status`**: the excluded `status` value (string).
+   - **`totals_by_region`**: object mapping region name → summed amount (number).
+   - **`grand_total`**: company-wide total (number).
+4. Write **`$WORKSPACE/out/report.docx`**: formal memo that **cites** policy id **POLICY-2024-Q3**, and states **per-region subtotals** and **company total** (numbers must match `summary.json`).

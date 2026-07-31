@@ -1,0 +1,9 @@
+task_id: "048-release-note-changelog"
+title: "Release Notes and Changelog Generation"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "easy"
+tags: ["software-engineering", "release", "changelog", "json-artifact", "deterministic"]

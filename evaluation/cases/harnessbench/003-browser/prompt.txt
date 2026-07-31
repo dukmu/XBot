@@ -1,0 +1,5 @@
+Open the page at `$MOCK_PAGE`, read the visible text on the page that is directly relevant to this benchmark, and save your excerpt to `$WORKSPACE/out/page_extract.txt`.
+
+Requirements:
+- Write at least one line.
+- The excerpt must include the page’s key marker text.

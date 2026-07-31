@@ -1,0 +1,14 @@
+task_id: "028-email-thread-merge"
+title: "Merge Duplicated And Forwarded Email Threads"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "office"
+  - "email"
+  - "threading"
+  - "dedupe"
+  - "deterministic"

@@ -1,0 +1,16 @@
+The small JavaScript cart state module in `$WORKSPACE/in/cart-ui/src/cartState.js` has state bugs: quantity updates mutate shared state, invalid quantities leak through, memoized selectors can go stale, and persisted carts can share arrays.
+
+Your job:
+- Fix the implementation in `$WORKSPACE/in/cart-ui/src/cartState.js`.
+- Do not edit `$WORKSPACE/in/cart-ui/src/cartState.test.js`.
+- Make `node $WORKSPACE/in/cart-ui/src/cartState.test.js` pass.
+- Preserve the public function names and CommonJS exports.
+- Add the expected undo/redo, persistence, selector, and coupon helpers without changing the test file.
+- Keep updates immutable; old cart snapshots must remain usable.
+- Add `applyCoupon(cart, code, discountCentsByCode)` as a CommonJS export. Applying a known code should reduce subtotal by that fixed cent amount but never below zero; unknown codes must throw `ValueError`/`Error` with a message mentioning coupon/code.
+- Persist carts with a schema version. `restoreCart` must support current serialized carts and legacy v1 payloads shaped like `{"items":[...],"coupon":...}` by migrating them into the current cart shape without sharing arrays or item objects.
+- Hidden checks will also exercise repeated operation sequences, deep item copying, selector freshness after restore, and undo/redo future clearing.
+- Hidden checks may mutate an original input item after `addItem`; carts must not retain that external object by reference.
+- Hidden checks will also exercise coupon application across undo/redo and serialization round trips.
+
+Do not introduce external dependencies or network calls.

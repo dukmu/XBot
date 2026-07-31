@@ -1,0 +1,10 @@
+{
+  "case_id": "A-05",
+  "appeal_filed": "2026-02-18",
+  "original_action": "3-day suspension",
+  "content_summary": "Single heated reply tagged another user twice, calling them incompetent; no threats and no protected-class slurs.",
+  "appeal": "I deleted the reply and will not contact them again.",
+  "prior_harass_strikes": 1,
+  "automated_scores": {"harass_risk": 0.71},
+  "reporter": "private_user_111"
+}

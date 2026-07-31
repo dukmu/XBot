@@ -1,85 +1,103 @@
-# XBot Inspect Adapter
+# XBot Inspect Evaluation
 
-This directory is an independent [Inspect AI](https://inspect.aisi.org.uk/)
-evaluation project. It launches XBot through its public ACP command and does not
-import or modify XBot internals.
+This is an independent Inspect AI project. It evaluates XBot through the public
+ACP command and does not import XBot runtime internals.
 
-## Smoke Run
+## Setup
 
 From the repository root:
 
 ```bash
 uv sync --project evaluation
-MINIMAX_API_TOKEN=... \
-uv run --project evaluation inspect eval evaluation/tasks/smoke.py \
-  --model none \
-  --ctl-server false \
-  --log-dir evaluation/results/runs
 ```
 
-The task creates a local Inspect sandbox, starts:
+The runner reads the selected provider from `XBotv2/data/config/providers.yaml`.
+Provide the API key through the environment variable named by that provider.
 
-```text
-xbot acp --data-dir XBotv2/data --provider minimax --no-plugins
-```
+## Full HarnessBench
 
-and sends one prompt over ACP. The expected score is `1`.
-
-The following environment variables select another installed XBot or provider:
-
-| Variable | Default |
-| --- | --- |
-| `XBOT_EVAL_COMMAND` | repository `.venv/bin/xbot` |
-| `XBOT_EVAL_DATA_DIR` | repository `XBotv2/data` |
-| `XBOT_EVAL_PROVIDER` | `minimax` |
-
-Provider credentials are deliberately passed explicitly by each task. The smoke
-task currently forwards only `MINIMAX_API_TOKEN`.
-
-## HarnessBench Subset
-
-The research subset contains four tasks copied from
-[Qihoo360/harness-bench](https://github.com/Qihoo360/harness-bench) and one
-XBot-specific background-shell task:
-
-- code repair with pytest closure;
-- interrupted work and stateful resume;
-- cancellation and temporary-artifact cleanup;
-- partial-batch failure and idempotent resume;
-- background shell completion, notification, and terminal-state inspection.
-
-Run the five samples serially so that provider limits and session traces remain
-easy to compare:
+Run all 106 tasks with four concurrent samples:
 
 ```bash
-MINIMAX_API_TOKEN=... \
-uv run --project evaluation inspect eval \
-  evaluation/tasks/harnessbench_subset.py \
-  --model none \
-  --max-samples 1 \
-  --ctl-server false \
-  --log-dir evaluation/results/runs
+uv run --project evaluation python evaluation/run_harnessbench.py \
+  --name harnessbench-$(date +%Y%m%d-%H%M%S) \
+  -j 4
 ```
 
-Each Inspect sample gets a fresh local temporary workspace. The task's original
-fixture files are copied into that workspace, multi-round prompts use the same
-XBot ACP session, and the original deterministic `oracle_grade.py` scores the
-final artifacts. XBot usage and a bounded ACP event trace are retained in the
-Inspect sample metadata.
+The runner uses Inspect's `eval-set` workflow. Provider requests are retried up
+to eight times, sample errors twice, and failed task attempts up to ten times
+with exponential waiting. Re-run the same command with the same `--name` to
+resume the eval set in place; Inspect reuses completed samples.
 
-Inspect `.eval` files are evaluation evidence and must remain under
-`evaluation/results/`. Only per-sample sandbox workspaces and disposable XBot
-runtime state belong in the system temporary directory.
+Use `--limit` for a bounded validation:
+
+```bash
+uv run --project evaluation python evaluation/run_harnessbench.py \
+  --name harnessbench-smoke -j 4 --limit 4
+```
+
+For an older log that was already recorded as successful despite timed-out
+samples, explicitly re-run only those sample IDs in the same result directory:
+
+```bash
+uv run --project evaluation python evaluation/run_harnessbench.py \
+  --name harnessbench-existing \
+  --sample-id task-id-1,task-id-2 \
+  -j 2
+```
+
+Inspect writes an additional `.eval` log in that directory and does not
+overwrite the original evidence. New runs treat a time-limited sample as an
+error, so normal `eval-set` retries and `inspect eval-retry` can recover it.
+
+Each sample receives an isolated Inspect workspace and a fresh XBot ACP
+process. Inspect's Agent Bridge supplies the model endpoint, so model messages,
+tool calls, usage, events, tags, and scores are stored in standard Inspect
+fields. Multi-round tasks retain one ACP session within the sample. After each
+sample, the original XBot session directory is collected into:
+
+```text
+evaluation/results/<name>/data/sessions/<session-id>/
+```
+
+Before execution, the runner snapshots the selected XBot `config/`, `.agents/`,
+and `memory/` inputs into:
+
+```text
+evaluation/results/<name>/data/
+```
+
+The evaluation runs from that snapshot. Inspect `.eval` files and input
+snapshots are local evidence and are ignored by Git.
+
+## Results
+
+The current baseline is documented in:
+
+- `REPORT.md`: human-readable analysis and limitations;
+- `HARNESSBENCH_RESULTS.json`: aggregate and per-task machine-readable results;
+- `results/harnessbench-final-20260730/`: canonical local Inspect log;
+- `.inspect/harnessbench-final-20260730/`: canonical local offline viewer.
+
+Start the Inspect viewer directly:
+
+```bash
+uv run --project evaluation inspect view \
+  --log-dir evaluation/results/harnessbench-final-20260730
+```
 
 ## Adapter Boundary
 
-`xbot_eval.xbot_agent` is an Inspect Solver. For each sample it:
+`xbot_eval.adapter.xbot_bridge_agent` is the full-benchmark solver. It:
 
-1. obtains the local Inspect sandbox workspace;
-2. starts a fresh XBot ACP process and session;
-3. sends the sample prompts through one ACP session;
-4. collects ACP assistant messages, usage, and bounded event metadata;
-5. returns the messages as the Inspect `ModelOutput`.
+1. obtains the Inspect sample workspace;
+2. starts Inspect's standard Agent Bridge;
+3. creates isolated XBot runtime data pointing at the bridge;
+4. starts XBot through ACP;
+5. executes all sample rounds in one XBot session;
+6. returns standard Inspect messages, output, usage, and events.
 
-This first adapter supports Inspect's local sandbox only. Container and remote
-sandbox path mapping are intentionally outside the smoke scope.
+HarnessBench fixtures, lifecycle hooks, local mock services, and deterministic
+oracles remain owned by the task layer. Public mock URLs default to their local
+loopback equivalents; set `HARNESSBENCH_PUBLIC_URL_TEMPLATE` when a different
+mapping is required.

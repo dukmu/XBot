@@ -1,0 +1,11 @@
+{
+  "event": "Atlas Launch Webinar",
+  "date_label": "Event Day",
+  "rooms": ["Room A", "Room B"],
+  "required_blocks": [
+    {"id": "setup", "earliest_start": "09:00", "duration_minutes": 45},
+    {"id": "rehearsal", "earliest_start": "10:00", "duration_minutes": 45},
+    {"id": "live_support", "earliest_start": "13:00", "duration_minutes": 90},
+    {"id": "teardown", "earliest_start": "14:45", "duration_minutes": 30}
+  ]
+}

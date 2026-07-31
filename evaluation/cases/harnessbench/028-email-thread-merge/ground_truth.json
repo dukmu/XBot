@@ -1,0 +1,8 @@
+{
+  "expected_thread_count": 2,
+  "northwind_unique_message_ids": ["m-100", "m-101", "m-102"],
+  "northwind_timeline": ["2026-08-04T09:12:00-04:00", "2026-08-04T10:05:00-04:00", "2026-08-04T11:30:00-04:00"],
+  "final_todos": ["send security questionnaire", "confirm procurement not approved"],
+  "reply_must_contain": ["Morgan", "August 18", "security questionnaire", "procurement", "not approved"],
+  "reply_forbidden": ["procurement is approved", "approval is complete"]
+}

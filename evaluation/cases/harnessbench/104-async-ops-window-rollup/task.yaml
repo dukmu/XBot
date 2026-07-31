@@ -1,0 +1,17 @@
+task_id: "104-async-ops-window-rollup"
+title: "Asynchronous Operations Update Window Rollup"
+class: "Long-running Autonomy & State Adaptation"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 720
+difficulty: "hard"
+tags:
+  - "long-running-autonomy"
+  - "async-injection"
+  - "polling"
+  - "deduplication"
+  - "state-management"
+  - "sre"
+  - "deterministic"

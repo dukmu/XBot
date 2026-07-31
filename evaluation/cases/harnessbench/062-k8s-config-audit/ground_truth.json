@@ -1,0 +1,17 @@
+{
+  "expected_findings": {
+    "cpu_memory_limits": {"status": "fail", "severity": "high", "keywords": ["limits", "memory", "cpu"]},
+    "readiness_probe": {"status": "fail", "severity": "high", "keywords": ["readinessProbe", "missing"]},
+    "liveness_probe": {"status": "fail", "severity": "medium", "keywords": ["livenessProbe", "missing"]},
+    "service_selector": {"status": "fail", "severity": "high", "keywords": ["selector", "app=checkout"]},
+    "service_target_port": {"status": "fail", "severity": "high", "keywords": ["targetPort", "8080", "8081"]},
+    "image_tag_policy": {"status": "fail", "severity": "medium", "keywords": ["latest", "pinned"]},
+    "privileged_container": {"status": "fail", "severity": "critical", "keywords": ["privileged", "true"]},
+    "service_type_policy": {"status": "fail", "severity": "medium", "keywords": ["NodePort", "ClusterIP"]}
+  },
+  "required_columns": ["check_id", "resource", "status", "severity", "evidence", "recommendation"],
+  "scoring": {
+    "weights": {"csv": 0.86, "source_unchanged": 0.14},
+    "thresholds": {"pass": 0.70, "good": 0.84, "excellent": 0.94}
+  }
+}

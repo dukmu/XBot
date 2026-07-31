@@ -1,0 +1,95 @@
+{
+  "decisions_path": "out/routing_decisions.json",
+  "templates_path": "out/reply_templates.md",
+  "escalation_path": "out/escalation_notes.csv",
+  "escalation_header": "ticket_id,reason,policy_basis,human_team",
+  "expected": {
+    "T-1001": {
+      "action": "reship",
+      "policy_basis": "SHIP-1",
+      "order_id": "O-501",
+      "priority": "normal",
+      "customer_reply_key": "tpl_reship_damage_photo"
+    },
+    "T-1002": {
+      "action": "refund",
+      "policy_basis": "REFUND-1",
+      "order_id": "O-502",
+      "priority": "normal",
+      "customer_reply_key": "tpl_refund_processing_cancel"
+    },
+    "T-1003": {
+      "action": "escalate_human",
+      "policy_basis": "ESC-1",
+      "order_id": "O-503",
+      "priority": "high",
+      "customer_reply_key": "tpl_escalate_delivery_failures"
+    },
+    "T-1004": {
+      "action": "information_request",
+      "policy_basis": "INFO-1",
+      "order_id": "O-999",
+      "priority": "normal",
+      "customer_reply_key": "tpl_request_order_proof"
+    },
+    "T-1005": {
+      "action": "escalate_human",
+      "policy_basis": "FRAUD-1",
+      "order_id": "O-504",
+      "priority": "high",
+      "customer_reply_key": "tpl_escalate_fraud_hold"
+    },
+    "T-1006": {
+      "action": "escalate_human",
+      "policy_basis": "CONFLICT-1",
+      "order_id": "O-505",
+      "priority": "high",
+      "customer_reply_key": "tpl_escalate_delivery_dispute"
+    },
+    "T-1007": {
+      "action": "information_request",
+      "policy_basis": "INFO-1",
+      "order_id": "",
+      "priority": "normal",
+      "customer_reply_key": "tpl_request_missing_order_id"
+    },
+    "T-1008": {
+      "action": "escalate_human",
+      "policy_basis": "DISPUTE-1",
+      "order_id": "O-506",
+      "priority": "high",
+      "customer_reply_key": "tpl_escalate_pod_dispute"
+    },
+    "T-1009": {
+      "action": "escalate_human",
+      "policy_basis": "CONFLICT-1",
+      "order_id": "O-503",
+      "priority": "high",
+      "customer_reply_key": "tpl_escalate_carrier_conflict_followup"
+    },
+    "T-1010": {
+      "action": "information_request",
+      "policy_basis": "INFO-1",
+      "order_id": "",
+      "priority": "high",
+      "customer_reply_key": "tpl_vip_info_tracking_request"
+    }
+  },
+  "allowed_actions": ["refund", "reship", "escalate_human", "information_request"],
+  "escalation_human_team": {
+    "T-1003": "Logistics Escalations",
+    "T-1005": "Fraud Review",
+    "T-1006": "Trust and Safety",
+    "T-1008": "Carrier Claims",
+    "T-1009": "Logistics Integrity"
+  },
+  "forbidden_template_phrases": [
+    "refund has been processed",
+    "we removed the fraud hold",
+    "replacement is guaranteed",
+    "reshipped already",
+    "your money is on the way",
+    "fraud hold is cleared",
+    "refund issued"
+  ]
+}

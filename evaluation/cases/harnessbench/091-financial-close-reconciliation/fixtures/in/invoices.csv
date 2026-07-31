@@ -1,0 +1,6 @@
+invoice_id,customer_id,invoice_date,currency,amount,status
+INV001,C001,2026-03-03,USD,100.00,open
+INV002,C002,2026-03-04,EUR,200.00,open
+INV003,C003,2026-03-05,GBP,100.00,open
+INV004,C004,2026-03-06,USD,80.00,void
+INV005,C005,2026-03-07,JPY,10000,open

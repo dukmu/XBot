@@ -1,0 +1,17 @@
+You are in a mock inbox environment. Process the email list in **`$WORKSPACE/in/emails.json`**. The file is a JSON object whose **`emails`** field is an array; each email has `id`, `from`, `subject`, and `body`. Working directory: `$WORKSPACE`.
+
+Complete the following:
+
+1) **Read** every email in `$WORKSPACE/in/emails.json` and assign one of three labels:
+   - `spam`: junk/scams/obvious ignore; should go on the deletion list.
+   - `needs_reply`: threads that need a human-like reply (e.g. a colleague asking if you are free).
+   - `ok`: no reply needed (system notifications, FYI-only, etc.).
+
+2) Write classifications to **`$WORKSPACE/out/triage.json`** (JSON object; keys are email `id` strings; values look like):
+   `{"label":"spam|needs_reply|ok","reason_short":"one-line reason"}`
+
+3) Write every `spam` email `id`, one per line, to **`$WORKSPACE/out/delete_ids.txt`** (ids only; no other text). Do not list non-spam ids.
+
+4) For each `needs_reply` email, write the **reply body** (plain text) to **`$WORKSPACE/out/replies/<id>.txt`** (e.g. `out/replies/002.txt`). Replies must **directly answer the question** (e.g. if they ask “Are you free today?”, say whether you are free or propose a time). Do not reply off-topic.
+
+5) First run `mkdir -p $WORKSPACE/out $WORKSPACE/out/replies`.

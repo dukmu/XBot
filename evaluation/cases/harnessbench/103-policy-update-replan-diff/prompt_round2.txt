@@ -1,0 +1,24 @@
+Round 2 of 2: revise the rollout plan after a late policy update.
+
+Read:
+- $WORKSPACE/out/original_plan.json
+- $WORKSPACE/out/state.json
+- $WORKSPACE/in/round2_update_notice.json
+- the original input files under $WORKSPACE/in
+
+Create:
+- $WORKSPACE/out/revised_plan.json
+- $WORKSPACE/out/diff.md
+- update $WORKSPACE/out/state.json
+
+Requirements:
+- Apply the late update:
+  - EU launch_gate must be moved at least 48 hours later than the original EU launch_gate.
+  - EU customer communications must move with the EU launch_gate and remain before the launch gate.
+  - APAC owner Priya is unavailable; replace Priya on APAC decisions.
+  - Support training must add a "refund exception drill" artifact for every region.
+- Preserve useful unaffected AMER decisions from the original plan.
+- $WORKSPACE/out/diff.md must have sections named Added, Removed, Changed, and Unchanged.
+- $WORKSPACE/out/state.json must record round, plan_version, decisions, source_files_read, changed_decision_ids, and unchanged_decision_ids.
+- Do not modify input files.
+- This is a planning task only. Do not claim that notices, approvals, training, or production changes have already been executed.

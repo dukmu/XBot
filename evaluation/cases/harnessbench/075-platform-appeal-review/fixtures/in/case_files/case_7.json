@@ -1,0 +1,10 @@
+{
+  "case_id": "A-07",
+  "appeal_filed": "2025-11-20",
+  "original_action": "3-day suspension",
+  "content_summary": "Reply tagged another user twice calling them incompetent; no threats or protected-class language.",
+  "appeal": "I deleted the reply and will disengage.",
+  "prior_harass_strikes": 1,
+  "automated_scores": {"harass_risk": 0.68},
+  "reporter": "private_user_717"
+}

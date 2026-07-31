@@ -1,0 +1,24 @@
+Task: iterative code repair and verification
+
+You receive buggy code at `$WORKSPACE/in/buggy_code.py`.
+
+Mechanism: the code has multiple layered bugs, but only the most urgent layer is visible each round. Fix what is currently exposed; after your fix passes validation, the next layer appears.
+
+Current state: layer **$CURRENT_LAYER** / **$TOTAL_LAYERS** total.
+
+Each round:
+1. Read `buggy_code.py` and analyze the currently visible error.
+2. Fix it (edit the file in place), preserving the intended behavior.
+3. Validate: `python $WORKSPACE/in/buggy_code.py`
+4. On success, tell me **"Layer X fixed"** (English, with the correct layer number); on failure, keep fixing.
+
+After you finish layer **`$CURRENT_LAYER`** and validation passes, **stop this conversation immediately**—do not attempt other layers. The next layer will appear in a new conversation round.
+
+Repair rules:
+- Minimal change: only fix what is currently exposed; do not preempt deeper bugs.
+- Add a comment: `# FIX: ...` describing what you fixed.
+- Preserve design: no wholesale refactor.
+
+Final artifacts (after **all** layers are fixed across rounds):
+- `$WORKSPACE/out/buggy_code_fixed.py` (final code)
+- `$WORKSPACE/out/fix_log.md` (log: what broke each layer, how many rounds per layer)

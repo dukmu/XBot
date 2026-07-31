@@ -1,0 +1,18 @@
+task_id: "058-multiday-project-state"
+title: "Three-Day Project State and Plan Maintenance"
+class: "Long-running Autonomy & State Adaptation"
+prompt_files:
+  - "prompt_day1.txt"
+  - "prompt_day2.txt"
+  - "prompt_day3.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 1200
+difficulty: "hard"
+tags:
+  - "long-task"
+  - "multi-round"
+  - "project-management"
+  - "state-management"
+  - "planning"

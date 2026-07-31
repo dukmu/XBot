@@ -1,0 +1,8 @@
+[Round 2 / 2 — same session-id as the previous round; do not start a new session] Working directory: `$WORKSPACE`.
+
+In the previous round the **user message** gave you an English passphrase (**this message does not contain it**). Recall it using **multi-turn conversation memory only**.
+
+1. Write the passphrase **verbatim** (character-for-character) to **`$WORKSPACE/out/recalled.txt`**, **one line only**, no extra whitespace.
+2. **Do not** try to “recover” it by reading workspace files (the harness checks whether the passphrase was ever written to disk after round 1); rely on session memory.
+
+If `out` does not exist, run `mkdir -p $WORKSPACE/out` first.

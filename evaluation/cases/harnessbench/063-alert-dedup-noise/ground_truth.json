@@ -1,0 +1,22 @@
+{
+  "expected_incidents": [
+    {
+      "root_alert_id": "A-100",
+      "root_service": "orders-db",
+      "cluster_alert_ids": ["A-100", "A-101", "A-102", "A-103", "A-104"],
+      "impact_services": ["orders-api", "checkout-web", "payment-api"]
+    },
+    {
+      "root_alert_id": "A-300",
+      "root_service": "redis-cache",
+      "cluster_alert_ids": ["A-300", "A-301", "A-302"],
+      "impact_services": ["catalog-api", "cart-api"]
+    }
+  ],
+  "noise_alert_ids": ["A-200", "A-201", "A-202"],
+  "noise_keywords": ["maintenance", "synthetic", "staging"],
+  "scoring": {
+    "weights": {"incidents": 0.78, "noise_report": 0.16, "source_unchanged": 0.06},
+    "thresholds": {"pass": 0.70, "good": 0.84, "excellent": 0.94}
+  }
+}

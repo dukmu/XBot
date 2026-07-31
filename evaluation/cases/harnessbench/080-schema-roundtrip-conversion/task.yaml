@@ -1,0 +1,15 @@
+task_id: "080-schema-roundtrip-conversion"
+title: "Schema Preserving Markdown CSV JSON YAML Conversion"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "medium"
+tags:
+  - "workspace-tooling"
+  - "conversion"
+  - "markdown"
+  - "csv"
+  - "json"
+  - "yaml"

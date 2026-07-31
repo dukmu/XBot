@@ -1,0 +1,16 @@
+{
+  "entrypoint": "checkout-web",
+  "dependencies": {
+    "checkout-web": ["payment-api", "orders-api", "cdn-edge"],
+    "payment-api": ["auth-gateway"],
+    "orders-api": ["orders-db"],
+    "auth-gateway": [],
+    "orders-db": [],
+    "cdn-edge": []
+  },
+  "recent_changes": [
+    {"change_id": "AUTH-2026-0318", "service": "auth-gateway", "time": "2026-03-22T14:05:00Z", "summary": "rotated issuer and JWKS cache namespace for partner-token validation"},
+    {"change_id": "CDN-2026-0091", "service": "cdn-edge", "time": "2026-03-22T13:58:00Z", "summary": "static asset compression rule"},
+    {"change_id": "DB-2026-0144", "service": "orders-db", "time": "2026-03-22T12:30:00Z", "summary": "vacuum tuning only, no schema or credential change"}
+  ]
+}

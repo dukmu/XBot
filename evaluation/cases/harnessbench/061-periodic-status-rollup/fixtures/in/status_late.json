@@ -1,0 +1,8 @@
+{
+  "update_id": "u-late",
+  "timestamp": "2026-04-20T10:05:00Z",
+  "component": "billing",
+  "status": "degraded",
+  "message": "post-window retry warning",
+  "severity": "warning"
+}

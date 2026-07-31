@@ -1,0 +1,28 @@
+Analyze the A/B test using only local files.
+
+Inputs:
+- $WORKSPACE/in/experiment_cells.csv
+- $WORKSPACE/in/exclusions.csv
+- $WORKSPACE/in/analysis_plan.md
+
+Create exactly:
+- $WORKSPACE/out/variant_metrics.csv
+- $WORKSPACE/out/ab_summary.json
+- $WORKSPACE/out/exclusion_ledger.csv
+- $WORKSPACE/out/recommendation.md
+
+Rules:
+1. Do not modify input files.
+2. Use the eligible_users and conversions in experiment_cells.csv after applying the listed exclusions.
+3. Compute conversion_rate = conversions / eligible_users, refund_rate = refunds / conversions, and revenue_per_eligible_user = revenue_usd / eligible_users.
+4. Use a two-proportion z-test for B versus A, two-sided, alpha = 0.05.
+5. Round rates and lift values to four decimals. Round revenue_per_eligible_user, z_stat, and p_value to four decimals.
+6. variant_metrics.csv must have exact header:
+   variant,eligible_users,conversions,conversion_rate,refund_rate,revenue_per_eligible_user
+7. ab_summary.json must contain: control_variant, treatment_variant, alpha, lift_absolute, lift_relative, z_stat, p_value, significant, recommendation.
+8. exclusion_ledger.csv must have exact header:
+   user_id,reason,variant,notes
+   Include every row from exclusions.csv, preserving input order.
+9. recommendation.md must state whether to launch, mention statistical significance, and include caveats about the underpowered mobile cohort and duplicate assignment cleanup.
+
+Do not use network access or external APIs.

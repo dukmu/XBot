@@ -1,0 +1,20 @@
+Audit report citations against the appendix and source files, then provide a repaired reference section.
+
+Inputs:
+- $WORKSPACE/in/report.md
+- $WORKSPACE/in/appendix.md
+- $WORKSPACE/in/sources/*.md
+
+Outputs:
+- $WORKSPACE/out/citation_audit.csv
+- $WORKSPACE/out/fixed_references.md
+
+citation_audit.csv requirements:
+- CSV header: citation_id,location,issue,expected_source,recommended_fix
+- Include each incorrect, missing, or unsupported citation.
+
+fixed_references.md requirements:
+- Provide corrected references for all claims in report.md.
+- Use format: [S1] title - file path
+- Do not invent sources.
+- Do not modify input files.

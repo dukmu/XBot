@@ -1,0 +1,5 @@
+metric_name,formula,primary_field
+arr,SUM(net_recurring_revenue),net_recurring_revenue
+activation_rate,activated_users / eligible_signup_users,eligible_signup_users
+retention_rate,retained_users / old_cohort_users,old_cohort_users
+support_sla,tickets_met_sla / closed_tickets,closed_tickets

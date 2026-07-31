@@ -1,0 +1,14 @@
+task_id: "066-rollback-readiness"
+title: "Rollback readiness review for a payments release"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags:
+  - "sre"
+  - "release-engineering"
+  - "rollback"
+  - "change-management"
+  - "csv-output"

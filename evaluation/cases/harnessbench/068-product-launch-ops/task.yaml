@@ -1,0 +1,9 @@
+task_id: "068-product-launch-ops"
+title: "Extended product launch operations plan"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "medium"
+tags: ["planning", "content-creation", "professional-workflow", "deterministic-oracle"]

@@ -1,0 +1,15 @@
+The Python package in `$WORKSPACE/in/ordercalc` has incomplete tests.
+
+Your job:
+- Add or edit tests under `$WORKSPACE/in/ordercalc/tests/`.
+- Do not edit files under `$WORKSPACE/in/ordercalc/ordercalc/`.
+- Read `$WORKSPACE/in/ordercalc/pricing_rules.md` and turn the behavioral contract into tests.
+- Include boundary cases that would fail if discount order, free-shipping threshold, bulk aggregation, or rounding behavior were implemented incorrectly.
+- The evaluator will run mutation checks against intentionally broken pricing implementations; good tests should fail those mutants.
+- The final command `python -m pytest $WORKSPACE/in/ordercalc/tests` must pass.
+- Add `$WORKSPACE/in/ordercalc/tests/TEST_INTENT.md` explaining which pricing-rule risks your tests cover. It must mention discount order, free-shipping threshold, bulk aggregation, rounding, coupons, expedited shipping, and validation errors.
+
+Forbidden:
+- Do not hard-code private implementation text such as exact source line snippets.
+- Do not monkeypatch the functions under test to force success.
+- Do not skip or xfail the required behavior tests.

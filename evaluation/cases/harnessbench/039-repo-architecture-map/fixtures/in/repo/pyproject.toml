@@ -1,0 +1,7 @@
+[project]
+name = "minisvc"
+version = "0.1.0"
+dependencies = []
+
+[project.scripts]
+minisvc = "minisvc.cli:main"

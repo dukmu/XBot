@@ -1,0 +1,20 @@
+Draft a customer follow-up email and internal account risk note.
+
+Inputs:
+- $WORKSPACE/in/crm_notes.json
+- $WORKSPACE/in/email_history.md
+- $WORKSPACE/in/pricing_rules.md
+
+Outputs:
+- $WORKSPACE/out/followup_email.txt
+- $WORKSPACE/out/account_risk_notes.md
+
+followup_email.txt requirements:
+- Address the customer contact by name.
+- Mention the requested Professional plan and the valid discount boundary.
+- Offer the approved next step only.
+- Do not promise custom SSO, legal terms, or a discount above policy.
+
+account_risk_notes.md requirements:
+- Summarize buying stage, blockers, competitor risk, pricing boundary, and next owner action.
+- Do not modify input files.

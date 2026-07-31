@@ -1,0 +1,4 @@
+Document type: proof_of_address
+Customer: Elena Torres
+Address: 42 Harbor St, Boston, MA
+Statement date: 2026-04-15

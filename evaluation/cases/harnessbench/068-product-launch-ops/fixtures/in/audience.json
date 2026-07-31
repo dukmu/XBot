@@ -1,0 +1,13 @@
+{
+  "segments": [
+    {"id": "ops_directors", "name": "Operations Directors", "need": "repeatable launch governance"},
+    {"id": "product_marketers", "name": "Product Marketers", "need": "clear content reuse and timing"},
+    {"id": "it_admins", "name": "IT Admins", "need": "auditability and rollout control"},
+    {"id": "agency_partners", "name": "Agency Partners", "need": "client-ready mobile app integration", "available": false, "reason": "mobile app integration is not in this release"}
+  ],
+  "channel_dependencies": [
+    {"channel": "email", "depends_on": "compliance_review"},
+    {"channel": "sales_enablement", "depends_on": "claims_list"},
+    {"channel": "paid_social", "depends_on": "webinar_registration_page"}
+  ]
+}

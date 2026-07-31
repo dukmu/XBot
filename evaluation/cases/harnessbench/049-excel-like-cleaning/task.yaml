@@ -1,0 +1,13 @@
+task_id: "049-excel-like-cleaning"
+title: "Excel-like sales table cleaning"
+class: "Data, BI & Finance Analytics"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1800
+difficulty: "easy"
+tags:
+  - data-analysis
+  - csv
+  - cleaning
+  - deterministic

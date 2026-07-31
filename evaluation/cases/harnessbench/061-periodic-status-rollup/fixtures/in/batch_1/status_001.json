@@ -1,0 +1,8 @@
+{
+  "update_id": "u-001",
+  "timestamp": "2026-04-20T09:05:00Z",
+  "component": "api",
+  "status": "degraded",
+  "message": "p95 latency above 900 ms",
+  "severity": "warning"
+}

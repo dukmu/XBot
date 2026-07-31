@@ -1,0 +1,37 @@
+Use the release inputs in `$WORKSPACE/in/release` to create three artifacts:
+
+1. `$WORKSPACE/out/CHANGELOG.md`
+   - Markdown release notes grouped into Added, Changed, Fixed, Security, and Breaking Changes when applicable.
+   - Include issue IDs and human-readable descriptions.
+   - Do not list reverted fixes as shipped changes.
+   - Do not list deferred features as shipped changes.
+   - Documentation-only work may be mentioned as supporting documentation, but it must not count as a shipped product issue.
+   - If an issue has multiple commits, summarize the issue once.
+   - For embargoed security work, include a safe high-level note without exploit or implementation details.
+2. `$WORKSPACE/out/release_summary.json`
+   - JSON with keys: `version`, `date`, `highlights`, `breaking_changes`, `issue_count`, `risk_notes`.
+   - `issue_count` should count shipped non-reverted `ISSUE-*` product issue IDs only; do not count `SEC-*` advisory IDs.
+   - Do not count deferred `ISSUE-*` IDs or documentation-only `ISSUE-*` IDs in `issue_count`.
+3. `$WORKSPACE/out/upgrade_notes.md`
+   - Include migration guidance for each breaking change.
+   - Mention reverted work separately from shipped changes.
+   - Do not disclose embargoed security details.
+4. `$WORKSPACE/out/release_decisions.json`
+   - JSON with keys: shipped_issue_ids, reverted_issue_ids, deferred_issue_ids, docs_only_issue_ids, security_advisory_ids, embargoed_security_advisory_ids, public_security_advisory_ids, breaking_change_ids, duplicate_commit_issue_ids.
+   - Each value must be an array sorted ascending.
+   - shipped_issue_ids counts shipped non-reverted `ISSUE-*` product issue IDs only.
+   - reverted_issue_ids lists reverted `ISSUE-*` product issue IDs that must not appear as shipped changes.
+   - deferred_issue_ids lists `ISSUE-*` feature work deferred before release and not shipped.
+   - docs_only_issue_ids lists `ISSUE-*` IDs whose shipped work is documentation-only and should not affect issue_count.
+   - security_advisory_ids lists `SEC-*` advisory IDs separately from product issues.
+   - embargoed_security_advisory_ids and public_security_advisory_ids split security_advisory_ids by whether details are embargoed.
+   - breaking_change_ids lists every shipped issue ID that requires migration guidance.
+   - duplicate_commit_issue_ids lists shipped issue IDs that appear in more than one non-revert, non-defer commit and should still be summarized once.
+5. `$WORKSPACE/out/release_audit.json`
+   - JSON with keys: issue_status_by_id, shipped_issue_commit_counts, non_counted_issue_ids, migration_required_issue_ids.
+   - issue_status_by_id must map every ID from issues.csv to exactly one status: shipped, reverted, deferred, docs_only, embargoed_security, public_security.
+   - shipped_issue_commit_counts must map each shipped `ISSUE-*` product issue ID to the number of non-revert, non-defer, non-docs commits for that issue.
+   - non_counted_issue_ids must list all IDs that must not contribute to release_summary.issue_count: reverted issues, deferred issues, docs-only issues, and SEC-* advisory IDs.
+   - migration_required_issue_ids must match breaking_change_ids and be sorted ascending.
+
+Do not invent commits or issues. Do not use the current date; use the date in `commits.json`. Do not modify fixture files.

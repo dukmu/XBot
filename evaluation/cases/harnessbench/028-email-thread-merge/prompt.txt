@@ -1,0 +1,21 @@
+Merge the email messages into coherent threads and draft the next reply.
+
+Inputs:
+- $WORKSPACE/in/emails/*.json
+
+Outputs:
+- $WORKSPACE/out/thread_summary.json
+- $WORKSPACE/out/reply_draft.txt
+
+thread_summary.json requirements:
+- JSON object with a "threads" array.
+- Deduplicate forwarded or repeated messages that contain the same message_id or same substantive body.
+- Keep unrelated subjects in separate threads.
+- For the Northwind onboarding thread, include a chronological timeline and final_todos.
+- Preserve ISO timestamps exactly as provided.
+
+reply_draft.txt requirements:
+- Draft a reply for the Northwind onboarding thread only.
+- Address Morgan Lee.
+- Confirm the agreed pilot kickoff date, name the missing security questionnaire, and avoid claiming that procurement approval is complete.
+- Do not modify input files.

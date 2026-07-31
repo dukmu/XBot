@@ -1,0 +1,42 @@
+{
+  "output": "out/customer_metrics.csv",
+  "region_summary": "out/region_summary.json",
+  "audit": "out/reconciliation_audit.json",
+  "notes": "out/reconciliation_notes.md",
+  "header": ["canonical_customer_id", "name", "region", "order_count", "gross_revenue_usd", "refund_amount_usd", "chargeback_amount_usd", "net_revenue_usd", "segment"],
+  "rows": [
+    {"canonical_customer_id": "C001", "name": "Ada Chen", "region": "North", "order_count": "4", "gross_revenue_usd": "440.00", "refund_amount_usd": "22.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "418.00", "segment": "gold"},
+    {"canonical_customer_id": "C002", "name": "Ben Ortiz", "region": "West", "order_count": "0", "gross_revenue_usd": "0.00", "refund_amount_usd": "0.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "0.00", "segment": "dormant"},
+    {"canonical_customer_id": "C003", "name": "Cleo Singh", "region": "East", "order_count": "2", "gross_revenue_usd": "338.00", "refund_amount_usd": "11.00", "chargeback_amount_usd": "43.00", "net_revenue_usd": "284.00", "segment": "gold"},
+    {"canonical_customer_id": "C004", "name": "Dara Moore", "region": "South", "order_count": "1", "gross_revenue_usd": "100.00", "refund_amount_usd": "0.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "100.00", "segment": "silver"},
+    {"canonical_customer_id": "C005", "name": "Eli Park", "region": "North", "order_count": "0", "gross_revenue_usd": "0.00", "refund_amount_usd": "0.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "0.00", "segment": "dormant"},
+    {"canonical_customer_id": "C008", "name": "Faye Liu", "region": "Central", "order_count": "1", "gross_revenue_usd": "550.00", "refund_amount_usd": "50.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "500.00", "segment": "platinum"},
+    {"canonical_customer_id": "C009", "name": "Gus Rivera", "region": "West", "order_count": "0", "gross_revenue_usd": "0.00", "refund_amount_usd": "0.00", "chargeback_amount_usd": "0.00", "net_revenue_usd": "0.00", "segment": "dormant"}
+  ],
+  "region_summary_expected": {
+    "Central": {"canonical_customer_count": 1, "gross_revenue_usd": 550.0, "net_revenue_usd": 500.0},
+    "East": {"canonical_customer_count": 1, "gross_revenue_usd": 338.0, "net_revenue_usd": 284.0},
+    "North": {"canonical_customer_count": 2, "gross_revenue_usd": 440.0, "net_revenue_usd": 418.0},
+    "South": {"canonical_customer_count": 1, "gross_revenue_usd": 100.0, "net_revenue_usd": 100.0},
+    "West": {"canonical_customer_count": 2, "gross_revenue_usd": 0.0, "net_revenue_usd": 0.0}
+  },
+  "fixture_counts": {"customers": 10, "orders": 10, "refunds": 6, "payments": 16, "fx_rates": 3, "chargebacks": 4},
+  "fixture_hashes": {
+    "chargebacks.csv": "d5efd0d09de7220667b6c74a053de52f98b15902f5cfd12640c8f24dbd5eb8cd",
+    "customers.csv": "ea32f565622b8c895833c82f991ba92d1549f0cb59c036c1729d37cef385818c",
+    "fx_rates.csv": "5f4809866a75b0e337c1468b9257def119f6b366b5c2ad65e837930502410c5d",
+    "orders.csv": "3dcf94ba75c947652f82d363bfd95e2f0fc7911e7b2ce37f0498050dc75955ee",
+    "payments.csv": "8077f0267d8075b5afd32d37dce026aa8ddf5300752d3a20c97c140568ceb542",
+    "refunds.csv": "fd0bb8f0601fc5439a016fad445374598cefb683dde12870b30a64758720f1af"
+  },
+  "required_notes_terms": ["captured payments", "duplicate", "P5002-DUP", "P5008-DUP", "orphan", "P5007", "P5013", "O9999", "cancelled", "O1003", "no_captured_payment", "R9006", "chargeback", "CB7003", "CB7004", "canonical", "C006", "C007", "C010"]
+  ,
+  "audit_expected": {
+    "duplicate_payment_ids": ["P5002-DUP", "P5008-DUP"],
+    "orphan_payment_ids": ["P5007", "P5013"],
+    "refund_anomaly_ids": ["R9002", "R9003", "R9006"],
+    "included_chargeback_ids": ["CB7001", "CB7002"],
+    "excluded_chargeback_ids": ["CB7003", "CB7004"],
+    "alias_customer_ids": ["C006", "C007", "C010"]
+  }
+}

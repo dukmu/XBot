@@ -1,0 +1,31 @@
+[
+  {
+    "active": true,
+    "name": "Alpha",
+    "note": "pipe | safe",
+    "quantity": 12,
+    "record_id": "A-001",
+    "tags": [
+      "blue",
+      "fragile"
+    ]
+  },
+  {
+    "active": false,
+    "name": "Beta",
+    "note": null,
+    "quantity": 7,
+    "record_id": "B-007",
+    "tags": [
+      "green"
+    ]
+  },
+  {
+    "active": true,
+    "name": "Gamma",
+    "note": "from json",
+    "quantity": 0,
+    "record_id": "C-010",
+    "tags": []
+  }
+]

@@ -1,0 +1,5 @@
+{
+  "sample_sku": "SKU-042",
+  "sample_order_count": 1500,
+  "notes": "Synthetic benchmark expects indexed lookup instead of scanning every order for every query."
+}

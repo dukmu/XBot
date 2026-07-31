@@ -1,0 +1,11 @@
+{
+  "actions_path": "out/delay_actions.csv",
+  "messages_path": "out/customer_messages.md",
+  "expected": {
+    "S-7001": {"delay_status": "delayed", "customer_tier": "standard", "action": "notify", "compensation": "none"},
+    "S-7002": {"delay_status": "on_track", "customer_tier": "standard", "action": "monitor", "compensation": "none"},
+    "S-7003": {"delay_status": "delayed", "customer_tier": "vip", "action": "expedite_replacement", "compensation": "replacement"},
+    "S-7004": {"delay_status": "delayed", "customer_tier": "premium", "action": "offer_credit", "compensation": "shipping_credit"}
+  },
+  "forbidden_message_terms": ["customer fault", "your fault", "internal carrier notes"]
+}

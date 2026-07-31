@@ -1,0 +1,9 @@
+task_id: "038-research-brief-synthesis"
+title: "Multi-Source Research Brief Synthesis"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags: ["information-retrieval", "research-brief", "multi-source-synthesis", "fact-checking", "hard"]

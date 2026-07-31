@@ -1,0 +1,4 @@
+Document: proof_of_payment
+Claim ID: CLM-2044
+Payment date: 2025-10-01
+Administrative note: receipt is older than 90 days before service date.

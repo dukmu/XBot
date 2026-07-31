@@ -1,0 +1,7 @@
+audience,region,channel,minimum_notice_hours,owner
+enterprise_admins,AMER,email,24,Iris
+support_agents,AMER,lms_module,12,Noah
+enterprise_admins,EU,email,36,Iris
+support_agents,EU,lms_module,18,Noah
+enterprise_admins,APAC,email,24,Iris
+support_agents,APAC,lms_module,18,Noah

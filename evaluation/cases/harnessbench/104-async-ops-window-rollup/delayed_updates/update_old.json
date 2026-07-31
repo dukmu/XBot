@@ -1,0 +1,8 @@
+{
+  "update_id": "UP-OLD",
+  "timestamp": "2026-05-04T00:55:00Z",
+  "component": "payment-worker",
+  "status": "healthy",
+  "severity": "info",
+  "message": "Old pre-window heartbeat."
+}

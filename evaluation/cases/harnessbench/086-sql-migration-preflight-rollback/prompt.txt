@@ -1,0 +1,27 @@
+The SQLite billing migration in `$WORKSPACE/in/billingdb/migration.sql` is unsafe and incomplete.
+
+Read `$WORKSPACE/in/billingdb/migration_policy.md`, then repair the migration package.
+
+Your job:
+- Edit `$WORKSPACE/in/billingdb/migration.sql`.
+- Create `$WORKSPACE/in/billingdb/preflight_report.md`.
+- Create `$WORKSPACE/in/billingdb/rollback.sql`.
+- Create `$WORKSPACE/in/billingdb/postcheck.sql`.
+- Create `$WORKSPACE/in/billingdb/migration_report.md`.
+
+Required behavior:
+- Preserve all invoices and payments from `schema.sql`.
+- Add non-null `status` to invoices with default `open`.
+- Preserve historical invoice `created_at`.
+- Preserve orphan payments by moving them to `payment_orphans` before enforcing referential safety.
+- Enforce future `payments.invoice_id` references to valid invoices.
+- The migration must run inside an explicit transaction.
+- The migration must be idempotent: running it a second time must not duplicate or corrupt data.
+- Rollback must execute after the migration and restore the old table shape: `invoices(id, customer_id, total_cents, created_at)` and `payments(id, invoice_id, amount_cents, created_at)`.
+
+Constraints:
+- Do not modify `schema.sql` or `migration_policy.md`.
+- Do not delete orphan payment `p4`; preserve it in `payment_orphans`.
+- Do not disable foreign keys without restoring them.
+- Do not hard-code a solution that only works by deleting existing rows.
+- Do not use external services or non-SQLite features.

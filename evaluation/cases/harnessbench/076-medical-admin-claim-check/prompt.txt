@@ -1,0 +1,33 @@
+You are checking administrative completeness for a deidentified insurance claim. Do not make medical judgments or diagnoses.
+
+Read:
+- $WORKSPACE/in/deidentified_claim.json
+- $WORKSPACE/in/required_docs_policy.md
+- $WORKSPACE/in/submitted_docs/*.txt
+
+Create:
+- $WORKSPACE/out/claim_completeness.json
+- $WORKSPACE/out/missing_items.md
+
+Requirements for claim_completeness.json:
+- Valid JSON object with keys: claim_id, complete, present_documents, missing_documents, admin_notes.
+- complete must be false if any required document is missing (including plan- and claim-field-triggered requirements in required_docs_policy.md).
+- present_documents and missing_documents must use document names from required_docs_policy.md exactly (underscores preserved where the policy lists them).
+- Stale documents (older than 90 days before service_date), claim_id-mismatched documents, and internal memos that are not themselves named required document types must not count as present for those required slots.
+- Apply every plan-specific and JSON-field-conditioned rule in required_docs_policy.md; explain which triggers apply only in administrative terms inside admin_notes.
+- admin_notes must discuss only administrative completeness and must explicitly reference: (1) PLAN-A + the prior_authorization trigger, and (2) the secondary payer / COB coordination materials trigger. Do not copy direct identifiers from submitted documents into admin_notes.
+
+Requirements for missing_items.md:
+- List each missing required document and why it is needed administratively (including why stale or mismatched submissions do not satisfy a required slot).
+- Explicitly mention that proof_of_payment (as submitted) is administratively stale and that provider_order (as submitted) is claim_id mismatched, in addition to listing other missing materials.
+- Mention that coordination acknowledgment for the secondary payer context is absent (administrative wording only; use the policy document name coordination_of_benefits_ack where you refer to the required packet).
+- Include the sentence: "No medical diagnosis or treatment assessment was performed."
+- Do not diagnose, recommend treatment, or assess medical necessity.
+
+Create also:
+- $WORKSPACE/out/redaction_notes.csv
+  First line must be exactly: source_file,redacted_type,reason
+  Then one or more CSV rows. Note direct identifiers found in submitted_docs that must not appear in other outputs (e.g., member_message requesting contact-data redaction).
+- Do not include phone numbers, email addresses, or other direct identifiers from submitted documents in any output.
+
+Do not use the network. Do not modify input files.

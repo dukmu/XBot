@@ -1,0 +1,9 @@
+task_id: "073-research-repro-package"
+title: "Research reproducibility package completeness check"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "hard"
+tags: ["research", "reproducibility", "data-audit", "professional-workflow", "deterministic-oracle"]

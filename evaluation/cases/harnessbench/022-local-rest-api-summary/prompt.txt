@@ -1,0 +1,43 @@
+Use the local REST API provided in the MOCK_API_BASE environment variable. Do not use the public internet.
+
+Available endpoints:
+- GET $MOCK_API_BASE/projects?page=N
+- GET $MOCK_API_BASE/users?page=N
+- GET $MOCK_API_BASE/incidents?page=N
+
+Each endpoint is paginated and returns JSON with `items` and `next_page`. Some first requests may return HTTP 429 or 503; retry locally with a short backoff.
+
+Task:
+Fetch all pages from all three endpoints, join the data, and write:
+- $WORKSPACE/out/api_summary.json
+- $WORKSPACE/out/data_quality_report.md
+
+Required JSON format:
+{
+  "source_base_url": "the exact base URL you used",
+  "project_count": 4,
+  "active_budget_usd": 26800,
+  "open_incidents": 5,
+  "projects": [
+    {
+      "id": "p-100",
+      "name": "Atlas Migration",
+      "owner_name": "Mira Chen",
+      "team": "Platform",
+      "status": "active",
+      "budget_usd": 12500,
+      "open_incident_count": 1,
+      "highest_open_severity": "high"
+    }
+  ]
+}
+
+Rules:
+- Sort projects by id ascending.
+- active_budget_usd is the sum of budget_usd for projects whose status is "active".
+- open_incidents counts only incidents where open is true.
+- highest_open_severity ranks high > medium > low; use null if a project has no open incidents.
+- Save only the summary JSON. Do not include raw endpoint payloads or unrelated text.
+- Do not count duplicate project ids twice.
+- Use owner_name null and team null for missing owners, and mention them in data_quality_report.md.
+- Exclude orphan incidents from project counts but mention them in data_quality_report.md.

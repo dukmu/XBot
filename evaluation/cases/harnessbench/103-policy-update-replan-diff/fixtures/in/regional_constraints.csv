@@ -1,0 +1,4 @@
+region,timezone,earliest_launch_gate,latest_launch_gate,approval_owner,blackout_dates
+AMER,America/Los_Angeles,2026-05-18T16:00:00-07:00,2026-05-20T18:00:00-07:00,Marta,2026-05-19
+EU,Europe/Berlin,2026-05-19T09:00:00+02:00,2026-05-21T17:00:00+02:00,Lena,2026-05-20
+APAC,Asia/Singapore,2026-05-20T10:00:00+08:00,2026-05-22T16:00:00+08:00,Priya,2026-05-21

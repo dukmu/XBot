@@ -1,0 +1,5 @@
+payment_id,invoice_id,settlement_date,currency,amount,bank_fee
+P001,INV001,2026-03-10,USD,100.00,2.00
+P002,INV002,2026-03-11,EUR,200.00,2.73
+P004,INV004,2026-03-12,USD,80.00,1.00
+P999,INV999,2026-03-12,USD,50.00,0.50

@@ -1,0 +1,31 @@
+Sessionize the clickstream JSONL using only local files.
+
+Inputs:
+- $WORKSPACE/in/clickstream.jsonl
+- $WORKSPACE/in/session_rules.md
+- $WORKSPACE/in/campaign_map.csv
+
+Create:
+- $WORKSPACE/out/sessions.csv
+- $WORKSPACE/out/session_summary.json
+- $WORKSPACE/out/reject_ledger.csv
+- $WORKSPACE/out/sessionization_notes.md
+
+Rules:
+1. Do not modify fixtures.
+2. Parse JSONL line by line. Record malformed lines in reject_ledger.csv.
+3. Sort valid, non-rejected events by timestamp before sessionizing.
+4. Exclude bot users when user_agent contains bot, crawler, or synthetic case-insensitively.
+5. Deduplicate repeated event_id values after keeping the first valid occurrence by timestamp.
+6. Stitch anonymous events to the logged-in user when the same anonymous_id later has a login event with user_id.
+7. Start a new session after more than 30 minutes of inactivity. Exactly 30 minutes remains in the same session.
+8. session_id must be user_key plus dash plus 1-based session ordinal, such as U100-1.
+9. sessions.csv exact header:
+   session_id,user_key,session_start,session_end,event_count,landing_page,last_page,converted,campaign_source
+   Sort sessions by user_key then session_start.
+10. reject_ledger.csv exact header:
+   line_number,event_id,reason,notes
+11. session_summary.json must contain: total_sessions, converted_sessions, excluded_bot_users, deduped_event_ids, malformed_line_numbers, missing_timestamp_event_ids, unknown_event_type_ids.
+12. sessionization_notes.md must mention identity stitching, the 30-minute boundary, and malformed/duplicate data caveats.
+
+Do not use network access or external APIs.

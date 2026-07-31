@@ -1,0 +1,51 @@
+{
+  "outputs": {
+    "csv": "out/suspicious_transactions.csv",
+    "audit": "out/rule_audit.json",
+    "notes": "out/case_notes.md"
+  },
+  "fixture_hashes": {
+    "rules.md": "baede250532a6fc67a527f21b9a6409181db993799830d78058621eab70ce3d6",
+    "transactions.csv": "24886a72b02955de3897f662731385f38b5e2cfb39b4d4c5f81acba68842f10b"
+  },
+  "header": ["transaction_id", "customer_id", "rule_id", "risk_level", "reason"],
+  "rows": [
+    {"transaction_id": "T002", "customer_id": "C002", "rule_id": "R1_HIGH_VALUE", "risk_level": "high"},
+    {"transaction_id": "T003", "customer_id": "C003", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T004", "customer_id": "C003", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T005", "customer_id": "C003", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T006", "customer_id": "C004", "rule_id": "R2_GEO_AMOUNT", "risk_level": "high"},
+    {"transaction_id": "T007", "customer_id": "C005", "rule_id": "R4_COUNTRY_MISMATCH", "risk_level": "medium"},
+    {"transaction_id": "T010", "customer_id": "C008", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T011", "customer_id": "C009", "rule_id": "R1_HIGH_VALUE", "risk_level": "high"},
+    {"transaction_id": "T012", "customer_id": "C008", "rule_id": "R2_GEO_AMOUNT", "risk_level": "high"},
+    {"transaction_id": "T019", "customer_id": "C012", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T020", "customer_id": "C012", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T021", "customer_id": "C012", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T022", "customer_id": "C013", "rule_id": "R1_HIGH_VALUE", "risk_level": "high"},
+    {"transaction_id": "T023", "customer_id": "C014", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T024", "customer_id": "C014", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T025", "customer_id": "C014", "rule_id": "R3_CARD_VELOCITY", "risk_level": "medium"},
+    {"transaction_id": "T031", "customer_id": "C018", "rule_id": "R1_HIGH_VALUE", "risk_level": "high"},
+    {"transaction_id": "T032", "customer_id": "C019", "rule_id": "R4_COUNTRY_MISMATCH", "risk_level": "medium"}
+  ],
+  "non_suspicious": ["T001", "T008", "T009", "T013", "T014", "T015", "T016", "T017", "T018", "T026", "T027", "T028", "T029", "T030"],
+  "secondary_rules": {
+    "T011": ["R3_CARD_VELOCITY", "R4_COUNTRY_MISMATCH"],
+    "T012": ["R3_CARD_VELOCITY"],
+    "T022": ["R2_GEO_AMOUNT", "R4_COUNTRY_MISMATCH"],
+    "T031": ["R2_GEO_AMOUNT", "R4_COUNTRY_MISMATCH"]
+  },
+  "rule_ids": ["R1_HIGH_VALUE", "R2_GEO_AMOUNT", "R3_CARD_VELOCITY", "R4_COUNTRY_MISMATCH"],
+  "rule_audit_expected": {
+    "suspicious_transaction_ids": ["T002", "T003", "T004", "T005", "T006", "T007", "T010", "T011", "T012", "T019", "T020", "T021", "T022", "T023", "T024", "T025", "T031", "T032"],
+    "non_suspicious_transaction_ids": ["T001", "T008", "T009", "T013", "T014", "T015", "T016", "T017", "T018", "T026", "T027", "T028", "T029", "T030"],
+    "rule_counts": {"R1_HIGH_VALUE": 4, "R2_GEO_AMOUNT": 2, "R3_CARD_VELOCITY": 10, "R4_COUNTRY_MISMATCH": 2},
+    "secondary_rule_ids": {
+      "T011": ["R3_CARD_VELOCITY", "R4_COUNTRY_MISMATCH"],
+      "T012": ["R3_CARD_VELOCITY"],
+      "T022": ["R2_GEO_AMOUNT", "R4_COUNTRY_MISMATCH"],
+      "T031": ["R2_GEO_AMOUNT", "R4_COUNTRY_MISMATCH"]
+    }
+  }
+}

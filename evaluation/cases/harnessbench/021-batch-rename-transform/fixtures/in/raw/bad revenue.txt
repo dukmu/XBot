@@ -1,0 +1,3 @@
+Region North
+Amount: eleven
+Currency: USD

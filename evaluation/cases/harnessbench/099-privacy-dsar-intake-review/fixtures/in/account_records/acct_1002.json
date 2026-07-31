@@ -1,0 +1,9 @@
+{
+  "account_id": "acct_1002",
+  "account_email": "jules.park@example.net",
+  "phone": "+1-206-555-0102",
+  "status": "active",
+  "retention_flags": [],
+  "household_member": null,
+  "internal_risk_note": "email mismatch may be benign; do not disclose matched account email"
+}

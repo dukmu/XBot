@@ -1,0 +1,14 @@
+task_id: "064-service-dependency-triage"
+title: "Service dependency triage with logs, topology, and metrics"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 1000
+difficulty: "hard"
+tags:
+  - "sre"
+  - "incident-response"
+  - "dependency-triage"
+  - "logs"
+  - "metrics"

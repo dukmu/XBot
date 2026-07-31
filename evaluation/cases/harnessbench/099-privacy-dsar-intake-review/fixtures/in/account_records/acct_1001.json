@@ -1,0 +1,9 @@
+{
+  "account_id": "acct_1001",
+  "account_email": "maya.chen@example.com",
+  "phone": "+1-415-555-0198",
+  "status": "active",
+  "retention_flags": [],
+  "household_member": null,
+  "internal_risk_note": "low risk; analyst Nina saw no account takeover signal"
+}

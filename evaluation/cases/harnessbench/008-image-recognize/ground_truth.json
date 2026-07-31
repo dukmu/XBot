@@ -1,0 +1,20 @@
+{
+  "image_files": ["target1.png", "target2.jpg"],
+  "rubric_reference": {
+    "image1": "Red square on a black background.",
+    "image2": "Orange-and-white long-haired kitten on a white knit blanket; soft indoor background (curtain/wood, bokeh)."
+  },
+  "vision_score_axes": {
+    "image1": {
+      "shape": "Image 1: main geometry is square-like. 1=clear square; 0.5=vague shape only; 0=wrong or irrelevant.",
+      "foreground_color": "Image 1: subject is red. 1=clear red; 0.5=partially red; 0=missing or wrong.",
+      "background": "Image 1: background is black or near-black. 1=clear; 0.5=dark but not black; 0=wrong."
+    },
+    "image2": {
+      "shape": "Image 2: subject is a cat. 1=clear cat + optional detail (kitten, long hair, pose); 0.5=generic “cat”; 0=wrong species.",
+      "foreground_color": "Image 2: orange/ginger and white (or “orange-and-white cat”). 1=both colors or phrase; 0.5=cat only; 0=wrong colors.",
+      "background": "Image 2: blanket/fabric OR indoor/bokeh/soft light—any one counts. 1=mentions at least one; 0.5=“indoor” only; 0=severe mismatch."
+    },
+    "aggregation": "vision_axes support authoring and manual review; automated quality uses oracle_grade.py rubric_llm with images and answer text; outcome_score still checks artifacts. Swapped answers reduce quality."
+  }
+}

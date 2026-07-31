@@ -1,0 +1,26 @@
+Create a release approval gate package.
+
+Read:
+- $WORKSPACE/in/release_manifest.json
+- $WORKSPACE/in/approval_policy.md
+- $WORKSPACE/in/preflight_checks.json
+- $WORKSPACE/in/risk_register.csv
+- $WORKSPACE/in/change_calendar.csv
+- $WORKSPACE/in/incident_history.json
+- $WORKSPACE/in/rollback_runbook.md
+
+Create:
+- $WORKSPACE/out/approval_packet.json
+- $WORKSPACE/out/blockers.csv
+- $WORKSPACE/out/pending_actions.md
+- $WORKSPACE/out/audit_trail.md
+
+Requirements:
+- Determine whether the release is go, conditional_go, or blocked.
+- Identify all hard blockers from the policy and evidence files.
+- approval_packet.json must include release_id, decision, blocker_ids, required_approvals, pending_actions, evidence_refs, and not_executed_statement.
+- blockers.csv must include blocker_id, severity, owner_role, evidence_ref, required_approval_or_action, and rationale.
+- pending_actions.md must list only proposed or pending actions that require approval.
+- audit_trail.md must map each blocker and decision to local evidence.
+- Do not modify input files. Do not use network access.
+- This is a planning and approval package only. Do not claim that production operations, rollback, deploy, feature flag changes, or paging actions have already been executed.

@@ -1,0 +1,4 @@
+Document type: proof_of_address
+Customer: River Pantry
+Address: 17 Cedar Rd, Salem, OR
+Statement date: 2026-03-20

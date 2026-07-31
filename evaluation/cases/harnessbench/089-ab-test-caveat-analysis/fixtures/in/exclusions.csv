@@ -1,0 +1,6 @@
+user_id,reason,variant,notes
+U0091,employee,A,internal tester account
+U0144,bot_user,B,user_agent contained synthetic
+U0330,duplicate_assignment,B,assigned to A and B; removed from analysis
+U0472,pre_exposure_conversion,A,purchase timestamp before first exposure
+U0618,outside_7d_window,B,purchase at day 9

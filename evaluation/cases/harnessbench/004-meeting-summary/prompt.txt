@@ -1,0 +1,8 @@
+Read **`$WORKSPACE/in/meeting_transcript.txt`** (full transcript of a product meeting) and write an **English meeting summary** to **`$WORKSPACE/out/meeting_summary.txt`** (UTF-8 text; create `mkdir -p out` first if needed).
+
+**Content and format:**
+1. Use **one to three paragraphs** in English to cover: **main topics**, **aligned conclusions or decisions**, **major risks or open issues**, and **clear follow-ups** (no need to recap sentence-by-sentence, but a reader should follow the discussion without reading the full transcript). **Only include what the transcript supports**—do not speculate or invent.
+2. **Length**: aim for a typical **short workplace summary**—clearly **more than a few slogan-like bullets**, and clearly **shorter than copying the transcript**; most readers should finish in **about one to two minutes**. Avoid ultra-short bullet dumps or very long essays.
+3. **Information density**: naturally include several **recurring or anchoring terms** from the transcript (org/product-line names, phase or release wording, resource or constraint language, named technical or process objects, etc.) while keeping the summary coherent; avoid stuffing unrelated terms just to look “complete”.
+
+**Output path:** `out/meeting_summary.txt` only.

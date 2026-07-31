@@ -1,0 +1,1 @@
+DSAR-001: requester verified by token. Support history, profile, marketing prefs, and analytics can be routed for deletion review. Contact phone +1-415-555-0198 should be redacted from requester-facing artifacts.

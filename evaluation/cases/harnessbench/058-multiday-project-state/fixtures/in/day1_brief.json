@@ -1,0 +1,12 @@
+{
+  "day": "Day 1",
+  "project": "Customer Analytics Pilot",
+  "baseline_budget": 120000,
+  "target_launch": "Day 30",
+  "workstreams": [
+    {"id": "WS-data", "owner": "Marta", "goal": "migrate CRM and ticket data"},
+    {"id": "WS-model", "owner": "Jun", "goal": "train churn risk model"},
+    {"id": "WS-enable", "owner": "Lee", "goal": "prepare success team workflow"}
+  ],
+  "initial_risks": ["R-data-quality", "R-adoption"]
+}

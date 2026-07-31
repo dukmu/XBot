@@ -1,0 +1,9 @@
+{
+  "max_seconds": 0.12,
+  "required_functions": ["build_catalog_index", "find_orders_for_sku"],
+  "forbidden_terms": ["subprocess", "requests", "pickle.dump", "open(", "sqlite3"],
+  "scoring": {
+    "weights": {"edge_semantics": 0.20, "generated_correctness": 0.30, "performance": 0.30, "implementation_shape": 0.20},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

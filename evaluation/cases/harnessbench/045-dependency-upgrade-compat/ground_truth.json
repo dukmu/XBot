@@ -1,0 +1,12 @@
+{
+  "expected_requirement": "python-slugify>=8,<9",
+  "forbidden_requirement_terms": ["requests", "django", "fastapi", "git+", "http://", "https://"],
+  "required_code_terms": ["slugify", "allow_unicode", "separator", "ValueError"],
+  "decision_terms": ["python-slugify", "8", "minimal", "allow_unicode", "separator", "unrelated dependencies", "signature", "ValueError"],
+  "matrix_terms": ["default_ascii", "unicode", "separator", "invalid_separator", "empty", "non_string", "punctuation"],
+  "risk_terms": ["behavior", "risk", "assumption", "rollback", "pytest", "unicode", "separator", "minimal"],
+  "scoring": {
+    "weights": {"requirements": 0.22, "pytest": 0.24, "compat_code": 0.24, "compat_decision": 0.08, "compat_matrix": 0.09, "compat_risks": 0.08, "notes_integrity": 0.05},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

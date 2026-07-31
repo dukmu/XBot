@@ -1,0 +1,22 @@
+The JavaScript state module in `$WORKSPACE/in/session-ui/src/sessionStore.js` has runtime type and state isolation bugs.
+
+Run `node sessionStore.test.js` from `$WORKSPACE/in/session-ui/src`, then fix the implementation.
+
+Required behavior:
+- `createSession()` returns a fresh independent session every time.
+- `login(session, user)` and `setPreference(session, key, value)` are immutable.
+- User ids must be normalized to strings.
+- Role input may be a string or array, but stored roles must always be an array of strings.
+- `isAdmin(session)` must not return stale results after roles change.
+- `serializeSession` and `restoreSession` must round-trip without sharing nested object references.
+- Invalid users, blank preference keys, and non-string role values should throw clear errors.
+
+Required artifact:
+- Write `$WORKSPACE/out/session_fix_report.md` summarizing the root cause and verification.
+
+Constraints:
+- Do not modify `sessionStore.test.js`.
+- Do not introduce npm dependencies.
+- Do not use a global singleton session.
+- Do not hard-code test user ids or names.
+- Do not use `JSON.stringify` as the primary clone strategy inside normal state updates.

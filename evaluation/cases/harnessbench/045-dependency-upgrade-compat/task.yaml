@@ -1,0 +1,9 @@
+task_id: "045-dependency-upgrade-compat"
+title: "Dependency Upgrade Compatibility"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags: ["software-engineering", "dependencies", "compatibility", "pytest", "deterministic"]

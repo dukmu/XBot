@@ -1,0 +1,13 @@
+{
+  "required_yaml_terms": ["actions/checkout@v4", "actions/setup-python@v5", "pip install -r requirements.txt", "python -m pytest", "3.10", "3.11", "cache", "paths", "python -c", "workflow_dispatch", "CI_NOTES.md", "permissions", "contents: read", "concurrency", "cancel-in-progress", "timeout-minutes", "fail-fast: false"],
+  "forbidden_yaml_terms": ["secrets.", "curl ", "wget ", "deploy", "production", "docker push", "scp ", "pull_request_target"],
+  "path_filter_positive": ["app/mathutil.py", "test_mathutil.py", "requirements.txt", ".github/workflows/ci.yml", "CI_NOTES.md"],
+  "path_filter_negative": ["README.md", "docs/notes.md"],
+  "smoke_command_terms": ["from app.mathutil import normalize_percent", "normalize_percent("],
+  "workflow_exact_terms": ["permissions", "contents", "read", "concurrency", "cancel-in-progress", "timeout-minutes"],
+  "design_note_terms": ["pull request", "path filter", "smoke", "import", "secrets", "deployment", "external service", "CI_NOTES.md"],
+  "scoring": {
+    "weights": {"yaml_parse": 0.10, "ci_structure": 0.18, "path_filter_simulation": 0.18, "local_tests": 0.14, "smoke_commands": 0.18, "design_notes": 0.08, "code_integrity": 0.14},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

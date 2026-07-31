@@ -1,0 +1,5 @@
+Document type: government_id
+Customer: Elena Torres
+Passport: P123456789
+Date of birth: 1988-04-19
+Expires: 2028-12-31

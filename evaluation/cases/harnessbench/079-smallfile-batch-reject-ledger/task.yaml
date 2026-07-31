@@ -1,0 +1,13 @@
+task_id: "079-smallfile-batch-reject-ledger"
+title: "Small File Batch Normalize With Reject Ledger"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 600
+difficulty: "medium-hard"
+tags:
+  - "workspace-tooling"
+  - "batch-processing"
+  - "filesystem"
+  - "reject-ledger"

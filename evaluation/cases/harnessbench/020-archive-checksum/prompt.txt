@@ -1,0 +1,30 @@
+You are working in the task workspace. Use only local files.
+
+Inputs:
+- $WORKSPACE/in/bundle_a.zip
+- $WORKSPACE/in/bundle_b.tar
+- $WORKSPACE/in/checksums.json
+
+Task:
+1. Extract both archives without modifying the archive files.
+2. Compute size in bytes and sha256 for every regular file actually present in the archives.
+3. Compare those files against $WORKSPACE/in/checksums.json.
+4. Write $WORKSPACE/out/manifest.json and $WORKSPACE/out/mismatches.txt.
+
+Required $WORKSPACE/out/manifest.json format:
+{
+  "files": [
+    {"archive": "bundle_a.zip", "path": "data/metrics.csv", "size": 49, "sha256": "..."}
+  ]
+}
+
+Rules:
+- The files array must contain every actual archived regular file exactly once.
+- Sort files by archive, then path.
+- path must be the path inside the archive, without leading ./.
+- Write $WORKSPACE/out/mismatches.txt as UTF-8 text, one row per mismatch, sorted exactly as:
+  archive,path,reason
+- Use reason "checksum_mismatch" for a present file whose sha256 differs from the checklist.
+- Use reason "missing" for a checklist entry not present in the extracted archive.
+- Do not list matching files in mismatches.txt.
+- Do not modify input files.

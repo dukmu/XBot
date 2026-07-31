@@ -1,0 +1,9 @@
+{
+  "required_test_terms": ["calculate_total", "bulk", "vip", "shipping", "ValueError", "round", "coupon_cents", "expedite", "customer_type"],
+  "intent_terms": ["discount order", "free-shipping", "bulk aggregation", "rounding", "coupon", "expedited", "validation"],
+  "forbidden_patterns": ["monkeypatch", "pytest.skip", "xfail", "inspect.getsource", "open(", "read_text("],
+  "scoring": {
+    "weights": {"pytest": 0.23, "mutation": 0.34, "coverage_intent": 0.23, "test_intent_doc": 0.08, "source_integrity": 0.12},
+    "thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}
+  }
+}

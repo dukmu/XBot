@@ -1,0 +1,10 @@
+department,category,actual_amount
+Marketing,Ads,62000.00
+Marketing,Events,26000.00
+Operations,Cloud,39500.00
+Operations,Logistics,31000.00
+R&D,Tools,17000.00
+G&A,Training,9800.00
+Support,Escalations,1200.00
+Product,Research,3500.00
+Sales,Travel,11000.00

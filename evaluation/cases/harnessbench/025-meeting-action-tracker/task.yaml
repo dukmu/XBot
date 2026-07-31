@@ -1,0 +1,14 @@
+task_id: "025-meeting-action-tracker"
+title: "Extract And Merge Meeting Action Items"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "office"
+  - "meeting"
+  - "csv"
+  - "action-items"
+  - "deterministic"

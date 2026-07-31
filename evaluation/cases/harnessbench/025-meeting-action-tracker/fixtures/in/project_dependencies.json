@@ -1,0 +1,42 @@
+{
+  "dependency_rules": [
+    {
+      "action_id": "AT-104",
+      "blocked_by": "AT-101",
+      "rule_type": "extend_if_blocked",
+      "extend_by_days": 3,
+      "extend_from": "most_recently_stated_deadline",
+      "note": "sandbox access checklist cannot start until pricing FAQ is finalized. Extend applies from the most recently stated deadline (2026-06-10 per transcript_part2.txt), not from original or previous deadline."
+    },
+    {
+      "action_id": "AT-106",
+      "blocked_by": "AT-104",
+      "rule_type": "set_pending_if_blocked",
+      "note": "partner onboarding session requires sandbox checklist completion"
+    }
+  ],
+  "resource_conflicts": [
+    {
+      "owner": "Sam",
+      "conflicting_deadlines": [
+        "2026-06-12",
+        "2026-06-13"
+      ],
+      "resolution": "later_date_wins",
+      "affected_actions": [
+        "NEW-01",
+        "NEW-02"
+      ],
+      "note": "If owner has multiple deadlines in the conflict window and all affected actions remain open, later deadline takes precedence for resource planning. Earlier task retains its original deadline unless explicitly rescheduled."
+    }
+  ],
+  "bulk_updates": [
+    {
+      "source": "followup_emails.md",
+      "type": "cancel_all_by_owner",
+      "owner": "Jules",
+      "reason": "Jules moved to another project",
+      "effective_date": "2026-06-04"
+    }
+  ]
+}

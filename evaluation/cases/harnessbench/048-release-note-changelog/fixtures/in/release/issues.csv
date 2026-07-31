@@ -1,0 +1,13 @@
+issue_id,title,customer_impact
+ISSUE-101,Webhook signatures,Integrators can verify outbound event authenticity
+ISSUE-102,CSV export duplicates,Finance exports no longer contain duplicated invoices
+ISSUE-103,Usage response rename,API clients must read billable_units instead of units
+ISSUE-104,Legacy token query parameter,Query-string tokens are rejected to reduce credential leakage
+ISSUE-105,Export timezone label,Internal fix was reverted before release
+ISSUE-106,Rate limit reset field,API clients must read retry_after_ms instead of retryAfter
+ISSUE-107,Beta dashboard export casing,Internal fix was reverted before release
+ISSUE-108,Audit log export API,Feature was deferred to 2.5.0 and must not be listed as shipped
+ISSUE-109,Usage migration examples,Documentation-only update; mention only as supporting docs, not as a shipped product issue
+ISSUE-110,Webhook signature header rename,Integrators must read X-Webhook-Signature instead of X-Signature
+SEC-EMBARGO-9,Embargoed security hardening,Do not disclose technical exploit details before advisory publication
+SEC-PUBLIC-4,Session fixation mitigation,Public security advisory may be mentioned at a high level

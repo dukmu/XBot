@@ -1,0 +1,14 @@
+Working directory: `$WORKSPACE` (a `git clone` of the repo; `origin` points to the harness bare repo).
+
+Context:
+- Current branch is **main**, aligned with `origin/main`.
+- Remote has PR branch **`feature/pr-add-doc`**: **one commit** ahead of main, adding **`CONTRIBUTING.md`** (includes marker **`BENCH_PR_OK`**); no other malicious changes expected.
+
+Tasks:
+1. Use `git fetch` / `git diff` / `git log` to review **main…feature/pr-add-doc** and decide whether to merge.
+2. Write your review to **`$WORKSPACE/out/review.txt`**: **at least one line**; if you approve merging, the **first line** must start with **`APPROVE`** (optionally with a short reason, e.g. `APPROVE: ...`).
+3. If you choose to merge: `git merge` that PR branch into **main** (fast-forward or merge commit allowed), then **`git push origin main`** to update the remote.
+
+Notes:
+- If `git` warns about `safe.directory`, run once `git config --global --add safe.directory "$WORKSPACE"` or use your environment’s equivalent.
+- `mkdir -p $WORKSPACE/out` if the directory is missing.

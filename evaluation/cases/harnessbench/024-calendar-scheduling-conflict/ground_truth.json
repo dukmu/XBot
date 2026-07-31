@@ -1,0 +1,10 @@
+{
+  "allowed_slots": [
+    {"start": "2026-05-12T10:30", "end": "2026-05-12T11:15"},
+    {"start": "2026-05-12T14:00", "end": "2026-05-12T14:45"},
+    {"start": "2026-05-13T11:00", "end": "2026-05-13T11:45"}
+  ],
+  "required_participants": ["alex@example.com", "priya@example.com", "marco@example.com", "dana@northwind.example"],
+  "invite_must_contain": ["Northwind renewal risk review", "Northwind Traders", "Alex Chen", "Priya Rao", "Marco Silva", "Dana Morris", "45"],
+  "forbidden_terms": ["guaranteed delivery", "final pricing", "legal approval"]
+}

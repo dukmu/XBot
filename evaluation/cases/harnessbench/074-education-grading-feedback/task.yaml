@@ -1,0 +1,9 @@
+task_id: "074-education-grading-feedback"
+title: "Education assignment grading and feedback"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "easy"
+tags: ["education", "grading", "feedback", "deterministic-oracle"]

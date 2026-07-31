@@ -1,0 +1,13 @@
+The implementation in `$WORKSPACE/in/perfcase/slow.py` is correct but too slow for repeated catalog lookups.
+
+Your job:
+- Optimize `$WORKSPACE/in/perfcase/slow.py`.
+- Preserve public function names and results.
+- Preserve the input order of matching order ids.
+- Treat missing or empty `lines` as no matches.
+- If an order contains the same SKU multiple times, return that order id only once for that SKU.
+- Support arbitrary SKU strings, not only the sample SKU prefix used in the benchmark note.
+- Do not edit `$WORKSPACE/in/perfcase/benchmark_expected.json`.
+- Do not add external dependencies, caching files, subprocess calls, databases, or network calls.
+
+The oracle checks correctness on generated and edge-case data, verifies that fixtures are not modified, and enforces a local time threshold.

@@ -1,0 +1,8 @@
+{
+  "required_blocks": ["setup", "rehearsal", "accessibility_check", "live_support", "teardown"],
+  "changed_constraints": ["Room B", "Chen", "13:00", "11:00", "accessibility_check"],
+  "live_support_room": "Room B",
+  "forbidden_live_support_people": ["Chen"],
+  "rehearsal_latest_end": "11:00",
+  "accessibility_duration_minutes": 15
+}

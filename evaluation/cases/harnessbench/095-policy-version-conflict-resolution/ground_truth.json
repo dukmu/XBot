@@ -1,0 +1,92 @@
+{
+  "rulings": {
+    "C-001": {
+      "decision": "denied",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["65", "dinner"],
+      "superseded": ["policy_versions/expense_policy_2024-09.md"],
+      "scope_tokens": ["global", "meal"]
+    },
+    "C-002": {
+      "decision": "approved",
+      "source": "policy_versions/emergency_addendum_2025-03.md",
+      "evidence_tokens": ["storm", "300"],
+      "superseded": ["policy_versions/expense_policy_2025-02.md"],
+      "scope_tokens": ["storm", "2025-04-30"]
+    },
+    "C-003": {
+      "decision": "denied",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["240", "hotel"],
+      "superseded": ["policy_versions/emergency_addendum_2025-03.md"],
+      "scope_tokens": ["expired", "window"]
+    },
+    "C-004": {
+      "decision": "approved",
+      "source": "policy_versions/hr_exception_memo_2025-01.md",
+      "evidence_tokens": ["remote engineering", "450"],
+      "superseded": ["policy_versions/expense_policy_2025-02.md"],
+      "scope_tokens": ["remote engineering", "chair"]
+    },
+    "C-005": {
+      "decision": "denied",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["not generally reimbursable", "furniture"],
+      "superseded": ["policy_versions/hr_exception_memo_2025-01.md"],
+      "scope_tokens": ["sales", "not apply"]
+    },
+    "C-006": {
+      "decision": "needs_review",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["above", "1000", "pre-approval"],
+      "superseded": ["policy_versions/expense_policy_2024-09.md"],
+      "scope_tokens": ["finance", "pre-approval"]
+    },
+    "C-007": {
+      "decision": "approved",
+      "source": "policy_versions/expense_policy_2024-09.md",
+      "evidence_tokens": ["70", "dinner"],
+      "superseded": ["policy_versions/expense_policy_2024-01.md"],
+      "scope_tokens": ["2024-09", "then"]
+    },
+    "C-008": {
+      "decision": "insufficient_evidence",
+      "source": "",
+      "evidence_tokens": ["gift", "schedule"],
+      "superseded": [],
+      "scope_tokens": ["missing", "threshold"]
+    },
+    "C-009": {
+      "decision": "approved",
+      "source": "policy_versions/regional_addendum_france_2025-02.md",
+      "evidence_tokens": ["90", "client-facing"],
+      "superseded": ["policy_versions/expense_policy_2025-02.md"],
+      "scope_tokens": ["France", "2025-03-31"]
+    },
+    "C-010": {
+      "decision": "denied",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["65", "dinner"],
+      "superseded": ["policy_versions/regional_addendum_france_2025-02.md"],
+      "scope_tokens": ["internal", "not change"]
+    },
+    "C-011": {
+      "decision": "denied",
+      "source": "policy_versions/expense_policy_2025-02.md",
+      "evidence_tokens": ["65", "dinner"],
+      "superseded": ["policy_versions/regional_addendum_france_2025-02.md"],
+      "scope_tokens": ["expired", "2025-03-31"]
+    }
+  },
+  "conflict_cases": ["C-001", "C-002", "C-003", "C-004", "C-005", "C-006", "C-007", "C-009", "C-010", "C-011"],
+  "forbidden_final_tokens": {
+    "C-001": ["approved"],
+    "C-002": ["denied"],
+    "C-003": ["approved"],
+    "C-005": ["approved"],
+    "C-008": ["approved", "denied"],
+    "C-010": ["approved"],
+    "C-011": ["approved"]
+  },
+  "scoring": {"thresholds": {"pass": 0.70, "good": 0.85, "excellent": 0.95}}
+}

@@ -1,0 +1,10 @@
+{
+  "day": "Day 2",
+  "updates": [
+    {"type": "delay", "id": "R-connect-delay", "detail": "analytics connector sandbox slips by 5 days"},
+    {"type": "budget", "detail": "approved pilot budget reduced to 92000"},
+    {"type": "compliance", "id": "R-compliance", "detail": "privacy team requires compliance review before launch"},
+    {"type": "owner_change", "workstream": "WS-data", "new_owner": "Priya"},
+    {"type": "stakeholder_conflict", "detail": "sales asks to keep in-app experimentation, while privacy asks to defer it until compliance review"}
+  ]
+}

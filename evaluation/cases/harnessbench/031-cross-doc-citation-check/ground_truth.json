@@ -1,0 +1,14 @@
+{
+  "expected_audit": [
+    {"citation_id": "S2", "location": "Claim B", "issue_contains": "wrong title", "expected_source": "sources/escalations.md"},
+    {"citation_id": "S4", "location": "Claim C", "issue_contains": "retired", "expected_source": "sources/help_center.md"},
+    {"citation_id": "missing", "location": "Claim D", "issue_contains": "missing", "expected_source": "sources/csat.md"}
+  ],
+  "fixed_refs": [
+    "[S1] Support latency dashboard - sources/latency.md",
+    "[S2] Escalation trend memo - sources/escalations.md",
+    "[S3] Help center analytics - sources/help_center.md",
+    "[S4] CSAT survey extract - sources/csat.md"
+  ],
+  "forbidden_refs": ["Renewal briefing", "retired"]
+}

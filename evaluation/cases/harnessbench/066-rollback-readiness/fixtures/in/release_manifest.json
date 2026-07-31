@@ -1,0 +1,21 @@
+{
+  "release_id": "PAY-2026-0417",
+  "service": "payments-api",
+  "version": "2026.04.17-rc3",
+  "rollback_slo_minutes": 15,
+  "estimated_rollback_minutes": 18,
+  "feature_flags": [
+    {"name": "payment_routing_v2", "default": "on", "kill_switch": false},
+    {"name": "card_bin_cache_v3", "default": "on", "kill_switch": true}
+  ],
+  "database_migrations": [
+    {"name": "ledger_entries_v4", "up_script": "20260417_ledger_entries_v4_up.sql", "down_script": null, "owner": "db-platform"},
+    {"name": "payment_attempt_index", "up_script": "20260417_payment_attempt_index_up.sql", "down_script": "20260417_payment_attempt_index_down.sql", "owner": "payments"}
+  ],
+  "approvals": [
+    {"role": "release_manager", "name": "A. Rivera", "approved": true},
+    {"role": "qa_lead", "name": "M. Chen", "approved": true},
+    {"role": "sre_oncall", "name": "", "approved": false},
+    {"role": "database_owner", "name": "T. Singh", "approved": "required_for_migration_rollback"}
+  ]
+}

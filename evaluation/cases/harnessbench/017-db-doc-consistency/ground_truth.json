@@ -1,0 +1,32 @@
+{
+  "min_subtasks": 3,
+  "expected_subtask_topics": [
+    "Parse structured SQL data (including multi‑environment and node tables)",
+    "Parse unstructured Markdown data (including parameters and node tables)",
+    "Parse YAML environment override configurations",
+    "Parse JSON node hardware inventory",
+    "Cross‑reference and generate conflict report"
+  ],
+  "required_files": [
+    "audit_report.csv",
+    "progress.md"
+  ],
+  "scoring": {
+    "weights": {
+      "sql_extraction": 0.25,
+      "md_extraction": 0.25,
+      "yaml_json_extraction": 0.15,
+      "contradiction_accuracy": 0.35
+    },
+    "thresholds": {
+      "excellent": 0.90,
+      "good": 0.75,
+      "pass": 0.60
+    }
+  },
+  "validation_constraints": {
+    "report_format_is_valid_csv": true,
+    "no_false_positives_in_report": true,
+    "no_db_json_internal_conflicts_reported": true
+  }
+}

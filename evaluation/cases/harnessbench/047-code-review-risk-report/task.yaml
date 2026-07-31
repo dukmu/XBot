@@ -1,0 +1,9 @@
+task_id: "047-code-review-risk-report"
+title: "Code Review Risk Report"
+class: "Software Engineering & Codebase Maintenance"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags: ["software-engineering", "code-review", "security", "json-artifact", "deterministic"]

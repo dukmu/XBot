@@ -1,0 +1,47 @@
+{
+  "outputs": {
+    "csv": "out/variance_report.csv",
+    "rollup": "out/department_rollup.csv",
+    "review_reasons": "out/review_reasons.json",
+    "summary": "out/summary.md"
+  },
+  "fixture_hashes": {
+    "actuals.csv": "262de03b60c3d3f12a1330b2e16bfcc84d3ffe042d63ed1fe81e258118c99960",
+    "budget.csv": "ccf7d3caddbcd492eb9a784a69cf8d8c625a745fbc3afff8570c17702a440554"
+  },
+  "header": ["department", "category", "budget_amount", "actual_amount", "variance_amount", "variance_pct", "flag"],
+  "rows": [
+    {"department": "G&A", "category": "Training", "budget_amount": "10000.00", "actual_amount": "9800.00", "variance_amount": "-200.00", "variance_pct": "-2.00", "flag": "ok"},
+    {"department": "Marketing", "category": "Ads", "budget_amount": "50000.00", "actual_amount": "62000.00", "variance_amount": "12000.00", "variance_pct": "24.00", "flag": "review"},
+    {"department": "Marketing", "category": "Events", "budget_amount": "30000.00", "actual_amount": "26000.00", "variance_amount": "-4000.00", "variance_pct": "-13.33", "flag": "review"},
+    {"department": "Operations", "category": "Cloud", "budget_amount": "40000.00", "actual_amount": "39500.00", "variance_amount": "-500.00", "variance_pct": "-1.25", "flag": "ok"},
+    {"department": "Operations", "category": "Logistics", "budget_amount": "25000.00", "actual_amount": "31000.00", "variance_amount": "6000.00", "variance_pct": "24.00", "flag": "review"},
+    {"department": "Product", "category": "Research", "budget_amount": "0.00", "actual_amount": "3500.00", "variance_amount": "3500.00", "variance_pct": "N/A", "flag": "review"},
+    {"department": "R&D", "category": "Tools", "budget_amount": "20000.00", "actual_amount": "17000.00", "variance_amount": "-3000.00", "variance_pct": "-15.00", "flag": "review"},
+    {"department": "Sales", "category": "Travel", "budget_amount": "10000.00", "actual_amount": "11000.00", "variance_amount": "1000.00", "variance_pct": "10.00", "flag": "ok"},
+    {"department": "Security", "category": "Tools", "budget_amount": "15000.00", "actual_amount": "0.00", "variance_amount": "-15000.00", "variance_pct": "-100.00", "flag": "review"},
+    {"department": "Support", "category": "Escalations", "budget_amount": "0.00", "actual_amount": "1200.00", "variance_amount": "1200.00", "variance_pct": "N/A", "flag": "review"}
+  ],
+  "review_items": ["Marketing Ads", "Marketing Events", "Operations Logistics", "Product Research", "R&D Tools", "Security Tools", "Support Escalations"],
+  "largest_overrun": "Marketing Ads",
+  "rollup_header": ["department", "budget_amount", "actual_amount", "variance_amount", "variance_pct", "review_item_count", "rollup_flag"],
+  "rollup_rows": [
+    {"department": "G&A", "budget_amount": "10000.00", "actual_amount": "9800.00", "variance_amount": "-200.00", "variance_pct": "-2.00", "review_item_count": "0", "rollup_flag": "ok"},
+    {"department": "Marketing", "budget_amount": "80000.00", "actual_amount": "88000.00", "variance_amount": "8000.00", "variance_pct": "10.00", "review_item_count": "2", "rollup_flag": "review"},
+    {"department": "Operations", "budget_amount": "65000.00", "actual_amount": "70500.00", "variance_amount": "5500.00", "variance_pct": "8.46", "review_item_count": "1", "rollup_flag": "review"},
+    {"department": "Product", "budget_amount": "0.00", "actual_amount": "3500.00", "variance_amount": "3500.00", "variance_pct": "N/A", "review_item_count": "1", "rollup_flag": "review"},
+    {"department": "R&D", "budget_amount": "20000.00", "actual_amount": "17000.00", "variance_amount": "-3000.00", "variance_pct": "-15.00", "review_item_count": "1", "rollup_flag": "review"},
+    {"department": "Sales", "budget_amount": "10000.00", "actual_amount": "11000.00", "variance_amount": "1000.00", "variance_pct": "10.00", "review_item_count": "0", "rollup_flag": "ok"},
+    {"department": "Security", "budget_amount": "15000.00", "actual_amount": "0.00", "variance_amount": "-15000.00", "variance_pct": "-100.00", "review_item_count": "1", "rollup_flag": "review"},
+    {"department": "Support", "budget_amount": "0.00", "actual_amount": "1200.00", "variance_amount": "1200.00", "variance_pct": "N/A", "review_item_count": "1", "rollup_flag": "review"}
+  ],
+  "review_reasons": {
+    "Marketing Ads": {"reason_type": "overrun_pct"},
+    "Marketing Events": {"reason_type": "underrun_pct"},
+    "Operations Logistics": {"reason_type": "overrun_pct"},
+    "Product Research": {"reason_type": "unplanned_actual"},
+    "R&D Tools": {"reason_type": "underrun_pct"},
+    "Security Tools": {"reason_type": "missing_actual"},
+    "Support Escalations": {"reason_type": "zero_budget_actual"}
+  }
+}

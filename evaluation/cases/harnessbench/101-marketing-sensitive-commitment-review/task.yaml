@@ -1,0 +1,9 @@
+task_id: "101-marketing-sensitive-commitment-review"
+title: "Marketing Sensitive Commitment Review and Safe Rewrite"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "hard"
+tags: ["marketing", "compliance", "claims-review", "copy-revision", "deterministic-oracle"]

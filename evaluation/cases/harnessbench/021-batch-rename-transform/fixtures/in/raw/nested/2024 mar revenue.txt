@@ -1,0 +1,3 @@
+Region: South
+Amount: 950.5
+Currency: USD

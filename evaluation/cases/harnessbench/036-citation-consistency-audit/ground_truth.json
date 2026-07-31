@@ -1,0 +1,49 @@
+{
+  "errors": {
+    "missing_bib": ["Parker2021", "Ortega2020"],
+    "orphan_bib": ["Vega2019", "Ortega2018"],
+    "year_mismatch": ["Lin2022"],
+    "author_mismatch": ["Gomez2020"],
+    "suffix_needed": ["Chen2024a", "Chen2024b"],
+    "duplicate_key": ["Chen2024"],
+    "doi_title_mismatch": ["Chen2024Duplicate"]
+  },
+  "corrected": {
+    "required_keys": ["Lin2023", "Gomez2020", "Parker2021", "Singh2022", "Ortega2020", "Chen2024a", "Chen2024b"],
+    "forbidden_keys": ["Lin2022", "Vega2019", "Chen2024", "Chen2024Duplicate", "Rao2023", "Ortega2018"],
+    "field_expectations": {
+      "Lin2023": {"year": 2023, "title": "Regional Cache Hints for Tail Latency"},
+      "Gomez2020": {"authors_contain": ["Gomez", "Patel"], "year": 2020},
+      "Parker2021": {"year": 2021, "title": "Telemetry Counters at the Edge"},
+      "Ortega2020": {"authors_contain": ["Ortega"], "year": 2020, "title": "Rollback Drills for Edge Services"},
+      "Chen2024a": {"year": "2024a", "title": "Adaptive Cache Prewarming"},
+      "Chen2024b": {"year": "2024b", "title": "Edge Operations Retrospective"}
+    }
+  },
+  "evidence_span_terms": {
+    "missing_bib:Parker2021": ["Parker", "Telemetry Counters"],
+    "missing_bib:Ortega2020": ["Ortega", "Rollback Drills"],
+    "orphan_bib:Vega2019": ["Vega2019", "Legacy CDN Routing"],
+    "orphan_bib:Ortega2018": ["Ortega2018", "Rollback Drills"],
+    "year_mismatch:Lin2022": ["Lin", "2023"],
+    "author_mismatch:Gomez2020": ["Gomez", "Patel"],
+    "suffix_needed:Chen2024a": ["Chen", "2024a"],
+    "suffix_needed:Chen2024b": ["Chen", "2024b"],
+    "duplicate_key:Chen2024": ["Chen2024"],
+    "doi_title_mismatch:Chen2024Duplicate": ["wrong-doi", "Edge Operations Retrospective"]
+  },
+  "error_aliases": {
+    "missing_bib:Ortega2020": ["year_mismatch:Ortega2018", "missing_bib:Ortega2018"],
+    "orphan_bib:Ortega2018": ["year_mismatch:Ortega2018"],
+    "suffix_needed:Chen2024a": ["suffix_needed:Chen2024"],
+    "suffix_needed:Chen2024b": ["suffix_needed:Chen2024Duplicate", "suffix_needed:Chen2024"],
+    "duplicate_key:Chen2024": ["duplicate_key:Chen2024/Chen2024Duplicate"]
+  },
+  "audit_terms": ["UNKNOWN", "2024a", "2024b", "no external", "Rao", "evidence"],
+  "audit_term_aliases": {
+    "no external": ["no external", "not use external", "without external", "no internet", "did not use internet", "no web"],
+    "evidence": ["evidence", "support", "basis"]
+  },
+  "citation_graph_terms": ["in_text_citations", "bibliography_entries", "key_renames", "Lin2023", "Ortega2020", "Chen2024a", "Chen2024b", "removed", "renamed"],
+  "scoring": {"thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}}
+}

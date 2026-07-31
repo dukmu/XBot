@@ -1,0 +1,16 @@
+task_id: "022-local-rest-api-summary"
+title: "Local REST API summary"
+class: "Workspace, Tool Use & Multimodal Operations"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 600
+difficulty: "hard"
+tags:
+  - "api"
+  - "http"
+  - "local-mock"
+  - "data-processing"
+  - "deterministic"
+  - "hard"

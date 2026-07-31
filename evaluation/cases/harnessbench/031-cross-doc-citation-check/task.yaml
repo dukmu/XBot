@@ -1,0 +1,14 @@
+task_id: "031-cross-doc-citation-check"
+title: "Audit And Repair Cross-Document Citations"
+class: "Office & Business Communication"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "hard"
+tags:
+  - "office"
+  - "documents"
+  - "citation"
+  - "audit"
+  - "deterministic"

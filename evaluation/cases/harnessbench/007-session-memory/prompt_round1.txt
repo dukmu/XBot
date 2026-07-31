@@ -1,0 +1,11 @@
+[Round 1 / 2 — same OpenClaw session] Working directory: `$WORKSPACE`.
+
+You must remember the following passphrase in **conversation memory** (it will not be repeated in the next round):
+
+**Passphrase: `$MEM_SECRET`**
+
+Rules:
+1. **Do not** put the passphrase in plaintext in any file under **`$WORKSPACE/out/`** (this task only allows `phase1_done.txt`, and its content must be exactly one line: `ready`, with no passphrase); keep it only in the current session context. Grading only inspects the `out/` directory.
+2. Create **`phase1_done.txt`** under `$WORKSPACE/out/` with **exactly one line**, the word **`ready`** only (lowercase, no quotes, no extra spaces), meaning you have accepted the passphrase.
+
+First run: `mkdir -p $WORKSPACE/out`.

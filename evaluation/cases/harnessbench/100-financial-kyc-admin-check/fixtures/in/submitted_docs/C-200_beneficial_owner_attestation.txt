@@ -1,0 +1,5 @@
+Document type: beneficial_owner_attestation
+Customer: Blue Kite LLC
+Owners:
+- Mira Shah, ownership percentage: 60
+- Theo Grant, ownership percentage: 40

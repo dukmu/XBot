@@ -1,0 +1,9 @@
+task_id: "100-financial-kyc-admin-check"
+title: "Financial KYC Administrative Completeness Check"
+class: "Vertical Professional Workflows"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "hard"
+tags: ["financial-compliance", "kyc", "administrative-review", "risk-boundary", "deterministic-oracle"]

@@ -1,0 +1,24 @@
+You are preparing a logistics delay response plan.
+
+Read:
+- $WORKSPACE/in/shipments.csv
+- $WORKSPACE/in/carrier_updates.json
+- $WORKSPACE/in/customer_tiers.csv
+
+Create:
+- $WORKSPACE/out/delay_actions.csv
+- $WORKSPACE/out/customer_messages.md
+
+Requirements for delay_actions.csv:
+- Header must be: shipment_id,delay_status,customer_tier,action,compensation,reason
+- Include one row per shipment.
+- delay_status must be delayed or on_track.
+- action must be one of: monitor, notify, offer_credit, expedite_replacement.
+- Apply customer tier rules consistently.
+
+Requirements for customer_messages.md:
+- Include a message for each delayed shipment id.
+- Mention the concrete action and compensation or alternative plan.
+- Do not blame the customer or reveal internal carrier notes.
+
+Do not use the network. Do not modify input files.

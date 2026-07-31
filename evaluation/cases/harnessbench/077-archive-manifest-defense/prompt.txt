@@ -1,0 +1,36 @@
+Audit the nested archives in $WORKSPACE/in and write deterministic artifacts under $WORKSPACE/out.
+
+Inputs:
+- $WORKSPACE/in/incoming_a.zip
+- $WORKSPACE/in/incoming_b.tar
+- $WORKSPACE/in/expected_manifest_rules.json
+- $WORKSPACE/in/checksums_hint.csv
+
+Requirements:
+1. Inspect zip/tar/tar.gz contents, including nested archives.
+2. Extract only safe regular files into $WORKSPACE/out/extracted_safe/.
+3. Reject entries with path traversal, absolute paths, control characters, leading/trailing path segment whitespace, duplicate normalized logical paths, unsupported extensions, or files over the size limit.
+4. Do not write anything outside $WORKSPACE/out.
+5. Do not modify files in $WORKSPACE/in.
+
+Create:
+- $WORKSPACE/out/manifest.json
+- $WORKSPACE/out/rejected_entries.csv
+- $WORKSPACE/out/extracted_safe/
+- $WORKSPACE/out/audit_summary.md
+
+manifest.json format:
+{
+  "files": [
+    {
+      "archive_chain": ["incoming_a.zip", "nested/payload.tar.gz"],
+      "logical_path": "incoming_a/nested_payload/safe/reports/q1.csv",
+      "size_bytes": 31,
+      "sha256": "...",
+      "media_type": "text/csv"
+    }
+  ]
+}
+
+Sort manifest files by logical_path. Sort rejected_entries.csv by archive_chain then raw_name.
+rejected_entries.csv header must be: archive_chain,raw_name,reason,normalized_candidate

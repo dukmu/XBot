@@ -1,0 +1,9 @@
+{
+  "roi_study_present": false,
+  "hipaa_attestation_present": false,
+  "bank_grade_cert_current": false,
+  "pricing_offer_approval_present": false,
+  "security_whitepaper_present": true,
+  "customer_case_studies_present": true,
+  "support_sla_approved": true
+}

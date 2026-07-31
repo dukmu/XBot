@@ -1,0 +1,14 @@
+task_id: "065-capacity-planning"
+title: "Capacity planning from traffic history and instance catalog"
+class: "SRE, DevOps & Release Ops"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 900
+difficulty: "medium"
+tags:
+  - "sre"
+  - "capacity-planning"
+  - "cost"
+  - "forecasting"
+  - "json-output"

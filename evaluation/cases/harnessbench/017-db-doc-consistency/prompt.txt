@@ -1,0 +1,33 @@
+# Database and System Deployment Documentation Consistency Audit
+
+## 1. Task Background
+The technical team reports that the existing online deployment document `$WORKSPACE/in/db/deployment_guide.md` may be outdated, causing frequent errors for new staff during deployment. The actual running state of the system is recorded in last night's database backup file `$WORKSPACE/in/db/backup.sql`. In addition, production environment uses K8s ConfigMap (`$WORKSPACE/in/db/environment.yml`) for configuration overrides, and a node inventory (`$WORKSPACE/in/db/node_inventory.json`) records actual hardware.
+
+You need to act as a DevOps Agent, auditing contradictions between the documentation and the real state.
+
+## 2. Core Subtasks
+- **Parse ground truth**: Read and parse `$WORKSPACE/in/db/backup.sql`, extract all key‑value pairs from the `system_config` table (distinguish `environment='global'` and other environments). Also parse node hardware information from the `cluster_nodes` table.
+- **Document comparison**: Read `$WORKSPACE/in/db/deployment_guide.md`, extract all system parameter descriptions and the node planning table.
+- **Environment override comparison**: Parse `$WORKSPACE/in/db/environment.yml`, extract configuration override values for each namespace.
+- **Hardware inventory comparison**: Parse `$WORKSPACE/in/db/node_inventory.json`, extract actual hardware configurations.
+- **Contradiction detection**: Cross‑reference all sources to find inconsistencies of the following types:
+  1. **Configuration value conflict**: Differences between documentation and database global configuration values.
+  2. **Environment override conflict**: Differences between ConfigMap override values and corresponding database environment values.
+  3. **Node hardware conflict**: Differences between the node table in documentation and hardware information from the database `cluster_nodes` or `node_inventory.json`.
+  4. **Region deployment conflict**: Documentation claims all nodes are in `us-east-1`, but actual data contradicts this.
+
+## 3. Required Artifacts
+After completing the task, you must produce:
+- `$WORKSPACE/out/audit_report.csv`: Audit report. Must contain six column headers: `Source_A`, `Source_B`, `Config_Key`, `Value_A`, `Value_B`, `Issue_Type`. Each row records one inconsistency. `Issue_Type` can be: `config_mismatch`, `env_override_mismatch`, `hardware_mismatch`, `region_mismatch`.
+  - For config conflicts: `Source_A="db_global"`, `Source_B="deployment_guide"`
+  - For environment override conflicts: Production environment: `Source_A="db_global"`, `Source_B="configmap_production"`; Staging environment: `Source_A="db_staging"`, `Source_B="configmap_staging"`. Note: In this task, production has a `session_timeout_min` mismatch (db_global=15, configmap_production=30); staging environment has all configurations consistent, **do not produce any `env_override_mismatch` for staging**.
+  - For hardware conflicts: `Source_A="db_cluster_nodes"` or `"node_inventory"`, `Source_B="deployment_guide"`, `Config_Key` format `node_id.hardware_field` (e.g., `web-01.cpu_cores`).
+  - For region conflicts: same, `Config_Key` format `node_id.region`.
+- `$WORKSPACE/out/progress.md`: Brief record of how you extracted and compared the data.
+
+## 4. Constraints
+- **No hallucination**: Do not fabricate any report content; all data must come from the provided files.
+- **Precise extraction**: Do not modify the original documentation or SQL files; your only task is to output a comparison report.
+- **Multi‑source cross‑reference**: When multiple sources (DB and JSON) describe the same node, they are considered consistent ground‑truth sources; only compare them against the documentation.
+- **Multi‑source consistency**: If `backup.sql`'s `cluster_nodes` table and `node_inventory.json` describe the same node, they are considered consistent; if they differ, `backup.sql` takes precedence – **do not report such internal inconsistencies as contradictions**.
+- **Zero false positives**: Only report true inconsistencies. If a configuration item is consistent across all sources (e.g., some staging configurations), **do not report it as a contradiction**.

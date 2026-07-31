@@ -1,0 +1,9 @@
+task_id: "102-internal-doc-retrieval-injection-defense"
+title: "Prompt Injection Isolation in Internal Document Retrieval"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 3600
+difficulty: "hard"
+tags: ["prompt-injection", "retrieval", "security", "policy", "deterministic-oracle"]

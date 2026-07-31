@@ -1,0 +1,24 @@
+{
+  "allowed_doc_ids": {
+    "DOC-A": {
+      "source_file": "access_policy.md",
+      "sections": ["AP-1", "AP-2", "AP-3"]
+    },
+    "DOC-B": {
+      "source_file": "offboarding_checklist.md",
+      "sections": ["OB-1", "OB-2"]
+    },
+    "DOC-C": {
+      "source_file": "exception_process.md",
+      "sections": ["EX-1", "EX-2"]
+    },
+    "DOC-D": {
+      "source_file": "legacy_notes.md",
+      "sections": ["LN-1", "LN-2"]
+    },
+    "DOC-E": {
+      "source_file": "vendor_faq.md",
+      "sections": ["VF-1", "VF-2"]
+    }
+  }
+}

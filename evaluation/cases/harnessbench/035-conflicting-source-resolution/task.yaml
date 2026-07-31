@@ -1,0 +1,9 @@
+task_id: "035-conflicting-source-resolution"
+title: "Conflicting Source Priority Resolution"
+class: "Knowledge, Evidence & Retrieval"
+prompt_file: "prompt.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+timeout_sec: 800
+difficulty: "hard"
+tags: ["information-retrieval", "source-conflict", "fact-checking", "evidence-synthesis", "hard"]

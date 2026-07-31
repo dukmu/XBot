@@ -1,0 +1,17 @@
+task_id: "059-event-update-replan"
+title: "Replan After a Late Event Constraint"
+class: "Long-running Autonomy & State Adaptation"
+prompt_files:
+  - "prompt_round1.txt"
+  - "prompt_round2.txt"
+fixtures_dir: "fixtures"
+oracle_module: "oracle_grade.py"
+hooks_module: "hooks.py"
+timeout_sec: 420
+difficulty: "medium"
+tags:
+  - "multi-round"
+  - "replanning"
+  - "diff"
+  - "state-management"
+  - "event-update"

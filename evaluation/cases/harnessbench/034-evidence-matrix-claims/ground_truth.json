@@ -1,0 +1,10 @@
+{
+  "claims": {
+    "C1": {"classification": "contradict", "source_file": "sources/field_report.txt", "tokens": ["118 enrolled", "7 pending"]},
+    "C2": {"classification": "contradict", "source_file": "sources/field_report.txt", "tokens": ["battery cabinets", "not as the primary"]},
+    "C3": {"classification": "support", "source_file": "sources/support_metrics.txt", "tokens": ["6.4 hours", "3.1 hours"]},
+    "C4": {"classification": "support", "source_file": "sources/safety_audit.txt", "tokens": ["zero unresolved", "high-severity"]},
+    "C5": {"classification": "contradict", "source_file": "sources/board_minutes.txt", "tokens": ["tabled", "No approval vote"]}
+  },
+  "scoring": {"thresholds": {"excellent": 0.9, "good": 0.75, "pass": 0.6}}
+}

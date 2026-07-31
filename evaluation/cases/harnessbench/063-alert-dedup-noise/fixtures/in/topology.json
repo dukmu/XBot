@@ -1,0 +1,22 @@
+{
+  "services": {
+    "checkout-web": {"depends_on": ["orders-api", "cart-api"], "customer_facing": true},
+    "payment-api": {"depends_on": ["orders-api"], "customer_facing": false},
+    "orders-api": {"depends_on": ["orders-db"], "customer_facing": false},
+    "orders-db": {"depends_on": [], "customer_facing": false},
+    "catalog-api": {"depends_on": ["redis-cache"], "customer_facing": true},
+    "cart-api": {"depends_on": ["redis-cache"], "customer_facing": true},
+    "redis-cache": {"depends_on": [], "customer_facing": false},
+    "search-api": {"depends_on": [], "customer_facing": true},
+    "billing-worker": {"depends_on": [], "customer_facing": false},
+    "synthetic-heartbeat": {"depends_on": [], "customer_facing": false}
+  },
+  "maintenance_windows": [
+    {"id": "MW-77", "service": "search-api", "start": "2026-03-18T09:00:00Z", "end": "2026-03-18T10:00:00Z", "approved": true}
+  ],
+  "noise_rules": [
+    "Ignore staging-only alerts for production incident grouping.",
+    "Ignore single-sample synthetic heartbeat misses when the next sample recovered.",
+    "Do not count approved maintenance-window alerts as active production incidents."
+  ]
+}

@@ -11,13 +11,20 @@ from xbot_eval.harnessbench import load_cases, workspace_oracle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CASES = REPO_ROOT / "evaluation" / "cases" / "harnessbench"
+TASK_IDS = {
+    "016-code-repair-pytest",
+    "057-interruption-resume",
+    "060-task-cancellation-cleanup",
+    "105-partial-batch-resume-ledger",
+    "xbot-background-shell",
+}
 
 
 @task
 def xbot_harnessbench_subset() -> Task:
     """Run a small deterministic HarnessBench subset through XBot."""
     return Task(
-        dataset=load_cases(CASES),
+        dataset=load_cases(CASES, TASK_IDS),
         solver=xbot_agent(
             command=os.environ.get(
                 "XBOT_EVAL_COMMAND",

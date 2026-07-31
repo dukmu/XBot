@@ -1,0 +1,21 @@
+{
+  "case_id": "CASE-204",
+  "title": "Invoice export stalled",
+  "owner": "Mira Chen",
+  "priority": "P1",
+  "tags": [
+    "billing",
+    "export"
+  ],
+  "confirmation_code": "CONF-204-OK",
+  "result_rows": [
+    {
+      "step": "validate",
+      "status": "passed"
+    },
+    {
+      "step": "export",
+      "status": "queued"
+    }
+  ]
+}

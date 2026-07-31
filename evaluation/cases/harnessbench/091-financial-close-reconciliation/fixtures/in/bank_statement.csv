@@ -1,0 +1,5 @@
+bank_line_id,payment_id,settlement_date,currency,amount
+B001,P001,2026-03-10,USD,98.00
+B002,P002,2026-03-11,EUR,197.27
+B003,P004,2026-03-12,USD,79.00
+B004,P999,2026-03-12,USD,49.50

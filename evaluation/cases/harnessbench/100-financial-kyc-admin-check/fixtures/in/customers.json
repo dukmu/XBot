@@ -1,0 +1,30 @@
+[
+  {
+    "customer_id": "C-100",
+    "customer_type": "individual",
+    "name": "Elena Torres",
+    "address": "42 Harbor St, Boston, MA",
+    "ssn_last4": "4412"
+  },
+  {
+    "customer_id": "C-200",
+    "customer_type": "business",
+    "legal_name": "Blue Kite LLC",
+    "address": "88 Market Ave, Austin, TX",
+    "registration_expected": true
+  },
+  {
+    "customer_id": "C-300",
+    "customer_type": "nonprofit",
+    "legal_name": "River Pantry",
+    "address": "17 Cedar Rd, Salem, OR",
+    "source_of_funds_expected": true
+  },
+  {
+    "customer_id": "C-400",
+    "customer_type": "individual",
+    "name": "Owen Price",
+    "address": "5 Lakeview Dr, Madison, WI",
+    "ssn_last4": "1188"
+  }
+]

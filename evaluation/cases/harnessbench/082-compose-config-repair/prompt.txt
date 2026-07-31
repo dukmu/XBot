@@ -1,0 +1,19 @@
+The service stack in `$WORKSPACE/in/composeapp/compose.yaml` was edited during an incident and no longer satisfies the local deployment contract.
+
+Work offline only. Do not pull images and do not start real containers.
+
+Your job:
+- Read `$WORKSPACE/in/composeapp/config/service-policy.yml`.
+- Repair `$WORKSPACE/in/composeapp/compose.yaml`.
+- You may update `$WORKSPACE/in/composeapp/.env.example` if it is inconsistent with the compose file.
+- Run `python tools/validate_compose.py` from `$WORKSPACE/in/composeapp` and make it pass.
+- Write `$WORKSPACE/out/compose_fix_report.md` with the root cause and the final validation command you ran.
+
+Important constraints:
+- Do not modify `tools/validate_compose.py` or `config/service-policy.yml`.
+- Do not run `docker compose up`, `docker pull`, or any command that downloads images.
+- Do not remove healthchecks, service dependencies, or the worker service.
+- Do not introduce new services or third-party dependencies.
+- Do not use the `latest` image tag.
+- Keep api, db, and redis healthchecks meaningful: api must call `/healthz`, db must use `pg_isready`, and redis must use `redis-cli ping`.
+- Keep the named data volume mounted at `/data` for the api service and document matching defaults in `.env.example`.

@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-2026-03-22-CHECKOUT-AUTH",
+  "expected": {
+    "root_cause_service": "auth-gateway",
+    "root_cause_change_id": "AUTH-2026-0318",
+    "affected_services": ["checkout-web", "payment-api"],
+    "red_herrings": ["orders-db", "cdn-edge"],
+    "evidence_sources": ["logs/auth-gateway.log", "logs/checkout-web.log", "logs/payment-api.log", "metrics/service_metrics.csv", "topology.json"]
+  },
+  "notes_keywords": ["dependency path", "401", "jwks", "issuer", "rollback", "verify"],
+  "scoring": {
+    "weights": {"root_cause_json": 0.74, "triage_notes": 0.20, "source_unchanged": 0.06},
+    "thresholds": {"pass": 0.70, "good": 0.84, "excellent": 0.94}
+  }
+}
