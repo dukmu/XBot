@@ -31,7 +31,19 @@ class ProviderConfig(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str | None = None
     thinking_enabled: bool = False
+    input_modalities: list[Literal["text", "image"]] = Field(
+        default_factory=lambda: ["text"]
+    )
     mock_responses: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("input_modalities")
+    @classmethod
+    def _validate_input_modalities(
+        cls, value: list[Literal["text", "image"]]
+    ) -> list[Literal["text", "image"]]:
+        if "text" not in value:
+            raise ValueError("input_modalities must include text")
+        return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
     def _validate_anthropic_output_limit(self) -> "ProviderConfig":

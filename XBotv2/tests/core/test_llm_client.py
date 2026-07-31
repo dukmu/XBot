@@ -10,7 +10,13 @@ from xbotv2.llm.anthropic import (
     normalize_anthropic_usage,
 )
 from xbotv2.llm.openai import OpenAICompatibleProvider, openai_messages
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import (
+    ImageContent,
+    Message,
+    ReasoningPart,
+    TextPart,
+    ToolCallPart,
+)
 from xbotv2.api.tools import ToolCall
 from xbotv2.core.internal_messages import structure_tool_message
 
@@ -20,7 +26,7 @@ def test_generic_openai_messages_do_not_invent_reasoning_extensions():
         role="assistant",
         content="",
         tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
-        additional_kwargs={"reasoning_content": "private reasoning"},
+        reasoning="private reasoning",
     )
     out = openai_messages([msg])
     assert "reasoning_content" not in out[0]
@@ -139,6 +145,67 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
     ]
 
 
+def test_provider_adapters_encode_canonical_image_content():
+    image = ImageContent("artifacts/media/image", "image/png", 3)
+    message = Message(role="user", content="inspect", images=[image])
+
+    openai = openai_messages(
+        [message],
+        image_loader=lambda _path: "YWJj",
+    )
+    _system, anthropic = anthropic_request_messages(
+        [message],
+        image_loader=lambda _path: "YWJj",
+    )
+
+    assert openai[0]["content"] == [
+        {"type": "text", "text": "inspect"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,YWJj"},
+        },
+    ]
+    assert anthropic[0]["content"] == [
+        {"type": "text", "text": "inspect"},
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "YWJj",
+            },
+        },
+    ]
+
+
+def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
+    message = Message(
+        role="tool",
+        content="image loaded",
+        tool_call_id="call-1",
+        images=[ImageContent("artifacts/media/image", "image/png", 3)],
+    )
+
+    _system, anthropic = anthropic_request_messages(
+        [message], image_loader=lambda _path: "YWJj"
+    )
+    assert anthropic[0]["content"][0]["content"][1]["type"] == "image"
+    with pytest.raises(ValueError, match="only in user messages"):
+        openai_messages([message], image_loader=lambda _path: "YWJj")
+
+    uploaded = openai_messages([Message(
+        role="user",
+        content="inspect",
+        artifact=[{
+            "id": "artifacts/attachments/hash/sample.bin",
+            "name": "sample.bin",
+            "media_type": "application/octet-stream",
+            "size": 6,
+        }],
+    )])
+    assert "session/artifacts/attachments/hash/sample.bin" in uploaded[0]["content"]
+
+
 def test_anthropic_usage_values_preserve_cache_context_tokens():
     assert normalize_anthropic_usage(
         input_tokens=100,
@@ -255,18 +322,16 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     assert final.tool_calls == [
         ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
     ]
-    assert final.additional_kwargs == {
-        "reasoning_content": "check",
-        "anthropic_content": [
-            {"type": "thinking", "thinking": "check", "signature": "signed"},
-            {
-                "type": "tool_use",
-                "id": "call-1",
-                "name": "filesystem_read",
-                "input": {"path": "notes.md"},
-            },
-        ],
-    }
+    assert final.additional_kwargs == {}
+    assert final.parts == [
+        ReasoningPart(
+            "check",
+            {"anthropic": {"signature": "signed"}},
+        ),
+        ToolCallPart(ToolCall(
+            "call-1", "filesystem_read", {"path": "notes.md"}
+        )),
+    ]
     assert final.usage_metadata == {
         "input_tokens": 10,
         "output_tokens": 3,
@@ -282,29 +347,26 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
             role="assistant",
             content=final.content,
             tool_calls=final.tool_calls,
-            additional_kwargs=final.additional_kwargs,
+            parts=final.parts,
             response_metadata=final.response_metadata,
         ),
         Message(role="tool", tool_call_id="call-1", content="file content"),
     ]
-    _system, replay = anthropic_request_messages(replay_messages, model="model")
-    assert replay[0]["content"] == final.additional_kwargs["anthropic_content"]
+    _system, replay = anthropic_request_messages(replay_messages)
+    assert replay[0]["content"] == [
+        {"type": "thinking", "thinking": "check", "signature": "signed"},
+        {
+            "type": "tool_use",
+            "id": "call-1",
+            "name": "filesystem_read",
+            "input": {"path": "notes.md"},
+        },
+    ]
     assert replay[1]["content"] == [{
         "type": "tool_result",
         "tool_use_id": "call-1",
         "content": "file content",
     }]
-    _system, switched = anthropic_request_messages(
-        replay_messages, model="another-model"
-    )
-    assert switched[0]["content"] == [{
-        "type": "tool_use",
-        "id": "call-1",
-        "name": "filesystem_read",
-        "input": {"path": "notes.md"},
-    }]
-
-
 @pytest.mark.asyncio
 async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     def chunk(*, content=None, reasoning=None, tool_calls=None, usage=None):
@@ -379,22 +441,14 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
     assert "max_tokens" not in captured
     assert final.content == "done"
-    assert final.additional_kwargs == {
-        "reasoning_content": "check",
-        "openai_message": {
-            "role": "assistant",
-            "content": "done",
-            "tool_calls": [{
-                "id": "call-1",
-                "type": "function",
-                "function": {
-                    "name": "filesystem_read",
-                    "arguments": '{"path": "notes.md"}',
-                },
-            }],
-            "reasoning_content": "check",
-        },
-    }
+    assert final.additional_kwargs == {}
+    assert final.parts == [
+        ReasoningPart("check"),
+        TextPart("done"),
+        ToolCallPart(ToolCall(
+            "call-1", "filesystem_read", {"path": "notes.md"}
+        )),
+    ]
     assert final.tool_calls == [
         ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
     ]
@@ -411,10 +465,19 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         role="assistant",
         content=final.content,
         tool_calls=final.tool_calls,
-        additional_kwargs=final.additional_kwargs,
+        parts=final.parts,
         response_metadata=final.response_metadata,
     )
-    replay = openai_messages([replay_message], model="model")
-    assert replay == [final.additional_kwargs["openai_message"]]
-    switched = openai_messages([replay_message], model="another-model")
-    assert "reasoning_content" not in switched[0]
+    replay = openai_messages([replay_message])
+    assert replay == [{
+        "role": "assistant",
+        "content": "done",
+        "tool_calls": [{
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": "filesystem_read",
+                "arguments": '{"path": "notes.md"}',
+            },
+        }],
+    }]

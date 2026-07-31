@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from xbotv2.protocol.models import (
@@ -233,6 +234,7 @@ def _register_routes(app: FastAPI) -> None:
                 max_output_tokens=config.max_output_tokens,
                 reasoning_effort=config.reasoning_effort or "",
                 thinking_enabled=config.thinking_enabled,
+                input_modalities=config.input_modalities,
             ))
         return ProviderListResponse(default=default, providers=providers)
 
@@ -770,6 +772,25 @@ def _register_routes(app: FastAPI) -> None:
         content = payload.content
         client_request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
         ctx = await manager.get(session_id, thread_id)
+        try:
+            images = [
+                ctx.engine.state_store.store_image(image.data, image.media_type)
+                for image in payload.images
+            ]
+            attachments = [
+                ctx.engine.state_store.store_attachment(
+                    attachment.data,
+                    attachment.media_type,
+                    attachment.name,
+                )
+                for attachment in payload.attachments
+            ]
+        except ValueError as exc:
+            raise HttpServerError(
+                "invalid_request",
+                str(exc),
+                status=400,
+            ) from exc
 
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
@@ -792,7 +813,10 @@ def _register_routes(app: FastAPI) -> None:
             try:
                 try:
                     async for event in ctx.stream_message(
-                        content, client_request_id
+                        content,
+                        client_request_id,
+                        images=images,
+                        artifacts=attachments,
                     ):
                         seq += 1
                         yield _format_sse(
@@ -1008,7 +1032,12 @@ def _register_routes(app: FastAPI) -> None:
             content=_error_payload(
                 "invalid_request",
                 "Request does not match the protocol schema",
-                details={"errors": exc.errors()},
+                details={
+                    "errors": jsonable_encoder(
+                        exc.errors(),
+                        custom_encoder={Exception: str},
+                    )
+                },
             ),
         )
 

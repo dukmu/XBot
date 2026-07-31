@@ -269,6 +269,22 @@ def test_message_request_rejects_blank_content():
         MessageRequest(content="   ")
 
 
+def test_message_request_accepts_image_only_content():
+    request = MessageRequest(
+        images=[{"data": "aW1hZ2U=", "media_type": "image/png"}]
+    )
+    assert request.content == ""
+
+
+def test_message_request_accepts_attachment_only_content():
+    request = MessageRequest(attachments=[{
+        "data": "YmluYXJ5",
+        "media_type": "application/octet-stream",
+        "name": "sample.bin",
+    }])
+    assert request.content == ""
+
+
 def test_server_event_carries_stream_envelope_fields():
     event = server_event(
         session_id="s1",

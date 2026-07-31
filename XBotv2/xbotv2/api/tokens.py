@@ -32,9 +32,7 @@ def estimate_messages_tokens(messages: list[Any]) -> int:
         for call in getattr(message, "tool_calls", None) or []:
             total += estimate_text_tokens(str(getattr(call, "name", "") or ""))
             total += estimate_text_tokens(_stable_json(getattr(call, "args", {})))
-        reasoning = (
-            getattr(message, "additional_kwargs", {}) or {}
-        ).get("reasoning_content")
+        reasoning = getattr(message, "reasoning", "")
         if isinstance(reasoning, str):
             total += estimate_text_tokens(reasoning)
     return total

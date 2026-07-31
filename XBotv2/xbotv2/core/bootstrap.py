@@ -356,7 +356,10 @@ async def bootstrap(
             llm = llm_override
         else:
             from xbotv2.llm.client import create_llm
-            llm = create_llm(provider_config)
+            llm = create_llm(
+                provider_config,
+                media_root=str(state_store.root),
+            )
 
         # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
         from xbotv2.api.runtime import SessionInfo

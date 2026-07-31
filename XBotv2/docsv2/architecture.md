@@ -256,14 +256,19 @@ No `events.jsonl` or `state.yaml`. `CoreStateStore` appends normal Messages,
 Compact checkpoints, Undo/Clear stack operations, and Mailbox delivery records.
 `read_messages()` materializes current provider history from the last checkpoint
 forward without rewriting or deleting prior interaction records.
+Each Message record stores one ordered `parts` list containing text, reasoning,
+image references, and Tool calls. Derived `content` and `tool_calls` fields are
+not duplicated in the journal. Image bytes live once under
+`artifacts/media/`; history stores only the session-relative reference.
 
 ## Streaming & Reasoning
 
-Provider uses `stream=True` with `async for chunk in response`.
-Reasoning content (DeepSeek thinking mode) extracted from `delta.reasoning_content`,
-emitted as regular content deltas with `## Thinking` header.
-Reasoning preserved in `Message.additional_kwargs.reasoning_content` and
-re-passed to API for tool-call turns via `provider_messages`.
+Providers use `stream=True` with `async for chunk in response`. Text and
+reasoning are separate provider-neutral stream fields and separate Message
+parts. OpenAI-compatible reasoning extensions are recorded but are not added to
+later Chat Completions requests. Anthropic thinking and redacted-thinking
+blocks retain the signature data required by the Messages protocol and are
+replayed unchanged in subsequent Anthropic Messages requests.
 
 TUI uses timer-based rendering (`_stream_timer` at 50ms intervals) —
 streaming events are near-zero-cost on the hot path.

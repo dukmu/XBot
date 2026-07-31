@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import Message, ReasoningPart, TextPart
 from xbotv2.api.prompts import cached_content_prompt
 
 MAX_INLINE_CHARS = 12_000
@@ -58,25 +58,33 @@ def _bound_message(message: Message, state_store: Any, limit: int) -> Message:
             kind=content_kind,
         )
     )
-    bounded_kwargs = dict(message.additional_kwargs)
-    reasoning = bounded_kwargs.get("reasoning_content")
-    if isinstance(reasoning, str):
-        bounded_kwargs["reasoning_content"] = _externalize(
-            reasoning,
-            state_store,
-            limit,
-            kind="reasoning_content",
-        )
-    if (
-        bounded_content == content
-        and bounded_kwargs == message.additional_kwargs
-    ):
+    parts = []
+    text_replaced = False
+    for part in message.parts:
+        if isinstance(part, TextPart):
+            if bounded_content == content:
+                parts.append(part)
+            elif not text_replaced:
+                parts.append(TextPart(bounded_content))
+                text_replaced = True
+        elif isinstance(part, ReasoningPart):
+            parts.append(
+                part
+                if part.provider_data
+                else ReasoningPart(
+                    _externalize(
+                        part.text,
+                        state_store,
+                        limit,
+                        kind="reasoning_content",
+                    )
+                )
+            )
+        else:
+            parts.append(part)
+    if parts == message.parts:
         return message
-    return replace(
-        message,
-        content=bounded_content,
-        additional_kwargs=bounded_kwargs,
-    )
+    return replace(message, parts=parts)
 
 
 def _externalize(

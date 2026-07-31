@@ -81,6 +81,29 @@ class TestFilesystemRead:
         assert "Non-text file" in result.content
 
     @pytest.mark.asyncio
+    async def test_image_read_returns_session_media_reference(self, tmp_path):
+        path = tmp_path / "pixel.png"
+        path.write_bytes(
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+            + (2).to_bytes(4, "big") + (3).to_bytes(4, "big")
+            + b"\x00" * 8
+        )
+
+        class Sandbox:
+            session_root = tmp_path / "session"
+            enabled = False
+
+            def resolve_filesystem_args(self, _operation, args):
+                return args
+
+        result = await read_file(str(path), sandbox=Sandbox())
+
+        assert len(result.images) == 1
+        image = result.images[0]
+        assert image.path.startswith("artifacts/media/")
+        assert (tmp_path / "session" / image.path).read_bytes() == path.read_bytes()
+
+    @pytest.mark.asyncio
     async def test_utf8_decodable_binary_returns_metadata_instead_of_controls(self, tmp_path):
         path = tmp_path / "controls.bin"
         path.write_bytes(b"header\x00payload")

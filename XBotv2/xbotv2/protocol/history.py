@@ -27,16 +27,17 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
             "tool_calls": [call.to_dict() for call in message.tool_calls or []],
             "tool_call_id": message.tool_call_id or "",
             "status": message.status or "",
+            "images": [image.to_dict() for image in message.images],
+            "artifacts": [
+                data
+                for value in message.artifact or []
+                if (data := _artifact_data(value)) is not None
+            ],
         }
         if message.role == "tool":
             item.update({
                 "data": additional.get("xbotv2_data"),
                 "error": additional.get("xbotv2_error"),
-                "artifacts": [
-                    data
-                    for value in message.artifact or []
-                    if (data := _artifact_data(value)) is not None
-                ],
             })
         history.append(item)
     return history

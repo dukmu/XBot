@@ -17,6 +17,8 @@ class MockLLM(BaseProvider):
             model="mock",
             temperature=0,
             max_output_tokens=None,
+            input_modalities=kwargs.pop("input_modalities", None),
+            media_root=kwargs.pop("media_root", None),
         )
         self.responses = responses or []
         self.call_count = 0
@@ -52,6 +54,7 @@ class MockLLM(BaseProvider):
             return
         yield ModelChunk(
             content=result.content,
+            reasoning=result.reasoning,
             tool_calls=result.tool_calls,
             response_metadata=result.response_metadata,
             usage_metadata=result.usage_metadata,
@@ -92,10 +95,11 @@ class MockLLM(BaseProvider):
     def to_response(self, response: dict[str, Any]) -> ModelResponse:
         return ModelResponse(
             content=str(response.get("content", "")),
+            reasoning=str(response.get("reasoning") or ""),
             tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
             response_metadata=dict(response.get("response_metadata") or {}),
             usage_metadata=dict(response.get("usage_metadata") or {}),
-            additional_kwargs=additional_kwargs(response),
+            additional_kwargs=dict(response.get("additional_kwargs") or {}),
         )
 
     def to_chunk(self, raw: Any) -> ModelChunk:
@@ -105,6 +109,7 @@ class MockLLM(BaseProvider):
             return ModelChunk(content=str(raw))
         return ModelChunk(
             content=str(raw.get("content", "")),
+            reasoning=str(raw.get("reasoning") or ""),
             tool_calls=normalize_tool_calls(raw.get("tool_calls") or []),
             tool_call_chunks=[
                 ToolCallDelta(
@@ -117,7 +122,7 @@ class MockLLM(BaseProvider):
             ],
             response_metadata=dict(raw.get("response_metadata") or {}),
             usage_metadata=dict(raw.get("usage_metadata") or {}),
-            additional_kwargs=additional_kwargs(raw),
+            additional_kwargs=dict(raw.get("additional_kwargs") or {}),
         )
 
     def record_call(
@@ -145,11 +150,3 @@ def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
             default_id=f"call_{len(normalized)}",
         ))
     return normalized
-
-
-def additional_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
-    kwargs = dict(raw.get("additional_kwargs") or {})
-    reasoning = raw.get("reasoning") or raw.get("reasoning_content")
-    if reasoning:
-        kwargs["reasoning_content"] = str(reasoning)
-    return kwargs

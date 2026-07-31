@@ -3,20 +3,49 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from abc import ABC, abstractmethod
 from copy import copy
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
 
 from xbotv2.api.messages import ModelChunk
+from xbotv2.api.providers import InputModality, ProviderCapabilities
+from xbotv2.api.prompts import prompt_container, prompt_element
 
 logger = logging.getLogger("xbotv2.llm")
 
 
+def attachment_prompt(message: Any) -> str:
+    """Render uploaded file references without embedding their bytes."""
+    children = []
+    for value in getattr(message, "artifact", None) or []:
+        item = value.to_dict() if hasattr(value, "to_dict") else value
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        path = str(item["id"])
+        if not path.startswith("session/"):
+            path = f"session/{path}"
+        children.append(prompt_element(
+            "attachment",
+            "Use filesystem or shell tools to inspect this file when needed.",
+            attributes={
+                "name": item.get("name") or Path(path).name,
+                "media_type": item.get("media_type") or "application/octet-stream",
+                "path": path,
+                "size": item.get("size"),
+            },
+        ))
+    return prompt_container("attachments", children) if children else ""
+
+
 class BaseProvider(ABC):
     """Provider-neutral configuration and Tool binding behavior."""
+
+    supported_input_modalities: frozenset[InputModality] = frozenset({"text"})
 
     def __init__(
         self,
@@ -28,6 +57,8 @@ class BaseProvider(ABC):
         thinking_enabled: bool = False,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
+        input_modalities: list[InputModality] | None = None,
+        media_root: Path | str | None = None,
     ) -> None:
         if max_retries is not None and max_retries < 0:
             raise ValueError("max_retries must be non-negative or None")
@@ -41,6 +72,15 @@ class BaseProvider(ABC):
         self.thinking_enabled = thinking_enabled
         self.max_retries = max_retries
         self.retry_backoff_factor = retry_backoff_factor
+        requested = frozenset(input_modalities or ["text"])
+        unsupported = requested - self.supported_input_modalities
+        if unsupported:
+            raise ValueError(
+                "Provider adapter does not support input modalities: "
+                + ", ".join(sorted(unsupported))
+            )
+        self.capabilities = ProviderCapabilities(requested)
+        self.media_root = Path(media_root).resolve() if media_root else None
         self.bound_tools: list[dict[str, Any]] = []
 
     def bind_tools(
@@ -64,6 +104,7 @@ class BaseProvider(ABC):
         **kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         """Retry transient failures until output begins or the limit is reached."""
+        self._validate_message_capabilities(messages)
         retries = 0
         while True:
             emitted = False
@@ -92,6 +133,37 @@ class BaseProvider(ABC):
                 )
                 if delay:
                     await asyncio.sleep(delay)
+
+    def read_image(self, path: str) -> str:
+        """Read a session-relative media artifact as base64."""
+        if self.media_root is None:
+            raise ValueError("Provider media root is not configured")
+        target = (self.media_root / path).resolve()
+        media_dir = (self.media_root / "artifacts" / "media").resolve()
+        if not target.is_relative_to(media_dir):
+            raise ValueError("Image path is outside the session media store")
+        return base64.b64encode(target.read_bytes()).decode("ascii")
+
+    def _validate_message_capabilities(self, messages: list[Any]) -> None:
+        image_messages = [
+            message for message in messages
+            if getattr(message, "images", None)
+        ]
+        if image_messages:
+            if any(
+                getattr(message, "role", "") not in {"user", "tool"}
+                for message in image_messages
+            ):
+                raise ValueError("Image content is supported only in user or tool messages")
+            capabilities = getattr(
+                self,
+                "capabilities",
+                ProviderCapabilities(),
+            )
+            if not capabilities.supports("image"):
+                raise ValueError(
+                    f"Provider model {self.model!r} does not support image input"
+                )
 
     @abstractmethod
     def _astream_once(
@@ -155,15 +227,6 @@ def usage_metadata(
 
 def message_role(message: Any) -> str:
     return str(getattr(message, "role", "") or "assistant")
-
-
-def same_response_model(message: Any, model: str | None) -> bool:
-    if model is None:
-        return True
-    response_model = (getattr(message, "response_metadata", {}) or {}).get(
-        "model_name"
-    )
-    return response_model == model
 
 
 __all__ = ["BaseProvider"]

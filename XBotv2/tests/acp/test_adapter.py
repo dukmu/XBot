@@ -60,9 +60,10 @@ class FakeRuntime:
         self.interrupted = False
         self.session_events: asyncio.Queue | None = None
 
-    async def stream_message(self, content: str, request_id: str):
+    async def stream_message(self, content: str, request_id: str, *, images=None):
         assert content == "hello"
         assert request_id == "acp:session-1"
+        assert not images
         for event in self.events:
             yield event
 
@@ -189,7 +190,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         Message(role="user", content="inspect"),
         Message(
             role="assistant",
-            additional_kwargs={"reasoning_content": "checking"},
+            reasoning="checking",
             tool_calls=[ToolCall("call-1", "shell", {"command": "pwd"})],
         ),
         Message(

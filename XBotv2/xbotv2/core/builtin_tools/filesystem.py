@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 from weakref import WeakKeyDictionary
 
+from xbotv2.api.messages import ImageContent
 from xbotv2.api.tools import Tool, ToolResult
 from xbotv2.tools.filesystem_ops import PATH_ACCESS, execute
 
@@ -69,9 +71,29 @@ async def read_file(
             f"Non-text file: {path} ({data.get('media_type')}, "
             f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})"
         )
+        image_content = _store_image_result(data, sandbox)
+        return ToolResult.success(
+            content,
+            data=data,
+            images=(image_content,) if image_content else (),
+        )
     elif line_numbers:
         content = _with_line_numbers(content, offset + 1)
     return ToolResult.success(content, data=data)
+
+
+def _store_image_result(data: dict[str, Any], sandbox: Any) -> ImageContent | None:
+    media_type = str(data.get("media_type") or "")
+    session_root = getattr(sandbox, "session_root", None)
+    if media_type not in {"image/gif", "image/jpeg", "image/png", "image/webp"} or not session_root:
+        return None
+    source = Path(str(data["resolved_path"]))
+    relative = Path("artifacts") / "media" / str(data["sha256"])
+    target = Path(session_root) / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        shutil.copyfile(source, target)
+    return ImageContent(relative.as_posix(), media_type, int(data["size_bytes"]))
 
 
 async def stat_path(path: str, *, sandbox=None) -> ToolResult:

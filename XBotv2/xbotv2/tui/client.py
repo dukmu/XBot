@@ -38,6 +38,7 @@ class TuiTool:
     data: Any = None
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
     # Wall-clock seconds between ``tool_calls_started`` and
     # ``tool_result``. Set when the result arrives. While pending,
     # the value is the live elapsed (see ``elapsed()``).
@@ -228,6 +229,10 @@ class TuiState:
                 dict(artifact) for artifact in artifacts or []
                 if isinstance(artifact, dict)
             ]
+            tool.images = [
+                dict(image) for image in data.get("images") or []
+                if isinstance(image, dict)
+            ]
             # Mark the wall-clock end of this tool call so the
             # transcript can show "shell success  0.4s" (per user
             # request: per-tool latency in the entry title).
@@ -384,7 +389,15 @@ class TuiState:
         for item in history:
             role = str(item.get("role") or "")
             if role == "user":
-                self.append_message("user", str(item.get("content") or ""))
+                content = str(item.get("content") or "")
+                images = item.get("images") or []
+                if images:
+                    labels = [
+                        str(image.get("media_type") or "image")
+                        for image in images if isinstance(image, dict)
+                    ]
+                    content = f"{content}\n\nAttachments: {', '.join(labels)}".strip()
+                self.append_message("user", content)
                 self.turn += 1
             elif role == "assistant":
                 self.apply_event({
@@ -404,6 +417,7 @@ class TuiState:
                         "data": item.get("data"),
                         "error": item.get("error"),
                         "artifacts": item.get("artifacts") or [],
+                        "images": item.get("images") or [],
                     },
                 })
 

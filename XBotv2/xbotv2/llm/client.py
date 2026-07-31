@@ -14,7 +14,11 @@ from xbotv2.llm.openai import OpenAICompatibleProvider
 logger = logging.getLogger("xbotv2.llm")
 
 
-def create_llm(provider_config: Any) -> BaseProvider:
+def create_llm(
+    provider_config: Any,
+    *,
+    media_root: str | None = None,
+) -> BaseProvider:
     provider = _get_cfg(provider_config, "provider", "openai")
     model = _get_cfg(provider_config, "model", "gpt-4")
     base_url = _get_cfg(provider_config, "base_url")
@@ -27,6 +31,7 @@ def create_llm(provider_config: Any) -> BaseProvider:
         "thinking_enabled",
         False,
     )
+    input_modalities = _get_cfg(provider_config, "input_modalities", ["text"])
     max_retries, retry_backoff_factor = _retry_settings()
     api_key = expand_env(api_key) if api_key else ""
     base_url = expand_env(base_url) if base_url else None
@@ -35,7 +40,9 @@ def create_llm(provider_config: Any) -> BaseProvider:
         from xbotv2.llm.mock import MockLLM
 
         return MockLLM(
-            responses=_get_cfg(provider_config, "mock_responses", [])
+            responses=_get_cfg(provider_config, "mock_responses", []),
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
     if provider in ("openai", "deepseek", "lmstudio-openai"):
         _require_api_key(provider, model, api_key)
@@ -54,6 +61,8 @@ def create_llm(provider_config: Any) -> BaseProvider:
             thinking_enabled=thinking_enabled,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
     if provider in ("anthropic", "lmstudio"):
         if max_output_tokens is None:
@@ -74,6 +83,8 @@ def create_llm(provider_config: Any) -> BaseProvider:
             thinking_enabled=thinking_enabled,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
     raise ValueError(f"Unknown provider: {provider!r}")
 

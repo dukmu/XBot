@@ -48,7 +48,7 @@ def test_request_estimate_includes_messages_reasoning_and_tool_schema():
         Message(
             role="assistant",
             content="done",
-            additional_kwargs={"reasoning_content": "consider constraints"},
+            reasoning="consider constraints",
         ),
     ]
 

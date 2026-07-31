@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from xbotv2.api.hooks import HookStage
+from xbotv2.api.messages import ImageContent
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.mailbox import MailboxMessage, SessionMailbox
 
@@ -99,12 +100,22 @@ class SessionRuntime:
         self,
         content: str,
         request_id: str,
+        *,
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> tuple[MailboxMessage, asyncio.Queue[dict[str, Any] | None], bool, int]:
         queued = self.turn_lock.locked() or self.mailbox.size > 0
         position = self.mailbox.size + 1
+        message: str | dict[str, Any] = content
+        if images or artifacts:
+            message = {
+                "content": content,
+                "images": [image.to_dict() for image in images or []],
+                "artifacts": list(artifacts or []),
+            }
         item = MailboxMessage.create(
             "user_message",
-            content,
+            message,
             request_id=request_id,
         )
         events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -117,6 +128,9 @@ class SessionRuntime:
         self,
         content: str,
         request_id: str,
+        *,
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not self.turn_lock.locked() and self.mailbox.size == 0:
             try:
@@ -124,6 +138,8 @@ class SessionRuntime:
                     self,
                     content=content,
                     request_id=request_id,
+                    images=images,
+                    artifacts=artifacts,
                 ):
                     yield event
                 return
@@ -133,7 +149,10 @@ class SessionRuntime:
                 pass
 
         item, events, queued, position = await self.enqueue_user_message(
-            content, request_id
+            content,
+            request_id,
+            images=images,
+            artifacts=artifacts,
         )
         completed = False
         try:
@@ -332,17 +351,18 @@ async def _pump_turn(
     content: str,
     request_id: str,
     mailbox_message: MailboxMessage | None = None,
+    images: list[ImageContent] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> None:
-    turn_stream = (
-        runtime.engine.run_turn(
+    turn_stream = None
+    try:
+        turn_stream = runtime.engine.run_turn(
             content,
             request_id=request_id,
             mailbox_message=mailbox_message,
+            images=images,
+            artifacts=artifacts,
         )
-        if mailbox_message is not None
-        else runtime.engine.run_turn(content, request_id=request_id)
-    )
-    try:
         async for event in turn_stream:
             payload = _event_payload(event)
             if payload["type"] in {"turn_finished", "turn_cancelled"}:
@@ -376,6 +396,8 @@ async def run_turn_stream(
     content: str,
     request_id: str = "",
     mailbox_message: MailboxMessage | None = None,
+    images: list[ImageContent] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
@@ -385,7 +407,15 @@ async def run_turn_stream(
         disconnected = asyncio.Event()
         stream_completed = False
         pump_task = asyncio.create_task(
-            _pump_turn(runtime, events, content, request_id, mailbox_message)
+            _pump_turn(
+                runtime,
+                events,
+                content,
+                request_id,
+                mailbox_message,
+                images,
+                artifacts,
+            )
         )
         runtime.turn_task = pump_task
         try:
@@ -427,16 +457,32 @@ async def _run_mailbox(runtime: SessionRuntime) -> None:
             await runtime.engine.run_mailbox_hook(
                 HookStage.BEFORE_MAILBOX_DELIVERY, item
             )
-            content = (
-                str(item.message)
-                if item.kind == "user_message"
-                else runtime.engine.mailbox_content(item)
-            )
+            images = None
+            artifacts = None
+            if item.kind == "user_message" and isinstance(item.message, dict):
+                content = str(item.message.get("content") or "")
+                images = [
+                    ImageContent.from_dict(image)
+                    for image in item.message.get("images") or []
+                ]
+                artifacts = [
+                    dict(artifact)
+                    for artifact in item.message.get("artifacts") or []
+                    if isinstance(artifact, dict)
+                ]
+            else:
+                content = (
+                    str(item.message)
+                    if item.kind == "user_message"
+                    else runtime.engine.mailbox_content(item)
+                )
             async for event in run_turn_stream(
                 runtime,
                 content=content,
                 request_id=item.request_id,
                 mailbox_message=item,
+                images=images,
+                artifacts=artifacts,
             ):
                 if target is not None:
                     await target.put(event)

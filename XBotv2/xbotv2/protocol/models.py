@@ -52,6 +52,7 @@ class SessionHistoryItem(WireModel):
     data: Any = None
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class UsageData(WireModel):
@@ -92,6 +93,9 @@ class ProviderInfo(WireModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str = ""
     thinking_enabled: bool = False
+    input_modalities: list[Literal["text", "image"]] = Field(
+        default_factory=lambda: ["text"]
+    )
 
 
 class ProviderListResponse(WireModel):
@@ -328,9 +332,28 @@ class CommandResponse(WireModel):
     data: CommandResult
 
 
+class ImageInput(WireModel):
+    data: str = Field(min_length=1)
+    media_type: str = Field(pattern=r"^image/[A-Za-z0-9.+-]+$")
+
+
+class AttachmentInput(WireModel):
+    data: str = Field(min_length=1)
+    media_type: str = "application/octet-stream"
+    name: str = Field(min_length=1)
+
+
 class MessageRequest(WireModel):
-    content: str = Field(min_length=1, pattern=r".*\S.*")
+    content: str = ""
+    images: list[ImageInput] = Field(default_factory=list)
+    attachments: list[AttachmentInput] = Field(default_factory=list)
     request_id: str = ""
+
+    @model_validator(mode="after")
+    def _require_content(self) -> "MessageRequest":
+        if not self.content.strip() and not self.images and not self.attachments:
+            raise ValueError("message requires text, image, or attachment content")
+        return self
 
 
 class PermissionResponseRequest(WireModel):
@@ -544,6 +567,7 @@ class ToolResultData(WireModel):
     data: Any = None
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskUpdatedData(WireModel):
@@ -665,6 +689,7 @@ __all__ = [
     "AgentSelectionResponse",
     "AgentInfo",
     "AgentListResponse",
+    "AttachmentInput",
     "ClientMessageData",
     "CompactionCompletedData",
     "CompactionFailedData",
@@ -683,6 +708,7 @@ __all__ = [
     "HelloResponse",
     "HealthResponse",
     "HistoryMutationResponse",
+    "ImageInput",
     "InteractionResponse",
     "InteractionRecordedData",
     "InterruptResponse",

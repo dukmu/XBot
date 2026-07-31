@@ -198,6 +198,7 @@ class HttpTransport:
         thread_id: str,
         content: str,
         request_id: str,
+        images: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         return self._trace_events(
             self._client.send_message(
@@ -205,10 +206,15 @@ class HttpTransport:
                 thread_id,
                 content,
                 request_id=request_id,
+                images=images,
             ),
             trace_label="messages",
             path=f"{_thread_path(session_id, thread_id)}/messages",
-            body={"content": content, "request_id": request_id},
+            body={
+                "content": content,
+                "request_id": request_id,
+                "image_count": len(images or []),
+            },
         )
 
     def session_events(

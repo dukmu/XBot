@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from xbotv2.core.context import ContextBuilder
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import ImageContent, Message
 from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, prompt_element
 from xbotv2.api.tools import ToolCall
 
@@ -36,6 +36,23 @@ class TestContextBuilderBasics:
         # Find the human messages
         human_msgs = [m for m in messages if m.role == "user"]
         assert len(human_msgs) == 2
+
+    def test_build_preserves_structured_history_parts(self, context_builder):
+        user = Message(
+            role="user",
+            content="inspect",
+            images=[ImageContent("artifacts/media/image", "image/png", 3)],
+        )
+        assistant = Message(
+            role="assistant",
+            reasoning="checking",
+            tool_calls=[ToolCall("call-1", "filesystem_read", {"path": "a"})],
+        )
+
+        messages = context_builder.build(messages=[user, assistant])
+
+        assert messages[-2] is user
+        assert messages[-1] is assistant
 
     def test_default_system_prompt_is_stable_between_builds(self, context_builder):
         first = context_builder.build(

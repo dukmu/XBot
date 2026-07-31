@@ -32,7 +32,8 @@ use the workspace recorded when it was created.
 | `session/close` | Supported | Cancels work and releases the runtime |
 | Text prompts | Supported | Runs one normal XBot turn |
 | Embedded text and resource links | Supported | Structured prompt context |
-| Image, audio, binary resources | Unsupported | Not advertised |
+| Image prompts | Supported | Base64 payload is stored as a session media artifact |
+| Audio and binary resources | Unsupported | Not advertised |
 | Assistant and thought streaming | Supported | Separate ACP chunks |
 | Tool call status | Supported | Parsed call and final result |
 | Tool argument delta streaming | Not exposed | Parsed call is authoritative |

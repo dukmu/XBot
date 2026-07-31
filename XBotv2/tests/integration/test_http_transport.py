@@ -111,6 +111,38 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "attachment received"}])
+    set_llm_override(http_app, llm)
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        await sdk.open_session(session_id="sdk-attachment", thread_id="main")
+        events = [
+            event
+            async for event in sdk.send_message(
+                "sdk-attachment",
+                "main",
+                "inspect this",
+                attachments=[{
+                    "name": "sample.bin",
+                    "media_type": "application/octet-stream",
+                    "data": "YmluYXJ5",
+                }],
+            )
+        ]
+        messages = await sdk.list_messages("sdk-attachment", "main")
+
+    assert events[-1].type == "end"
+    artifact = messages.messages[0].artifacts[0]
+    assert artifact["name"] == "sample.bin"
+    assert not str(artifact["id"]).startswith("/")
+    user = next(message for message in llm.get_call_messages(0) if message.role == "user")
+    assert user.artifact == [artifact]
+
+
+@pytest.mark.asyncio
 async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app) -> None:
     async with XBotClient(
         "http://test",
@@ -240,8 +272,16 @@ async def test_closing_turn_stream_cancels_background_turn() -> None:
             self.client_event_sink = sink
             return previous
 
-        async def run_turn(self, content: str, *, request_id: str = ""):
-            del content, request_id
+        async def run_turn(
+            self,
+            content: str,
+            *,
+            request_id: str = "",
+            mailbox_message=None,
+            images=None,
+            artifacts=None,
+        ):
+            del content, request_id, mailbox_message, images, artifacts
             try:
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 await asyncio.Event().wait()
@@ -417,6 +457,7 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
             "max_output_tokens": None,
             "reasoning_effort": "",
             "thinking_enabled": False,
+            "input_modalities": ["text"],
         }],
     }
     assert "api_key" not in str(providers)
@@ -900,12 +941,12 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         {
             "role": "user", "content": "first", "tool_calls": [],
             "tool_call_id": "", "status": "",
-            "data": None, "error": None, "artifacts": [],
+            "data": None, "error": None, "artifacts": [], "images": [],
         },
         {
             "role": "assistant", "content": "first answer", "tool_calls": [],
             "tool_call_id": "", "status": "",
-            "data": None, "error": None, "artifacts": [],
+            "data": None, "error": None, "artifacts": [], "images": [],
         },
     ]
     ctx = await http_app.state.manager.get("history", "t")
@@ -919,7 +960,10 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert any(record.get("content") == "second" for record in source_records)
+    assert any(
+        any(part.get("text") == "second" for part in record.get("parts", []))
+        for record in source_records
+    )
     assert source_records[-1]["record_type"] == "history_undo"
     (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
     (source.artifacts_dir / "cached.txt").write_text("cached")

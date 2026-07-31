@@ -353,15 +353,22 @@ class TerminalSession:
     async def send_message(
         self,
         content: str,
+        *,
+        images: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Send one user message and yield every non-transport SSE event."""
 
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
+        request = {
+            "session_id": self._session_id,
+            "thread_id": self._thread_id,
+            "content": content,
+            "request_id": request_id,
+        }
+        if images:
+            request["images"] = images
         stream = self._transport.send_message(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
-            content=content,
-            request_id=request_id,
+            **request,
         )
         async for event in stream:
             event_type = str(event.get("type") or "")

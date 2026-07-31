@@ -111,6 +111,7 @@ class Transport(Protocol):
         thread_id: str,
         content: str,
         request_id: str,
+        images: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Send a user message; yield every server event for this turn.
 

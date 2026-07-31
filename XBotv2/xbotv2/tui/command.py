@@ -38,6 +38,7 @@ _CLIENT_ALIASES: dict[str, str] = {
     "/exit": "exit", "/quit": "exit", "/q": "exit",
     "/clear-screen": "clear-screen", "/cls": "clear-screen", "/help": "help",
     "/thinking": "thinking", "/details": "details",
+    "/attach": "attach",
 }
 
 _CLIENT_COMMANDS: dict[str, CommandSpec] = {
@@ -71,6 +72,12 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         description="Expand or collapse tool execution details",
         usage="/details [on|off|toggle]",
         raw="/details",
+    ),
+    "attach": CommandSpec(
+        name="attach", kind="client",
+        description="Attach a local image to the next message",
+        usage="/attach <path> | /attach clear",
+        raw="/attach",
     ),
     "status": CommandSpec(
         name="status", kind="client",
@@ -135,7 +142,7 @@ _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 _CLIENT_SEARCH_ORDER = (
     "help", "status", "provider", "agent", "clear", "undo", "fork",
     "tasks", "task", "permission", "sandbox", "clear-screen", "thinking",
-    "details", "exit",
+    "details", "attach", "exit",
 )
 _ALIASES = dict(_CLIENT_ALIASES)
 _COMMANDS = dict(_CLIENT_COMMANDS)

@@ -54,12 +54,13 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
         "clear-screen",
         "thinking",
         "details",
+        "attach",
         "exit",
     ]
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(search_commands("   ")) == 15
+    assert len(search_commands("   ")) == 16
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
@@ -115,7 +116,7 @@ def test_search_commands_falls_back_to_substring() -> None:
 def test_search_commands_deduplicates_results() -> None:
     results = search_commands("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 15
+    assert len(names) == len(set(names)) == 16
 
 
 def test_register_server_commands_adds_dynamic_completion() -> None:

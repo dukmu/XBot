@@ -7,7 +7,9 @@ and does not import runtime engine or bootstrap modules.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import mimetypes
 import shlex
 import time
 from pathlib import Path
@@ -173,6 +175,7 @@ class XBotTextualApp(App[None]):
         self._activity_timer = None
         self._reasoning_expanded = False
         self._tool_details_expanded = False
+        self._pending_images: list[tuple[str, dict[str, str]]] = []
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
@@ -292,9 +295,10 @@ class XBotTextualApp(App[None]):
         composer.clear()
         self._history_index = None
         self._resize_composer()
-        if not text:
+        self._refresh_all()
+        if not text and not self._pending_images:
             return
-        if is_slash_command(text):
+        if text and is_slash_command(text):
             spec = parse_slash_command(text)
             if spec is not None and spec.kind == "server":
                 self.state.append_message("user", text)
@@ -322,16 +326,24 @@ class XBotTextualApp(App[None]):
             return
 
         self._remember_input(text)
+        attachments = self._pending_images
+        self._pending_images = []
+        images = [payload for _name, payload in attachments]
         append_on_start = self.state.turn_active or bool(self._pending_messages)
+        visible_text = text or "[image]"
+        display_text = self._attachment_label(
+            visible_text,
+            [name for name, _payload in attachments],
+        )
         if not append_on_start:
-            self.state.append_message("user", text)
+            self.state.append_message("user", display_text)
             await self._render_new_transcript_entries()
         self._request_sequence += 1
         sequence = self._request_sequence
-        self._pending_messages[sequence] = text
+        self._pending_messages[sequence] = display_text
         self._refresh_all()
         self.run_worker(
-            self._collect_queued_message(sequence, text, append_on_start),
+            self._collect_queued_message(sequence, text, images, append_on_start),
             exclusive=False,
             name=f"turn-{sequence}",
         )
@@ -349,16 +361,19 @@ class XBotTextualApp(App[None]):
             self.action_interrupt_turn()
             return
         self.query_one("#input", ComposerTextArea).load_text("")
+        self._pending_images.clear()
         self._history_index = None
         self._resize_composer()
 
     def action_cancel_or_quit(self) -> None:
         """Clear a non-empty composer; quit when there is nothing to clear."""
         composer = self.query_one("#input", ComposerTextArea)
-        if composer.text:
+        if composer.text or self._pending_images:
             composer.load_text("")
+            self._pending_images.clear()
             self._history_index = None
             self._resize_composer()
+            self._refresh_all()
             return
         self.exit()
 
@@ -442,6 +457,9 @@ class XBotTextualApp(App[None]):
             return
         if spec.name == "details":
             await self._cmd_toggle_blocks("details", spec.args)
+            return
+        if spec.name == "attach":
+            await self._cmd_attach(spec.args)
             return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
@@ -542,6 +560,44 @@ class XBotTextualApp(App[None]):
         await self._render_new_transcript_entries()
         self._refresh_all()
 
+    async def _cmd_attach(self, args: str) -> None:
+        try:
+            values = shlex.split(args)
+        except ValueError as exc:
+            await self._append_local_notice("/attach", str(exc))
+            return
+        if values == ["clear"]:
+            self._pending_images.clear()
+            self._refresh_all()
+            return
+        if len(values) != 1:
+            await self._append_local_notice(
+                "/attach", "Usage: /attach <path> | /attach clear"
+            )
+            return
+        path = Path(values[0]).expanduser()
+        if not path.is_absolute():
+            path = Path(self.state.workspace_root or Path.cwd()) / path
+        path = path.resolve()
+        media_type = mimetypes.guess_type(path.name)[0] or ""
+        if not path.is_file():
+            await self._append_local_notice("/attach", f"File not found: {path}")
+            return
+        if media_type not in {"image/gif", "image/jpeg", "image/png", "image/webp"}:
+            await self._append_local_notice(
+                "/attach", f"Unsupported image type: {media_type or path.suffix or 'unknown'}"
+            )
+            return
+        payload = base64.b64encode(path.read_bytes()).decode("ascii")
+        self._pending_images.append((path.name, {"data": payload, "media_type": media_type}))
+        self._refresh_all()
+
+    @staticmethod
+    def _attachment_label(text: str, names: list[str]) -> str:
+        if not names:
+            return text
+        return f"{text}\n\nAttachments: {', '.join(names)}"
+
     async def _cmd_help(self, command_name: str | None = None) -> None:
         if command_name:
             spec = get_command(command_name.strip().lstrip("/"))
@@ -623,12 +679,14 @@ class XBotTextualApp(App[None]):
         self,
         sequence: int,
         text: str,
+        images: list[dict[str, str]],
         append_on_start: bool,
     ) -> None:
         try:
             await self._collect_response(
                 text,
-                queued_text=text if append_on_start else None,
+                images=images,
+                queued_text=self._pending_messages.get(sequence) if append_on_start else None,
             )
         finally:
             self._pending_messages.pop(sequence, None)
@@ -650,11 +708,17 @@ class XBotTextualApp(App[None]):
         self,
         text: str,
         *,
+        images: list[dict[str, str]] | None = None,
         queued_text: str | None = None,
     ) -> None:
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
-            async for event in self.session.send_message(text):
+            stream = (
+                self.session.send_message(text, images=images)
+                if images
+                else self.session.send_message(text)
+            )
+            async for event in stream:
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
                 if queued_text is not None and event.get("type") == "turn_started":
                     self.state.append_message("user", queued_text)
@@ -1019,7 +1083,8 @@ class XBotTextualApp(App[None]):
                 hint.update("Turn running — type to queue a follow-up")
             self._set_input_placeholder("Message XBotv2 (queue)")
         else:
-            hint.update("")
+            count = len(self._pending_images)
+            hint.update(f"{count} image{'s' if count != 1 else ''} attached" if count else "")
             self._set_input_placeholder("Message XBotv2")
         if self.focused is None:
             composer.focus()

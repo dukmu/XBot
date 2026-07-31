@@ -110,6 +110,13 @@ Thread status and history remain queryable after its runtime closes.
 | POST | `/sessions/{sid}/threads/{tid}/close` | Close one thread runtime |
 | POST | `/sessions/{sid}/close` | Close all live runtimes in a session |
 
+`POST .../messages` accepts text plus optional `images` and `attachments`.
+Images contain base64 `data` and an `image/*` `media_type` and become native
+visual input. Attachments additionally contain a file `name`; the server stores
+them under `session/artifacts/attachments/` and gives the Agent a structured
+relative reference for filesystem or shell inspection. At least one of text,
+images, or attachments is required. Uploaded bytes are not embedded in history.
+
 `close` never deletes persisted history, artifacts, policy, or plugin state.
 Slash command transport is not part of the OpenAPI/SDK resource contract.
 
@@ -168,7 +175,11 @@ back into a queued item or provider Message. The separate append-only
 XBot conversation history uses the provider-neutral roles `system`, `user`,
 `assistant`, and `tool`. Only human input is persisted with `user`; transient
 runtime input is source-labelled and excluded from history. Provider adapters
-own wire conversion: OpenAI-compatible
+own wire conversion. Messages contain ordered text, reasoning, image, and Tool
+call parts; image payloads and uploaded attachments are stored as session
+artifacts rather than embedded in the append-only journal. Anthropic can carry
+images in Tool results; Chat Completions rejects that non-standard placement.
+OpenAI-compatible
 requests receive one leading instruction message, while Anthropic receives the
 same instruction text through its top-level `system` field and groups adjacent
 Tool results into one user content block. OpenAI's `developer` role is a
@@ -354,6 +365,6 @@ normal completion, interrupt, and disconnect.
 
 ## Provider Events (internal)
 
-`_model_response` event carries an aggregated `ModelResponse` with
-content, tool_calls, usage_metadata, additional_kwargs (including
-reasoning_content if present).
+`_model_response` event carries an aggregated `ModelResponse` with ordered
+parts, usage metadata, response metadata, and provider-neutral text,
+reasoning, and Tool-call projections.

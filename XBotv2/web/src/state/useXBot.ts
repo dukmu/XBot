@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { XBotApi, XBotApiError } from "../api/client";
 import type { InteractionRequest, OpenSessionResponse, ServerEvent, ThreadSummary } from "../api/types";
+import type { PendingAttachment } from "../components/Composer";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
 const apiBase = import.meta.env.VITE_XBOT_API_BASE || "/api";
@@ -158,11 +159,15 @@ export function useXBot() {
     }
   }, [activate, api, reportError, state.current]);
 
-  const sendMessage = useCallback(async (rawContent: string) => {
+  const sendMessage = useCallback(async (rawContent: string, attachments: PendingAttachment[] = []) => {
     const current = state.current;
     const content = rawContent.trim();
-    if (!current || !content) return;
-    dispatch({ type: "user_message", content });
+    if (!current || (!content && attachments.length === 0)) return;
+    dispatch({
+      type: "user_message",
+      content,
+      images: attachments.map((attachment) => ({ label: attachment.name, src: attachment.preview })),
+    });
     const controller = new AbortController();
     messageControllers.current.add(controller);
     try {
@@ -170,6 +175,12 @@ export function useXBot() {
         current.session_id,
         current.thread_id,
         content,
+        attachments
+          .filter((attachment) => attachment.media_type.startsWith("image/"))
+          .map(({ data, media_type }) => ({ data, media_type })),
+        attachments
+          .filter((attachment) => !attachment.media_type.startsWith("image/"))
+          .map(({ data, media_type, name }) => ({ data, media_type, name })),
         controller.signal,
       )) {
         handleEvent(event);

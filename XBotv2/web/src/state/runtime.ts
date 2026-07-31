@@ -2,6 +2,7 @@ import {
   EMPTY_USAGE,
   type AgentInfo,
   type HistoryItem,
+  type ImageReference,
   type InteractionRequest,
   type JsonObject,
   type OpenSessionResponse,
@@ -23,6 +24,12 @@ export interface MessageEntry {
   content: string;
   reasoning: string;
   streaming: boolean;
+  images: MessageImage[];
+}
+
+export interface MessageImage {
+  label: string;
+  src?: string;
 }
 
 export interface ToolEntry {
@@ -36,6 +43,7 @@ export interface ToolEntry {
   data: unknown;
   error: JsonObject | null;
   artifacts: JsonObject[];
+  images: JsonObject[];
 }
 
 export interface NoticeEntry {
@@ -72,7 +80,7 @@ export type RuntimeAction =
   | { type: "opened"; session: OpenSessionResponse }
   | { type: "history"; history: HistoryItem[] }
   | { type: "tasks"; tasks: TaskData[] }
-  | { type: "user_message"; content: string }
+  | { type: "user_message"; content: string; images: MessageImage[] }
   | { type: "event"; event: ServerEvent }
   | { type: "interaction_resolved"; requestId: string }
   | { type: "remove_task"; taskId: string }
@@ -140,7 +148,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "user_message":
       return {
         ...state,
-        entries: [...state.entries, messageEntry("user", action.content)],
+        entries: [...state.entries, { ...messageEntry("user", action.content), images: action.images }],
       };
     case "event":
       return applyEvent(state, action.event);
@@ -266,7 +274,10 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
     if (item.role === "user") {
-      entries.push(messageEntry("user", item.content));
+      entries.push({
+        ...messageEntry("user", item.content),
+        images: historyAttachments(item.images, item.artifacts),
+      });
       continue;
     }
     if (item.role === "assistant") {
@@ -281,6 +292,7 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
       data: item.data,
       error: item.error,
       artifacts: item.artifacts,
+      images: item.images,
     });
   }
   return entries;
@@ -317,6 +329,20 @@ function finalizeAssistant(entries: TimelineEntry[]): TimelineEntry[] {
   return entries.map((entry) => entry.kind === "message" && entry.streaming ? { ...entry, streaming: false } : entry);
 }
 
+function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {
+  return [...images.map((image) => ({
+    label: `${image.media_type} · ${formatBytes(image.size)}`,
+  })), ...artifacts.map((artifact) => ({
+    label: String(artifact.name || artifact.id || "attachment"),
+  }))];
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} kB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function upsertToolCalls(entries: TimelineEntry[], rawCalls: unknown[]): TimelineEntry[] {
   const copy = [...entries];
   for (const raw of rawCalls) {
@@ -336,6 +362,7 @@ function upsertToolCalls(entries: TimelineEntry[], rawCalls: unknown[]): Timelin
       data: current?.data ?? null,
       error: current?.error ?? null,
       artifacts: current?.artifacts ?? [],
+      images: current?.images ?? [],
     };
     if (existing >= 0) copy[existing] = next;
     else copy.push(next);
@@ -372,6 +399,7 @@ function applyToolResult(entries: TimelineEntry[], data: JsonObject): TimelineEn
       data: data.data ?? null,
       error: data.error ? objectValue(data.error) : null,
       artifacts: arrayValue(data.artifacts).map(objectValue),
+      images: arrayValue(data.images).map(objectValue),
     };
   }
   return copy;
@@ -426,7 +454,7 @@ function updateSlots(current: OpenSessionResponse | null, slots: unknown): OpenS
 }
 
 function messageEntry(role: "user" | "assistant", content: string): MessageEntry {
-  return { id: nextId(role), kind: "message", role, content, reasoning: "", streaming: false };
+  return { id: nextId(role), kind: "message", role, content, reasoning: "", streaming: false, images: [] };
 }
 
 function noticeEntry(content: string, level: "info" | "error"): NoticeEntry {

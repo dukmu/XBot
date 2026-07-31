@@ -2,7 +2,9 @@ import { decodeSseStream } from "./sse";
 import {
   PROTOCOL_VERSION,
   type AgentInfo,
+  type AttachmentInput,
   type HistoryItem,
+  type ImageInput,
   type OpenSessionResponse,
   type ProviderInfo,
   type ServerEvent,
@@ -192,10 +194,14 @@ export class XBotApi {
     sessionId: string,
     threadId: string,
     content: string,
+    images: ImageInput[],
+    attachments: AttachmentInput[],
     signal?: AbortSignal,
   ): AsyncGenerator<ServerEvent> {
     return this.stream("POST", `${threadPath(sessionId, threadId)}/messages`, {
       content,
+      images,
+      attachments,
       request_id: crypto.randomUUID(),
     }, signal);
   }

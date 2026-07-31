@@ -117,7 +117,7 @@ class XBotACPAgent:
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(
-                    image=False,
+                    image=True,
                     audio=False,
                     embedded_context=True,
                 ),
@@ -283,7 +283,10 @@ class XBotACPAgent:
         **_: Any,
     ) -> PromptResponse:
         runtime = await self._runtime(session_id)
-        content = _prompt_text(prompt)
+        content, images = _prompt_content(
+            prompt,
+            getattr(runtime.engine, "state_store", None),
+        )
         command = _slash_command(runtime, content)
         if command is not None:
             await self._run_command(runtime, *command)
@@ -295,7 +298,9 @@ class XBotACPAgent:
 
         mapper = ACPEventMapper(context_size=runtime.engine.context_window)
         async for event in runtime.stream_message(
-            content, f"acp:{session_id}"
+            content,
+            f"acp:{session_id}",
+            images=images,
         ):
             for update in mapper.updates(event):
                 await self._update(session_id, update)
@@ -752,12 +757,27 @@ def _session_metadata(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
     return store.read_thread_metadata()
 
 
-def _prompt_text(blocks: list[Any]) -> str:
+def _prompt_content(blocks: list[Any], state_store: Any) -> tuple[str, list[Any]]:
     parts: list[str] = []
+    images = []
     for block in blocks:
         block_type = getattr(block, "type", "")
         if block_type == "text":
             parts.append(str(block.text))
+        elif block_type == "image":
+            if state_store is None:
+                raise RequestError.invalid_params({
+                    "prompt": "image storage is unavailable",
+                })
+            try:
+                images.append(state_store.store_image(
+                    str(block.data),
+                    str(block.mime_type),
+                ))
+            except ValueError as exc:
+                raise RequestError.invalid_params({
+                    "prompt": str(exc),
+                }) from exc
         elif block_type == "resource":
             resource = block.resource
             text = getattr(resource, "text", None)
@@ -780,9 +800,9 @@ def _prompt_text(blocks: list[Any]) -> str:
                 "prompt": f"unsupported content type: {block_type}"
             })
     content = "\n\n".join(parts).strip()
-    if not content:
+    if not content and not images:
         raise RequestError.invalid_params({"prompt": "prompt is empty"})
-    return content
+    return content, images
 
 
 def _slash_command(runtime: Any, content: str) -> tuple[str, str] | None:

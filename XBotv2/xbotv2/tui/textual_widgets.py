@@ -494,6 +494,8 @@ def tool_detail(tool: TuiTool) -> str:
         parts.append(f"error: {format_value(tool.error, indent=2)}")
     if tool.artifacts:
         parts.append(f"artifacts: {format_value(tool.artifacts, indent=2)}")
+    if tool.images:
+        parts.append(f"images: {format_value(tool.images, indent=2)}")
     return "\n".join(parts)
 
 

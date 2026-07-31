@@ -132,6 +132,7 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
+        images: [],
       }],
     });
 
