@@ -121,7 +121,11 @@ def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
 def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     from typing import Literal
 
-    def edit(path: str, mode: Literal["append", "overwrite"] = "append"):
+    def edit(
+        path: str,
+        mode: Literal["append", "overwrite"] = "append",
+        expected_sha256: str | None = None,
+    ):
         """Edit a file with one explicit mode.
 
         Args:
@@ -136,6 +140,9 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     assert schema["parameters"]["properties"]["mode"] == {
         "type": "string",
         "enum": ["append", "overwrite"],
+    }
+    assert schema["parameters"]["properties"]["expected_sha256"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
     }
     assert schema["parameters"]["required"] == ["path"]
     assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None

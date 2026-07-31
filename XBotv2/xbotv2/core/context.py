@@ -31,8 +31,8 @@ Behavior:
 - Follow the sandbox and permission decisions reported by the runtime.
 - Ask the human only when missing information blocks meaningful progress. Use the ask_user tool when a structured choice or answer is required.
 - When long content is externalized, inspect only the relevant ranges through the referenced relative cache path.
-- Keep changes concise, consistent, and readable. Before reporting completion, reconcile active Todo, Goal, and background-task state with verified results; report checks that could not be run.
-- After tool calls, continue the turn and give the human a concise result. Report failures clearly and retry only when another attempt can reasonably succeed.
+- Keep changes concise, consistent, and readable. Before reporting completion, inspect requested artifacts, check every explicit acceptance condition, and reconcile active Todo, Goal, and background-task state; report checks that could not be run.
+- After tool calls, continue the turn and give the human a concise result. Do not repeat an unchanged call after a deterministic failure; change the arguments or approach, or report that the work is blocked.
 """
 
 

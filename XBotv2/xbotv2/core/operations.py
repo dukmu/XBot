@@ -12,6 +12,7 @@ from typing import Any
 
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS
 from xbotv2.core.session import SessionRuntime
 
 
@@ -288,7 +289,9 @@ async def _activate_agent(
     ctx.engine.model = provider.model
     ctx.engine.model_mode = provider.model_mode
     ctx.engine.context_window = config.max_context_tokens
-    ctx.engine.max_iterations = definition.max_iterations or 50
+    ctx.engine.max_iterations = (
+        definition.max_iterations or DEFAULT_MAX_ITERATIONS
+    )
     apply_agent_tools(ctx.engine.tool_registry, config, definition)
 
     ctx.provider_name = provider_name

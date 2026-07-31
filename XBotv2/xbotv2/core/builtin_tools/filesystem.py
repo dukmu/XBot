@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Literal
+from weakref import WeakKeyDictionary
 
 from xbotv2.api.tools import Tool, ToolResult
 from xbotv2.tools.filesystem_ops import PATH_ACCESS, execute
+
+_FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
 
 
 async def read_file(
@@ -50,6 +53,11 @@ async def read_file(
     if not data.get("ok"):
         return _failure(data)
     content = str(data.pop("content", ""))
+    if data.get("changed_since_last_observation"):
+        content = (
+            "File changed since the previous read. The content and metadata "
+            f"below are current.\n{content}"
+        )
     data["requested_path"] = path
     if not data.get("is_text", True):
         image = data.get("image") or {}
@@ -205,15 +213,14 @@ async def find_files(
 async def write_file(
     path: str,
     content: str,
-    expected_sha256: str | None = None,
     *,
     sandbox=None,
 ) -> ToolResult:
     """Atomically create or completely replace one UTF-8 text file.
 
-    ``content`` is the entire final file, never a fragment or patch. For an
-    existing file, read it first and pass the returned hash. Use
-    ``filesystem_edit`` for a localized exact replacement and
+    ``content`` is the entire final file, never a fragment or patch. Files read
+    earlier in this runtime are guarded automatically against external changes.
+    Use ``filesystem_edit`` for a localized exact replacement and
     ``filesystem_patch`` for a unified diff. After writing, inspect the result
     and reread the relevant range before reporting the change as verified.
     Existing non-UTF-8 files are rejected. Parent directories are created.
@@ -221,11 +228,10 @@ async def write_file(
     Args:
         path: Destination path relative to the workspace unless explicitly approved.
         content: Complete UTF-8 file content.
-        expected_sha256: Optional hash that the current file must match.
     """
     return await _structured_operation(
         "write",
-        {"path": path, "content": content, "expected_sha256": expected_sha256},
+        {"path": path, "content": content},
         sandbox,
     )
 
@@ -235,23 +241,22 @@ async def edit_file(
     old_text: str,
     new_text: str,
     replace_all: bool = False,
-    expected_sha256: str | None = None,
     *,
     sandbox=None,
 ) -> ToolResult:
     """Atomically replace exact text in an existing UTF-8 file.
 
-    Read the relevant file range first, use enough exact surrounding text to
-    identify one occurrence, and pass its hash when available. The edit fails
-    when ``old_text`` is absent or ambiguous. Set ``replace_all`` only when every
-    occurrence should change. Reread the changed range before reporting success.
+    Read the relevant file range first and use enough exact surrounding text to
+    identify one occurrence. Files read earlier in this runtime are guarded
+    automatically against external changes. The edit fails when ``old_text`` is
+    absent or ambiguous. Set ``replace_all`` only when every occurrence should
+    change. Reread the changed range before reporting success.
 
     Args:
         path: Existing text file.
         old_text: Exact non-empty text expected in the file.
         new_text: Replacement text.
         replace_all: Replace every occurrence instead of requiring one match.
-        expected_sha256: Optional hash that the current file must match.
     """
     return await _structured_operation(
         "edit",
@@ -260,7 +265,6 @@ async def edit_file(
             "old_text": old_text,
             "new_text": new_text,
             "replace_all": replace_all,
-            "expected_sha256": expected_sha256,
         },
         sandbox,
     )
@@ -269,25 +273,24 @@ async def edit_file(
 async def patch_file(
     path: str,
     patch: str,
-    expected_sha256: str | None = None,
     *,
     sandbox=None,
 ) -> ToolResult:
     """Apply a validated unified diff to one UTF-8 file.
 
-    Build the diff against current file content and pass its hash when available.
-    The system ``patch`` implementation performs a dry run before applying any
-    hunk. The patch must target only ``path``; use separate calls for multiple
-    files. Reread the changed ranges before reporting success.
+    Build the diff against current file content. Files read earlier in this
+    runtime are guarded automatically against external changes. The system
+    ``patch`` implementation performs a dry run before applying any hunk. The
+    patch must target only ``path``; use separate calls for multiple files.
+    Reread the changed ranges before reporting success.
 
     Args:
         path: File created, updated, or deleted by the patch.
         patch: Complete unified diff with file headers and at least one hunk.
-        expected_sha256: Optional hash that an existing target must match.
     """
     return await _structured_operation(
         "patch",
-        {"path": path, "patch": patch, "expected_sha256": expected_sha256},
+        {"path": path, "patch": patch},
         sandbox,
     )
 
@@ -384,9 +387,52 @@ async def _operation(
     args: dict[str, Any],
     sandbox: Any,
 ) -> dict[str, Any]:
+    resolved = _resolved_args(operation, args, sandbox)
+    path = resolved.get("path")
+    versions = (
+        _FILE_VERSIONS.setdefault(sandbox, {})
+        if sandbox is not None
+        else None
+    )
+    effective_args = dict(args)
+    if (
+        versions is not None
+        and isinstance(path, str)
+        and operation in {"write", "edit", "patch"}
+        and path in versions
+    ):
+        effective_args["expected_sha256"] = versions[path]
+
     if sandbox is not None and sandbox.enabled:
-        return _parse_result(await sandbox.filesystem(operation, args))
-    return execute(operation, _resolved_args(operation, args, sandbox))
+        result = _parse_result(await sandbox.filesystem(operation, effective_args))
+    else:
+        result = execute(
+            operation,
+            _resolved_args(operation, effective_args, sandbox),
+        )
+
+    if (
+        not result.get("ok")
+        or versions is None
+        or not isinstance(path, str)
+        or operation not in {"read", "stat", "write", "edit", "patch"}
+    ):
+        return result
+
+    current = result.get("sha256")
+    previous = versions.get(path)
+    if (
+        operation in {"read", "stat"}
+        and path in versions
+        and previous != current
+    ):
+        result["changed_since_last_observation"] = True
+        result["previous_sha256"] = previous
+    if isinstance(current, str):
+        versions[path] = current
+    else:
+        versions.pop(path, None)
+    return result
 
 
 def _resolved_args(
