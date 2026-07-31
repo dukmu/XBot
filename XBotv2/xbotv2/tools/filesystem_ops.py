@@ -230,18 +230,28 @@ def _search(
     exclude: list[str] | None = None,
     max_line_chars: int = 1000,
 ) -> dict[str, Any]:
-    root = _directory(path)
+    target = _path(path)
     if not pattern:
         raise FilesystemError("invalid_pattern", "pattern must be non-empty", path=path)
     if max_results < 1 or max_line_chars < 1:
         raise FilesystemError("invalid_limit", "result limits must be >= 1", path=path)
+    if target.is_dir():
+        candidates = (
+            (candidate, candidate.relative_to(target).as_posix())
+            for candidate in _walk_files(target, include_hidden, exclude)
+        )
+        kind = "directory"
+    elif target.is_file():
+        candidates = iter(((target, str(target)),))
+        kind = "file"
+    else:
+        raise FilesystemError("not_a_file", f"Not a file or directory: {path}", path=path)
     flags = 0 if case_sensitive else re.IGNORECASE
     expression = re.compile(re.escape(pattern) if literal else pattern, flags)
     matches: list[dict[str, Any]] = []
     truncated = False
-    for candidate in _walk_files(root, include_hidden, exclude):
-        relative = candidate.relative_to(root).as_posix()
-        if glob and not _glob_matches(relative, glob):
+    for candidate, display_path in candidates:
+        if kind == "directory" and glob and not _glob_matches(display_path, glob):
             continue
         try:
             handle = candidate.open("r", encoding="utf-8", newline="")
@@ -255,7 +265,7 @@ def _search(
                         break
                     text = line.rstrip("\r\n")
                     matches.append({
-                        "path": relative,
+                        "path": display_path,
                         "line": number,
                         "column": match.start() + 1,
                         "text": text[:max_line_chars],
@@ -266,7 +276,8 @@ def _search(
         if truncated:
             break
     return {
-        "path": str(root),
+        "path": str(target),
+        "kind": kind,
         "pattern": pattern,
         "matches": matches,
         "returned_matches": len(matches),

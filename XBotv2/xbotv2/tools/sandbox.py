@@ -108,12 +108,17 @@ class SandboxPolicy:
     async def run_shell(
         self,
         command: str,
+        *,
+        shell: str | None = None,
         cwd: str | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
+        shell = shell or os.environ.get("SHELL")
+        if not shell:
+            raise RuntimeError("SHELL is not set in the XBot process environment")
         spec = self._mount_specs()
         return await self._backend.run(
-            ["/bin/sh", "-lc", command],
+            [shell, "-lc", command],
             spec,
             cwd=cwd,
             timeout_seconds=timeout_seconds,

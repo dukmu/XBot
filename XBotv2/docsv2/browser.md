@@ -48,7 +48,9 @@ plugins:
 `allow_private` is false by default, which rejects loopback, private, link-local,
 reserved, multicast, and otherwise non-global destinations. Enable it only for
 trusted local application testing. Redirect targets and browser subrequests are
-checked again. Disabling the XBot sandbox network setting disables live search,
+checked again. This setting applies only to Browser plugin Tools; it does not
+prevent another network-capable Tool such as Shell from reaching a private
+address. Disabling the XBot sandbox network setting disables live search,
 fetch, navigation, and interactive browser actions.
 
 Install the Chromium runtime once after installing XBot:

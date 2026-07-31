@@ -44,15 +44,18 @@ async def run_shell_command(
     timeout_seconds: float | None = 0,
 ) -> str:
     """Run a shell command with cancellation-safe process cleanup."""
+    shell = _default_shell()
     if sandbox is not None and sandbox.enabled:
         return await sandbox.run_shell(
-            command, cwd=cwd, timeout_seconds=timeout_seconds
+            command,
+            shell=shell,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
         )
 
     with tempfile.TemporaryFile() as output_file:
         proc = subprocess.Popen(
-            command,
-            shell=True,
+            [shell, "/c" if os.name == "nt" else "-lc", command],
             cwd=cwd,
             stdout=output_file,
             stderr=subprocess.STDOUT,
@@ -73,6 +76,14 @@ async def run_shell_command(
             f"Command failed with exit code {proc.returncode}: {output.strip()}"
         )
     return output
+
+
+def _default_shell() -> str:
+    variable = "COMSPEC" if os.name == "nt" else "SHELL"
+    shell = os.environ.get(variable)
+    if not shell:
+        raise RuntimeError(f"{variable} is not set in the XBot process environment")
+    return shell
 
 
 def _signal_process(proc: subprocess.Popen[bytes]) -> None:

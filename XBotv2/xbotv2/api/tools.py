@@ -200,8 +200,12 @@ def _parameters_schema(
 ) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
+    accepts_extra = False
     for name, parameter in signature.parameters.items():
-        if parameter.kind in {parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD}:
+        if parameter.kind == parameter.VAR_KEYWORD:
+            accepts_extra = True
+            continue
+        if parameter.kind == parameter.VAR_POSITIONAL:
             continue
         if parameter.kind == parameter.KEYWORD_ONLY and parameter.default is not inspect.Parameter.empty:
             continue
@@ -209,7 +213,11 @@ def _parameters_schema(
         properties[name] = _annotation_schema(annotation)
         if parameter.default is inspect.Parameter.empty:
             required.append(name)
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": accepts_extra,
+    }
     if required:
         schema["required"] = required
     return schema

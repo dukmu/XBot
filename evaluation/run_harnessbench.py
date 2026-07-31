@@ -143,6 +143,21 @@ def _copy_evaluation_data(source: Path, target: Path) -> None:
         path = source / name
         if path.exists():
             shutil.copytree(path, target / name)
+    _enable_local_browser_access(target)
+
+
+def _enable_local_browser_access(data_dir: Path) -> None:
+    path = data_dir / "config" / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    browser = config.setdefault("plugins", {}).setdefault("browser", {})
+    network = browser.setdefault("config", {}).setdefault("network", {})
+    if network.get("allow_private") is True:
+        return
+    network["allow_private"] = True
+    path.write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding="utf-8",
+    )
 
 
 def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:

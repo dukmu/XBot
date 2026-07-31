@@ -67,8 +67,11 @@ and `memory/` inputs into:
 evaluation/results/<name>/data/
 ```
 
-The evaluation runs from that snapshot. Inspect `.eval` files and input
-snapshots are local evidence and are ignored by Git.
+The evaluation runs from that snapshot. Because HarnessBench mock services are
+trusted loopback endpoints, the runner explicitly enables the Browser plugin's
+existing `network.allow_private` option in the snapshot. The product default
+remains disabled. Inspect `.eval` files and input snapshots are local evidence
+and are ignored by Git.
 
 ## Results
 

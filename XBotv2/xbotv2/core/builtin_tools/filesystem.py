@@ -141,13 +141,13 @@ async def search_text(
 
     Args:
         pattern: Regular expression, or literal text when ``literal`` is true.
-        path: Root directory to search recursively.
+        path: UTF-8 file to search, or root directory to search recursively.
         glob: Optional glob matched against relative paths or basenames.
         max_results: Maximum matches; must be at least one.
         case_sensitive: Use case-sensitive matching.
         literal: Escape ``pattern`` instead of interpreting it as regex.
         include_hidden: Search dotfiles and dot-directories.
-        exclude: Directory or file names to skip; defaults to common generated directories.
+        exclude: Directory or file names to skip during directory traversal.
         max_line_chars: Maximum text retained for each match.
     """
     data = await _operation(

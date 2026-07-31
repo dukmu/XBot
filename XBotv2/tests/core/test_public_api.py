@@ -145,6 +145,7 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
         "anyOf": [{"type": "string"}, {"type": "null"}],
     }
     assert schema["parameters"]["required"] == ["path"]
+    assert schema["parameters"]["additionalProperties"] is False
     assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
     assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
 

@@ -167,6 +167,18 @@ class TestFilesystemDiscovery:
         assert match["column"] == 8
         assert match["text_truncated"] is True
 
+    @pytest.mark.asyncio
+    async def test_search_accepts_one_file(self, tmp_path):
+        path = tmp_path / "a.txt"
+        path.write_text("alpha\nbeta alpha\n", encoding="utf-8")
+
+        result = await search_text("alpha", str(path), literal=True)
+
+        assert result.data["kind"] == "file"
+        assert result.data["returned_matches"] == 2
+        assert result.data["matches"][0]["path"] == str(path)
+        assert result.data["matches"][1]["line"] == 2
+
 
 class TestFilesystemMutation:
     @pytest.mark.asyncio
