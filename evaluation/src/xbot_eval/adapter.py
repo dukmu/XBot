@@ -302,6 +302,17 @@ def xbot_bridge_agent(
                             )
                 bridge_state = bridge.state
         finally:
+            source = bridge_data / "sessions"
+            if source.is_dir():
+                target = Path(data_dir).resolve() / "sessions"
+                target.mkdir(exist_ok=True)
+                for session_dir in source.iterdir():
+                    if session_dir.is_dir():
+                        shutil.copytree(
+                            session_dir,
+                            target / session_dir.name,
+                            dirs_exist_ok=True,
+                        )
             if runtime:
                 runtime.cleanup()
 

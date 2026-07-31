@@ -24,6 +24,11 @@ uv run --project evaluation python evaluation/run_harnessbench.py \
   -j 4
 ```
 
+The runner uses Inspect's `eval-set` workflow. Provider requests are retried up
+to eight times, sample errors twice, and failed task attempts up to ten times
+with exponential waiting. Re-run the same command with the same `--name` to
+resume the eval set in place; Inspect reuses completed samples.
+
 Use `--limit` for a bounded validation:
 
 ```bash
@@ -31,10 +36,29 @@ uv run --project evaluation python evaluation/run_harnessbench.py \
   --name harnessbench-smoke -j 4 --limit 4
 ```
 
+For an older log that was already recorded as successful despite timed-out
+samples, explicitly re-run only those sample IDs in the same result directory:
+
+```bash
+uv run --project evaluation python evaluation/run_harnessbench.py \
+  --name harnessbench-existing \
+  --sample-id task-id-1,task-id-2 \
+  -j 2
+```
+
+Inspect writes an additional `.eval` log in that directory and does not
+overwrite the original evidence. New runs treat a time-limited sample as an
+error, so normal `eval-set` retries and `inspect eval-retry` can recover it.
+
 Each sample receives an isolated Inspect workspace and a fresh XBot ACP
 process. Inspect's Agent Bridge supplies the model endpoint, so model messages,
 tool calls, usage, events, tags, and scores are stored in standard Inspect
-fields. Multi-round tasks retain one ACP session within the sample.
+fields. Multi-round tasks retain one ACP session within the sample. After each
+sample, the original XBot session directory is collected into:
+
+```text
+evaluation/results/<name>/data/sessions/<session-id>/
+```
 
 Before execution, the runner snapshots the selected XBot `config/`, `.agents/`,
 and `memory/` inputs into:

@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 from inspect_ai.dataset import Sample
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.log import transcript
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer, stderr
 from inspect_ai.solver import TaskState
 from inspect_ai.util import sandbox
@@ -57,6 +59,11 @@ def workspace_oracle() -> Scorer:
     """Run the task's deterministic HarnessBench workspace oracle."""
 
     async def score(state: TaskState, _target: Target) -> Score:
+        if any(
+            isinstance(event, SampleLimitEvent) and event.type == "time"
+            for event in transcript().events
+        ):
+            raise RuntimeError("HarnessBench sample exceeded its time limit")
         result = await sandbox().exec(["pwd"])
         if not result.success:
             return Score(value=0, explanation=result.stderr)
