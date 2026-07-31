@@ -26,8 +26,7 @@ explicit requirement.
 - Run XBot commands through `.venv/bin/xbot` or `uv run`.
 - Run tests with the repository environment and `PYTHONPATH=XBotv2` when
   required.
-- The evaluation project uses its own environment under `evaluation/.venv` on
-  the `eval-harness` branch.
+- The evaluation project uses its own environment under `evaluation/.venv`.
 - Use UTF-8 exclusively for source, configuration, documentation, and persisted
   text.
 - Do not commit virtual environments, caches, generated web bundles, runtime
@@ -41,26 +40,22 @@ explicit requirement.
 - Create `dev-*` branches for features and planned improvements.
 - Create `fix-*` branches for focused bug fixes.
 - Branch from the latest tested `main`.
-- Merge completed development branches into `main` with a meaningful merge
-  commit after review and verification.
+- Keep implementation, tests, evaluation, and evaluation-driven fixes on that
+  same development branch until the work is accepted.
+- If evaluation exposes a defect, fix it on the current development branch and
+  rerun the affected verification there. Do not move the work through an
+  intermediate integration branch.
+- Merge the fully reviewed and evaluated development branch into `main` once,
+  with a meaningful merge commit.
 - Keep commits small and organized by responsibility. Do not mix core changes,
   generated artifacts, evaluation changes, and unrelated cleanup.
 - Never rewrite, remove, or include user changes that are outside the task.
-
-`eval-harness` is the long-lived evaluation branch.
-
-- Evaluation adapters, task sets, raw-result handling, and reports remain on
-  `eval-harness`.
-- Never merge `eval-harness` into `main`.
-- Update `eval-harness` by merging the latest `main`; do not rebase published
-  evaluation history.
-- A core defect found during evaluation must be fixed on a `fix-*` branch
-  created from `main`. Merge the fix into `main`, then merge `main` into
-  `eval-harness` and rerun the affected evaluation.
-- Record both the evaluated `main` commit and the evaluation commit.
-
-Prefer a separate Git worktree for `eval-harness` so ignored results and runtime
-state do not interfere with normal development.
+- Record the exact evaluated development commit. Any code change after that
+  point invalidates the recorded result until the affected evaluation is run
+  again.
+- Keep raw evaluation logs, result directories, runtime sessions, and generated
+  viewers local and ignored. Commit evaluation framework or task changes only
+  when they are durable project inputs.
 
 ## Design Boundaries
 
