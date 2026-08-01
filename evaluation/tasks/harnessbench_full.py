@@ -27,6 +27,7 @@ def xbot_harnessbench_full() -> Task:
             command=os.environ["XBOT_EVAL_COMMAND"],
             data_dir=os.environ["XBOT_EVAL_DATA_DIR"],
             agent=os.environ.get("XBOT_EVAL_AGENT"),
+            provider_name=os.environ.get("XBOT_EVAL_PROVIDER"),
         ),
         scorer=workspace_oracle(),
         sandbox="local",

@@ -19,6 +19,25 @@ from xbotv2.api.prompts import prompt_container, prompt_element
 logger = logging.getLogger("xbotv2.llm")
 
 
+class ProviderRetryExhaustedError(RuntimeError):
+    """A provider request failed after all configured retries were consumed."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        retries: int,
+        last_error: Exception,
+    ) -> None:
+        self.model = model
+        self.retries = retries
+        self.last_error = last_error
+        super().__init__(
+            f"Provider request for {model!r} failed after {retries} retries: "
+            f"{last_error}"
+        )
+
+
 def attachment_prompt(message: Any) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
@@ -116,11 +135,12 @@ class BaseProvider(ABC):
             except Exception as exc:
                 if emitted or not retryable_provider_error(exc):
                     raise
-                if (
-                    self.max_retries is not None
-                    and retries >= self.max_retries
-                ):
-                    raise
+                if self.max_retries is not None and retries >= self.max_retries:
+                    raise ProviderRetryExhaustedError(
+                        model=self.model,
+                        retries=retries,
+                        last_error=exc,
+                    ) from exc
                 delay = self.retry_backoff_factor * (2**retries)
                 retries += 1
                 logger.warning(
@@ -229,4 +249,4 @@ def message_role(message: Any) -> str:
     return str(getattr(message, "role", "") or "assistant")
 
 
-__all__ = ["BaseProvider"]
+__all__ = ["BaseProvider", "ProviderRetryExhaustedError"]

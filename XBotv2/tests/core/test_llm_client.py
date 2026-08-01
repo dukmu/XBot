@@ -9,6 +9,7 @@ from xbotv2.llm.anthropic import (
     anthropic_request_messages,
     normalize_anthropic_usage,
 )
+from xbotv2.llm.base import BaseProvider, ProviderRetryExhaustedError
 from xbotv2.llm.openai import OpenAICompatibleProvider, openai_messages
 from xbotv2.api.messages import (
     ImageContent,
@@ -19,6 +20,48 @@ from xbotv2.api.messages import (
 )
 from xbotv2.api.tools import ToolCall
 from xbotv2.core.internal_messages import structure_tool_message
+
+
+def test_provider_retry_default_is_bounded(monkeypatch):
+    monkeypatch.delenv("XBOT_PROVIDER_MAX_RETRIES", raising=False)
+
+    from xbotv2.llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
+
+    assert _retry_settings()[0] == DEFAULT_PROVIDER_MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_provider_retry_exhaustion_reports_clear_error(monkeypatch):
+    class AlwaysFail(BaseProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                model="flaky",
+                temperature=0,
+                max_output_tokens=None,
+                max_retries=2,
+                retry_backoff_factor=0,
+            )
+            self.calls = 0
+
+        async def _astream_once(self, messages, **kwargs):
+            self.calls += 1
+            if False:
+                yield None
+            raise ConnectionError("still down")
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("xbotv2.llm.base.asyncio.sleep", no_sleep)
+    llm = AlwaysFail()
+
+    with pytest.raises(ProviderRetryExhaustedError) as raised:
+        async for _ in llm.astream([]):
+            pass
+
+    assert raised.value.model == "flaky"
+    assert raised.value.retries == 2
+    assert llm.calls == 3
 
 
 def test_generic_openai_messages_do_not_invent_reasoning_extensions():

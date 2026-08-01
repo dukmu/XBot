@@ -9,7 +9,7 @@ from urllib.parse import unquote, urlsplit
 
 from xbotv2.api import ArtifactRef, ToolResult
 
-from .network import UrlPolicy
+from .network import UrlPolicy, network_available
 
 
 _SNAPSHOT_SCRIPT = """
@@ -69,6 +69,10 @@ class BrowserSession:
 
     async def open(self, url: str, *, sandbox: Any = None) -> ToolResult:
         try:
+            if urlsplit(url.strip()).scheme.lower() != "file":
+                unavailable = network_available(sandbox)
+                if unavailable is not None:
+                    return unavailable
             self._sandbox = sandbox
             target = await self._target_url(url, sandbox)
             page = await self._ensure_page(sandbox)

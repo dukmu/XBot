@@ -49,6 +49,10 @@ uv run --project evaluation python evaluation/run_harnessbench.py \
 Inspect writes an additional `.eval` log in that directory and does not
 overwrite the original evidence. New runs treat a time-limited sample as an
 error, so normal `eval-set` retries and `inspect eval-retry` can recover it.
+Each run also writes `run-manifest.json` into the result directory with the
+selected provider, retry settings, XBot command, data snapshot, and Inspect
+arguments, so the result directory can be inspected without reconstructing the
+original command.
 
 Each sample receives an isolated Inspect workspace and a fresh XBot ACP
 process. Inspect's Agent Bridge supplies the model endpoint, so model messages,
@@ -72,6 +76,16 @@ trusted loopback endpoints, the runner explicitly enables the Browser plugin's
 existing `network.allow_private` option in the snapshot. The product default
 remains disabled. Inspect `.eval` files and input snapshots are local evidence
 and are ignored by Git.
+
+The evaluation depends on the official HarnessBench package, pinned from
+`Qihoo360/harness-bench` at commit `1025086a446653702b80cfb48babbeec35db6b2c`.
+The task oracles import `harnessbench.grading` directly; there is no XBot-side
+compatibility shim. The official package honors `RUBRIC_API_KEY`,
+`RUBRIC_BASE_URL`, and `RUBRIC_MODEL` for quality grading, and
+`HARNESSBENCH_SKIP_ORACLE_QUALITY_LLM=1` / `HARNESSBENCH_SKIP_PROCESS_GRADE=1`
+to skip LLM scoring cleanly. Without those credentials, quality metadata is
+recorded as skipped and the deterministic workspace oracle remains
+authoritative.
 
 ## Results
 
@@ -99,6 +113,15 @@ uv run --project evaluation inspect view \
 4. starts XBot through ACP;
 5. executes all sample rounds in one XBot session;
 6. returns standard Inspect messages, output, usage, and events.
+
+The bridge provider is derived from the selected XBot provider in
+`providers.yaml`, so `max_context_tokens`, `max_output_tokens`,
+`input_modalities`, and generation settings match the configured model. Only
+the bridge transport itself is replaced with the local Inspect endpoint.
+
+The ACP adapter answers XBot permission prompts with `allow_once`; workspace
+scope is enforced by XBot's own bwrap sandbox and permission policy rather than
+by heuristics inside the Inspect adapter.
 
 HarnessBench fixtures, lifecycle hooks, local mock services, and deterministic
 oracles remain owned by the task layer. Public mock URLs default to their local

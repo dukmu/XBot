@@ -52,7 +52,11 @@ async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
 
     assert time.monotonic() - started < 0.2
     assert results[0].status == "error"
-    assert "Error executing slow" in results[0].content
+    assert "Tool slow timed out after 0.05s" in results[0].content
+    error = results[0].additional_kwargs["xbotv2_error"]
+    assert error["code"] == "tool_timeout"
+    assert error["message"] == "Tool slow timed out after 0.05s"
+    assert error["details"] == {"timeout_seconds": 0.05}
 
 
 @pytest.mark.asyncio
@@ -74,7 +78,8 @@ async def test_registered_tool_can_override_dispatch_timeout(monkeypatch) -> Non
     results = await execute_tools([ToolCall("call_1", "slow", {})], registry)
 
     assert results[0].status == "error"
-    assert "Error executing slow" in results[0].content
+    assert "Tool slow timed out after 0.02s" in results[0].content
+    assert results[0].additional_kwargs["xbotv2_error"]["code"] == "tool_timeout"
 
 
 @pytest.mark.asyncio

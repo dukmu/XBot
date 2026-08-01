@@ -107,11 +107,12 @@ back to another thinking mode.
 
 Transient provider connection failures, timeouts, HTTP 408/409/429 responses,
 and HTTP 5xx responses are retried with exponential backoff before any response
-chunk is emitted. Retries are unlimited by default. These process-level
-controls deliberately do not belong to YAML configuration:
+chunk is emitted. The default retry limit is 16; once it is exhausted the
+request fails with a provider retry error instead of continuing indefinitely.
+These process-level controls deliberately do not belong to YAML configuration:
 
 - `XBOT_PROVIDER_MAX_RETRIES`: retry count after the initial request; unset,
-  `none`, or `infinite` means unlimited.
+  defaults to `16`; `none` or `infinite` means unlimited only when explicitly set.
 - `XBOT_PROVIDER_RETRY_BACKOFF_FACTOR`: delay factor in seconds, default `0.5`;
   retry `n` waits `factor * 2^(n-1)`.
 
