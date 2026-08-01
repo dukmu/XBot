@@ -100,6 +100,8 @@ Required behavior:
 
 - `Enter` submits text.
 - `Shift+Enter` inserts a newline.
+- `/attach <path>` attaches a local PNG, JPEG, GIF, or WebP image to the next
+  message; `/attach clear` removes pending images.
 - `Ctrl+C` clears a non-empty composer and exits when the composer is empty.
 - `/` prefix opens completion popup.
 - `Ctrl+P` opens the searchable local/server command palette; long discovered

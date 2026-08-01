@@ -2,6 +2,21 @@ export const PROTOCOL_VERSION = "xbotv2.v3";
 
 export type JsonObject = Record<string, unknown>;
 
+export interface ImageInput {
+  data: string;
+  media_type: string;
+}
+
+export interface AttachmentInput extends ImageInput {
+  name: string;
+}
+
+export interface ImageReference {
+  path: string;
+  media_type: string;
+  size: number;
+}
+
 export interface UsageData {
   input_tokens: number;
   output_tokens: number;
@@ -44,6 +59,7 @@ export interface HistoryItem {
   data: unknown;
   error: JsonObject | null;
   artifacts: JsonObject[];
+  images: ImageReference[];
 }
 
 export interface OpenSessionResponse {

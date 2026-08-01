@@ -338,9 +338,7 @@ class TestEngineBasics:
             },
             {
                 "content": "",
-                "additional_kwargs": {
-                    "reasoning_content": "<tool_call>not native ToolUse</tool_call>",
-                },
+                "reasoning": "<tool_call>not native ToolUse</tool_call>",
                 "response_metadata": {"stop_reason": "end_turn"},
             },
         ])
@@ -2357,12 +2355,12 @@ async def test_submit_permission_response_resolves_pending_request(state_store, 
 
 
 @pytest.mark.asyncio
-async def test_reasoning_emitted_as_content_in_stream(state_store, temp_workspace):
-    """Reasoning content appears in assistant_message_delta via provider."""
+async def test_reasoning_emitted_separately_in_stream(state_store, temp_workspace):
+    """Reasoning and assistant text use distinct stream fields."""
     llm = MockLLM(responses=[{
         "content": "The answer is 42.",
         "chunks": [
-            {"content": "Let me think...", "additional_kwargs": {"reasoning_content": "step by step"}},
+            {"reasoning": "step by step"},
             {"content": "The answer is 42."},
         ],
     }])
@@ -2373,6 +2371,8 @@ async def test_reasoning_emitted_as_content_in_stream(state_store, temp_workspac
 
     deltas = [e for e in events if e["type"] == "assistant_message_delta"]
     assert len(deltas) == 2
+    assert deltas[0]["data"] == {"reasoning": "step by step"}
+    assert deltas[1]["data"] == {"content": "The answer is 42."}
 
 
 @pytest.mark.asyncio

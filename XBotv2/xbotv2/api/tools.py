@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin, get_type_hints
+
+if TYPE_CHECKING:
+    from xbotv2.api.messages import ImageContent
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -90,13 +93,20 @@ class ToolResult:
     data: JsonValue = None
     error: ToolError | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
+    images: tuple["ImageContent", ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
     wait_for_user: bool = False
     timeout_seconds: float | None = None
 
     @classmethod
-    def success(cls, content: str = "", *, data: JsonValue = None) -> "ToolResult":
-        return cls(content=content, data=data)
+    def success(
+        cls,
+        content: str = "",
+        *,
+        data: JsonValue = None,
+        images: tuple["ImageContent", ...] = (),
+    ) -> "ToolResult":
+        return cls(content=content, data=data, images=images)
 
     @classmethod
     def failure(
@@ -200,8 +210,12 @@ def _parameters_schema(
 ) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
+    accepts_extra = False
     for name, parameter in signature.parameters.items():
-        if parameter.kind in {parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD}:
+        if parameter.kind == parameter.VAR_KEYWORD:
+            accepts_extra = True
+            continue
+        if parameter.kind == parameter.VAR_POSITIONAL:
             continue
         if parameter.kind == parameter.KEYWORD_ONLY and parameter.default is not inspect.Parameter.empty:
             continue
@@ -209,7 +223,11 @@ def _parameters_schema(
         properties[name] = _annotation_schema(annotation)
         if parameter.default is inspect.Parameter.empty:
             required.append(name)
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": accepts_extra,
+    }
     if required:
         schema["required"] = required
     return schema

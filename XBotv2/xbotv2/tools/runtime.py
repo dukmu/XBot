@@ -695,6 +695,7 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             status=value.status,
             additional_kwargs=additional_kwargs,
             artifact=list(value.artifacts),
+            images=list(value.images),
         )
     if isinstance(value, dict):
         additional_kwargs: dict[str, Any] = {}

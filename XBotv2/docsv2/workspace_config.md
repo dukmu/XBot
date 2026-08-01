@@ -86,6 +86,7 @@ providers:
     api_key_env: MINIMAX_API_KEY
     max_context_tokens: 200000
     max_output_tokens: 32768 # required by the Anthropic Messages protocol
+    input_modalities: [text, image]
 ```
 
 `max_context_tokens` is required model capacity used for context accounting and
@@ -93,6 +94,11 @@ compaction. `max_output_tokens` is optional and is omitted from OpenAI-compatibl
 requests when absent. Anthropic Messages requires it, so Anthropic-compatible
 providers must set it explicitly. Missing environment variables and unknown
 provider names fail closed.
+
+`input_modalities` declares the inputs accepted by that configured model. It
+always includes `text`; add `image` only for a model endpoint that supports
+image input. XBot rejects image messages before dispatch when the selected
+provider does not declare that capability.
 
 `thinking_enabled` is an explicit capability of a provider/model combination.
 Verify it across a Tool call and the following response before enabling it;

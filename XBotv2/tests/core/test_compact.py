@@ -173,7 +173,14 @@ async def test_human_command_compacts_and_persists_immediately(
         if record.get("record_type") == "history_checkpoint"
     )
     assert checkpoint["reason"] == "compact:manual"
-    assert any(record.get("content") == "user 0 message" for record in records)
+    assert any(
+        any(
+            part.get("type") == "text"
+            and part.get("text") == "user 0 message"
+            for part in record.get("parts", [])
+        )
+        for record in records
+    )
 
     assert result.status == "ok"
     assert result.data["requested"] is True

@@ -22,10 +22,12 @@ per-token overhead is near-zero.
 
 ### Reasoning / Thinking
 
-Provider extracts `reasoning_content` from streaming deltas (DeepSeek thinking mode).
-Emitted as regular `assistant_message_delta` with `## Thinking` header.
-Stored in `Message.additional_kwargs.reasoning_content`.
-Re-passed to API for tool-call turns via `provider_messages`.
+Provider adapters normalize reasoning into `ReasoningPart` values and Engine
+emits it through the `reasoning` field of `assistant_message_delta`. OpenAI
+Chat Completions requests do not receive non-standard reasoning fields.
+Anthropic thinking and redacted-thinking blocks retain the protocol metadata
+needed for exact replay; signed reasoning is never rewritten by context
+externalization.
 
 ### Hooks
 
@@ -157,10 +159,10 @@ normalized stream contract. `OpenAICompatibleProvider` and
 assembly, reasoning replay data, and per-request usage normalization.
 `llm/client.py` only selects and constructs the configured Provider.
 
-Provider conversion preserves the complete native assistant response needed by
-ToolResult continuation. `reasoning_content` remains a display view; Anthropic
-content blocks and OpenAI-compatible assistant fields are replayed in their
-original protocol shape.
+Provider conversion preserves only protocol data needed by ToolResult
+continuation. Anthropic thinking signatures and redacted-thinking blocks are
+replayed unchanged. OpenAI-compatible reasoning output is retained for display
+but is not added to subsequent Chat Completions requests.
 
 ## Startup (`core/bootstrap.py`)
 

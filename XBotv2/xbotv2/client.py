@@ -12,6 +12,7 @@ from xbotv2.protocol.models import (
     AgentListResponse,
     AgentSelectionRequest,
     AgentSelectionResponse,
+    AttachmentInput,
     CloseResponse,
     ErrorResponse,
     ForkResponse,
@@ -20,6 +21,7 @@ from xbotv2.protocol.models import (
     HelloResponse,
     HistoryMutationResponse,
     InteractionResponse,
+    ImageInput,
     InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
@@ -380,11 +382,28 @@ class XBotClient:
         content: str,
         *,
         request_id: str = "",
+        images: list[ImageInput | dict[str, Any]] | None = None,
+        attachments: list[AttachmentInput | dict[str, Any]] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "POST",
             f"{_thread_path(session_id, thread_id)}/messages",
-            MessageRequest(content=content, request_id=request_id),
+            MessageRequest(
+                content=content,
+                request_id=request_id,
+                images=[
+                    image
+                    if isinstance(image, ImageInput)
+                    else ImageInput.model_validate(image)
+                    for image in images or []
+                ],
+                attachments=[
+                    attachment
+                    if isinstance(attachment, AttachmentInput)
+                    else AttachmentInput.model_validate(attachment)
+                    for attachment in attachments or []
+                ],
+            ),
         )
 
     def stream_events(

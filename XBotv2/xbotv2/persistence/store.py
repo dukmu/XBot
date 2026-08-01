@@ -8,6 +8,9 @@ Manages:
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import os
 import tempfile
@@ -17,10 +20,12 @@ from typing import Any
 
 import yaml
 
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import (
+    ImageContent,
+    Message,
+    part_from_dict,
+)
 from xbotv2.api.paths import SessionPaths, ThreadPaths
-from xbotv2.api.tools import ToolCall
-
 _PERSISTED_XBOT_KWARGS = {
     "xbotv2_data",
     "xbotv2_error",
@@ -35,20 +40,20 @@ def now_iso() -> str:
 def message_to_dict(msg: Message) -> dict[str, Any]:
     d: dict[str, Any] = {
         "role": msg.role,
-        "content": msg.content,
         "status": msg.status,
     }
+    d["parts"] = [part.to_dict() for part in msg.parts]
     if msg.name:
         d["name"] = msg.name
-    if msg.tool_calls:
-        d["tool_calls"] = [call.to_dict() for call in msg.tool_calls]
     if msg.tool_call_id:
         d["tool_call_id"] = msg.tool_call_id
     if msg.additional_kwargs:
-        d["additional_kwargs"] = _json_safe({
+        kwargs = {
             k: v for k, v in msg.additional_kwargs.items()
             if not str(k).startswith("xbotv2_") or k in _PERSISTED_XBOT_KWARGS
-        })
+        }
+        if kwargs:
+            d["additional_kwargs"] = _json_safe(kwargs)
     if msg.response_metadata:
         d["response_metadata"] = _json_safe(msg.response_metadata)
     if msg.usage_metadata:
@@ -59,11 +64,13 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
 
 
 def dict_to_message(d: dict[str, Any]) -> Message:
+    raw_parts = d.get("parts")
+    if not isinstance(raw_parts, list):
+        raise ValueError("Persisted message requires a parts list")
     return Message(
         role=d.get("role", "assistant"),
-        content=d.get("content", ""),
+        parts=[part_from_dict(part) for part in raw_parts],
         status=d.get("status", ""),
-        tool_calls=[ToolCall.from_dict(call) for call in d.get("tool_calls") or []],
         tool_call_id=d.get("tool_call_id", ""),
         name=d.get("name", ""),
         additional_kwargs=dict(d.get("additional_kwargs") or {}),
@@ -156,6 +163,51 @@ class CoreStateStore:
             f.flush()
             os.fsync(f.fileno())
         return d
+
+    def store_image(self, data: str, media_type: str) -> ImageContent:
+        """Persist one base64 image and return its journal-safe reference."""
+        if not media_type.startswith("image/"):
+            raise ValueError("media_type must be an image MIME type")
+        try:
+            payload = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("image data must be valid base64") from exc
+        if not payload:
+            raise ValueError("image data must not be empty")
+        media_dir = self.artifacts_dir / "media"
+        media_dir.mkdir(exist_ok=True)
+        name = hashlib.sha256(payload).hexdigest()
+        path = media_dir / name
+        if not path.exists():
+            path.write_bytes(payload)
+        return ImageContent(
+            path=str(path.relative_to(self.root)),
+            media_type=media_type,
+            size=len(payload),
+        )
+
+    def store_attachment(self, data: str, media_type: str, name: str) -> dict[str, Any]:
+        """Persist an uploaded file and return a session-relative reference."""
+        try:
+            payload = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("attachment data must be valid base64") from exc
+        if not payload:
+            raise ValueError("attachment data must not be empty")
+        safe_name = Path(name).name
+        if not safe_name or safe_name in {".", ".."}:
+            raise ValueError("attachment name must be a file name")
+        digest = hashlib.sha256(payload).hexdigest()
+        path = self.artifacts_dir / "attachments" / digest
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_bytes(payload)
+        return {
+            "id": path.relative_to(self.root).as_posix(),
+            "name": safe_name,
+            "media_type": media_type or "application/octet-stream",
+            "size": len(payload),
+        }
 
     def append_messages(self, messages: list[Message]) -> int:
         if not messages:

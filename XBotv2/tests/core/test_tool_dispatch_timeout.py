@@ -89,10 +89,10 @@ async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
     registry = ToolRegistry()
     registry.register(Tool.from_function(choose), sandbox_mode="host")
 
-    results = await execute_tools(
-        [ToolCall("call_1", "choose", {"options": [["nested"]]})],
-        registry,
-    )
+    results = await execute_tools([
+        ToolCall("call_1", "choose", {"options": [["nested"]]}),
+        ToolCall("call_2", "choose", {"options": ["valid"], "extra": True}),
+    ], registry)
 
     assert invoked is False
     assert results[0].status == "error"
@@ -100,3 +100,5 @@ async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
         "Error: Invalid arguments for choose at options.0: "
         "['nested'] is not of type 'string'"
     )
+    assert results[1].status == "error"
+    assert "'extra' was unexpected" in results[1].content

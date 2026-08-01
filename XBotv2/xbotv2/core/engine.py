@@ -38,7 +38,7 @@ from xbotv2.core.internal_messages import (
 from xbotv2.core.mailbox import MailboxMessage
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
-from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.messages import ImageContent, Message, ModelChunk, ModelResponse
 from xbotv2.api.context import ContextComponent
 from xbotv2.api.prompts import prompt_container, prompt_element
 from xbotv2.api.tokens import (
@@ -89,6 +89,7 @@ def merge_xbot_chunk(
 ) -> ModelResponse:
     if not isinstance(aggregate, ModelResponse):
         aggregate = ModelResponse()
+    aggregate.reasoning += chunk.reasoning
     aggregate.content += chunk.content
     if chunk.tool_calls:
         aggregate.tool_calls = chunk.tool_calls
@@ -157,6 +158,8 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
             else {"id": str(artifact)}
             for artifact in artifacts
         ]
+    if message.images:
+        data["images"] = [image.to_dict() for image in message.images]
     return data
 
 
@@ -472,6 +475,8 @@ class Engine:
         *,
         request_id: str = "",
         mailbox_message: MailboxMessage | None = None,
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
         mailbox_token = self._mailbox_message.set(mailbox_message)
@@ -488,6 +493,8 @@ class Engine:
                     if mailbox_message is not None
                     else "user_message"
                 ),
+                images=images,
+                artifacts=artifacts,
             ):
                 if event.get("type") == "turn_started":
                     turn_started = True
@@ -562,12 +569,19 @@ class Engine:
         user_input: str,
         *,
         input_kind: str = "user_message",
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
         """
-        turn_start = await self._start_turn(user_input, input_kind=input_kind)
+        turn_start = await self._start_turn(
+            user_input,
+            input_kind=input_kind,
+            images=images,
+            artifacts=artifacts,
+        )
         for event in turn_start.events:
             yield event
         if not turn_start.proceed:
@@ -673,11 +687,7 @@ class Engine:
                     f"exhausted: {names}"
                 )
             if not str(content).strip() and not response.tool_calls:
-                reasoning = str(
-                    (getattr(response, "additional_kwargs", None) or {}).get(
-                        "reasoning_content", ""
-                    )
-                )
+                reasoning = response.reasoning
                 after_tool = bool(
                     self.messages and self.messages[-1].role == "tool"
                 )
@@ -709,8 +719,7 @@ class Engine:
             )
             response_msg = Message(
                 role="assistant",
-                content=content,
-                tool_calls=getattr(response, "tool_calls", None) or [],
+                parts=response.parts,
                 usage_metadata=getattr(response, "usage_metadata", None) or {},
                 response_metadata=response_metadata,
                 additional_kwargs=getattr(response, "additional_kwargs", None) or {},
@@ -902,6 +911,8 @@ class Engine:
         user_input: str,
         *,
         input_kind: str = "user_message",
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> _TurnStartResult:
         if input_kind == "general":
             self.turn_count += 1
@@ -954,7 +965,12 @@ class Engine:
         self.turn_count += 1
         if self.session is not None:
             self.session.turn_count = self.turn_count
-        self.messages.append(Message(role="user", content=user_input))
+        self.messages.append(Message(
+            role="user",
+            content=user_input,
+            images=list(images or []),
+            artifact=list(artifacts or []),
+        ))
 
         accepted_ctx = self._make_hook_context(
             HookStage.AFTER_USER_MESSAGE_ACCEPT,
@@ -1342,15 +1358,14 @@ class Engine:
             if isinstance(chunk, ModelChunk):
                 aggregate = merge_xbot_chunk(aggregate, chunk)
                 if chunk.content:
-                    is_reasoning = bool(
-                        (chunk.additional_kwargs or {}).get(
-                            "reasoning_content"
-                        )
-                    )
-                    key = "reasoning" if is_reasoning else "content"
                     yield {
                         "type": "assistant_message_delta",
-                        "data": {key: chunk.content},
+                        "data": {"content": chunk.content},
+                    }
+                if chunk.reasoning:
+                    yield {
+                        "type": "assistant_message_delta",
+                        "data": {"reasoning": chunk.reasoning},
                     }
                 for tool_delta in xbot_tool_call_deltas(
                     chunk, tool_stream_ids

@@ -901,7 +901,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         assert app.focused is not None
         # All client and discovered server commands are visible.
         from xbotv2.tui.command import search_commands
-        assert len(search_commands("")) == 15
+        assert len(search_commands("")) == 16
 
         await pilot.press("escape")
         await pilot.pause()

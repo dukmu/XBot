@@ -59,6 +59,7 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # ------------------------------------------------------------------
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
+from xbotv2.core.builtin_tools.content import content_read_tool
 from xbotv2.core.builtin_tools.interaction import (
     ask_user,
     request_permission,
@@ -78,6 +79,7 @@ SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
     *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
+    (content_read_tool, "sandboxed"),
     (send_message, "host"),
     (ask_user, "host"),
     (request_permission, "host"),
@@ -356,7 +358,10 @@ async def bootstrap(
             llm = llm_override
         else:
             from xbotv2.llm.client import create_llm
-            llm = create_llm(provider_config)
+            llm = create_llm(
+                provider_config,
+                media_root=str(state_store.root),
+            )
 
         # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
         from xbotv2.api.runtime import SessionInfo

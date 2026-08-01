@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.api.messages import Message
+from xbotv2.api.messages import Message, ReasoningPart
 from xbotv2.api.tools import ToolCall
 from xbotv2.core.content_cache import (
     MAX_INLINE_CHARS,
@@ -29,13 +29,13 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
         role="assistant",
         content=content,
         tool_calls=[ToolCall("call-1", "echo", {"value": argument})],
-        additional_kwargs={"reasoning_content": reasoning},
+        reasoning=reasoning,
     )
 
     bounded = bound_context_messages([message], state_store)[0]
 
     assert bounded is not message
-    cached_values = [bounded.content, bounded.additional_kwargs["reasoning_content"]]
+    cached_values = [bounded.content, bounded.reasoning]
     roots = [ET.fromstring(value) for value in cached_values]
     assert [root.attrib["kind"] for root in roots] == [
         "assistant_content",
@@ -49,7 +49,7 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
     )
     assert message.content == content
     assert message.tool_calls[0].args["value"] == argument
-    assert message.additional_kwargs["reasoning_content"] == reasoning
+    assert message.reasoning == reasoning
 
     cached = sorted((Path(state_store.artifacts_dir) / "context").glob("*.txt"))
     assert {path.read_text(encoding="utf-8") for path in cached} == {
@@ -69,6 +69,23 @@ def test_never_externalizes_tool_call_arguments(state_store):
 
     assert bounded is message
     assert bounded.tool_calls[0].args["content"] == argument
+    assert not (Path(state_store.artifacts_dir) / "context").exists()
+
+
+def test_preserves_provider_signed_reasoning(state_store):
+    reasoning = "signed:" + "x" * MAX_INLINE_CHARS
+    message = Message(
+        role="assistant",
+        parts=[ReasoningPart(
+            reasoning,
+            {"anthropic": {"signature": "signature"}},
+        )],
+    )
+
+    bounded = bound_context_messages([message], state_store)[0]
+
+    assert bounded is message
+    assert bounded.reasoning == reasoning
     assert not (Path(state_store.artifacts_dir) / "context").exists()
 
 

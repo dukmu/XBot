@@ -45,6 +45,15 @@ export function Timeline({ entries, turnRunning }: { entries: TimelineEntry[]; t
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
                   </div>
                 )}
+                {entry.images.length > 0 && (
+                  <div className="message-images">
+                    {entry.images.map((image, index) => image.src ? (
+                      <img key={`${image.label}-${index}`} src={image.src} alt={image.label} />
+                    ) : (
+                      <div className="message-image-reference" key={`${image.label}-${index}`}>{image.label}</div>
+                    ))}
+                  </div>
+                )}
                 {entry.streaming && !entry.content && !entry.reasoning && (
                   <div className="assistant-pending"><i /><i /><i /></div>
                 )}
@@ -84,6 +93,7 @@ function ToolBlock({ tool }: { tool: ToolEntry }) {
         {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
         {tool.data !== null && <Detail label="Data" value={tool.data} />}
         {tool.error && <Detail label="Error" value={tool.error} />}
+        {tool.images.length > 0 && <Detail label="Images" value={tool.images} />}
       </div>
     </details>
   );

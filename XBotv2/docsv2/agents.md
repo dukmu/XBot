@@ -123,9 +123,10 @@ Background children are non-interactive: they do not inherit the parent turn's
 temporary sink, do not expose interaction tools, and permission decisions that
 still require a human fail closed.
 
-The shipped `Explorer` definition has `mode: all` and exposes only read, list,
-search, and `ask_user` tools. It can be selected as a primary Agent or delegated
-to as a subagent; it cannot see filesystem writes, Shell, or subagent dispatch.
+The shipped `Explorer` definition has `mode: all` and exposes only read,
+`content_read`, list, search, and `ask_user` tools. It can be selected as a
+primary Agent or delegated to as a subagent; it cannot see filesystem writes,
+Shell, or subagent dispatch.
 The shipped `default` definition is selected for a new primary thread when the
 client does not choose an Agent. Explicit selection, resume metadata, and child
 Agent definitions take precedence.

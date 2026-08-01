@@ -28,8 +28,16 @@ class FakeEngine:
     def mailbox_content(item):
         return str(item.message)
 
-    async def run_turn(self, content, *, request_id="", mailbox_message=None):
-        del content, request_id
+    async def run_turn(
+        self,
+        content,
+        *,
+        request_id="",
+        mailbox_message=None,
+        images=None,
+        artifacts=None,
+    ):
+        del content, request_id, images, artifacts
         yield {"type": "turn_started", "data": {"turn": 1}}
         if mailbox_message is None or mailbox_message.kind == "user_message":
             await self.enqueue_mailbox({"source": "test", "event": "continue"})

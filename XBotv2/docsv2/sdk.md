@@ -96,6 +96,13 @@ call typed SDK methods. Only plugin-owned commands use the compatibility route.
 ## Streaming
 
 `POST .../messages` returns the events for one submitted turn as SSE.
+`XBotClient.send_message(..., images=[...])` accepts image objects with base64
+`data` and an `image/*` `media_type`. Provider discovery reports
+`input_modalities`; clients should only offer image input when `image` is
+present.
+`XBotClient.send_message(..., attachments=[...])` uploads arbitrary files.
+Each item contains base64 `data`, `media_type`, and `name`. History returns a
+session-relative artifact reference, not the original bytes.
 `GET .../events` is the single-consumer stream for server-initiated turns and
 task notifications. Both streams carry validated `ServerEvent` envelopes.
 Compaction remains a foreground, session-busy operation. Its lifecycle is

@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
-from xbotv2.api.messages import ModelChunk, ModelResponse
+from xbotv2.api.messages import (
+    ImagePart,
+    ModelChunk,
+    ModelResponse,
+    ReasoningPart,
+    TextPart,
+    ToolCallPart,
+)
 from xbotv2.api.tools import ToolCall
-from xbotv2.llm.base import BaseProvider, same_response_model, usage_metadata
-
-_ANTHROPIC_CONTENT = "anthropic_content"
-
+from xbotv2.llm.base import BaseProvider, attachment_prompt, usage_metadata
 
 class AnthropicProvider(BaseProvider):
+    supported_input_modalities = frozenset({"text", "image"})
+
     def __init__(
         self,
         *,
@@ -25,6 +31,8 @@ class AnthropicProvider(BaseProvider):
         thinking_enabled: bool = False,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
+        input_modalities: list[str] | None = None,
+        media_root: str | None = None,
     ) -> None:
         from anthropic import AsyncAnthropic
 
@@ -36,6 +44,8 @@ class AnthropicProvider(BaseProvider):
             thinking_enabled=thinking_enabled,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
         kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
@@ -55,7 +65,7 @@ class AnthropicProvider(BaseProvider):
     ) -> AsyncIterator[ModelChunk]:
         system, request_messages = anthropic_request_messages(
             messages,
-            model=self.model,
+            image_loader=self.read_image,
         )
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -78,8 +88,6 @@ class AnthropicProvider(BaseProvider):
         tool_blocks: dict[int, dict[str, Any]] = {}
         tool_json: dict[int, list[str]] = {}
         content_blocks: dict[int, dict[str, Any]] = {}
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         usage_values = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -116,7 +124,6 @@ class AnthropicProvider(BaseProvider):
                         text = str(getattr(block, "text", "") or "")
                         content_blocks[index] = {"type": "text", "text": text}
                         if text:
-                            text_parts.append(text)
                             yield ModelChunk(content=text)
                     elif block_type == "thinking":
                         thinking = str(getattr(block, "thinking", "") or "")
@@ -128,12 +135,8 @@ class AnthropicProvider(BaseProvider):
                         if signature:
                             content_blocks[index]["signature"] = signature
                         if thinking:
-                            reasoning_parts.append(thinking)
                             yield ModelChunk(
-                                content=thinking,
-                                additional_kwargs={
-                                    "reasoning_content": thinking
-                                },
+                                reasoning=thinking,
                             )
                     elif block_type == "redacted_thinking":
                         content_blocks[index] = {
@@ -157,7 +160,6 @@ class AnthropicProvider(BaseProvider):
                                 index,
                                 {"type": "text", "text": ""},
                             )["text"] += text
-                            text_parts.append(text)
                             yield ModelChunk(content=text)
                     elif delta_type == "thinking_delta":
                         thinking = getattr(delta, "thinking", "")
@@ -166,12 +168,8 @@ class AnthropicProvider(BaseProvider):
                                 index,
                                 {"type": "thinking", "thinking": ""},
                             )["thinking"] += thinking
-                            reasoning_parts.append(thinking)
                             yield ModelChunk(
-                                content=thinking,
-                                additional_kwargs={
-                                    "reasoning_content": thinking
-                                },
+                                reasoning=thinking,
                             )
                     elif delta_type == "signature_delta":
                         signature = getattr(delta, "signature", "")
@@ -213,38 +211,20 @@ class AnthropicProvider(BaseProvider):
         finally:
             await stream.close()
 
-        tool_calls = [
-            ToolCall(
-                id=str(metadata.get("id") or ""),
-                name=str(metadata.get("name") or ""),
-                args=dict(metadata.get("input") or {}),
-            )
-            for metadata in tool_blocks.values()
-            if metadata.get("name")
-        ]
         response_metadata = {"model_name": response_model}
         if stop_reason:
             response_metadata["stop_reason"] = stop_reason
-        additional_kwargs: dict[str, Any] = {
-            _ANTHROPIC_CONTENT: [
-                content_blocks[index] for index in sorted(content_blocks)
-            ]
-        }
-        if reasoning_parts:
-            additional_kwargs["reasoning_content"] = "".join(reasoning_parts)
         yield ModelResponse(
-            content="".join(text_parts),
-            tool_calls=tool_calls,
+            parts=_response_parts(content_blocks),
             response_metadata=response_metadata,
             usage_metadata=normalize_anthropic_usage(**usage_values),
-            additional_kwargs=additional_kwargs,
         )
 
 
 def anthropic_request_messages(
     messages: list[Any],
     *,
-    model: str | None = None,
+    image_loader: Callable[[str], str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system = "\n\n".join(
         str(getattr(message, "content", ""))
@@ -252,13 +232,16 @@ def anthropic_request_messages(
         if getattr(message, "role", "") == "system"
         and str(getattr(message, "content", "")).strip()
     )
-    return system, anthropic_messages(messages, model=model)
+    return system, anthropic_messages(
+        messages,
+        image_loader=image_loader,
+    )
 
 
 def anthropic_messages(
     messages: list[Any],
     *,
-    model: str | None = None,
+    image_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
@@ -269,34 +252,31 @@ def anthropic_messages(
         blocks: list[dict[str, Any]] = []
         target_role = "assistant" if role == "assistant" else "user"
         if role == "tool":
+            tool_content = _parts_to_anthropic(
+                message.parts,
+                image_loader=image_loader,
+            )
             block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": getattr(message, "tool_call_id", ""),
-                "content": content,
+                "content": tool_content if message.images else content,
             }
             if (getattr(message, "status", "") or "success") != "success":
                 block["is_error"] = True
             blocks.append(block)
         elif role == "assistant":
-            native = (
-                getattr(message, "additional_kwargs", {}) or {}
-            ).get(_ANTHROPIC_CONTENT)
-            if isinstance(native, list) and same_response_model(message, model):
-                blocks.extend(dict(block) for block in native)
-            else:
-                if content:
-                    blocks.append({"type": "text", "text": content})
-                blocks.extend(
-                    {
-                        "type": "tool_use",
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "input": tool_call.args,
-                    }
-                    for tool_call in getattr(message, "tool_calls", None) or []
-                )
-        elif content:
-            blocks.append({"type": "text", "text": content})
+            blocks.extend(_parts_to_anthropic(
+                message.parts,
+                image_loader=image_loader,
+            ))
+        else:
+            blocks.extend(_parts_to_anthropic(
+                message.parts,
+                image_loader=image_loader,
+            ))
+            attachments = attachment_prompt(message)
+            if attachments:
+                blocks.append({"type": "text", "text": attachments})
         if not blocks:
             continue
         if result and result[-1]["role"] == target_role:
@@ -304,6 +284,88 @@ def anthropic_messages(
         else:
             result.append({"role": target_role, "content": blocks})
     return result
+
+
+def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[Any]:
+    parts = []
+    for block in (blocks[index] for index in sorted(blocks)):
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append(TextPart(str(block.get("text") or "")))
+        elif block_type == "thinking":
+            provider_data = {}
+            if block.get("signature"):
+                provider_data = {
+                    "anthropic": {"signature": block["signature"]}
+                }
+            parts.append(ReasoningPart(
+                str(block.get("thinking") or ""),
+                provider_data,
+            ))
+        elif block_type == "redacted_thinking":
+            parts.append(ReasoningPart(
+                "",
+                {"anthropic": {"redacted_data": block.get("data", "")}},
+            ))
+        elif block_type == "tool_use":
+            parts.append(ToolCallPart(ToolCall(
+                id=str(block.get("id") or ""),
+                name=str(block.get("name") or ""),
+                args=dict(block.get("input") or {}),
+            )))
+    return parts
+
+
+def _parts_to_anthropic(
+    parts: list[Any],
+    *,
+    image_loader: Callable[[str], str] | None,
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for part in parts:
+        if isinstance(part, TextPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, ToolCallPart):
+            blocks.append({
+                "type": "tool_use",
+                "id": part.call.id,
+                "name": part.call.name,
+                "input": part.call.args,
+            })
+        elif isinstance(part, ImagePart):
+            if image_loader is None:
+                raise ValueError("Image loader is required for image content")
+            if part.image.media_type not in {
+                "image/gif",
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+            }:
+                raise ValueError(
+                    f"Unsupported Anthropic image type: {part.image.media_type}"
+                )
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": part.image.media_type,
+                    "data": image_loader(part.image.path),
+                },
+            })
+        elif isinstance(part, ReasoningPart):
+            data = part.provider_data.get("anthropic") or {}
+            if data.get("redacted_data"):
+                blocks.append({
+                    "type": "redacted_thinking",
+                    "data": data["redacted_data"],
+                })
+            elif data.get("signature"):
+                blocks.append({
+                    "type": "thinking",
+                    "thinking": part.text,
+                    "signature": data["signature"],
+                })
+    return blocks
 
 
 def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:

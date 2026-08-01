@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from xbotv2.api import ArtifactRef, ToolResult
 
@@ -61,19 +61,46 @@ class BrowserSession:
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
+        self._sandbox: Any = None
 
     @property
     def active(self) -> bool:
         return self._page is not None and not self._page.is_closed()
 
-    async def open(self, url: str) -> ToolResult:
+    async def open(self, url: str, *, sandbox: Any = None) -> ToolResult:
         try:
-            target = await self.policy.check(url)
-            page = await self._ensure_page()
+            self._sandbox = sandbox
+            target = await self._target_url(url, sandbox)
+            page = await self._ensure_page(sandbox)
             await page.goto(target, wait_until="domcontentloaded", timeout=self.timeout_ms)
             return await self.snapshot()
         except Exception as exc:
             return ToolResult.failure("browser_open_failed", f"Browser open failed: {exc}")
+
+    async def _target_url(self, url: str, sandbox: Any) -> str:
+        stripped = url.strip()
+        if urlsplit(stripped).scheme.lower() == "file":
+            return self._file_url(stripped, sandbox)
+        return await self.policy.check(stripped)
+
+    def _file_url(self, url: str, sandbox: Any) -> str:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() != "file":
+            raise ValueError("URL scheme must be file")
+        if parsed.netloc not in {"", "localhost"} or not parsed.path.startswith("/"):
+            raise ValueError("file:// requires an absolute local path")
+        raw = unquote(parsed.path)
+        if sandbox is None:
+            target = Path(raw).expanduser().resolve()
+        else:
+            target = sandbox.resolve_read_path(raw)
+            issues = sandbox.check_filesystem_access(
+                "read_bytes",
+                {"path": raw},
+            )
+            if any(issue.get("decision") != "allow" for issue in issues):
+                raise ValueError("File URL is outside the sandbox-approved paths")
+        return "file://" + str(target)
 
     async def snapshot(self) -> ToolResult:
         if not self.active:
@@ -163,9 +190,10 @@ class BrowserSession:
                 pass
         self._page = self._context = self._browser = self._playwright = None
 
-    async def _ensure_page(self) -> Any:
+    async def _ensure_page(self, sandbox: Any = None) -> Any:
         if self.active:
             return self._page
+        self._sandbox = sandbox
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
@@ -181,7 +209,16 @@ class BrowserSession:
             raise
 
     async def _guard_request(self, route: Any, request: Any) -> None:
-        if urlsplit(request.url).scheme in {"about", "blob", "data"}:
+        scheme = urlsplit(request.url).scheme
+        if scheme == "file":
+            try:
+                self._file_url(request.url, getattr(self, "_sandbox", None))
+            except Exception:
+                await route.abort("blockedbyclient")
+                return
+            await route.continue_()
+            return
+        if scheme in {"about", "blob", "data"}:
             await route.continue_()
             return
         try:

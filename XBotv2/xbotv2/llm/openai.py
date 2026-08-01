@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
-from xbotv2.api.messages import ModelChunk, ModelResponse
+from xbotv2.api.messages import (
+    ImagePart,
+    ModelChunk,
+    ModelResponse,
+    ReasoningPart,
+    TextPart,
+    ToolCallPart,
+)
 from xbotv2.api.tools import ToolCall, ToolCallDelta
 from xbotv2.llm.base import (
     BaseProvider,
+    attachment_prompt,
     message_role,
-    same_response_model,
     usage_metadata,
 )
 
-_OPENAI_MESSAGE = "openai_message"
-
-
 class OpenAICompatibleProvider(BaseProvider):
+    supported_input_modalities = frozenset({"text", "image"})
+
     def __init__(
         self,
         *,
@@ -30,6 +36,8 @@ class OpenAICompatibleProvider(BaseProvider):
         thinking_enabled: bool = False,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
+        input_modalities: list[str] | None = None,
+        media_root: str | None = None,
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -41,6 +49,8 @@ class OpenAICompatibleProvider(BaseProvider):
             thinking_enabled=thinking_enabled,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
         kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
@@ -54,7 +64,10 @@ class OpenAICompatibleProvider(BaseProvider):
     ) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": openai_messages(messages, model=self.model),
+            "messages": openai_messages(
+                messages,
+                image_loader=self.read_image,
+            ),
             "tools": self.bound_tools or None,
             "temperature": self.temperature,
             "stream": True,
@@ -69,7 +82,6 @@ class OpenAICompatibleProvider(BaseProvider):
         response = await self.client.chat.completions.create(**api_kwargs)
 
         reasoning_parts: list[str] = []
-        reasoning_field = "reasoning_content"
         content_parts: list[str] = []
         tool_call_buffers: dict[int, dict[str, Any]] = {}
         final_usage: dict[str, int] = {}
@@ -88,14 +100,11 @@ class OpenAICompatibleProvider(BaseProvider):
             reasoning = getattr(delta, "reasoning_content", None)
             if not reasoning:
                 reasoning = getattr(delta, "reasoning", None)
-                if reasoning:
-                    reasoning_field = "reasoning"
             reasoning = reasoning or ""
             if reasoning:
                 reasoning_parts.append(reasoning)
                 yield ModelChunk(
-                    content=reasoning,
-                    additional_kwargs={"reasoning_content": reasoning},
+                    reasoning=reasoning,
                 )
                 continue
 
@@ -148,37 +157,26 @@ class OpenAICompatibleProvider(BaseProvider):
             for buffer in tool_call_buffers.values()
             if buffer["name"]
         ]
-        native_message: dict[str, Any] = {
-            "role": "assistant",
-            "content": content or None,
-        }
-        if tool_calls:
-            native_message["tool_calls"] = [
-                openai_tool_call(tool_call) for tool_call in tool_calls
-            ]
+        parts = []
         if reasoning:
-            native_message[reasoning_field] = reasoning
-        additional_kwargs: dict[str, Any] = {
-            _OPENAI_MESSAGE: native_message
-        }
-        if reasoning:
-            additional_kwargs["reasoning_content"] = reasoning
+            parts.append(ReasoningPart(reasoning))
+        if content:
+            parts.append(TextPart(content))
+        parts.extend(ToolCallPart(call) for call in tool_calls)
         yield ModelResponse(
-            content=content,
-            tool_calls=tool_calls,
+            parts=parts,
             response_metadata={
                 "model_name": self.model,
                 **({"stop_reason": stop_reason} if stop_reason else {}),
             },
             usage_metadata=final_usage,
-            additional_kwargs=additional_kwargs,
         )
 
 
 def openai_messages(
     messages: list[Any],
     *,
-    model: str | None = None,
+    image_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     system_parts = [
@@ -195,6 +193,10 @@ def openai_messages(
             continue
         content = getattr(message, "content", "")
         if role == "tool":
+            if message.images:
+                raise ValueError(
+                    "OpenAI Chat Completions supports image content only in user messages"
+                )
             result.append(
                 {
                     "role": "tool",
@@ -203,24 +205,57 @@ def openai_messages(
                 }
             )
             continue
-        native = (getattr(message, "additional_kwargs", {}) or {}).get(
-            _OPENAI_MESSAGE
-        )
-        if (
-            role == "assistant"
-            and isinstance(native, dict)
-            and same_response_model(message, model)
-        ):
-            result.append(dict(native))
-            continue
-        item: dict[str, Any] = {"role": role, "content": str(content)}
-        tool_calls = getattr(message, "tool_calls", None)
+        parts = message.parts
+        images = [part for part in parts if isinstance(part, ImagePart)]
+        if images and role != "user":
+            raise ValueError("Image content is supported only in user messages")
+        item: dict[str, Any] = {
+            "role": role,
+            "content": _openai_content(
+                parts,
+                image_loader,
+                attachment_prompt(message),
+            ),
+        }
+        tool_calls = [
+            part.call for part in parts if isinstance(part, ToolCallPart)
+        ]
         if tool_calls:
             item["tool_calls"] = [
                 openai_tool_call(tool_call) for tool_call in tool_calls
             ]
         result.append(item)
     return result
+
+
+def _openai_content(
+    parts: list[Any],
+    image_loader: Callable[[str], str] | None,
+    attachment_text: str = "",
+) -> str | list[dict[str, Any]]:
+    text = "".join(
+        part.text for part in parts if isinstance(part, TextPart)
+    )
+    if attachment_text:
+        text = f"{text}\n\n{attachment_text}".strip()
+    images = [part.image for part in parts if isinstance(part, ImagePart)]
+    if not images:
+        return text
+    if image_loader is None:
+        raise ValueError("Image loader is required for image content")
+    content_parts: list[dict[str, Any]] = []
+    if text:
+        content_parts.append({"type": "text", "text": text})
+    content_parts.extend({
+        "type": "image_url",
+        "image_url": {
+            "url": (
+                f"data:{image.media_type};base64,"
+                f"{image_loader(image.path)}"
+            )
+        },
+    } for image in images)
+    return content_parts
 
 
 def openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 """Tests for message history persistence and session restore."""
 
 import json
+import base64
 import tempfile
 from pathlib import Path
 
@@ -53,6 +54,16 @@ class TestMessageSerialization:
             ],
         )
         d = message_to_dict(msg)
+        assert d["parts"] == [
+            {"type": "text", "text": "calling tool"},
+            {
+                "type": "tool_call",
+                "id": "call_1",
+                "name": "shell",
+                "args": {"command": "ls"},
+            },
+        ]
+        assert "content" not in d and "tool_calls" not in d
         restored = dict_to_message(d)
         assert restored.role == "assistant"
         assert restored.tool_calls is not None
@@ -124,7 +135,11 @@ class TestMessageSerialization:
     def test_multiline_content(self):
         msg = Message(role="user", content="line 1\nline 2\nline 3")
         d = message_to_dict(msg)
-        assert d["content"] == "line 1\nline 2\nline 3"
+        assert d["parts"] == [{
+            "type": "text",
+            "text": "line 1\nline 2\nline 3",
+        }]
+        assert "content" not in d
         restored = dict_to_message(d)
         assert restored.content == "line 1\nline 2\nline 3"
 
@@ -153,6 +168,34 @@ class TestMessagePersistence:
         restored = store.read_messages()
         assert len(restored) == 1
         assert restored[0].content == "hello"
+
+    def test_image_payload_is_stored_once_outside_the_journal(self, store):
+        payload = b"small-image"
+        image = store.store_image(
+            base64.b64encode(payload).decode("ascii"),
+            "image/png",
+        )
+        store.append_message(Message(role="user", images=[image]))
+
+        record = json.loads(store.messages_path.read_text(encoding="utf-8"))
+        assert "small-image" not in store.messages_path.read_text(encoding="utf-8")
+        assert record["parts"] == [{"type": "image", **image.to_dict()}]
+        assert "images" not in record
+        assert (store.root / image.path).read_bytes() == payload
+        assert store.read_messages()[0].images == [image]
+
+    def test_uploaded_attachment_is_stored_outside_the_journal(self, store):
+        payload = b"binary\x00payload"
+        attachment = store.store_attachment(
+            base64.b64encode(payload).decode("ascii"),
+            "application/octet-stream",
+            "archive.bin",
+        )
+        store.append_message(Message(role="user", artifact=[attachment]))
+
+        assert (store.root / attachment["id"]).read_bytes() == payload
+        assert "binary" not in store.messages_path.read_text(encoding="utf-8")
+        assert store.read_messages()[0].artifact == [attachment]
 
     def test_append_multiple_messages(self, store):
         messages = [
@@ -234,15 +277,6 @@ class TestMessagePersistence:
         assert "discarded raw input" in store.messages_path.read_text(
             encoding="utf-8"
         )
-
-    def test_legacy_message_records_remain_readable(self, store):
-        store.messages_path.write_text(
-            json.dumps({"role": "user", "content": "legacy", "status": ""})
-            + "\n",
-            encoding="utf-8",
-        )
-
-        assert [message.content for message in store.read_messages()] == ["legacy"]
 
     def test_replay_ignores_only_an_incomplete_trailing_record(self, store):
         store.append_message(Message(role="user", content="durable"))
@@ -451,10 +485,10 @@ class TestEnginePersistence:
         _ = [e async for e in engine.run_turn("turn 2")]
         second_save = _raw_messages(store)
 
-        assert second_save[0]["content"] == first_save[0]["content"]
+        assert second_save[0]["parts"] == first_save[0]["parts"]
         assert second_save[0]["msg_id"] == first_save[0]["msg_id"]
         assert second_save[0]["ts"] == first_save[0]["ts"]
-        assert second_save[1]["content"] == first_save[1]["content"]
+        assert second_save[1]["parts"] == first_save[1]["parts"]
         assert second_save[1]["msg_id"] == first_save[1]["msg_id"]
         assert second_save[1]["ts"] == first_save[1]["ts"]
 

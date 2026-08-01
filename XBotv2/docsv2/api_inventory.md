@@ -27,12 +27,16 @@ type-only import inside XBotv2 itself.
 | `ClientEvent` | dataclass | Client-facing event emitted by tools. |
 | `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
 | `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
+| `ContentPart` | type alias | Ordered provider-neutral message content part. |
 | `ContextComponent` | dataclass | Immutable, source-tagged context fragment exposed to Hooks. |
 | `HookAction` | enum | Hook control-flow action. |
 | `HookContext` | dataclass | Stage-specific hook payload envelope. |
 | `HookDecision` | dataclass | Guard hook decision with reason/value. |
 | `HookStage` | enum | Complete set of current hook stages. |
 | `JsonValue` | type alias | JSON-compatible tool data shape. |
+| `ImageContent` | dataclass | Session-relative image artifact metadata. |
+| `ImagePart` | dataclass | Image entry in ordered message content. |
+| `InputModality` | type alias | Provider input modality name. |
 | `Message` | dataclass | Provider-neutral conversation message. |
 | `ModelChunk` | dataclass | Provider-neutral streaming model chunk. |
 | `ModelResponse` | dataclass | Provider-neutral model response. |
@@ -41,6 +45,8 @@ type-only import inside XBotv2 itself.
 | `PluginSetupContext` | protocol | Setup-time registration capabilities. |
 | `PluginManifest` | pydantic model | Validated plugin manifest. |
 | `PluginStore` | protocol | Per-plugin persistent key-value storage. |
+| `ProviderCapabilities` | dataclass | Effective provider input capabilities. |
+| `ReasoningPart` | dataclass | Reasoning entry with provider-required replay metadata. |
 | `PromptFragmentStage` | type alias | Supported plugin prompt insertion stages. |
 | `calibrated_context_tokens` | function | Calibrate the next request estimate from the latest provider context measurement. |
 | `context_token_limit` | function | Resolve one context threshold from window, ratio, and output reservation. |
@@ -54,8 +60,10 @@ type-only import inside XBotv2 itself.
 | `SessionInfo` | dataclass | Session identity and status metadata. |
 | `SessionPaths` | dataclass | Per-session filesystem layout. |
 | `ThreadPaths` | dataclass | Per-thread mutable state layout within a session. |
+| `TextPart` | dataclass | Text entry in ordered message content. |
 | `ToolCall` | dataclass | Parsed tool call request. |
 | `ToolCallDelta` | dataclass | Streaming tool call fragment. |
+| `ToolCallPart` | dataclass | Tool-call entry in ordered message content. |
 | `ToolError` | dataclass | Structured tool failure. |
 | `ToolResult` | dataclass | Tool output, error, artifacts, and events. |
 | `Tool` | dataclass | Tool definition and invocation wrapper. |

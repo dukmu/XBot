@@ -145,6 +145,7 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
         "anyOf": [{"type": "string"}, {"type": "null"}],
     }
     assert schema["parameters"]["required"] == ["path"]
+    assert schema["parameters"]["additionalProperties"] is False
     assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
     assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
 
@@ -266,6 +267,22 @@ def test_wire_models_reject_unknown_fields():
 def test_message_request_rejects_blank_content():
     with pytest.raises(ValidationError):
         MessageRequest(content="   ")
+
+
+def test_message_request_accepts_image_only_content():
+    request = MessageRequest(
+        images=[{"data": "aW1hZ2U=", "media_type": "image/png"}]
+    )
+    assert request.content == ""
+
+
+def test_message_request_accepts_attachment_only_content():
+    request = MessageRequest(attachments=[{
+        "data": "YmluYXJ5",
+        "media_type": "application/octet-stream",
+        "name": "sample.bin",
+    }])
+    assert request.content == ""
 
 
 def test_server_event_carries_stream_envelope_fields():

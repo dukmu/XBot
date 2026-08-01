@@ -23,13 +23,14 @@ async def read_file(
     *,
     sandbox=None,
 ) -> ToolResult:
-    """Read a bounded UTF-8 text range or inspect a non-text file.
+    """Read a bounded UTF-8 text range or return non-text metadata.
 
     Text reads are limited by both line count and character count. If the
     result is truncated, continue from the returned next offsets before
     relying on omitted content. Non-UTF-8 files return metadata instead of
     binary content, including MIME type, size, SHA-256, and recognized image
-    dimensions. The ``session/`` virtual path is read-only.
+    dimensions. Use ``content_read`` to send recognized image files to the
+    model. The ``session/`` virtual path is read-only.
 
     Args:
         path: Workspace-relative, absolute approved, or ``session/`` file path.
@@ -65,9 +66,10 @@ async def read_file(
             f", {image.get('width')}x{image.get('height')} {image.get('format')}"
             if image else ""
         )
-        content = (
+        return ToolResult.success(
             f"Non-text file: {path} ({data.get('media_type')}, "
-            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})"
+            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})",
+            data=data,
         )
     elif line_numbers:
         content = _with_line_numbers(content, offset + 1)
@@ -141,13 +143,13 @@ async def search_text(
 
     Args:
         pattern: Regular expression, or literal text when ``literal`` is true.
-        path: Root directory to search recursively.
+        path: UTF-8 file to search, or root directory to search recursively.
         glob: Optional glob matched against relative paths or basenames.
         max_results: Maximum matches; must be at least one.
         case_sensitive: Use case-sensitive matching.
         literal: Escape ``pattern`` instead of interpreting it as regex.
         include_hidden: Search dotfiles and dot-directories.
-        exclude: Directory or file names to skip; defaults to common generated directories.
+        exclude: Directory or file names to skip during directory traversal.
         max_line_chars: Maximum text retained for each match.
     """
     data = await _operation(

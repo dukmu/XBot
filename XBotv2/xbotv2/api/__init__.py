@@ -35,7 +35,18 @@ from xbotv2.api.hooks import (
     HookDecision,
     HookStage,
 )
-from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.messages import (
+    ContentPart,
+    ImageContent,
+    ImagePart,
+    Message,
+    ModelChunk,
+    ModelResponse,
+    ReasoningPart,
+    TextPart,
+    ToolCallPart,
+)
+from xbotv2.api.providers import InputModality, ProviderCapabilities
 from xbotv2.api.prompts import prompt_container, prompt_element
 from xbotv2.api.tokens import (
     calibrated_context_tokens,
@@ -52,12 +63,16 @@ __all__ = [
     "ClientEvent",
     "Command",
     "CommandResult",
+    "ContentPart",
     "ContextComponent",
     "HookAction",
     "HookContext",
     "HookDecision",
     "HookStage",
     "JsonValue",
+    "ImageContent",
+    "ImagePart",
+    "InputModality",
     "Message",
     "ModelChunk",
     "ModelResponse",
@@ -66,6 +81,8 @@ __all__ = [
     "PluginSetupContext",
     "PluginManifest",
     "PluginStore",
+    "ProviderCapabilities",
+    "ReasoningPart",
     "PromptFragmentStage",
     "calibrated_context_tokens",
     "context_token_limit",
@@ -79,8 +96,10 @@ __all__ = [
     "SessionInfo",
     "SessionPaths",
     "ThreadPaths",
+    "TextPart",
     "ToolCall",
     "ToolCallDelta",
+    "ToolCallPart",
     "ToolError",
     "ToolResult",
     "Tool",

@@ -178,7 +178,7 @@ def replay_history(messages: list[Any]) -> list[Any]:
             updates.append(update_user_message_text(str(message.content)))
             continue
         if message.role == "assistant":
-            reasoning = message.additional_kwargs.get("reasoning_content")
+            reasoning = message.reasoning
             if reasoning:
                 updates.append(update_agent_thought_text(str(reasoning)))
             if message.content:

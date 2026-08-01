@@ -1,12 +1,14 @@
 """Tests for SandboxPolicy with BubblewrapBackend."""
 
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
 
 import pytest
 
+from xbotv2.core.builtin_tools.shell import run_shell_command
 from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.tools.sandbox_bwrap import _build_args
 from xbotv2.api.variables import RuntimeVariables
@@ -137,6 +139,8 @@ class TestBubblewrapCapabilities:
         monkeypatch.setenv("XBOT_SANDBOX_TEST_ENV", "from-host")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
+        source = workspace / "search.txt"
+        source.write_text("first\nsearch target\n", encoding="utf-8")
         session_root = tmp_path / ".data" / "sessions" / "s" / "state"
         cached_path = session_root / "artifacts" / "tool_results" / "cached.txt"
         cached_path.parent.mkdir(parents=True)
@@ -154,17 +158,37 @@ class TestBubblewrapCapabilities:
             "read",
             {"path": "session/artifacts/tool_results/cached.txt"},
         ))
+        searched = json.loads(await policy.filesystem(
+            "search",
+            {"path": str(source), "pattern": "target"},
+        ))
+        searched_directory = json.loads(await policy.filesystem(
+            "search",
+            {"path": str(workspace), "pattern": "target"},
+        ))
 
         assert cached["content"] == "cached"
-        assert await policy.run_shell("printf sandbox-ok") == "sandbox-ok"
+        assert searched["matches"][0]["line"] == 2
+        assert searched_directory["matches"][0]["path"] == "search.txt"
+        shell = os.environ["SHELL"]
+        assert await policy.run_shell(
+            "printf sandbox-ok", shell=shell
+        ) == "sandbox-ok"
         assert (
-            await policy.run_shell('printf %s "$XBOT_SANDBOX_TEST_ENV"')
+            await policy.run_shell(
+                'printf %s "$XBOT_SANDBOX_TEST_ENV"', shell=shell
+            )
             == "from-host"
         )
+        host_shell = await run_shell_command('printf %s "$0"')
+        sandbox_shell = await policy.run_shell('printf %s "$0"', shell=shell)
+        assert Path(host_shell).resolve() == Path(shell).resolve()
+        assert Path(sandbox_shell).resolve() == Path(shell).resolve()
         assert (
             await policy.run_shell(
                 f"{shlex.quote(sys.executable)} "
-                "-c 'import sys; print(sys.prefix)'"
+                "-c 'import sys; print(sys.prefix)'",
+                shell=shell,
             )
         ).strip() == str(Path(sys.prefix).resolve())
 
