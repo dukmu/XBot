@@ -10,11 +10,22 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from xbotv2.api.hooks import HookAction, HookDecision, HookStage
-from xbotv2.api.tools import ToolCall, ToolResult, tool_parameters_schema
+from xbotv2.api.tools import ToolCall, ToolError, ToolResult, tool_parameters_schema
 from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.api.messages import Message
 
 logger = logging.getLogger("xbotv2.tools.runtime")
+
+
+class ToolDispatchTimeoutError(TimeoutError):
+    """The outer tool dispatch deadline expired."""
+
+    def __init__(self, *, tool_name: str, timeout_seconds: float) -> None:
+        self.tool_name = tool_name
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Tool {tool_name} timed out after {timeout_seconds}s"
+        )
 
 
 async def execute_tools(
@@ -468,10 +479,23 @@ async def _run_tool_hook(
     return await hook_manager.run(stage, ctx, short_circuit=short_circuit)
 
 
-def _error_message(call: ToolCall, reason: str, events: list[dict[str, Any]] | None = None) -> Message:
+def _error_message(
+    call: ToolCall,
+    reason: str,
+    events: list[dict[str, Any]] | None = None,
+    error: ToolError | None = None,
+) -> Message:
+    additional_kwargs: dict[str, Any] = {}
+    if events:
+        additional_kwargs["xbotv2_events"] = events
+    if error is not None:
+        additional_kwargs["xbotv2_error"] = error.to_dict()
     return Message(
-        role="tool", content=f"Error: {reason}", tool_call_id=call.id, status="error",
-        additional_kwargs={"xbotv2_events": events} if events else {},
+        role="tool",
+        content=f"Error: {reason}",
+        tool_call_id=call.id,
+        status="error",
+        additional_kwargs=additional_kwargs,
     )
 
 
@@ -658,6 +682,46 @@ async def _execute_one_tool(
         logger.info("tool.execute finished id=%s name=%s status=%s content_len=%d", tool_id, tool_name, message.status, len(str(message.content)))
         await _run_tool_hook(hook_manager, hook_context_factory, HookStage.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
 
+    except ToolDispatchTimeoutError as exc:
+        logger.warning(
+            "Tool %s timed out id=%s timeout=%s",
+            tool_name,
+            tool_id,
+            exc.timeout_seconds,
+        )
+        observed_call = ToolCall(tool_id, tool_name, args)
+        timeout = exc.timeout_seconds
+        reason = f"Tool {tool_name} timed out after {timeout}s"
+        message = _error_message(
+            observed_call,
+            reason,
+            error=ToolError(
+                code="tool_timeout",
+                message=reason,
+                retryable=False,
+                details={"timeout_seconds": timeout},
+            ),
+        )
+        observed_tool_calls.append(observed_call)
+        results.append(message)
+        await _run_tool_hook(
+            hook_manager,
+            hook_context_factory,
+            HookStage.ON_TOOL_CALL_FAILURE,
+            tool_call=observed_call,
+            tool_result=message,
+            error=exc,
+            short_circuit=False,
+        )
+        await _run_tool_hook(
+            hook_manager,
+            hook_context_factory,
+            HookStage.AFTER_TOOL_CALL,
+            tool_call=observed_call,
+            tool_result=message,
+            error=exc,
+            short_circuit=False,
+        )
     except UserInputDisconnected:
         raise
     except Exception as exc:
@@ -755,7 +819,14 @@ async def _invoke_tool(
         call = asyncio.to_thread(tool, **args)
     else:
         raise TypeError(f"Tool {tool!r} is not callable")
-    return await asyncio.wait_for(
-        call,
-        timeout=timeout_seconds or _TOOL_DISPATCH_TIMEOUT_SECONDS,
-    )
+    timeout = timeout_seconds or _TOOL_DISPATCH_TIMEOUT_SECONDS
+    task = asyncio.create_task(call)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise ToolDispatchTimeoutError(
+            tool_name=getattr(tool, "name", str(tool)),
+            timeout_seconds=timeout,
+        )
+    return task.result()
