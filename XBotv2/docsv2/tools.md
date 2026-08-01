@@ -6,6 +6,7 @@ Core registers these tools without plugins:
 |---|---|---|
 | `shell` | session runtime | Run a foreground command or start one with `background=true` |
 | `filesystem_read` | sandboxed, sequential | Read bounded UTF-8 text or return non-text metadata |
+| `content_read` | sandboxed, sequential | Read image content as a model-visible image part |
 | `filesystem_stat` | sandboxed, sequential | Inspect file, symlink, hash, MIME, and image metadata |
 | `filesystem_list` | sandboxed, sequential | List bounded directory entries |
 | `search_text` | sandboxed, sequential | Search UTF-8 text with structured locations |
@@ -78,6 +79,14 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
+`filesystem_read` never attaches image bytes to provider messages. Use
+`content_read` for model-visible image input. It accepts exactly one of a local
+path, an `http`/`https` URL, or base64 image data (optionally as a
+`data:image/*;base64,` URL). Supported types are GIF, JPEG, PNG, and WebP; the
+bytes are stored under `session/artifacts/media/` and sent to image-capable
+providers as a native image block. `filesystem_stat` still reports recognized
+image dimensions for discovery.
+
 Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
 stored under the session's `state/artifacts/tool_results` directory before
 history persistence and SSE emission. `tool_results.preview_chars` controls the
@@ -118,8 +127,8 @@ atomically. The runtime records the version of each file returned by read or
 stat. A later write, edit, or patch is guarded against external changes without
 exposing hashes in the Agent-facing Tool schema. A repeated read reports when
 the file changed since its previous observation. Non-text reads return MIME,
-size, hash, and recognized image
-metadata without placing binary content in context. Text must be valid UTF-8
+size, hash, and recognized image metadata without placing binary content in
+context. Text must be valid UTF-8
 and must not contain binary control data. Existing files are read before
 mutation, complete content is sent only to `filesystem_write`, and relevant
 ranges are read again before a change is reported as verified.

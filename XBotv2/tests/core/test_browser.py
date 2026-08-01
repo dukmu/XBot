@@ -1,11 +1,96 @@
 """Focused behavior tests for the built-in Browser plugin."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
 
+from builtin_plugins.browser.browser import BrowserSession
 from builtin_plugins.browser.network import NetworkOptions, UrlPolicy, WebAccess
+from xbotv2.api import ToolResult
+
+
+class FakeBrowserSandbox:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+
+    def resolve_read_path(self, path: str) -> Path:
+        candidate = Path(path)
+        return candidate if candidate.is_absolute() else self.workspace / candidate
+
+    def check_filesystem_access(self, _operation, args):
+        path = Path(str(args["path"]))
+        if path.is_relative_to(self.workspace):
+            return []
+        return [{"field": "path", "path": str(path), "write": False, "decision": "deny"}]
+
+
+@pytest.mark.asyncio
+async def test_browser_file_url_resolves_inside_sandbox(tmp_path):
+    page = tmp_path / "page.html"
+    page.write_text("<h1>local</h1>", encoding="utf-8")
+    sandbox = FakeBrowserSandbox(tmp_path)
+    browser = BrowserSession(
+        policy=UrlPolicy(),
+        artifacts_dir=tmp_path,
+        headless=True,
+        timeout_seconds=5,
+    )
+
+    target = await browser._target_url(page.as_uri(), sandbox)
+
+    assert target == "file://" + str(page)
+
+
+@pytest.mark.asyncio
+async def test_browser_file_url_rejects_path_outside_sandbox(tmp_path):
+    outside = tmp_path.parent / "outside.html"
+    sandbox = FakeBrowserSandbox(tmp_path)
+    browser = BrowserSession(
+        policy=UrlPolicy(),
+        artifacts_dir=tmp_path,
+        headless=True,
+        timeout_seconds=5,
+    )
+
+    with pytest.raises(ValueError, match="outside the sandbox"):
+        await browser._target_url(outside.as_uri(), sandbox)
+
+
+@pytest.mark.asyncio
+async def test_browser_open_accepts_file_url_with_sandbox(tmp_path):
+    class FakeBrowser(BrowserSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.opened = ""
+
+        async def _ensure_page(self, sandbox=None):
+            self._sandbox = sandbox
+            return self
+
+        async def goto(self, url, **_kwargs):
+            self.opened = url
+
+        async def snapshot(self):
+            return ToolResult.success("snapshot")
+
+    page = tmp_path / "page.html"
+    page.write_text("<h1>local</h1>", encoding="utf-8")
+    browser = FakeBrowser(
+        policy=UrlPolicy(),
+        artifacts_dir=tmp_path,
+        headless=True,
+        timeout_seconds=5,
+    )
+
+    result = await browser.open(
+        page.as_uri(),
+        sandbox=FakeBrowserSandbox(tmp_path),
+    )
+
+    assert result.status == "success"
+    assert browser.opened == "file://" + str(page)
 
 
 @pytest.mark.asyncio

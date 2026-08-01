@@ -59,6 +59,7 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # ------------------------------------------------------------------
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
+from xbotv2.core.builtin_tools.content import content_read_tool
 from xbotv2.core.builtin_tools.interaction import (
     ask_user,
     request_permission,
@@ -78,6 +79,7 @@ SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
     *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
+    (content_read_tool, "sandboxed"),
     (send_message, "host"),
     (ask_user, "host"),
     (request_permission, "host"),

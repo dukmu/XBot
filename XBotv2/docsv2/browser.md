@@ -53,6 +53,13 @@ prevent another network-capable Tool such as Shell from reaching a private
 address. Disabling the XBot sandbox network setting disables live search,
 fetch, navigation, and interactive browser actions.
 
+`browser_open` also accepts absolute `file:///...` URLs. File navigation does
+not use the network setting and works when network access is disabled. The
+target and every file subrequest must resolve inside the active sandbox's
+approved read scope, which by default is the workspace plus configured session
+resources. Paths outside that scope are rejected even when the host filesystem
+is readable.
+
 Install the Chromium runtime once after installing XBot:
 
 ```bash

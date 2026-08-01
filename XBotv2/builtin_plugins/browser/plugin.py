@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from xbotv2.api import (
     PluginBase,
@@ -116,18 +117,21 @@ class BrowserPlugin(PluginBase):
         return await self._web_access().fetch(url)
 
     async def browser_open(self, url: str, *, sandbox=None) -> ToolResult:
-        """Open a public URL in the isolated browser and return a page snapshot.
+        """Open a public or sandbox-approved local URL in the browser.
 
         Starts Chromium lazily. Use web_fetch for static reading and this Tool
         only when rendering or interaction is required.
 
         Args:
-            url: Absolute public http or https URL to render.
+            url: Absolute public http/https URL, or absolute file:// URL within
+                the sandbox-approved filesystem scope.
         """
+        if urlsplit(url.strip()).scheme.lower() == "file":
+            return await self._browser_session().open(url, sandbox=sandbox)
         unavailable = network_available(sandbox)
         if unavailable:
             return unavailable
-        return await self._browser_session().open(url)
+        return await self._browser_session().open(url, sandbox=sandbox)
 
     async def browser_snapshot(self, *, sandbox=None) -> ToolResult:
         """Read the active page text and refresh its interactive element refs.

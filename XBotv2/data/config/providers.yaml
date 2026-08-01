@@ -21,6 +21,9 @@ providers:
     max_output_tokens: 32768
     reasoning_effort: high        # or max
     thinking_enabled: true
+    input_modalities:
+      - text
+      - image
 
   lmstudio:
     provider: openai

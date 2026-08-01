@@ -353,6 +353,7 @@ def _prepare_bridge_data(source: Path, target: Path, port: int) -> None:
                 "api_key": "inspect",
                 "max_context_tokens": 1_000_000,
                 "max_output_tokens": 32_768,
+                "input_modalities": ["text", "image"],
             }
         },
     }

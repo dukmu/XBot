@@ -275,6 +275,7 @@ class NormalClosePlugin(PluginBase):
         assert {
             "shell",
             "filesystem_read",
+            "content_read",
             "ask_user",
             "request_permission",
             "list_tasks",

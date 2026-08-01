@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import hashlib
 import json
@@ -21,6 +22,7 @@ DEFAULT_EXCLUDES = (".git", ".venv", "node_modules", "__pycache__")
 PathAccess = Literal["read", "write"]
 PATH_ACCESS: dict[str, tuple[tuple[str, PathAccess], ...]] = {
     "read": (("path", "read"),),
+    "read_bytes": (("path", "read"),),
     "stat": (("path", "read"),),
     "list": (("path", "read"),),
     "search": (("path", "read"),),
@@ -35,6 +37,7 @@ PATH_ACCESS: dict[str, tuple[tuple[str, PathAccess], ...]] = {
 }
 TOOL_OPERATIONS = {
     "filesystem_read": "read",
+    "content_read": "read_bytes",
     "filesystem_stat": "stat",
     "filesystem_list": "list",
     "search_text": "search",
@@ -59,6 +62,7 @@ class FilesystemError(Exception):
 def execute(operation: str, args: dict[str, Any]) -> dict[str, Any]:
     handlers = {
         "read": _read,
+        "read_bytes": _read_bytes,
         "stat": _stat,
         "list": _list,
         "search": _search,
@@ -82,6 +86,16 @@ def execute(operation: str, args: dict[str, Any]) -> dict[str, Any]:
         return _error("filesystem_error", str(exc))
     except (TypeError, ValueError, re.error) as exc:
         return _error("invalid_arguments", str(exc))
+
+
+def _read_bytes(path: str) -> dict[str, Any]:
+    target = _file(path)
+    metadata = _file_metadata(target, inspect_text=False)
+    payload = target.read_bytes()
+    return {
+        **metadata,
+        "base64": base64.b64encode(payload).decode("ascii"),
+    }
 
 
 def _read(

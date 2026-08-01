@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
 
+from xbotv2.core.builtin_tools import content as content_module
+from xbotv2.core.builtin_tools.content import content_read
 from xbotv2.core.builtin_tools.filesystem import (
     copy_path,
     delete_path,
@@ -22,6 +25,121 @@ from xbotv2.core.builtin_tools.filesystem import (
     write_file,
 )
 from xbotv2.tools.sandbox import SandboxPolicy
+
+
+class TestContentRead:
+    @pytest.mark.asyncio
+    async def test_content_read_path_returns_image_part(self, tmp_path):
+        payload = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+        path = tmp_path / "image.png"
+        path.write_bytes(payload)
+
+        class Sandbox:
+            session_root = tmp_path / "session"
+            enabled = False
+            network = True
+
+            def resolve_filesystem_args(self, _operation, args):
+                return args
+
+        result = await content_read(path=str(path), sandbox=Sandbox())
+
+        assert result.status == "success"
+        assert len(result.images) == 1
+        image = result.images[0]
+        assert image.media_type == "image/png"
+        assert (tmp_path / "session" / image.path).read_bytes() == payload
+        assert result.data["sha256"]
+
+    @pytest.mark.asyncio
+    async def test_content_read_accepts_base64_and_data_url(self, tmp_path):
+        payload = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+        encoded = base64.b64encode(payload).decode("ascii")
+
+        class Sandbox:
+            session_root = tmp_path / "session"
+            enabled = False
+            network = True
+
+        raw = await content_read(data=encoded, sandbox=Sandbox())
+        data_url = await content_read(
+            data=f"data:image/png;base64,{encoded}",
+            sandbox=Sandbox(),
+        )
+
+        assert raw.status == "success"
+        assert data_url.status == "success"
+        assert raw.images[0].media_type == "image/png"
+        assert data_url.images[0].size == len(payload)
+
+    @pytest.mark.asyncio
+    async def test_content_read_url_uses_http_response(self, tmp_path, monkeypatch):
+        payload = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+
+        class Response:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aiter_bytes(self):
+                yield payload
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, _url, **_kwargs):
+                return Response()
+
+        monkeypatch.setattr(content_module.httpx, "AsyncClient", Client)
+
+        class Sandbox:
+            session_root = tmp_path / "session"
+            enabled = False
+            network = True
+
+        result = await content_read(
+            url="https://example.com/cat.png",
+            sandbox=Sandbox(),
+        )
+
+        assert result.status == "success"
+        assert result.images[0].media_type == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_content_read_rejects_unsupported_content(self, tmp_path):
+        class Sandbox:
+            session_root = tmp_path / "session"
+            enabled = False
+            network = True
+
+        result = await content_read(
+            data="bm90IGFuIGltYWdl",
+            sandbox=Sandbox(),
+        )
+
+        assert result.status == "error"
+        assert result.error.code == "unsupported_content"
 
 
 class TestFilesystemRead:
@@ -81,7 +199,7 @@ class TestFilesystemRead:
         assert "Non-text file" in result.content
 
     @pytest.mark.asyncio
-    async def test_image_read_returns_session_media_reference(self, tmp_path):
+    async def test_non_text_read_does_not_attach_image_content(self, tmp_path):
         path = tmp_path / "pixel.png"
         path.write_bytes(
             b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
@@ -98,10 +216,9 @@ class TestFilesystemRead:
 
         result = await read_file(str(path), sandbox=Sandbox())
 
-        assert len(result.images) == 1
-        image = result.images[0]
-        assert image.path.startswith("artifacts/media/")
-        assert (tmp_path / "session" / image.path).read_bytes() == path.read_bytes()
+        assert result.status == "success"
+        assert result.images == ()
+        assert result.data["media_type"] == "image/png"
 
     @pytest.mark.asyncio
     async def test_utf8_decodable_binary_returns_metadata_instead_of_controls(self, tmp_path):

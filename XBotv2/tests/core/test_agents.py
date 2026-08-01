@@ -36,6 +36,7 @@ def test_shipped_explorer_definition_is_read_only():
 
     assert definition.mode == "all"
     assert "filesystem_stat" in definition.tools
+    assert "content_read" in definition.tools
     permissions = PermissionSystem(definition.permissions)
     assert permissions.check("filesystem_write") == "deny"
     assert permissions.check("shell") == "deny"
