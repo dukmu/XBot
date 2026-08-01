@@ -13,6 +13,8 @@ from xbotv2.llm.openai import OpenAICompatibleProvider
 
 logger = logging.getLogger("xbotv2.llm")
 
+DEFAULT_PROVIDER_MAX_RETRIES = 16
+
 
 def create_llm(
     provider_config: Any,
@@ -109,7 +111,12 @@ def _require_api_key(provider: str, model: str, api_key: str) -> None:
 
 def _retry_settings() -> tuple[int | None, float]:
     retries = os.environ.get("XBOT_PROVIDER_MAX_RETRIES", "").strip().lower()
-    max_retries = None if retries in {"", "none", "infinite"} else int(retries)
+    if not retries:
+        max_retries = DEFAULT_PROVIDER_MAX_RETRIES
+    elif retries in {"none", "infinite"}:
+        max_retries = None
+    else:
+        max_retries = int(retries)
     backoff = float(
         os.environ.get("XBOT_PROVIDER_RETRY_BACKOFF_FACTOR", "0.5")
     )
@@ -122,4 +129,4 @@ def _retry_settings() -> tuple[int | None, float]:
     return max_retries, backoff
 
 
-__all__ = ["create_llm"]
+__all__ = ["DEFAULT_PROVIDER_MAX_RETRIES", "create_llm"]

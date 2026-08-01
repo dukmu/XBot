@@ -12,6 +12,8 @@ from xbotv2.llm.base import BaseProvider
 class MockLLM(BaseProvider):
     """Deterministic provider with the same public test helpers as the old mock."""
 
+    supported_input_modalities = frozenset({"text", "image"})
+
     def __init__(self, responses: list[dict[str, Any]] | None = None, **kwargs):
         super().__init__(
             model="mock",

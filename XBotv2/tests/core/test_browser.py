@@ -26,6 +26,103 @@ class FakeBrowserSandbox:
         return [{"field": "path", "path": str(path), "write": False, "decision": "deny"}]
 
 
+class NoNetworkSandbox(FakeBrowserSandbox):
+    network = False
+
+
+@pytest.mark.asyncio
+async def test_browser_open_http_uses_unified_network_guard(tmp_path):
+    browser = BrowserSession(
+        policy=UrlPolicy(),
+        artifacts_dir=tmp_path,
+        headless=True,
+        timeout_seconds=5,
+    )
+
+    result = await browser.open(
+        "https://example.com/page",
+        sandbox=NoNetworkSandbox(tmp_path),
+    )
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert result.error.code == "network_disabled"
+
+
+@pytest.mark.asyncio
+async def test_web_search_normalizes_ddgs_results(monkeypatch):
+    class FakeDDGS:
+        def __init__(self, timeout):
+            self.timeout = timeout
+            self.kwargs = {}
+
+        def text(self, query, **kwargs):
+            self.kwargs = {"query": query, **kwargs}
+            return [
+                {
+                    "title": "XBot project",
+                    "href": "https://example.com/xbot",
+                    "body": "Readable Agent runtime",
+                    "date": "2026-07-29",
+                },
+                {"title": "No URL", "body": "skipped"},
+            ]
+
+    fake = FakeDDGS(timeout=20)
+    monkeypatch.setattr("ddgs.DDGS", lambda timeout: fake)
+    access = WebAccess(NetworkOptions())
+    try:
+        result = await access.search(
+            "xbot",
+            max_results=5,
+            freshness="week",
+            backend="auto",
+            region="wt-wt",
+            safesearch="moderate",
+        )
+    finally:
+        await access.close()
+
+    assert result.status == "success"
+    assert result.data["results"] == [{
+        "title": "XBot project",
+        "url": "https://example.com/xbot",
+        "snippet": "Readable Agent runtime",
+        "date": "2026-07-29",
+    }]
+    assert fake.kwargs["query"] == "xbot"
+    assert fake.kwargs["max_results"] == 5
+    assert fake.kwargs["timelimit"] == "w"
+
+
+@pytest.mark.asyncio
+async def test_web_search_reports_ddgs_failure(monkeypatch):
+    class FailingDDGS:
+        def __init__(self, timeout):
+            del timeout
+
+        def text(self, query, **kwargs):
+            raise RuntimeError("search backend unavailable")
+
+    monkeypatch.setattr("ddgs.DDGS", FailingDDGS)
+    access = WebAccess(NetworkOptions())
+    try:
+        result = await access.search(
+            "xbot",
+            max_results=3,
+            freshness=None,
+            backend="auto",
+            region="wt-wt",
+            safesearch="off",
+        )
+    finally:
+        await access.close()
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert result.error.code == "search_failed"
+
+
 @pytest.mark.asyncio
 async def test_browser_file_url_resolves_inside_sandbox(tmp_path):
     page = tmp_path / "page.html"

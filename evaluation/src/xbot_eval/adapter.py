@@ -20,8 +20,7 @@ _BRIDGE_PORTS: set[int] = set()
 
 
 class _InspectACPClient:
-    def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
+    def __init__(self) -> None:
         self.message_parts: list[str] = []
         self.events: list[dict[str, Any]] = []
 
@@ -38,11 +37,9 @@ class _InspectACPClient:
 
     async def request_permission(self, **kwargs: Any) -> RequestPermissionResponse:
         tool_call = kwargs["tool_call"]
-        option_id = (
-            "deny"
-            if _external_path(tool_call.title, tool_call.raw_input, self.workspace)
-            else "allow_once"
-        )
+        # XBot enforces workspace scope through its bwrap sandbox and
+        # permission policy; the Inspect adapter only answers the ACP prompt.
+        option_id = "allow_once"
         self.events.append({
             "session_update": "permission_request",
             "tool_call_id": tool_call.tool_call_id,
@@ -107,7 +104,7 @@ def xbot_agent(
             args.append("--no-plugins")
         args.extend(extra_args)
 
-        client = _InspectACPClient(workspace)
+        client = _InspectACPClient()
         child_env = dict(env or {})
         child_env.update(runtime_variables)
         child_env.setdefault("PYTHONUTF8", "1")
@@ -193,6 +190,7 @@ def xbot_bridge_agent(
     command: str,
     data_dir: str,
     agent: str | None = None,
+    provider_name: str | None = None,
 ) -> Solver:
     """Run XBot through Inspect's standard external-agent model bridge."""
 
@@ -221,7 +219,7 @@ def xbot_bridge_agent(
         bridge_state = AgentState(messages=list(state.messages))
         bridge_port = _allocate_bridge_port()
         bridge_data = sandbox_root / ".xbot-eval"
-        client = _InspectACPClient(workspace)
+        client = _InspectACPClient()
         responses = []
         session_id = ""
         try:
@@ -235,6 +233,7 @@ def xbot_bridge_agent(
                     Path(data_dir).resolve(),
                     bridge_data,
                     bridge.port,
+                    provider_name,
                 )
                 args = [
                     "acp",
@@ -337,23 +336,42 @@ def xbot_bridge_agent(
     return solve
 
 
-def _prepare_bridge_data(source: Path, target: Path, port: int) -> None:
+def _prepare_bridge_data(
+    source: Path,
+    target: Path,
+    port: int,
+    provider_name: str | None = None,
+) -> None:
     target.mkdir()
     for name in ("config", ".agents", "memory"):
         path = source / name
         if path.exists():
             shutil.copytree(path, target / name)
+    provider = _load_bridge_provider(source, provider_name)
+    provider_type = str(provider.get("provider", "anthropic"))
+    max_output_tokens = provider.get("max_output_tokens")
+    if max_output_tokens is None and provider_type == "anthropic":
+        max_output_tokens = 32_768
     providers = {
         "default": "inspect",
         "providers": {
             "inspect": {
-                "provider": "anthropic",
-                "model": "inspect",
+                "provider": provider_type,
+                "model": provider.get("model", "inspect"),
                 "base_url": f"http://127.0.0.1:{port}",
                 "api_key": "inspect",
-                "max_context_tokens": 1_000_000,
-                "max_output_tokens": 32_768,
-                "input_modalities": ["text", "image"],
+                "max_context_tokens": provider.get(
+                    "max_context_tokens",
+                    200_000,
+                ),
+                "max_output_tokens": max_output_tokens,
+                "input_modalities": provider.get(
+                    "input_modalities",
+                    ["text"],
+                ),
+                "temperature": provider.get("temperature", 0.7),
+                "reasoning_effort": provider.get("reasoning_effort"),
+                "thinking_enabled": provider.get("thinking_enabled", False),
             }
         },
     }
@@ -363,6 +381,24 @@ def _prepare_bridge_data(source: Path, target: Path, port: int) -> None:
         yaml.safe_dump(providers, sort_keys=False),
         encoding="utf-8",
     )
+
+
+def _load_bridge_provider(
+    source: Path,
+    provider_name: str | None,
+) -> dict[str, Any]:
+    path = source / "config" / "providers.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    providers = document.get("providers") or {}
+    selected = provider_name or str(document.get("default") or "")
+    provider = providers.get(selected)
+    if not isinstance(provider, dict):
+        available = ", ".join(sorted(str(name) for name in providers))
+        raise RuntimeError(
+            f"Unknown evaluation bridge provider {selected!r}; "
+            f"available providers: {available or '(none)'}"
+        )
+    return provider
 
 
 def _allocate_bridge_port() -> int:
@@ -388,16 +424,3 @@ def _trace_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_trace_value(item) for item in value]
     return value
-
-
-def _external_path(tool: str | None, args: Any, workspace: Path) -> bool:
-    if not tool or not tool.startswith("filesystem_") or not isinstance(args, dict):
-        return False
-    for key in ("path", "source", "destination"):
-        value = args.get(key)
-        if not isinstance(value, str):
-            continue
-        path = Path(value)
-        if path.is_absolute() and not path.resolve().is_relative_to(workspace):
-            return True
-    return False

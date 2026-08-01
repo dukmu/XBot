@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +103,7 @@ def main() -> int:
         env.get("XBOT_EVAL_COMMAND", REPO_ROOT / ".venv" / "bin" / "xbot")
     ).resolve())
     env["XBOT_EVAL_DATA_DIR"] = str(evaluation_data)
+    env["XBOT_EVAL_PROVIDER"] = args.provider
     env.setdefault("HARNESSBENCH_PUBLIC_URL_TEMPLATE", "{local_url}")
     _provider_credentials(env, provider_type, provider)
 
@@ -134,7 +137,85 @@ def main() -> int:
     if args.limit:
         command.extend(["--limit", args.limit])
     command.extend(inspect_args)
-    return subprocess.run(command, env=env, cwd=REPO_ROOT).returncode
+    started_at = datetime.now(timezone.utc).isoformat()
+    _write_run_manifest(
+        run_root,
+        args=args,
+        evaluation_data=evaluation_data,
+        provider=provider,
+        provider_type=provider_type,
+        model=model,
+        base_url=base_url,
+        env=env,
+        inspect_args=inspect_args,
+        status="running",
+        started_at=started_at,
+    )
+    returncode = subprocess.run(command, env=env, cwd=REPO_ROOT).returncode
+    _write_run_manifest(
+        run_root,
+        args=args,
+        evaluation_data=evaluation_data,
+        provider=provider,
+        provider_type=provider_type,
+        model=model,
+        base_url=base_url,
+        env=env,
+        inspect_args=inspect_args,
+        status="completed" if returncode == 0 else f"failed:{returncode}",
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return returncode
+
+
+def _write_run_manifest(
+    run_root: Path,
+    *,
+    args: argparse.Namespace,
+    evaluation_data: Path,
+    provider: dict[str, Any],
+    provider_type: str,
+    model: str,
+    base_url: str | None,
+    env: dict[str, str],
+    inspect_args: list[str],
+    status: str,
+    started_at: str,
+    completed_at: str | None = None,
+) -> None:
+    manifest = {
+        "schema_version": 1,
+        "run_name": run_root.name,
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "provider": args.provider,
+        "provider_type": provider_type,
+        "model": model,
+        "base_url": base_url,
+        "jobs": args.jobs,
+        "limit": args.limit,
+        "sample_id": args.sample_id,
+        "provider_max_retries": args.provider_max_retries,
+        "sample_retries": args.sample_retries,
+        "retry_attempts": args.retry_attempts,
+        "retry_wait": args.retry_wait,
+        "xbot_command": env.get("XBOT_EVAL_COMMAND"),
+        "data_dir": str(args.data_dir.resolve()),
+        "data_snapshot": str(evaluation_data),
+        "provider_config": {
+            key: value
+            for key, value in provider.items()
+            if key not in {"api_key", "api_key_env"}
+        },
+        "inspect_args": list(inspect_args),
+    }
+    path = run_root / "run-manifest.json"
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _copy_evaluation_data(source: Path, target: Path) -> None:
