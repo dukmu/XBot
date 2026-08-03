@@ -643,26 +643,36 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
             break
         await asyncio.sleep(0)
 
-    assert runtime.mailbox.size == 1
-    item = await runtime.mailbox.get()
-    assert item.kind == "general"
-    assert item.message["source"] == "subagent"
-    assert item.message["data"]["output"] == "background result"
-
+    # Hold the turn lock so completions aggregate instead of draining.
+    await runtime.turn_lock.acquire()
+    await runtime._enqueue_subagent_completion({
+        "task_id": "agent-task",
+        "status": "completed",
+        "agent": "worker",
+        "output": "background result",
+    })
     await runtime._enqueue_subagent_completion({
         "task_id": "agent-task-long",
         "status": "completed",
         "agent": "worker",
         "output": "x" * 13_000,
     })
-    long_item = await runtime.mailbox.get()
-    bounded = long_item.message["data"]["output"]
-    cached = ET.fromstring(bounded)
+    # aggregated into pending notices; long output externalized
+    assert runtime.mailbox.size == 0
+    by_task = {n["task_id"]: n for n in runtime._pending_notices}
+    assert "agent-task" in by_task
+    short_notice = by_task["agent-task"]
+    assert short_notice["kind"] == "subagent"
+    assert short_notice["data"]["output"] == "background result"
+    long_notice = by_task["agent-task-long"]
+    output = long_notice["data"]["output"]
+    cached = ET.fromstring(output)
     assert cached.attrib["kind"] == "subagent_output"
     assert cached.findtext("cache_path").strip().startswith(
         "session/artifacts/context/"
     )
     assert list((state_store.artifacts_dir / "context").glob("*.txt"))
+    runtime.turn_lock.release()
 
 
 @pytest.mark.asyncio

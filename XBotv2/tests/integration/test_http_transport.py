@@ -1829,30 +1829,72 @@ async def test_background_task_updates_and_completion_use_session_stream(
 
     await ctx.engine.background_tasks.start_task("printf result")
 
-    received = []
-    while True:
+    # Completion is broadcast as a notice, then flushed as one special
+    # user turn (no user input required) that enters history.
+    notice = None
+    while notice is None:
         event = await asyncio.wait_for(events.get(), timeout=1)
-        received.append(event)
-        if event and event["type"] == "turn_finished":
-            break
+        if event and event["type"] == "completion_notice":
+            notice = event
+    assert notice["data"]["kind"] == "background_task"
+    assert notice["data"]["task_id"] == "task-1"
+    assert notice["data"]["status"] == "completed"
 
-    task_events = [
-        event for event in received
-        if event and event["type"] == "task_updated"
+    deadline = asyncio.get_event_loop().time() + 3
+    while llm.call_count == 0 and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert llm.call_count == 1
+    notice_input = llm.get_call_messages(0)[-1]
+    assert notice_input.role == "user"
+    assert "not human messages" in notice_input.content
+    assert "background task task-1 completed" in notice_input.content.lower()
+    # the notice turn is persisted as a complete user+assistant pair
+    assert [message.role for message in ctx.engine.messages] == [
+        "user", "assistant",
     ]
-    assert [event["data"]["status"] for event in task_events] == [
-        "pending", "running", "completed",
-    ]
-    assert any(
-        event and event["type"] == "assistant_message"
-        and event["data"]["content"] == "task acknowledged"
-        for event in received
+    assert "background_task task-1" in ctx.engine.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_multiple_completions_aggregate_into_one_injection(
+    http_app, monkeypatch
+) -> None:
+    async def run(*args, **kwargs):
+        await asyncio.sleep(0)
+        return "task output"
+
+    monkeypatch.setattr(
+        "xbotv2.core.background_tasks.run_shell_command", run
     )
-    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    llm = MockLLM(responses=[{"content": "ok"}])
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="aggregate-events",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    await ctx.engine.background_tasks.start_task("printf one")
+    await ctx.engine.background_tasks.start_task("printf two")
+    # Both completions aggregate into ONE idle user turn that enters history.
+    deadline = asyncio.get_event_loop().time() + 3
+    while llm.call_count == 0 and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert llm.call_count == 1
     runtime_input = llm.get_call_messages(0)[-1]
     assert runtime_input.role == "user"
-    assert "not a human message" in runtime_input.content
-    assert "background task task-1 completed" in runtime_input.content.lower()
+    assert "not human messages" in runtime_input.content
+    assert runtime_input.content.count("- background_task") == 2
+    assert "printf one" in runtime_input.content
+    assert "printf two" in runtime_input.content
+    # pending notices drained after the idle turn
+    assert ctx._pending_notices == []
+    # one complete user+assistant turn persisted
+    assert [message.role for message in ctx.engine.messages] == [
+        "user", "assistant",
+    ]
 
 
 @pytest.mark.asyncio

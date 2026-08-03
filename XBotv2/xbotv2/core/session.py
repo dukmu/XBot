@@ -44,6 +44,10 @@ class SessionRuntime:
     session_events: asyncio.Queue[dict[str, Any] | None] | None = None
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
+    # Aggregated background/subagent completion notices (deduped by task id),
+    # consumed as one general turn while the session is idle.
+    _pending_notices: list[dict[str, Any]] = field(default_factory=list)
+    _drain_scheduled: bool = False
 
     def __post_init__(self) -> None:
         self.mailbox = SessionMailbox(
@@ -74,12 +78,13 @@ class SessionRuntime:
             self.session_events.put_nowait(event)
 
     async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
-        await self.enqueue_general({
-            "source": "background_task",
-            "event": "background_task_finished",
+        await self._collect_completion({
+            "kind": "background_task",
+            "task_id": str(task.get("task_id") or ""),
+            "status": str(task.get("status") or "finished"),
             "content": (
-                f"Background task {task['task_id']} {task['status']}: "
-                f"{task['command']}"
+                f"Background task {task['task_id']} {task.get('status')}: "
+                f"{task.get('command')}"
             ),
             "data": task,
         })
@@ -93,15 +98,38 @@ class SessionRuntime:
             self.engine.state_store,
             kind="subagent_output",
         )
-        await self.enqueue_general({
-            "source": "subagent",
-            "event": "finished",
+        await self._collect_completion({
+            "kind": "subagent",
+            "task_id": str(task.get("task_id") or ""),
+            "status": str(task.get("status") or "finished"),
             "content": (
-                f"Subagent task {task['task_id']} {task['status']}: "
-                f"{task['agent']}"
+                f"Subagent task {task['task_id']} {task.get('status')}: "
+                f"{task.get('agent')}"
             ),
             "data": task,
         })
+
+    async def _collect_completion(self, notice: dict[str, Any]) -> None:
+        """Aggregate one completion; dedupe by task id and broadcast."""
+        task_id = str(notice.get("task_id") or "")
+        for existing in self._pending_notices:
+            if existing.get("task_id") == task_id:
+                existing.update(notice)
+                break
+        else:
+            self._pending_notices.append(notice)
+        self.touch()
+        if self.session_events is not None:
+            await self.session_events.put({
+                "type": "completion_notice",
+                "data": notice,
+            })
+        # Debounce: coalesce a burst of completions into one idle turn.
+        if not self._drain_scheduled:
+            self._drain_scheduled = True
+            asyncio.create_task(
+                self._debounced_drain(), name=f"xbotv2-drain-{self.session_id}"
+            )
 
     async def enqueue_user_message(
         self,
@@ -211,6 +239,58 @@ class SessionRuntime:
             self.mailbox_worker = None
         if self.mailbox.size:
             self.ensure_mailbox_worker()
+        elif self._pending_notices and not self.turn_lock.locked():
+            self._drain_pending_notices()
+
+    async def _debounced_drain(self) -> None:
+        """Short window so concurrent completions coalesce into one turn."""
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            self._drain_scheduled = False
+        self._drain_pending_notices()
+
+    def _drain_pending_notices(self) -> None:
+        """Consume all aggregated notices as one general turn while idle."""
+        if not self._pending_notices or self.turn_lock.locked():
+            return
+        notices = list(self._pending_notices)
+        self._pending_notices.clear()
+        lines = [
+            f"- {notice['kind']} {notice['task_id']}: {notice['content']}"
+            for notice in notices
+        ]
+        content = (
+            "Runtime notices (not human messages): background/subagent "
+            "tasks completed.\n" + "\n".join(lines)
+        )
+        asyncio.create_task(
+            self._run_notice_turn(content),
+            name=f"xbotv2-notice-turn-{self.session_id}",
+        )
+
+    async def _run_notice_turn(self, content: str) -> None:
+        """Run one special user turn for aggregated completion notices.
+
+        The notice is appended as a user message (marked as runtime input),
+        so the turn is persisted in history with its assistant reply instead
+        of leaving an orphan assistant message.
+        """
+        item = MailboxMessage.create("user_message", content)
+        target = self.mailbox_output or self.session_events
+        try:
+            async for event in run_turn_stream(
+                self,
+                content=content,
+                request_id=item.request_id,
+                mailbox_message=item,
+            ):
+                if target is not None:
+                    await target.put(event)
+            self.mailbox.delivered(item)
+        except Exception as exc:
+            logger.exception("notice turn failed")
+            self.mailbox.failed(item, exc)
 
     def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
         if self.session_events is not None:
