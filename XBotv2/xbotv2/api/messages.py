@@ -203,6 +203,24 @@ class Message(_PartBacked):
             tool_calls=tool_calls,
         )
 
+    def fingerprint(self) -> int:
+        """Cheap stable fingerprint for persisted-message change detection.
+
+        ``str`` hashes are cached, so fingerprinting large message content is
+        much cheaper than serializing it while still catching in-place edits.
+        """
+        return hash((
+            self.role,
+            str(self.content or ""),
+            self.tool_call_id,
+            self.status,
+            self.name,
+            len(self.parts),
+            len(self.additional_kwargs or {}),
+            len(self.usage_metadata or {}),
+            len(self.response_metadata or {}),
+        ))
+
 
 @dataclass(init=False)
 class ModelResponse(_PartBacked):

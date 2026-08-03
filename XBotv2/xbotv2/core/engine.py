@@ -49,7 +49,6 @@ from xbotv2.api.tokens import (
 )
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 from xbotv2.api.variables import RuntimeVariables
-from xbotv2.persistence.store import message_to_dict
 
 DEFAULT_MAX_ITERATIONS = 200
 
@@ -82,6 +81,7 @@ class _ToolBatchResult:
     turn_complete: bool = False
 
 logger = logging.getLogger("xbotv2.engine")
+
 
 def merge_xbot_chunk(
     aggregate: ModelResponse | None,
@@ -230,7 +230,10 @@ class Engine:
         )
 
         self.messages: list[Message] = []
-        self._persisted_messages: list[dict[str, Any]] = []
+        # Identity references and content fingerprints of the last persisted
+        # message state; None means unknown (rebuilt on next save).
+        self._persisted_refs: list[Message] | None = []
+        self._persisted_fingerprints: list[int] | None = []
         self.session: SessionInfo | None = None
         self.turn_count = 0
         self.session_usage = self._empty_usage()
@@ -285,7 +288,8 @@ class Engine:
     async def _resume_from_store(self) -> None:
         self.messages = self.state_store.read_messages()
         self._restore_usage()
-        self._persisted_messages = self._message_snapshot()
+        self._persisted_refs = list(self.messages)
+        self._persisted_fingerprints = self._message_fingerprints()
         self._close_interrupted_tool_calls("session_restarted")
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
@@ -1463,14 +1467,10 @@ class Engine:
         history_operation: tuple[str, int] | None = None,
     ) -> bool:
         """Persist changed message history and bracket the write with hooks."""
-        if (
-            history_operation is None
-            and self._message_snapshot() == self._persisted_messages
-        ):
+        if history_operation is None and self._messages_unchanged():
             return False
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
-        snapshot = self._message_snapshot()
         if history_operation is None:
             self.state_store.sync_messages(self.messages)
         else:
@@ -1484,13 +1484,29 @@ class Engine:
                     self.messages,
                     reason=operation,
                 )
-        self._persisted_messages = snapshot
+        self._persisted_refs = list(self.messages)
+        self._persisted_fingerprints = self._message_fingerprints()
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
         return True
 
-    def _message_snapshot(self) -> list[dict[str, Any]]:
-        return [message_to_dict(message) for message in self.messages]
+    def _messages_unchanged(self) -> bool:
+        """Return whether messages match the last persisted state."""
+        refs = self._persisted_refs
+        fingerprints = self._persisted_fingerprints
+        if refs is None or fingerprints is None:
+            return False
+        if len(self.messages) != len(refs) or len(fingerprints) != len(refs):
+            return False
+        if not all(a is b for a, b in zip(self.messages, refs)):
+            return False
+        return all(
+            fingerprint == message.fingerprint()
+            for fingerprint, message in zip(fingerprints, self.messages)
+        )
+
+    def _message_fingerprints(self) -> list[int]:
+        return [message.fingerprint() for message in self.messages]
 
     def _close_interrupted_tool_calls(self, reason: str) -> None:
         """Append error results for an interrupted trailing tool batch."""

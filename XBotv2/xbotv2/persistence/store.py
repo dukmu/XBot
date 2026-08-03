@@ -128,6 +128,9 @@ class CoreStateStore:
         self.plugin_states_dir = paths.plugin_states_dir
         self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
+        # References to the messages already persisted in the journal.
+        # None means unknown (rebuilt from disk on the next sync).
+        self._persisted_refs: list[Any] | None = None
 
     @classmethod
     def create(
@@ -162,6 +165,8 @@ class CoreStateStore:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if self._persisted_refs is not None:
+            self._persisted_refs.append(msg)
         return d
 
     def store_image(self, data: str, media_type: str) -> ImageContent:
@@ -221,15 +226,38 @@ class CoreStateStore:
                 stream.write(json.dumps(d, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        if self._persisted_refs is not None:
+            self._persisted_refs.extend(messages)
         return len(messages)
 
     def sync_messages(self, messages: list[Message]) -> int:
-        """Persist a normal history extension without rewriting the journal."""
-        previous = self.read_messages()
+        """Persist a normal history extension without rewriting the journal.
+
+        Fast path: when the already-persisted prefix is unchanged (message
+        identity), append only the new tail. If the caller rebuilt the message
+        objects (e.g. after resume), fall back to a content comparison and
+        still append only the delta; a diverged history degrades to a
+        checkpoint so nothing is silently lost.
+        """
+        if not messages:
+            return 0
+        refs = self._persisted_refs
+        if refs is None:
+            refs = self._persisted_refs = self.read_messages()
+        k = len(refs)
+        if len(messages) >= k and all(
+            a is b for a, b in zip(messages, refs)
+        ):
+            new = messages[k:]
+            if new:
+                self.append_messages(new)
+                self._persisted_refs.extend(new)
+            return len(messages)
         serialized = [message_to_dict(message) for message in messages]
-        previous_payloads = [message_to_dict(message) for message in previous]
+        previous_payloads = [message_to_dict(message) for message in refs]
         if serialized[:len(previous_payloads)] == previous_payloads:
             self.append_messages(messages[len(previous_payloads):])
+            self._persisted_refs = list(messages)
             return len(messages)
         self.append_checkpoint(messages, reason="sync")
         return len(messages)
@@ -245,6 +273,7 @@ class CoreStateStore:
             "reason": reason,
             "messages": [message_to_dict(message) for message in messages],
         })
+        self._persisted_refs = list(messages)
 
     def append_undo(self, turns: int) -> None:
         if turns < 1:
@@ -253,9 +282,13 @@ class CoreStateStore:
             "record_type": "history_undo",
             "turns": turns,
         })
+        # Undo rewrites history on replay; the persisted baseline is unknown
+        # until the next sync rebuilds it from the journal.
+        self._persisted_refs = None
 
     def append_clear(self) -> None:
         self._append_record({"record_type": "history_clear"})
+        self._persisted_refs = []
 
     def append_mailbox_delivery(self, message: Any) -> None:
         self._append_record({
