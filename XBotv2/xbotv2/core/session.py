@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -42,6 +43,7 @@ class SessionRuntime:
     mailbox_output: asyncio.Queue[dict[str, Any] | None] | None = None
     session_events: asyncio.Queue[dict[str, Any] | None] | None = None
     close_reason: str = "session_closed"
+    last_activity: float = field(default_factory=time.monotonic)
 
     def __post_init__(self) -> None:
         self.mailbox = SessionMailbox(
@@ -49,6 +51,7 @@ class SessionRuntime:
         )
         self.engine.enqueue_mailbox = self.enqueue_general
         self.engine.runtime_event_sink = self._publish_runtime_event
+        self.touch()
         background_tasks = getattr(self.engine, "background_tasks", None)
         if background_tasks is not None:
             background_tasks.on_update = self._publish_task_update
@@ -57,6 +60,10 @@ class SessionRuntime:
         if subagents is not None:
             subagents.on_update = self._publish_task_update
             subagents.on_complete = self._enqueue_subagent_completion
+
+    def touch(self) -> None:
+        """Mark the runtime active; resets the idle-reaper deadline."""
+        self.last_activity = time.monotonic()
 
     async def _publish_task_update(self, task: dict[str, Any]) -> None:
         if self.session_events is not None:
@@ -173,6 +180,7 @@ class SessionRuntime:
                     self.mailbox_responses.pop(item.id, None)
                 elif self.mailbox_output is events:
                     self.request_interrupt()
+            self.touch()
 
     async def enqueue_general(self, message: str | dict[str, Any]) -> MailboxMessage:
         item = MailboxMessage.create("general", message)
@@ -437,6 +445,9 @@ async def run_turn_stream(
                 pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
             runtime.turn_task = None
+            touch = getattr(runtime, "touch", None)
+            if touch is not None:
+                touch()
     runtime.ensure_mailbox_worker()
 
 

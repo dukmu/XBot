@@ -97,7 +97,6 @@ from xbotv2.protocol.session_manager import (
     SessionManager,
     SessionNotFound,
     ThreadNotActive,
-    close_disconnected_runtime,
     pending_interactions,
     persisted_thread_ids,
     session_summary,
@@ -163,6 +162,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        manager.start_reaper()
         try:
             yield
         finally:
@@ -849,10 +849,7 @@ def _register_routes(app: FastAPI) -> None:
                 disconnected = True
                 logger.info("SSE stream cancelled for session %s", session_id)
             finally:
-                if disconnected:
-                    if ctx.session_events is None:
-                        await close_disconnected_runtime(manager, ctx)
-                else:
+                if not disconnected:
                     final = emit_end()
                     if final:
                         yield final
@@ -902,8 +899,6 @@ def _register_routes(app: FastAPI) -> None:
                 disconnected = True
             finally:
                 ctx.detach_event_stream(events)
-                if disconnected:
-                    await close_disconnected_runtime(manager, ctx)
 
         return StreamingResponse(
             sse_stream(),

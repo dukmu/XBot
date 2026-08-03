@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -12,6 +14,8 @@ from xbotv2.core.bootstrap import bootstrap
 from xbotv2.core.session import SessionRuntime
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.protocol.models import SessionSummary, ThreadSummary
+
+logger = logging.getLogger("xbotv2.session_manager")
 
 
 class SessionNotFound(KeyError):
@@ -29,10 +33,53 @@ class ThreadNotActive(RuntimeError):
 class SessionManager:
     """Own active thread runtimes grouped by persistent session id."""
 
-    def __init__(self, paths: RuntimePaths) -> None:
+    def __init__(
+        self,
+        paths: RuntimePaths,
+        *,
+        idle_timeout: float | None = 3600.0,
+        reap_interval: float = 60.0,
+    ) -> None:
         self.paths = paths
+        self.idle_timeout = idle_timeout
+        self.reap_interval = reap_interval
         self._sessions: dict[tuple[str, str], SessionRuntime] = {}
         self._lock = asyncio.Lock()
+        self._reaper: asyncio.Task[None] | None = None
+
+    def start_reaper(self) -> None:
+        """Start the idle-reaper loop; idempotent."""
+        if self._reaper is not None and not self._reaper.done():
+            return
+        self._reaper = asyncio.create_task(
+            self._reap_idle_loop(), name="xbotv2-session-reaper"
+        )
+
+    async def _reap_idle_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.reap_interval)
+            try:
+                await self._reap_idle()
+            except Exception:
+                logger.exception("idle reaper pass failed")
+
+    async def _reap_idle(self) -> None:
+        if self.idle_timeout is None or self.idle_timeout <= 0:
+            return
+        now = time.monotonic()
+        async with self._lock:
+            due = [
+                ctx
+                for ctx in self._sessions.values()
+                if now - ctx.last_activity >= self.idle_timeout
+                and not ctx.turn_lock.locked()
+                and ctx.mailbox.size == 0
+                and ctx.session_events is None
+            ]
+            for ctx in due:
+                self._sessions.pop((ctx.session_id, ctx.thread_id), None)
+        for ctx in due:
+            await ctx.close("idle_timeout")
 
     @property
     def size(self) -> int:
@@ -41,6 +88,12 @@ class SessionManager:
     @property
     def thread_count(self) -> int:
         return len(self._sessions)
+
+    def touch(self, session_id: str, thread_id: str) -> None:
+        """Mark a runtime active (e.g. on any API interaction)."""
+        ctx = self._sessions.get((session_id, thread_id))
+        if ctx is not None:
+            ctx.touch()
 
     async def get(self, session_id: str, thread_id: str) -> SessionRuntime:
         async with self._lock:
@@ -162,6 +215,11 @@ class SessionManager:
             self._sessions.clear()
         for ctx in contexts:
             await ctx.close()
+        reaper = self._reaper
+        self._reaper = None
+        if reaper is not None and not reaper.done():
+            reaper.cancel()
+            await asyncio.gather(reaper, return_exceptions=True)
 
     async def active_threads(self) -> dict[tuple[str, str], SessionRuntime]:
         async with self._lock:
@@ -264,6 +322,11 @@ async def close_disconnected_runtime(
     manager: SessionManager,
     ctx: SessionRuntime,
 ) -> None:
+    """Explicitly close a runtime and its child thread tree.
+
+    No longer invoked automatically on SSE disconnect — connections are
+    decoupled from session lifetime. Used for explicit teardown and by tests.
+    """
     metadata = ctx.engine.state_store.read_thread_metadata()
     if metadata.get("parent_thread_id"):
         await manager.close_thread(

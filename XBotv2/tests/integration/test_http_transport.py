@@ -565,6 +565,29 @@ async def test_http_session_exposes_independent_thread_resources(
 
 
 @pytest.mark.asyncio
+async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
+    manager = http_app.state.manager
+    tmp = http_app.state.paths
+    await manager.close_all()
+    # give the shared app manager a short idle timeout
+    manager.idle_timeout = 0.05
+    manager.reap_interval = 0.02
+    manager.start_reaper()
+    await manager.open_session(
+        session_id="idle-reap", thread_id="agent", provider_name="default",
+        workspace_root=str(tmp), no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "hi"}]),
+    )
+    assert await manager.get("idle-reap", "agent") is not None
+    await asyncio.sleep(0.2)
+    with pytest.raises(ThreadNotActive):
+        await manager.get("idle-reap", "agent")
+    # restore defaults so other tests are unaffected
+    manager.idle_timeout = 3600.0
+    manager.reap_interval = 60.0
+
+
+@pytest.mark.asyncio
 async def test_main_thread_disconnect_closes_child_runtimes(
     client: httpx.AsyncClient,
     http_app,
