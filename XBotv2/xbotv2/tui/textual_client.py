@@ -67,6 +67,9 @@ from xbotv2.tui.textual_widgets import (
 # Status bar refresh throttle: streaming deltas can arrive many times per
 # second; rebuilding the status renderable on every delta is wasteful.
 _STATUS_REFRESH_INTERVAL = 0.2
+# Replay window: number of most-recent transcript entries mounted on startup
+# after resuming a session. Older entries are lazy-loaded on scroll.
+_REPLAY_WINDOW = 50
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -278,7 +281,10 @@ class XBotTextualApp(App[None]):
             history = session.get("history") if isinstance(session, dict) else None
             if isinstance(history, list):
                 self.state.restore_history(history)
-                await self._render_new_transcript_entries()
+                # Replay windowed: mount only the most recent entries so a
+                # long resumed session does not pay full DOM construction on
+                # startup. The full history stays in state for lazy loading.
+                await self._render_replay_window()
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
@@ -1038,6 +1044,22 @@ class XBotTextualApp(App[None]):
             except asyncio.CancelledError:
                 pass
             self._stream_timer = None
+
+    async def _render_replay_window(self) -> None:
+        """Mount only the tail of a resumed history on startup.
+
+        Long sessions replay hundreds of entries; constructing a widget for
+        every one of them stalls startup. We render a bounded window around
+        the end (where the user lands after resume) and leave older entries
+        in ``state.transcript`` for lazy loading on scroll.
+        """
+        total = len(self.state.transcript)
+        if total <= _REPLAY_WINDOW:
+            self._rendered_transcript_entries = 0
+            await self._render_new_transcript_entries()
+            return
+        self._rendered_transcript_entries = total - _REPLAY_WINDOW
+        await self._render_new_transcript_entries()
 
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:
