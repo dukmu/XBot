@@ -254,6 +254,15 @@ async def edit_file(
     absent or ambiguous. Set ``replace_all`` only when every occurrence should
     change. Reread the changed range before reporting success.
 
+    Snapshot guard: the tool matches ``old_text`` against the last snapshot
+    read through this runtime. Any external write to the same file (shell
+    command, script, git checkout, another process) invalidates that snapshot
+    and the edit fails with ``content_changed``. Never mix non-tool writes
+    with this tool on the same file: after a shell/script write, re-read the
+    file first to refresh the snapshot, then edit. If an edit reports
+    ``old_text was not found``, re-read the file before changing the search
+    text.
+
     Args:
         path: Existing text file.
         old_text: Exact non-empty text expected in the file.
