@@ -70,6 +70,8 @@ _STATUS_REFRESH_INTERVAL = 0.2
 # Replay window: number of most-recent transcript entries mounted on startup
 # after resuming a session. Older entries are lazy-loaded on scroll.
 _REPLAY_WINDOW = 50
+# Replay lazy-load batch size: entries mounted per scroll-to-top batch.
+_REPLAY_BATCH = 50
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -180,6 +182,10 @@ class XBotTextualApp(App[None]):
         self._stream_timer: asyncio.Task | None = None
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
+        # Start index of the rendered replay window. Entries before this are
+        # lazy-loaded in batches when the user scrolls to the top.
+        self._replay_start = 0
+        self._replay_loading = False
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
@@ -226,6 +232,13 @@ class XBotTextualApp(App[None]):
         self._refresh_all()
         self._activity_timer = self.set_interval(0.5, self._tick_activity)
         self.run_worker(self._connect, exclusive=True, name="connect")
+
+    @on(TranscriptScroll.ReplayTopReached)
+    def _handle_replay_top(self) -> None:
+        """Lazy-load earlier replayed history when scrolled to the top."""
+        if self._replay_start <= 0 or self._replay_loading:
+            return
+        self.run_worker(self._load_earlier_replay, exclusive=False)
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
@@ -1055,11 +1068,64 @@ class XBotTextualApp(App[None]):
         """
         total = len(self.state.transcript)
         if total <= _REPLAY_WINDOW:
+            self._replay_start = 0
             self._rendered_transcript_entries = 0
             await self._render_new_transcript_entries()
             return
-        self._rendered_transcript_entries = total - _REPLAY_WINDOW
+        self._replay_start = total - _REPLAY_WINDOW
+        self._rendered_transcript_entries = total
         await self._render_new_transcript_entries()
+
+    async def _load_earlier_replay(self) -> None:
+        """Lazily mount an earlier batch of replayed history.
+
+        Called when the user scrolls to the top of the transcript. Mounts the
+        batch immediately before the current window and keeps the viewport
+        stable by compensating the scroll offset.
+        """
+        if self._replay_loading or self._replay_start <= 0:
+            return
+        self._replay_loading = True
+        try:
+            async with self._render_lock:
+                stream = self.query_one("#transcript", VerticalScroll)
+                batch_start = max(0, self._replay_start - _REPLAY_BATCH)
+                entries = self.state.transcript[batch_start:self._replay_start]
+                if not entries:
+                    self._replay_start = 0
+                    return
+                widgets = [self._widget_for_entry(e) for e in entries]
+                widgets = [w for w in widgets if w is not None]
+                if not widgets:
+                    self._replay_start = batch_start
+                    return
+                first = stream.children[0] if stream.children else None
+                for widget in widgets:
+                    if widget.parent is stream:
+                        continue
+                    if widget.parent is not None:
+                        try:
+                            await widget.remove()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if first is not None:
+                        await stream.mount(widget, before=first)
+                    else:
+                        await stream.mount(widget)
+                self._replay_start = batch_start
+                # The inserted batch shifts content down; keep the viewport
+                # pinned where it was by scrolling down by the inserted size.
+                inserted_height = sum(
+                    (w.virtual_size.height if w.virtual_size else 1)
+                    for w in widgets
+                )
+                self.call_after_refresh(
+                    lambda h=inserted_height: stream.scroll_to(
+                        y=stream.scroll_y + h, animate=False
+                    )
+                )
+        finally:
+            self._replay_loading = False
 
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:

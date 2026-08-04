@@ -2760,3 +2760,64 @@ async def test_narrow_task_panel_does_not_overlap_status_or_composer():
         assert tasks.region.bottom <= composer.region.y
         assert composer.region.bottom == status.region.y
         assert status.region.bottom == app.size.height
+
+
+class _ReplayFakeSession:
+    def __init__(self):
+        self.history = []
+
+    async def connect(self):
+        return {"history": self.history}
+
+    async def disconnect(self):
+        return None
+
+    async def list_commands(self):
+        return {"commands": []}
+
+    async def send_message(self, text):
+        yield {"type": "turn_started", "data": {"turn": 1}}
+        yield {"type": "assistant_message", "data": {"content": "ok"}}
+        yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    async def session_events(self):
+        if False:
+            yield {}
+
+
+@pytest.mark.asyncio
+async def test_replay_window_mounts_only_tail_then_lazy_loads():
+    from textual.containers import VerticalScroll
+    from textual.containers import VerticalScroll
+    from xbotv2.tui.textual_client import (
+        XBotTextualApp,
+        _REPLAY_BATCH,
+        _REPLAY_WINDOW,
+    )
+
+    session = _ReplayFakeSession()
+    # 120 messages: 60 user + 60 assistant
+    session.history = [
+        {"role": "user", "content": f"msg {i}"}
+        for i in range(60)
+    ] + [
+        {"role": "assistant", "content": f"ans {i}"}
+        for i in range(60)
+    ]
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = session
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        # restore_history creates 60 user + 60 assistant = 120 transcript entries
+        assert len(app.state.transcript) == 120
+        # Only the tail window is mounted in the DOM
+        stream = app.query_one("#transcript", VerticalScroll)
+        mounted = len(list(stream.children))
+        assert mounted <= _REPLAY_WINDOW, f"expected <= {_REPLAY_WINDOW}, got {mounted}"
+        assert app._replay_start == 120 - _REPLAY_WINDOW
+        # Lazy load: simulate scroll-to-top
+        await app._load_earlier_replay()
+        await pilot.pause()
+        assert app._replay_start <= 120 - _REPLAY_WINDOW - _REPLAY_BATCH
+        assert len(list(stream.children)) <= _REPLAY_WINDOW + _REPLAY_BATCH + 1

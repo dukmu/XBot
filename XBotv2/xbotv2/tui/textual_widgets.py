@@ -12,6 +12,8 @@ from typing import Any
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
+from textual import events
+from textual.message import Message
 from textual.events import Key
 from textual.widgets import Collapsible, Static, TextArea
 
@@ -379,9 +381,26 @@ class ComposerTextArea(TextArea):
 
 
 class TranscriptScroll(VerticalScroll):
-    """Mouse-scrollable transcript that never takes keyboard focus."""
+    """Mouse-scrollable transcript that never takes keyboard focus.
+
+    Emits :class:`ReplayTopReached` when the user scrolls to the top while
+    older replayed history is still unmounted, so the app can lazy-load it.
+    """
 
     can_focus = False
+
+    class ReplayTopReached(Message):
+        pass
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        super()._on_mouse_scroll_up(event)
+        if self.scroll_y == 0:
+            self.post_message(self.ReplayTopReached())
+
+    def scroll_up(self, *args, **kwargs) -> None:
+        super().scroll_up(*args, **kwargs)
+        if self.scroll_y == 0:
+            self.post_message(self.ReplayTopReached())
 
 
 @dataclass(frozen=True)
