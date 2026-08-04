@@ -16,6 +16,10 @@ class TuiMessage:
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
+    # True while assistant content is still streaming: the TUI renders the
+    # body as plain text (cheap) and defers Markdown parsing until the final
+    # assistant_message event.
+    streaming: bool = False
 
 
 @dataclass
@@ -187,7 +191,12 @@ class TuiState:
             tool_calls = data.get("tool_calls")
             if content.strip():
                 if self._streaming_assistant_index is not None:
+                    index = self._streaming_assistant_index
                     self._streaming_assistant_index = None
+                    try:
+                        self.messages[index].streaming = False
+                    except IndexError:
+                        pass
                 else:
                     self.append_message("assistant", content)
             elif tool_calls:
@@ -429,6 +438,7 @@ class TuiState:
             self._streaming_assistant_index = len(self.messages) - 1
         try:
             msg = self.messages[self._streaming_assistant_index]
+            msg.streaming = True
             if content:
                 msg.content += content
             if reasoning:

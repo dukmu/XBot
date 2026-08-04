@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import shorten
@@ -15,6 +16,26 @@ from textual.events import Key
 from textual.widgets import Collapsible, Static, TextArea
 
 from xbotv2.tui.client import TuiMessage, TuiState, TuiTask, TuiTool, format_value
+
+# Bound Markdown render cache: streaming assistant deltas re-render the same
+# growing content many times per second; memoizing the parsed render avoids
+# re-tokenizing the whole message on every 50ms tick. Keyed by role+content
+# so an appended delta (content change) naturally misses and re-renders once.
+_MARKDOWN_CACHE: OrderedDict[tuple[str, str], Text | Markdown] = OrderedDict()
+_MARKDOWN_CACHE_MAX = 64
+
+
+def _cached_render_message(content: str, *, role: str) -> Text | Markdown:
+    key = (role, content)
+    cached = _MARKDOWN_CACHE.get(key)
+    if cached is not None:
+        _MARKDOWN_CACHE.move_to_end(key)
+        return cached
+    rendered = _render_message_uncached(content, role=role)
+    _MARKDOWN_CACHE[key] = rendered
+    if len(_MARKDOWN_CACHE) > _MARKDOWN_CACHE_MAX:
+        _MARKDOWN_CACHE.popitem(last=False)
+    return rendered
 
 
 _STATUS_BADGE_STYLE: dict[str, str] = {
@@ -519,6 +540,10 @@ def render_reasoning(content: str) -> Text:
 
 
 def render_message(content: str, *, role: str) -> Text | Markdown:
+    return _cached_render_message(content, role=role)
+
+
+def _render_message_uncached(content: str, *, role: str) -> Text | Markdown:
     if role == "assistant":
         markdown = Markdown(content, code_theme="monokai", justify="left")
         plain_tokens = {

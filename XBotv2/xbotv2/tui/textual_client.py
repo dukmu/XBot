@@ -64,6 +64,10 @@ from xbotv2.tui.textual_widgets import (
     tool_widget,
 )
 
+# Status bar refresh throttle: streaming deltas can arrive many times per
+# second; rebuilding the status renderable on every delta is wasteful.
+_STATUS_REFRESH_INTERVAL = 0.2
+
 
 logger = logging.getLogger("xbotv2.tui")
 
@@ -71,6 +75,13 @@ logger = logging.getLogger("xbotv2.tui")
 def _kind_tag(kind: str) -> str:
     _tags = {"client": "client cmd", "server": "server cmd", "skill": "skill", "tool": "tool", "mcp": "mcp"}
     return f"[{_tags.get(kind, kind)}]"
+
+
+# Widget cache caps: long sessions grow the transcript unboundedly; bound the
+# number of cached (and thus mounted) message/tool widgets so DOM and layout
+# work stay flat instead of growing with history length.
+_MAX_MESSAGE_WIDGETS = 200
+_MAX_TOOL_WIDGETS = 100
 
 
 class TextualTuiClient:
@@ -164,6 +175,8 @@ class XBotTextualApp(App[None]):
         self._active_choice_index = 0
         self._pending_stream_deltas = 0
         self._stream_timer: asyncio.Task | None = None
+        self._last_status_refresh = 0.0
+        self._status_refresh_pending = False
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
@@ -818,7 +831,11 @@ class XBotTextualApp(App[None]):
             exclusive=False,
             name="render_error",
         )
-        self._refresh_all()
+        # Errors are rare and critical: bypass the status throttle so the
+        # failure is visible immediately.
+        self._refresh_status_now()
+        self._refresh_queue_panel()
+        self._refresh_input_mode()
 
     async def _append_local_notice(self, kind: str, text: str) -> None:
         self.state.notices.append(TuiNotice(kind=kind, text=text))
@@ -837,6 +854,17 @@ class XBotTextualApp(App[None]):
     def _refresh_status(self) -> None:
         if not self.is_mounted:
             return
+        # Throttle: streaming deltas arrive many times per second; the status
+        # bar only needs to reflect the latest state a few times per second.
+        now = time.monotonic()
+        if now - self._last_status_refresh < _STATUS_REFRESH_INTERVAL:
+            self._status_refresh_pending = True
+            return
+        self._last_status_refresh = now
+        self._status_refresh_pending = False
+        self._refresh_status_now()
+
+    def _refresh_status_now(self) -> None:
         try:
             panel = self.query_one("#status_bar", Static)
         except Exception:  # noqa: BLE001 — defensive; widget may be unmounting
@@ -941,13 +969,12 @@ class XBotTextualApp(App[None]):
             refresh_input = True
         elif event_type == "usage":
             self._update_activity()
-            self._refresh_status()
+            self._refresh_status_now()
         elif event_type == "assistant_message_delta":
             if self._stream_timer is None:
                 self._stream_timer = asyncio.create_task(self._stream_tick())
             self._refresh_status()
-            return  # timer handles all rendering
-        elif event_type == "assistant_message":
+            return  # timer handles all rendering        elif event_type == "assistant_message":
             await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
         elif event_type == "tool_call_delta":
@@ -976,6 +1003,7 @@ class XBotTextualApp(App[None]):
             if event_type == "error":
                 self._cancel_interaction_response()
                 self._resolve_active_choice("request failed")
+                self.state.status = "Error"
             self._interaction_response_pending = False
             if event_type == "error":
                 await self._refresh_changed_tool_widgets()
@@ -983,7 +1011,11 @@ class XBotTextualApp(App[None]):
         elif event_type in {"user_input_required"}:
             refresh_input = True
         await self._render_new_transcript_entries()
-        self._refresh_status()
+        if event_type == "error":
+            # Errors are rare and critical: bypass the status throttle.
+            self._refresh_status_now()
+        else:
+            self._refresh_status()
         if refresh_input:
             self._refresh_input_mode()
 
@@ -993,6 +1025,8 @@ class XBotTextualApp(App[None]):
             while True:
                 await asyncio.sleep(0.05)
                 await self._refresh_streaming_assistant_widget()
+                if self._status_refresh_pending:
+                    self._refresh_status()
         except asyncio.CancelledError:
             pass
 
@@ -1334,6 +1368,7 @@ class XBotTextualApp(App[None]):
                 reasoning_expanded=self._reasoning_expanded,
             )
             self._message_widgets[int(key)] = widget
+            self._trim_message_widgets()
             return widget
         if kind == "tool":
             tool = self.state.tools.get(key)
@@ -1354,6 +1389,7 @@ class XBotTextualApp(App[None]):
                 return existing
             widget = tool_widget(tool, details_expanded=self._tool_details_expanded)
             self._tool_widgets[widget_id] = widget
+            self._trim_tool_widgets()
             return widget
         if kind == "notice":
             try:
@@ -1368,6 +1404,22 @@ class XBotTextualApp(App[None]):
                 return None
             return entry_widget("error", "Error", error)
         return None
+
+    def _trim_message_widgets(self) -> None:
+        """Drop the oldest cached message widgets beyond the cap.
+
+        Only the cache is pruned here; mounted widgets stay in the DOM until
+        they naturally scroll away. This bounds memory and repeated lookups
+        without churning visible entries.
+        """
+        while len(self._message_widgets) > _MAX_MESSAGE_WIDGETS:
+            oldest = next(iter(self._message_widgets))
+            self._message_widgets.pop(oldest, None)
+
+    def _trim_tool_widgets(self) -> None:
+        while len(self._tool_widgets) > _MAX_TOOL_WIDGETS:
+            oldest = next(iter(self._tool_widgets))
+            self._tool_widgets.pop(oldest, None)
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
         """Synchronously refresh the cached tool widget in place.
@@ -1451,11 +1503,17 @@ class XBotTextualApp(App[None]):
                 await widget.mount(block, before=body)
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(render_message(message.content, role=message.role))
+            body.update(
+                render_text(message.content)
+                if message.streaming
+                else render_message(message.content, role=message.role)
+            )
         elif message.content:
             await widget.mount(
                 Static(
-                    render_message(message.content, role=message.role),
+                    render_text(message.content)
+                    if message.streaming
+                    else render_message(message.content, role=message.role),
                     classes="body",
                 )
             )
