@@ -5,7 +5,7 @@ from pathlib import Path
 
 from inspect_ai import Task, task
 
-from xbot_eval.adapter import selected_environment, xbot_agent
+from xbot_eval.adapters.xbot import selected_environment, xbot_agent
 from xbot_eval.harnessbench import load_cases, workspace_oracle
 
 

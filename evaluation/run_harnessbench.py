@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -12,6 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from xbot_eval.adapters import (
+    AdapterContext,
+    AdapterSetup,
+    adapter_names,
+    get_adapter,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +29,7 @@ def main() -> int:
         description="Run HarnessBench through the Inspect Agent Bridge."
     )
     parser.add_argument("-j", "--jobs", type=int, default=4)
+    parser.add_argument("--adapter", choices=adapter_names(), default="xbot")
     parser.add_argument(
         "--name",
         help="result directory name; defaults to a timestamped HarnessBench run",
@@ -36,6 +43,7 @@ def main() -> int:
         type=Path,
         default=REPO_ROOT / "XBotv2" / "data",
     )
+    parser.add_argument("--agent-command", help="override the adapter executable")
     parser.add_argument(
         "--limit",
         help="Inspect sample limit, for example 4 or 1:10",
@@ -86,12 +94,24 @@ def main() -> int:
     model = str(provider["model"])
     base_url = provider.get("base_url")
 
-    run_name = args.name or time.strftime("harnessbench-%Y%m%d-%H%M%S")
+    run_name = args.name or time.strftime(
+        f"harnessbench-{args.adapter}-%Y%m%d-%H%M%S"
+    )
     run_root = EVALUATION_ROOT / "results" / run_name
     run_root.mkdir(parents=True, exist_ok=True)
-    evaluation_data = run_root / "data"
-    if not evaluation_data.exists():
-        _copy_evaluation_data(data_dir, evaluation_data)
+    run_data = run_root / "data"
+    run_data.mkdir(exist_ok=True)
+    adapter = get_adapter(args.adapter)
+    setup = adapter.prepare(
+        AdapterContext(
+            repo_root=REPO_ROOT,
+            run_data=run_data,
+            source_data=data_dir,
+            provider_name=args.provider,
+            provider=provider,
+        ),
+        args.agent_command,
+    )
 
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [
@@ -99,12 +119,10 @@ def main() -> int:
         str(EVALUATION_ROOT / "src"),
         env.get("PYTHONPATH"),
     ]))
-    env["XBOT_EVAL_COMMAND"] = str(Path(
-        env.get("XBOT_EVAL_COMMAND", REPO_ROOT / ".venv" / "bin" / "xbot")
-    ).resolve())
-    env["XBOT_EVAL_DATA_DIR"] = str(evaluation_data)
-    env["XBOT_EVAL_PROVIDER"] = args.provider
+    env.update(setup.environment)
+    env["XBOT_EVAL_ADAPTER"] = adapter.name
     env.setdefault("HARNESSBENCH_PUBLIC_URL_TEMPLATE", "{local_url}")
+    _set_inspect_runtime_environment(env, run_data / "inspect")
     _provider_credentials(env, provider_type, provider)
 
     command = [
@@ -134,6 +152,13 @@ def main() -> int:
         ])
     if base_url:
         command.extend(["--model-base-url", str(base_url)])
+    for option, value in (
+        ("--temperature", provider.get("temperature")),
+        ("--max-tokens", provider.get("max_output_tokens")),
+        ("--reasoning-effort", provider.get("reasoning_effort")),
+    ):
+        if value is not None:
+            command.extend([option, str(value)])
     if args.limit:
         command.extend(["--limit", args.limit])
     command.extend(inspect_args)
@@ -141,12 +166,12 @@ def main() -> int:
     _write_run_manifest(
         run_root,
         args=args,
-        evaluation_data=evaluation_data,
+        run_data=run_data,
+        setup=setup,
         provider=provider,
         provider_type=provider_type,
         model=model,
         base_url=base_url,
-        env=env,
         inspect_args=inspect_args,
         status="running",
         started_at=started_at,
@@ -155,12 +180,12 @@ def main() -> int:
     _write_run_manifest(
         run_root,
         args=args,
-        evaluation_data=evaluation_data,
+        run_data=run_data,
+        setup=setup,
         provider=provider,
         provider_type=provider_type,
         model=model,
         base_url=base_url,
-        env=env,
         inspect_args=inspect_args,
         status="completed" if returncode == 0 else f"failed:{returncode}",
         started_at=started_at,
@@ -173,12 +198,12 @@ def _write_run_manifest(
     run_root: Path,
     *,
     args: argparse.Namespace,
-    evaluation_data: Path,
+    run_data: Path,
+    setup: AdapterSetup,
     provider: dict[str, Any],
     provider_type: str,
     model: str,
     base_url: str | None,
-    env: dict[str, str],
     inspect_args: list[str],
     status: str,
     started_at: str,
@@ -190,6 +215,7 @@ def _write_run_manifest(
         "status": status,
         "started_at": started_at,
         "completed_at": completed_at,
+        "adapter": args.adapter,
         "provider": args.provider,
         "provider_type": provider_type,
         "model": model,
@@ -201,9 +227,14 @@ def _write_run_manifest(
         "sample_retries": args.sample_retries,
         "retry_attempts": args.retry_attempts,
         "retry_wait": args.retry_wait,
-        "xbot_command": env.get("XBOT_EVAL_COMMAND"),
+        "agent_command": setup.command,
+        "git_commit": _git_output("rev-parse", "HEAD"),
+        "git_tracked_dirty": bool(
+            _git_output("status", "--short", "--untracked-files=no")
+        ),
         "data_dir": str(args.data_dir.resolve()),
-        "data_snapshot": str(evaluation_data),
+        "run_data": str(run_data),
+        "adapter_data": str(setup.data_dir),
         "provider_config": {
             key: value
             for key, value in provider.items()
@@ -214,29 +245,6 @@ def _write_run_manifest(
     path = run_root / "run-manifest.json"
     path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _copy_evaluation_data(source: Path, target: Path) -> None:
-    target.mkdir()
-    for name in ("config", ".agents", "memory"):
-        path = source / name
-        if path.exists():
-            shutil.copytree(path, target / name)
-    _enable_local_browser_access(target)
-
-
-def _enable_local_browser_access(data_dir: Path) -> None:
-    path = data_dir / "config" / "config.yaml"
-    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    browser = config.setdefault("plugins", {}).setdefault("browser", {})
-    network = browser.setdefault("config", {}).setdefault("network", {})
-    if network.get("allow_private") is True:
-        return
-    network["allow_private"] = True
-    path.write_text(
-        yaml.safe_dump(config, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -269,6 +277,34 @@ def _provider_credentials(
             f"Inspect Agent Bridge does not support provider {provider_type!r}"
         )
     env[target] = str(api_key)
+
+
+def _set_inspect_runtime_environment(
+    env: dict[str, str],
+    root: Path,
+) -> None:
+    directories = {
+        "XDG_CONFIG_HOME": root / "config",
+        "XDG_DATA_HOME": root / "data",
+        "XDG_CACHE_HOME": root / "cache",
+        "XDG_STATE_HOME": root / "state",
+        # Inspect appends Unix socket names below TMPDIR. Keep this path short.
+        "TMPDIR": EVALUATION_ROOT / "results" / ".tmp",
+    }
+    for path in directories.values():
+        path.mkdir(parents=True, exist_ok=True)
+    env.update({key: str(path) for key, path in directories.items()})
+
+
+def _git_output(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 if __name__ == "__main__":

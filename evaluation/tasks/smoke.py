@@ -7,7 +7,7 @@ from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
 from inspect_ai.scorer import match
 
-from xbot_eval.adapter import selected_environment, xbot_agent
+from xbot_eval.adapters.xbot import selected_environment, xbot_agent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
