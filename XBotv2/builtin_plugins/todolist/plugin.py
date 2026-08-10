@@ -58,19 +58,22 @@ class TodolistPlugin(PluginBase):
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
 
-        Use only for multi-step work or a human-requested checklist, normally
-        with 3-7 user-visible milestones. Each call replaces the list, so retain
-        unfinished milestones. Do not create items for individual reads, edits,
-        commands, replies, summaries, or bookkeeping.
+        This list is the current plan state, not a log of actions or reasoning.
+        Use it only for multi-step work or a human-requested checklist, normally
+        with 3-7 independently verifiable milestones. Each call replaces the
+        list, so retain unfinished milestones. Do not create items for individual
+        reads, edits, commands, replies, summaries, routine verification, or
+        bookkeeping.
 
         Update the list when it is created, the scope materially changes, the
         active phase changes, or all work has been verified. Do not update it
         after every small action. Status records observed progress, not intent,
         with exactly one item in_progress while work remains. Mark a milestone
         completed only when its acceptance evidence exists; Todo status is not
-        itself evidence. When all milestones are verified, submit them all as
-        completed once and the plugin clears the list. Use an empty list only
-        to discard an obsolete checklist.
+        itself evidence and does not replace comparison with the human's request.
+        When all milestones are verified, submit them all as completed once and
+        the plugin clears the list. Do not add a final item for summarizing or
+        replying. Use an empty list only to discard an obsolete checklist.
 
         Args:
             todos: Complete ordered checklist. Each item contains content and a
