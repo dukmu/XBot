@@ -22,6 +22,7 @@ Core registers these tools without plugins:
 | `ask_user` | host, sequential | Wait for client input |
 | `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
 | `list_tasks` | session runtime | List tasks or read one full result |
+| `wait_task` | session runtime | Wait for one background shell task and read its full result |
 | `stop_task` | session runtime | Stop one background task |
 
 The built-in Agents plugin adds `task`, `list_agent_tasks`, and
@@ -35,8 +36,10 @@ complete; large foreground and background results are externalized by the
 common ToolResult cache instead of being irreversibly truncated. Task completion
 enters the runtime mailbox as a general message, so the Agent can react while
 the client is connected without polling. Starting a background task confirms
-only that it was accepted. After the completion notification, the Agent reads
-`list_tasks(task_id)` before using its output or reporting command success.
+only that it was accepted. The Agent uses `wait_task(task_id)` when subsequent
+work depends on completion, or reads `list_tasks(task_id)` after a completion
+notification. Cancelling `wait_task` does not stop the process; `stop_task`
+owns that operation.
 
 Foreground Shell execution has no default time limit. It waits for process
 completion and is terminated when the current turn is cancelled. Use background
@@ -143,8 +146,29 @@ then overlays the workspace, `/tmp`, and explicitly configured resources with
 their requested access. This keeps interpreters, libraries, certificates, and
 user configuration readable without hard-coded installation or home paths.
 Home caches remain read-only unless their actual runtime path is explicitly
-configured as a writable resource. Filesystem Tool permissions remain separate
-from the mount policy.
+configured as a writable resource. The data directory is reapplied read-only;
+an environment located inside a writable workspace remains writable according
+to the workspace policy. Filesystem Tool permissions remain separate from the
+mount policy.
+
+Foreground `shell` calls have no default duration limit and remain cancellable
+with the active turn. Everything inside a writable workspace, including a
+Python environment, is writable. Paths outside the workspace are read-only by
+default because arbitrary shell text is not parsed for paths. A command that
+genuinely requires external writes must set
+`sandbox_permissions=require_escalated` with a justification. This checks the
+normal `external_write` allow, deny, or ask policy before starting the process.
+An approved command runs on the host, outside bwrap; this applies equally to
+foreground calls and `background=true`. A denied request creates no process.
+The default `use_default` mode always retains the configured sandbox.
+
+An allow-once decision applies only to that invocation. A session decision
+updates the session's `external_write` overlay, so later explicit escalation
+requests follow that decision. The Agent must still
+set `sandbox_permissions=require_escalated`; ordinary shell calls remain
+sandboxed. Foreground commands run until completion or turn cancellation.
+Background commands return a task ID after authorization and remain manageable
+through `list_tasks`, `wait_task`, and `stop_task`.
 
 A session-scoped approval for a mutating filesystem tool records only its Tool
 name, source/destination paths, and destructive flags such as `recursive` or
@@ -165,7 +189,7 @@ through relative `session/...` paths. External `ask` paths use the normal
 ordered permission interaction and record only the approved path. For atomic
 filesystem mutations, the trusted filesystem worker receives a temporary parent
 directory mount for that call; shell commands do not inherit it. The complete
-data directory is not mounted separately.
+data directory is visible but read-only inside shell sandboxes.
 
 `ask_user` is itself a tool call, so a restrictive permission policy may emit
 and resolve `permission_request` before the tool emits

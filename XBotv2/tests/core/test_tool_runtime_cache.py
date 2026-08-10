@@ -400,6 +400,57 @@ async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxPolicy(
+        config={"external_write": "ask"},
+        workspace_root=workspace,
+    )
+    calls = []
+
+    async def shell(
+        sandbox_permissions: str,
+        justification: str,
+        cwd: str | None = None,
+    ) -> str:
+        del cwd
+        calls.append((sandbox_permissions, justification))
+        return "ran"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool.from_function(shell, name="shell"),
+        sandbox_mode="sandboxed",
+    )
+    events = []
+
+    async def approve(event, **kwargs):
+        events.append((event, kwargs))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "shell", {
+            "sandbox_permissions": "require_escalated",
+            "justification": "Install a required dependency.",
+        })],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert calls == [(
+        "require_escalated",
+        "Install a required dependency.",
+    )]
+    event, _ = events[0]
+    assert event["data"]["source"] == "sandbox"
+    assert "Install a required dependency." in event["data"]["reason"]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_copy_checks_both_paths_with_one_approval(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

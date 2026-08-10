@@ -7,7 +7,7 @@ import pytest
 
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
-from xbotv2.core.builtin_tools.shell import shell
+from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
 from xbotv2.core.builtin_tools.interaction import request_permission
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
@@ -279,6 +279,13 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
+        shell = next(
+            tool
+            for tool in BackgroundTaskManager(
+                workspace_root=str(temp_workspace)
+            ).tools
+            if tool.name == "shell"
+        )
         registry.register(shell, sandbox_mode="host")
 
         engine = make_engine(llm, registry, state_store, temp_workspace)

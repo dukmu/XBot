@@ -217,11 +217,20 @@ def _persist_sandbox_rules(
     doc = _read_yaml(path)
     sandbox = doc.setdefault("sandbox", {})
     sandbox["enabled"] = True
-    resources = sandbox.setdefault("resources", [])
     for item in sandbox_rules:
+        if item.get("setting") == "external_write":
+            external_write = "allow" if decision == "allow" else "deny"
+            sandbox["external_write"] = external_write
+            if (
+                engine is not None
+                and getattr(engine, "sandbox_policy", None) is not None
+            ):
+                engine.sandbox_policy.external_write = external_write
+            continue
         path_value = item.get("path")
         if not path_value:
             continue
+        resources = sandbox.setdefault("resources", [])
         resolved_path = str(Path(path_value).resolve())
         access = (
             str(item.get("access"))

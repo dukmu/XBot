@@ -2,8 +2,7 @@ import asyncio
 
 import pytest
 
-from xbotv2.core.background_tasks import BackgroundTaskManager
-from xbotv2.core.builtin_tools.shell import run_shell_command
+from xbotv2.core.builtin_tools.shell import BackgroundTaskManager, run_shell_command
 from xbotv2.tools.sandbox import SandboxPolicy
 
 
@@ -12,7 +11,7 @@ async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeyp
     async def run(*args, **kwargs):
         return "background-output"
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     updates = []
     completions = []
     manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
@@ -27,17 +26,17 @@ async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeyp
     manager.on_complete = record_completion
 
     tools = {tool.name: tool for tool in manager.tools}
-    assert set(tools) == {"shell", "list_tasks", "stop_task"}
+    assert set(tools) == {"shell", "list_tasks", "wait_task", "stop_task"}
     background = tools["shell"].parameters["properties"]["background"]
     assert background == {"type": "boolean"}
+    assert "sandbox_permissions" in tools["shell"].description
+    assert "require_escalated" in tools["shell"].description
 
     started = await manager.shell(
         "printf background-output", background=True
     )
     task_id = started.data["task_id"]
-    await manager._tasks[task_id].runner
-
-    result = await manager.list_tasks(task_id)
+    result = await manager.wait_task(task_id)
     assert [item["status"] for item in updates] == [
         "pending", "running", "completed",
     ]
@@ -62,6 +61,41 @@ async def test_foreground_shell_defaults_to_workspace_when_sandbox_is_disabled(
 
 
 @pytest.mark.asyncio
+async def test_escalated_shell_bypasses_sandbox_in_both_modes(
+    temp_workspace,
+    monkeypatch,
+):
+    sandboxes = []
+
+    async def run(*args, sandbox=None, **kwargs):
+        sandboxes.append(sandbox)
+        return "output"
+
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    manager = BackgroundTaskManager(
+        workspace_root=str(temp_workspace),
+        sandbox=object(),
+    )
+
+    foreground = await manager.shell(
+        "install dependency",
+        sandbox_permissions="require_escalated",
+        justification="Install a required dependency.",
+    )
+    background = await manager.shell(
+        "install dependency",
+        background=True,
+        sandbox_permissions="require_escalated",
+        justification="Install a required dependency.",
+    )
+    await manager._tasks[background.data["task_id"]].runner
+
+    assert foreground.status == "success"
+    assert foreground.content == "output"
+    assert sandboxes == [None, None]
+
+
+@pytest.mark.asyncio
 async def test_task_events_bound_output_but_result_keeps_cacheable_content(
     temp_workspace, monkeypatch
 ):
@@ -70,7 +104,7 @@ async def test_task_events_bound_output_but_result_keeps_cacheable_content(
     async def run(*args, **kwargs):
         return full_output
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
     updates = []
 
@@ -95,7 +129,7 @@ async def test_stop_task_cancels_process_and_reports_stopped(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     running = asyncio.Event()
     manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
 
@@ -123,7 +157,7 @@ async def test_close_stops_tasks_without_completion_delivery(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     completions = []
     manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
 

@@ -42,7 +42,7 @@ from xbotv2.core.agents import (
     apply_agent_tools,
 )
 from xbotv2.core.subagents import SubagentManager
-from xbotv2.core.background_tasks import BackgroundTaskManager
+from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
@@ -224,7 +224,13 @@ async def bootstrap(
         sandbox=sandbox,
     )
     for tool in background_tasks.tools:
-        tool_registry.register(tool, sandbox_mode="host")
+        if tool.name == "shell":
+            tool_registry.register(
+                tool,
+                sandbox_mode="sandboxed",
+            )
+        else:
+            tool_registry.register(tool, sandbox_mode="host")
 
     parent_engine: Engine | None = None
 

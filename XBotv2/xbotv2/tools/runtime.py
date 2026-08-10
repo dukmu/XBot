@@ -157,32 +157,10 @@ def _permission_client_event(
             "source": source,
             "tool_call": tool_call.to_dict(),
             "decision": decision,
-            "reason": _client_visible_permission_reason(
-                tool_call,
-                reason,
-                source=source,
-            ),
+            "reason": reason,
             "resume_supported": False,
         },
     }
-
-
-def _client_visible_permission_reason(
-    tool_call: ToolCall,
-    reason: str,
-    *,
-    source: str,
-) -> str:
-    """Return a short permission label for fallback / non-TUI clients.
-
-    The Textual TUI ignores this field entirely — it builds the
-    widget title from ``tool_call.name`` and ``tool.status``.
-    """
-
-    tool_name = tool_call.name or "tool"
-    if source == "sandbox" and reason.startswith("Path approval required"):
-        return f"Path approval for {tool_name}: {reason.partition(': ')[2]}"
-    return f"Approval: {tool_name}"
 
 
 def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[str, Any]:
@@ -367,7 +345,10 @@ def _permission_denial_reason(response: dict[str, Any], fallback: str) -> str:
     if status == "cancelled":
         return f"Permission request cancelled; tool call denied: {reason}"
     if status == "unsupported":
-        return fallback
+        return (
+            f"{fallback} No live permission handler is available, "
+            "so this call fails closed."
+        )
     return fallback
 
 
@@ -378,40 +359,63 @@ async def _authorize_sandbox_tool(
     hook_manager: Any,
     hook_context_factory: Any,
 ) -> tuple[bool, list[dict[str, Any]], str, list[Any]]:
-    issues = sandbox_policy.check_tool_access(call.name, call.args)
+    # Escalation authorizes this ToolCall's execution mode; it is not a path rule.
+    escalation = (
+        call.name == "shell"
+        and call.args.get("sandbox_permissions") == "require_escalated"
+    )
     events: list[dict[str, Any]] = []
     temporary_rules: list[Any] = []
-    seen: set[tuple[str, bool]] = set()
     rules: list[dict[str, str]] = []
-    denied = False
-    for issue in issues:
-        path = str(issue["path"])
-        write = bool(issue["write"])
-        key = (path, write)
-        if key in seen:
-            continue
-        seen.add(key)
-        decision = str(issue["decision"])
-        access = "readwrite" if write else "readonly"
-        rules.append({"path": path, "access": access})
-        denied = denied or decision != "ask"
-
-    if not rules:
-        return True, events, "", temporary_rules
-    approval_details = "; ".join(
-        f"{rule['access']} {rule['path']}" for rule in rules
-    )
-    denial_details = "; ".join(
-        f"{'write' if rule['access'] == 'readwrite' else 'read'} access: "
-        f"{rule['path']}"
-        for rule in rules
-    )
-    decision = "deny" if denied else "ask"
-    reason = (
-        f"Sandbox denied {denial_details}"
-        if denied
-        else f"Path approval required: {approval_details}"
-    )
+    if escalation:
+        justification = str(call.args.get("justification") or "").strip()
+        if not justification:
+            return True, events, "", temporary_rules
+        configured = str(sandbox_policy.external_write)
+        decision = {
+            "allow": "allow",
+            "readwrite": "allow",
+            "ask": "ask",
+        }.get(configured, "deny")
+        if decision == "allow":
+            return True, events, "", temporary_rules
+        denied = decision == "deny"
+        reason = (
+            f"Sandbox escape denied: {justification}"
+            if denied
+            else f"Sandbox escape requested: {justification}"
+        )
+        rules.append({"setting": "external_write", "access": "readwrite"})
+    else:
+        seen: set[tuple[str, bool]] = set()
+        denied = False
+        for issue in sandbox_policy.check_tool_access(call.name, call.args):
+            path = str(issue["path"])
+            write = bool(issue["write"])
+            key = (path, write)
+            if key in seen:
+                continue
+            seen.add(key)
+            decision = str(issue["decision"])
+            access = "readwrite" if write else "readonly"
+            rules.append({"path": path, "access": access})
+            denied = denied or decision != "ask"
+        if not rules:
+            return True, events, "", temporary_rules
+        approval_details = "; ".join(
+            f"{rule['access']} {rule['path']}" for rule in rules
+        )
+        denial_details = "; ".join(
+            f"{'write' if rule['access'] == 'readwrite' else 'read'} access: "
+            f"{rule['path']}"
+            for rule in rules
+        )
+        decision = "deny" if denied else "ask"
+        reason = (
+            f"Sandbox denied {denial_details}"
+            if denied
+            else f"Path approval required: {approval_details}"
+        )
     stage = (
         HookStage.ON_PERMISSION_DENIED
         if denied
@@ -444,6 +448,8 @@ async def _authorize_sandbox_tool(
     )
     if response.get("decision") != "allow":
         return False, events, _permission_denial_reason(response, reason), []
+    if escalation:
+        return True, events, "", temporary_rules
     for item in rules:
         path = item["path"]
         access = item["access"]
@@ -612,7 +618,7 @@ async def _execute_one_tool(
             observed_tool_calls.append(call)
             return
         if decision == "ask" and not hook_allowed:
-            reason = f"Permission approval required for tool: {tool_name}. No live permission handler is available, so this call fails closed."
+            reason = f"Permission approval required for tool: {tool_name}."
             events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
             await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
             response = await _resolve_live_permission(
@@ -800,9 +806,6 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
     return Message(role="tool", content=str(value), tool_call_id=tool_call_id, status="success")
 
 
-_TOOL_DISPATCH_TIMEOUT_SECONDS = 60.0
-
-
 async def _invoke_tool(
     tool: Any,
     args: dict[str, Any],
@@ -819,14 +822,15 @@ async def _invoke_tool(
         call = asyncio.to_thread(tool, **args)
     else:
         raise TypeError(f"Tool {tool!r} is not callable")
-    timeout = timeout_seconds or _TOOL_DISPATCH_TIMEOUT_SECONDS
     task = asyncio.create_task(call)
-    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if timeout_seconds is None:
+        return await task
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
     if not done:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         raise ToolDispatchTimeoutError(
             tool_name=getattr(tool, "name", str(tool)),
-            timeout_seconds=timeout,
+            timeout_seconds=timeout_seconds,
         )
     return task.result()

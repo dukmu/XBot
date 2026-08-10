@@ -105,7 +105,8 @@ add or replace built-in values. Markdown prompt fragments use fenced `var`
 blocks through `RuntimeVariables.expand_markdown`; ordinary Markdown references
 remain untouched.
 Tool registrations may set a positive `timeout_seconds`; the dispatcher applies
-it through the normal Tool execution path instead of special-casing long tools.
+it through the normal Tool execution path. `None` leaves the Tool without a
+dispatcher deadline, while turn cancellation still cancels the Tool.
 Duplicate canonical names or provider-visible tool names are rejected before
 registry mutation.
 Entered `on_load` callbacks receive best-effort `on_unload` after failure, and

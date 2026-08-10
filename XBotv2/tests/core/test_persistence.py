@@ -213,17 +213,17 @@ class TestMessagePersistence:
         assert restored[3].content == "done"
 
     def test_sync_messages_preserves_existing_message_ids(self, store):
-        store.append_messages([
+        messages = [
             Message(role="user", content="first"),
             Message(role="assistant", content="response"),
-        ])
+        ]
+        store.append_messages(messages)
         before = _raw_messages(store)
 
-        count = store.sync_messages([
-            Message(role="user", content="first"),
-            Message(role="assistant", content="response"),
-            Message(role="user", content="second"),
-        ])
+        messages.append(Message(role="user", content="second"))
+        count = store.sync_messages(messages)
+        messages.append(Message(role="assistant", content="done"))
+        store.sync_messages(messages)
 
         after = _raw_messages(store)
         assert count == 3
@@ -232,6 +232,8 @@ class TestMessagePersistence:
         assert after[1]["msg_id"] == before[1]["msg_id"]
         assert after[1]["ts"] == before[1]["ts"]
         assert after[2]["msg_id"] == 3
+        assert after[3]["msg_id"] == 4
+        assert all("record_type" not in record for record in after)
 
     def test_history_operations_append_without_removing_prior_records(self, store):
         store.append_messages([

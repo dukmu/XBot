@@ -141,7 +141,12 @@ class SandboxPolicy:
     # ------------------------------------------------------------------
 
     def _mount_specs(self) -> list[SandboxMountSpec]:
-        mounts: list[SandboxMountSpec] = []
+        mounts = [SandboxMountSpec(
+            source=self.data_root,
+            target=self.data_root,
+            access="readonly",
+            kind="dir",
+        )]
 
         workspace_access = self._configured_mount_access(
             self.workspace_read,

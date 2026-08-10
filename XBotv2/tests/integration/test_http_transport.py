@@ -1813,7 +1813,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         return "task output"
 
     monkeypatch.setattr(
-        "xbotv2.core.background_tasks.run_shell_command", run
+        "xbotv2.core.builtin_tools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "task acknowledged"}])
     set_llm_override(http_app, llm)
@@ -1864,7 +1864,7 @@ async def test_multiple_completions_aggregate_into_one_injection(
         return "task output"
 
     monkeypatch.setattr(
-        "xbotv2.core.background_tasks.run_shell_command", run
+        "xbotv2.core.builtin_tools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "ok"}])
     set_llm_override(http_app, llm)
@@ -1906,7 +1906,7 @@ async def test_typed_task_stop_is_idempotent(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )

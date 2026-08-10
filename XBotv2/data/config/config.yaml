@@ -29,8 +29,7 @@ hooks: []
 
 permissions:
   allow:
-    - tool: list_tasks
-    - tool: stop_task
+    - tool: (?:list_tasks|wait_task|stop_task)
     - tool: (?:send_message|ask_user|request_permission)
     - tool: (?:search_text|find_files)
     - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)

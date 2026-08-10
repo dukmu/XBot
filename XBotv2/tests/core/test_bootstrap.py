@@ -279,6 +279,7 @@ class NormalClosePlugin(PluginBase):
             "ask_user",
             "request_permission",
             "list_tasks",
+            "wait_task",
         } <= tool_names
         assert "ask" not in tool_names
 
@@ -305,6 +306,7 @@ class NormalClosePlugin(PluginBase):
             "filesystem_mkdir",
             "list_tasks",
             "request_permission",
+            "wait_task",
         } <= set(engine.tool_registry.names())
         assert engine.config.tools is None
 

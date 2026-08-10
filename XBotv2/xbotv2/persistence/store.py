@@ -131,6 +131,7 @@ class CoreStateStore:
         # References to the messages already persisted in the journal.
         # None means unknown (rebuilt from disk on the next sync).
         self._persisted_refs: list[Any] | None = None
+        self._persisted_fingerprints: list[int] | None = None
 
     @classmethod
     def create(
@@ -167,6 +168,8 @@ class CoreStateStore:
             os.fsync(f.fileno())
         if self._persisted_refs is not None:
             self._persisted_refs.append(msg)
+            assert self._persisted_fingerprints is not None
+            self._persisted_fingerprints.append(msg.fingerprint())
         return d
 
     def store_image(self, data: str, media_type: str) -> ImageContent:
@@ -228,6 +231,10 @@ class CoreStateStore:
             os.fsync(stream.fileno())
         if self._persisted_refs is not None:
             self._persisted_refs.extend(messages)
+            assert self._persisted_fingerprints is not None
+            self._persisted_fingerprints.extend(
+                message.fingerprint() for message in messages
+            )
         return len(messages)
 
     def sync_messages(self, messages: list[Message]) -> int:
@@ -244,20 +251,30 @@ class CoreStateStore:
         refs = self._persisted_refs
         if refs is None:
             refs = self._persisted_refs = self.read_messages()
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in refs
+            ]
         k = len(refs)
         if len(messages) >= k and all(
             a is b for a, b in zip(messages, refs)
         ):
+            assert self._persisted_fingerprints is not None
+            current = [message.fingerprint() for message in messages[:k]]
+            if current != self._persisted_fingerprints:
+                self.append_checkpoint(messages, reason="sync")
+                return len(messages)
             new = messages[k:]
             if new:
                 self.append_messages(new)
-                self._persisted_refs.extend(new)
             return len(messages)
         serialized = [message_to_dict(message) for message in messages]
         previous_payloads = [message_to_dict(message) for message in refs]
         if serialized[:len(previous_payloads)] == previous_payloads:
             self.append_messages(messages[len(previous_payloads):])
             self._persisted_refs = list(messages)
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in messages
+            ]
             return len(messages)
         self.append_checkpoint(messages, reason="sync")
         return len(messages)
@@ -274,6 +291,9 @@ class CoreStateStore:
             "messages": [message_to_dict(message) for message in messages],
         })
         self._persisted_refs = list(messages)
+        self._persisted_fingerprints = [
+            message.fingerprint() for message in messages
+        ]
 
     def append_undo(self, turns: int) -> None:
         if turns < 1:
@@ -285,10 +305,12 @@ class CoreStateStore:
         # Undo rewrites history on replay; the persisted baseline is unknown
         # until the next sync rebuilds it from the journal.
         self._persisted_refs = None
+        self._persisted_fingerprints = None
 
     def append_clear(self) -> None:
         self._append_record({"record_type": "history_clear"})
         self._persisted_refs = []
+        self._persisted_fingerprints = []
 
     def append_mailbox_delivery(self, message: Any) -> None:
         self._append_record({
