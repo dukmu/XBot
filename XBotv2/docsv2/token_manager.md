@@ -22,8 +22,15 @@ configuration.
 
 - `context_tokens`: input tokens in the latest main-Agent provider request,
   including provider-reported cache read/creation tokens where required.
-- `input_tokens`, `output_tokens`, and `total_tokens`: normalized usage
-  accumulated by Engine for the session.
+- `input_tokens`: full-rate input, excluding cache read and cache creation
+  tokens reported separately by the provider.
+- `output_tokens`: provider-reported output, including reasoning when the
+  provider includes it there.
+- `total_tokens`: complete processed input plus output, including separately
+  reported cache read and cache creation tokens. This matches Inspect AI's
+  `ModelUsage` accounting.
+- Engine accumulates these fields and the separate cache counters for the
+  session.
 - auxiliary calls contribute to cumulative usage but do not overwrite the
   main-Agent `context_tokens`.
 

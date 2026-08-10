@@ -258,7 +258,7 @@ def test_anthropic_usage_values_preserve_cache_context_tokens():
     ) == {
         "input_tokens": 100,
         "output_tokens": 20,
-        "total_tokens": 120,
+        "total_tokens": 870,
         "requests": 1,
         "context_tokens": 850,
         "cache_read_input_tokens": 700,
@@ -378,7 +378,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     assert final.usage_metadata == {
         "input_tokens": 10,
         "output_tokens": 3,
-        "total_tokens": 13,
+        "total_tokens": 33,
         "requests": 1,
         "context_tokens": 30,
         "cache_read_input_tokens": 20,
@@ -495,7 +495,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
     ]
     assert final.usage_metadata == {
-        "input_tokens": 12,
+        "input_tokens": 4,
         "output_tokens": 3,
         "total_tokens": 15,
         "requests": 1,

@@ -876,7 +876,10 @@ class XBotTextualApp(App[None]):
         # Throttle: streaming deltas arrive many times per second; the status
         # bar only needs to reflect the latest state a few times per second.
         now = time.monotonic()
-        if now - self._last_status_refresh < _STATUS_REFRESH_INTERVAL:
+        if (
+            self._stream_timer is not None
+            and now - self._last_status_refresh < _STATUS_REFRESH_INTERVAL
+        ):
             self._status_refresh_pending = True
             return
         self._last_status_refresh = now
@@ -1591,17 +1594,11 @@ class XBotTextualApp(App[None]):
                 await widget.mount(block, before=body)
         body = self._query_child_first(widget, ".body")
         if body is not None:
-            body.update(
-                render_text(message.content)
-                if message.streaming
-                else render_message(message.content, role=message.role)
-            )
+            body.update(render_message(message.content, role=message.role))
         elif message.content:
             await widget.mount(
                 Static(
-                    render_text(message.content)
-                    if message.streaming
-                    else render_message(message.content, role=message.role),
+                    render_message(message.content, role=message.role),
                     classes="body",
                 )
             )

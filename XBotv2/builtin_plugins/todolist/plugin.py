@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from typing import Any
 
 from xbotv2.api import (
@@ -108,7 +107,7 @@ class TodolistPlugin(PluginBase):
             content = "Todo list cleared." if changed else "Todo list is already empty."
         else:
             action = "updated" if changed else "unchanged"
-            content = f"Todo list {action}:\n{json.dumps(active, ensure_ascii=False)}"
+            content = f"Todo list {action}."
             if not changed:
                 content += "\nDo not call update_todos again until the work changes."
         return ToolResult.success(content, data=data)

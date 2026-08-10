@@ -16,9 +16,7 @@ class TuiMessage:
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
-    # True while assistant content is still streaming: the TUI renders the
-    # body as plain text (cheap) and defers Markdown parsing until the final
-    # assistant_message event.
+    # True while assistant content is still streaming.
     streaming: bool = False
 
 

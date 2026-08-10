@@ -271,6 +271,7 @@ def openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:
 def normalize_openai_usage(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     reported_total = getattr(usage, "total_tokens", None)
     cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
     if cache_read is None:
@@ -278,14 +279,17 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
     cache_creation = getattr(usage, "prompt_cache_miss_tokens", None)
     if cache_creation is None:
         cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+    cache_read = int(cache_read or 0)
+    cache_creation = int(cache_creation or 0)
     return usage_metadata(
-        input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+        input_tokens=max(0, prompt_tokens - cache_read - cache_creation),
         output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
         total_tokens=(
             int(reported_total) if reported_total is not None else None
         ),
-        cache_read_input_tokens=int(cache_read or 0),
-        cache_creation_input_tokens=int(cache_creation or 0),
+        context_tokens=prompt_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
         prompt_cache_write_tokens=int(
             getattr(usage, "prompt_cache_write_tokens", 0) or 0
         ),

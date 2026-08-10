@@ -71,6 +71,8 @@ Thread status and history remain queryable after its runtime closes.
   contribute to cumulative session usage without replacing it. Live `usage`
   events are per-model-
   call deltas; clients add them to the restored totals.
+  `input_tokens` excludes cache reads and cache creation reported in their
+  dedicated fields; `total_tokens` includes all processed input and output.
   Core persists these totals independently in `state/usage.yaml`, so compact,
   clear, and undo do not erase token accounting.
 - Protocol/configuration text is UTF-8. Clients do not attempt Latin-1 or

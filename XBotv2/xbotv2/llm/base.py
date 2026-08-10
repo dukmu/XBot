@@ -226,7 +226,10 @@ def usage_metadata(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": (
-            input_tokens + output_tokens
+            input_tokens
+            + cache_read_input_tokens
+            + cache_creation_input_tokens
+            + output_tokens
             if total_tokens is None
             else total_tokens
         ),
