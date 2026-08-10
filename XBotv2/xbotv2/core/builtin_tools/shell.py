@@ -99,11 +99,14 @@ class BackgroundTaskManager:
         Combine related inspection or validation in one readable command when
         this avoids unnecessary round trips. Treat interactions with stateful
         external systems as real operations: exploratory commands may mutate or
-        consume state, so understand the contract before acting. After a failure,
-        inspect the error before retrying. Retry an unchanged command only for a
-        plausibly transient failure; otherwise correct the command, environment,
-        permission, or implementation cause. Do not launch a duplicate because
-        a foreground or background command is still running.
+        consume state, so understand the contract before acting. When the first
+        operation contributes required evidence, perform it through the intended
+        implementation instead of a disposable probe. Create scripts and durable
+        artifacts with filesystem tools, then use Shell to run or inspect them.
+        After a failure, inspect the error before retrying. Retry an unchanged
+        command only for a plausibly transient failure; otherwise correct the
+        command, environment, permission, or implementation cause. Do not launch
+        a duplicate because a foreground or background command is still running.
 
         When a command must run outside the configured sandbox, set
         ``sandbox_permissions`` to ``require_escalated`` and explain why in

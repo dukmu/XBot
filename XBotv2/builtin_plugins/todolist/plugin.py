@@ -67,8 +67,9 @@ class TodolistPlugin(PluginBase):
 
         Update the list when it is created, the scope materially changes, the
         active phase changes, or all work has been verified. Do not update it
-        after every small action. Status records observed progress, not intent,
-        with exactly one item in_progress while work remains. Mark a milestone
+        after every small action or create it late merely to reconstruct work
+        already performed. Status records observed progress, not intent, with
+        exactly one item in_progress while work remains. Mark a milestone
         completed only when its acceptance evidence exists; Todo status is not
         itself evidence and does not replace comparison with the human's request.
         When all milestones are verified, submit them all as completed once and
