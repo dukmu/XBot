@@ -106,7 +106,6 @@ class OpenAICompatibleProvider(BaseProvider):
                 yield ModelChunk(
                     reasoning=reasoning,
                 )
-                continue
 
             content = getattr(delta, "content", None) or ""
             if content:

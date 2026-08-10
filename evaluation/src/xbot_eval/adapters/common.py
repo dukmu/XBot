@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import re
 import shutil
 import socket
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
+import anyio
+from inspect_ai.agent import AgentState, SandboxAgentBridge, sandbox_agent_bridge
 from inspect_ai.solver import TaskState
 from inspect_ai.util import sandbox
 
@@ -14,6 +16,7 @@ from ..harnessbench import HarnessBenchRuntime
 
 
 _BRIDGE_PORTS: set[int] = set()
+_BRIDGE_START_LOCK = anyio.Lock()
 
 
 @dataclass
@@ -68,11 +71,20 @@ def allocate_bridge_port() -> int:
             return port
 
 
-def create_attempt_dir(root: Path, state: TaskState) -> Path:
-    sample = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(state.sample_id)).strip("-")
-    path = root / f"{sample}-e{state.epoch}-{uuid4().hex}"
-    path.mkdir(parents=True)
-    return path
+@asynccontextmanager
+async def local_agent_bridge(
+    state: AgentState,
+    *,
+    port: int,
+) -> AsyncIterator[SandboxAgentBridge]:
+    """Start an Inspect bridge without racing its shared local tool install."""
+
+    async with AsyncExitStack() as stack:
+        async with _BRIDGE_START_LOCK:
+            bridge = await stack.enter_async_context(
+                sandbox_agent_bridge(state, sandbox="local", port=port)
+            )
+        yield bridge
 
 
 def resolve_command(command: str | None, default: str | Path | None) -> str:

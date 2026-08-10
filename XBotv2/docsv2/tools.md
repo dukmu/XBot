@@ -137,10 +137,14 @@ Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 
 Bubblewrap inherits the environment of the XBot process by default, including
-`PATH`, provider variables, proxy settings, and active virtual-environment
-variables. The Python environment running XBot is mounted read-only so commands
-resolved through the inherited `PATH` remain available. Filesystem, network,
-and permission isolation remain controlled by the sandbox policy.
+`PATH`, `HOME`, provider variables, proxy settings, and active
+virtual-environment variables. It mounts the complete host filesystem read-only,
+then overlays the workspace, `/tmp`, and explicitly configured resources with
+their requested access. This keeps interpreters, libraries, certificates, and
+user configuration readable without hard-coded installation or home paths.
+Home caches remain read-only unless their actual runtime path is explicitly
+configured as a writable resource. Filesystem Tool permissions remain separate
+from the mount policy.
 
 A session-scoped approval for a mutating filesystem tool records only its Tool
 name, source/destination paths, and destructive flags such as `recursive` or

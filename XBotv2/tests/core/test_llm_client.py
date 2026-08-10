@@ -424,8 +424,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
         return SimpleNamespace(choices=choices, usage=usage)
 
     events = [
-        chunk(reasoning="check"),
-        chunk(content="done", tool_calls=[SimpleNamespace(
+        chunk(reasoning="check", content="done", tool_calls=[SimpleNamespace(
             index=0,
             id="call-1",
             function=SimpleNamespace(

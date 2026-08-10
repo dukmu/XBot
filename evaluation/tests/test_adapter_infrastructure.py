@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,11 +10,13 @@ import yaml
 from acp.schema import PermissionOption
 
 from xbot_eval.adapters.acp import InspectACPClient
+from xbot_eval.adapters import common
+from xbot_eval.adapters.common import local_agent_bridge
 from xbot_eval.adapters.opencode import (
     _opencode_environment,
     _write_opencode_config,
 )
-from xbot_eval.adapters.xbot import _prepare_bridge_data
+from xbot_eval.adapters.xbot import _configure_bridge_provider
 
 
 def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
@@ -37,12 +40,10 @@ def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
         }),
         encoding="utf-8",
     )
-    target = tmp_path / "target"
-
-    _prepare_bridge_data(source, target, port=12345, provider_name="minimax")
+    _configure_bridge_provider(source, provider_name="minimax")
 
     generated = yaml.safe_load(
-        (target / "config" / "providers.yaml").read_text(encoding="utf-8")
+        (source / "config" / "providers.yaml").read_text(encoding="utf-8")
     )
     bridge = generated["providers"]["inspect"]
     assert bridge["provider"] == "anthropic"
@@ -50,7 +51,7 @@ def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
     assert bridge["max_context_tokens"] == 204800
     assert bridge["max_output_tokens"] == 32768
     assert bridge["input_modalities"] == ["text", "image"]
-    assert bridge["base_url"] == "http://127.0.0.1:12345"
+    assert bridge["base_url"] == "${XBOT_EVAL_BRIDGE_URL}"
 
 
 def test_acp_permission_adapter_selects_standard_allow_once_option() -> None:
@@ -77,7 +78,45 @@ def test_acp_permission_adapter_selects_standard_allow_once_option() -> None:
     assert client.events[-1]["decision"] == "approve-this-call"
 
 
-def test_opencode_config_and_state_are_isolated(tmp_path: Path) -> None:
+def test_local_bridge_serializes_startup_without_serializing_sessions(
+    monkeypatch,
+) -> None:
+    entering = 0
+    max_entering = 0
+    active_sessions = 0
+    both_active = asyncio.Event()
+
+    @asynccontextmanager
+    async def fake_bridge(*args, **kwargs):
+        nonlocal entering, max_entering, active_sessions
+        entering += 1
+        max_entering = max(max_entering, entering)
+        await asyncio.sleep(0)
+        entering -= 1
+        active_sessions += 1
+        if active_sessions == 2:
+            both_active.set()
+        try:
+            yield SimpleNamespace()
+        finally:
+            active_sessions -= 1
+
+    async def run() -> None:
+        async def session() -> None:
+            async with local_agent_bridge(SimpleNamespace(), port=12345):
+                await asyncio.wait_for(both_active.wait(), timeout=1)
+
+        await asyncio.gather(session(), session())
+
+    monkeypatch.setattr(common, "sandbox_agent_bridge", fake_bridge)
+    asyncio.run(run())
+
+    assert max_entering == 1
+
+
+def test_opencode_environment_only_sets_bridge_configuration(
+    tmp_path: Path,
+) -> None:
     run_dir = tmp_path / "sample"
     run_dir.mkdir()
     config_path = run_dir / "opencode.json"
@@ -91,23 +130,19 @@ def test_opencode_config_and_state_are_isolated(tmp_path: Path) -> None:
             "thinking_enabled": True,
             "input_modalities": ["text", "image"],
         },
-        port=12345,
     )
-    env = _opencode_environment(run_dir, config_path)
+    env = _opencode_environment(config_path, port=12345)
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     model = config["provider"]["anthropic"]["models"]["inspect"]
     assert config["model"] == "anthropic/inspect"
     assert model["name"] == "Minimax-M3"
     assert config["provider"]["anthropic"]["options"]["baseURL"] == (
-        "http://127.0.0.1:12345/v1"
+        "{env:XBOT_EVAL_BRIDGE_URL}"
     )
     assert config["permission"]["external_directory"] == "deny"
     assert model["limit"] == {"context": 204800, "output": 32768}
     assert model["modalities"]["input"] == ["text", "image"]
     assert env["ANTHROPIC_API_KEY"] == "inspect"
-    assert all(
-        Path(value).is_relative_to(run_dir)
-        for key, value in env.items()
-        if key not in {"ANTHROPIC_API_KEY"}
-    )
+    assert env["OPENCODE_CONFIG"] == str(config_path)
+    assert env["XBOT_EVAL_BRIDGE_URL"] == "http://127.0.0.1:12345/v1"

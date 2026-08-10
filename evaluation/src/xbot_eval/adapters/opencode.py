@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from inspect_ai.agent import AgentState, sandbox_agent_bridge
+from inspect_ai.agent import AgentState
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 
 from .acp import InspectACPClient, run_acp_session
@@ -12,7 +12,7 @@ from .base import AdapterContext, AdapterSetup
 from .common import (
     PreparedSample,
     allocate_bridge_port,
-    create_attempt_dir,
+    local_agent_bridge,
     resolve_command,
 )
 
@@ -31,20 +31,14 @@ class OpenCodeAdapter:
             )
         data_dir = context.run_data / self.name
         data_dir.mkdir(exist_ok=True)
-        config = data_dir / "adapter.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "provider": {
-                        key: value
-                        for key, value in context.provider.items()
-                        if key not in {"api_key", "api_key_env"}
-                    }
-                },
-                ensure_ascii=False,
-                indent=2,
-            ) + "\n",
-            encoding="utf-8",
+        config = data_dir / "opencode.json"
+        _write_opencode_config(
+            config,
+            {
+                key: value
+                for key, value in context.provider.items()
+                if key not in {"api_key", "api_key_env"}
+            },
         )
         executable = resolve_command(
             command or os.environ.get("OPENCODE_EVAL_COMMAND"),
@@ -61,13 +55,9 @@ class OpenCodeAdapter:
 
     def solver(self) -> Solver:
         data_dir = Path(os.environ["XBOT_EVAL_ADAPTER_DATA"])
-        document = json.loads(
-            (data_dir / "adapter.json").read_text(encoding="utf-8")
-        )
         return opencode_bridge_agent(
             command=os.environ["XBOT_EVAL_AGENT_COMMAND"],
             data_dir=str(data_dir),
-            provider=document["provider"],
         )
 
 
@@ -76,28 +66,24 @@ def opencode_bridge_agent(
     *,
     command: str,
     data_dir: str,
-    provider: dict[str, object],
 ) -> Solver:
     """Run OpenCode ACP through Inspect's external-Agent model bridge."""
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         sample = await PreparedSample.create(state)
         root = Path(data_dir).resolve()
-        run_dir = create_attempt_dir(root / "samples", state)
         bridge_state = AgentState(messages=list(state.messages))
         client = InspectACPClient()
         session_id = ""
         try:
-            async with sandbox_agent_bridge(
+            async with local_agent_bridge(
                 bridge_state,
-                sandbox="local",
                 port=allocate_bridge_port(),
             ) as bridge:
-                config = run_dir / "opencode.json"
-                _write_opencode_config(config, provider, bridge.port)
+                config = root / "opencode.json"
                 child_env = {
-                    **_opencode_environment(run_dir, config),
                     **sample.environment,
+                    **_opencode_environment(config, bridge.port),
                 }
                 session_id, responses = await run_acp_session(
                     client=client,
@@ -117,7 +103,7 @@ def opencode_bridge_agent(
         state.output = bridge_state.output
         state.metadata["opencode"] = {
             "session_id": session_id,
-            "state_dir": str(run_dir.relative_to(root)),
+            "state_dir": "runtime",
             "turns": [
                 {
                     "stop_reason": response.stop_reason,
@@ -138,7 +124,6 @@ def opencode_bridge_agent(
 def _write_opencode_config(
     path: Path,
     provider: dict[str, object],
-    port: int,
 ) -> None:
     model = str(provider["model"])
     input_modalities = list(provider.get("input_modalities") or ["text"])
@@ -151,7 +136,7 @@ def _write_opencode_config(
             "anthropic": {
                 "options": {
                     "apiKey": "inspect",
-                    "baseURL": f"http://127.0.0.1:{port}/v1",
+                    "baseURL": "{env:XBOT_EVAL_BRIDGE_URL}",
                     "timeout": False,
                 },
                 "models": {
@@ -187,23 +172,11 @@ def _write_opencode_config(
     )
 
 
-def _opencode_environment(run_dir: Path, config: Path) -> dict[str, str]:
-    roots = {
-        "HOME": run_dir / "home",
-        "XDG_CONFIG_HOME": run_dir / "config",
-        "XDG_DATA_HOME": run_dir / "data",
-        "XDG_CACHE_HOME": run_dir / "cache",
-        "XDG_STATE_HOME": run_dir / "state",
-        "TMPDIR": run_dir / "tmp",
-    }
-    for path in roots.values():
-        path.mkdir()
+def _opencode_environment(config: Path, port: int) -> dict[str, str]:
     return {
-        key: str(value)
-        for key, value in roots.items()
-    } | {
         "ANTHROPIC_API_KEY": "inspect",
         "OPENCODE_CONFIG": str(config),
+        "XBOT_EVAL_BRIDGE_URL": f"http://127.0.0.1:{port}/v1",
     }
 
 

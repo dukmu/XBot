@@ -122,15 +122,12 @@ class TestBubblewrapBuildArgs:
         assert "--unshare-net" in args
         assert "--share-net" not in args
 
-    def test_etc_dns_files_are_bound(self, temp_workspace):
+    def test_root_is_readonly_and_tmp_is_writable(self, temp_workspace):
         args = _build_args([], network=True, cwd=str(temp_workspace))
-        # resolv.conf and nsswitch.conf must be bind-mounted so
-        # DNS resolution works inside the sandbox.
-        assert "--ro-bind-try" in args
-        assert "/etc/resolv.conf" in args
-        assert "/etc/nsswitch.conf" in args
-        # TLS roots too — curl on HTTPS endpoints.
-        assert "/etc/ssl/certs" in args
+        root_bind = args.index("--ro-bind")
+        assert args[root_bind : root_bind + 3] == ["--ro-bind", "/", "/"]
+        tmp_bind = args.index("--bind")
+        assert args[tmp_bind : tmp_bind + 3] == ["--bind", "/tmp", "/tmp"]
 
 
 class TestBubblewrapCapabilities:

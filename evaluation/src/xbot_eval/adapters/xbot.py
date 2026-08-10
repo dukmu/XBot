@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from inspect_ai.agent import AgentState, sandbox_agent_bridge
+from inspect_ai.agent import AgentState
 from inspect_ai.model import ModelOutput, ModelUsage
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 
@@ -16,7 +16,7 @@ from .base import AdapterContext, AdapterSetup
 from .common import (
     PreparedSample,
     allocate_bridge_port,
-    create_attempt_dir,
+    local_agent_bridge,
     resolve_command,
 )
 
@@ -36,10 +36,11 @@ class XBotAdapter:
                 source = context.source_data / name
                 if source.exists():
                     shutil.copytree(source, data_dir / name)
-            _enable_local_browser_access(data_dir)
+        _configure_bridge_provider(data_dir, context.provider_name)
+        _configure_evaluation_sandbox(data_dir)
         executable = resolve_command(
             command or os.environ.get("XBOT_EVAL_COMMAND"),
-            context.repo_root / ".venv" / "bin" / "xbot",
+            "xbot",
         )
         return AdapterSetup(
             command=executable,
@@ -47,7 +48,6 @@ class XBotAdapter:
             environment={
                 "XBOT_EVAL_AGENT_COMMAND": executable,
                 "XBOT_EVAL_ADAPTER_DATA": str(data_dir),
-                "XBOT_EVAL_PROVIDER": context.provider_name,
             },
         )
 
@@ -56,7 +56,6 @@ class XBotAdapter:
             command=os.environ["XBOT_EVAL_AGENT_COMMAND"],
             data_dir=os.environ["XBOT_EVAL_ADAPTER_DATA"],
             agent=os.environ.get("XBOT_EVAL_AGENT"),
-            provider_name=os.environ.get("XBOT_EVAL_PROVIDER"),
         )
 
 
@@ -136,7 +135,6 @@ def xbot_bridge_agent(
     command: str,
     data_dir: str,
     agent: str | None = None,
-    provider_name: str | None = None,
 ) -> Solver:
     """Run XBot ACP through Inspect's external-Agent model bridge."""
 
@@ -144,25 +142,18 @@ def xbot_bridge_agent(
         sample = await PreparedSample.create(state)
         bridge_state = AgentState(messages=list(state.messages))
         root = Path(data_dir).resolve()
-        bridge_data = create_attempt_dir(root / "samples", state)
         client = InspectACPClient()
         session_id = ""
         try:
-            async with sandbox_agent_bridge(
+            port = allocate_bridge_port()
+            async with local_agent_bridge(
                 bridge_state,
-                sandbox="local",
-                port=allocate_bridge_port(),
+                port=port,
             ) as bridge:
-                _prepare_bridge_data(
-                    root,
-                    bridge_data,
-                    bridge.port,
-                    provider_name,
-                )
                 args = [
                     "acp",
                     "--data-dir",
-                    str(bridge_data),
+                    str(root),
                     "--provider",
                     "inspect",
                 ]
@@ -173,7 +164,11 @@ def xbot_bridge_agent(
                     command=command,
                     args=args,
                     workspace=sample.workspace,
-                    env={"PYTHONUTF8": "1", **sample.environment},
+                    env={
+                        **sample.environment,
+                        "PYTHONUTF8": "1",
+                        "XBOT_EVAL_BRIDGE_URL": f"http://127.0.0.1:{bridge.port}",
+                    },
                     prompts=sample.prompts,
                     runtime=sample.runtime,
                     label="XBot",
@@ -190,53 +185,36 @@ def xbot_bridge_agent(
             client.events,
             event_key="acp_events",
         )
-        metadata["state_dir"] = str(bridge_data.relative_to(root))
+        metadata["state_dir"] = f"sessions/{session_id}"
         state.metadata["xbot"] = metadata
         return state
 
     return solve
 
 
-def _prepare_bridge_data(
-    source: Path,
-    target: Path,
-    port: int,
+def _configure_bridge_provider(
+    data_dir: Path,
     provider_name: str | None = None,
 ) -> None:
-    target.mkdir(parents=True, exist_ok=True)
-    for name in ("config", ".agents", "memory"):
-        path = source / name
-        if path.exists():
-            shutil.copytree(path, target / name)
-    provider = _load_provider(source, provider_name)
+    provider = _load_provider(data_dir, provider_name)
     provider_type = str(provider.get("provider", "anthropic"))
     max_output_tokens = provider.get("max_output_tokens")
     if max_output_tokens is None and provider_type == "anthropic":
         max_output_tokens = 32_768
-    providers = {
-        "default": "inspect",
-        "providers": {
-            "inspect": {
-                "provider": provider_type,
-                "model": "inspect",
-                "base_url": f"http://127.0.0.1:{port}",
-                "api_key": "inspect",
-                "max_context_tokens": provider.get(
-                    "max_context_tokens",
-                    200_000,
-                ),
-                "max_output_tokens": max_output_tokens,
-                "input_modalities": provider.get(
-                    "input_modalities",
-                    ["text"],
-                ),
-            }
-        },
+    path = data_dir / "config" / "providers.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    providers = document.setdefault("providers", {})
+    providers["inspect"] = {
+        "provider": provider_type,
+        "model": "inspect",
+        "base_url": "${XBOT_EVAL_BRIDGE_URL}",
+        "api_key": "inspect",
+        "max_context_tokens": provider.get("max_context_tokens", 200_000),
+        "max_output_tokens": max_output_tokens,
+        "input_modalities": provider.get("input_modalities", ["text"]),
     }
-    config_dir = target / "config"
-    config_dir.mkdir(exist_ok=True)
-    (config_dir / "providers.yaml").write_text(
-        yaml.safe_dump(providers, sort_keys=False),
+    path.write_text(
+        yaml.safe_dump(document, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -276,7 +254,7 @@ def _metadata(
     }
 
 
-def _enable_local_browser_access(data_dir: Path) -> None:
+def _configure_evaluation_sandbox(data_dir: Path) -> None:
     path = data_dir / "config" / "config.yaml"
     if not path.is_file():
         return
@@ -288,6 +266,12 @@ def _enable_local_browser_access(data_dir: Path) -> None:
         .setdefault("network", {})
     )
     network["allow_private"] = True
+    configured_cache = os.environ.get("XDG_CACHE_HOME")
+    cache_dir = Path(configured_cache) if configured_cache else Path.home() / ".cache"
+    resources = config.setdefault("sandbox", {}).setdefault("resources", [])
+    cache_resource = {"path": str(cache_dir), "access": "readwrite"}
+    if cache_dir.is_dir() and cache_resource not in resources:
+        resources.append(cache_resource)
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 

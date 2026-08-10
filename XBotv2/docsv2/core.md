@@ -84,8 +84,9 @@ example `shell`); non-core examples include `plugin:skills:skill`,
 `BubblewrapBackend` provides process isolation via `bwrap`.
 `SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
 `write_file`, `list_dir`. Tools call these directly via `sandbox` kwarg
-injection. Bwrap mounts enforce access control at OS level — no Python
-path extraction/checking.
+injection. Bwrap exposes the complete filesystem read-only, then overlays the
+workspace, `/tmp`, and configured writable resources. Filesystem Tools apply
+the separate path permission policy before entering that sandbox.
 
 ### Permissions (`tools/permissions.py`)
 

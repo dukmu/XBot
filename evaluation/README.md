@@ -5,17 +5,51 @@ their public ACP commands and does not import XBot runtime internals.
 
 ## Setup
 
-From the repository root:
+Install Docker and make sure the current user can run it. Install the small
+host-side runner environment from the repository root:
 
 ```bash
 uv sync --project evaluation
 ```
 
+Build the evaluation image before running the runner:
+
+```bash
+docker build \
+  -f evaluation/docker/Dockerfile -t xbot-evaluation:local \
+  --build-arg USER_ID="$(id -u)" \
+  --build-arg GROUP_ID="$(id -g)" .
+```
+
+`APT_MIRROR` overrides the Ubuntu package mirror. `PIP_MIRROR` configures
+both pip and uv for package installation inside the evaluation container.
+The runner never builds or pulls an image implicitly.
+
+On Linux, a proxy reachable through the default Docker bridge can be enabled
+for the image build with Docker's predefined proxy arguments:
+
+```bash
+docker build \
+    -f evaluation/docker/Dockerfile \
+    -t xbot-evaluation:local \
+    --build-arg USER_ID="$(id -u)" \
+    --build-arg GROUP_ID="$(id -g)" \
+    --build-arg HTTP_PROXY="http://172.17.0.1:10808" \
+    --build-arg HTTPS_PROXY="http://172.17.0.1:10808" \
+    --build-arg http_proxy="http://172.17.0.1:10808" \
+    --build-arg https_proxy="http://172.17.0.1:10808" \
+    .
+```
+
+Omit the proxy arguments for a direct build. These predefined proxy arguments
+are not retained in the image or included in Docker cache keys.
+
 The runner reads the selected provider from `XBotv2/data/config/providers.yaml`.
 Provide the API key through the environment variable named by that provider.
 
-OpenCode comparisons require an `opencode` executable on `PATH`, or an explicit
-`--agent-command`. The adapter does not install or configure OpenCode globally.
+The image installs the XBot package through its Python package entry point and
+installs the pinned OpenCode release. Host XBot and OpenCode installations are
+not used.
 
 ## Full HarnessBench
 
@@ -57,14 +91,19 @@ selected provider, retry settings, Agent command, data snapshot, Git commit,
 tracked-dirty state, and Inspect arguments, so the result directory can be
 inspected without reconstructing the original command.
 
-Each sample receives an isolated Inspect workspace and a fresh Agent ACP
-process. Inspect's Agent Bridge supplies the model endpoint, so model messages,
-tool calls, usage, events, tags, and scores are stored in standard Inspect
-fields. Multi-round tasks retain one ACP session within the sample. XBot writes
-its runtime state directly into:
+One Docker container owns the entire evaluation run. Inspect uses its `local`
+sandbox inside that container because Inspect's Docker sandbox creates one
+container per sample. Each sample still receives an isolated workspace and a
+fresh Agent ACP process. Bridge startup is serialized because Inspect's local
+sandboxes share one sandbox-tools installation; sample execution remains
+parallel. Inspect's Agent Bridge supplies the model endpoint, so
+model messages, tool calls, usage, events, tags, and scores are stored in
+standard Inspect fields. Multi-round tasks retain one ACP session within the
+sample. All XBot processes share one runtime data root, while XBot keeps each
+case's mutable state in its own session:
 
 ```text
-evaluation/results/<name>/data/xbot/samples/<attempt>/sessions/<session-id>/
+evaluation/results/<name>/data/xbot/sessions/<session-id>/
 ```
 
 Before execution, the runner snapshots the selected XBot `config/`, `.agents/`,
@@ -74,11 +113,15 @@ and `memory/` inputs into:
 evaluation/results/<name>/data/xbot/
 ```
 
-The evaluation runs from that snapshot. Because HarnessBench mock services are
-trusted loopback endpoints, the runner explicitly enables the Browser plugin's
-existing `network.allow_private` option in the snapshot. The product default
-remains disabled. Inspect `.eval` files and input snapshots are local evidence
-and are ignored by Git.
+Only `evaluation/results/<name>/` is mounted writable from the host. Source is
+copied into the image, and the manifest records the Git revision and image ID.
+The shared provider configuration resolves each process's Agent Bridge URL from
+`XBOT_EVAL_BRIDGE_URL`, so concurrent cases do not rewrite configuration. The
+evaluation runs from the XBot data snapshot. Because HarnessBench mock services
+are trusted loopback endpoints, the runner explicitly enables the Browser
+plugin's existing `network.allow_private` option in the snapshot. The product
+default remains disabled. Inspect `.eval` files and input snapshots are local
+evidence and are ignored by Git.
 
 The evaluation depends on the official HarnessBench package, pinned from
 `Qihoo360/harness-bench` at commit `1025086a446653702b80cfb48babbeec35db6b2c`.
@@ -116,21 +159,29 @@ registry; it contains no framework-specific branches.
 Each adapter owns its executable discovery, data directory, generated
 configuration, subprocess environment, ACP launch, and Inspect bridge solver:
 
-- `adapters/xbot.py` snapshots XBot inputs under `data/xbot/`, creates the
-  per-sample bridge provider, and writes XBot sessions there;
-- `adapters/opencode.py` stores its adapter configuration and isolated
-  per-sample OpenCode homes under `data/opencode/`.
+- `adapters/xbot.py` snapshots XBot inputs under `data/xbot/` once and writes
+  each case as an independent XBot session there;
+- `adapters/opencode.py` stores one shared configuration and OpenCode runtime
+  for the full evaluation;
 
 `adapters/acp.py` and `adapters/common.py` contain only the ACP session and
 HarnessBench sample lifecycle shared by both implementations. Inspect owns the
-model endpoint and generation settings for both adapters. XBot writes each
-attempt directly below `data/xbot/samples/`; an interrupted run therefore keeps
-the configuration, conversation, Tool results, and other session artifacts
-already produced instead of depending on an end-of-run copy.
+model endpoint and generation settings for both adapters. An interrupted XBot
+run keeps every completed or partial session directly below `data/xbot/`
+instead of depending on an end-of-run copy.
 
 The ACP adapter selects the standard `allow_once` option offered by the Agent.
 For XBot, workspace scope is enforced by XBot's own bwrap sandbox and permission
-policy rather than by heuristics inside the Inspect adapter.
+policy rather than by heuristics inside the Inspect adapter. The outer Docker
+container drops all capabilities and keeps `no-new-privileges`; its seccomp
+filter is disabled so the unprivileged inner bwrap process can create its own
+user and mount namespaces.
+
+XBot mounts the container filesystem read-only and overlays each sample
+workspace and `/tmp` as writable. The evaluation adapter additionally opens the
+current user's existing `~/.cache` directory for package-manager caches; it
+derives that path from the container runtime instead of assuming a username or
+home location.
 
 HarnessBench fixtures, lifecycle hooks, local mock services, and deterministic
 oracles remain owned by the task layer. Public mock URLs default to their local
@@ -166,24 +217,25 @@ uv run --project evaluation python evaluation/compare_harnessbench.py \
   --output evaluation/results/m3-comparison
 ```
 
-OpenCode runs as an ACP subprocess with `--pure`. Every sample receives isolated
-`HOME` and XDG directories under its result snapshot:
+OpenCode runs as an ACP subprocess with `--pure`. Its standard data directory is
+mounted directly into the current result at:
 
 ```text
-evaluation/results/<name>/data/opencode/samples/<sample-and-attempt>/
+evaluation/results/<name>/data/opencode/runtime/
 ```
 
-Inspect's own XDG directories are likewise rooted at
-`evaluation/results/<name>/data/inspect/`. Short-lived socket files use the
-ignored `evaluation/results/.tmp/` directory to stay within the Unix socket
-path limit.
+All cases share `data/opencode/opencode.json`. Its bridge endpoint uses
+`{env:XBOT_EVAL_BRIDGE_URL}`, which each ACP process resolves to its own local
+Agent Bridge port without rewriting the shared configuration.
+
+Inspect's own transient configuration and cache use the container filesystem.
 
 The generated configuration disables automatic updates and sharing, denies
 paths outside the sample workspace, and points OpenCode at the same local
 Inspect Agent Bridge used by XBot. The real provider credential stays in the
 Inspect process; OpenCode receives only the local bridge address and the dummy
-key `inspect`. Existing files under the user's home directory are not used as
-OpenCode configuration or modified.
+key `inspect`. The host user's OpenCode configuration and data are neither
+mounted nor modified.
 
 The deterministic workspace oracle is the primary quality measure. The report
 also includes paired deltas, retries, time, provider usage, and standard ACP Tool
