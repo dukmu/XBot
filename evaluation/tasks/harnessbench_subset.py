@@ -40,5 +40,4 @@ def xbot_harnessbench_subset() -> Task:
         ),
         scorer=workspace_oracle(),
         sandbox="local",
-        time_limit=900,
     )

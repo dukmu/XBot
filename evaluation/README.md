@@ -65,6 +65,8 @@ The runner uses Inspect's `eval-set` workflow. Provider requests are retried up
 to eight times, sample errors twice, and failed task attempts up to ten times
 with exponential waiting. Re-run the same command with the same `--name` to
 resume the eval set in place; Inspect reuses completed samples.
+Each Agent round uses the `timeout_sec` declared by its HarnessBench manifest,
+matching the official HarnessBench runner.
 
 Use `--limit` for a bounded validation:
 
@@ -125,6 +127,8 @@ evidence and are ignored by Git.
 
 The evaluation depends on the official HarnessBench package, pinned from
 `Qihoo360/harness-bench` at commit `1025086a446653702b80cfb48babbeec35db6b2c`.
+Task manifests and lifecycle hooks are loaded through the package's public
+`load_tasks()` and `load_hooks()` functions.
 The task oracles import `harnessbench.grading` directly; there is no XBot-side
 compatibility shim. The official package honors `RUBRIC_API_KEY`,
 `RUBRIC_BASE_URL`, and `RUBRIC_MODEL` for quality grading, and
@@ -177,11 +181,12 @@ container drops all capabilities and keeps `no-new-privileges`; its seccomp
 filter is disabled so the unprivileged inner bwrap process can create its own
 user and mount namespaces.
 
-XBot mounts the container filesystem read-only and overlays each sample
-workspace and `/tmp` as writable. The evaluation adapter additionally opens the
-current user's existing `~/.cache` directory for package-manager caches; it
-derives that path from the container runtime instead of assuming a username or
-home location.
+The container root filesystem is read-only. One anonymous volume backs the
+runtime user's complete home directory, so package caches and tool state never
+write through the container overlay. Each sample workspace and `/tmp` use
+tmpfs, while evaluation logs and Agent data remain bind-mounted under the
+selected `results/<name>/` directory. The anonymous home volume is shared by
+all samples in one evaluation and removed with the container.
 
 HarnessBench fixtures, lifecycle hooks, local mock services, and deterministic
 oracles remain owned by the task layer. Public mock URLs default to their local

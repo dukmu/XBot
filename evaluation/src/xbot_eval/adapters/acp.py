@@ -6,6 +6,9 @@ from typing import Any
 
 from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
 from acp.schema import AllowedOutcome, ClientCapabilities, RequestPermissionResponse
+from inspect_ai.util import time_limit
+
+from ..harnessbench import HarnessBenchRuntime
 
 
 class InspectACPClient:
@@ -61,7 +64,7 @@ async def run_acp_session(
     workspace: Path,
     env: Mapping[str, str],
     prompts: Sequence[str],
-    runtime: Any = None,
+    runtime: HarnessBenchRuntime | None = None,
     label: str,
 ) -> tuple[str, list[Any]]:
     """Run one ACP session while preserving its multi-round conversation."""
@@ -102,10 +105,13 @@ async def run_acp_session(
                 if runtime
                 else prompt.replace("$WORKSPACE", str(workspace))
             )
-            responses.append(await connection.prompt(
-                session_id=session.session_id,
-                prompt=[text_block(rendered)],
-            ))
+            timeout_sec = runtime.task.timeout_sec if runtime else None
+            with time_limit(timeout_sec):
+                response = await connection.prompt(
+                    session_id=session.session_id,
+                    prompt=[text_block(rendered)],
+                )
+            responses.append(response)
             if runtime:
                 runtime.after_round(
                     round_index,

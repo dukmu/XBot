@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+from functools import cache
 from pathlib import Path
-from types import SimpleNamespace
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
-import yaml
+from harnessbench.models import TaskSpec
+from harnessbench.tasks import load_hooks, load_tasks
 from inspect_ai.dataset import Sample
 from inspect_ai.event import SampleLimitEvent
 from inspect_ai.log import transcript
@@ -22,33 +23,39 @@ def load_cases(
 ) -> list[Sample]:
     """Load HarnessBench task assets into Inspect samples."""
     return [
-        load_case(path)
-        for path in sorted(root.iterdir())
-        if path.is_dir()
-        and (task_ids is None or path.name in task_ids)
+        _sample(task)
+        for task_id, task in _tasks(root.resolve()).items()
+        if task_ids is None or task_id in task_ids
     ]
 
 
-def load_case(path: Path) -> Sample:
-    manifest = yaml.safe_load((path / "task.yaml").read_text(encoding="utf-8"))
-    prompt_names = manifest.get("prompt_files")
-    if not prompt_names:
-        prompt_names = [manifest.get("prompt_file", "prompt.txt")]
+@cache
+def _tasks(root: Path) -> dict[str, TaskSpec]:
+    return load_tasks(root)
+
+
+def _sample(task: TaskSpec) -> Sample:
+    if task.task_dir is None:
+        raise ValueError(f"HarnessBench task has no directory: {task.task_id}")
+    prompt_names = task.prompt_files or [task.prompt_file]
     prompts = [
-        (path / name).read_text(encoding="utf-8")
+        (task.task_dir / name).read_text(encoding="utf-8")
         for name in prompt_names
     ]
-    fixtures = path / manifest.get("fixtures_dir", "fixtures")
+    fixtures = task.task_dir / task.fixtures_dir
     files = {"workspace": str(fixtures.resolve())} if fixtures.is_dir() else {}
     return Sample(
-        id=manifest["task_id"],
+        id=task.task_id,
         input=prompts[0],
         files=files,
         setup="mkdir -p workspace/in workspace/out workspace/out/tmp",
         metadata={
-            "case_dir": str(path.resolve()),
+            "case_dir": str(task.task_dir),
             "followups": prompts[1:],
             "prompt_names": prompt_names,
+            "task_tags": task.tags,
+            "task_title": task.title,
+            "timeout_sec": task.timeout_sec,
             "workspace_dir": "workspace",
         },
     )
@@ -111,29 +118,12 @@ class HarnessBenchRuntime:
         sandbox_root: Path,
         workspace: Path,
     ) -> None:
-        manifest = yaml.safe_load(
-            (case_dir / "task.yaml").read_text(encoding="utf-8")
-        )
         self.case_dir = case_dir
         self.sandbox_root = sandbox_root
         self.workspace = workspace
-        self.prompt_names = manifest.get("prompt_files") or [
-            manifest.get("prompt_file", "prompt.txt")
-        ]
-        task_data = dict(manifest)
-        task_data.update({
-            "task_dir": case_dir,
-            "prompt_file": manifest.get("prompt_file", "prompt.txt"),
-            "prompt_files": list(manifest.get("prompt_files") or []),
-            "fixtures_dir": manifest.get("fixtures_dir", "fixtures"),
-            "oracle_module": manifest.get("oracle_module", "oracle_grade.py"),
-            "hooks_module": manifest.get("hooks_module", "hooks.py"),
-        })
-        self.task = SimpleNamespace(**task_data)
-        self.hooks = _module(
-            case_dir / self.task.hooks_module,
-            f"xbot_eval_hooks_{case_dir.name.replace('-', '_')}",
-        )
+        self.task = _tasks(case_dir.parent.resolve())[case_dir.name]
+        self.prompt_names = self.task.prompt_files or [self.task.prompt_file]
+        self.hooks = load_hooks(self.task)
         self.state: dict[str, Any] = {}
 
     def prepare(self) -> dict[str, str]:

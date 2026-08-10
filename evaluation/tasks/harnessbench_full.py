@@ -28,7 +28,6 @@ def harnessbench_full() -> Task:
         solver=adapter.solver(),
         scorer=workspace_oracle(),
         sandbox="local",
-        time_limit=2400,
         continue_on_fail=True,
         tags=[adapter_name, "harnessbench", "full"],
         metadata={

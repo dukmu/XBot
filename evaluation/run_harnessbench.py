@@ -253,6 +253,8 @@ def _run_in_container(
         "--tmpfs",
         "/tmp:rw,exec,nosuid,nodev,size=4g",
         "--mount",
+        "type=volume,dst=/home/xbot",
+        "--mount",
         f"type=bind,src={run_root},dst={container_run_root}",
         "--env",
         f"{CONTAINER_MARKER}=1",

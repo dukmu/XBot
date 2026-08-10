@@ -42,28 +42,25 @@ RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/install-uv.sh \
 
 RUN groupadd --gid "${GROUP_ID}" xbot \
     && useradd --create-home --uid "${USER_ID}" --gid "${GROUP_ID}" xbot \
-    && install -d -o xbot -g xbot /opt/xbot
+    && install -d -o xbot -g xbot /opt/xbot /opt/uv-python /opt/venv
 
 USER xbot
 ENV HOME=/home/xbot \
+    PIP_INDEX_URL=${PIP_MIRROR} \
     PYTHONUTF8=1 \
-    UV_DEFAULT_INDEX=${PIP_MIRROR}
+    UV_DEFAULT_INDEX=${PIP_MIRROR} \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 RUN uv python install 3.12 \
-    && uv venv --python 3.12 --seed /home/xbot/.venv
-
-# pip mirror
-RUN /home/xbot/.venv/bin/pip config set global.index-url "${PIP_MIRROR}"
-
-RUN mkdir -p /home/xbot/.config/opencode
+    && uv venv --python 3.12 --seed /opt/venv
 
 WORKDIR /opt/xbot
 COPY --chown=xbot:xbot . .
 
 RUN --mount=type=cache,target=/home/xbot/.cache/pip,uid=${USER_ID},gid=${GROUP_ID} \
-    /home/xbot/.venv/bin/pip install \
-        --index-url "${PIP_MIRROR}" /opt/xbot /opt/xbot/evaluation
+    /opt/venv/bin/pip install \
+        --index-url "${PIP_MIRROR}" /opt/xbot /opt/xbot/evaluation numpy Pillow opencv-python-headless
 
-ENV PATH=/home/xbot/.venv/bin:$PATH
+ENV PATH=/opt/venv/bin:$PATH
 
 ENTRYPOINT ["python", "/opt/xbot/evaluation/run_harnessbench.py"]
