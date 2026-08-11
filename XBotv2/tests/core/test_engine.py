@@ -18,7 +18,14 @@ from xbotv2.llm.base import BaseProvider
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
+from xbotv2.api.tools import (
+    ArtifactRef,
+    ClientEvent,
+    Tool,
+    ToolCall,
+    ToolError,
+    ToolResult,
+)
 
 
 def tool_name(tool):
@@ -37,31 +44,29 @@ def shout(message: str) -> str:
 shout_tool = Tool.from_function(shout, name="shout")
 
 
-def send_notice(message: str) -> dict:
-    return {
-        "content": "notice sent",
-        "events": [{"type": "client_message", "data": {"message": message}}],
-    }
+def send_notice(message: str) -> ToolResult:
+    return ToolResult(
+        content="notice sent",
+        client_events=(ClientEvent("client_message", {"message": message}),),
+    )
 send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 
 
-def request_input(question: str) -> dict:
-    return {
-        "content": "waiting for user",
-        "wait_for_user": True,
-        "events": [
+def request_input(question: str) -> ToolResult:
+    return ToolResult(
+        content="waiting for user",
+        wait_for_user=True,
+        client_events=(ClientEvent(
+            "user_input_required",
             {
-                "type": "user_input_required",
-                "data": {
-                    "question": question,
-                    "options": [
-                        {"label": "continue", "description": "Continue the work."},
-                        {"label": "stop", "description": "Stop the work."},
-                    ],
-                },
-            }
-        ],
-    }
+                "question": question,
+                "options": [
+                    {"label": "continue", "description": "Continue the work."},
+                    {"label": "stop", "description": "Stop the work."},
+                ],
+            },
+        ),),
+    )
 
 
 def structured_failure() -> ToolResult:

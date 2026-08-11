@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -188,22 +189,16 @@ def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[st
 
 
 def _is_interaction_wait_result(result: Any) -> bool:
-    if isinstance(result, ToolResult):
-        return result.wait_for_user
-    return isinstance(result, dict) and bool(result.get("wait_for_user"))
+    return isinstance(result, ToolResult) and result.wait_for_user
 
 
 async def _tool_message_from_interaction_wait(
-    result: ToolResult | dict[str, Any],
+    result: ToolResult,
     tool_call_id: str,
     client_interaction_handler: Any,
     permission_interaction_handler: Any,
 ) -> Message:
-    raw_events = (
-        [event.to_dict() for event in result.client_events]
-        if isinstance(result, ToolResult)
-        else result.get("events", [])
-    )
+    raw_events = [event.to_dict() for event in result.client_events]
     events = [
         _normalize_client_event(event, tool_call_id)
         for event in raw_events
@@ -249,7 +244,6 @@ async def _tool_message_from_interaction_wait(
             status=status,
         )
     if client_interaction_handler is None:
-        request_id = str((event.get("data") or {}).get("request_id") or "")
         return Message(
             role="tool",
             content=(
@@ -258,21 +252,10 @@ async def _tool_message_from_interaction_wait(
             ),
             tool_call_id=tool_call_id,
             status="error",
-            additional_kwargs={
-                "xbotv2_events": events,
-                "xbotv2_user_input_result": {
-                    "request_id": request_id,
-                    "status": "cancelled",
-                    "reason": "live_user_input_unsupported",
-                },
-            },
+            client_events=events,
         )
 
-    timeout_seconds = (
-        result.timeout_seconds
-        if isinstance(result, ToolResult)
-        else result.get("timeout_seconds")
-    )
+    timeout_seconds = result.timeout_seconds
     response = await client_interaction_handler(
         event,
         timeout_seconds=timeout_seconds,
@@ -491,17 +474,13 @@ def _error_message(
     events: list[dict[str, Any]] | None = None,
     error: ToolError | None = None,
 ) -> Message:
-    additional_kwargs: dict[str, Any] = {}
-    if events:
-        additional_kwargs["xbotv2_events"] = events
-    if error is not None:
-        additional_kwargs["xbotv2_error"] = error.to_dict()
     return Message(
         role="tool",
         content=f"Error: {reason}",
         tool_call_id=call.id,
         status="error",
-        additional_kwargs=additional_kwargs,
+        client_events=events,
+        error=error.to_dict() if error is not None else None,
     )
 
 
@@ -743,67 +722,38 @@ async def _execute_one_tool(
 
 
 def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
-    if hasattr(value, "role") and value.role == "tool":
+    if isinstance(value, Message):
+        if value.role != "tool":
+            raise ValueError("A tool may return only a tool-role Message")
         return value
     if isinstance(value, ToolResult):
-        additional_kwargs: dict[str, Any] = {}
-        if value.client_events:
-            additional_kwargs["xbotv2_events"] = [
-                _normalize_client_event(
-                    event.to_dict(), tool_call_id
-                )
-                for event in value.client_events
-            ]
-        if value.data is not None:
-            additional_kwargs["xbotv2_data"] = value.data
-        if value.error is not None:
-            additional_kwargs["xbotv2_error"] = value.error.to_dict()
         return Message(
             role="tool",
             content=value.content,
             tool_call_id=tool_call_id,
             status=value.status,
-            additional_kwargs=additional_kwargs,
             artifact=list(value.artifacts),
             images=list(value.images),
+            data=value.data,
+            error=value.error.to_dict() if value.error is not None else None,
+            client_events=[
+                _normalize_client_event(event.to_dict(), tool_call_id)
+                for event in value.client_events
+            ],
+            turn_complete=value.turn_complete,
         )
-    if isinstance(value, dict):
-        additional_kwargs: dict[str, Any] = {}
-        if "events" in value:
-            additional_kwargs["xbotv2_events"] = [
-                _normalize_client_event(event, tool_call_id)
-                for event in value["events"]
-            ]
-        if value.get("turn_complete") is not None:
-            additional_kwargs["xbotv2_turn_complete"] = bool(value["turn_complete"])
-        if "data" in value:
-            additional_kwargs["xbotv2_data"] = value["data"]
-        if value.get("error") is not None:
-            error = value["error"]
-            if hasattr(error, "to_dict"):
-                error = error.to_dict()
-            elif isinstance(error, dict):
-                error = dict(error)
-            else:
-                error = {
-                    "code": "tool_error",
-                    "message": str(error),
-                    "retryable": False,
-                    "details": {},
-                }
-            additional_kwargs["xbotv2_error"] = error
-        artifacts = value.get("artifacts", value.get("artifact"))
-        if artifacts is not None and not isinstance(artifacts, (list, tuple)):
-            artifacts = [artifacts]
-        return Message(
-            role="tool",
-            content=str(value.get("content", "")),
-            tool_call_id=str(value.get("tool_call_id", tool_call_id)),
-            status=value.get("status", "success"),
-            additional_kwargs=additional_kwargs,
-            artifact=list(artifacts or []),
-        )
-    return Message(role="tool", content=str(value), tool_call_id=tool_call_id, status="success")
+    if value is None:
+        content = ""
+    elif isinstance(value, str):
+        content = value
+    else:
+        content = json.dumps(value, ensure_ascii=False, default=str)
+    return Message(
+        role="tool",
+        content=content,
+        tool_call_id=tool_call_id,
+        status="success",
+    )
 
 
 async def _invoke_tool(

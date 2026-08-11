@@ -139,11 +139,10 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
         ),
         "status": message.status or "success",
     }
-    metadata = message.additional_kwargs
-    if "xbotv2_data" in metadata:
-        data["data"] = metadata["xbotv2_data"]
-    if "xbotv2_error" in metadata:
-        data["error"] = metadata["xbotv2_error"]
+    if message.data is not None:
+        data["data"] = message.data
+    if message.error is not None:
+        data["error"] = message.error
     if message.artifact:
         artifacts = (
             message.artifact
@@ -861,10 +860,7 @@ class Engine:
             tool_event_payloads,
             strict=True,
         ):
-            client_events = getattr(message, "additional_kwargs", {}).get(
-                "xbotv2_events",
-                [],
-            )
+            client_events = message.client_events
             for client_event in client_events:
                 event_ctx = self._make_hook_context(
                     HookStage.ON_CLIENT_EVENT,
@@ -893,12 +889,7 @@ class Engine:
                 short_circuit=False,
             )
 
-        if any(
-            getattr(message, "additional_kwargs", {}).get(
-                "xbotv2_turn_complete"
-            )
-            for message in tool_messages
-        ):
+        if any(message.turn_complete for message in tool_messages):
             yield self._tool_batch_result_event(
                 _ToolBatchResult(stop_loop=True, turn_complete=True)
             )

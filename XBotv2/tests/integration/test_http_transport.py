@@ -814,10 +814,8 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         content="cached result",
         tool_call_id="call-1",
         status="error",
-        additional_kwargs={
-            "xbotv2_data": {"cache": "tool-results/call-1.txt"},
-            "xbotv2_error": {"code": "failed", "message": "bad input"},
-        },
+        data={"cache": "tool-results/call-1.txt"},
+        error={"code": "failed", "message": "bad input"},
         artifact=[
             {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
         ],

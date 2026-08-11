@@ -99,30 +99,28 @@ class TestMessageSerialization:
         assert restored.content == "output"
         assert restored.tool_call_id == "call_1"
 
-    def test_tool_message_metadata_roundtrip_filters_internal_kwargs(self):
+    def test_tool_message_metadata_roundtrip(self):
         msg = Message(
             role="tool",
             content="output",
             tool_call_id="call_1",
             name="filesystem_read",
-            additional_kwargs={
-                "visible": "kept",
-                "xbotv2_data": {"count": 1},
-                "xbotv2_error": {"code": "failed"},
-                "xbotv2_events": [{"type": "client_message", "data": {}}],
-                "xbotv2_turn_complete": True,
-            },
+            additional_kwargs={"visible": "kept"},
             response_metadata={"duration_ms": 5},
+            data={"count": 1},
+            error={"code": "failed"},
+            client_events=[{"type": "client_message", "data": {}}],
+            turn_complete=True,
         )
         d = message_to_dict(msg)
         restored = dict_to_message(d)
         assert restored.role == "tool"
         assert restored.name == "filesystem_read"
-        assert restored.additional_kwargs == {
-            "visible": "kept",
-            "xbotv2_data": {"count": 1},
-            "xbotv2_error": {"code": "failed"},
-        }
+        assert restored.additional_kwargs == {"visible": "kept"}
+        assert restored.data == {"count": 1}
+        assert restored.error == {"code": "failed"}
+        assert restored.client_events == []
+        assert restored.turn_complete is False
         assert restored.response_metadata == {"duration_ms": 5}
 
     def test_system_message_roundtrip(self):

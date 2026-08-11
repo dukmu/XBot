@@ -26,11 +26,7 @@ from xbotv2.api.messages import (
     part_from_dict,
 )
 from xbotv2.api.paths import SessionPaths, ThreadPaths
-_PERSISTED_XBOT_KWARGS = {
-    "xbotv2_data",
-    "xbotv2_error",
-    "xbotv2_message_format",
-}
+_PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
 
 
 def now_iso() -> str:
@@ -60,6 +56,10 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
         d["usage_metadata"] = _json_safe(msg.usage_metadata)
     if msg.artifact is not None:
         d["artifact"] = _json_safe(msg.artifact)
+    if msg.data is not None:
+        d["data"] = _json_safe(msg.data)
+    if msg.error is not None:
+        d["error"] = _json_safe(msg.error)
     return d
 
 
@@ -77,6 +77,8 @@ def dict_to_message(d: dict[str, Any]) -> Message:
         response_metadata=dict(d.get("response_metadata") or {}),
         usage_metadata=dict(d.get("usage_metadata") or {}),
         artifact=d.get("artifact"),
+        data=d.get("data"),
+        error=d.get("error"),
     )
 
 

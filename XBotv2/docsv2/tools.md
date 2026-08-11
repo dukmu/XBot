@@ -72,9 +72,16 @@ and only before any content or Tool-call delta was emitted. The client receives
 a warning through the existing `client_message` event. Schema/history 400s and
 requests that already produced output are not retried.
 
-`ToolResult.content` enters model history. `data`, `error`, and `artifacts` are
-preserved on the runtime tool message and emitted as optional fields on the
-client-visible `tool_result` event. Client events are emitted separately in
+`ToolResult.content` is the complete model-visible business result and may be
+empty when a successful operation has no output. The common message formatter
+represents that outcome as a minimal structured Tool result; individual tools
+must not invent explanatory text. `data` is a runtime, persistence, and client
+sidecar and is never copied into model content. A tool that needs the model to
+consume structured output must render that information in `content` explicitly.
+`data`, `error`, and `artifacts` remain on the runtime tool message and are
+emitted as optional fields on the client-visible `tool_result` event. Errors
+and artifact references are also included in the model-visible result because
+they affect the Agent's next action. Client events are emitted separately in
 their original order. `ToolError`, `ArtifactRef`, and `ClientEvent` expose
 `to_dict()` for this boundary conversion.
 

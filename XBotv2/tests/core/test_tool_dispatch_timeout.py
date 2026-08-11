@@ -54,7 +54,7 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
     assert time.monotonic() - started < 0.2
     assert results[0].status == "error"
     assert "Tool slow timed out after 0.05s" in results[0].content
-    error = results[0].additional_kwargs["xbotv2_error"]
+    error = results[0].error
     assert error["code"] == "tool_timeout"
     assert error["message"] == "Tool slow timed out after 0.05s"
     assert error["details"] == {"timeout_seconds": 0.05}

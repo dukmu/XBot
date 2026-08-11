@@ -36,8 +36,8 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
         }
         if message.role == "tool":
             item.update({
-                "data": additional.get("xbotv2_data"),
-                "error": additional.get("xbotv2_error"),
+                "data": message.data,
+                "error": message.error,
             })
         history.append(item)
     return history

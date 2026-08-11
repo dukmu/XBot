@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +39,7 @@ def make_tool_result_cache_hook(
             candidate = _cache_candidate(message, max_inline_chars)
             if candidate is None:
                 continue
-            content, suffix, replaces_data = candidate
+            content, suffix = candidate
 
             cache_dir.mkdir(parents=True, exist_ok=True)
             tool_call_id = getattr(message, "tool_call_id", "tool")
@@ -67,8 +66,6 @@ def make_tool_result_cache_hook(
             message.additional_kwargs[DISPLAY_CONTENT_KEY] = (
                 f"Tool result cached at {cache_path} ({len(content)} characters)."
             )
-            if replaces_data:
-                message.additional_kwargs["xbotv2_data"] = reference
             artifact = {
                 "kind": "cached_tool_result",
                 "tool_call_id": tool_call_id,
@@ -113,24 +110,11 @@ def _format_cached_result(
     )
 
 
-def _cache_candidate(message: Any, limit: int) -> tuple[str, str, bool] | None:
+def _cache_candidate(message: Any, limit: int) -> tuple[str, str] | None:
     content = getattr(message, "content", "")
     if not isinstance(content, str):
         content = str(content)
-    metadata = getattr(message, "additional_kwargs", None)
-    value = metadata.get("xbotv2_data") if isinstance(metadata, dict) else None
-    if isinstance(value, str):
-        if len(value) > limit:
-            return value, "txt", True
-    if isinstance(value, dict):
-        original_text = value.get("content")
-        if isinstance(original_text, str) and len(original_text) > limit:
-            return original_text, "txt", True
-    if isinstance(value, (dict, list)):
-        serialized = json.dumps(value, ensure_ascii=False)
-        if len(serialized) > limit:
-            return serialized, "json", True
-    return (content, "txt", False) if len(content) > limit else None
+    return (content, "txt") if len(content) > limit else None
 
 
 def _safe_name(value: str) -> str:
