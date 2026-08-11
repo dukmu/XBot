@@ -20,6 +20,7 @@ from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
+from xbotv2.api.jobs import JobRegistry
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.api.plugins import (
     PluginBase,
@@ -100,6 +101,7 @@ class _PluginSetupContext:
     data_root: Path = field(default_factory=Path.cwd)
     variables: RuntimeVariables = field(default_factory=RuntimeVariables)
     agent_runtime: AgentRuntime | None = None
+    job_registry: JobRegistry | None = None
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
@@ -196,6 +198,7 @@ class PluginLoader:
         runtime_variables: RuntimeVariables | None = None,
         disabled_plugins: set[str] | None = None,
         agent_runtime: AgentRuntime | None = None,
+        job_registry: JobRegistry | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs
@@ -212,6 +215,7 @@ class PluginLoader:
         )
         self.disabled_plugins = disabled_plugins or set()
         self.agent_runtime = agent_runtime
+        self.job_registry = job_registry
         self.plugin_configs = plugin_configs or {}
         self._records: dict[str, LoadedPluginRecord] = {}
         self._commands: dict[str, Command] = {}
@@ -401,6 +405,7 @@ class PluginLoader:
             data_root=self.state_store.paths.runtime.data_dir,
             variables=self.runtime_variables,
             agent_runtime=self.agent_runtime,
+            job_registry=self.job_registry,
             commands=self._commands,
         )
         try:

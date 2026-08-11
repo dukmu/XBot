@@ -85,6 +85,21 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
   `write_file`, `list_dir`.
 - **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
 
+### Job System (`xbotv2/api/jobs/`)
+
+Background shells and subagents share one unified job lifecycle. `JobRegistry`
+owns IDs, status transitions, waiting, cancellation, output storage, and
+cleanup for every kind; it is the only runtime entity for this subsystem.
+Kind-specific adapters implement a `JobRunner` and the typed, model-facing
+tools: the shell tools (`start_shell`, `list_shells`, `wait_shell`,
+`read_shell`, `cancel_shell`) live in `core/builtin_tools/shell.py`, and the
+subagent tools (`spawn_subagent`, `list_subagents`, `wait_subagent`,
+`read_subagent`, `cancel_subagent`) live in the `agents` plugin. The model never
+sees a generic `task`/`job` tool. List and wait responses carry only lightweight
+metadata; bulk output is read through the explicit `read_*` tools, each bounded
+by character limits. Child Engine sessions are spawned through the api
+`AgentRuntime`/`AgentSession` protocols, implemented in `core/agents.py`.
+
 ### Hooks (`xbotv2/hooks/`)
 
 43 `HookStage` values cover session, turn, mailbox, tool, context, and compaction

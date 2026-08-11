@@ -626,8 +626,8 @@ async def _run_once(args):
         engine=engine,
         interactive=False,
     )
-    if engine.subagents is not None:
-        engine.subagents.on_complete = None
+    if engine.job_registry is not None:
+        engine.job_registry.on_complete = None
 
     try:
         async for event in runtime.stream_message(args.prompt, "once"):

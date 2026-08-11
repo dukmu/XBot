@@ -13,7 +13,7 @@ tools:
 permission:
   filesystem_write: deny
   shell: deny
-  task: deny
+  "*subagent*": deny
 ---
 Explore the workspace, trace behavior, and report evidence with file references.
 Do not modify files or start other agents.

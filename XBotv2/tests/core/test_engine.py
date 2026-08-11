@@ -7,7 +7,7 @@ import pytest
 
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
-from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
+from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.builtin_tools.interaction import request_permission
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
@@ -285,13 +285,7 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
-        shell = next(
-            tool
-            for tool in BackgroundTaskManager(
-                workspace_root=str(temp_workspace)
-            ).tools
-            if tool.name == "shell"
-        )
+        shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
         registry.register(shell, sandbox_mode="host")
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
@@ -2039,8 +2033,7 @@ class TestEngineState:
         hook_manager.register(HookStage.ON_SESSION_START, record_call)
         hook_manager.register(HookStage.ON_SESSION_CLOSE, record_call)
         plugin_loader = AsyncMock()
-        background_tasks = AsyncMock()
-        subagents = AsyncMock()
+        job_registry = AsyncMock()
 
         engine = Engine(
             llm=llm,
@@ -2052,8 +2045,7 @@ class TestEngineState:
             permission_system=PermissionSystem(default_decision="allow"),
             config=RuntimeConfig(),
             plugin_loader=plugin_loader,
-            background_tasks=background_tasks,
-            subagents=subagents,
+            job_registry=job_registry,
         )
         await engine.start_session()
         await engine.close_session()
@@ -2061,8 +2053,7 @@ class TestEngineState:
         assert "on_session_start" in calls
         assert "on_session_close" in calls
         plugin_loader.unload_all.assert_awaited_once()
-        background_tasks.close.assert_awaited_once()
-        subagents.close.assert_awaited_once()
+        job_registry.shutdown.assert_awaited_once()
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio

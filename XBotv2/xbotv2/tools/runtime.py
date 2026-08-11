@@ -40,6 +40,7 @@ async def execute_tools(
     client_interaction_handler: Any = None,
     permission_interaction_handler: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
+    job_registry: Any = None,
 ) -> list[Message]:
     """Execute tool calls through the guard pipeline.
 
@@ -89,6 +90,7 @@ async def execute_tools(
             hook_manager, hook_context_factory,
             client_interaction_handler, permission_interaction_handler,
             workspace_root,
+            job_registry,
             results, observed_tool_calls,
         )
 
@@ -344,7 +346,7 @@ async def _authorize_sandbox_tool(
 ) -> tuple[bool, list[dict[str, Any]], str, list[Any]]:
     # Escalation authorizes this ToolCall's execution mode; it is not a path rule.
     escalation = (
-        call.name == "shell"
+        call.name in {"shell", "start_shell"}
         and call.args.get("sandbox_permissions") == "require_escalated"
     )
     events: list[dict[str, Any]] = []
@@ -490,6 +492,7 @@ async def _execute_one_tool(
     hook_manager: Any, hook_context_factory: Any,
     client_interaction_handler: Any, permission_interaction_handler: Any,
     workspace_root: str | None,
+    job_registry: Any,
     results: list[Message], observed_tool_calls: list[ToolCall],
 ) -> None:
     tool_id = call.id
@@ -498,7 +501,7 @@ async def _execute_one_tool(
 
     tool = entry.tool
     args = dict(call.args)
-    if tool_name == "shell" and workspace_root:
+    if tool_name in {"shell", "start_shell"} and workspace_root:
         args.setdefault("cwd", workspace_root)
 
     before_result = await _run_tool_hook(
@@ -524,11 +527,11 @@ async def _execute_one_tool(
                 return
             tool = entry.tool
             args = dict(call.args)
-            if tool_name == "shell" and workspace_root:
+            if tool_name in {"shell", "start_shell"} and workspace_root:
                 args.setdefault("cwd", workspace_root)
         if "args" in before_result:
             args = dict(before_result["args"])
-            if tool_name == "shell" and workspace_root:
+            if tool_name in {"shell", "start_shell"} and workspace_root:
                 args.setdefault("cwd", workspace_root)
         if "tool_result" in before_result:
             message = _coerce_tool_message(before_result["tool_result"], tool_id)
@@ -645,6 +648,7 @@ async def _execute_one_tool(
             args,
             sandbox=sandbox_policy if use_sandbox_policy else None,
             timeout_seconds=entry.timeout_seconds,
+            job_registry=job_registry,
         )
 
         if _is_interaction_wait_result(result):
@@ -762,10 +766,16 @@ async def _invoke_tool(
     *,
     sandbox: Any = None,
     timeout_seconds: float | None = None,
+    job_registry: Any = None,
 ) -> Any:
     """Invoke any registered tool without blocking the event loop."""
+    injected: dict[str, Any] = {}
+    if sandbox is not None:
+        injected["sandbox"] = sandbox
+    if job_registry is not None:
+        injected["job_registry"] = job_registry
     if hasattr(tool, "ainvoke"):
-        call = tool.ainvoke(args, **({"sandbox": sandbox} if sandbox else {}))
+        call = tool.ainvoke(args, **injected)
     elif hasattr(tool, "invoke"):
         call = asyncio.to_thread(tool.invoke, args)
     elif callable(tool):

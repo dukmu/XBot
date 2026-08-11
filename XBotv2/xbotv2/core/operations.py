@@ -189,41 +189,28 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
 
 
 def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
-    background = ctx.engine.background_tasks
-    subagents = ctx.engine.subagents
-    if background is not None:
-        tasks.extend(background.snapshots())
-    if subagents is not None:
-        tasks.extend(subagents.snapshots())
-    return tasks
+    registry = ctx.engine.job_registry
+    if registry is None:
+        return []
+    return [registry.snapshot(job) for job in registry.all()]
 
 
 async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
-    background = ctx.engine.background_tasks
-    subagents = ctx.engine.subagents
-    manager = subagents if task_id.startswith("agent-task-") else background
-    if manager is None:
+    registry = ctx.engine.job_registry
+    if registry is None:
         raise OperationError("task_not_found", f"Unknown task: {task_id}")
-    result = await manager.stop_task(task_id)
-    if result.status != "success":
-        code = (
-            result.error.code if result.error is not None else "task_stop_failed"
-        )
-        retryable = bool(result.error and result.error.retryable)
-        raise OperationError(code, str(result.content), retryable=retryable)
-    return dict(result.data) if isinstance(result.data, dict) else {}
+    job = registry.get_or_none(task_id)
+    if job is None:
+        raise OperationError("task_not_found", f"Unknown task: {task_id}")
+    await registry.cancel(task_id)
+    return registry.snapshot(job)
 
 
 async def stop_all_tasks(ctx: SessionRuntime) -> list[dict[str, Any]]:
-    stopped: list[dict[str, Any]] = []
-    background = ctx.engine.background_tasks
-    subagents = ctx.engine.subagents
-    if background is not None:
-        stopped.extend(await background.stop_all())
-    if subagents is not None:
-        stopped.extend(await subagents.stop_all())
-    return stopped
+    registry = ctx.engine.job_registry
+    if registry is None:
+        return []
+    return await registry.stop_all()
 
 
 async def update_session_policy(

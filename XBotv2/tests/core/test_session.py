@@ -10,9 +10,8 @@ from xbotv2.core.session import SessionRuntime
 
 
 class FakeEngine:
-    background_tasks = None
     plugin_loader = None
-    subagents = None
+    job_registry = None
 
     def __init__(self) -> None:
         self.enqueue_mailbox = None

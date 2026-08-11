@@ -319,12 +319,13 @@ class NormalClosePlugin(PluginBase):
         tool_names = set(engine.tool_registry.names())
         assert {
             "shell",
+            "start_shell",
             "filesystem_read",
             "content_read",
             "ask_user",
             "request_permission",
-            "list_tasks",
-            "wait_task",
+            "list_shells",
+            "wait_shell",
         } <= tool_names
         assert "ask" not in tool_names
 
@@ -349,9 +350,9 @@ class NormalClosePlugin(PluginBase):
         assert {
             "ask_user",
             "filesystem_mkdir",
-            "list_tasks",
+            "list_shells",
             "request_permission",
-            "wait_task",
+            "wait_shell",
         } <= set(engine.tool_registry.names())
         assert engine.config.tools is None
 

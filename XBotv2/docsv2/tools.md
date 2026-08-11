@@ -21,34 +21,40 @@ Core registers these tools without plugins:
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
 | `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
-| `list_tasks` | session runtime | List tasks or read one full result |
-| `wait_task` | session runtime | Wait for one background shell task and read its full result |
-| `stop_task` | session runtime | Stop one background task |
+| `start_shell` | session runtime | Start a background shell and return its job ID |
+| `list_shells` | session runtime | List background shells with lightweight metadata |
+| `wait_shell` | session runtime | Wait for background shells and return status/exit codes |
+| `read_shell` | session runtime | Read captured background shell output (bounded, cursor-based) |
+| `cancel_shell` | session runtime | Cancel one background shell job |
 
-The built-in Agents plugin adds `task`, `list_agent_tasks`, and
-`stop_agent_task`. Subagent tools use Core Agent execution and do not implement
-a separate model or Tool loop inside the plugin.
+The built-in Agents plugin adds `spawn_subagent`, `list_subagents`,
+`wait_subagent`, `read_subagent`, and `cancel_subagent`. Subagent and background
+shell jobs share one unified `JobRegistry` lifecycle; the generic `task`/`job`
+vocabulary is never exposed to the model.
 
-Background shell and subagent tasks are runtime-only and end with the live session. They emit
-bounded previews through `task_updated`; `list_tasks(task_id)` returns the
-captured output through the normal ToolResult cache boundary. Shell capture is
-complete; large foreground and background results are externalized by the
-common ToolResult cache instead of being irreversibly truncated. Task completion
-enters the runtime mailbox as a general message, so the Agent can react while
-the client is connected without polling. Starting a background task confirms
-only that it was accepted. The Agent uses `wait_task(task_id)` when subsequent
-work depends on completion, or reads `list_tasks(task_id)` after a completion
-notification. Cancelling `wait_task` does not stop the process; `stop_task`
-owns that operation.
+Background shell and subagent jobs are runtime-only and end with the live
+session. They emit bounded previews through `task_updated`. Output is stored in
+the job and is never included in list/wait responses; the Agent reads it through
+the explicit `read_shell`/`read_subagent` tools, which are the only tools that
+return bulk text and each bound the returned characters. A completed subagent
+or background shell enters the runtime mailbox as a general message, so the
+Agent can react while the client is connected without polling. Starting a job
+confirms only that it was accepted. The Agent uses `wait_shell(ids)` /
+`wait_subagent(ids)` when subsequent work depends on completion; cancelling a
+wait does not stop the job — `cancel_shell`/`cancel_subagent` own that
+operation.
 
 Foreground Shell execution has no default time limit. It waits for process
-completion and is terminated when the current turn is cancelled. Use background
-mode when other Agent work should continue before the command finishes, not as
-a workaround for a fixed foreground timeout.
+completion and is terminated when the current turn is cancelled. Use
+`start_shell` when other Agent work should continue before the command
+finishes, not as a workaround for a fixed foreground timeout.
 
-`shell(background=true)` uses the same canonical Tool name, command arguments,
-Hooks, and permission rules as foreground shell execution. Background mode is
-not a permission alias or a second execution path around `shell` policy.
+`start_shell` uses the same canonical command arguments, Hooks, and permission
+rules as foreground Shell execution. Background mode is not a permission alias
+or a second execution path around `shell` policy. An escalated background shell
+(`sandbox_permissions=require_escalated`) requests the same human approval as
+an escalated foreground command before it is started; a denied request creates
+no background job.
 
 `RuntimeConfig.tools` may narrow this registry after plugin initialization. The
 shipped configuration keeps both client-interaction tools visible so an agent
@@ -166,7 +172,7 @@ genuinely requires external writes must set
 `sandbox_permissions=require_escalated` with a justification. This checks the
 normal `external_write` allow, deny, or ask policy before starting the process.
 An approved command runs on the host, outside bwrap; this applies equally to
-foreground calls and `background=true`. A denied request creates no process.
+foreground calls and `start_shell`. A denied request creates no process.
 The default `use_default` mode always retains the configured sandbox.
 
 An allow-once decision applies only to that invocation. A session decision
@@ -174,8 +180,8 @@ updates the session's `external_write` overlay, so later explicit escalation
 requests follow that decision. The Agent must still
 set `sandbox_permissions=require_escalated`; ordinary shell calls remain
 sandboxed. Foreground commands run until completion or turn cancellation.
-Background commands return a task ID after authorization and remain manageable
-through `list_tasks`, `wait_task`, and `stop_task`.
+Background commands return a job ID after authorization and remain manageable
+through `list_shells`, `wait_shell`, `read_shell`, and `cancel_shell`.
 
 A session-scoped approval for a mutating filesystem tool records only its Tool
 name, source/destination paths, and destructive flags such as `recursive` or

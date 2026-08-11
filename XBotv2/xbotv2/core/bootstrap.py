@@ -32,18 +32,19 @@ from typing import Any
 from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
 from xbotv2.config.models import HookConfig, RuntimeConfig, WorkspaceToolConfig
 from xbotv2.api.agents import AgentDefinition
+from xbotv2.api.jobs import JobKind, JobRegistry
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.tools import Tool
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.agents import (
     AgentRegistry,
+    EngineAgentRuntime,
     apply_agent_definition,
     apply_agent_provider,
     apply_agent_tools,
 )
-from xbotv2.core.subagents import SubagentManager
-from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
+from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
@@ -61,6 +62,7 @@ from xbotv2.tools.sandbox import SandboxPolicy
 # ------------------------------------------------------------------
 
 from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
+from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.builtin_tools.content import content_read_tool
 from xbotv2.core.builtin_tools.interaction import (
     ask_user,
@@ -72,15 +74,21 @@ from xbotv2.tools.result_cache import make_tool_result_cache_hook
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 NON_INTERACTIVE_FORBIDDEN_TOOLS = frozenset({"ask_user", "request_permission"})
 SUBAGENT_FORBIDDEN_TOOLS = frozenset({
-    "task",
-    "list_agent_tasks",
-    "stop_agent_task",
+    "spawn_subagent",
+    "list_subagents",
+    "wait_subagent",
+    "read_subagent",
+    "cancel_subagent",
 })
 SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 
 # (tool, sandbox_mode)
 CORE_BASE_TOOLS = [
     *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
+    *(
+        (tool, "sandboxed" if tool.name in {"shell", "start_shell"} else "host")
+        for tool in SHELL_TOOLS
+    ),
     (content_read_tool, "sandboxed"),
     (send_message, "host"),
     (ask_user, "host"),
@@ -222,18 +230,11 @@ async def bootstrap(
     )
     if parent_permission_system is not None:
         permissions = PermissionIntersection(parent_permission_system, permissions)
-    background_tasks = BackgroundTaskManager(
-        workspace_root=str(workspace_root),
-        sandbox=sandbox,
+    job_registry = JobRegistry(
+        limits={
+            JobKind.SUBAGENT: agent_config.max_concurrent_subagents,
+        },
     )
-    for tool in background_tasks.tools:
-        if tool.name == "shell":
-            tool_registry.register(
-                tool,
-                sandbox_mode="sandboxed",
-            )
-        else:
-            tool_registry.register(tool, sandbox_mode="host")
 
     parent_engine: Engine | None = None
 
@@ -261,15 +262,14 @@ async def bootstrap(
             child.set_client_event_sink(parent_engine.client_event_sink)
         return child
 
-    subagents = (
+    agent_runtime = (
         None
         if is_subagent
-        else SubagentManager(
+        else EngineAgentRuntime(
             registry=agent_registry,
             session_paths=session_paths,
             parent_thread_id=thread_id,
             engine_factory=create_child_engine,
-            max_concurrency=agent_config.max_concurrent_subagents,
         )
     )
 
@@ -297,7 +297,8 @@ async def bootstrap(
                 workspace_root=workspace_root,
                 runtime_variables=runtime_variables,
                 disabled_plugins=disabled_plugins,
-                agent_runtime=subagents,
+                agent_runtime=agent_runtime,
+                job_registry=job_registry,
             )
             await plugin_loader.load()
 
@@ -415,8 +416,8 @@ async def bootstrap(
             workspace_root=str(workspace_root),
             config=agent_config,
             plugin_loader=plugin_loader,
-            background_tasks=background_tasks,
-            subagents=subagents,
+            job_registry=job_registry,
+            agent_runtime=agent_runtime,
             agent_registry=agent_registry,
             model=provider_config.model,
             model_mode=provider_config.model_mode,

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
-
-from xbotv2.api.tools import ToolResult
+from typing import Any, Awaitable, Callable, Literal, Protocol
 
 AgentMode = Literal["primary", "subagent", "all"]
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -48,21 +46,62 @@ class AgentDefinition:
                 raise ValueError(f"Agent {field_name} must be positive")
 
 
-class AgentRuntime(Protocol):
-    """Core execution capability exposed to Agent plugins."""
+ChildEngineFactory = Callable[[AgentDefinition, str, bool], Awaitable[Any]]
 
-    async def run(
+
+class SubagentAgentError(RuntimeError):
+    """Invalid subagent spawn request; the job fails with this error code."""
+
+    code = "agent_not_found"
+
+
+class SubagentTurnError(RuntimeError):
+    """Child turn finished without a usable assistant response."""
+
+    code = "subagent_failed"
+
+
+@dataclass(frozen=True)
+class AgentSessionResult:
+    """Outcome of one completed child agent session."""
+
+    final_response: str
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
+class AgentSession(Protocol):
+    """One spawned child session owned by an AgentRuntime."""
+
+    async def wait(self) -> AgentSessionResult: ...
+    async def cancel(self) -> None: ...
+
+
+class AgentRuntime(Protocol):
+    """Core execution capability exposed to Agent plugins.
+
+    The runtime spawns child sessions; it does not own job lifecycle state.
+    Job tracking, waiting, cancellation, and output storage live in the
+    shared JobRegistry that the adapter wraps.
+    """
+
+    async def spawn(
         self,
         agent: str,
         prompt: str,
-        background: bool = False,
-    ) -> ToolResult: ...
-
-    async def list_tasks(self, task_id: str | None = None) -> ToolResult: ...
-
-    async def stop_task(self, task_id: str) -> ToolResult: ...
+        *,
+        parent_job_id: str | None = None,
+    ) -> AgentSession: ...
 
     def definitions(self) -> tuple[AgentDefinition, ...]: ...
 
 
-__all__ = ["AgentDefinition", "AgentMode", "AgentRuntime"]
+__all__ = [
+    "AgentDefinition",
+    "AgentMode",
+    "AgentRuntime",
+    "AgentSession",
+    "AgentSessionResult",
+    "ChildEngineFactory",
+    "SubagentAgentError",
+    "SubagentTurnError",
+]

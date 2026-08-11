@@ -257,10 +257,9 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
             session_root=paths.session("s").thread(thread_id).root,
         )
         engine = SimpleNamespace(
-            background_tasks=None,
+            job_registry=None,
             permission_system=permissions,
             sandbox_policy=sandbox,
-            subagents=None,
             config=SimpleNamespace(permissions={}, sandbox={}),
             state_store=SimpleNamespace(
                 read_thread_metadata=lambda: {

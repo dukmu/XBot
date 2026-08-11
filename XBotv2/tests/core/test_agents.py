@@ -40,7 +40,8 @@ def test_shipped_explorer_definition_is_read_only():
     permissions = PermissionSystem(definition.permissions)
     assert permissions.check("filesystem_write") == "deny"
     assert permissions.check("shell") == "deny"
-    assert permissions.check("task") == "deny"
+    assert permissions.check("spawn_subagent") == "deny"
+    assert permissions.check("wait_subagent") == "deny"
     assert permissions.check("filesystem_read") == "ask"
 
 

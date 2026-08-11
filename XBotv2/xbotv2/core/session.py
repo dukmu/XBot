@@ -62,14 +62,10 @@ class SessionRuntime:
         self.engine.take_pending_mailbox = self._take_pending_mailbox
         self.engine.runtime_event_sink = self._publish_runtime_event
         self.touch()
-        background_tasks = self.engine.background_tasks
-        if background_tasks is not None:
-            background_tasks.on_update = self._publish_task_update
-            background_tasks.on_complete = self._enqueue_task_completion
-        subagents = self.engine.subagents
-        if subagents is not None:
-            subagents.on_update = self._publish_task_update
-            subagents.on_complete = self._enqueue_subagent_completion
+        job_registry = self.engine.job_registry
+        if job_registry is not None:
+            job_registry.on_update = self._publish_task_update
+            job_registry.on_complete = self._enqueue_job_completion
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
@@ -82,6 +78,12 @@ class SessionRuntime:
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
         if self.session_events is not None:
             self.session_events.put_nowait(event)
+
+    async def _enqueue_job_completion(self, task: dict[str, Any]) -> None:
+        if str(task.get("kind") or "") == "shell":
+            await self._enqueue_task_completion(task)
+        else:
+            await self._enqueue_subagent_completion(task)
 
     async def _enqueue_task_completion(self, task: dict[str, Any]) -> None:
         await self._collect_completion({

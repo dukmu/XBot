@@ -27,7 +27,6 @@ from typing import Any
 
 from xbotv2.config.models import RuntimeConfig, UserContext
 from xbotv2.core.agents import AgentRegistry
-from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
 from xbotv2.core.content_cache import bound_context_messages
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.interactions import (
@@ -40,7 +39,6 @@ from xbotv2.core.internal_messages import (
     structure_tool_message,
 )
 from xbotv2.core.mailbox import MailboxMessage, decode_mailbox_message
-from xbotv2.core.subagents import SubagentManager
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.base import BaseProvider
 from xbotv2.persistence.store import CoreStateStore
@@ -48,6 +46,8 @@ from xbotv2.plugin.loader import PluginLoader
 from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
+from xbotv2.api.agents import AgentRuntime
+from xbotv2.api.jobs import JobRegistry
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import ImageContent, Message, ModelChunk, ModelResponse
@@ -201,8 +201,8 @@ class Engine:
         workspace_root: str | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         plugin_loader: PluginLoader | None = None,
-        background_tasks: BackgroundTaskManager | None = None,
-        subagents: SubagentManager | None = None,
+        job_registry: JobRegistry | None = None,
+        agent_runtime: AgentRuntime | None = None,
         agent_registry: AgentRegistry | None = None,
         model: str = "",
         model_mode: str = "",
@@ -222,8 +222,8 @@ class Engine:
         self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
         self.plugin_loader = plugin_loader
-        self.background_tasks = background_tasks
-        self.subagents = subagents
+        self.job_registry = job_registry
+        self.agent_runtime = agent_runtime
         self.agent_registry = agent_registry
         self.model = model
         self.model_mode = model_mode
@@ -311,14 +311,9 @@ class Engine:
         self.cancel_pending_user_inputs("session_closed")
         self.cancel_pending_permissions("session_closed")
         errors: list[BaseException] = []
-        if self.background_tasks is not None:
+        if self.job_registry is not None:
             try:
-                await self.background_tasks.close()
-            except BaseException as exc:
-                errors.append(exc)
-        if self.subagents is not None:
-            try:
-                await self.subagents.close()
+                await self.job_registry.shutdown()
             except BaseException as exc:
                 errors.append(exc)
         try:
@@ -432,6 +427,7 @@ class Engine:
                 else None
             ),
             workspace_root=self.workspace_root,
+            job_registry=self.job_registry,
         )
         after_ctx = self._make_hook_context(
             HookStage.AFTER_TOOLS,
@@ -1099,7 +1095,7 @@ class Engine:
 
     def _agent_catalog_notice(self) -> str:
         registry = self.agent_registry
-        if registry is None or self.tool_registry.get("task") is None:
+        if registry is None or self.tool_registry.get("spawn_subagent") is None:
             return ""
         definitions = [
             definition
@@ -1108,7 +1104,7 @@ class Engine:
         ]
         if not definitions:
             return ""
-        lines = ["Available subagents for the task tool:"]
+        lines = ["Available subagents for the spawn_subagent tool:"]
         lines.extend(
             f"- {definition.name}: {definition.description}"
             for definition in definitions

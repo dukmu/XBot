@@ -105,23 +105,25 @@ becomes the thread's resume state. Switching is rejected while a turn is active.
 
 ## Execution
 
-The Agents plugin registers `task(agent, prompt, background=false)`. Blocking
-mode waits for the child final response. Background mode returns an
-`agent-task-*` ID immediately, emits `task_updated` snapshots, and places the
-final result in the parent runtime mailbox. `list_agent_tasks` and
-`stop_agent_task` inspect and stop background work.
+The Agents plugin registers `spawn_subagent(agent, prompt, name?)`, which
+starts a SUBAGENT job asynchronously and returns its job ID immediately.
+`wait_subagent(ids)` blocks until listed jobs reach a terminal state and returns
+only IDs and statuses; `read_subagent(id, cursor, max_chars)` reads the final
+response, which is the only subagent tool that returns bulk text.
+`list_subagents(status?)` and `cancel_subagent(id)` list lightweight metadata
+and stop a job. A completed subagent also places a bounded completion notice in
+the parent runtime mailbox so the Agent can react without polling.
 
-Both modes use `SubagentManager` and the normal `bootstrap()`/Engine path. Child
-permissions are intersected with parent permissions, so an Agent definition can
-restrict but cannot expand its caller's authority. Child results pass through
-the standard ToolResult cache; full child history remains in its thread. Active
-background children are cancelled when the live session closes.
+Both shell and subagent jobs run through the shared `JobRegistry` with the
+normal `bootstrap()`/Engine path. Child permissions are intersected with parent
+permissions, so an Agent definition can restrict but cannot expand its caller's
+authority. Child results pass through the standard ToolResult cache; full child
+history remains in its thread. Active jobs are cancelled when the live session
+closes.
 
-A blocking child shares the parent turn's live interaction sink, so its
-`ask_user` and permission requests use the normal ordered C/S interaction flow.
-Background children are non-interactive: they do not inherit the parent turn's
-temporary sink, do not expose interaction tools, and permission decisions that
-still require a human fail closed.
+A subagent shares the parent turn's live interaction sink, so its `ask_user`
+and permission requests use the normal ordered C/S interaction flow. Permission
+decisions that still require a human fail closed when no live sink is attached.
 
 The shipped `Explorer` definition has `mode: all` and exposes only read,
 `content_read`, list, search, and `ask_user` tools. It can be selected as a

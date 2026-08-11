@@ -31,11 +31,13 @@ import pytest
 import pytest_asyncio
 import xbotv2
 import yaml
+from xbotv2.api.jobs import JobKind
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
 from xbotv2.api.tools import Tool
 from xbotv2.client import XBotClient, XBotClientError
+from xbotv2.core.builtin_tools.shell import ShellRunner
 from xbotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
@@ -59,6 +61,15 @@ from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
+
+
+async def _start_background_shell(engine: Any, command: str) -> str:
+    job = await engine.job_registry.create(
+        kind=JobKind.SHELL,
+        metadata={"command": command, "cwd": ""},
+    )
+    engine.job_registry.start(job.id, ShellRunner())
+    return job.id
 
 
 @pytest.mark.asyncio
@@ -183,7 +194,8 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         assert ctx.engine.sandbox_policy.network is False
         assert ctx.engine.sandbox_policy.external_write == "deny"
         assert ctx.engine.sandbox_policy is sandbox
-        assert ctx.engine.background_tasks.sandbox is sandbox
+        assert ctx.engine.job_registry is not None
+        assert ctx.engine.tool_registry.get("shell") is not None
 
         cleared = await sdk.update_session_policy(
             "sdk-policy",
@@ -231,9 +243,8 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
             turn_cancelled.set()
 
     class Engine:
-        background_tasks = None
         plugin_loader = None
-        subagents = None
+        job_registry = None
 
         def __init__(self) -> None:
             self.closed_after_turn = False
@@ -267,9 +278,8 @@ async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
     cancelled = asyncio.Event()
 
     class HangingEngine:
-        background_tasks = None
         plugin_loader = None
-        subagents = None
+        job_registry = None
 
         def __init__(self) -> None:
             self.client_event_sink = None
@@ -394,9 +404,15 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         encoding="utf-8",
     )
 
+    # Isolate the workspace from the ambient checkout so a workspace
+    # ``.xbot/config.yaml`` cannot override session policy in these tests.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
     app = create_app(
         provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
+        workspace_root=str(workspace),
         no_plugins=True,
     )
     # Inject a mock LLM that returns one canned response per turn.
@@ -1894,7 +1910,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
     )
     events = ctx.attach_event_stream()
 
-    await ctx.engine.background_tasks.start_task("printf result")
+    job_id = await _start_background_shell(ctx.engine, "printf result")
 
     # Completion is broadcast as a notice, then flushed as one runtime turn.
     notice = None
@@ -1903,7 +1919,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         if event and event["type"] == "completion_notice":
             notice = event
     assert notice["data"]["kind"] == "background_task"
-    assert notice["data"]["task_id"] == "task-1"
+    assert notice["data"]["task_id"] == job_id
     assert notice["data"]["status"] == "completed"
 
     deadline = asyncio.get_event_loop().time() + 3
@@ -1919,7 +1935,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         "source": "tasks",
     }
     notices = json.loads(runtime_event.findtext("payload"))["notices"]
-    assert notices[0]["task_id"] == "task-1"
+    assert notices[0]["task_id"] == job_id
     assert notices[0]["status"] == "completed"
     assert [message.role for message in ctx.engine.messages] == ["user", "assistant"]
 
@@ -1945,8 +1961,8 @@ async def test_multiple_completions_aggregate_into_one_injection(
         no_plugins=True,
         llm_override=llm,
     )
-    await ctx.engine.background_tasks.start_task("printf one")
-    await ctx.engine.background_tasks.start_task("printf two")
+    await _start_background_shell(ctx.engine, "printf one")
+    await _start_background_shell(ctx.engine, "printf two")
     # Both completions aggregate into one idle runtime turn.
     deadline = asyncio.get_event_loop().time() + 3
     while llm.call_count == 0 and asyncio.get_event_loop().time() < deadline:
@@ -1979,8 +1995,7 @@ async def test_typed_task_stop_is_idempotent(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
     ctx = await http_app.state.manager.get("task-stop", "t")
-    started = await ctx.engine.background_tasks.start_task("sleep forever")
-    task_id = started.data["task_id"]
+    task_id = await _start_background_shell(ctx.engine, "sleep forever")
     await asyncio.sleep(0)
 
     busy_fork = await client.post("/sessions/task-stop/fork")
