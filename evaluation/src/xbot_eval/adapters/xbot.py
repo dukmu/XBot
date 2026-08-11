@@ -36,9 +36,11 @@ EVALUATION_TOOLS = (
     "filesystem_delete",
     "filesystem_mkdir",
     "shell",
-    "list_tasks",
-    "wait_task",
-    "stop_task",
+    "start_shell",
+    "list_shells",
+    "wait_shell",
+    "read_shell",
+    "cancel_shell",
     "update_todos",
 )
 
@@ -233,7 +235,7 @@ def _configure_bridge_provider(
     providers["inspect"] = {
         "provider": provider_type,
         "model": "inspect",
-        "base_url": "${XBOT_EVAL_BRIDGE_URL}",
+        "base_url": _bridge_base_url(provider_type),
         "api_key": "inspect",
         "max_context_tokens": provider.get("max_context_tokens", 200_000),
         "max_output_tokens": max_output_tokens,
@@ -243,6 +245,13 @@ def _configure_bridge_provider(
         yaml.safe_dump(document, sort_keys=False),
         encoding="utf-8",
     )
+
+
+def _bridge_base_url(provider_type: str) -> str:
+    """Inspect's Agent Bridge serves OpenAI-compatible requests under ``/v1``
+    and Anthropic/Google requests at the root."""
+    base = "${XBOT_EVAL_BRIDGE_URL}"
+    return f"{base}/v1" if provider_type == "openai" else base
 
 
 def _load_provider(source: Path, provider_name: str | None) -> dict[str, Any]:
