@@ -159,9 +159,7 @@ class SessionManager:
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
-                provider_name=str(
-                    getattr(engine.config, "provider", provider_name)
-                ),
+                provider_name=engine.config.provider,
                 paths=self.paths,
                 workspace_root=workspace_root,
                 no_plugins=no_plugins,
@@ -246,7 +244,7 @@ async def thread_summary(
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
         engine = active.engine
-        loader = getattr(engine, "plugin_loader", None)
+        loader = engine.plugin_loader
         status_slots = await loader.status_slots() if loader is not None else {}
         metadata = engine.state_store.read_thread_metadata()
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
@@ -257,14 +255,11 @@ async def thread_summary(
             kind="subagent" if parent_thread_id else "main",
             turn_status="running" if active.turn_lock.locked() else "idle",
             parent_thread_id=parent_thread_id,
-            agent=str(
-                metadata.get("agent")
-                or getattr(engine.config, "agent_name", "")
-            ),
+            agent=str(metadata.get("agent") or engine.config.agent_name),
             provider=active.provider_name,
-            model=str(getattr(engine, "model", "")),
-            model_mode=str(getattr(engine, "model_mode", "")),
-            context_window=int(getattr(engine, "context_window", 0)),
+            model=engine.model,
+            model_mode=engine.model_mode,
+            context_window=engine.context_window,
             message_count=len(engine.messages),
             usage=engine.session_usage,
             pending_interactions=pending_interactions(active),
@@ -318,30 +313,6 @@ async def session_summary(
     )
 
 
-async def close_disconnected_runtime(
-    manager: SessionManager,
-    ctx: SessionRuntime,
-) -> None:
-    """Explicitly close a runtime and its child thread tree.
-
-    No longer invoked automatically on SSE disconnect — connections are
-    decoupled from session lifetime. Used for explicit teardown and by tests.
-    """
-    metadata = ctx.engine.state_store.read_thread_metadata()
-    if metadata.get("parent_thread_id"):
-        await manager.close_thread(
-            ctx.session_id,
-            ctx.thread_id,
-            expected=ctx,
-            reason="client_disconnected",
-        )
-    else:
-        await manager.close_session(
-            ctx.session_id,
-            reason="client_disconnected",
-        )
-
-
 def pending_interactions(ctx: SessionRuntime) -> list[str]:
     return list(ctx.engine.user_input_waiter.pending_request_ids()) + list(
         ctx.engine.permission_waiter.pending_request_ids()
@@ -367,7 +338,6 @@ __all__ = [
     "SessionManager",
     "SessionNotFound",
     "ThreadNotActive",
-    "close_disconnected_runtime",
     "pending_interactions",
     "persisted_thread_ids",
     "session_summary",

@@ -1,8 +1,4 @@
-"""Unit tests for the slash command registry extensions (v1.1).
-
-Covers the new ``search_commands`` / ``complete_command`` API that
-drives the composer completion popup and the command palette.
-"""
+"""Unit tests for the slash command registry and search behavior."""
 
 from __future__ import annotations
 
@@ -15,7 +11,6 @@ from xbotv2.api.commands import Command, CommandResult
 
 from xbotv2.tui.command import (
     CommandSpec,
-    complete_command,
     known_command_labels,
     parse_slash_command,
     register_server_commands,
@@ -247,29 +242,6 @@ def test_get_command_returns_server_command() -> None:
 def test_get_command_returns_none_for_unknown() -> None:
     from xbotv2.tui.command import get_command
     assert get_command("nonexistent") is None
-
-
-# ----------------------------------------------------------------------
-# complete_command with aliases
-# ----------------------------------------------------------------------
-
-
-def test_complete_command_with_alias_returns_canonical() -> None:
-    spec = complete_command("/q")
-    assert spec is not None
-    assert spec.name == "exit"
-    assert spec.kind == "client"
-
-
-def test_complete_command_skill_alias_exists() -> None:
-    register_server_commands([
-        {"name": "git-release", "description": "Create releases", "kind": "prompt"},
-    ])
-
-    spec = complete_command("/git-release")
-    assert spec is not None
-    assert spec.name == "git-release"
-    assert spec.kind == "prompt"
 
 
 # ----------------------------------------------------------------------

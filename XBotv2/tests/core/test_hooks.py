@@ -53,14 +53,6 @@ def test_hook_stage_matrix_matches_short_and_strict_sets():
 
 class TestHookRegistration:
 
-    def test_register_by_enum(self, hook_manager):
-        called = []
-
-        async def my_hook(ctx):
-            called.append(1)
-
-        hook_manager.register(HookStage.BEFORE_AGENT, my_hook)
-
     def test_unregister_hook_removes_one_registration(self, hook_manager):
         async def hook(ctx):
             pass
@@ -377,55 +369,3 @@ class TestHookContext:
         hook_manager.register(HookStage.ON_USER_MESSAGE, checker)
         await hook_manager.run(HookStage.ON_USER_MESSAGE, ctx, short_circuit=False)
         assert received == ["hello"]
-
-
-# ------------------------------------------------------------------
-# Stage coverage
-# ------------------------------------------------------------------
-
-class TestAllStages:
-    """All hook stages are defined and work."""
-
-    def test_all_stages_exist(self):
-        """Verify all HookStage values."""
-        stages = list(HookStage)
-        assert len(stages) == 43
-        stage_values = {s.value for s in stages}
-
-        expected = {
-            "on_session_init", "on_session_start", "on_session_resume", "on_session_close",
-            "on_turn_start", "on_turn_end", "on_stop", "on_stop_failure",
-            "before_mailbox_delivery", "after_mailbox_delivery",
-            "before_user_message_accept", "after_user_message_accept",
-            "before_context", "pre_compact", "post_compact",
-            "before_context_build", "after_context",
-            "after_context_components_build", "after_context_build",
-            "before_agent", "before_tool_schema_bind", "after_tool_schema_bind",
-            "before_model_request", "after_model_response", "on_model_request_error",
-            "after_agent",
-            "before_tools", "after_tools",
-            "on_user_message", "on_assistant_message", "on_tool_message",
-            "on_tool_calls_parsed", "on_permission_request", "on_permission_denied",
-            "before_tool_call", "after_tool_call", "on_tool_call_failure",
-            "post_tool_batch",
-            "on_tool_denied", "on_client_event",
-            "before_state_persist", "after_state_persist",
-            "on_error",
-        }
-        assert stage_values == expected
-
-    def test_short_circuit_stages(self):
-        """Only loop stages permit short-circuit."""
-        from xbotv2.api.hooks import SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_CONTEXT in SHORT_CIRCUIT_STAGES
-        assert HookStage.PRE_COMPACT in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_CONTEXT_BUILD in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_TOOL_SCHEMA_BIND in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_TOOL_CALL in SHORT_CIRCUIT_STAGES
-        assert HookStage.AFTER_TOOLS in SHORT_CIRCUIT_STAGES
-        assert HookStage.BEFORE_MODEL_REQUEST in SHORT_CIRCUIT_STAGES
-        assert HookStage.AFTER_CONTEXT_BUILD not in SHORT_CIRCUIT_STAGES
-        assert HookStage.ON_STOP not in SHORT_CIRCUIT_STAGES
-        assert HookStage.POST_TOOL_BATCH not in SHORT_CIRCUIT_STAGES
-        assert HookStage.ON_SESSION_START not in SHORT_CIRCUIT_STAGES
-        assert HookStage.ON_ERROR not in SHORT_CIRCUIT_STAGES

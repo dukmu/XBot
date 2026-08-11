@@ -46,10 +46,7 @@ from xbotv2.protocol.http_server import (
     create_app,
     set_llm_override,
 )
-from xbotv2.protocol.session_manager import (
-    ThreadNotActive,
-    close_disconnected_runtime,
-)
+from xbotv2.protocol.session_manager import ThreadNotActive
 from xbotv2.core.session import (
     SessionRuntime,
     _live_sink,
@@ -234,6 +231,10 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
             turn_cancelled.set()
 
     class Engine:
+        background_tasks = None
+        plugin_loader = None
+        subagents = None
+
         def __init__(self) -> None:
             self.closed_after_turn = False
 
@@ -262,10 +263,14 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_closing_turn_stream_cancels_background_turn() -> None:
+async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
     cancelled = asyncio.Event()
 
     class HangingEngine:
+        background_tasks = None
+        plugin_loader = None
+        subagents = None
+
         def __init__(self) -> None:
             self.client_event_sink = None
 
@@ -290,10 +295,13 @@ async def test_closing_turn_stream_cancels_background_turn() -> None:
             finally:
                 cancelled.set()
 
-    ctx = SimpleNamespace(
+    ctx = SessionRuntime(
         session_id="disconnect",
-        turn_lock=asyncio.Lock(),
-        turn_task=None,
+        thread_id="agent",
+        provider_name="mock",
+        paths=RuntimePaths.from_data_dir(tmp_path),
+        workspace_root=str(tmp_path),
+        no_plugins=True,
         engine=HangingEngine(),
     )
     stream = run_turn_stream(ctx, content="wait", request_id="request")
@@ -587,29 +595,6 @@ async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     # restore defaults so other tests are unaffected
     manager.idle_timeout = 3600.0
     manager.reap_interval = 60.0
-
-
-@pytest.mark.asyncio
-async def test_main_thread_disconnect_closes_child_runtimes(
-    client: httpx.AsyncClient,
-    http_app,
-) -> None:
-    await client.post(
-        "/sessions",
-        json={"session_id": "disconnect-tree", "thread_id": "agent"},
-    )
-    await client.post(
-        "/sessions/disconnect-tree/threads",
-        json={"thread_id": "child"},
-    )
-    main = await http_app.state.manager.get("disconnect-tree", "agent")
-
-    await close_disconnected_runtime(http_app.state.manager, main)
-
-    with pytest.raises(ThreadNotActive):
-        await http_app.state.manager.get("disconnect-tree", "agent")
-    with pytest.raises(ThreadNotActive):
-        await http_app.state.manager.get("disconnect-tree", "child")
 
 
 @pytest.mark.asyncio

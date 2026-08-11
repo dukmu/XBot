@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
+from xbotv2.config.models import HookConfig, RuntimeConfig, WorkspaceToolConfig
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.tools import Tool
@@ -46,6 +47,7 @@ from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
+from xbotv2.llm.base import BaseProvider
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
@@ -99,10 +101,12 @@ async def bootstrap(
     workspace_root: Path | str | None = None,
     plugin_dirs: list[Path | str] | None = None,
     plugin_configs: dict[str, dict[str, Any]] | None = None,
-    llm_override: Any | None = None,
+    llm_override: BaseProvider | None = None,
     selected_agent: str | None = None,
     agent_definition: AgentDefinition | None = None,
-    parent_permission_system: Any | None = None,
+    parent_permission_system: (
+        PermissionSystem | PermissionIntersection | None
+    ) = None,
     parent_thread_id: str = "",
     is_subagent: bool = False,
     interactive: bool = True,
@@ -128,22 +132,21 @@ async def bootstrap(
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
     workspace_root = Path(workspace_root or Path.cwd()).resolve()
-    _plugin_configs = plugin_configs or {}
 
     # 1. Load configuration
-    startup_config = load_runtime_config(paths, workspace_root, session_id)
-    agent_config = startup_config.model_copy(deep=True)
+    agent_config = load_runtime_config(paths, workspace_root, session_id)
     resolved_agent = agent_definition
+    if provider_name == "default":
+        provider_name = agent_config.provider
     if resolved_agent is not None:
         apply_agent_definition(agent_config, resolved_agent)
         provider_name = agent_definition.provider or provider_name
-    provider_name = provider_name or agent_config.provider
-    policy_base_config = agent_config.model_copy(deep=True)
     user_context = load_user_context(paths)
 
-    # Merge plugin configs from system config
-    if agent_config.plugins:
-        _plugin_configs = {**agent_config.plugin_configs, **_plugin_configs}
+    resolved_plugin_configs = {
+        **agent_config.plugin_configs,
+        **(plugin_configs or {}),
+    }
 
     # Ensure session state directory
     session_paths = paths.session(session_id)
@@ -235,7 +238,7 @@ async def bootstrap(
     parent_engine: Engine | None = None
 
     async def create_child_engine(
-        definition: Any,
+        definition: AgentDefinition,
         child_thread_id: str,
         background: bool,
     ) -> Engine:
@@ -283,19 +286,20 @@ async def bootstrap(
 
     try:
         if resolved_plugin_dirs:
-            plugin_loader = await _load_plugins(
-                resolved_plugin_dirs,
-                hook_manager,
-                tool_registry,
-                context_builder,
-                state_store,
-                _plugin_configs,
-                agent_registry,
-                workspace_root,
-                runtime_variables,
-                disabled_plugins,
-                subagents,
+            plugin_loader = PluginLoader(
+                plugin_dirs=resolved_plugin_dirs,
+                state_store=state_store,
+                hook_manager=hook_manager,
+                tool_registry=tool_registry,
+                context_builder=context_builder,
+                plugin_configs=resolved_plugin_configs,
+                agent_registry=agent_registry,
+                workspace_root=workspace_root,
+                runtime_variables=runtime_variables,
+                disabled_plugins=disabled_plugins,
+                agent_runtime=subagents,
             )
+            await plugin_loader.load()
 
         if selected_agent is None and resolved_agent is None:
             default_agent = agent_registry.get("default")
@@ -318,8 +322,6 @@ async def bootstrap(
             elif resolved_agent.mode == "subagent" and not is_subagent:
                 raise ValueError(f"Unknown primary agent: {selected_agent}")
             apply_agent_definition(agent_config, resolved_agent)
-            policy_base_config = startup_config.model_copy(deep=True)
-            apply_agent_definition(policy_base_config, resolved_agent)
             provider_name = resolved_agent.provider or provider_name
             permissions = PermissionSystem(
                 agent_config.permissions,
@@ -344,8 +346,6 @@ async def bootstrap(
             else provider_config.max_context_tokens
         )
         agent_config.max_output_tokens = provider_config.max_output_tokens
-        policy_base_config.max_context_tokens = agent_config.max_context_tokens
-        policy_base_config.max_output_tokens = agent_config.max_output_tokens
         state_store.write_thread_metadata({
             "agent": resolved_agent.name if resolved_agent is not None else "",
             "agent_definition": (
@@ -373,7 +373,6 @@ async def bootstrap(
         from xbotv2.api.runtime import SessionInfo
         init_ctx = HookContext(
             stage=HookStage.ON_SESSION_INIT,
-            state={},
             config=agent_config,
             tools=tool_registry,
             sandbox=sandbox,
@@ -419,7 +418,6 @@ async def bootstrap(
             background_tasks=background_tasks,
             subagents=subagents,
             agent_registry=agent_registry,
-            startup_config=policy_base_config,
             model=provider_config.model,
             model_mode=provider_config.model_mode,
             context_window=agent_config.max_context_tokens,
@@ -500,46 +498,21 @@ def _resolve_plugin_dirs(
     return resolved
 
 
-async def _load_plugins(
-    plugin_dirs: list[Path],
+def _register_configured_hooks(
+    agent_config: RuntimeConfig,
     hook_manager: HookManager,
-    tool_registry: ToolRegistry,
-    context_builder: ContextBuilder,
-    state_store: CoreStateStore,
-    plugin_configs: dict[str, dict[str, Any]],
-    agent_registry: AgentRegistry,
-    workspace_root: Path,
-    runtime_variables: RuntimeVariables,
-    disabled_plugins: set[str],
-    agent_runtime: Any,
-) -> PluginLoader:
-    """Discover, load, and wire plugins."""
-    loader = PluginLoader(
-        plugin_dirs=plugin_dirs,
-        state_store=state_store,
-        hook_manager=hook_manager,
-        tool_registry=tool_registry,
-        context_builder=context_builder,
-        plugin_configs=plugin_configs,
-        agent_registry=agent_registry,
-        workspace_root=workspace_root,
-        runtime_variables=runtime_variables,
-        disabled_plugins=disabled_plugins,
-        agent_runtime=agent_runtime,
-    )
-    await loader.load()
-    return loader
-
-
-def _register_configured_hooks(agent_config: Any, hook_manager: HookManager) -> None:
+) -> None:
     """Register trusted standalone hooks declared for startup."""
-    for decl in getattr(agent_config, "hooks", []) or []:
+    for decl in agent_config.hooks:
         hook_manager.register(HookStage(decl.stage), _resolve_hook_target(decl))
 
 
-def _register_workspace_tools(agent_config: Any, tool_registry: ToolRegistry) -> None:
+def _register_workspace_tools(
+    agent_config: RuntimeConfig,
+    tool_registry: ToolRegistry,
+) -> None:
     """Register Tool exports explicitly declared by workspace configuration."""
-    for declaration in getattr(agent_config, "workspace_tools", ()):
+    for declaration in agent_config.workspace_tools:
         exported = _resolve_workspace_target(declaration, directory="tools")
         tools = exported if isinstance(exported, (list, tuple)) else (exported,)
         if not tools:
@@ -553,7 +526,7 @@ def _register_workspace_tools(agent_config: Any, tool_registry: ToolRegistry) ->
             tool_registry.register(tool, namespace="workspace", sandbox_mode="host")
 
 
-def _resolve_hook_target(declaration: Any) -> Any:
+def _resolve_hook_target(declaration: HookConfig) -> Any:
     """Resolve a module or workspace script target without changing sys.path."""
     source, attr_name = declaration.target.split(":", 1)
     if source.endswith(".py") or "/" in source or "\\" in source:
@@ -571,10 +544,14 @@ def _resolve_hook_target(declaration: Any) -> Any:
     return callback
 
 
-def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
+def _resolve_workspace_target(
+    declaration: HookConfig | WorkspaceToolConfig,
+    *,
+    directory: str,
+) -> Any:
     """Load one declared export from a standard workspace extension directory."""
     source, attr_name = declaration.target.split(":", 1)
-    base_dir = getattr(declaration, "base_dir", None)
+    base_dir = declaration.base_dir
     if base_dir is None:
         raise ValueError(
             f"Workspace {directory} target {source!r} must be declared in .xbot/config.yaml"

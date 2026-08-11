@@ -18,6 +18,7 @@ from xbotv2.core.builtin_tools.filesystem import (
 from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
 from xbotv2.api.messages import Message
@@ -653,7 +654,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
     events = [e async for e in engine.run_turn("run large")]

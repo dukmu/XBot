@@ -76,6 +76,8 @@ the default is empty and failures do not break session execution.
 `HookContext.request_id` carries the current message/turn correlation id for
 turn-scoped hooks, including error and persistence hooks. Session lifecycle
 hooks use an empty value because they are not owned by one message request.
+`HookContext.messages` carries the current persisted history. `POST_COMPACT`
+also provides explicit before/after message counts.
 Engine-created contexts also expose `invoke_model(messages)` for one unbound
 auxiliary provider call. It returns `ModelResponse` without recursively running
 model Hooks or exposing the provider implementation.
@@ -134,10 +136,9 @@ the richer in-process representation.
 
 ## Current Gaps To Improve
 
-- `HookContext` still carries broad mutable fields. Improve it by documenting
-  stage-specific payloads and reusing existing public types. Add a new public
-  type only when multiple independent consumers share a gap that existing
-  fields cannot express.
+- Some `HookContext` stage fields remain broadly typed. Narrow them when the
+  producer and independent consumers share one stable public representation;
+  do not add wrapper payload types for plugin-local data.
 - Every current `ServerEvent.data` family has a typed DTO. New event types must
   add producer/consumer tests and join `TYPED_SERVER_EVENT_TYPES` deliberately.
 - Server-owned error codes are documented and stable in shape; Hook-provided

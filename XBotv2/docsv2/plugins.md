@@ -405,5 +405,5 @@ plugin instead of receiving special runtime access or a new public wrapper.
 - Token Manager demonstrates a hook-only plugin with configuration,
   diagnostics, model-request inspection, public collector methods, and
   unload-time in-memory state reset.
-  It does not write into `HookContext.state`: that mapping is a stage payload,
-  not a generic plugin persistence channel.
+  It reads `HookContext.messages` for history accounting and keeps its own
+  diagnostics; Hook payloads are not a plugin persistence channel.

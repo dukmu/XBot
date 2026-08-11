@@ -21,11 +21,6 @@ from xbotv2.tui.client import (
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.terminal import CommandOutcome
 from xbotv2.tui.command import CommandSpec
-from xbotv2.tui.textual_state import (
-    queue_user_message,
-    render_transcript_entry,
-    route_submitted_text,
-)
 
 
 @pytest.mark.asyncio
@@ -684,9 +679,6 @@ def test_terminal_events_clear_pending_interactions(
 ):
     state = TuiState()
     state.tools["call-1"] = TuiTool(tool_call_id="call-1", name="shell")
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-
     state.apply_event(_frame("turn_started", {"turn": 1}))
     state.apply_event(_frame(request_type, request_data))
     state.apply_event(_frame(terminal_type, terminal_data))
@@ -694,47 +686,7 @@ def test_terminal_events_clear_pending_interactions(
     assert state.pending_user_input_payload is None
     assert state.pending_permission_payload is None
     assert state.status == expected_status
-    assert (
-        route_submitted_text(state, answers, permission_decisions, "next")
-        == "message"
-    )
-    assert answers.empty()
-    assert permission_decisions.empty()
     assert state.tools["call-1"].permission_pending is False
-
-
-@pytest.mark.asyncio
-async def test_textual_queues_user_messages_without_reordering_transcript():
-    state = TuiState()
-    messages: asyncio.Queue[str] = asyncio.Queue()
-
-    queue_user_message(state, messages, "first")
-    queue_user_message(state, messages, "second")
-
-    assert state.messages == []
-    state.append_message("user", await messages.get())
-    state.append_message("assistant", "reply")
-    state.append_message("user", await messages.get())
-
-    assert [(message.role, message.content) for message in state.messages] == [
-        ("user", "first"),
-        ("assistant", "reply"),
-        ("user", "second"),
-    ]
-
-
-def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
-    state = TuiState(agent_name="助手")
-    state.append_message("user", "你好 [不要解析] 中文")
-    state.append_message("assistant", "收到：中文正常显示")
-
-    first = render_transcript_entry(state, state.transcript[0])
-    second = render_transcript_entry(state, state.transcript[1])
-
-    assert first is not None
-    assert second is not None
-    assert first.plain == "You\n你好 [不要解析] 中文"
-    assert second.plain == "助手\n收到：中文正常显示"
 
 
 @pytest.mark.asyncio
@@ -915,42 +867,6 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "DEBUG" in captured["cmd"]
     assert "--log-file" in captured["cmd"]
     assert "./run.log" in captured["cmd"]
-
-
-@pytest.mark.asyncio
-async def test_textual_routes_submitted_text_to_live_user_input_queue():
-    state = TuiState()
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
-    state.apply_event({
-        "type": "user_input_required",
-        "data": {"request_id": "user_input:c1", "question": "Proceed?"},
-    })
-
-    route = route_submitted_text(state, answers, permission_decisions, "yes")
-
-    assert route == "user_input"
-    assert await answers.get() == "yes"
-    assert permission_decisions.empty()
-    assert state.messages == []
-
-
-@pytest.mark.asyncio
-async def test_textual_routes_submitted_text_to_live_permission_queue():
-    state = TuiState()
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
-    state.apply_event({
-        "type": "permission_request",
-        "data": {"request_id": "permission:c1", "reason": "approve?"},
-    })
-
-    route = route_submitted_text(state, answers, permission_decisions, "y")
-
-    assert route == "permission"
-    assert await permission_decisions.get() == {"decision": "allow", "scope": "once"}
-    assert answers.empty()
-    assert state.messages == []
 
 
 @pytest.mark.asyncio
@@ -2054,7 +1970,6 @@ def test_tui_modules_do_not_import_core():
         Path("XBotv2/xbotv2/tui/client.py"),
         Path("XBotv2/xbotv2/tui/session_config.py"),
         Path("XBotv2/xbotv2/tui/terminal.py"),
-        Path("XBotv2/xbotv2/tui/textual_state.py"),
         Path("XBotv2/xbotv2/tui/textual_theme.py"),
         Path("XBotv2/xbotv2/tui/textual_client.py"),
         Path("XBotv2/xbotv2/tui/textual_widgets.py"),

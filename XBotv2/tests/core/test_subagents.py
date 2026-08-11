@@ -621,6 +621,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
 
     class ParentEngine:
         background_tasks = None
+        plugin_loader = None
         subagents = manager
         enqueue_mailbox = None
 

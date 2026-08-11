@@ -15,7 +15,7 @@ import logging
 import shlex
 import time
 import uuid
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -74,9 +74,8 @@ from xbotv2.config.loader import (
 from xbotv2.core.operations import (
     OperationError,
     clear_history,
-    fork_persisted_session,
+    fork_session,
     reload_agents,
-    require_forkable,
     select_agent,
     select_provider,
     stop_all_tasks,
@@ -363,13 +362,11 @@ def _register_routes(app: FastAPI) -> None:
             for (active_session_id, _), ctx in active.items()
             if active_session_id == session_id
         ]
-        require_forkable(*session_contexts)
-        async with AsyncExitStack() as stack:
-            for ctx in sorted(session_contexts, key=lambda item: item.thread_id):
-                await stack.enter_async_context(ctx.turn_lock)
-            for ctx in session_contexts:
-                await ctx.engine.save_messages()
-            forked_id = fork_persisted_session(manager.paths, session_id)
+        forked_id = await fork_session(
+            manager.paths,
+            session_id,
+            *session_contexts,
+        )
         return ForkResponse(
             session_id=forked_id,
             source_session_id=session_id,

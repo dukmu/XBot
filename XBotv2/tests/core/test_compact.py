@@ -26,6 +26,7 @@ from xbotv2.api.tokens import (
     REQUEST_ESTIMATE_KEY,
 )
 from xbotv2.core.context import ContextBuilder
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
@@ -108,7 +109,7 @@ async def test_manual_tool_requests_compaction_below_threshold():
     result = await setup.hooks[HookStage.BEFORE_CONTEXT](
         HookContext(
             stage=HookStage.BEFORE_CONTEXT,
-            state={"messages": original},
+            messages=original,
             session=SimpleNamespace(turn_count=3),
             invoke_model=invoke_model,
         )
@@ -155,7 +156,7 @@ async def test_human_command_compacts_and_persists_immediately(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await engine.start_session()
     runtime_events = []
@@ -266,7 +267,7 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 
     result = await plugin._on_before_context(HookContext(
         stage=HookStage.BEFORE_CONTEXT,
-        state={"messages": original},
+        messages=original,
         session=SimpleNamespace(turn_count=3),
         invoke_model=invoke_model,
     ))
@@ -289,7 +290,7 @@ async def test_large_context_does_not_use_fixed_character_threshold():
 
     result = await plugin._on_before_model_request(HookContext(
         stage=HookStage.BEFORE_MODEL_REQUEST,
-        state={"messages": original},
+        messages=original,
         model_request={"messages": context, "tools": []},
         config=SimpleNamespace(
             max_context_tokens=1_048_576,
@@ -324,7 +325,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
 
     result = await plugin._on_before_model_request(HookContext(
         stage=HookStage.BEFORE_MODEL_REQUEST,
-        state={"messages": original},
+        messages=original,
         model_request={"messages": context, "tools": []},
         config=SimpleNamespace(
             max_context_tokens=200_000,
@@ -366,7 +367,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
 
     result = await plugin._on_before_model_request(HookContext(
         stage=HookStage.BEFORE_MODEL_REQUEST,
-        state={"messages": original},
+        messages=original,
         model_request={
             "messages": [Message(role="system", content="stable"), *original],
             "tools": [],
@@ -396,7 +397,7 @@ async def test_failed_summary_leaves_history_untouched():
 
     ctx = HookContext(
         stage=HookStage.BEFORE_CONTEXT,
-        state={"messages": original},
+        messages=original,
         session=SimpleNamespace(turn_count=2),
         invoke_model=fail,
     )
@@ -404,7 +405,7 @@ async def test_failed_summary_leaves_history_untouched():
     with pytest.raises(RuntimeError, match="summary unavailable"):
         await plugin._on_before_context(ctx)
 
-    assert ctx.state["messages"] == original
+    assert ctx.messages == original
     assert plugin._manual_requested is False
     assert plugin.diagnostics()["compactions"] == 0
 
@@ -420,7 +421,7 @@ async def test_failed_automatic_summary_continues_with_original_history():
 
     ctx = HookContext(
         stage=HookStage.BEFORE_MODEL_REQUEST,
-        state={"messages": original},
+        messages=original,
         model_request={
             "messages": [Message(role="system", content="stable"), *original],
             "tools": [],
@@ -434,7 +435,7 @@ async def test_failed_automatic_summary_continues_with_original_history():
     )
 
     assert await plugin._on_before_model_request(ctx) is None
-    assert ctx.state["messages"] == original
+    assert ctx.messages == original
     assert plugin.diagnostics()["compactions"] == 0
 
 
@@ -491,7 +492,7 @@ async def test_compact_tool_rewrites_and_persists_history(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await engine.start_session()
 
@@ -527,7 +528,7 @@ async def test_compact_tool_rewrites_and_persists_history(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await resumed.start_session()
 
@@ -577,10 +578,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=SimpleNamespace(
-            max_context_tokens=10_000,
-            max_output_tokens=None,
-        ),
+        config=RuntimeConfig(max_context_tokens=10_000),
     )
     await engine.start_session()
 

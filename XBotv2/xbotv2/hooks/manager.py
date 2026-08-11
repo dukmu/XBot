@@ -69,7 +69,13 @@ class HookManager:
                 return True
         return False
 
-    async def run(self, stage: HookStage, ctx: HookContext, *, short_circuit: bool | None = None) -> Any:
+    async def run(
+        self,
+        stage: HookStage,
+        ctx: HookContext,
+        *,
+        short_circuit: bool | None = None,
+    ) -> dict[str, Any] | HookDecision | None:
         if short_circuit is None:
             short_circuit = stage in SHORT_CIRCUIT_STAGES
         ctx.stage = stage

@@ -6,6 +6,8 @@ import json
 from typing import Any, AsyncIterator, Callable
 
 from xbotv2.api.messages import (
+    ContentPart,
+    Message,
     ImagePart,
     ModelChunk,
     ModelResponse,
@@ -60,7 +62,7 @@ class AnthropicProvider(BaseProvider):
 
     async def _astream_once(
         self,
-        messages: list[Any],
+        messages: list[Message],
         **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         system, request_messages = anthropic_request_messages(
@@ -222,15 +224,14 @@ class AnthropicProvider(BaseProvider):
 
 
 def anthropic_request_messages(
-    messages: list[Any],
+    messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system = "\n\n".join(
-        str(getattr(message, "content", ""))
+        message.content
         for message in messages
-        if getattr(message, "role", "") == "system"
-        and str(getattr(message, "content", "")).strip()
+        if message.role == "system" and message.content.strip()
     )
     return system, anthropic_messages(
         messages,
@@ -239,16 +240,16 @@ def anthropic_request_messages(
 
 
 def anthropic_messages(
-    messages: list[Any],
+    messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
-        role = getattr(message, "role", "user")
+        role = message.role
         if role == "system":
             continue
-        content = str(getattr(message, "content", "") or "")
+        content = message.content
         blocks: list[dict[str, Any]] = []
         target_role = "assistant" if role == "assistant" else "user"
         if role == "tool":
@@ -258,10 +259,10 @@ def anthropic_messages(
             )
             block: dict[str, Any] = {
                 "type": "tool_result",
-                "tool_use_id": getattr(message, "tool_call_id", ""),
+                "tool_use_id": message.tool_call_id,
                 "content": tool_content if message.images else content,
             }
-            if (getattr(message, "status", "") or "success") != "success":
+            if (message.status or "success") != "success":
                 block["is_error"] = True
             blocks.append(block)
         elif role == "assistant":
@@ -286,8 +287,8 @@ def anthropic_messages(
     return result
 
 
-def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[Any]:
-    parts = []
+def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
+    parts: list[ContentPart] = []
     for block in (blocks[index] for index in sorted(blocks)):
         block_type = block.get("type")
         if block_type == "text":
@@ -317,7 +318,7 @@ def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[Any]:
 
 
 def _parts_to_anthropic(
-    parts: list[Any],
+    parts: list[ContentPart],
     *,
     image_loader: Callable[[str], str] | None,
 ) -> list[dict[str, Any]]:

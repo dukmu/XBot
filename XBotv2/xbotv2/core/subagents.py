@@ -45,7 +45,7 @@ class SubagentTask:
         return {
             "task_id": self.id,
             "kind": "agent",
-            "command": f"{self.agent}: {_preview(self.prompt, 1_000)}",
+            "command": f"{self.agent}: {_preview(self.prompt, 1_00)}",
             "cwd": "",
             "status": self.status,
             "created_at": self.created_at,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 from xbotv2.config.loader import expand_env
+from xbotv2.config.models import ProviderConfig
 from xbotv2.llm.anthropic import AnthropicProvider
 from xbotv2.llm.base import BaseProvider
 from xbotv2.llm.openai import OpenAICompatibleProvider
@@ -17,23 +17,19 @@ DEFAULT_PROVIDER_MAX_RETRIES = 16
 
 
 def create_llm(
-    provider_config: Any,
+    provider_config: ProviderConfig,
     *,
     media_root: str | None = None,
 ) -> BaseProvider:
-    provider = _get_cfg(provider_config, "provider", "openai")
-    model = _get_cfg(provider_config, "model", "gpt-4")
-    base_url = _get_cfg(provider_config, "base_url")
-    api_key = _get_cfg(provider_config, "api_key", "")
-    temperature = _get_cfg(provider_config, "temperature", 0.7)
-    max_output_tokens = _get_cfg(provider_config, "max_output_tokens")
-    reasoning_effort = _get_cfg(provider_config, "reasoning_effort")
-    thinking_enabled = _get_cfg(
-        provider_config,
-        "thinking_enabled",
-        False,
-    )
-    input_modalities = _get_cfg(provider_config, "input_modalities", ["text"])
+    provider = provider_config.provider
+    model = provider_config.model
+    base_url = provider_config.base_url
+    api_key = provider_config.api_key or ""
+    temperature = provider_config.temperature
+    max_output_tokens = provider_config.max_output_tokens
+    reasoning_effort = provider_config.reasoning_effort
+    thinking_enabled = provider_config.thinking_enabled
+    input_modalities = provider_config.input_modalities
     max_retries, retry_backoff_factor = _retry_settings()
     api_key = expand_env(api_key) if api_key else ""
     base_url = expand_env(base_url) if base_url else None
@@ -42,7 +38,7 @@ def create_llm(
         from xbotv2.llm.mock import MockLLM
 
         return MockLLM(
-            responses=_get_cfg(provider_config, "mock_responses", []),
+            responses=provider_config.mock_responses,
             input_modalities=input_modalities,
             media_root=media_root,
         )
@@ -67,8 +63,6 @@ def create_llm(
             media_root=media_root,
         )
     if provider in ("anthropic", "lmstudio"):
-        if max_output_tokens is None:
-            raise ValueError("Anthropic providers require max_output_tokens")
         _require_api_key(provider, model, api_key)
         logger.info(
             "creating anthropic provider=%s model=%s",
@@ -89,16 +83,6 @@ def create_llm(
             media_root=media_root,
         )
     raise ValueError(f"Unknown provider: {provider!r}")
-
-
-def _get_cfg(
-    provider_config: Any,
-    key: str,
-    default: Any = None,
-) -> Any:
-    if isinstance(provider_config, dict):
-        return provider_config.get(key, default)
-    return getattr(provider_config, key, default)
 
 
 def _require_api_key(provider: str, model: str, api_key: str) -> None:

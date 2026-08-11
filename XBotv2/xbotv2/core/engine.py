@@ -25,7 +25,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from xbotv2.config.models import RuntimeConfig, UserContext
+from xbotv2.core.agents import AgentRegistry
+from xbotv2.core.builtin_tools.shell import BackgroundTaskManager
 from xbotv2.core.content_cache import bound_context_messages
+from xbotv2.core.context import ContextBuilder
 from xbotv2.core.interactions import (
     InteractionDisconnected,
     InteractionResult,
@@ -35,7 +39,15 @@ from xbotv2.core.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from xbotv2.core.mailbox import MailboxMessage
+from xbotv2.core.mailbox import MailboxMessage, decode_mailbox_message
+from xbotv2.core.subagents import SubagentManager
+from xbotv2.hooks.manager import HookManager
+from xbotv2.llm.base import BaseProvider
+from xbotv2.persistence.store import CoreStateStore
+from xbotv2.plugin.loader import PluginLoader
+from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
+from xbotv2.tools.registry import ToolRegistry
+from xbotv2.tools.sandbox import SandboxPolicy
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import ImageContent, Message, ModelChunk, ModelResponse
@@ -178,26 +190,25 @@ class Engine:
     def __init__(
         self,
         *,
-        llm: Any,
-        tool_registry: Any,  # ToolRegistry
-        hook_manager: Any,  # HookManager
-        state_store: Any,  # CoreStateStore
-        context_builder: Any,  # ContextBuilder
-        sandbox_policy: Any,  # SandboxPolicy
-        permission_system: Any,  # PermissionSystem
-        config: Any,  # RuntimeConfig
+        llm: BaseProvider,
+        tool_registry: ToolRegistry,
+        hook_manager: HookManager,
+        state_store: CoreStateStore,
+        context_builder: ContextBuilder,
+        sandbox_policy: SandboxPolicy,
+        permission_system: PermissionSystem | PermissionIntersection,
+        config: RuntimeConfig,
         workspace_root: str | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
-        plugin_loader: Any | None = None,
-        background_tasks: Any | None = None,
-        subagents: Any | None = None,
-        agent_registry: Any | None = None,
-        startup_config: Any | None = None,
+        plugin_loader: PluginLoader | None = None,
+        background_tasks: BackgroundTaskManager | None = None,
+        subagents: SubagentManager | None = None,
+        agent_registry: AgentRegistry | None = None,
         model: str = "",
         model_mode: str = "",
         context_window: int = 0,
         llm_is_override: bool = False,
-        user_context: Any | None = None,
+        user_context: UserContext | None = None,
         runtime_variables: RuntimeVariables | None = None,
     ) -> None:
         self.llm = llm
@@ -214,14 +225,11 @@ class Engine:
         self.background_tasks = background_tasks
         self.subagents = subagents
         self.agent_registry = agent_registry
-        self.startup_config = startup_config or config
         self.model = model
         self.model_mode = model_mode
-        self.context_window = context_window or int(
-            getattr(config, "max_context_tokens", 0) or 0
-        )
+        self.context_window = context_window or config.max_context_tokens
         self.llm_is_override = llm_is_override
-        self.user_context = user_context
+        self.user_context = user_context or UserContext()
         self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
             state_store.paths.runtime,
             self.workspace_root,
@@ -280,7 +288,7 @@ class Engine:
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
             workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
+            provider=self.config.provider,
         )
 
     async def _resume_from_store(self) -> None:
@@ -483,7 +491,12 @@ class Engine:
         request_token = self._request_id.set(request_id)
         mailbox_token = self._mailbox_message.set(mailbox_message)
         if mailbox_message is not None:
-            self.state_store.append_mailbox_delivery(mailbox_message)
+            self.state_store.append_mailbox_delivery(
+                mailbox_id=mailbox_message.id,
+                kind=mailbox_message.kind,
+                message=mailbox_message.message,
+                request_id=mailbox_message.request_id,
+            )
         turn_started = False
         turn_ended = False
         try:
@@ -679,7 +692,7 @@ class Engine:
                     short_circuit=False,
                 )
                 raise
-            content = response.content if hasattr(response, "content") else str(response)
+            content = response.content
             if finalizing and response.tool_calls:
                 names = ", ".join(call.name for call in response.tool_calls)
                 raise RuntimeError(
@@ -691,9 +704,9 @@ class Engine:
                 after_tool = bool(
                     self.messages and self.messages[-1].role == "tool"
                 )
-                stop_reason = (
-                    getattr(response, "response_metadata", None) or {}
-                ).get("stop_reason", "unknown")
+                stop_reason = response.response_metadata.get(
+                    "stop_reason", "unknown"
+                )
                 context = " after ToolResult" if after_tool else ""
                 logger.debug(
                     "invalid model response%s stop_reason=%s reasoning=%r",
@@ -705,24 +718,23 @@ class Engine:
                     f"LLM returned no assistant content or ToolUse{context} "
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
-            response_metadata = dict(
-                getattr(response, "response_metadata", None) or {}
-            )
+            response_metadata = dict(response.response_metadata)
             response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
                 context_messages,
                 list(model_request.get("tools") or []),
             )
             response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.context_window
-            response_metadata[REQUEST_PROVIDER_KEY] = str(
-                getattr(self.session, "provider", "")
-                or getattr(self.config, "provider", "")
+            response_metadata[REQUEST_PROVIDER_KEY] = (
+                self.session.provider
+                if self.session is not None
+                else self.config.provider
             )
             response_msg = Message(
                 role="assistant",
                 parts=response.parts,
-                usage_metadata=getattr(response, "usage_metadata", None) or {},
+                usage_metadata=response.usage_metadata,
                 response_metadata=response_metadata,
-                additional_kwargs=getattr(response, "additional_kwargs", None) or {},
+                additional_kwargs=response.additional_kwargs,
             )
             self.messages.append(response_msg)
             self._record_usage(response_msg.usage_metadata)
@@ -847,8 +859,8 @@ class Engine:
             "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
             self.turn_count,
             len(tool_messages),
-            [getattr(message, "tool_call_id", None) for message in tool_messages],
-            [getattr(message, "status", None) for message in tool_messages],
+            [message.tool_call_id for message in tool_messages],
+            [message.status for message in tool_messages],
         )
         self.messages.extend(tool_messages)
         # Commit tool responses before exposing them or requesting another model step.
@@ -983,13 +995,13 @@ class Engine:
 
         context_kwargs = {
             "messages": list(self.messages),
-            "agent_name": getattr(self.config, "agent_name", "XBotv2"),
-            "agent_role": getattr(self.config, "agent_role", ""),
-            "user_name": getattr(self.user_context, "user_name", "User"),
-            "user_id": getattr(self.user_context, "user_id", "default-user"),
-            "developer_instructions": getattr(self.config, "instructions", ""),
-            "instructions": getattr(self.config, "agent_instructions", ""),
-            "memory": getattr(self.config, "memory", ""),
+            "agent_name": self.config.agent_name,
+            "agent_role": self.config.agent_role,
+            "user_name": self.user_context.user_name,
+            "user_id": self.user_context.user_id,
+            "developer_instructions": self.config.instructions,
+            "instructions": self.config.agent_instructions,
+            "memory": self.config.memory,
             "sandbox_summary": (
                 self.sandbox_policy.describe() if self.sandbox_policy else ""
             ),
@@ -1027,22 +1039,19 @@ class Engine:
                 turn_complete=True,
             )
 
-        if hasattr(self.context_builder, "build_components"):
-            components = self.context_builder.build_components(**context_kwargs)
-            component_ctx = self._make_hook_context(
-                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                context_components=components,
-            )
-            await self.hook_manager.run(
-                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                component_ctx,
-                short_circuit=False,
-            )
-            if component_ctx.context_components is not None:
-                components = component_ctx.context_components
-            context_messages = self.context_builder.messages_from_components(components)
-        else:
-            context_messages = self.context_builder.build(**context_kwargs)
+        components = self.context_builder.build_components(**context_kwargs)
+        component_ctx = self._make_hook_context(
+            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+            context_components=components,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+            component_ctx,
+            short_circuit=False,
+        )
+        if component_ctx.context_components is not None:
+            components = component_ctx.context_components
+        context_messages = self.context_builder.messages_from_components(components)
 
         context_messages = bound_context_messages(
             context_messages,
@@ -1272,7 +1281,7 @@ class Engine:
         except NotImplementedError:
             return self.llm
 
-    def _llm_without_tools(self) -> Any:
+    def _llm_without_tools(self) -> BaseProvider:
         try:
             return self.llm.bind_tools([])
         except NotImplementedError:
@@ -1288,8 +1297,8 @@ class Engine:
 
     async def _stream_model_response(
         self,
-        llm: Any,
-        context_messages: list[Any],
+        llm: BaseProvider,
+        context_messages: list[Message],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
@@ -1372,11 +1381,9 @@ class Engine:
         post_compact_ctx = self._make_hook_context(
             HookStage.POST_COMPACT,
             compact_reason=compact_reason,
+            previous_message_count=previous_message_count,
+            current_message_count=len(self.messages),
         )
-        post_compact_ctx.state.update({
-            "previous_message_count": previous_message_count,
-            "current_message_count": len(self.messages),
-        })
         await self.hook_manager.run(HookStage.POST_COMPACT, post_compact_ctx, short_circuit=False)
         await self.save_messages(
             history_operation=(f"compact:{compact_reason}", 0)
@@ -1637,6 +1644,8 @@ class Engine:
         tool_result: Any = None,
         stop_reason: str | None = None,
         compact_reason: str | None = None,
+        previous_message_count: int | None = None,
+        current_message_count: int | None = None,
         permission_decision: str | None = None,
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
@@ -1645,7 +1654,7 @@ class Engine:
         return HookContext(
             stage=stage,
             request_id=self._request_id.get(),
-            state={"messages": self.messages},
+            messages=self.messages,
             config=self.config,
             tools=self.tool_registry,
             sandbox=self.sandbox_policy,
@@ -1658,7 +1667,7 @@ class Engine:
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,
                 workspace_root=self.workspace_root,
-                provider=str(getattr(self.config, "provider", "default")),
+                provider=self.config.provider,
                 turn_count=self.turn_count,
             ),
             user_input=user_input,
@@ -1673,6 +1682,8 @@ class Engine:
             tool_result=tool_result,
             stop_reason=stop_reason,
             compact_reason=compact_reason,
+            previous_message_count=previous_message_count,
+            current_message_count=current_message_count,
             permission_decision=permission_decision,
             client_event=client_event,
             error=error,
@@ -1704,17 +1715,21 @@ class Engine:
         item = await self.take_pending_mailbox()
         if item is None:
             return []
-        self.state_store.append_mailbox_delivery(item)
+        self.state_store.append_mailbox_delivery(
+            mailbox_id=item.id,
+            kind=item.kind,
+            message=item.message,
+            request_id=item.request_id,
+        )
+        content, images, artifacts = decode_mailbox_message(item)
         if item.kind == "general":
-            payload = self.mailbox_content(item)
             self.messages.append(self._runtime_message(
-                self._runtime_event_content(payload, mailbox_message=item),
+                self._runtime_event_content(content, mailbox_message=item),
                 item,
             ))
             await self.save_messages()
             return []
 
-        content, images, artifacts = self._mailbox_user_content(item)
         accepted = await self._accept_user_message(
             content,
             images=images,
@@ -1778,25 +1793,6 @@ class Engine:
         return _TurnStartResult(user_input, events, True)
 
     @staticmethod
-    def _mailbox_user_content(
-        item: MailboxMessage,
-    ) -> tuple[str, list[ImageContent], list[dict[str, Any]]]:
-        if isinstance(item.message, str):
-            return item.message, [], []
-        return (
-            str(item.message.get("content") or ""),
-            [
-                ImageContent.from_dict(image)
-                for image in item.message.get("images") or []
-            ],
-            [
-                dict(artifact)
-                for artifact in item.message.get("artifacts") or []
-                if isinstance(artifact, dict)
-            ],
-        )
-
-    @staticmethod
     def _runtime_message(
         content: str,
         item: MailboxMessage | None,
@@ -1823,22 +1819,14 @@ class Engine:
         )
 
     @staticmethod
-    def mailbox_content(message: MailboxMessage) -> str:
-        if isinstance(message.message, str):
-            return message.message
-        return json.dumps(
-            message.message,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-
-    @staticmethod
     def _runtime_event_content(
         payload: str,
         *,
         mailbox_message: MailboxMessage | None = None,
     ) -> str:
-        message = getattr(mailbox_message, "message", None)
+        message = (
+            mailbox_message.message if mailbox_message is not None else None
+        )
         attributes = {
             "kind": "general",
             "source": "mailbox",

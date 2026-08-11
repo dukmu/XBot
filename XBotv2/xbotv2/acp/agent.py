@@ -60,7 +60,6 @@ from xbotv2.api.paths import RuntimePaths
 from xbotv2.config.loader import load_provider_names, load_runtime_config
 from xbotv2.core.operations import (
     OperationError,
-    fork_persisted_session,
     fork_session as fork_runtime_session,
     select_agent,
     select_provider,
@@ -255,14 +254,17 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
 
-        active = (await self.manager.active_threads()).get(
-            (session_id, "agent")
-        )
+        active = await self.manager.active_threads()
+        contexts = [
+            runtime
+            for (active_session_id, _), runtime in active.items()
+            if active_session_id == session_id
+        ]
         try:
-            forked_id = (
-                await fork_runtime_session(active)
-                if active is not None
-                else fork_persisted_session(self.paths, session_id)
+            forked_id = await fork_runtime_session(
+                self.paths,
+                session_id,
+                *contexts,
             )
         except OperationError as exc:
             raise RequestError.invalid_params({

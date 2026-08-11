@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from xbotv2.config.models import RuntimeConfig
+
 
 @pytest.fixture
 def skill_workspace(tmp_path):
@@ -297,7 +299,7 @@ Body
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [event async for event in engine.run_turn("load manual skill")]
@@ -434,7 +436,7 @@ Body
                 workspace_root=str(temp_workspace),
             ),
             permission_system=permissions,
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [event async for event in engine.run_turn("test restrictions")]

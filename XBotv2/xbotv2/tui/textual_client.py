@@ -41,7 +41,6 @@ from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
 from xbotv2.tui.session_config import TuiSessionConfig
 from xbotv2.tui.textual_theme import TEXTUAL_TUI_CSS
-from xbotv2.tui.textual_state import route_submitted_text
 from xbotv2.tui.trace import trace_event
 from xbotv2.tui.textual_widgets import (
     ComposerTextArea,
@@ -337,19 +336,15 @@ class XBotTextualApp(App[None]):
                 await self._render_new_transcript_entries()
             await self._handle_slash_command(spec)
             return
-        route = route_submitted_text(
-            self.state,
-            self._answers,
-            self._permission_decisions,
-            text,
-        )
-        if route == "user_input":
+        if self.state.pending_user_input_payload is not None:
+            self._answers.put_nowait(text)
             self._remember_input(text)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {text}")
             return
-        if route == "permission":
+        if self.state.pending_permission_payload is not None:
             parsed = _parse_permission_decision(text)
+            self._permission_decisions.put_nowait(parsed)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
             return

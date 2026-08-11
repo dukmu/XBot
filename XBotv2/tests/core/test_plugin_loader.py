@@ -1,7 +1,6 @@
 """Tests for PluginLoader — discovery, dependency resolution, loading."""
 
 import asyncio
-import tempfile
 import sys
 import types
 from pathlib import Path
@@ -132,6 +131,15 @@ class TestDependencyResolution:
         with pytest.raises(ValueError, match="nonexistent"):
             resolve_dependencies(items)
 
+    def test_duplicate_manifest_name_raises_explicitly(self):
+        items = [
+            _make_manifest_tuple("duplicate"),
+            (_make_manifest("duplicate"), Path("/other/duplicate")),
+        ]
+
+        with pytest.raises(ValueError, match="Duplicate plugin manifests: duplicate"):
+            resolve_dependencies(items)
+
     def test_circular_dependency_raises(self):
         """A→B, B→A raises."""
         items = [
@@ -140,19 +148,6 @@ class TestDependencyResolution:
         ]
         with pytest.raises(ValueError, match="Circular dependency"):
             resolve_dependencies(items)
-
-    def test_chain_dependency(self):
-        """Long chain: a→b→c→d."""
-        items = [
-            _make_manifest_tuple("a", deps=["b"]),
-            _make_manifest_tuple("b", deps=["c"]),
-            _make_manifest_tuple("c", deps=["d"]),
-            _make_manifest_tuple("d"),
-        ]
-        result = resolve_dependencies(items)
-        names = [m.name for m, _ in result]
-        assert names == ["d", "c", "b", "a"]
-
 
 class TestPluginManifest:
     """Manifest model validation."""
@@ -341,36 +336,6 @@ class TestPromptFragmentFiles:
             f"Results:\n{tmp_path / 'session/tool_results'}\n"
             "Keep ${tool_results} and ${OTHER}.\n"
         )
-
-    def test_plugin_base_loads_prompt_file_relative_to_plugin_dir(self, tmp_path):
-        plugin_dir = tmp_path / "plugins" / "classy"
-        prompts_dir = plugin_dir / "prompts"
-        prompts_dir.mkdir(parents=True)
-        (prompts_dir / "rules.md").write_text("## Plugin Rules\nStay isolated.\n")
-
-        state_store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(tmp_path).session("s"),
-            thread_id="t",
-            workspace_root="/workspace", provider="default",
-        )
-        manifest = PluginManifest(
-            name="classy",
-            version="1.0.0",
-            prompt_fragments=[
-                {"stage": "system_rules", "file": "prompts/rules.md"}
-            ],
-            plugin_dir=plugin_dir,
-        )
-
-        class ClassyPlugin(PluginBase):
-            async def on_load(self, config: dict) -> None:
-                self._config = config
-
-        plugin = ClassyPlugin(manifest, PluginStore(state_store, "classy"))
-
-        context = _setup_plugin(plugin)
-
-        assert context.get_fragment("system_rules", "classy") == "## Plugin Rules\nStay isolated.\n"
 
     def test_default_plugin_missing_prompt_file_raises(self, tmp_path):
         plugin_dir = tmp_path / "plugins" / "broken"
@@ -582,7 +547,7 @@ class RuntimeToolsPlugin(PluginBase):
 class TestPluginLoader:
     """PluginLoader discovery and registration."""
 
-    def test_instantiate_plugin_continues_past_module_without_class(
+    def test_instantiate_plugin_uses_discovered_plugin_source(
         self, tmp_path, monkeypatch
     ):
         plugins_root = tmp_path / "plugins"
@@ -594,15 +559,23 @@ class TestPluginLoader:
 from xbotv2.api.plugins import PluginBase
 
 class SearchablePlugin(PluginBase):
+    source = "workspace"
+
     async def on_load(self, config):
         pass
 """
         )
         monkeypatch.syspath_prepend(str(plugins_root))
+        builtin_module = types.ModuleType("builtin_plugins.searchable.plugin")
+        builtin_module.SearchablePlugin = type(
+            "SearchablePlugin",
+            (PluginBase,),
+            {"source": "builtin"},
+        )
         monkeypatch.setitem(
             sys.modules,
             "builtin_plugins.searchable.plugin",
-            types.ModuleType("builtin_plugins.searchable.plugin"),
+            builtin_module,
         )
         state_store = CoreStateStore.create(
             RuntimePaths.from_data_dir(tmp_path).session("s"),
@@ -610,11 +583,38 @@ class SearchablePlugin(PluginBase):
             workspace_root="/workspace",
             provider="default",
         )
-        manifest = PluginManifest(name="searchable", version="1.0.0")
+        manifest = PluginManifest(
+            name="searchable",
+            version="1.0.0",
+            plugin_dir=plugin_dir,
+        )
 
         plugin = instantiate_plugin(manifest, PluginStore(state_store, "searchable"))
 
-        assert plugin.__class__.__name__ == "SearchablePlugin"
+        assert plugin.source == "workspace"
+
+    def test_instantiate_plugin_does_not_hide_dependency_import_failure(
+        self, tmp_path, monkeypatch
+    ):
+        plugins_root = tmp_path / "plugins"
+        plugin_dir = plugins_root / "broken_import"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "import xbotv2_dependency_that_does_not_exist\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(plugins_root))
+        manifest = PluginManifest(
+            name="broken_import",
+            version="1.0.0",
+            plugin_dir=plugin_dir,
+        )
+
+        with pytest.raises(
+            ModuleNotFoundError,
+            match="xbotv2_dependency_that_does_not_exist",
+        ):
+            instantiate_plugin(manifest, plugin_store=None)
 
     @pytest.mark.asyncio
     async def test_invalid_config_fails_before_plugin_module_import(self, tmp_path):

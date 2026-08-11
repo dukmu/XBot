@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from xbotv2.api.messages import ModelChunk
+from xbotv2.api.messages import Message, ModelChunk
 from xbotv2.api.providers import InputModality, ProviderCapabilities
 from xbotv2.api.prompts import prompt_container, prompt_element
 
@@ -38,10 +38,10 @@ class ProviderRetryExhaustedError(RuntimeError):
         )
 
 
-def attachment_prompt(message: Any) -> str:
+def attachment_prompt(message: Message) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
-    for value in getattr(message, "artifact", None) or []:
+    for value in message.artifact or []:
         item = value.to_dict() if hasattr(value, "to_dict") else value
         if not isinstance(item, dict) or not item.get("id"):
             continue
@@ -119,7 +119,7 @@ class BaseProvider(ABC):
 
     async def astream(
         self,
-        messages: list[Any],
+        messages: list[Message],
         **kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         """Retry transient failures until output begins or the limit is reached."""
@@ -164,23 +164,17 @@ class BaseProvider(ABC):
             raise ValueError("Image path is outside the session media store")
         return base64.b64encode(target.read_bytes()).decode("ascii")
 
-    def _validate_message_capabilities(self, messages: list[Any]) -> None:
+    def _validate_message_capabilities(self, messages: list[Message]) -> None:
         image_messages = [
-            message for message in messages
-            if getattr(message, "images", None)
+            message for message in messages if message.images
         ]
         if image_messages:
             if any(
-                getattr(message, "role", "") not in {"user", "tool"}
+                message.role not in {"user", "tool"}
                 for message in image_messages
             ):
                 raise ValueError("Image content is supported only in user or tool messages")
-            capabilities = getattr(
-                self,
-                "capabilities",
-                ProviderCapabilities(),
-            )
-            if not capabilities.supports("image"):
+            if not self.capabilities.supports("image"):
                 raise ValueError(
                     f"Provider model {self.model!r} does not support image input"
                 )
@@ -188,7 +182,7 @@ class BaseProvider(ABC):
     @abstractmethod
     def _astream_once(
         self,
-        messages: list[Any],
+        messages: list[Message],
         **kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         """Perform one provider request."""
@@ -246,10 +240,4 @@ def usage_metadata(
         if value:
             result[key] = value
     return result
-
-
-def message_role(message: Any) -> str:
-    return str(getattr(message, "role", "") or "assistant")
-
-
 __all__ = ["BaseProvider", "ProviderRetryExhaustedError"]

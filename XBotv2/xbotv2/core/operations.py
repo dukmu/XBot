@@ -12,8 +12,10 @@ from typing import Any
 
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS
 from xbotv2.core.session import SessionRuntime
+from xbotv2.tools.permissions import PermissionIntersection
 
 
 class OperationError(RuntimeError):
@@ -57,13 +59,6 @@ async def undo_history(ctx: SessionRuntime, count: int) -> list[Any]:
     return kept
 
 
-async def fork_session(ctx: SessionRuntime) -> str:
-    require_forkable(ctx)
-    async with ctx.turn_lock:
-        await ctx.engine.save_messages()
-        return fork_persisted_session(ctx.paths, ctx.session_id)
-
-
 def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
     session_id = _new_fork_id()
     while paths.session(session_id).root.exists():
@@ -73,6 +68,21 @@ def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target)
     return session_id
+
+
+async def fork_session(
+    paths: RuntimePaths,
+    source_session_id: str,
+    *contexts: SessionRuntime,
+) -> str:
+    """Persist and copy one idle session while all live threads are locked."""
+    require_forkable(*contexts)
+    async with AsyncExitStack() as stack:
+        for ctx in sorted(contexts, key=lambda item: item.thread_id):
+            await stack.enter_async_context(ctx.turn_lock)
+        for ctx in contexts:
+            await ctx.engine.save_messages()
+        return fork_persisted_session(paths, source_session_id)
 
 
 def require_forkable(*contexts: SessionRuntime) -> None:
@@ -91,14 +101,14 @@ def require_forkable(*contexts: SessionRuntime) -> None:
 
 async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
     _require_idle(ctx, "switch Agent")
-    registry = getattr(ctx.engine, "agent_registry", None)
+    registry = ctx.engine.agent_registry
     definition = registry.get(name) if registry is not None else None
     if definition is None or definition.mode == "subagent":
         raise OperationError(
             "agent_not_found",
             f"Unknown primary Agent: {name}",
         )
-    active = str(getattr(ctx.engine.config, "agent_name", "XBotv2"))
+    active = ctx.engine.config.agent_name
     if definition.name != active:
         async with ctx.turn_lock:
             await _activate_agent(ctx, definition)
@@ -106,19 +116,19 @@ async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
         "active": definition.name,
         "agent_name": definition.name,
         "provider": ctx.provider_name,
-        "model": str(getattr(ctx.engine, "model", "")),
-        "model_mode": str(getattr(ctx.engine, "model_mode", "")),
-        "context_window": int(getattr(ctx.engine, "context_window", 0)),
+        "model": ctx.engine.model,
+        "model_mode": ctx.engine.model_mode,
+        "context_window": ctx.engine.context_window,
     }
 
 
 async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
     """Reload Agent definitions and reapply the active primary Agent."""
     _require_idle(ctx, "reload Agents")
-    loader = getattr(ctx.engine, "plugin_loader", None)
+    loader = ctx.engine.plugin_loader
     if loader is None:
         raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
-    active = str(getattr(ctx.engine.config, "agent_name", "default"))
+    active = ctx.engine.config.agent_name
     async with ctx.turn_lock:
         if not await loader.reload("agents"):
             raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
@@ -148,8 +158,11 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
         )
     async with ctx.turn_lock:
         config = load_provider_config(ctx.paths, name)
-        if not getattr(ctx.engine, "llm_is_override", False):
-            ctx.engine.llm = create_llm(config)
+        if not ctx.engine.llm_is_override:
+            ctx.engine.llm = create_llm(
+                config,
+                media_root=str(ctx.engine.state_store.root),
+            )
         ctx.engine.model = config.model
         ctx.engine.model_mode = config.model_mode
         ctx.engine.context_window = config.max_context_tokens
@@ -177,8 +190,8 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
 
 def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
-    background = getattr(ctx.engine, "background_tasks", None)
-    subagents = getattr(ctx.engine, "subagents", None)
+    background = ctx.engine.background_tasks
+    subagents = ctx.engine.subagents
     if background is not None:
         tasks.extend(background.snapshots())
     if subagents is not None:
@@ -187,8 +200,8 @@ def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
 
 
 async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
-    background = getattr(ctx.engine, "background_tasks", None)
-    subagents = getattr(ctx.engine, "subagents", None)
+    background = ctx.engine.background_tasks
+    subagents = ctx.engine.subagents
     manager = subagents if task_id.startswith("agent-task-") else background
     if manager is None:
         raise OperationError("task_not_found", f"Unknown task: {task_id}")
@@ -204,8 +217,8 @@ async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
 
 async def stop_all_tasks(ctx: SessionRuntime) -> list[dict[str, Any]]:
     stopped: list[dict[str, Any]] = []
-    background = getattr(ctx.engine, "background_tasks", None)
-    subagents = getattr(ctx.engine, "subagents", None)
+    background = ctx.engine.background_tasks
+    subagents = ctx.engine.subagents
     if background is not None:
         stopped.extend(await background.stop_all())
     if subagents is not None:
@@ -278,12 +291,14 @@ async def _activate_agent(
     config.max_output_tokens = provider.max_output_tokens
     llm = (
         ctx.engine.llm
-        if getattr(ctx.engine, "llm_is_override", False)
-        else create_llm(provider)
+        if ctx.engine.llm_is_override
+        else create_llm(
+            provider,
+            media_root=str(ctx.engine.state_store.root),
+        )
     )
 
     ctx.engine.config = config
-    ctx.engine.startup_config = config.model_copy(deep=True)
     _apply_live_policies(ctx, config)
     ctx.engine.llm = llm
     ctx.engine.model = provider.model
@@ -318,10 +333,7 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
     base_config = load_runtime_config(
         ctx.paths, Path(ctx.workspace_root), ctx.session_id
     )
-    state_store = getattr(ctx.engine, "state_store", None)
-    metadata = (
-        state_store.read_thread_metadata() if state_store is not None else {}
-    )
+    metadata = ctx.engine.state_store.read_thread_metadata()
     stored_definition = metadata.get("agent_definition")
     if isinstance(stored_definition, dict):
         apply_agent_definition(
@@ -332,15 +344,11 @@ def reload_live_policies(ctx: SessionRuntime) -> None:
                 for key, value in stored_definition.items()
             }),
         )
-    ctx.engine.startup_config = base_config.model_copy(deep=True)
     _apply_live_policies(ctx, base_config)
 
 
-def _apply_live_policies(ctx: SessionRuntime, config: Any) -> None:
+def _apply_live_policies(ctx: SessionRuntime, config: RuntimeConfig) -> None:
     """Apply one already-resolved policy to live runtime objects."""
-    from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
-    from xbotv2.tools.sandbox import SandboxPolicy
-
     permissions = config.permissions
     sandbox = config.sandbox
     ctx.engine.config.permissions = permissions
@@ -348,24 +356,9 @@ def _apply_live_policies(ctx: SessionRuntime, config: Any) -> None:
     live_permissions = ctx.engine.permission_system
     if isinstance(live_permissions, PermissionIntersection):
         live_permissions.child.replace_rules(permissions)
-    elif isinstance(live_permissions, PermissionSystem):
+    else:
         live_permissions.replace_rules(permissions)
-    else:
-        ctx.engine.permission_system = PermissionSystem(
-            permissions,
-            variables=ctx.engine.runtime_variables,
-        )
-    live_sandbox = ctx.engine.sandbox_policy
-    if isinstance(live_sandbox, SandboxPolicy):
-        live_sandbox.replace_config(sandbox)
-    else:
-        ctx.engine.sandbox_policy = SandboxPolicy(
-            sandbox,
-            data_root=ctx.paths.data_dir,
-            workspace_root=Path(ctx.workspace_root),
-            session_root=getattr(live_sandbox, "session_root", None),
-            variables=ctx.engine.runtime_variables,
-        )
+    ctx.engine.sandbox_policy.replace_config(sandbox)
 
 
 def _require_idle(ctx: SessionRuntime, action: str) -> None:

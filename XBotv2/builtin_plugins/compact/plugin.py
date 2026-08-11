@@ -144,7 +144,7 @@ class CompactPlugin(PluginBase):
     async def _on_before_context(self, ctx: HookContext):
         if not self._manual_requested:
             return None
-        messages = list(ctx.state.get("messages") or [])
+        messages = list(ctx.messages)
         self._manual_requested = False
         return await self._compact(
             ctx,
@@ -157,7 +157,7 @@ class CompactPlugin(PluginBase):
     async def _on_before_model_request(self, ctx: HookContext):
         if not self._automatic:
             return None
-        messages = list(ctx.state.get("messages") or [])
+        messages = list(ctx.messages)
         request = ctx.model_request or {}
         context_messages = list(request.get("messages") or [])
         tools = list(request.get("tools") or [])

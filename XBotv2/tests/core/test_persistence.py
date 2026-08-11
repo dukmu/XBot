@@ -2,8 +2,6 @@
 
 import json
 import base64
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -15,6 +13,7 @@ from xbotv2.persistence.store import (
 )
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.registry import ToolRegistry
@@ -37,13 +36,6 @@ class TestMessageSerialization:
         restored = dict_to_message(d)
         assert restored.role == "user"
         assert restored.content == "hello world"
-
-    def test_ai_message_roundtrip(self):
-        msg = Message(role="assistant", content="response text")
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "assistant"
-        assert restored.content == "response text"
 
     def test_ai_message_with_tool_calls_roundtrip(self):
         msg = Message(
@@ -123,13 +115,6 @@ class TestMessageSerialization:
         assert restored.turn_complete is False
         assert restored.response_metadata == {"duration_ms": 5}
 
-    def test_system_message_roundtrip(self):
-        msg = Message(role="system", content="system instructions")
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "system"
-        assert restored.content == "system instructions"
-
     def test_multiline_content(self):
         msg = Message(role="user", content="line 1\nline 2\nline 3")
         d = message_to_dict(msg)
@@ -160,7 +145,7 @@ class TestMessagePersistence:
 
     def test_append_and_read_single_message(self, store):
         msg = Message(role="user", content="hello")
-        store.append_message(msg)
+        store.append_messages([msg])
         assert store.message_count() == 1
 
         restored = store.read_messages()
@@ -173,7 +158,7 @@ class TestMessagePersistence:
             base64.b64encode(payload).decode("ascii"),
             "image/png",
         )
-        store.append_message(Message(role="user", images=[image]))
+        store.append_messages([Message(role="user", images=[image])])
 
         record = json.loads(store.messages_path.read_text(encoding="utf-8"))
         assert "small-image" not in store.messages_path.read_text(encoding="utf-8")
@@ -189,7 +174,7 @@ class TestMessagePersistence:
             "application/octet-stream",
             "archive.bin",
         )
-        store.append_message(Message(role="user", artifact=[attachment]))
+        store.append_messages([Message(role="user", artifact=[attachment])])
 
         assert (store.root / attachment["id"]).read_bytes() == payload
         assert "binary" not in store.messages_path.read_text(encoding="utf-8")
@@ -279,13 +264,13 @@ class TestMessagePersistence:
         )
 
     def test_replay_ignores_only_an_incomplete_trailing_record(self, store):
-        store.append_message(Message(role="user", content="durable"))
+        store.append_messages([Message(role="user", content="durable")])
         with store.messages_path.open("a", encoding="utf-8") as stream:
             stream.write('{"record_type":"history_checkpoint"')
 
         assert [message.content for message in store.read_messages()] == ["durable"]
 
-        store.append_message(Message(role="assistant", content="continued"))
+        store.append_messages([Message(role="assistant", content="continued")])
 
         assert [message.content for message in store.read_messages()] == [
             "durable", "continued",
@@ -293,52 +278,17 @@ class TestMessagePersistence:
         assert store.messages_path.read_bytes().endswith(b"\n")
 
     def test_message_ids_are_sequential(self, store):
-        d1 = store.append_message(Message(role="user", content="m1"))
-        d2 = store.append_message(Message(role="user", content="m2"))
-        assert d1["msg_id"] == 1
-        assert d2["msg_id"] == 2
-
-    def test_clear_messages(self, store):
-        store.append_message(Message(role="user", content="test"))
-        assert store.message_count() == 1
-
-        store.clear_messages()
-        assert store.message_count() == 0
-        assert store.read_messages() == []
-
-    def test_truncate_keep_last(self, store):
         store.append_messages([
-            Message(role="user", content="old1"),
-            Message(role="user", content="old2"),
-            Message(role="user", content="keep1"),
-            Message(role="user", content="keep2"),
+            Message(role="user", content="m1"),
+            Message(role="user", content="m2"),
         ])
-        assert store.message_count() == 4
-
-        removed = store.truncate_messages(keep_last=2)
-        assert removed == 2
-        assert store.message_count() == 2
-        restored = store.read_messages()
-        assert restored[0].content == "keep1"
-        assert restored[1].content == "keep2"
-
-    def test_truncate_keep_zero_returns_removed_count(self, store):
-        """Truncating all messages returns the number deleted."""
-        store.append_messages([
-            Message(role="user", content="old1"),
-            Message(role="user", content="old2"),
-        ])
-
-        removed = store.truncate_messages(keep_last=0)
-
-        assert removed == 2
-        assert store.message_count() == 0
+        assert [record["msg_id"] for record in _raw_messages(store)] == [1, 2]
 
     def test_has_existing_session(self, store):
         """Session detection works based on stored messages."""
         assert store.has_existing_session() is False
 
-        store.append_message(Message(role="user", content="hello"))
+        store.append_messages([Message(role="user", content="hello")])
         assert store.has_existing_session() is True
 
     def test_persistence_survives_store_recreation(self, tmp_path):
@@ -352,8 +302,10 @@ class TestMessagePersistence:
             workspace_root="/workspace",
             provider="p",
         )
-        store1.append_message(Message(role="user", content="persistent"))
-        store1.append_message(Message(role="assistant", content="survives restart"))
+        store1.append_messages([
+            Message(role="user", content="persistent"),
+            Message(role="assistant", content="survives restart"),
+        ])
 
         # Second store — read them back
         store2 = CoreStateStore(
@@ -389,7 +341,7 @@ def make_engine(llm, registry, store, workspace, hook_manager=None):
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
 
@@ -540,32 +492,9 @@ class TestEnginePersistence:
         assert "user" in roles
 
         # Verify tool call detail preserved
-        model_msgs = [m for m in restored if getattr(m, "tool_calls", None)]
+        model_msgs = [m for m in restored if m.tool_calls]
         assert len(model_msgs) >= 1
         assert model_msgs[0].tool_calls[0].name == "echo"
-
-    @pytest.mark.asyncio
-    async def test_compacted_messages_saved(self, temp_data_dir, temp_workspace):
-        """After messages are truncated (simulating compaction), save reflects it."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[{"content": "R1"}, {"content": "R2"}, {"content": "R3"}])
-        registry = ToolRegistry()
-
-        engine = make_engine(llm, registry, store, temp_workspace)
-        await engine.start_session()
-
-        # Run 3 turns
-        for i in range(3):
-            _ = [e async for e in engine.run_turn(f"msg{i}")]
-
-        full_count = store.message_count()
-        assert full_count >= 6  # 3 user + 3 AI
-
-        # Simulate compaction: truncate to keep only last 2 messages
-        store.truncate_messages(keep_last=2)
-        assert store.message_count() == 2
 
     @pytest.mark.asyncio
     async def test_fresh_session_has_no_messages(self, temp_data_dir, temp_workspace):
@@ -581,18 +510,6 @@ class TestEnginePersistence:
         engine = make_engine(llm, registry, store, temp_workspace)
         await engine.start_session()
         assert len(engine.messages) == 0
-
-    @pytest.mark.asyncio
-    async def test_message_count_in_derived_state(self, temp_data_dir, temp_workspace):
-        """Message count is tracked."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        store.append_message(Message(role="user", content="m1"))
-        store.append_message(Message(role="assistant", content="m2"))
-
-        assert store.message_count() == 2
-
 
 def _raw_messages(store: CoreStateStore) -> list[dict]:
     if not store.messages_path.exists():

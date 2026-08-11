@@ -10,6 +10,10 @@ from xbotv2.core.session import SessionRuntime
 
 
 class FakeEngine:
+    background_tasks = None
+    plugin_loader = None
+    subagents = None
+
     def __init__(self) -> None:
         self.enqueue_mailbox = None
         self.client_event_sink = None
@@ -23,10 +27,6 @@ class FakeEngine:
 
     async def run_mailbox_hook(self, stage, message, error=None):
         del stage, message, error
-
-    @staticmethod
-    def mailbox_content(item):
-        return str(item.message)
 
     async def run_turn(
         self,

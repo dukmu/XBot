@@ -87,6 +87,51 @@ class TestBootstrapBasics:
                 llm_override=MockLLM(responses=[]),
             )
 
+    @pytest.mark.asyncio
+    async def test_default_provider_argument_uses_merged_runtime_selection(
+        self, temp_data_dir, temp_workspace
+    ):
+        paths = RuntimePaths.from_data_dir(temp_data_dir)
+        paths.providers_config.write_text(
+            yaml.safe_dump({
+                "default": "global",
+                "providers": {
+                    "global": {"provider": "mock", "model": "global"},
+                    "workspace": {
+                        "provider": "mock",
+                        "model": "workspace",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        workspace_config = temp_workspace / ".xbot" / "config.yaml"
+        workspace_config.parent.mkdir(parents=True)
+        workspace_config.write_text("provider: workspace\n", encoding="utf-8")
+
+        engine = await bootstrap(
+            paths=paths,
+            session_id="configured-provider",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.config.provider == "workspace"
+        assert engine.model == "workspace"
+
+        explicit = await bootstrap(
+            paths=paths,
+            provider_name="global",
+            session_id="explicit-provider",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert explicit.config.provider == "global"
+        assert explicit.model == "global"
+
     def test_cli_reports_unknown_provider_without_traceback(
         self,
         temp_data_dir,
@@ -775,13 +820,13 @@ class ConfiguredPlugin(PluginBase):
             llm_override=MockLLM(responses=[]),
         )
 
-        state = engine.state_store.read_state()
-        assert state["session_id"] != "default"
-        assert "-" in state["session_id"]
+        session_id = engine.state_store.session_id
+        assert session_id != "default"
+        assert "-" in session_id
         assert (
             temp_data_dir
             / "sessions"
-            / state["session_id"]
+            / session_id
             / "threads"
             / "test-thread"
             / "state"

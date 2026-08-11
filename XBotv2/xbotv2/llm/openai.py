@@ -6,7 +6,9 @@ import json
 from typing import Any, AsyncIterator, Callable
 
 from xbotv2.api.messages import (
+    ContentPart,
     ImagePart,
+    Message,
     ModelChunk,
     ModelResponse,
     ReasoningPart,
@@ -17,7 +19,6 @@ from xbotv2.api.tools import ToolCall, ToolCallDelta
 from xbotv2.llm.base import (
     BaseProvider,
     attachment_prompt,
-    message_role,
     usage_metadata,
 )
 
@@ -59,7 +60,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
     async def _astream_once(
         self,
-        messages: list[Any],
+        messages: list[Message],
         **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
@@ -173,24 +174,23 @@ class OpenAICompatibleProvider(BaseProvider):
 
 
 def openai_messages(
-    messages: list[Any],
+    messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     system_parts = [
-        str(getattr(message, "content", ""))
+        message.content
         for message in messages
-        if message_role(message) == "system"
-        and str(getattr(message, "content", "")).strip()
+        if message.role == "system" and message.content.strip()
     ]
     if system_parts:
         result.append({"role": "system", "content": "\n\n".join(system_parts)})
     for message in messages:
-        role = message_role(message)
+        role = message.role
         if role == "system":
             continue
-        content = getattr(message, "content", "")
+        content = message.content
         if role == "tool":
             if message.images:
                 raise ValueError(
@@ -200,7 +200,7 @@ def openai_messages(
                 {
                     "role": "tool",
                     "content": str(content),
-                    "tool_call_id": getattr(message, "tool_call_id", ""),
+                    "tool_call_id": message.tool_call_id,
                 }
             )
             continue
@@ -228,7 +228,7 @@ def openai_messages(
 
 
 def _openai_content(
-    parts: list[Any],
+    parts: list[ContentPart],
     image_loader: Callable[[str], str] | None,
     attachment_text: str = "",
 ) -> str | list[dict[str, Any]]:

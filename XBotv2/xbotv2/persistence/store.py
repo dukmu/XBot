@@ -105,9 +105,6 @@ def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
 
 
 class CoreStateStore:
-
-    SCHEMA_VERSION = 3
-
     def __init__(
         self,
         paths: SessionPaths | ThreadPaths,
@@ -132,7 +129,7 @@ class CoreStateStore:
         self._max_msg_id = 0
         # References to the messages already persisted in the journal.
         # None means unknown (rebuilt from disk on the next sync).
-        self._persisted_refs: list[Any] | None = None
+        self._persisted_refs: list[Message] | None = None
         self._persisted_fingerprints: list[int] | None = None
 
     @classmethod
@@ -158,21 +155,6 @@ class CoreStateStore:
         if not store.messages_path.exists():
             store.messages_path.touch()
         return store
-
-    def append_message(self, msg: Message) -> dict[str, Any]:
-        _discard_incomplete_tail(self.messages_path)
-        d = message_to_dict(msg)
-        d["msg_id"] = self._next_message_id()
-        d["ts"] = now_iso()
-        with open(self.messages_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(d, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        if self._persisted_refs is not None:
-            self._persisted_refs.append(msg)
-            assert self._persisted_fingerprints is not None
-            self._persisted_fingerprints.append(msg.fingerprint())
-        return d
 
     def store_image(self, data: str, media_type: str) -> ImageContent:
         """Persist one base64 image and return its journal-safe reference."""
@@ -314,13 +296,20 @@ class CoreStateStore:
         self._persisted_refs = []
         self._persisted_fingerprints = []
 
-    def append_mailbox_delivery(self, message: Any) -> None:
+    def append_mailbox_delivery(
+        self,
+        *,
+        mailbox_id: str,
+        kind: str,
+        message: str | dict[str, Any],
+        request_id: str,
+    ) -> None:
         self._append_record({
             "record_type": "mailbox_delivery",
-            "mailbox_id": str(getattr(message, "id", "")),
-            "kind": str(getattr(message, "kind", "")),
-            "message": _json_safe(getattr(message, "message", None)),
-            "request_id": str(getattr(message, "request_id", "")),
+            "mailbox_id": mailbox_id,
+            "kind": kind,
+            "message": _json_safe(message),
+            "request_id": request_id,
         })
 
     def read_messages(self) -> list[Message]:
@@ -359,42 +348,8 @@ class CoreStateStore:
     def message_count(self) -> int:
         return len(self.read_messages())
 
-    def record_count(self) -> int:
-        return sum(1 for _ in _iter_jsonl(self.messages_path))
-
-    def truncate_messages(self, keep_last: int = 0) -> int:
-        messages = self.read_messages()
-        if len(messages) <= keep_last:
-            return 0
-        removed = len(messages) - max(0, keep_last)
-        if keep_last <= 0:
-            self.append_clear()
-        else:
-            self.append_checkpoint(messages[-keep_last:], reason="truncate")
-        return removed
-
-    def clear_messages(self) -> None:
-        self.append_clear()
-
     def has_existing_session(self) -> bool:
-        return self.messages_path.exists() and self.record_count() > 0
-
-    def read_state(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "thread_id": self.thread_id,
-            "workspace_root": self.workspace_root,
-            "provider": self.provider,
-            "turn_count": 0,
-            "event_count": 0,
-            "message_count": self.message_count(),
-            "status": "active",
-            "pending_interactions": [],
-            "workspace": {},
-            "plugin_states": self._read_all_plugin_states(),
-            "artifacts_root": str(self.artifacts_dir),
-        }
+        return next(_iter_jsonl(self.messages_path), None) is not None
 
     def read_usage(self) -> dict[str, int] | None:
         if not self.usage_path.exists():
@@ -485,16 +440,6 @@ class CoreStateStore:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-
-    def _read_all_plugin_states(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        if not self.plugin_states_dir.exists():
-            return result
-        for path in sorted(self.plugin_states_dir.iterdir()):
-            if path.suffix == ".yaml":
-                name = path.stem
-                result[name] = self.get_plugin_state(name)
-        return result
 
 def _undo_turns(messages: list[Message], turns: int) -> list[Message]:
     if turns <= 0:

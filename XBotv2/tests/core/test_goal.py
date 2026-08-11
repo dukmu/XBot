@@ -1,6 +1,7 @@
 """Behavior tests for the built-in Goal plugin."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
@@ -11,6 +12,7 @@ from builtin_plugins.goal.plugin import GoalPlugin
 from xbotv2.api import ContextComponent, HookContext, HookStage, PluginManifest
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
 from xbotv2.core.mailbox import MailboxMessage
@@ -275,7 +277,7 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     item = MailboxMessage.create(
         "general",
@@ -370,11 +372,10 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
     state_store,
 ):
     plugins_root = tmp_path / "plugins"
-    plugin_dir = plugins_root / "goal"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text(
-        yaml.safe_dump({"name": "goal", "version": "1.0.0"}),
-        encoding="utf-8",
+    plugins_root.mkdir()
+    (plugins_root / "goal").symlink_to(
+        Path(__file__).parents[2] / "builtin_plugins" / "goal",
+        target_is_directory=True,
     )
     hooks = HookManager()
     registry = ToolRegistry()
@@ -433,7 +434,7 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await engine.start_session()
 

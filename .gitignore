@@ -35,3 +35,5 @@ coverage.xml
 # Local evaluation results
 evaluation/results/
 evaluation/.inspect/
+
+.xbot/

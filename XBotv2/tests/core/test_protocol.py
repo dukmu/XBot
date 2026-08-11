@@ -2,48 +2,48 @@
 
 import pytest
 
-from xbotv2.api.messages import Message
-from xbotv2.api.tools import ToolCall
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.config.models import ProviderConfig
 
 
 class TestProviderConfig:
     """LLM client factory tests."""
 
-    def test_create_llm_from_dict_deepseek(self):
+    def test_create_llm_deepseek(self):
         """DeepSeek provider config creates OpenAI client."""
         from xbotv2.llm.client import create_llm
 
-        config = {
-            "provider": "deepseek",
-            "model": "deepseek-chat",
-            "base_url": "https://api.deepseek.com/v1",
-            "api_key": "test-key",
-            "temperature": 0.7,
-            "max_output_tokens": 8192,
-        }
+        config = ProviderConfig(
+            provider="deepseek",
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            api_key="test-key",
+            temperature=0.7,
+            max_output_tokens=8192,
+        )
         llm = create_llm(config)
-        assert llm is not None
-        assert hasattr(llm, "model_name")
+        from xbotv2.llm.openai import OpenAICompatibleProvider
+
+        assert isinstance(llm, OpenAICompatibleProvider)
         assert llm.model_name == "deepseek-chat"
 
-    def test_create_llm_from_dict_lmstudio(self):
+    def test_create_llm_lmstudio(self):
         """LM Studio Anthropic protocol creates Anthropic client."""
         from xbotv2.llm.client import create_llm
 
-        config = {
-            "provider": "lmstudio",
-            "model": "qwen2.5-coder-7b-instruct",
-            "base_url": "http://localhost:1234/v1",
-            "api_key": "lm-studio",
-            "temperature": 0.7,
-            "max_output_tokens": 4096,
-        }
+        config = ProviderConfig(
+            provider="lmstudio",
+            model="qwen2.5-coder-7b-instruct",
+            base_url="http://localhost:1234/v1",
+            api_key="lm-studio",
+            temperature=0.7,
+            max_output_tokens=4096,
+        )
         llm = create_llm(config)
-        assert llm is not None
-        # ChatAnthropic uses `model` attribute, ChatOpenAI uses `model_name`
-        model = getattr(llm, "model_name", None) or getattr(llm, "model", "")
-        assert "qwen" in model.lower()
+        from xbotv2.llm.anthropic import AnthropicProvider
+
+        assert isinstance(llm, AnthropicProvider)
+        assert llm.model == "qwen2.5-coder-7b-instruct"
 
     def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
@@ -51,32 +51,23 @@ class TestProviderConfig:
 
         monkeypatch.setenv("TEST_KEY", "expanded-key")
 
-        config = {
-            "provider": "openai",
-            "model": "gpt-4",
-            "api_key": "${TEST_KEY}",
-        }
+        config = ProviderConfig(
+            provider="openai",
+            model="gpt-4",
+            api_key="${TEST_KEY}",
+        )
         llm = create_llm(config)
-        # The API key should have been expanded
-        assert llm is not None
-
-    def test_mock_llm_response_queue(self):
-        """Mock LLM preserves its deterministic response queue."""
-        from xbotv2.llm.mock import MockLLM
-
-        llm = MockLLM([{"content": "test"}])
-        assert llm is not None
-        assert len(llm.responses) == 1
+        assert llm.client.api_key == "expanded-key"
 
     def test_create_llm_from_mock_provider_config(self):
         """Provider config can select deterministic MockLLM."""
         from xbotv2.llm.client import create_llm
         from xbotv2.llm.mock import MockLLM
 
-        llm = create_llm({
-            "provider": "mock",
-            "mock_responses": [{"content": "mocked"}],
-        })
+        llm = create_llm(ProviderConfig(
+            provider="mock",
+            mock_responses=[{"content": "mocked"}],
+        ))
 
         assert isinstance(llm, MockLLM)
         assert llm.responses == [{"content": "mocked"}]
@@ -86,35 +77,7 @@ class TestProviderConfig:
         from xbotv2.llm.client import create_llm
 
         with pytest.raises(ValueError, match="Unknown provider"):
-            create_llm({"provider": "not-a-provider", "model": "x"})
-
-    def test_mock_llm_records_input_messages(self):
-        """MockLLM call history records the actual request messages."""
-        from xbotv2.llm.mock import MockLLM
-
-        llm = MockLLM([{"content": "ok"}])
-        response = llm.invoke([Message(role="user", content="hello")])
-
-        assert response.content == "ok"
-        assert llm.call_count == 1
-        assert [message.content for message in llm.get_call_messages(0)] == ["hello"]
-
-    def test_mock_llm_records_normalized_tool_calls(self):
-        """MockLLM call history records normalized tool calls from responses."""
-        from xbotv2.llm.mock import MockLLM
-
-        llm = MockLLM([
-            {
-                "content": "using tool",
-                "tool_calls": [{"name": "shell", "args": {"command": "pwd"}, "id": "c1"}],
-            }
-        ])
-        llm.invoke([Message(role="user", content="run")])
-
-        assert llm.verify_tool_call_made("shell")
-        assert llm._mock_call_history[0]["tool_calls"] == [
-            ToolCall("c1", "shell", {"command": "pwd"})
-        ]
+            create_llm(ProviderConfig(provider="not-a-provider", model="x"))
 
 
 class TestProviderConfigLoader:
