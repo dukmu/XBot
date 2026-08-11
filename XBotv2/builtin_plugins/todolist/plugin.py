@@ -57,21 +57,15 @@ class TodolistPlugin(PluginBase):
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
 
-        This list is the current plan state, not a log of actions or reasoning.
-        Use it for a human-requested checklist or work with at least three
-        distinct phases; several tool calls for one phase do not require Todo.
-        Each call replaces the list, so retain unfinished phases. Do not create
-        items for individual reads, edits, commands, replies, summaries,
-        validation probes, or bookkeeping.
+        Todo is persistent plan state for work with several distinct phases,
+        not an action log. Each call replaces the list, so include every
+        unfinished item. Update it only when a phase or scope changes.
 
-        Update the list when a phase starts or finishes, or when the scope
-        materially changes. Do not update it after every small action or create
-        it late to reconstruct completed work. Keep exactly one item in_progress
-        while work remains. Status records observed progress, not intent, and a
-        single acceptance workflow may prove several items complete. When all
-        work is verified, submit every item as completed once and the plugin
-        clears the list. Do not add a final item for summarizing or replying.
-        Use an empty list only to discard an obsolete checklist.
+        While work remains, exactly one item must be ``in_progress``. Mark
+        status from observed progress, not intent. Submitting a non-empty list
+        with every item ``completed`` clears the checklist. Submit an empty list
+        only to discard an obsolete checklist. Do not add an item for the final
+        reply or summary.
 
         Args:
             todos: Complete ordered checklist. Each item contains content and a

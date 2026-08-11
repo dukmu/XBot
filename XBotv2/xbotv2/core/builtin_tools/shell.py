@@ -85,45 +85,26 @@ class BackgroundTaskManager:
     ) -> ToolResult:
         """Run a shell command in the foreground or as a background task.
 
-        Use foreground mode when the next step needs the result. Use background
-        only while other work proceeds. A successful start accepts the process;
-        it does not mean the command succeeded. Keep the task ID and use
-        ``wait_task`` when work depends on its result. Completion notifications
-        also arrive asynchronously; use ``list_tasks`` to inspect them without
-        waiting. Stop unneeded tasks. Commands use the sandbox by default; do
-        not start interactive commands. A Python environment inside a writable
-        workspace is writable. An environment outside the workspace follows
-        the external-write policy; create a workspace-local environment when
-        external writes are unavailable.
+        Foreground mode returns the completed command's output. Background mode
+        returns a task ID immediately; use ``wait_task`` when later work depends
+        on completion, or ``list_tasks`` to inspect it without waiting. Starting
+        a background task does not mean its command succeeded. Commands must be
+        non-interactive.
 
-        When related checks share setup or state, run them as one readable
-        acceptance command instead of separate probes. Create durable artifacts
-        with filesystem tools, then use Shell to execute or inspect them. After
-        a failure, correct its specific cause and rerun only the affected
-        workflow. Retry unchanged only for a plausibly transient failure. Do not
-        repeat a successful check, broaden validation beyond the requested
-        contract, or duplicate a command that is still running.
+        Tool status follows the final exit code. If a nonzero exit is an
+        expected result, the command must verify that condition and then exit
+        zero. Unexpected failures must remain nonzero.
 
-        Tool status follows the command's final exit code. When rejection or a
-        nonzero exit is an expected acceptance condition, handle it inside the
-        command and exit successfully only after confirming the expected result.
-        Leave unexpected failures nonzero so they remain visible to the Agent.
-
-        When a command must run outside the configured sandbox, set
-        ``sandbox_permissions`` to ``require_escalated`` and explain why in
-        ``justification``. XBot requests approval before starting the command;
-        an approved command runs outside the sandbox in foreground or background
-        mode. It does not infer paths from shell text.
+        Commands run in the configured sandbox by default. To run the complete
+        command outside it, request ``require_escalated`` and provide a concrete
+        justification; XBot asks the human for approval before execution.
 
         Args:
             command: Complete shell command to execute.
-            cwd: Working directory. Defaults to the authoritative session
-                workspace root. Prefer this default or an exact known path;
-                never guess a directory from another runtime or prior session.
+            cwd: Working directory. Defaults to the session workspace root.
             background: Start a session-owned task and return immediately when true.
             sandbox_permissions: ``use_default`` runs inside the configured
-                sandbox. ``require_escalated`` asks the user before running this
-                complete command outside the sandbox.
+                sandbox; ``require_escalated`` requests execution outside it.
             justification: Required explanation when requesting escalation.
         """
         if sandbox_permissions == "require_escalated":

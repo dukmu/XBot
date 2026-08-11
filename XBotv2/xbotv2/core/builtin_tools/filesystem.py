@@ -220,13 +220,11 @@ async def write_file(
 ) -> ToolResult:
     """Atomically create or completely replace one UTF-8 text file.
 
-    ``content`` is the entire final file, never a fragment or patch. Files read
-    earlier in this runtime are guarded automatically against external changes.
-    Use ``filesystem_edit`` for a localized exact replacement and
-    ``filesystem_patch`` for a unified diff. A successful result confirms the
-    atomic write. Read the file again only when a later change needs its final
-    text or an acceptance condition requires inspecting it. Existing non-UTF-8
-    files are rejected. Parent directories are created.
+    ``content`` is the entire final file, not a fragment or patch. Parent
+    directories are created. Existing non-UTF-8 files are rejected, and a file
+    observed earlier in this runtime is protected against external changes.
+    Use ``filesystem_edit`` for an exact replacement or ``filesystem_patch``
+    for a unified diff.
 
     Args:
         path: Destination path relative to the workspace unless explicitly approved.
@@ -249,21 +247,12 @@ async def edit_file(
 ) -> ToolResult:
     """Atomically replace exact text in an existing UTF-8 file.
 
-    Read the relevant file range first and use enough exact surrounding text to
-    identify one occurrence. Files read earlier in this runtime are guarded
-    automatically against external changes. The edit fails when ``old_text`` is
-    absent or ambiguous. Set ``replace_all`` only when every occurrence should
-    change. A successful result confirms the replacement; reread only when a
-    later operation needs the resulting text or acceptance requires it.
-
-    Snapshot guard: the tool matches ``old_text`` against the last snapshot
-    read through this runtime. Any external write to the same file (shell
-    command, script, git checkout, another process) invalidates that snapshot
-    and the edit fails with ``content_changed``. Never mix non-tool writes
-    with this tool on the same file: after a shell/script write, re-read the
-    file first to refresh the snapshot, then edit. If an edit reports
-    ``old_text was not found``, re-read the file before changing the search
-    text.
+    Read the relevant range first and provide enough surrounding text to select
+    one occurrence. The edit fails when ``old_text`` is absent or ambiguous;
+    set ``replace_all`` only when every occurrence should change. A file
+    observed earlier is protected by its last runtime snapshot. External
+    modification invalidates that snapshot and returns ``content_changed``;
+    reading the file again refreshes it.
 
     Args:
         path: Existing text file.
@@ -291,12 +280,10 @@ async def patch_file(
 ) -> ToolResult:
     """Apply a validated unified diff to one UTF-8 file.
 
-    Build the diff against current file content. Files read earlier in this
-    runtime are guarded automatically against external changes. The system
-    ``patch`` implementation performs a dry run before applying any hunk. The
-    patch must target only ``path``; use separate calls for multiple files. A
-    successful result confirms the applied patch; inspect it again only when a
-    later operation or acceptance condition needs the resulting content.
+    The diff must match current content and target only ``path``. The system
+    ``patch`` implementation performs a dry run before applying any hunk. A
+    file observed earlier is protected against external changes by its last
+    runtime snapshot.
 
     Args:
         path: File created, updated, or deleted by the patch.
