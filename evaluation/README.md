@@ -23,7 +23,10 @@ docker build \
 
 `APT_MIRROR` overrides the Ubuntu package mirror. `PIP_MIRROR` configures
 both pip and uv for package installation inside the evaluation container.
-The runner never builds or pulls an image implicitly.
+The runner never builds or pulls an image implicitly. The image installs XBot
+and the evaluation adapter in editable mode against `/opt/xbot`; at runtime the
+runner bind-mounts the current repository at that path. Source changes therefore
+do not require rebuilding the dependency image.
 
 On Linux, a proxy reachable through the default Docker bridge can be enabled
 for the image build with Docker's predefined proxy arguments:

@@ -55,11 +55,15 @@ RUN uv python install 3.12 \
     && uv venv --python 3.12 --seed /opt/venv
 
 WORKDIR /opt/xbot
-COPY --chown=xbot:xbot . .
 
-RUN --mount=type=cache,target=/home/xbot/.cache/pip,uid=${USER_ID},gid=${GROUP_ID} \
+USER root
+RUN --mount=type=bind,target=/opt/xbot,rw \
+    --mount=type=cache,target=/home/xbot/.cache/pip \
     /opt/venv/bin/pip install \
-        --index-url "${PIP_MIRROR}" /opt/xbot /opt/xbot/evaluation numpy Pillow opencv-python-headless
+        --index-url "${PIP_MIRROR}" \
+        -e /opt/xbot -e /opt/xbot/evaluation \
+        numpy Pillow opencv-python-headless
+USER xbot
 
 ENV PATH=/opt/venv/bin:$PATH
 
