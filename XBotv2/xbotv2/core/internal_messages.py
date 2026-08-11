@@ -28,7 +28,7 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
     cached = metadata.pop(CACHED_CONTENT_KEY, False)
     status = message.status or "success"
     message.name = tool_name or message.name
-    if cached and status == "success":
+    if cached:
         metadata.pop(DISPLAY_CONTENT_KEY, None)
         metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
         return message

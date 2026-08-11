@@ -223,9 +223,10 @@ async def write_file(
     ``content`` is the entire final file, never a fragment or patch. Files read
     earlier in this runtime are guarded automatically against external changes.
     Use ``filesystem_edit`` for a localized exact replacement and
-    ``filesystem_patch`` for a unified diff. After writing, inspect the result
-    and reread the relevant range before reporting the change as verified.
-    Existing non-UTF-8 files are rejected. Parent directories are created.
+    ``filesystem_patch`` for a unified diff. A successful result confirms the
+    atomic write. Read the file again only when a later change needs its final
+    text or an acceptance condition requires inspecting it. Existing non-UTF-8
+    files are rejected. Parent directories are created.
 
     Args:
         path: Destination path relative to the workspace unless explicitly approved.
@@ -252,7 +253,8 @@ async def edit_file(
     identify one occurrence. Files read earlier in this runtime are guarded
     automatically against external changes. The edit fails when ``old_text`` is
     absent or ambiguous. Set ``replace_all`` only when every occurrence should
-    change. Reread the changed range before reporting success.
+    change. A successful result confirms the replacement; reread only when a
+    later operation needs the resulting text or acceptance requires it.
 
     Snapshot guard: the tool matches ``old_text`` against the last snapshot
     read through this runtime. Any external write to the same file (shell
@@ -292,8 +294,9 @@ async def patch_file(
     Build the diff against current file content. Files read earlier in this
     runtime are guarded automatically against external changes. The system
     ``patch`` implementation performs a dry run before applying any hunk. The
-    patch must target only ``path``; use separate calls for multiple files.
-    Reread the changed ranges before reporting success.
+    patch must target only ``path``; use separate calls for multiple files. A
+    successful result confirms the applied patch; inspect it again only when a
+    later operation or acceptance condition needs the resulting content.
 
     Args:
         path: File created, updated, or deleted by the patch.

@@ -58,22 +58,20 @@ class TodolistPlugin(PluginBase):
         """Replace the current Todo checklist with one complete list.
 
         This list is the current plan state, not a log of actions or reasoning.
-        Use it only for multi-step work or a human-requested checklist, normally
-        with 3-7 independently verifiable milestones. Each call replaces the
-        list, so retain unfinished milestones. Do not create items for individual
-        reads, edits, commands, replies, summaries, routine verification, or
-        bookkeeping.
+        Use it for a human-requested checklist or work with at least three
+        distinct phases; several tool calls for one phase do not require Todo.
+        Each call replaces the list, so retain unfinished phases. Do not create
+        items for individual reads, edits, commands, replies, summaries,
+        validation probes, or bookkeeping.
 
-        Update the list when it is created, the scope materially changes, the
-        active phase changes, or all work has been verified. Do not update it
-        after every small action or create it late merely to reconstruct work
-        already performed. Status records observed progress, not intent, with
-        exactly one item in_progress while work remains. Mark a milestone
-        completed only when its acceptance evidence exists; Todo status is not
-        itself evidence and does not replace comparison with the human's request.
-        When all milestones are verified, submit them all as completed once and
-        the plugin clears the list. Do not add a final item for summarizing or
-        replying. Use an empty list only to discard an obsolete checklist.
+        Update the list when a phase starts or finishes, or when the scope
+        materially changes. Do not update it after every small action or create
+        it late to reconstruct completed work. Keep exactly one item in_progress
+        while work remains. Status records observed progress, not intent, and a
+        single acceptance workflow may prove several items complete. When all
+        work is verified, submit every item as completed once and the plugin
+        clears the list. Do not add a final item for summarizing or replying.
+        Use an empty list only to discard an obsolete checklist.
 
         Args:
             todos: Complete ordered checklist. Each item contains content and a

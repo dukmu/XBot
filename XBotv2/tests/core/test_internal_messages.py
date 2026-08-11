@@ -73,6 +73,8 @@ def test_cached_tool_content_remains_a_nested_element():
     message = Message(
         role="tool",
         content=cached,
+        status="error",
+        error={"code": "failed", "message": "x" * 1000},
         additional_kwargs={CACHED_CONTENT_KEY: True},
     )
 
@@ -87,3 +89,5 @@ def test_cached_tool_content_remains_a_nested_element():
     )
     assert structure_tool_message(message, "shell") is message
     assert "<tool_result" not in message.content
+    assert "x" * 1000 not in message.content
+    assert message.error["code"] == "failed"

@@ -96,17 +96,18 @@ class BackgroundTaskManager:
         the external-write policy; create a workspace-local environment when
         external writes are unavailable.
 
-        Combine related inspection or validation in one readable command when
-        this avoids unnecessary round trips. Treat interactions with stateful
-        external systems as real operations: exploratory commands may mutate or
-        consume state, so understand the contract before acting. When the first
-        operation contributes required evidence, perform it through the intended
-        implementation instead of a disposable probe. Create scripts and durable
-        artifacts with filesystem tools, then use Shell to run or inspect them.
-        After a failure, inspect the error before retrying. Retry an unchanged
-        command only for a plausibly transient failure; otherwise correct the
-        command, environment, permission, or implementation cause. Do not launch
-        a duplicate because a foreground or background command is still running.
+        When related checks share setup or state, run them as one readable
+        acceptance command instead of separate probes. Create durable artifacts
+        with filesystem tools, then use Shell to execute or inspect them. After
+        a failure, correct its specific cause and rerun only the affected
+        workflow. Retry unchanged only for a plausibly transient failure. Do not
+        repeat a successful check, broaden validation beyond the requested
+        contract, or duplicate a command that is still running.
+
+        Tool status follows the command's final exit code. When rejection or a
+        nonzero exit is an expected acceptance condition, handle it inside the
+        command and exit successfully only after confirming the expected result.
+        Leave unexpected failures nonzero so they remain visible to the Agent.
 
         When a command must run outside the configured sandbox, set
         ``sandbox_permissions`` to ``require_escalated`` and explain why in
@@ -116,7 +117,9 @@ class BackgroundTaskManager:
 
         Args:
             command: Complete shell command to execute.
-            cwd: Working directory. Defaults to the session workspace root.
+            cwd: Working directory. Defaults to the authoritative session
+                workspace root. Prefer this default or an exact known path;
+                never guess a directory from another runtime or prior session.
             background: Start a session-owned task and return immediately when true.
             sandbox_permissions: ``use_default`` runs inside the configured
                 sandbox. ``require_escalated`` asks the user before running this

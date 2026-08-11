@@ -21,6 +21,28 @@ from .common import (
 )
 
 
+EVALUATION_AGENT = "harnessbench"
+EVALUATION_TOOLS = (
+    "filesystem_read",
+    "filesystem_stat",
+    "filesystem_list",
+    "search_text",
+    "find_files",
+    "filesystem_write",
+    "filesystem_edit",
+    "filesystem_patch",
+    "filesystem_move",
+    "filesystem_copy",
+    "filesystem_delete",
+    "filesystem_mkdir",
+    "shell",
+    "list_tasks",
+    "wait_task",
+    "stop_task",
+    "update_todos",
+)
+
+
 class XBotAdapter:
     name = "xbot"
 
@@ -38,6 +60,7 @@ class XBotAdapter:
                     shutil.copytree(source, data_dir / name)
         _configure_bridge_provider(data_dir, context.provider_name)
         _configure_evaluation_sandbox(data_dir)
+        _configure_evaluation_agent(data_dir)
         executable = resolve_command(
             command or os.environ.get("XBOT_EVAL_COMMAND"),
             "xbot",
@@ -48,6 +71,9 @@ class XBotAdapter:
             environment={
                 "XBOT_EVAL_AGENT_COMMAND": executable,
                 "XBOT_EVAL_ADAPTER_DATA": str(data_dir),
+                "XBOT_EVAL_AGENT": os.environ.get(
+                    "XBOT_EVAL_AGENT", EVALUATION_AGENT
+                ),
             },
         )
 
@@ -273,6 +299,22 @@ def _configure_evaluation_sandbox(data_dir: Path) -> None:
     if cache_dir.is_dir() and cache_resource not in resources:
         resources.append(cache_resource)
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def _configure_evaluation_agent(data_dir: Path) -> None:
+    agents_dir = data_dir / ".agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    tools = "\n".join(f"  - {name}" for name in EVALUATION_TOOLS)
+    (agents_dir / f"{EVALUATION_AGENT}.md").write_text(
+        "---\n"
+        "description: HarnessBench coding and artifact evaluation\n"
+        "mode: primary\n"
+        "tools:\n"
+        f"{tools}\n"
+        "---\n"
+        "Complete the requested workspace task using only observed evidence.\n",
+        encoding="utf-8",
+    )
 
 
 def selected_environment(*names: str) -> dict[str, str]:
