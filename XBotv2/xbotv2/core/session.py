@@ -256,32 +256,23 @@ class SessionRuntime:
             return
         notices = list(self._pending_notices)
         self._pending_notices.clear()
-        lines = [
-            f"- {notice['kind']} {notice['task_id']}: {notice['content']}"
-            for notice in notices
-        ]
-        content = (
-            "Runtime notices (not human messages): background/subagent "
-            "tasks completed.\n" + "\n".join(lines)
-        )
         asyncio.create_task(
-            self._run_notice_turn(content),
-            name=f"xbotv2-notice-turn-{self.session_id}",
+            self._run_notice_turn({
+                "source": "tasks",
+                "event": "completed",
+                "notices": notices,
+            }),
+            name=f"xbotv2-run-notices-{self.session_id}",
         )
 
-    async def _run_notice_turn(self, content: str) -> None:
-        """Run one special user turn for aggregated completion notices.
-
-        The notice is appended as a user message (marked as runtime input),
-        so the turn is persisted in history with its assistant reply instead
-        of leaving an orphan assistant message.
-        """
-        item = MailboxMessage.create("user_message", content)
+    async def _run_notice_turn(self, message: dict[str, Any]) -> None:
+        """Run one aggregated completion event even without a client stream."""
+        item = MailboxMessage.create("general", message)
         target = self.mailbox_output or self.session_events
         try:
             async for event in run_turn_stream(
                 self,
-                content=content,
+                content=self.engine.mailbox_content(item),
                 request_id=item.request_id,
                 mailbox_message=item,
             ):

@@ -1769,7 +1769,11 @@ class Engine:
         mailbox_message: MailboxMessage | None = None,
     ) -> str:
         message = getattr(mailbox_message, "message", None)
-        attributes = {"kind": "general", "source": "mailbox"}
+        attributes = {
+            "kind": "general",
+            "source": "mailbox",
+            "event": "message",
+        }
         if isinstance(message, dict):
             attributes.update({
                 "source": str(message.get("source") or "runtime"),
@@ -1783,12 +1787,6 @@ class Engine:
         return prompt_container(
             "runtime_event",
             [
-                prompt_element(
-                    "instruction",
-                    "This is runtime-generated input, not a human message. "
-                    "Continue the active work using the event and do not ask "
-                    "the human to repeat the preceding request.",
-                ),
                 prompt_element(
                     "payload",
                     payload,

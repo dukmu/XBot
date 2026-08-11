@@ -209,7 +209,6 @@ Body
         assert runtime.commands["test-skill"].kind == "prompt"
         entry = registry.get("skills:project:test-skill")
         assert entry is not None
-        assert entry.tool.description == "A test skill for integration testing"
         assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80

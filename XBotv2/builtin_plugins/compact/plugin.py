@@ -24,8 +24,10 @@ from xbotv2.api import (
     calibrated_context_tokens,
     context_token_limit,
     estimate_messages_tokens,
+    prompt_container,
     prompt_element,
 )
+from xbotv2.api.prompts import MESSAGE_FORMAT_KEY
 
 logger = logging.getLogger("xbotv2.compact")
 
@@ -312,12 +314,18 @@ class CompactPlugin(PluginBase):
         )
         compacted = Message(
             role="system",
-            content=prompt_element(
-                "conversation_summary",
-                summary,
-                attributes={"reason": reason},
+            content=prompt_container(
+                "historical_context",
+                [
+                    prompt_element(
+                        "conversation_summary",
+                        summary,
+                        attributes={"reason": reason},
+                    ),
+                ],
+                attributes={"source": "compaction"},
             ),
-            additional_kwargs={"xbotv2_message_format": "xml-v1"},
+            additional_kwargs={MESSAGE_FORMAT_KEY: "xml"},
         )
         compacted_messages = [compacted, *messages[split:]]
         usage = _model_usage(response.usage_metadata)
@@ -468,15 +476,14 @@ def _summary_request(
     stable_prefix: Message | None = None,
 ) -> list[Message]:
     instruction = (
-        "Summarize only the supplied older conversation for a future agent. Preserve "
-        "the user's objective and exact constraints; confirmed decisions and reasons; "
-        "important feedback and corrections; verified results, file paths, commands, "
-        "errors, and current repository state; remaining work, active plans, and known "
-        "unknowns. Clearly distinguish completed work from intentions or unverified "
-        "claims. Omit repetitive chatter and raw detail that does not affect future "
-        "decisions. Do not continue the task or call tools. Return only the summary in "
-        "compact Markdown with sections for Requirements, Decisions, Current State, "
-        f"and Remaining Work, using no more than {max_chars} characters."
+        "Summarize the supplied older conversation for future continuation. "
+        "Preserve the current objective and constraints, user corrections and accepted "
+        "decisions, verified state and essential evidence, unresolved problems, and "
+        "remaining work. Include paths or errors only when needed to continue. "
+        "Distinguish verified facts and completed work from plans or unverified claims. "
+        "Omit repetition, superseded discussion, raw logs, and recoverable detail. "
+        "Do not continue the task or call tools. Return only concise Markdown using no "
+        f"more than {max_chars} characters."
     )
     request = [
         Message(

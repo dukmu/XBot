@@ -18,7 +18,7 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
         content = str(message.content or "")
         if (
             message.role == "tool"
-            and additional.get(MESSAGE_FORMAT_KEY) == "xml-v1"
+            and additional.get(MESSAGE_FORMAT_KEY)
         ):
             content = tool_result_display_content(content)
         item = {

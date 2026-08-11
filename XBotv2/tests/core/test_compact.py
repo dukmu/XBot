@@ -273,7 +273,9 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 
     summary = result["messages"][0].content
     root = ET.fromstring(summary)
-    assert root.tag == "conversation_summary"
+    assert root.tag == "historical_context"
+    assert root.attrib == {"source": "compaction"}
+    assert root.find("conversation_summary") is not None
     assert "## Recent Human Directives (verbatim)" not in summary
     assert summary.count("Older context only.") == 1
 
@@ -587,5 +589,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
     assert llm.call_count == 2
     assert any(event["type"] == "assistant_message" for event in events)
     assert engine.messages[0].role == "system"
-    assert ET.fromstring(engine.messages[0].content).tag == "conversation_summary"
+    root = ET.fromstring(engine.messages[0].content)
+    assert root.tag == "historical_context"
+    assert root.find("conversation_summary") is not None
     assert engine.session_usage["context_tokens"] == 2_000

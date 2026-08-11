@@ -615,11 +615,8 @@ class ConfiguredPlugin(PluginBase):
 
         system = llm.get_call_messages(0)[0]
         root = ET.fromstring(system.content)
-        workspace = next(
-            element
-            for element in root.findall("plugin_instruction")
-            if element.attrib["name"] == "workspace_instructions"
-        )
+        workspace = root.find("workspace_instructions")
+        assert workspace is not None
         assert workspace.attrib["source"] == "AGENTS.md"
         assert workspace.text.strip() == (
             f"Workspace instruction path:\n{temp_workspace}\n"

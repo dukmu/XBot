@@ -1,5 +1,6 @@
 """Behavior tests for the built-in Goal plugin."""
 
+import json
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
@@ -299,8 +300,14 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
         "kind": "general",
         "source": "goal",
     }
-    assert runtime_event.find("payload").attrib["encoding"] == "text"
-    assert "not a human message" in runtime_input.content
+    payload = runtime_event.find("payload")
+    assert payload is not None
+    assert payload.attrib["encoding"] == "json"
+    assert json.loads(payload.text) == {
+        "objective": "finish the audit",
+        "status": "active",
+    }
+    assert runtime_event.find("instruction") is None
     assert "finish the audit" in runtime_input.content
     assert all(message.role != "user" for message in request[:-1])
     assert all("finish the audit" not in message.content for message in engine.messages)

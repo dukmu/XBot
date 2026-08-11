@@ -20,7 +20,7 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
     if message.role != "tool":
         return message
     metadata = message.additional_kwargs
-    if metadata.get(MESSAGE_FORMAT_KEY) == "xml-v1":
+    if metadata.get(MESSAGE_FORMAT_KEY):
         return message
 
     content = str(message.content or "")
@@ -30,7 +30,7 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
     message.name = tool_name or message.name
     if cached:
         metadata.pop(DISPLAY_CONTENT_KEY, None)
-        metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
+        metadata[MESSAGE_FORMAT_KEY] = "xml"
         return message
     if (
         status == "success"
@@ -56,7 +56,7 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
         },
     )
     metadata.pop(DISPLAY_CONTENT_KEY, None)
-    metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
+    metadata[MESSAGE_FORMAT_KEY] = "xml"
     return message
 
 

@@ -136,7 +136,9 @@ class SkillsPlugin(PluginBase):
                 data={"name": skill.name, "scope": skill.scope},
             )
 
-        invoke.__doc__ = skill.description
+        invoke.__doc__ = (
+            f"Load Skill instructions for this turn. {skill.description}"
+        )
         return Tool.from_function(invoke, name=skill.name)
 
     def _activate_skill(self, skill: Skill) -> None:

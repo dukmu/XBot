@@ -29,7 +29,7 @@ class WorkspaceInstructionsPlugin(PluginBase):
                 return
             component = ContextComponent(
                 role="system",
-                source="plugin_fragment",
+                source="workspace_instructions",
                 content=text,
                 plugin_name=self.manifest.name,
                 stage="system_instructions",
