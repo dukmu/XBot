@@ -60,6 +60,7 @@ export interface HistoryItem {
   error: JsonObject | null;
   artifacts: JsonObject[];
   images: ImageReference[];
+  runtime?: Record<string, string> | null;
 }
 
 export interface OpenSessionResponse {

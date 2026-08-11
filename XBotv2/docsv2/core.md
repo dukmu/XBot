@@ -146,7 +146,8 @@ compatible ordering zones and do not describe wire positions or authority.
 Every synthetic section escapes its content and source metadata. The default
 prompt contains no clock or turn counter, so repeated model calls retain a
 deterministic provider prefix. Slash Skill expansion and runtime notifications
-use separate structured transient inputs. Runtime Tool results are stored as
+use separate structured inputs; delivered runtime inputs persist with explicit
+non-human metadata. Runtime Tool results are stored as
 `<tool_result>` content under their standard Tool role; both cache paths use
 `<cached_content>` with relative session paths. `_sanitize_history` removes
 orphaned tool messages before provider conversion. See

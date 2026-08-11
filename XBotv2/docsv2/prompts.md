@@ -37,9 +37,9 @@ fragment is rendered as `plugin_instruction` with its owner and declared stage.
 
 Core, Agent, workspace, and startup plugin instructions form a deterministic
 prefix. Clocks and turn counters are excluded. Runtime mailbox notifications
-are transient `<runtime_event>` inputs and are not persisted as human history.
-An active Goal is injected only when its idle continuation is delivered, not on
-every provider call.
+are persisted `<runtime_event>` inputs with explicit non-human metadata. An
+active Goal schedules such an input only after a turn ends, not on every
+provider call or Tool result.
 
 Runtime paths are stable for the thread. The workspace is shown explicitly;
 cached artifacts use the read-only `session/artifacts/...` virtual namespace.
@@ -108,5 +108,5 @@ reconstructing provider blocks from display content.
 - Register durable plugin instructions during setup and identify their source.
 - Put external content in Tool results. If it must enter a synthetic prompt,
   render it with `prompt_element` so content and attributes are escaped.
-- Do not persist runtime events as human messages.
+- Persist delivered runtime events as source-labelled, non-human messages.
 - Do not add dynamic values to the stable context without a demonstrated need.

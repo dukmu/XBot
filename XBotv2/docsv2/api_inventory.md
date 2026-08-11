@@ -38,6 +38,7 @@ type-only import inside XBotv2 itself.
 | `ImagePart` | dataclass | Image entry in ordered message content. |
 | `InputModality` | type alias | Provider input modality name. |
 | `Message` | dataclass | Provider-neutral conversation message. |
+| `MESSAGE_FORMAT_KEY` | constant | Additional-message metadata key marking structured model content. |
 | `ModelChunk` | dataclass | Provider-neutral streaming model chunk. |
 | `ModelResponse` | dataclass | Provider-neutral model response. |
 | `PluginBase` | class | Plugin lifecycle base class. |

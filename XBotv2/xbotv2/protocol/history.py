@@ -39,6 +39,12 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
                 "data": message.data,
                 "error": message.error,
             })
+        runtime = additional.get("runtime_input")
+        if isinstance(runtime, dict):
+            item["runtime"] = {
+                str(key): str(value)
+                for key, value in runtime.items()
+            }
         history.append(item)
     return history
 

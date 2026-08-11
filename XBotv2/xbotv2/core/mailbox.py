@@ -73,6 +73,18 @@ class SessionMailbox:
             self._audit("dequeued", item)
             return item
 
+    async def get_pending(self) -> MailboxMessage | None:
+        """Return the next queued message without waiting."""
+        async with self._condition:
+            if self._user:
+                item = self._user.popleft()
+            elif self._general:
+                item = self._general.popleft()
+            else:
+                return None
+            self._audit("dequeued", item)
+            return item
+
     async def close(self, reason: str = "session_closed") -> list[MailboxMessage]:
         async with self._condition:
             if self._closed:

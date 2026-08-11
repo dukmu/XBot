@@ -310,7 +310,11 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     assert runtime_event.find("instruction") is None
     assert "finish the audit" in runtime_input.content
     assert all(message.role != "user" for message in request[:-1])
-    assert all("finish the audit" not in message.content for message in engine.messages)
+    assert engine.messages[0].additional_kwargs["runtime_input"] == {
+        "kind": "general",
+        "source": "goal",
+        "event": "continue",
+    }
     records = [
         yaml.safe_load(line)
         for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
@@ -321,10 +325,9 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     )
     assert delivery["kind"] == "general"
     assert delivery["message"] == {"source": "goal", "event": "continue"}
-    assert all(
-        message.content != str(delivery["message"])
-        for message in state_store.read_messages()
-    )
+    restored = state_store.read_messages()
+    assert restored[0].content == runtime_input.content
+    assert restored[0].additional_kwargs["runtime_input"]["source"] == "goal"
 
 
 @pytest.mark.asyncio

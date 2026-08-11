@@ -54,6 +54,7 @@ class SessionRuntime:
             self.paths.session(self.session_id).thread(self.thread_id).mailbox_log
         )
         self.engine.enqueue_mailbox = self.enqueue_general
+        self.engine.take_pending_mailbox = self._take_pending_mailbox
         self.engine.runtime_event_sink = self._publish_runtime_event
         self.touch()
         background_tasks = getattr(self.engine, "background_tasks", None)
@@ -219,12 +220,6 @@ class SessionRuntime:
     def ensure_mailbox_worker(self) -> None:
         if self.mailbox.size == 0:
             return
-        if (
-            self.mailbox.next_kind == "general"
-            and self.mailbox_output is None
-            and self.session_events is None
-        ):
-            return
         if self.turn_lock.locked() and self.mailbox_worker is None:
             return
         if self.mailbox_worker is None or self.mailbox_worker.done():
@@ -240,7 +235,7 @@ class SessionRuntime:
         if self.mailbox.size:
             self.ensure_mailbox_worker()
         elif self._pending_notices and not self.turn_lock.locked():
-            self._drain_pending_notices()
+            asyncio.create_task(self._enqueue_pending_notices())
 
     async def _debounced_drain(self) -> None:
         """Short window so concurrent completions coalesce into one turn."""
@@ -248,40 +243,36 @@ class SessionRuntime:
             await asyncio.sleep(0.05)
         finally:
             self._drain_scheduled = False
-        self._drain_pending_notices()
+        await self._enqueue_pending_notices()
 
-    def _drain_pending_notices(self) -> None:
-        """Consume all aggregated notices as one general turn while idle."""
-        if not self._pending_notices or self.turn_lock.locked():
+    async def _enqueue_pending_notices(self) -> None:
+        """Move accumulated completion notices into the session mailbox."""
+        if not self._pending_notices:
             return
         notices = list(self._pending_notices)
         self._pending_notices.clear()
-        asyncio.create_task(
-            self._run_notice_turn({
-                "source": "tasks",
-                "event": "completed",
-                "notices": notices,
-            }),
-            name=f"xbotv2-run-notices-{self.session_id}",
-        )
+        await self.enqueue_general({
+            "source": "tasks",
+            "event": "completed",
+            "notices": notices,
+        })
 
-    async def _run_notice_turn(self, message: dict[str, Any]) -> None:
-        """Run one aggregated completion event even without a client stream."""
-        item = MailboxMessage.create("general", message)
-        target = self.mailbox_output or self.session_events
-        try:
-            async for event in run_turn_stream(
-                self,
-                content=self.engine.mailbox_content(item),
-                request_id=item.request_id,
-                mailbox_message=item,
-            ):
-                if target is not None:
-                    await target.put(event)
-            self.mailbox.delivered(item)
-        except Exception as exc:
-            logger.exception("notice turn failed")
-            self.mailbox.failed(item, exc)
+    async def _take_pending_mailbox(self) -> MailboxMessage | None:
+        """Deliver one pending input to the active turn when routing is safe."""
+        if (
+            self.mailbox.next_kind == "user_message"
+            and self.mailbox_output is not None
+        ):
+            return None
+        item = await self.mailbox.get_pending()
+        if item is None:
+            return None
+        if item.kind == "user_message":
+            self.mailbox_output = self.mailbox_responses.pop(item.id, None)
+        await self.engine.run_mailbox_hook(HookStage.BEFORE_MAILBOX_DELIVERY, item)
+        self.mailbox.delivered(item)
+        await self.engine.run_mailbox_hook(HookStage.AFTER_MAILBOX_DELIVERY, item)
+        return item
 
     def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
         if self.session_events is not None:
@@ -477,6 +468,7 @@ async def run_turn_stream(
     mailbox_message: MailboxMessage | None = None,
     images: list[ImageContent] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
+    interactive: bool | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
@@ -500,7 +492,11 @@ async def run_turn_stream(
         try:
             interaction_sink = (
                 _live_interaction_sink(runtime, events, disconnected)
-                if getattr(runtime, "interactive", True)
+                if (
+                    getattr(runtime, "interactive", True)
+                    if interactive is None
+                    else interactive
+                )
                 else nullcontext()
             )
             async with interaction_sink:
@@ -509,6 +505,9 @@ async def run_turn_stream(
                     if event is None:
                         stream_completed = True
                         break
+                    mailbox_output = getattr(runtime, "mailbox_output", None)
+                    if mailbox_message is None and mailbox_output is not None:
+                        await mailbox_output.put(event)
                     yield event
         finally:
             disconnected.set()
@@ -519,6 +518,14 @@ async def run_turn_stream(
             touch = getattr(runtime, "touch", None)
             if touch is not None:
                 touch()
+            if (
+                mailbox_message is None
+                and getattr(runtime, "mailbox_output", None) is not None
+                and getattr(runtime, "mailbox", None) is not None
+                and runtime.mailbox.next_kind != "general"
+            ):
+                await runtime.mailbox_output.put(None)
+                runtime.mailbox_output = None
     runtime.ensure_mailbox_worker()
 
 
@@ -565,6 +572,7 @@ async def _run_mailbox(runtime: SessionRuntime) -> None:
                 mailbox_message=item,
                 images=images,
                 artifacts=artifacts,
+                interactive=target is not None,
             ):
                 if target is not None:
                     await target.put(event)

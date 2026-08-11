@@ -47,7 +47,7 @@ from xbotv2.api.messages import (
     ToolCallPart,
 )
 from xbotv2.api.providers import InputModality, ProviderCapabilities
-from xbotv2.api.prompts import prompt_container, prompt_element
+from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, prompt_container, prompt_element
 from xbotv2.api.tokens import (
     calibrated_context_tokens,
     context_token_limit,
@@ -74,6 +74,7 @@ __all__ = [
     "ImagePart",
     "InputModality",
     "Message",
+    "MESSAGE_FORMAT_KEY",
     "ModelChunk",
     "ModelResponse",
     "PluginBase",

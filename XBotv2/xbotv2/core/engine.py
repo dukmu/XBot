@@ -243,6 +243,9 @@ class Engine:
         self.enqueue_mailbox: (
             Callable[[str | dict[str, Any]], Awaitable[Any]] | None
         ) = None
+        self.take_pending_mailbox: (
+            Callable[[], Awaitable[MailboxMessage | None]] | None
+        ) = None
         self.paths = state_store.paths.runtime
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -251,10 +254,6 @@ class Engine:
         self._mailbox_message: ContextVar[MailboxMessage | None] = ContextVar(
             f"xbotv2_mailbox_message_{id(self)}",
             default=None,
-        )
-        self._turn_instruction: ContextVar[str] = ContextVar(
-            f"xbotv2_turn_instruction_{id(self)}",
-            default="",
         )
 
     # ------------------------------------------------------------------
@@ -483,7 +482,6 @@ class Engine:
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
         mailbox_token = self._mailbox_message.set(mailbox_message)
-        instruction_token = self._turn_instruction.set("")
         if mailbox_message is not None:
             self.state_store.append_mailbox_delivery(mailbox_message)
         turn_started = False
@@ -565,7 +563,6 @@ class Engine:
             finally:
                 self._request_id.reset(request_token)
                 self._mailbox_message.reset(mailbox_token)
-                self._turn_instruction.reset(instruction_token)
 
     async def _run_turn_impl(
         self,
@@ -796,6 +793,8 @@ class Engine:
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
+            for event in await self._accept_pending_mailbox():
+                yield event
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -927,64 +926,24 @@ class Engine:
                 user_input,
                 mailbox_message=self._mailbox_message.get(),
             )
-            self._turn_instruction.set(user_input)
+            self.messages.append(self._runtime_message(
+                user_input,
+                self._mailbox_message.get(),
+            ))
             return _TurnStartResult(
                 user_input,
                 [{"type": "turn_started", "data": {"turn": self.turn_count}}],
                 True,
             )
-        accept_ctx = self._make_hook_context(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
+        accepted = await self._accept_user_message(
+            user_input,
+            images=images,
+            artifacts=artifacts,
+            new_turn=True,
         )
-        accept_result = await self.hook_manager.run(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            accept_ctx,
-            short_circuit=True,
-        )
-        events: list[dict[str, Any]] = []
-        if isinstance(accept_result, dict):
-            if "user_input" in accept_result:
-                user_input = str(accept_result["user_input"])
-            if "event" in accept_result:
-                events.append(accept_result["event"])
-                if accept_result.get("turn_complete", True):
-                    return _TurnStartResult(user_input, events, False)
-            elif accept_result.get("turn_complete"):
-                events.append(self._user_message_rejected_event())
-                return _TurnStartResult(user_input, events, False)
-        elif accept_result is not None:
-            events.append(self._user_message_rejected_event())
-            return _TurnStartResult(user_input, events, False)
-
-        self.turn_count += 1
-        if self.session is not None:
-            self.session.turn_count = self.turn_count
-        self.messages.append(Message(
-            role="user",
-            content=user_input,
-            images=list(images or []),
-            artifact=list(artifacts or []),
-        ))
-
-        accepted_ctx = self._make_hook_context(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
-        )
-        await self.hook_manager.run(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            accepted_ctx,
-            short_circuit=False,
-        )
-        user_ctx = self._make_hook_context(
-            HookStage.ON_USER_MESSAGE,
-            user_input=user_input,
-        )
-        await self.hook_manager.run(
-            HookStage.ON_USER_MESSAGE,
-            user_ctx,
-            short_circuit=False,
-        )
+        if not accepted.proceed:
+            return accepted
+        user_input = accepted.user_input
         turn_ctx = self._make_hook_context(
             HookStage.ON_TURN_START,
             user_input=user_input,
@@ -994,8 +953,11 @@ class Engine:
             turn_ctx,
             short_circuit=False,
         )
-        events.append({"type": "turn_started", "data": {"turn": self.turn_count}})
-        return _TurnStartResult(user_input, events, True)
+        accepted.events.append({
+            "type": "turn_started",
+            "data": {"turn": self.turn_count},
+        })
+        return accepted
 
     @staticmethod
     def _user_message_rejected_event() -> dict[str, Any]:
@@ -1019,25 +981,8 @@ class Engine:
             if event is not None:
                 return _ContextBuildResult(event=event, turn_complete=True)
 
-        turn_messages = list(self.messages)
-        turn_instruction = self._turn_instruction.get()
-        if turn_instruction:
-            mailbox_message = self._mailbox_message.get()
-            turn_messages.append(Message(
-                role=(
-                    "user"
-                    if mailbox_message is not None
-                    and mailbox_message.kind == "general"
-                    else "system"
-                ),
-                content=turn_instruction,
-                additional_kwargs={
-                    "xbotv2_source": "runtime_mailbox",
-                    "xbotv2_runtime_input": True,
-                },
-            ))
         context_kwargs = {
-            "messages": turn_messages,
+            "messages": list(self.messages),
             "agent_name": getattr(self.config, "agent_name", "XBotv2"),
             "agent_role": getattr(self.config, "agent_role", ""),
             "user_name": getattr(self.user_context, "user_name", "User"),
@@ -1751,6 +1696,131 @@ class Engine:
             error=error,
         )
         await self.hook_manager.run(stage, ctx, short_circuit=False)
+
+    async def _accept_pending_mailbox(self) -> list[dict[str, Any]]:
+        """Accept one queued input at a complete ToolResult boundary."""
+        if self.take_pending_mailbox is None:
+            return []
+        item = await self.take_pending_mailbox()
+        if item is None:
+            return []
+        self.state_store.append_mailbox_delivery(item)
+        if item.kind == "general":
+            payload = self.mailbox_content(item)
+            self.messages.append(self._runtime_message(
+                self._runtime_event_content(payload, mailbox_message=item),
+                item,
+            ))
+            await self.save_messages()
+            return []
+
+        content, images, artifacts = self._mailbox_user_content(item)
+        accepted = await self._accept_user_message(
+            content,
+            images=images,
+            artifacts=artifacts,
+        )
+        if accepted.proceed:
+            await self.save_messages()
+        return accepted.events
+
+    async def _accept_user_message(
+        self,
+        user_input: str,
+        *,
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        new_turn: bool = False,
+    ) -> _TurnStartResult:
+        accept_ctx = self._make_hook_context(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        accept_result = await self.hook_manager.run(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            accept_ctx,
+            short_circuit=True,
+        )
+        events: list[dict[str, Any]] = []
+        if isinstance(accept_result, dict):
+            if "user_input" in accept_result:
+                user_input = str(accept_result["user_input"])
+            if "event" in accept_result:
+                events.append(accept_result["event"])
+                if accept_result.get("turn_complete", True):
+                    return _TurnStartResult(user_input, events, False)
+            elif accept_result.get("turn_complete"):
+                events.append(self._user_message_rejected_event())
+                return _TurnStartResult(user_input, events, False)
+        elif accept_result is not None:
+            events.append(self._user_message_rejected_event())
+            return _TurnStartResult(user_input, events, False)
+
+        if new_turn:
+            self.turn_count += 1
+            if self.session is not None:
+                self.session.turn_count = self.turn_count
+        self.messages.append(Message(
+            role="user",
+            content=user_input,
+            images=list(images or []),
+            artifact=list(artifacts or []),
+        ))
+        for stage in (
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            HookStage.ON_USER_MESSAGE,
+        ):
+            await self.hook_manager.run(
+                stage,
+                self._make_hook_context(stage, user_input=user_input),
+                short_circuit=False,
+            )
+        return _TurnStartResult(user_input, events, True)
+
+    @staticmethod
+    def _mailbox_user_content(
+        item: MailboxMessage,
+    ) -> tuple[str, list[ImageContent], list[dict[str, Any]]]:
+        if isinstance(item.message, str):
+            return item.message, [], []
+        return (
+            str(item.message.get("content") or ""),
+            [
+                ImageContent.from_dict(image)
+                for image in item.message.get("images") or []
+            ],
+            [
+                dict(artifact)
+                for artifact in item.message.get("artifacts") or []
+                if isinstance(artifact, dict)
+            ],
+        )
+
+    @staticmethod
+    def _runtime_message(
+        content: str,
+        item: MailboxMessage | None,
+    ) -> Message:
+        raw = item.message if item is not None else None
+        return Message(
+            role="user",
+            content=content,
+            additional_kwargs={
+                "runtime_input": {
+                    "kind": "general",
+                    "source": str(
+                        (raw.get("source") or "runtime")
+                        if isinstance(raw, dict)
+                        else "mailbox"
+                    ),
+                    "event": str(
+                        (raw.get("event") or "message")
+                        if isinstance(raw, dict)
+                        else "message"
+                    ),
+                },
+            },
+        )
 
     @staticmethod
     def mailbox_content(message: MailboxMessage) -> str:

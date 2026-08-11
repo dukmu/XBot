@@ -34,6 +34,7 @@ import yaml
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
+from xbotv2.api.tools import Tool
 from xbotv2.client import XBotClient, XBotClientError
 from xbotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
@@ -54,6 +55,7 @@ from xbotv2.core.session import (
     _live_sink,
     run_turn_stream,
 )
+from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.transport_http import HttpTransport
@@ -1754,6 +1756,74 @@ async def test_session_mailbox_queues_user_messages_and_delivers_in_order(
 
 
 @pytest.mark.asyncio
+async def test_queued_user_message_enters_after_complete_tool_batch(http_app) -> None:
+    tool_started = asyncio.Event()
+    release_tool = asyncio.Event()
+
+    async def wait_for_release(value: str) -> str:
+        """Return a value after the test releases this Tool."""
+        tool_started.set()
+        await release_tool.wait()
+        return value
+
+    llm = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "wait-1",
+                "name": "wait_for_release",
+                "args": {"value": "ready"},
+            }],
+        },
+        {"content": "handled both requests"},
+    ])
+    ctx = await http_app.state.manager.open_session(
+        session_id="mailbox-steer",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
+    ctx.engine.tool_registry.restrict(None)
+
+    async def collect(stream):
+        return [event async for event in stream]
+
+    first_task = asyncio.create_task(collect(
+        ctx.stream_message("start the tool", "req-1")
+    ))
+    await asyncio.wait_for(tool_started.wait(), timeout=1)
+    second_stream = ctx.stream_message("also include this", "req-2")
+    queued = await anext(second_stream)
+    assert queued["type"] == "message_queued"
+
+    release_tool.set()
+    first_events, second_events = await asyncio.gather(
+        first_task,
+        collect(second_stream),
+    )
+
+    assert llm.call_count == 2
+    assert [
+        message.content
+        for message in llm.get_call_messages(1)
+        if message.role == "user"
+    ] == ["start the tool", "also include this"]
+    assert any(
+        event["type"] == "assistant_message"
+        and event["data"]["content"] == "handled both requests"
+        for event in first_events
+    )
+    assert any(
+        event["type"] == "assistant_message"
+        and event["data"]["content"] == "handled both requests"
+        for event in second_events
+    )
+
+
+@pytest.mark.asyncio
 async def test_general_message_uses_session_event_stream(http_app) -> None:
     llm = MockLLM(responses=[{"content": "background result"}])
     set_llm_override(http_app, llm)
@@ -1793,7 +1863,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         event for event in received if event and event["type"] == "assistant_message"
     )["data"]["content"] == "background result"
     assert [message.role for message in ctx.engine.messages] == [
-        "user", "assistant", "assistant",
+        "user", "assistant", "user", "assistant",
     ]
     runtime_input = llm.get_call_messages(0)[-1]
     assert runtime_input.role == "user"
@@ -1805,6 +1875,13 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     }
     assert json.loads(runtime_event.findtext("payload"))["data"] == {
         "task_id": "task-1",
+    }
+    persisted_runtime = ctx.engine.state_store.read_messages()[-2]
+    assert persisted_runtime.content == runtime_input.content
+    assert persisted_runtime.additional_kwargs["runtime_input"] == {
+        "kind": "general",
+        "source": "task",
+        "event": "completed",
     }
     assert item.kind == "general"
 
@@ -1859,7 +1936,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
     notices = json.loads(runtime_event.findtext("payload"))["notices"]
     assert notices[0]["task_id"] == "task-1"
     assert notices[0]["status"] == "completed"
-    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    assert [message.role for message in ctx.engine.messages] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio
@@ -1900,7 +1977,7 @@ async def test_multiple_completions_aggregate_into_one_injection(
     ]
     # pending notices drained after the idle turn
     assert ctx._pending_notices == []
-    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    assert [message.role for message in ctx.engine.messages] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio

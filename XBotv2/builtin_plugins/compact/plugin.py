@@ -14,6 +14,7 @@ from xbotv2.api import (
     HookDecision,
     HookStage,
     Message,
+    MESSAGE_FORMAT_KEY,
     PluginBase,
     PluginManifest,
     PluginSetupContext,
@@ -27,7 +28,6 @@ from xbotv2.api import (
     prompt_container,
     prompt_element,
 )
-from xbotv2.api.prompts import MESSAGE_FORMAT_KEY
 
 logger = logging.getLogger("xbotv2.compact")
 

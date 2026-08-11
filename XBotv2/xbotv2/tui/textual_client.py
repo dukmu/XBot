@@ -996,7 +996,8 @@ class XBotTextualApp(App[None]):
             if self._stream_timer is None:
                 self._stream_timer = asyncio.create_task(self._stream_tick())
             self._refresh_status()
-            return  # timer handles all rendering        elif event_type == "assistant_message":
+            return  # The timer handles delta rendering.
+        elif event_type == "assistant_message":
             await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
         elif event_type == "tool_call_delta":

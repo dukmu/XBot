@@ -192,7 +192,9 @@ class TuiState:
                     index = self._streaming_assistant_index
                     self._streaming_assistant_index = None
                     try:
-                        self.messages[index].streaming = False
+                        message = self.messages[index]
+                        message.content = content
+                        message.streaming = False
                     except IndexError:
                         pass
                 else:
@@ -397,6 +399,20 @@ class TuiState:
             role = str(item.get("role") or "")
             if role == "user":
                 content = str(item.get("content") or "")
+                runtime = item.get("runtime")
+                if isinstance(runtime, dict):
+                    source = str(runtime.get("source") or "runtime")
+                    event = str(runtime.get("event") or "message")
+                    self.notices.append(TuiNotice(
+                        kind=f"{source}:{event}",
+                        text=f"{source} {event}",
+                        payload=runtime,
+                    ))
+                    self.transcript.append(TuiTranscriptEntry(
+                        kind="notice",
+                        key=str(len(self.notices) - 1),
+                    ))
+                    continue
                 images = item.get("images") or []
                 if images:
                     labels = [

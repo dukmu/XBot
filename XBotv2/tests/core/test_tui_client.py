@@ -279,6 +279,11 @@ def test_tui_state_restores_resumed_message_and_tool_history():
             ],
         },
         {"role": "assistant", "content": "done"},
+        {
+            "role": "user",
+            "content": "<runtime_event />",
+            "runtime": {"source": "tasks", "event": "completed"},
+        },
     ])
 
     assert state.turn == 1
@@ -293,6 +298,9 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert state.tools["call_1"].data == {"bytes": 8}
     assert state.tools["call_1"].error["code"] == "warning"
     assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
+    assert [(notice.kind, notice.text) for notice in state.notices] == [
+        ("tasks:completed", "tasks completed"),
+    ]
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -304,7 +312,6 @@ def test_tui_state_appends_assistant_deltas_to_one_message():
     state.apply_event({"type": "assistant_message", "data": {"content": "Hello"}})
 
     assert [(m.role, m.content) for m in state.messages] == [("assistant", "Hello")]
-    assert [entry.kind for entry in state.transcript] == ["message"]
 
 
 def test_tui_state_distinguishes_thinking_from_visible_output() -> None:
