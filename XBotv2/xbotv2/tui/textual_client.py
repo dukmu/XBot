@@ -918,8 +918,34 @@ class XBotTextualApp(App[None]):
         if task.cancelled():
             return
         error = task.exception()
-        if error is not None:
-            self._record_error(error)
+        if error is None:
+            return
+        # The server invalidates an interaction as soon as its turn ends
+        # (interrupt, timeout, or terminal error). A response that races
+        # that invalidation is rejected with ``interaction_no_longer_pending``.
+        # Treat it as an expired request rather than a failure: drop the
+        # stale dialog and explain, instead of flipping the UI to "Error".
+        if getattr(error, "code", "") == "interaction_no_longer_pending":
+            self._interaction_response_pending = False
+            self.state._clear_pending_interactions(tool_status="cancelled")
+            self.run_worker(
+                self._refresh_changed_tool_widgets,
+                exclusive=False,
+                name="refresh_expired_interaction",
+            )
+            self.run_worker(
+                self._render_new_transcript_entries,
+                exclusive=False,
+                name="render_expired_interaction_notice",
+            )
+            self.state.append_notice(
+                "interaction",
+                "Request expired (the turn was interrupted); nothing was decided.",
+            )
+            self._refresh_status()
+            self._refresh_input_mode()
+            return
+        self._record_error(error)
 
     def _cancel_interaction_response(self) -> None:
         task = self._interaction_response_task
@@ -1846,11 +1872,17 @@ class XBotTextualApp(App[None]):
                 self._choice_payloads.pop(ck, None)
                 self._choice_request_ids.pop(ck, None)
                 self._choice_widgets.pop(ck, None)
-                self._resolved_choice_keys.discard(ck)
                 if self._active_choice_key == ck:
                     self._active_choice_key = None
 
         if not tool.permission_pending or not tool.permission_request_id:
+            return
+        # A resolved interaction must stay resolved. It may only be answered
+        # once: re-arming the dialog would let the user respond again to an
+        # interaction the server already resolved, which fails with
+        # ``interaction_no_longer_pending``. The resolved label is rendered
+        # below but the choice set is never re-activated.
+        if key in self._resolved_choice_keys:
             return
 
         choices = [
