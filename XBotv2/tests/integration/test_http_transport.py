@@ -12,7 +12,7 @@ The tests cover:
 - ESC interrupt: POST /sessions/{sid}/interrupt mid-turn yields
   ``turn_cancelled`` on the SSE stream (v1.2)
 
-See ``docsv2/tui_opencode_requirements.md`` §10.5 + Phase E DoD.
+See ``docsv2/protocol/tui_opencode_requirements.md`` §10.5 + Phase E DoD.
 """
 
 from __future__ import annotations

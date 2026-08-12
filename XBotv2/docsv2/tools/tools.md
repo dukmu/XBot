@@ -37,8 +37,8 @@ session. They emit bounded previews through `task_updated`. Output is stored in
 the job and is never included in list/wait responses; the Agent reads it through
 the explicit `read_shell`/`read_subagent` tools, which are the only tools that
 return bulk text and each bound the returned characters. A completed subagent
-or background shell enters the runtime mailbox as a general message, so the
-Agent can react while the client is connected without polling. Starting a job
+or background shell stages a runtime notice in the agent inbox, so the
+Agent can react on the next turn without polling. Starting a job
 confirms only that it was accepted. The Agent uses `wait_shell(ids)` /
 `wait_subagent(ids)` when subsequent work depends on completion; cancelling a
 wait does not stop the job — `cancel_shell`/`cancel_subagent` own that

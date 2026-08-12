@@ -42,7 +42,7 @@ from xbotv2.protocol.models import (
 
 
 def test_public_api_inventory_is_explicit():
-    inventory = Path(__file__).parents[2] / "docsv2" / "api_inventory.md"
+    inventory = Path(__file__).parents[2] / "docsv2" / "api" / "api_inventory.md"
     documented = [
         match.group(1)
         for line in inventory.read_text(encoding="utf-8").splitlines()

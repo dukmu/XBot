@@ -36,7 +36,7 @@ fragment is rendered as `plugin_instruction` with its owner and declared stage.
 ## Stable And Dynamic Inputs
 
 Core, Agent, workspace, and startup plugin instructions form a deterministic
-prefix. Clocks and turn counters are excluded. Runtime mailbox notifications
+prefix. Clocks and turn counters are excluded. Runtime inbox notifications
 are persisted `<runtime_event>` inputs with explicit non-human metadata. An
 active Goal schedules such an input only after a turn ends, not on every
 provider call or Tool result.

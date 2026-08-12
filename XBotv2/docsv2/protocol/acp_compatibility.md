@@ -66,7 +66,7 @@ XBot's normal logging configuration and must target stderr or a log file.
 ## Known boundaries
 
 - ACP clients see the main conversation, not XBot's internal thread tree.
-- Loading replays persisted conversation state. Runtime-only mailbox and
+- Loading replays persisted conversation state. Runtime-only fold/inbox and
   interaction requests are not replayed.
 - Process disconnect releases live runtimes; persisted sessions remain
   available for resume or load.

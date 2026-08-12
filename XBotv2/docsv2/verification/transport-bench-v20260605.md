@@ -1,7 +1,7 @@
 # XBotv2 TUI Phase E — HTTP/SSE Transport Verification
 
 Status: bench captured 2026-06-05 against Phase E milestone 3
-(`d0b7c9f`). See `docsv2/tui_opencode_requirements.md` §10.5 + §16.
+(`d0b7c9f`). See `docsv2/protocol/tui_opencode_requirements.md` §10.5 + §16.
 
 ## What was verified
 

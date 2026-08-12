@@ -39,7 +39,7 @@ replaces it. Resume changes a terminal or paused Goal back to active.
 The command handler belongs to the plugin and calls the same private state
 transitions as its Tools. It does not construct a Tool call, enter Tool
 permissions, or append a Tool message to model history. Setting or resuming an
-active Goal schedules its next mailbox turn.
+active Goal schedules its next continuation turn via `request_continuation`.
 
 ## Agent Tools
 
@@ -68,16 +68,15 @@ completion evidence.
 
 Every successful transition persists immediately through `PluginStore`. Goal
 does not inject state during each context build. When an active Goal reaches an
-idle session, its runtime-only mailbox wake causes `ON_TURN_START` to build one
+continuation turn causes `ON_TURN_START` to build one
 non-persisted Goal snapshot for that turn. ReAct iterations reuse that stable
 snapshot. Terminal and paused Goals remain available to the command and Tools,
 but are not injected into unrelated model calls.
 
-After a human or Goal-owned turn, `ON_TURN_END` places at most one wake-only
-`general` message in the Core mailbox while the Goal remains active. Unrelated
-runtime turns, including background-task and subagent notifications, do not
+After a human or Goal-owned turn, `ON_TURN_END` requests at most one
+continuation turn while the Goal remains active. Runtime notifications (background-task and subagent completions) do not
 drive the Goal state machine. The objective remains authoritative in
-`PluginStore` and is not duplicated in the mailbox payload. Delivery clears the
+`PluginStore` and is not duplicated in the turn payload. Delivery clears the
 pending marker before the next turn. ESC pauses the Goal and schedules no
 successor. `/goal resume` activates it and schedules continuation again.
 Mailbox entries and turn snapshots are not restored by session resume.

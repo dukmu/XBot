@@ -148,37 +148,54 @@ Tool call.
 Typed history mutations return `HistoryMutationResponse.messages`, which is the
 same display-safe state the next provider request will use.
 
-## Runtime Mailbox
+## Input acceptance, fold, and runtime inbox
 
-Each connected session owns an in-memory mailbox. `user_message` and `general`
-are its only message kinds. User messages have priority, and FIFO order is
-preserved within each kind. Idle human input bypasses the mailbox. A message
-submitted behind an active turn or existing queue receives `message_queued`;
-the server, rather than the TUI, controls delivery.
+While the agent is busy, new user input is **held** in the session's pending
+fold and fused into the running turn at the next complete ToolResult batch, so
+it is injected mid-turn. A held input that no tool boundary ever fuses (a
+turn with no tool calls) is rejected with `input_rejected` at turn end and the
+client retries it as a later turn. No `message_queued` event exists; the
+server does not hold a mailbox of pending user messages.
 
-`general` messages carry source and metadata inside their payload. When the
-message is delivered, Core builds one explicitly labelled runtime input from
-the payload and the owning plugin's current state. The provider sees a user-role
-envelope because supported chat protocols need an input to trigger generation,
-while persisted `runtime` metadata distinguishes it from human input. These
-turns cover Goal continuation and runtime notifications. Their output
-uses `GET /sessions/{sid}/threads/{tid}/events`; queued human turns keep their
-originating message stream. The thread event stream remains open across separate `general`
-turns and closes only when the client disconnects or the session ends.
+Runtime notifications (background-task / subagent completions) do not start
+turns. They are staged in the session's agent inbox and drained — all at
+once — into the next turn's model context as one `<runtime_event>` envelope.
+Goal automatic continuation is the one deliberate wake: a plugin requests a
+new turn via `request_continuation`, never through the inbox.
 
-After a complete ToolResult batch, Engine may accept one queued input before
-the next provider request. It never inserts input between an assistant ToolUse
-and its matching ToolResults. If no such boundary occurs, the mailbox worker
-delivers the input as the next turn. Human input remains an ordinary user
-message; `general` input uses `<runtime_event>`.
+The pending-fold buffer and the inbox are runtime-only state. Closing or
+losing the client connection drops both, and `resume` starts empty.
 
-The mailbox queue is not persistent state. Closing or losing the client
-connection drops queued messages, and `resume` starts with an empty mailbox.
-Once delivery starts, Core also appends a `mailbox_delivery` record to
-`state/messages.jsonl`. The delivered Message is appended separately and is
-reconstructed on resume; the delivery record remains audit evidence and never
-requeues the item. The separate append-only
-`logs/mailbox.jsonl` file remains lower-level queue diagnostic evidence.
+### Core ↔ TUI sequence
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Core as session (core/session.py)
+    participant Turn as engine turn
+    participant Fold as pending_fold
+    participant Ev as session_events stream
+
+    Note over TUI,Ev: Submitting while idle runs a fresh turn directly
+    TUI->>Core: send_message(A) POST /messages
+    Core->>Ev: publish message(A) {id, role:user, content:A}
+    Core->>Turn: run_turn_stream(A)
+    Turn-->>TUI: turn_started, assistant_message, turn_finished
+    Note over TUI: renders A from message(A) on the event stream
+
+    Note over TUI,Fold: Submitting while busy holds input for the fold
+    TUI->>Core: send_message(B), send_message(C)
+    Core->>Fold: append B, C (FIFO)
+    Note over Fold: queue drains only at a tool batch boundary or turn end
+    Turn->>Fold: _accept_pending_fold() drains ALL pending
+    Fold->>Ev: publish message(B), message(C) in order
+    Fold-->>Turn: items (content/images/artifacts)
+    Turn->>Turn: fuse each as a user message, save
+    Turn-->>TUI: _fold_handoff → merged reply routed to last stream
+    Ev-->>TUI: message events → pop queue + append transcript (in order)
+    Turn-->>TUI: assistant_message (merged reply), turn_finished
+```
+
 
 XBot conversation history uses the provider-neutral roles `system`, `user`,
 `assistant`, and `tool`. Human and runtime inputs both use the standard `user`
@@ -266,7 +283,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `turn_started` | `{turn}` |
 | `turn_finished` | `{turn}` |
 | `turn_cancelled` | `{turn, reason}` |
-| `message_queued` | `{message_id, position}` |
+| `input_rejected` | `{reason, request_id}` |
 | `assistant_message_delta` | `{content}` or `{reasoning}` |
 | `assistant_message` | `{content, tool_calls}` |
 | `tool_call_delta` | `{tool_calls: [{tool_call_id, id, name, args_delta, args, index, replaces_tool_call_id?}]}` |

@@ -205,8 +205,7 @@ Implement these as public-API consumers and reference plugins, in this order:
 - Active, complete, and blocked goals append concise non-persisted context;
   completion retains its execution summary and explicitly prevents repetition.
 - Todo items remain concrete work tracking. Active Goal continuation uses the
-  runtime-only Core mailbox; ESC pauses it and resume does not restore queued
-  mailbox items. Real-provider tool selection, internal permission baseline,
+  runtime-only continuation; ESC pauses it and resume does not restore it. Real-provider tool selection, internal permission baseline,
   restart recovery, context injection, and terminal retention are verified.
 - Connect an explicitly requested Goal `token_budget` to provider-reported
   usage. `/goal` must distinguish declared, used, and remaining tokens before
@@ -248,7 +247,7 @@ documentation before it becomes a shipped default.
   Tasks control in place and distinguishes their `kind` without parsing text.
 - Queued follow-ups now render ordered summaries beside Tasks in one runtime
   band. Their display lifecycle reuses the existing client request map while
-  delivery ordering remains owned by the Core mailbox.
+  acceptance and fold ordering remain owned by the session.
 - Narrow-terminal, long-transcript, semantic-control, and task-panel rendering
   have headless screenshot or layout coverage. Visual polish remains secondary
   to interaction behavior.

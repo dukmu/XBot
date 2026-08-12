@@ -38,11 +38,11 @@ data/sessions/<session-id>/
     ├── state/usage.yaml
     ├── state/plugin_states/
     ├── state/artifacts/
-    └── logs/mailbox.jsonl
+    └── session journal (messages.jsonl)
 ```
 
 Session policy is shared. Conversation history, usage, plugin state, cached
-artifacts, and mailbox audit records are thread-local. Existing sessions with
+artifacts are thread-local. Existing sessions with
 the legacy `state/` layout remain readable as the `agent` thread; new writes
 use the thread layout.
 
@@ -112,7 +112,7 @@ only IDs and statuses; `read_subagent(id, cursor, max_chars)` reads the final
 response, which is the only subagent tool that returns bulk text.
 `list_subagents(status?)` and `cancel_subagent(id)` list lightweight metadata
 and stop a job. A completed subagent also places a bounded completion notice in
-the parent runtime mailbox so the Agent can react without polling.
+the parent agent inbox so the Agent can react without polling.
 
 Both shell and subagent jobs run through the shared `JobRegistry` with the
 normal `bootstrap()`/Engine path. Child permissions are intersected with parent
