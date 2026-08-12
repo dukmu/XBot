@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,13 @@ MAX_INLINE_CHARS = 12_000
 MAX_USER_INLINE_CHARS = 48_000
 HEAD_CHARS = 3_000
 TAIL_CHARS = 1_000
+
+# Memoize per-session externalization: the same oversized content is re-bound
+# for every ReAct iteration, so skip the digest + cache write + render on hits.
+_MAX_EXTERNALIZE_CACHE = 64
+_externalize_cache: OrderedDict[
+    tuple[int, str, str, str], tuple[str, Path, str]
+] = OrderedDict()
 
 
 def bound_context_messages(
@@ -96,6 +104,13 @@ def _externalize(
 ) -> str:
     if len(content) <= limit:
         return content
+    cache_key = (limit, kind, content, str(state_store.artifacts_dir))
+    cached = _externalize_cache.get(cache_key)
+    if cached is not None:
+        digest, path, rendered = cached
+        if path.exists():
+            return rendered
+        _externalize_cache.pop(cache_key, None)
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     cache_dir = Path(state_store.artifacts_dir) / "context"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +119,7 @@ def _externalize(
         path.write_text(content, encoding="utf-8")
     relative = Path("session") / path.relative_to(Path(state_store.root))
     omitted = len(content) - HEAD_CHARS - TAIL_CHARS
-    return cached_content_prompt(
+    rendered = cached_content_prompt(
         kind=kind,
         cache_path=str(relative),
         original_chars=len(content),
@@ -114,6 +129,10 @@ def _externalize(
         sha256=digest,
         inline_limit_chars=limit,
     )
+    _externalize_cache[cache_key] = (digest, path, rendered)
+    if len(_externalize_cache) > _MAX_EXTERNALIZE_CACHE:
+        _externalize_cache.popitem(last=False)
+    return rendered
 
 
 __all__ = [

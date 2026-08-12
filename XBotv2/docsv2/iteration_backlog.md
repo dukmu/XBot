@@ -164,8 +164,8 @@ ambiguity before large implementation changes.
 
 - `PluginBase` has optional lifecycle defaults, and the built-ins now expose
   consistent cleanup and diagnostics behavior documented in `plugins.md`.
-- Token Manager no longer writes statistics into ephemeral `HookContext.state`;
-  it uses explicit collector methods and resets plugin-owned memory on unload.
+- Token Manager reads explicit Hook fields, uses collector methods for its own
+  statistics, and resets plugin-owned memory on unload.
 - Keep Skills as the template for prompt/tool capability plugins.
 - Keep MCP as the template for external tool provider plugins.
 - Keep token manager as the template for policy/observation plugins.

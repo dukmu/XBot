@@ -26,11 +26,7 @@ from xbotv2.api.messages import (
     part_from_dict,
 )
 from xbotv2.api.paths import SessionPaths, ThreadPaths
-_PERSISTED_XBOT_KWARGS = {
-    "xbotv2_data",
-    "xbotv2_error",
-    "xbotv2_message_format",
-}
+_PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
 
 
 def now_iso() -> str:
@@ -60,6 +56,10 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
         d["usage_metadata"] = _json_safe(msg.usage_metadata)
     if msg.artifact is not None:
         d["artifact"] = _json_safe(msg.artifact)
+    if msg.data is not None:
+        d["data"] = _json_safe(msg.data)
+    if msg.error is not None:
+        d["error"] = _json_safe(msg.error)
     return d
 
 
@@ -77,6 +77,8 @@ def dict_to_message(d: dict[str, Any]) -> Message:
         response_metadata=dict(d.get("response_metadata") or {}),
         usage_metadata=dict(d.get("usage_metadata") or {}),
         artifact=d.get("artifact"),
+        data=d.get("data"),
+        error=d.get("error"),
     )
 
 
@@ -103,9 +105,6 @@ def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
 
 
 class CoreStateStore:
-
-    SCHEMA_VERSION = 3
-
     def __init__(
         self,
         paths: SessionPaths | ThreadPaths,
@@ -128,6 +127,10 @@ class CoreStateStore:
         self.plugin_states_dir = paths.plugin_states_dir
         self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
+        # References to the messages already persisted in the journal.
+        # None means unknown (rebuilt from disk on the next sync).
+        self._persisted_refs: list[Message] | None = None
+        self._persisted_fingerprints: list[int] | None = None
 
     @classmethod
     def create(
@@ -152,17 +155,6 @@ class CoreStateStore:
         if not store.messages_path.exists():
             store.messages_path.touch()
         return store
-
-    def append_message(self, msg: Message) -> dict[str, Any]:
-        _discard_incomplete_tail(self.messages_path)
-        d = message_to_dict(msg)
-        d["msg_id"] = self._next_message_id()
-        d["ts"] = now_iso()
-        with open(self.messages_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(d, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        return d
 
     def store_image(self, data: str, media_type: str) -> ImageContent:
         """Persist one base64 image and return its journal-safe reference."""
@@ -221,15 +213,52 @@ class CoreStateStore:
                 stream.write(json.dumps(d, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        if self._persisted_refs is not None:
+            self._persisted_refs.extend(messages)
+            assert self._persisted_fingerprints is not None
+            self._persisted_fingerprints.extend(
+                message.fingerprint() for message in messages
+            )
         return len(messages)
 
     def sync_messages(self, messages: list[Message]) -> int:
-        """Persist a normal history extension without rewriting the journal."""
-        previous = self.read_messages()
+        """Persist a normal history extension without rewriting the journal.
+
+        Fast path: when the already-persisted prefix is unchanged (message
+        identity), append only the new tail. If the caller rebuilt the message
+        objects (e.g. after resume), fall back to a content comparison and
+        still append only the delta; a diverged history degrades to a
+        checkpoint so nothing is silently lost.
+        """
+        if not messages:
+            return 0
+        refs = self._persisted_refs
+        if refs is None:
+            refs = self._persisted_refs = self.read_messages()
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in refs
+            ]
+        k = len(refs)
+        if len(messages) >= k and all(
+            a is b for a, b in zip(messages, refs)
+        ):
+            assert self._persisted_fingerprints is not None
+            current = [message.fingerprint() for message in messages[:k]]
+            if current != self._persisted_fingerprints:
+                self.append_checkpoint(messages, reason="sync")
+                return len(messages)
+            new = messages[k:]
+            if new:
+                self.append_messages(new)
+            return len(messages)
         serialized = [message_to_dict(message) for message in messages]
-        previous_payloads = [message_to_dict(message) for message in previous]
+        previous_payloads = [message_to_dict(message) for message in refs]
         if serialized[:len(previous_payloads)] == previous_payloads:
             self.append_messages(messages[len(previous_payloads):])
+            self._persisted_refs = list(messages)
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in messages
+            ]
             return len(messages)
         self.append_checkpoint(messages, reason="sync")
         return len(messages)
@@ -245,6 +274,10 @@ class CoreStateStore:
             "reason": reason,
             "messages": [message_to_dict(message) for message in messages],
         })
+        self._persisted_refs = list(messages)
+        self._persisted_fingerprints = [
+            message.fingerprint() for message in messages
+        ]
 
     def append_undo(self, turns: int) -> None:
         if turns < 1:
@@ -253,17 +286,30 @@ class CoreStateStore:
             "record_type": "history_undo",
             "turns": turns,
         })
+        # Undo rewrites history on replay; the persisted baseline is unknown
+        # until the next sync rebuilds it from the journal.
+        self._persisted_refs = None
+        self._persisted_fingerprints = None
 
     def append_clear(self) -> None:
         self._append_record({"record_type": "history_clear"})
+        self._persisted_refs = []
+        self._persisted_fingerprints = []
 
-    def append_mailbox_delivery(self, message: Any) -> None:
+    def append_mailbox_delivery(
+        self,
+        *,
+        mailbox_id: str,
+        kind: str,
+        message: str | dict[str, Any],
+        request_id: str,
+    ) -> None:
         self._append_record({
             "record_type": "mailbox_delivery",
-            "mailbox_id": str(getattr(message, "id", "")),
-            "kind": str(getattr(message, "kind", "")),
-            "message": _json_safe(getattr(message, "message", None)),
-            "request_id": str(getattr(message, "request_id", "")),
+            "mailbox_id": mailbox_id,
+            "kind": kind,
+            "message": _json_safe(message),
+            "request_id": request_id,
         })
 
     def read_messages(self) -> list[Message]:
@@ -302,42 +348,8 @@ class CoreStateStore:
     def message_count(self) -> int:
         return len(self.read_messages())
 
-    def record_count(self) -> int:
-        return sum(1 for _ in _iter_jsonl(self.messages_path))
-
-    def truncate_messages(self, keep_last: int = 0) -> int:
-        messages = self.read_messages()
-        if len(messages) <= keep_last:
-            return 0
-        removed = len(messages) - max(0, keep_last)
-        if keep_last <= 0:
-            self.append_clear()
-        else:
-            self.append_checkpoint(messages[-keep_last:], reason="truncate")
-        return removed
-
-    def clear_messages(self) -> None:
-        self.append_clear()
-
     def has_existing_session(self) -> bool:
-        return self.messages_path.exists() and self.record_count() > 0
-
-    def read_state(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "thread_id": self.thread_id,
-            "workspace_root": self.workspace_root,
-            "provider": self.provider,
-            "turn_count": 0,
-            "event_count": 0,
-            "message_count": self.message_count(),
-            "status": "active",
-            "pending_interactions": [],
-            "workspace": {},
-            "plugin_states": self._read_all_plugin_states(),
-            "artifacts_root": str(self.artifacts_dir),
-        }
+        return next(_iter_jsonl(self.messages_path), None) is not None
 
     def read_usage(self) -> dict[str, int] | None:
         if not self.usage_path.exists():
@@ -428,16 +440,6 @@ class CoreStateStore:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-
-    def _read_all_plugin_states(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        if not self.plugin_states_dir.exists():
-            return result
-        for path in sorted(self.plugin_states_dir.iterdir()):
-            if path.suffix == ".yaml":
-                name = path.stem
-                result[name] = self.get_plugin_state(name)
-        return result
 
 def _undo_turns(messages: list[Message], turns: int) -> list[Message]:
     if turns <= 0:

@@ -13,6 +13,7 @@ from xbotv2.core.content_cache import (
     bound_context_messages,
 )
 from xbotv2.core.context import ContextBuilder
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
@@ -122,7 +123,7 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
     events = [event async for event in engine.run_turn(user_input)]
@@ -156,7 +157,7 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
     _events = [event async for event in engine.run_turn(user_input)]

@@ -29,8 +29,8 @@ receive an empty value.
 | `on_session_close` | observer | no | yes | `session`, pending interactions already cancelled | None | engine close |
 | `on_turn_start` | observer | no | no | `session` with current `turn_count`, `user_input` | None | start of accepted user turn |
 | `on_turn_end` | observer | no | no | `session`, final turn state, `stop_reason` | None | before stop hooks |
-| `before_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session` | None | session worker before one queued input becomes a turn |
-| `after_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session`, optional `error` | None | session worker after turn delivery or failure |
+| `before_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session` | None | before one queued input is handed to Engine |
+| `after_mailbox_delivery` | observer | no | no | immutable `mailbox_message`, `session`, optional `error` | None | after queue delivery or delivery failure |
 | `on_stop` | observer | no | yes | `stop_reason` | None | normal turn stop |
 | `on_stop_failure` | observer | no | no | `stop_reason`, `error`, optional `user_input` | None | turn failure path |
 | `before_user_message_accept` | transform | default | no | `user_input` | `{user_input}`, `{event, turn_complete}`, or rejection | before message enters history |

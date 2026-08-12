@@ -15,7 +15,7 @@ import logging
 import shlex
 import time
 import uuid
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -74,9 +74,8 @@ from xbotv2.config.loader import (
 from xbotv2.core.operations import (
     OperationError,
     clear_history,
-    fork_persisted_session,
+    fork_session,
     reload_agents,
-    require_forkable,
     select_agent,
     select_provider,
     stop_all_tasks,
@@ -97,7 +96,6 @@ from xbotv2.protocol.session_manager import (
     SessionManager,
     SessionNotFound,
     ThreadNotActive,
-    close_disconnected_runtime,
     pending_interactions,
     persisted_thread_ids,
     session_summary,
@@ -163,6 +161,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        manager.start_reaper()
         try:
             yield
         finally:
@@ -363,13 +362,11 @@ def _register_routes(app: FastAPI) -> None:
             for (active_session_id, _), ctx in active.items()
             if active_session_id == session_id
         ]
-        require_forkable(*session_contexts)
-        async with AsyncExitStack() as stack:
-            for ctx in sorted(session_contexts, key=lambda item: item.thread_id):
-                await stack.enter_async_context(ctx.turn_lock)
-            for ctx in session_contexts:
-                await ctx.engine.save_messages()
-            forked_id = fork_persisted_session(manager.paths, session_id)
+        forked_id = await fork_session(
+            manager.paths,
+            session_id,
+            *session_contexts,
+        )
         return ForkResponse(
             session_id=forked_id,
             source_session_id=session_id,
@@ -849,10 +846,7 @@ def _register_routes(app: FastAPI) -> None:
                 disconnected = True
                 logger.info("SSE stream cancelled for session %s", session_id)
             finally:
-                if disconnected:
-                    if ctx.session_events is None:
-                        await close_disconnected_runtime(manager, ctx)
-                else:
+                if not disconnected:
                     final = emit_end()
                     if final:
                         yield final
@@ -902,8 +896,6 @@ def _register_routes(app: FastAPI) -> None:
                 disconnected = True
             finally:
                 ctx.detach_event_stream(events)
-                if disconnected:
-                    await close_disconnected_runtime(manager, ctx)
 
         return StreamingResponse(
             sse_stream(),

@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from xbotv2.api.messages import ImageContent
+
 
 MailboxKind = Literal["user_message", "general"]
 
@@ -64,6 +66,18 @@ class SessionMailbox:
             await self._condition.wait_for(
                 lambda: self._closed or bool(self._user or self._general)
             )
+            if self._user:
+                item = self._user.popleft()
+            elif self._general:
+                item = self._general.popleft()
+            else:
+                return None
+            self._audit("dequeued", item)
+            return item
+
+    async def get_pending(self) -> MailboxMessage | None:
+        """Return the next queued message without waiting."""
+        async with self._condition:
             if self._user:
                 item = self._user.popleft()
             elif self._general:
@@ -134,4 +148,31 @@ class SessionMailbox:
             stream.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
-__all__ = ["MailboxKind", "MailboxMessage", "SessionMailbox"]
+def decode_mailbox_message(
+    item: MailboxMessage,
+) -> tuple[str, list[ImageContent], list[dict[str, Any]]]:
+    """Decode one queued payload into Engine input fields."""
+    if isinstance(item.message, str):
+        return item.message, [], []
+    if item.kind == "general":
+        return json.dumps(item.message, ensure_ascii=False, sort_keys=True), [], []
+    return (
+        str(item.message.get("content") or ""),
+        [
+            ImageContent.from_dict(image)
+            for image in item.message.get("images") or []
+        ],
+        [
+            dict(artifact)
+            for artifact in item.message.get("artifacts") or []
+            if isinstance(artifact, dict)
+        ],
+    )
+
+
+__all__ = [
+    "MailboxKind",
+    "MailboxMessage",
+    "SessionMailbox",
+    "decode_mailbox_message",
+]

@@ -16,43 +16,37 @@ from xbotv2.api.prompts import (
 
 
 def structure_tool_message(message: Message, tool_name: str) -> Message:
-    """Wrap a runtime Tool message while preserving its protocol role."""
+    """Structure errors and artifacts without copying sidecar data into context."""
     if message.role != "tool":
         return message
     metadata = message.additional_kwargs
-    if metadata.get(MESSAGE_FORMAT_KEY) == "xml-v1":
+    if metadata.get(MESSAGE_FORMAT_KEY):
         return message
 
     content = str(message.content or "")
-    data = metadata.get("xbotv2_data")
-    error = metadata.get("xbotv2_error")
+    error = message.error
     cached = metadata.pop(CACHED_CONTENT_KEY, False)
     status = message.status or "success"
     message.name = tool_name or message.name
-    if cached and status == "success":
+    if cached:
         metadata.pop(DISPLAY_CONTENT_KEY, None)
-        metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
+        metadata[MESSAGE_FORMAT_KEY] = "xml"
         return message
     if (
         status == "success"
         and error is None
         and not message.artifact
-        and (data is None or _content_matches_data(content, data))
+        and content
     ):
         return message
     children: list[str] = []
 
-    if not _content_matches_data(content, data) and content:
+    if content:
         children.append(prompt_element("content", content))
-    if data is not None:
-        children.append(_json_element("data", data))
     if message.artifact:
         children.append(_json_element("artifacts", _artifacts(message.artifact)))
     if error is not None:
         children.append(_json_element("error", error))
-    if not children:
-        children.append(prompt_element("content", ""))
-
     message.content = prompt_container(
         "tool_result",
         children,
@@ -62,17 +56,8 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
         },
     )
     metadata.pop(DISPLAY_CONTENT_KEY, None)
-    metadata[MESSAGE_FORMAT_KEY] = "xml-v1"
+    metadata[MESSAGE_FORMAT_KEY] = "xml"
     return message
-
-
-def _content_matches_data(content: str, data: Any) -> bool:
-    if data is None or not content:
-        return False
-    try:
-        return json.loads(content) == data
-    except (json.JSONDecodeError, TypeError):
-        return False
 
 
 def _json_element(name: str, value: Any) -> str:

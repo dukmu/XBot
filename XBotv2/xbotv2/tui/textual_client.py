@@ -41,7 +41,6 @@ from xbotv2.tui.completion_popup import CompletionPopup
 from xbotv2.tui.mode import Mode
 from xbotv2.tui.session_config import TuiSessionConfig
 from xbotv2.tui.textual_theme import TEXTUAL_TUI_CSS
-from xbotv2.tui.textual_state import route_submitted_text
 from xbotv2.tui.trace import trace_event
 from xbotv2.tui.textual_widgets import (
     ComposerTextArea,
@@ -64,6 +63,19 @@ from xbotv2.tui.textual_widgets import (
     tool_widget,
 )
 
+# Status bar refresh throttle: streaming deltas can arrive many times per
+# second; rebuilding the status renderable on every delta is wasteful.
+_STATUS_REFRESH_INTERVAL = 0.2
+# Replay window: number of most-recent transcript entries mounted on startup
+# after resuming a session. Older entries are lazy-loaded on scroll.
+_REPLAY_WINDOW = 50
+# Replay lazy-load batch size: entries mounted per scroll-to-top batch.
+_REPLAY_BATCH = 50
+# The transcript is windowed: at most this many entry widgets stay mounted.
+# Older/newer entries are re-mounted from ``state.transcript`` as the user
+# scrolls, so a long conversation never grows the DOM unboundedly.
+_MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
+
 
 logger = logging.getLogger("xbotv2.tui")
 
@@ -71,6 +83,13 @@ logger = logging.getLogger("xbotv2.tui")
 def _kind_tag(kind: str) -> str:
     _tags = {"client": "client cmd", "server": "server cmd", "skill": "skill", "tool": "tool", "mcp": "mcp"}
     return f"[{_tags.get(kind, kind)}]"
+
+
+# Widget cache caps: long sessions grow the transcript unboundedly; bound the
+# number of cached (and thus mounted) message/tool widgets so DOM and layout
+# work stay flat instead of growing with history length.
+_MAX_MESSAGE_WIDGETS = 200
+_MAX_TOOL_WIDGETS = 100
 
 
 class TextualTuiClient:
@@ -152,7 +171,13 @@ class XBotTextualApp(App[None]):
         self._connected = False
         self._request_sequence = 0
         self._pending_messages: dict[int, str] = {}
-        self._rendered_transcript_entries = 0
+        # Windowed transcript: ``state.transcript[_window_start:_window_end]``
+        # is what is mounted in the DOM (bounded by ``_MAX_MOUNTED_ENTRIES``).
+        # ``_mounted_entry_widgets`` runs in parallel to that slice so the
+        # DOM can be trimmed from either end without touching activity widgets.
+        self._window_start = 0
+        self._window_end = 0
+        self._mounted_entry_widgets: list[Any] = []
         self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
         self._tool_widgets: dict[str, Vertical] = {}
@@ -164,6 +189,9 @@ class XBotTextualApp(App[None]):
         self._active_choice_index = 0
         self._pending_stream_deltas = 0
         self._stream_timer: asyncio.Task | None = None
+        self._last_status_refresh = 0.0
+        self._status_refresh_pending = False
+        self._replay_loading = False
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
@@ -210,6 +238,20 @@ class XBotTextualApp(App[None]):
         self._refresh_all()
         self._activity_timer = self.set_interval(0.5, self._tick_activity)
         self.run_worker(self._connect, exclusive=True, name="connect")
+
+    @on(TranscriptScroll.ReplayTopReached)
+    def _handle_replay_top(self) -> None:
+        """Lazy-load earlier replayed history when scrolled to the top."""
+        if self._window_start <= 0 or self._replay_loading:
+            return
+        self.run_worker(self._load_earlier_replay, exclusive=False)
+
+    @on(TranscriptScroll.ReplayBottomReached)
+    def _handle_replay_bottom(self) -> None:
+        """Re-mount the newest entries dropped while the user scrolled up."""
+        if self._replay_loading or self._window_end >= len(self.state.transcript):
+            return
+        self.run_worker(self._load_newer_replay, exclusive=False)
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
@@ -265,7 +307,10 @@ class XBotTextualApp(App[None]):
             history = session.get("history") if isinstance(session, dict) else None
             if isinstance(history, list):
                 self.state.restore_history(history)
-                await self._render_new_transcript_entries()
+                # Replay windowed: mount only the most recent entries so a
+                # long resumed session does not pay full DOM construction on
+                # startup. The full history stays in state for lazy loading.
+                await self._render_replay_window()
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
@@ -305,19 +350,15 @@ class XBotTextualApp(App[None]):
                 await self._render_new_transcript_entries()
             await self._handle_slash_command(spec)
             return
-        route = route_submitted_text(
-            self.state,
-            self._answers,
-            self._permission_decisions,
-            text,
-        )
-        if route == "user_input":
+        if self.state.pending_user_input_payload is not None:
+            self._answers.put_nowait(text)
             self._remember_input(text)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {text}")
             return
-        if route == "permission":
+        if self.state.pending_permission_payload is not None:
             parsed = _parse_permission_decision(text)
+            self._permission_decisions.put_nowait(parsed)
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
             return
@@ -546,7 +587,9 @@ class XBotTextualApp(App[None]):
         self.state.tools.clear()
         self.state.notices.clear()
         self.state.errors.clear()
-        self._rendered_transcript_entries = 0
+        self._window_start = 0
+        self._window_end = 0
+        self._mounted_entry_widgets.clear()
         self._activity_widgets.clear()
         self._tool_widgets.clear()
         self._message_widgets.clear()
@@ -818,7 +861,11 @@ class XBotTextualApp(App[None]):
             exclusive=False,
             name="render_error",
         )
-        self._refresh_all()
+        # Errors are rare and critical: bypass the status throttle so the
+        # failure is visible immediately.
+        self._refresh_status_now()
+        self._refresh_queue_panel()
+        self._refresh_input_mode()
 
     async def _append_local_notice(self, kind: str, text: str) -> None:
         self.state.notices.append(TuiNotice(kind=kind, text=text))
@@ -837,6 +884,20 @@ class XBotTextualApp(App[None]):
     def _refresh_status(self) -> None:
         if not self.is_mounted:
             return
+        # Throttle: streaming deltas arrive many times per second; the status
+        # bar only needs to reflect the latest state a few times per second.
+        now = time.monotonic()
+        if (
+            self._stream_timer is not None
+            and now - self._last_status_refresh < _STATUS_REFRESH_INTERVAL
+        ):
+            self._status_refresh_pending = True
+            return
+        self._last_status_refresh = now
+        self._status_refresh_pending = False
+        self._refresh_status_now()
+
+    def _refresh_status_now(self) -> None:
         try:
             panel = self.query_one("#status_bar", Static)
         except Exception:  # noqa: BLE001 — defensive; widget may be unmounting
@@ -941,12 +1002,12 @@ class XBotTextualApp(App[None]):
             refresh_input = True
         elif event_type == "usage":
             self._update_activity()
-            self._refresh_status()
+            self._refresh_status_now()
         elif event_type == "assistant_message_delta":
             if self._stream_timer is None:
                 self._stream_timer = asyncio.create_task(self._stream_tick())
             self._refresh_status()
-            return  # timer handles all rendering
+            return  # The timer handles delta rendering.
         elif event_type == "assistant_message":
             await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
@@ -976,6 +1037,7 @@ class XBotTextualApp(App[None]):
             if event_type == "error":
                 self._cancel_interaction_response()
                 self._resolve_active_choice("request failed")
+                self.state.status = "Error"
             self._interaction_response_pending = False
             if event_type == "error":
                 await self._refresh_changed_tool_widgets()
@@ -983,7 +1045,11 @@ class XBotTextualApp(App[None]):
         elif event_type in {"user_input_required"}:
             refresh_input = True
         await self._render_new_transcript_entries()
-        self._refresh_status()
+        if event_type == "error":
+            # Errors are rare and critical: bypass the status throttle.
+            self._refresh_status_now()
+        else:
+            self._refresh_status()
         if refresh_input:
             self._refresh_input_mode()
 
@@ -993,6 +1059,8 @@ class XBotTextualApp(App[None]):
             while True:
                 await asyncio.sleep(0.05)
                 await self._refresh_streaming_assistant_widget()
+                if self._status_refresh_pending:
+                    self._refresh_status()
         except asyncio.CancelledError:
             pass
 
@@ -1005,37 +1073,180 @@ class XBotTextualApp(App[None]):
                 pass
             self._stream_timer = None
 
+    async def _render_replay_window(self) -> None:
+        """Mount only the tail of a resumed history on startup.
+
+        Long sessions replay hundreds of entries; constructing a widget for
+        every one of them stalls startup. We render a bounded window around
+        the end (where the user lands after resume) and leave older entries
+        in ``state.transcript`` for lazy loading on scroll.
+        """
+        total = len(self.state.transcript)
+        if total <= _REPLAY_WINDOW:
+            self._window_start = 0
+            self._window_end = 0
+            await self._render_new_transcript_entries()
+            return
+        self._window_start = total - _REPLAY_WINDOW
+        self._window_end = self._window_start
+        await self._render_new_transcript_entries()
+
+    async def _load_earlier_replay(self) -> None:
+        """Shift the window to an earlier batch of replayed history.
+
+        Called when the user scrolls to the top of the transcript. Mounts the
+        batch immediately before the current window, drops the newest entries
+        from the far end to keep the mounted window bounded, and keeps the
+        viewport stable by compensating the scroll offset.
+        """
+        if self._replay_loading or self._window_start <= 0:
+            return
+        self._replay_loading = True
+        try:
+            async with self._render_lock:
+                stream = self.query_one("#transcript", VerticalScroll)
+                batch_start = max(0, self._window_start - _REPLAY_BATCH)
+                entries = self.state.transcript[batch_start:self._window_start]
+                if not entries:
+                    self._window_start = 0
+                    return
+                widgets = await self._mount_entries(
+                    stream, batch_start, self._window_start, prepend=True
+                )
+                if not widgets:
+                    self._window_start = batch_start
+                    return
+                inserted_height = self._widgets_height(widgets)
+                self._window_start = batch_start
+                await self._drop_trailing_excess(stream)
+                # The inserted batch shifts content down; keep the viewport
+                # pinned where it was by scrolling down by the inserted size.
+                self.call_after_refresh(
+                    lambda h=inserted_height: stream.scroll_to(
+                        y=max(0, stream.scroll_y + h), animate=False
+                    )
+                )
+        finally:
+            self._replay_loading = False
+
+    async def _load_newer_replay(self) -> None:
+        """Shift the window forward to re-mount the newest entries.
+
+        Called when the user scrolls back to the bottom after entries were
+        dropped while loading earlier history. Mounts the next batch of the
+        live tail and drops the oldest entries to keep the window bounded.
+        """
+        async with self._render_lock:
+            stream = self.query_one("#transcript", VerticalScroll)
+            if self._window_end >= len(self.state.transcript):
+                await self._drop_leading_excess(stream, follow=True)
+                return
+            end = min(len(self.state.transcript), self._window_end + _REPLAY_BATCH)
+            await self._mount_entries(stream, self._window_end, end)
+            self._window_end = end
+            await self._drop_leading_excess(stream, follow=True)
+            self.call_after_refresh(lambda: stream.scroll_end(animate=False))
+
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:
             stream = self.query_one("#transcript", VerticalScroll)
-            start = self._rendered_transcript_entries
-            entries = self.state.transcript[start:]
-            if not entries:
+            end = len(self.state.transcript)
+            if end <= self._window_end:
+                # Follow the live tail only when the user is already at the
+                # bottom; never yank the viewport while reading older entries.
+                follow = stream.is_vertical_scroll_end
+                await self._drop_leading_excess(stream, follow)
                 return False
-            self._rendered_transcript_entries = len(self.state.transcript)
-            for entry in entries:
-                widget = self._widget_for_entry(entry)
-                if widget is None:
-                    continue
-                # If this widget is already mounted in the DOM,
-                # skip the mount.  Textual's parent attribute is
-                # updated synchronously by ``mount()``, so a second
-                # mount of the SAME widget object would raise
-                # MountError.
-                if widget.parent is stream:
-                    continue
-                # If the widget is mounted somewhere else (orphan),
-                # detach it first.
-                if widget.parent is not None:
-                    try:
-                        await widget.remove()
-                    except Exception:  # noqa: BLE001
-                        pass
-                await stream.mount(widget)
-            self.call_after_refresh(
-                lambda: stream.scroll_end(animate=False)
-            )
+            # Follow the live tail only when the user is already at the bottom;
+            # never yank the viewport while they are reading older entries.
+            follow = stream.is_vertical_scroll_end
+            await self._mount_entries(stream, self._window_end, end)
+            self._window_end = end
+            await self._drop_leading_excess(stream, follow)
+            if follow:
+                self.call_after_refresh(
+                    lambda: stream.scroll_end(animate=False)
+                )
             return True
+
+    async def _mount_entries(
+        self,
+        stream: VerticalScroll,
+        start: int,
+        end: int,
+        *,
+        prepend: bool = False,
+    ) -> list[Any]:
+        """Mount ``transcript[start:end]`` as widgets and track them.
+
+        ``prepend`` inserts the batch before the current first child (used when
+        loading earlier history); otherwise widgets are appended at the end.
+        Returns the successfully mounted widgets (in entry order).
+        """
+        widgets: list[Any] = []
+        reference = stream.children[0] if prepend and stream.children else None
+        for entry in self.state.transcript[start:end]:
+            widget = self._widget_for_entry(entry)
+            if widget is None:
+                continue
+            widgets.append(widget)
+            # Textual's ``parent`` attribute is updated synchronously by
+            # ``mount()``, so mounting the same widget twice raises.
+            if widget.parent is stream:
+                continue
+            if widget.parent is not None:
+                try:
+                    await widget.remove()
+                except Exception:  # noqa: BLE001
+                    pass
+            if reference is not None:
+                await stream.mount(widget, before=reference)
+            else:
+                await stream.mount(widget)
+        if prepend:
+            self._mounted_entry_widgets[0:0] = widgets
+        else:
+            self._mounted_entry_widgets.extend(widgets)
+        return widgets
+
+    @staticmethod
+    def _widgets_height(widgets: list[Any]) -> int:
+        return sum(
+            (w.virtual_size.height if w.virtual_size else 1)
+            for w in widgets
+        )
+
+    async def _drop_leading_excess(self, stream: VerticalScroll, follow: bool) -> int:
+        """Drop the oldest mounted entries when the window exceeds the cap.
+
+        Only trims while following the tail; while the user is scrolled up the
+        window may grow so their viewport never moves.
+        """
+        if not follow:
+            return 0
+        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
+        if excess <= 0:
+            return 0
+        removed = self._mounted_entry_widgets[:excess]
+        self._mounted_entry_widgets = self._mounted_entry_widgets[excess:]
+        for widget in removed:
+            if widget.parent is stream:
+                await widget.remove()
+        self._window_start += len(removed)
+        return len(removed)
+
+    async def _drop_trailing_excess(self, stream: VerticalScroll) -> int:
+        """Drop the newest mounted entries when the window exceeds the cap."""
+        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
+        if excess <= 0:
+            return 0
+        removed = self._mounted_entry_widgets[-excess:]
+        self._mounted_entry_widgets = self._mounted_entry_widgets[:-excess]
+        for widget in removed:
+            if widget.parent is stream:
+                await widget.remove()
+        self._window_end -= len(removed)
+        return len(removed)
 
     def _refresh_input_mode(self) -> None:
         if not self.is_mounted:
@@ -1334,6 +1545,7 @@ class XBotTextualApp(App[None]):
                 reasoning_expanded=self._reasoning_expanded,
             )
             self._message_widgets[int(key)] = widget
+            self._trim_message_widgets()
             return widget
         if kind == "tool":
             tool = self.state.tools.get(key)
@@ -1354,6 +1566,7 @@ class XBotTextualApp(App[None]):
                 return existing
             widget = tool_widget(tool, details_expanded=self._tool_details_expanded)
             self._tool_widgets[widget_id] = widget
+            self._trim_tool_widgets()
             return widget
         if kind == "notice":
             try:
@@ -1368,6 +1581,22 @@ class XBotTextualApp(App[None]):
                 return None
             return entry_widget("error", "Error", error)
         return None
+
+    def _trim_message_widgets(self) -> None:
+        """Drop the oldest cached message widgets beyond the cap.
+
+        Only the cache is pruned here; mounted widgets stay in the DOM until
+        they naturally scroll away. This bounds memory and repeated lookups
+        without churning visible entries.
+        """
+        while len(self._message_widgets) > _MAX_MESSAGE_WIDGETS:
+            oldest = next(iter(self._message_widgets))
+            self._message_widgets.pop(oldest, None)
+
+    def _trim_tool_widgets(self) -> None:
+        while len(self._tool_widgets) > _MAX_TOOL_WIDGETS:
+            oldest = next(iter(self._tool_widgets))
+            self._tool_widgets.pop(oldest, None)
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
         """Synchronously refresh the cached tool widget in place.

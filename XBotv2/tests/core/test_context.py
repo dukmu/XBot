@@ -280,13 +280,23 @@ class TestContextComponents:
         summary = Message(
             role="system",
             content=prompt_element("conversation_summary", "Earlier <work>"),
-            additional_kwargs={MESSAGE_FORMAT_KEY: "xml-v1"},
+            additional_kwargs={MESSAGE_FORMAT_KEY: "xml"},
         )
 
         root = ET.fromstring(context_builder.build(messages=[summary])[0].content)
 
         assert root.findtext("conversation_summary").strip() == "Earlier <work>"
         assert root.find("context_component") is None
+
+    def test_malformed_structured_system_history_is_rejected(self, context_builder):
+        summary = Message(
+            role="system",
+            content="<conversation_summary>",
+            additional_kwargs={MESSAGE_FORMAT_KEY: "xml"},
+        )
+
+        with pytest.raises(ValueError):
+            context_builder.build(messages=[summary])
 
 
 class TestBuilderIsolation:

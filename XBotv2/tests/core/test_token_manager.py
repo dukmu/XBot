@@ -85,7 +85,7 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     messages = [Message(role="user", content="hello")]
     ctx = HookContext(
         stage=HookStage.BEFORE_MODEL_REQUEST,
-        state={"messages": messages},
+        messages=messages,
         config=SimpleNamespace(max_context_tokens=204_800),
         session=SimpleNamespace(turn_count=3),
         model_request={"messages": messages, "tools": []},

@@ -5,7 +5,37 @@ package are implementation details and may change without a compatibility shim.
 """
 
 from xbotv2.api.context import ContextComponent, PromptFragmentStage
-from xbotv2.api.agents import AgentDefinition, AgentMode, AgentRuntime
+from xbotv2.api.jobs import (
+    CancelResult,
+    Job,
+    JobContext,
+    JobError,
+    JobId,
+    JobKind,
+    JobNotFound,
+    JobRegistry,
+    JobRegistryClosed,
+    JobResult,
+    JobRunner,
+    JobStatus,
+    JobSummary,
+    OutputChunk,
+    OutputStore,
+    StreamOutputStore,
+    TERMINAL_STATES,
+    TextOutputStore,
+    WaitResult,
+)
+from xbotv2.api.agents import (
+    AgentDefinition,
+    AgentMode,
+    AgentRuntime,
+    AgentSession,
+    AgentSessionResult,
+    ChildEngineFactory,
+    SubagentAgentError,
+    SubagentTurnError,
+)
 from xbotv2.api.commands import Command, CommandResult
 from xbotv2.api.plugins import (
     PluginBase,
@@ -47,7 +77,7 @@ from xbotv2.api.messages import (
     ToolCallPart,
 )
 from xbotv2.api.providers import InputModality, ProviderCapabilities
-from xbotv2.api.prompts import prompt_container, prompt_element
+from xbotv2.api.prompts import MESSAGE_FORMAT_KEY, prompt_container, prompt_element
 from xbotv2.api.tokens import (
     calibrated_context_tokens,
     context_token_limit,
@@ -60,6 +90,10 @@ __all__ = [
     "AgentDefinition",
     "AgentMode",
     "AgentRuntime",
+    "AgentSession",
+    "AgentSessionResult",
+    "CancelResult",
+    "ChildEngineFactory",
     "ClientEvent",
     "Command",
     "CommandResult",
@@ -73,9 +107,24 @@ __all__ = [
     "ImageContent",
     "ImagePart",
     "InputModality",
+    "Job",
+    "JobContext",
+    "JobError",
+    "JobId",
+    "JobKind",
+    "JobNotFound",
+    "JobRegistry",
+    "JobRegistryClosed",
+    "JobResult",
+    "JobRunner",
+    "JobStatus",
+    "JobSummary",
     "Message",
+    "MESSAGE_FORMAT_KEY",
     "ModelChunk",
     "ModelResponse",
+    "OutputChunk",
+    "OutputStore",
     "PluginBase",
     "PluginConfigError",
     "PluginSetupContext",
@@ -97,6 +146,11 @@ __all__ = [
     "SessionPaths",
     "ThreadPaths",
     "TextPart",
+    "StreamOutputStore",
+    "SubagentAgentError",
+    "SubagentTurnError",
+    "TERMINAL_STATES",
+    "TextOutputStore",
     "ToolCall",
     "ToolCallDelta",
     "ToolCallPart",
@@ -104,4 +158,5 @@ __all__ = [
     "ToolResult",
     "Tool",
     "ToolRegistrationOptions",
+    "WaitResult",
 ]

@@ -6,6 +6,7 @@ import importlib
 import inspect
 import logging
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from xbotv2.api.commands import Command
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
+from xbotv2.api.jobs import JobRegistry
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.api.plugins import (
     PluginBase,
@@ -99,6 +101,7 @@ class _PluginSetupContext:
     data_root: Path = field(default_factory=Path.cwd)
     variables: RuntimeVariables = field(default_factory=RuntimeVariables)
     agent_runtime: AgentRuntime | None = None
+    job_registry: JobRegistry | None = None
     commands: dict[str, Command] = field(default_factory=dict)
     hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
@@ -195,6 +198,7 @@ class PluginLoader:
         runtime_variables: RuntimeVariables | None = None,
         disabled_plugins: set[str] | None = None,
         agent_runtime: AgentRuntime | None = None,
+        job_registry: JobRegistry | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs
@@ -211,6 +215,7 @@ class PluginLoader:
         )
         self.disabled_plugins = disabled_plugins or set()
         self.agent_runtime = agent_runtime
+        self.job_registry = job_registry
         self.plugin_configs = plugin_configs or {}
         self._records: dict[str, LoadedPluginRecord] = {}
         self._commands: dict[str, Command] = {}
@@ -352,6 +357,7 @@ class PluginLoader:
         manifest = record.plugin.manifest
         plugin_dir = manifest.plugin_dir
         await self.unload(plugin_name)
+        self._ensure_importable(manifest, plugin_dir or Path.cwd())
         plugin = instantiate_plugin(
             manifest,
             PluginStore(self.state_store, manifest.name),
@@ -359,11 +365,15 @@ class PluginLoader:
         try:
             config = dict(self.plugin_configs.get(manifest.name, {}))
             manifest.validate_config(config)
-            self._ensure_importable(manifest, plugin_dir or Path.cwd())
             await plugin.on_load(config)
             self._records[manifest.name] = self._register(plugin)
-        except BaseException:
-            await plugin.on_unload()
+        except BaseException as reload_error:
+            try:
+                await plugin.on_unload()
+            except BaseException as cleanup_error:
+                reload_error.add_note(
+                    f"Plugin cleanup also failed: {cleanup_error!r}"
+                )
             raise
         return True
 
@@ -395,6 +405,7 @@ class PluginLoader:
             data_root=self.state_store.paths.runtime.data_dir,
             variables=self.runtime_variables,
             agent_runtime=self.agent_runtime,
+            job_registry=self.job_registry,
             commands=self._commands,
         )
         try:
@@ -412,12 +423,8 @@ class PluginLoader:
             raise
 
     def _ensure_importable(self, manifest: PluginManifest, plugin_dir: Path) -> None:
-        plugin_pkg = f"builtin_plugins.{manifest.name}"
-        try:
-            importlib.import_module(plugin_pkg)
+        if _is_builtin_plugin_dir(plugin_dir):
             return
-        except ImportError:
-            pass
 
         self._drop_stale_plugin_modules(manifest.name, plugin_dir)
         parent = str(plugin_dir.parent)
@@ -425,10 +432,6 @@ class PluginLoader:
             sys.path.insert(0, parent)
             self._import_paths.append(parent)
         importlib.invalidate_caches()
-        try:
-            importlib.import_module(manifest.name)
-        except ImportError:
-            return
 
     @staticmethod
     def _drop_stale_plugin_modules(plugin_name: str, plugin_dir: Path) -> None:
@@ -453,6 +456,10 @@ def resolve_dependencies(
 ) -> list[tuple[PluginManifest, Path]]:
     """Topological sort by dependency. Raises on cycles or missing deps."""
     name_to_item = {m.name: (m, p) for m, p in manifests}
+    if len(name_to_item) != len(manifests):
+        counts = Counter(manifest.name for manifest, _ in manifests)
+        duplicates = sorted(name for name, count in counts.items() if count > 1)
+        raise ValueError(f"Duplicate plugin manifests: {', '.join(duplicates)}")
 
     for manifest, _ in manifests:
         for dep in manifest.depends_on:
@@ -489,23 +496,49 @@ def resolve_dependencies(
 def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> Any:
     """Instantiate a PluginBase subclass or manifest-driven default plugin."""
     class_name = "".join(part.title() for part in manifest.name.split("_")) + "Plugin"
-
-    for module_name in [
-        f"builtin_plugins.{manifest.name}.plugin",
-        f"{manifest.name}.plugin",
-        f"builtin_plugins.{manifest.name}",
-        manifest.name,
-    ]:
+    package = (
+        f"builtin_plugins.{manifest.name}"
+        if manifest.plugin_dir is not None
+        and _is_builtin_plugin_dir(manifest.plugin_dir)
+        else manifest.name
+    )
+    for module_name in (f"{package}.plugin", package):
         try:
             module = importlib.import_module(module_name)
-            if hasattr(module, class_name):
-                cls = getattr(module, class_name)
-                if issubclass(cls, PluginBase):
-                    return cls(manifest, plugin_store)
-        except (ImportError, AttributeError):
+        except ModuleNotFoundError as exc:
+            if exc.name and (
+                exc.name == module_name
+                or module_name.startswith(f"{exc.name}.")
+            ):
+                continue
+            raise
+        if (
+            manifest.plugin_dir is not None
+            and not _module_belongs_to_path(module, manifest.plugin_dir)
+        ):
+            raise ImportError(
+                f"Plugin module {module_name!r} was not loaded from "
+                f"{manifest.plugin_dir}"
+            )
+        cls = getattr(module, class_name, None)
+        if cls is None:
             continue
+        if not isinstance(cls, type) or not issubclass(cls, PluginBase):
+            raise TypeError(
+                f"Plugin class {module_name}:{class_name} must inherit PluginBase"
+            )
+        return cls(manifest, plugin_store)
 
     return _DefaultPlugin(manifest, plugin_store)
+
+
+def _is_builtin_plugin_dir(plugin_dir: Path) -> bool:
+    builtin_root = Path(__file__).parent.parent.parent / "builtin_plugins"
+    try:
+        plugin_dir.resolve().relative_to(builtin_root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _register_plugin_tool(

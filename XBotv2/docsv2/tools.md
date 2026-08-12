@@ -21,31 +21,40 @@ Core registers these tools without plugins:
 | `send_message` | host, sequential | Emit a non-blocking client message |
 | `ask_user` | host, sequential | Wait for client input |
 | `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
-| `list_tasks` | session runtime | List tasks or read one full result |
-| `stop_task` | session runtime | Stop one background task |
+| `start_shell` | session runtime | Start a background shell and return its job ID |
+| `list_shells` | session runtime | List background shells with lightweight metadata |
+| `wait_shell` | session runtime | Wait for background shells and return status/exit codes |
+| `read_shell` | session runtime | Read captured background shell output (bounded, cursor-based) |
+| `cancel_shell` | session runtime | Cancel one background shell job |
 
-The built-in Agents plugin adds `task`, `list_agent_tasks`, and
-`stop_agent_task`. Subagent tools use Core Agent execution and do not implement
-a separate model or Tool loop inside the plugin.
+The built-in Agents plugin adds `spawn_subagent`, `list_subagents`,
+`wait_subagent`, `read_subagent`, and `cancel_subagent`. Subagent and background
+shell jobs share one unified `JobRegistry` lifecycle; the generic `task`/`job`
+vocabulary is never exposed to the model.
 
-Background shell and subagent tasks are runtime-only and end with the live session. They emit
-bounded previews through `task_updated`; `list_tasks(task_id)` returns the
-captured output through the normal ToolResult cache boundary. Shell capture is
-complete; large foreground and background results are externalized by the
-common ToolResult cache instead of being irreversibly truncated. Task completion
-enters the runtime mailbox as a general message, so the Agent can react while
-the client is connected without polling. Starting a background task confirms
-only that it was accepted. After the completion notification, the Agent reads
-`list_tasks(task_id)` before using its output or reporting command success.
+Background shell and subagent jobs are runtime-only and end with the live
+session. They emit bounded previews through `task_updated`. Output is stored in
+the job and is never included in list/wait responses; the Agent reads it through
+the explicit `read_shell`/`read_subagent` tools, which are the only tools that
+return bulk text and each bound the returned characters. A completed subagent
+or background shell enters the runtime mailbox as a general message, so the
+Agent can react while the client is connected without polling. Starting a job
+confirms only that it was accepted. The Agent uses `wait_shell(ids)` /
+`wait_subagent(ids)` when subsequent work depends on completion; cancelling a
+wait does not stop the job — `cancel_shell`/`cancel_subagent` own that
+operation.
 
 Foreground Shell execution has no default time limit. It waits for process
-completion and is terminated when the current turn is cancelled. Use background
-mode when other Agent work should continue before the command finishes, not as
-a workaround for a fixed foreground timeout.
+completion and is terminated when the current turn is cancelled. Use
+`start_shell` when other Agent work should continue before the command
+finishes, not as a workaround for a fixed foreground timeout.
 
-`shell(background=true)` uses the same canonical Tool name, command arguments,
-Hooks, and permission rules as foreground shell execution. Background mode is
-not a permission alias or a second execution path around `shell` policy.
+`start_shell` uses the same canonical command arguments, Hooks, and permission
+rules as foreground Shell execution. Background mode is not a permission alias
+or a second execution path around `shell` policy. An escalated background shell
+(`sandbox_permissions=require_escalated`) requests the same human approval as
+an escalated foreground command before it is started; a denied request creates
+no background job.
 
 `RuntimeConfig.tools` may narrow this registry after plugin initialization. The
 shipped configuration keeps both client-interaction tools visible so an agent
@@ -69,9 +78,16 @@ and only before any content or Tool-call delta was emitted. The client receives
 a warning through the existing `client_message` event. Schema/history 400s and
 requests that already produced output are not retried.
 
-`ToolResult.content` enters model history. `data`, `error`, and `artifacts` are
-preserved on the runtime tool message and emitted as optional fields on the
-client-visible `tool_result` event. Client events are emitted separately in
+`ToolResult.content` is the complete model-visible business result and may be
+empty when a successful operation has no output. The common message formatter
+represents that outcome as a minimal structured Tool result; individual tools
+must not invent explanatory text. `data` is a runtime, persistence, and client
+sidecar and is never copied into model content. A tool that needs the model to
+consume structured output must render that information in `content` explicitly.
+`data`, `error`, and `artifacts` remain on the runtime tool message and are
+emitted as optional fields on the client-visible `tool_result` event. Errors
+and artifact references are also included in the model-visible result because
+they affect the Agent's next action. Client events are emitted separately in
 their original order. `ToolError`, `ArtifactRef`, and `ClientEvent` expose
 `to_dict()` for this boundary conversion.
 
@@ -137,10 +153,35 @@ Disabling the session sandbox is an explicit policy choice. Permission checks
 still run before every tool call.
 
 Bubblewrap inherits the environment of the XBot process by default, including
-`PATH`, provider variables, proxy settings, and active virtual-environment
-variables. The Python environment running XBot is mounted read-only so commands
-resolved through the inherited `PATH` remain available. Filesystem, network,
-and permission isolation remain controlled by the sandbox policy.
+`PATH`, `HOME`, provider variables, proxy settings, and active
+virtual-environment variables. It mounts the complete host filesystem read-only,
+then overlays the workspace, `/tmp`, and explicitly configured resources with
+their requested access. This keeps interpreters, libraries, certificates, and
+user configuration readable without hard-coded installation or home paths.
+Home caches remain read-only unless their actual runtime path is explicitly
+configured as a writable resource. The data directory is reapplied read-only;
+an environment located inside a writable workspace remains writable according
+to the workspace policy. Filesystem Tool permissions remain separate from the
+mount policy.
+
+Foreground `shell` calls have no default duration limit and remain cancellable
+with the active turn. Everything inside a writable workspace, including a
+Python environment, is writable. Paths outside the workspace are read-only by
+default because arbitrary shell text is not parsed for paths. A command that
+genuinely requires external writes must set
+`sandbox_permissions=require_escalated` with a justification. This checks the
+normal `external_write` allow, deny, or ask policy before starting the process.
+An approved command runs on the host, outside bwrap; this applies equally to
+foreground calls and `start_shell`. A denied request creates no process.
+The default `use_default` mode always retains the configured sandbox.
+
+An allow-once decision applies only to that invocation. A session decision
+updates the session's `external_write` overlay, so later explicit escalation
+requests follow that decision. The Agent must still
+set `sandbox_permissions=require_escalated`; ordinary shell calls remain
+sandboxed. Foreground commands run until completion or turn cancellation.
+Background commands return a job ID after authorization and remain manageable
+through `list_shells`, `wait_shell`, `read_shell`, and `cancel_shell`.
 
 A session-scoped approval for a mutating filesystem tool records only its Tool
 name, source/destination paths, and destructive flags such as `recursive` or
@@ -161,7 +202,7 @@ through relative `session/...` paths. External `ask` paths use the normal
 ordered permission interaction and record only the approved path. For atomic
 filesystem mutations, the trusted filesystem worker receives a temporary parent
 directory mount for that call; shell commands do not inherit it. The complete
-data directory is not mounted separately.
+data directory is visible but read-only inside shell sandboxes.
 
 `ask_user` is itself a tool call, so a restrictive permission policy may emit
 and resolve `permission_request` before the tool emits

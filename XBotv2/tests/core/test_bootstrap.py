@@ -87,6 +87,51 @@ class TestBootstrapBasics:
                 llm_override=MockLLM(responses=[]),
             )
 
+    @pytest.mark.asyncio
+    async def test_default_provider_argument_uses_merged_runtime_selection(
+        self, temp_data_dir, temp_workspace
+    ):
+        paths = RuntimePaths.from_data_dir(temp_data_dir)
+        paths.providers_config.write_text(
+            yaml.safe_dump({
+                "default": "global",
+                "providers": {
+                    "global": {"provider": "mock", "model": "global"},
+                    "workspace": {
+                        "provider": "mock",
+                        "model": "workspace",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        workspace_config = temp_workspace / ".xbot" / "config.yaml"
+        workspace_config.parent.mkdir(parents=True)
+        workspace_config.write_text("provider: workspace\n", encoding="utf-8")
+
+        engine = await bootstrap(
+            paths=paths,
+            session_id="configured-provider",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert engine.config.provider == "workspace"
+        assert engine.model == "workspace"
+
+        explicit = await bootstrap(
+            paths=paths,
+            provider_name="global",
+            session_id="explicit-provider",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert explicit.config.provider == "global"
+        assert explicit.model == "global"
+
     def test_cli_reports_unknown_provider_without_traceback(
         self,
         temp_data_dir,
@@ -274,11 +319,13 @@ class NormalClosePlugin(PluginBase):
         tool_names = set(engine.tool_registry.names())
         assert {
             "shell",
+            "start_shell",
             "filesystem_read",
             "content_read",
             "ask_user",
             "request_permission",
-            "list_tasks",
+            "list_shells",
+            "wait_shell",
         } <= tool_names
         assert "ask" not in tool_names
 
@@ -303,8 +350,9 @@ class NormalClosePlugin(PluginBase):
         assert {
             "ask_user",
             "filesystem_mkdir",
-            "list_tasks",
+            "list_shells",
             "request_permission",
+            "wait_shell",
         } <= set(engine.tool_registry.names())
         assert engine.config.tools is None
 
@@ -613,11 +661,8 @@ class ConfiguredPlugin(PluginBase):
 
         system = llm.get_call_messages(0)[0]
         root = ET.fromstring(system.content)
-        workspace = next(
-            element
-            for element in root.findall("plugin_instruction")
-            if element.attrib["name"] == "workspace_instructions"
-        )
+        workspace = root.find("workspace_instructions")
+        assert workspace is not None
         assert workspace.attrib["source"] == "AGENTS.md"
         assert workspace.text.strip() == (
             f"Workspace instruction path:\n{temp_workspace}\n"
@@ -776,13 +821,13 @@ class ConfiguredPlugin(PluginBase):
             llm_override=MockLLM(responses=[]),
         )
 
-        state = engine.state_store.read_state()
-        assert state["session_id"] != "default"
-        assert "-" in state["session_id"]
+        session_id = engine.state_store.session_id
+        assert session_id != "default"
+        assert "-" in session_id
         assert (
             temp_data_dir
             / "sessions"
-            / state["session_id"]
+            / session_id
             / "threads"
             / "test-thread"
             / "state"

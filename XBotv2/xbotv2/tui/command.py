@@ -214,10 +214,6 @@ def get_command(name: str) -> CommandSpec | None:
     return _COMMANDS.get(name)
 
 
-def all_commands() -> list[CommandSpec]:
-    return [_COMMANDS[name] for name in _SEARCH_ORDER]
-
-
 def search_commands(query: str) -> list[CommandSpec]:
     normalised = query.strip().lower()
     if not normalised:
@@ -247,14 +243,3 @@ def search_commands(query: str) -> list[CommandSpec]:
             scored.append((len(haystack) - longest, spec))
     scored.sort(key=lambda item: (item[0], _SEARCH_ORDER.index(item[1].name)))
     return [spec for _, spec in scored]
-
-
-def complete_command(prefix: str) -> CommandSpec | None:
-    if not prefix.startswith("/"):
-        return None
-    # Resolve alias before searching
-    canonical = _ALIASES.get(prefix.lower())
-    if canonical:
-        return _COMMANDS.get(canonical)
-    matches = search_commands(prefix)
-    return matches[0] if matches else None

@@ -1161,9 +1161,20 @@ async def test_assistant_markdown_survives_streaming_updates(scripted_session) -
             }
         )
         await app._refresh_streaming_assistant_widget()
+        final = {
+            "type": "assistant_message",
+            "data": {
+                "content": "## Result\n\n```python\nprint('ok')\n```\n\nComplete."
+            },
+        }
+        app.state.apply_event(final)
+        assert app.state.messages[-1].content.endswith("Complete.")
+        await app._handle_stream_event(final)
         await pilot.pause()
 
+        body = app.query_one(".assistant .body", Static)
         assert isinstance(body.content, Markdown)
+        assert "Complete" in body.content.markup
         screenshot = app.export_screenshot(title="assistant-markdown")
         assert "Result" in screenshot
         assert "print" in screenshot

@@ -31,10 +31,13 @@ import pytest
 import pytest_asyncio
 import xbotv2
 import yaml
+from xbotv2.api.jobs import JobKind
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import Message
+from xbotv2.api.tools import Tool
 from xbotv2.client import XBotClient, XBotClientError
+from xbotv2.core.builtin_tools.shell import ShellRunner
 from xbotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
@@ -45,21 +48,28 @@ from xbotv2.protocol.http_server import (
     create_app,
     set_llm_override,
 )
-from xbotv2.protocol.session_manager import (
-    ThreadNotActive,
-    close_disconnected_runtime,
-)
+from xbotv2.protocol.session_manager import ThreadNotActive
 from xbotv2.core.session import (
     SessionRuntime,
     _live_sink,
     run_turn_stream,
 )
+from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
+
+
+async def _start_background_shell(engine: Any, command: str) -> str:
+    job = await engine.job_registry.create(
+        kind=JobKind.SHELL,
+        metadata={"command": command, "cwd": ""},
+    )
+    engine.job_registry.start(job.id, ShellRunner())
+    return job.id
 
 
 @pytest.mark.asyncio
@@ -184,7 +194,8 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         assert ctx.engine.sandbox_policy.network is False
         assert ctx.engine.sandbox_policy.external_write == "deny"
         assert ctx.engine.sandbox_policy is sandbox
-        assert ctx.engine.background_tasks.sandbox is sandbox
+        assert ctx.engine.job_registry is not None
+        assert ctx.engine.tool_registry.get("shell") is not None
 
         cleared = await sdk.update_session_policy(
             "sdk-policy",
@@ -232,6 +243,9 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
             turn_cancelled.set()
 
     class Engine:
+        plugin_loader = None
+        job_registry = None
+
         def __init__(self) -> None:
             self.closed_after_turn = False
 
@@ -260,10 +274,13 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_closing_turn_stream_cancels_background_turn() -> None:
+async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
     cancelled = asyncio.Event()
 
     class HangingEngine:
+        plugin_loader = None
+        job_registry = None
+
         def __init__(self) -> None:
             self.client_event_sink = None
 
@@ -288,10 +305,13 @@ async def test_closing_turn_stream_cancels_background_turn() -> None:
             finally:
                 cancelled.set()
 
-    ctx = SimpleNamespace(
+    ctx = SessionRuntime(
         session_id="disconnect",
-        turn_lock=asyncio.Lock(),
-        turn_task=None,
+        thread_id="agent",
+        provider_name="mock",
+        paths=RuntimePaths.from_data_dir(tmp_path),
+        workspace_root=str(tmp_path),
+        no_plugins=True,
         engine=HangingEngine(),
     )
     stream = run_turn_stream(ctx, content="wait", request_id="request")
@@ -384,9 +404,15 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         encoding="utf-8",
     )
 
+    # Isolate the workspace from the ambient checkout so a workspace
+    # ``.xbot/config.yaml`` cannot override session policy in these tests.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
     app = create_app(
         provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
+        workspace_root=str(workspace),
         no_plugins=True,
     )
     # Inject a mock LLM that returns one canned response per turn.
@@ -565,26 +591,26 @@ async def test_http_session_exposes_independent_thread_resources(
 
 
 @pytest.mark.asyncio
-async def test_main_thread_disconnect_closes_child_runtimes(
-    client: httpx.AsyncClient,
-    http_app,
-) -> None:
-    await client.post(
-        "/sessions",
-        json={"session_id": "disconnect-tree", "thread_id": "agent"},
+async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
+    manager = http_app.state.manager
+    tmp = http_app.state.paths
+    await manager.close_all()
+    # give the shared app manager a short idle timeout
+    manager.idle_timeout = 0.05
+    manager.reap_interval = 0.02
+    manager.start_reaper()
+    await manager.open_session(
+        session_id="idle-reap", thread_id="agent", provider_name="default",
+        workspace_root=str(tmp), no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
-    await client.post(
-        "/sessions/disconnect-tree/threads",
-        json={"thread_id": "child"},
-    )
-    main = await http_app.state.manager.get("disconnect-tree", "agent")
-
-    await close_disconnected_runtime(http_app.state.manager, main)
-
+    assert await manager.get("idle-reap", "agent") is not None
+    await asyncio.sleep(0.2)
     with pytest.raises(ThreadNotActive):
-        await http_app.state.manager.get("disconnect-tree", "agent")
-    with pytest.raises(ThreadNotActive):
-        await http_app.state.manager.get("disconnect-tree", "child")
+        await manager.get("idle-reap", "agent")
+    # restore defaults so other tests are unaffected
+    manager.idle_timeout = 3600.0
+    manager.reap_interval = 60.0
 
 
 @pytest.mark.asyncio
@@ -791,10 +817,8 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         content="cached result",
         tool_call_id="call-1",
         status="error",
-        additional_kwargs={
-            "xbotv2_data": {"cache": "tool-results/call-1.txt"},
-            "xbotv2_error": {"code": "failed", "message": "bad input"},
-        },
+        data={"cache": "tool-results/call-1.txt"},
+        error={"code": "failed", "message": "bad input"},
         artifact=[
             {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
         ],
@@ -1733,6 +1757,80 @@ async def test_session_mailbox_queues_user_messages_and_delivers_in_order(
 
 
 @pytest.mark.asyncio
+async def test_queued_user_message_enters_after_complete_tool_batch(http_app) -> None:
+    tool_started = asyncio.Event()
+    release_tool = asyncio.Event()
+
+    async def wait_for_release(value: str) -> str:
+        """Return a value after the test releases this Tool."""
+        tool_started.set()
+        await release_tool.wait()
+        return value
+
+    llm = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "wait-1",
+                "name": "wait_for_release",
+                "args": {"value": "ready"},
+            }],
+        },
+        {"content": "handled both requests"},
+    ])
+    ctx = await http_app.state.manager.open_session(
+        session_id="mailbox-steer",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
+    ctx.engine.tool_registry.restrict(None)
+
+    async def collect(stream):
+        return [event async for event in stream]
+
+    first_task = asyncio.create_task(collect(
+        ctx.stream_message("start the tool", "req-1")
+    ))
+    await asyncio.wait_for(tool_started.wait(), timeout=1)
+    second_stream = ctx.stream_message("also include this", "req-2")
+    queued = await anext(second_stream)
+    assert queued["type"] == "message_queued"
+
+    release_tool.set()
+    first_events, second_events = await asyncio.gather(
+        first_task,
+        collect(second_stream),
+    )
+
+    assert llm.call_count == 2
+    assert [
+        message.content
+        for message in llm.get_call_messages(1)
+        if message.role == "user"
+    ] == ["start the tool", "also include this"]
+    # The folded-in request receives its own turn boundary and owns the
+    # response events; the superseded active request must not observe them.
+    assert any(
+        event["type"] == "turn_started"
+        for event in second_events
+    )
+    assert any(
+        event["type"] == "assistant_message"
+        and event["data"]["content"] == "handled both requests"
+        for event in second_events
+    )
+    assert not any(
+        event["type"] == "assistant_message"
+        and event["data"]["content"] == "handled both requests"
+        for event in first_events
+    )
+
+
+@pytest.mark.asyncio
 async def test_general_message_uses_session_event_stream(http_app) -> None:
     llm = MockLLM(responses=[{"content": "background result"}])
     set_llm_override(http_app, llm)
@@ -1772,12 +1870,26 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         event for event in received if event and event["type"] == "assistant_message"
     )["data"]["content"] == "background result"
     assert [message.role for message in ctx.engine.messages] == [
-        "user", "assistant", "assistant",
+        "user", "assistant", "user", "assistant",
     ]
     runtime_input = llm.get_call_messages(0)[-1]
     assert runtime_input.role == "user"
-    assert "not a human message" in runtime_input.content
-    assert "background command completed" in runtime_input.content.lower()
+    runtime_event = ET.fromstring(runtime_input.content)
+    assert runtime_event.attrib == {
+        "event": "completed",
+        "kind": "general",
+        "source": "task",
+    }
+    assert json.loads(runtime_event.findtext("payload"))["data"] == {
+        "task_id": "task-1",
+    }
+    persisted_runtime = ctx.engine.state_store.read_messages()[-2]
+    assert persisted_runtime.content == runtime_input.content
+    assert persisted_runtime.additional_kwargs["runtime_input"] == {
+        "kind": "general",
+        "source": "task",
+        "event": "completed",
+    }
     assert item.kind == "general"
 
 
@@ -1790,7 +1902,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         return "task output"
 
     monkeypatch.setattr(
-        "xbotv2.core.background_tasks.run_shell_command", run
+        "xbotv2.core.builtin_tools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "task acknowledged"}])
     set_llm_override(http_app, llm)
@@ -1804,32 +1916,75 @@ async def test_background_task_updates_and_completion_use_session_stream(
     )
     events = ctx.attach_event_stream()
 
-    await ctx.engine.background_tasks.start_task("printf result")
+    job_id = await _start_background_shell(ctx.engine, "printf result")
 
-    received = []
-    while True:
+    # Completion is broadcast as a notice, then flushed as one runtime turn.
+    notice = None
+    while notice is None:
         event = await asyncio.wait_for(events.get(), timeout=1)
-        received.append(event)
-        if event and event["type"] == "turn_finished":
-            break
+        if event and event["type"] == "completion_notice":
+            notice = event
+    assert notice["data"]["kind"] == "background_task"
+    assert notice["data"]["task_id"] == job_id
+    assert notice["data"]["status"] == "completed"
 
-    task_events = [
-        event for event in received
-        if event and event["type"] == "task_updated"
-    ]
-    assert [event["data"]["status"] for event in task_events] == [
-        "pending", "running", "completed",
-    ]
-    assert any(
-        event and event["type"] == "assistant_message"
-        and event["data"]["content"] == "task acknowledged"
-        for event in received
+    deadline = asyncio.get_event_loop().time() + 3
+    while llm.call_count == 0 and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert llm.call_count == 1
+    notice_input = llm.get_call_messages(0)[-1]
+    assert notice_input.role == "user"
+    runtime_event = ET.fromstring(notice_input.content)
+    assert runtime_event.attrib == {
+        "event": "completed",
+        "kind": "general",
+        "source": "tasks",
+    }
+    notices = json.loads(runtime_event.findtext("payload"))["notices"]
+    assert notices[0]["task_id"] == job_id
+    assert notices[0]["status"] == "completed"
+    assert [message.role for message in ctx.engine.messages] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_multiple_completions_aggregate_into_one_injection(
+    http_app, monkeypatch
+) -> None:
+    async def run(*args, **kwargs):
+        await asyncio.sleep(0)
+        return "task output"
+
+    monkeypatch.setattr(
+        "xbotv2.core.builtin_tools.shell.run_shell_command", run
     )
-    assert [message.role for message in ctx.engine.messages] == ["assistant"]
+    llm = MockLLM(responses=[{"content": "ok"}])
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="aggregate-events",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    await _start_background_shell(ctx.engine, "printf one")
+    await _start_background_shell(ctx.engine, "printf two")
+    # Both completions aggregate into one idle runtime turn.
+    deadline = asyncio.get_event_loop().time() + 3
+    while llm.call_count == 0 and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert llm.call_count == 1
     runtime_input = llm.get_call_messages(0)[-1]
     assert runtime_input.role == "user"
-    assert "not a human message" in runtime_input.content
-    assert "background task task-1 completed" in runtime_input.content.lower()
+    runtime_event = ET.fromstring(runtime_input.content)
+    notices = json.loads(runtime_event.findtext("payload"))["notices"]
+    assert [notice["data"]["command"] for notice in notices] == [
+        "printf one",
+        "printf two",
+    ]
+    # pending notices drained after the idle turn
+    assert ctx._pending_notices == []
+    assert [message.role for message in ctx.engine.messages] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio
@@ -1841,13 +1996,12 @@ async def test_typed_task_stop_is_idempotent(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
     ctx = await http_app.state.manager.get("task-stop", "t")
-    started = await ctx.engine.background_tasks.start_task("sleep forever")
-    task_id = started.data["task_id"]
+    task_id = await _start_background_shell(ctx.engine, "sleep forever")
     await asyncio.sleep(0)
 
     busy_fork = await client.post("/sessions/task-stop/fork")

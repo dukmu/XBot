@@ -21,11 +21,6 @@ from xbotv2.tui.client import (
 from xbotv2.tui.terminal import TerminalSession
 from xbotv2.tui.terminal import CommandOutcome
 from xbotv2.tui.command import CommandSpec
-from xbotv2.tui.textual_state import (
-    queue_user_message,
-    render_transcript_entry,
-    route_submitted_text,
-)
 
 
 @pytest.mark.asyncio
@@ -279,6 +274,11 @@ def test_tui_state_restores_resumed_message_and_tool_history():
             ],
         },
         {"role": "assistant", "content": "done"},
+        {
+            "role": "user",
+            "content": "<runtime_event />",
+            "runtime": {"source": "tasks", "event": "completed"},
+        },
     ])
 
     assert state.turn == 1
@@ -293,6 +293,9 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert state.tools["call_1"].data == {"bytes": 8}
     assert state.tools["call_1"].error["code"] == "warning"
     assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
+    assert [(notice.kind, notice.text) for notice in state.notices] == [
+        ("tasks:completed", "tasks completed"),
+    ]
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -304,7 +307,6 @@ def test_tui_state_appends_assistant_deltas_to_one_message():
     state.apply_event({"type": "assistant_message", "data": {"content": "Hello"}})
 
     assert [(m.role, m.content) for m in state.messages] == [("assistant", "Hello")]
-    assert [entry.kind for entry in state.transcript] == ["message"]
 
 
 def test_tui_state_distinguishes_thinking_from_visible_output() -> None:
@@ -677,9 +679,6 @@ def test_terminal_events_clear_pending_interactions(
 ):
     state = TuiState()
     state.tools["call-1"] = TuiTool(tool_call_id="call-1", name="shell")
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-
     state.apply_event(_frame("turn_started", {"turn": 1}))
     state.apply_event(_frame(request_type, request_data))
     state.apply_event(_frame(terminal_type, terminal_data))
@@ -687,47 +686,7 @@ def test_terminal_events_clear_pending_interactions(
     assert state.pending_user_input_payload is None
     assert state.pending_permission_payload is None
     assert state.status == expected_status
-    assert (
-        route_submitted_text(state, answers, permission_decisions, "next")
-        == "message"
-    )
-    assert answers.empty()
-    assert permission_decisions.empty()
     assert state.tools["call-1"].permission_pending is False
-
-
-@pytest.mark.asyncio
-async def test_textual_queues_user_messages_without_reordering_transcript():
-    state = TuiState()
-    messages: asyncio.Queue[str] = asyncio.Queue()
-
-    queue_user_message(state, messages, "first")
-    queue_user_message(state, messages, "second")
-
-    assert state.messages == []
-    state.append_message("user", await messages.get())
-    state.append_message("assistant", "reply")
-    state.append_message("user", await messages.get())
-
-    assert [(message.role, message.content) for message in state.messages] == [
-        ("user", "first"),
-        ("assistant", "reply"),
-        ("user", "second"),
-    ]
-
-
-def test_textual_transcript_rendering_preserves_chinese_and_markup_chars():
-    state = TuiState(agent_name="助手")
-    state.append_message("user", "你好 [不要解析] 中文")
-    state.append_message("assistant", "收到：中文正常显示")
-
-    first = render_transcript_entry(state, state.transcript[0])
-    second = render_transcript_entry(state, state.transcript[1])
-
-    assert first is not None
-    assert second is not None
-    assert first.plain == "You\n你好 [不要解析] 中文"
-    assert second.plain == "助手\n收到：中文正常显示"
 
 
 @pytest.mark.asyncio
@@ -908,42 +867,6 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "DEBUG" in captured["cmd"]
     assert "--log-file" in captured["cmd"]
     assert "./run.log" in captured["cmd"]
-
-
-@pytest.mark.asyncio
-async def test_textual_routes_submitted_text_to_live_user_input_queue():
-    state = TuiState()
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
-    state.apply_event({
-        "type": "user_input_required",
-        "data": {"request_id": "user_input:c1", "question": "Proceed?"},
-    })
-
-    route = route_submitted_text(state, answers, permission_decisions, "yes")
-
-    assert route == "user_input"
-    assert await answers.get() == "yes"
-    assert permission_decisions.empty()
-    assert state.messages == []
-
-
-@pytest.mark.asyncio
-async def test_textual_routes_submitted_text_to_live_permission_queue():
-    state = TuiState()
-    answers: asyncio.Queue[str] = asyncio.Queue()
-    permission_decisions: asyncio.Queue[str] = asyncio.Queue()
-    state.apply_event({
-        "type": "permission_request",
-        "data": {"request_id": "permission:c1", "reason": "approve?"},
-    })
-
-    route = route_submitted_text(state, answers, permission_decisions, "y")
-
-    assert route == "permission"
-    assert await permission_decisions.get() == {"decision": "allow", "scope": "once"}
-    assert answers.empty()
-    assert state.messages == []
 
 
 @pytest.mark.asyncio
@@ -1258,6 +1181,166 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
     # assistant streaming entry. Later deltas update that same entry
     # in place and must not schedule empty scrolls.
     assert scheduled_refreshes == 2
+
+
+@pytest.mark.asyncio
+async def test_textual_app_new_entries_follow_only_when_at_bottom():
+    """New transcript entries must follow the tail only when the user is
+    already at the bottom; mounting entries while the user is scrolled up
+    must not yank the viewport down (regression: unconditional scroll_end)."""
+
+    from unittest.mock import PropertyMock, patch
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text):
+            del text
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {"type": "assistant_message", "data": {"content": "reply"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        stream = app.query_one("#transcript")
+        scroll_ends = 0
+        original_scroll_end = stream.scroll_end
+
+        def spy_scroll_end(*args, **kwargs):
+            nonlocal scroll_ends
+            scroll_ends += 1
+            original_scroll_end(*args, **kwargs)
+
+        stream.scroll_end = spy_scroll_end
+
+        # Scrolled up to read older content: new entries must NOT yank down.
+        with patch.object(
+            type(stream), "is_vertical_scroll_end", new_callable=PropertyMock,
+            return_value=False,
+        ):
+            app.state.append_message("user", "scrolled up here")
+            await app._render_new_transcript_entries()
+            await pilot.pause()
+            await pilot.pause()
+        assert scroll_ends == 0, (
+            "scroll_end must not fire while the user is not at the bottom"
+        )
+
+        # At the bottom: follow behavior is preserved.
+        with patch.object(
+            type(stream), "is_vertical_scroll_end", new_callable=PropertyMock,
+            return_value=True,
+        ):
+            app.state.append_message("user", "following tail")
+            await app._render_new_transcript_entries()
+            await pilot.pause()
+            await pilot.pause()
+        assert scroll_ends >= 1, "scroll_end must fire while following the tail"
+
+
+@pytest.mark.asyncio
+async def test_textual_app_foldin_shows_queued_text_and_usage_once():
+    """Fold-in queued message: the queued user text is shown on its own
+    turn boundary, the response appears exactly once, and usage events are
+    applied exactly once (no duplication from the superseded active stream)."""
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text):
+            del text
+            self.calls += 1
+            if self.calls == 1:
+                # Active turn, superseded by the fold-in: stream ends after
+                # the tool batch without a turn boundary.
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "assistant_message", "data": {"content": "starting tool"}}
+                yield {
+                    "type": "usage",
+                    "data": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "total_tokens": 150,
+                        "requests": 1,
+                    },
+                }
+                yield {
+                    "type": "tool_result",
+                    "data": {
+                        "tool_call_id": "t1",
+                        "name": "shell",
+                        "content": "ok",
+                        "status": "completed",
+                    },
+                }
+            else:
+                yield {"type": "message_queued", "data": {}}
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "assistant_message", "data": {"content": "handled both"}}
+                yield {
+                    "type": "usage",
+                    "data": {
+                        "input_tokens": 200,
+                        "output_tokens": 80,
+                        "total_tokens": 280,
+                        "requests": 1,
+                    },
+                }
+                yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("first")
+        await app.submit_composer()
+        await pilot.pause()
+        input_widget.load_text("second queued")
+        await app.submit_composer()
+        for _ in range(6):
+            await pilot.pause()
+
+    user_texts = [m.content for m in app.state.messages if m.role == "user"]
+    assert user_texts.count("second queued") == 1, (
+        f"queued user text shown {user_texts.count('second queued')} times"
+    )
+    assistant_texts = [m.content for m in app.state.messages if m.role == "assistant"]
+    assert assistant_texts.count("handled both") == 1, (
+        f"fold-in response shown {assistant_texts.count('handled both')} times"
+    )
+    assert app.state.usage["total_tokens"] == 150 + 280, (
+        f"usage double counted: {app.state.usage}"
+    )
+
+
 
 
 @pytest.mark.asyncio
@@ -2047,7 +2130,6 @@ def test_tui_modules_do_not_import_core():
         Path("XBotv2/xbotv2/tui/client.py"),
         Path("XBotv2/xbotv2/tui/session_config.py"),
         Path("XBotv2/xbotv2/tui/terminal.py"),
-        Path("XBotv2/xbotv2/tui/textual_state.py"),
         Path("XBotv2/xbotv2/tui/textual_theme.py"),
         Path("XBotv2/xbotv2/tui/textual_client.py"),
         Path("XBotv2/xbotv2/tui/textual_widgets.py"),
@@ -2760,3 +2842,133 @@ async def test_narrow_task_panel_does_not_overlap_status_or_composer():
         assert tasks.region.bottom <= composer.region.y
         assert composer.region.bottom == status.region.y
         assert status.region.bottom == app.size.height
+
+
+class _ReplayFakeSession:
+    def __init__(self):
+        self.history = []
+
+    async def connect(self):
+        return {"history": self.history}
+
+    async def disconnect(self):
+        return None
+
+    async def list_commands(self):
+        return {"commands": []}
+
+    async def send_message(self, text):
+        yield {"type": "turn_started", "data": {"turn": 1}}
+        yield {"type": "assistant_message", "data": {"content": "ok"}}
+        yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    async def session_events(self):
+        if False:
+            yield {}
+
+
+@pytest.mark.asyncio
+async def test_replay_window_mounts_only_tail_then_lazy_loads():
+    from textual.containers import VerticalScroll
+    from textual.containers import VerticalScroll
+    from xbotv2.tui.textual_client import (
+        XBotTextualApp,
+        _MAX_MOUNTED_ENTRIES,
+        _REPLAY_BATCH,
+        _REPLAY_WINDOW,
+    )
+
+    session = _ReplayFakeSession()
+    # 120 messages: 60 user + 60 assistant
+    session.history = [
+        {"role": "user", "content": f"msg {i}"}
+        for i in range(60)
+    ] + [
+        {"role": "assistant", "content": f"ans {i}"}
+        for i in range(60)
+    ]
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = session
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        # restore_history creates 60 user + 60 assistant = 120 transcript entries
+        assert len(app.state.transcript) == 120
+        # The tail window IS mounted after resume (regression: the window must
+        # not be empty), bounded to the replay window.
+        stream = app.query_one("#transcript", VerticalScroll)
+        mounted = len(list(stream.children))
+        assert mounted == _REPLAY_WINDOW, f"expected {_REPLAY_WINDOW}, got {mounted}"
+        assert app._window_start == 120 - _REPLAY_WINDOW
+        assert app._window_end == 120
+        # Lazy load: simulate scroll-to-top (shifts the window earlier)
+        await app._load_earlier_replay()
+        await pilot.pause()
+        assert app._window_start <= 120 - _REPLAY_WINDOW - _REPLAY_BATCH
+        assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+        assert len(list(stream.children)) <= _MAX_MOUNTED_ENTRIES + 1
+        # The newest entries dropped from the far end are re-mountd when the
+        # user scrolls back to the bottom.
+        await app._load_newer_replay()
+        await pilot.pause()
+        assert app._window_end == 120
+        assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+
+
+@pytest.mark.asyncio
+async def test_replay_window_scrolls_all_the_way_to_the_beginning():
+    """Scrolling up repeatedly through a long history must eventually reach
+    the very first entry, keep the mounted window bounded, and never lose
+    contiguity (no gaps between batches)."""
+
+    from textual.containers import VerticalScroll
+    from xbotv2.tui.textual_client import (
+        XBotTextualApp,
+        _MAX_MOUNTED_ENTRIES,
+        _REPLAY_WINDOW,
+    )
+
+    session = _ReplayFakeSession()
+    # 300 entries: 150 user + 150 assistant
+    session.history = [
+        {"role": "user", "content": f"msg {i}"}
+        for i in range(150)
+    ] + [
+        {"role": "assistant", "content": f"ans {i}"}
+        for i in range(150)
+    ]
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = session
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert len(app.state.transcript) == 300
+        stream = app.query_one("#transcript", VerticalScroll)
+        assert app._window_start == 300 - _REPLAY_WINDOW
+        # Scroll up in batches until the beginning is reached.
+        guard = 0
+        while app._window_start > 0:
+            await app._load_earlier_replay()
+            await pilot.pause()
+            # The window is contiguous and bounded at every step.
+            assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+            guard += 1
+            assert guard < 50, "scroll-up never reached the beginning"
+        # The very first entries are mounted and reachable.
+        first_texts = []
+        for widget in stream.children:
+            if widget.parent is stream:
+                first_texts.append(str(getattr(widget, "renderable", ""))[:40])
+        assert app._window_start == 0
+        assert len(list(stream.children)) <= _MAX_MOUNTED_ENTRIES + 1
+        # Scrolling back to the bottom re-mounts the newest tail in batches,
+        # again bounded at every step.
+        guard = 0
+        while app._window_end < 300:
+            await app._load_newer_replay()
+            await pilot.pause()
+            assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+            guard += 1
+            assert guard < 50, "scroll-down never re-mounted the tail"
+        assert app._window_end == 300
+

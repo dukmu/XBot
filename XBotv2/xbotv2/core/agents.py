@@ -1,11 +1,161 @@
-"""Ownership-aware registry for plugin-defined agents."""
+"""Ownership-aware registry for plugin-defined agents.
+
+Core owns definition uniqueness, registration rollback, and later execution.
+Execution is exposed to Agent plugins through the api-level AgentRuntime
+protocol: this module implements the child-session spawner and the session that
+drives one child Engine. It owns no job lifecycle state — the shared
+JobRegistry does that.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+import secrets
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
-from xbotv2.api.agents import AgentDefinition
+from xbotv2.api.agents import (
+    AgentDefinition,
+    AgentSession,
+    AgentSessionResult,
+    ChildEngineFactory,
+    SubagentAgentError,
+    SubagentTurnError,
+)
+from xbotv2.api.paths import SessionPaths
 from xbotv2.config.policy import merge_permission_config
+
+
+@dataclass(slots=True)
+class ChildEngineSession:
+    """One spawned child engine; implements the api AgentSession protocol."""
+
+    child: Any
+    prompt: str
+    agent: str
+    thread_id: str
+    session_paths: SessionPaths
+    parent_thread_id: str
+
+    async def wait(self) -> AgentSessionResult:
+        """Run the child turn, collect its response and usage, then close."""
+        await self.child.start_session()
+        output = ""
+        error = ""
+        try:
+            async for event in self.child.run_turn(self.prompt):
+                event_type = event.get("type")
+                data = event.get("data") or {}
+                if event_type == "assistant_message":
+                    output = str(data.get("content") or "")
+                elif event_type == "error":
+                    error = str(data.get("message") or "Subagent turn failed")
+                elif event_type == "turn_cancelled":
+                    error = str(
+                        data.get("reason") or "Subagent turn was cancelled"
+                    )
+        except asyncio.CancelledError:
+            with suppress(BaseException):
+                await asyncio.shield(self.child.close_session())
+            self._record("cancelled", error=error)
+            raise
+        usage = dict(getattr(self.child, "session_usage", {}) or {})
+        close_error = await self._close_child()
+        if close_error and not error:
+            error = close_error
+        if error:
+            self._record("failed", error=error)
+            raise SubagentTurnError(error)
+        if not output:
+            error = "Subagent completed without an assistant response"
+            self._record("failed", error=error)
+            raise SubagentTurnError(error)
+        self._record("completed")
+        return AgentSessionResult(final_response=output, usage=usage)
+
+    async def cancel(self) -> None:
+        """Best-effort release; the registry cancels the runner task, and
+        ``wait`` closes the child on CancelledError."""
+
+    async def _close_child(self) -> str:
+        try:
+            await self.child.close_session()
+        except Exception as exc:  # noqa: BLE001 - close errors become state
+            return f"Subagent close failed: {exc}"
+        return ""
+
+    def _record(self, event: str, *, error: str = "") -> None:
+        path = self.session_paths.threads_log
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "event": event,
+            "thread_id": self.thread_id,
+            "parent_thread_id": self.parent_thread_id,
+            "agent": self.agent,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if error:
+            record["error"] = error
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
+class EngineAgentRuntime:
+    """Api-level AgentRuntime backed by the bootstrap child-engine factory."""
+
+    def __init__(
+        self,
+        *,
+        registry: AgentRegistry,
+        session_paths: SessionPaths,
+        parent_thread_id: str,
+        engine_factory: ChildEngineFactory,
+    ) -> None:
+        self.registry = registry
+        self.session_paths = session_paths
+        self.parent_thread_id = parent_thread_id
+        self.engine_factory = engine_factory
+
+    async def spawn(
+        self,
+        agent: str,
+        prompt: str,
+        *,
+        parent_job_id: str | None = None,
+    ) -> AgentSession:
+        del parent_job_id
+        definition = self.registry.get(agent)
+        if definition is None or definition.mode == "primary":
+            raise SubagentAgentError(f"Unknown subagent: {agent}")
+        if not prompt.strip():
+            raise SubagentAgentError("Subagent prompt cannot be empty")
+        thread_id = self._new_thread_id(definition.name)
+        child = await self.engine_factory(definition, thread_id, False)
+        session = ChildEngineSession(
+            child=child,
+            prompt=prompt,
+            agent=definition.name,
+            thread_id=thread_id,
+            session_paths=self.session_paths,
+            parent_thread_id=self.parent_thread_id,
+        )
+        session._record("started")
+        return session
+
+    def definitions(self) -> tuple[AgentDefinition, ...]:
+        return self.registry.definitions()
+
+    def _new_thread_id(self, agent: str) -> str:
+        while True:
+            thread_id = f"{agent}-{secrets.token_hex(3)}"
+            if not self.session_paths.has_thread(thread_id):
+                return thread_id
 
 
 class AgentRegistry:
@@ -75,6 +225,8 @@ def apply_agent_tools(registry: Any, config: Any, definition: AgentDefinition) -
 
 __all__ = [
     "AgentRegistry",
+    "ChildEngineSession",
+    "EngineAgentRuntime",
     "apply_agent_definition",
     "apply_agent_provider",
     "apply_agent_tools",

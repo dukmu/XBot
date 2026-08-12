@@ -7,8 +7,9 @@ import pytest
 
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
-from xbotv2.core.builtin_tools.shell import shell
+from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.builtin_tools.interaction import request_permission
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookStage
 from xbotv2.llm.mock import MockLLM
@@ -18,7 +19,14 @@ from xbotv2.llm.base import BaseProvider
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
+from xbotv2.api.tools import (
+    ArtifactRef,
+    ClientEvent,
+    Tool,
+    ToolCall,
+    ToolError,
+    ToolResult,
+)
 
 
 def tool_name(tool):
@@ -37,31 +45,29 @@ def shout(message: str) -> str:
 shout_tool = Tool.from_function(shout, name="shout")
 
 
-def send_notice(message: str) -> dict:
-    return {
-        "content": "notice sent",
-        "events": [{"type": "client_message", "data": {"message": message}}],
-    }
+def send_notice(message: str) -> ToolResult:
+    return ToolResult(
+        content="notice sent",
+        client_events=(ClientEvent("client_message", {"message": message}),),
+    )
 send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 
 
-def request_input(question: str) -> dict:
-    return {
-        "content": "waiting for user",
-        "wait_for_user": True,
-        "events": [
+def request_input(question: str) -> ToolResult:
+    return ToolResult(
+        content="waiting for user",
+        wait_for_user=True,
+        client_events=(ClientEvent(
+            "user_input_required",
             {
-                "type": "user_input_required",
-                "data": {
-                    "question": question,
-                    "options": [
-                        {"label": "continue", "description": "Continue the work."},
-                        {"label": "stop", "description": "Stop the work."},
-                    ],
-                },
-            }
-        ],
-    }
+                "question": question,
+                "options": [
+                    {"label": "continue", "description": "Continue the work."},
+                    {"label": "stop", "description": "Stop the work."},
+                ],
+            },
+        ),),
+    )
 
 
 def structured_failure() -> ToolResult:
@@ -104,7 +110,7 @@ def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
 
@@ -121,7 +127,7 @@ def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace,
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
 
@@ -279,6 +285,7 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
+        shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
         registry.register(shell, sandbox_mode="host")
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
@@ -500,7 +507,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
         _ = [e async for e in engine.run_turn("test")]
         assert "turn_start" in hook_calls
@@ -529,7 +536,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
         events = [e async for e in engine.run_turn("test")]
 
@@ -573,7 +580,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("test")]
@@ -610,7 +617,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("test")]
@@ -654,7 +661,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("test")]
@@ -681,7 +688,7 @@ class TestEngineHooks:
             return {"user_input": "rewritten"}
 
         async def after_accept(ctx):
-            calls.append(("after", ctx.user_input, ctx.state["messages"][-1].content))
+            calls.append(("after", ctx.user_input, ctx.messages[-1].content))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, before_accept)
@@ -695,7 +702,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("original")]
@@ -726,7 +733,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("blocked")]
@@ -762,7 +769,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("blocked")]
@@ -847,7 +854,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -924,7 +931,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -964,7 +971,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -1001,7 +1008,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("test")]
@@ -1096,7 +1103,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("test")]
@@ -1155,7 +1162,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=permission_system,
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [event async for event in engine.run_turn("test")]
@@ -1196,7 +1203,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="ask"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [event async for event in engine.run_turn("test")]
@@ -1269,7 +1276,7 @@ class TestEngineHooks:
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="deny"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [event async for event in engine.run_turn("run echo")]
@@ -1290,10 +1297,10 @@ class TestEngineHooks:
         calls = []
 
         async def before_persist(ctx):
-            calls.append(("before", len(ctx.state["messages"]), state_store.message_count()))
+            calls.append(("before", len(ctx.messages), state_store.message_count()))
 
         async def after_persist(ctx):
-            calls.append(("after", len(ctx.state["messages"]), state_store.message_count()))
+            calls.append(("after", len(ctx.messages), state_store.message_count()))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.BEFORE_STATE_PERSIST, before_persist)
@@ -1307,7 +1314,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -1337,7 +1344,7 @@ class TestEngineHooks:
         persisted_sizes = []
 
         async def after_persist(ctx):
-            persisted_sizes.append(len(ctx.state["messages"]))
+            persisted_sizes.append(len(ctx.messages))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
@@ -1428,8 +1435,8 @@ class TestEngineHooks:
         self, state_store, temp_workspace
     ):
         async def add_metadata_message(ctx):
-            if not any(message.name == "persist-hook" for message in ctx.state["messages"]):
-                ctx.state["messages"].append(
+            if not any(message.name == "persist-hook" for message in ctx.messages):
+                ctx.messages.append(
                     Message(role="system", content="metadata", name="persist-hook")
                 )
 
@@ -1480,7 +1487,7 @@ class TestEngineHooks:
             raise asyncio.CancelledError()
 
         async def after_persist(ctx):
-            persisted_sizes.append(len(ctx.state["messages"]))
+            persisted_sizes.append(len(ctx.messages))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.ON_TURN_START, cancel_turn)
@@ -1512,7 +1519,7 @@ class TestEngineHooks:
             raise RuntimeError("model request blocked")
 
         async def after_persist(ctx):
-            persisted_sizes.append(len(ctx.state["messages"]))
+            persisted_sizes.append(len(ctx.messages))
 
         hook_manager = HookManager()
         hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, fail_model_request)
@@ -1556,7 +1563,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -1579,14 +1586,14 @@ class TestEngineHooks:
             }
 
         async def pre_compact(ctx):
-            calls.append(("pre", ctx.compact_reason, len(ctx.state["messages"])))
+            calls.append(("pre", ctx.compact_reason, len(ctx.messages)))
 
         async def post_compact(ctx):
             calls.append((
                 "post",
                 ctx.compact_reason,
-                ctx.state["previous_message_count"],
-                ctx.state["current_message_count"],
+                ctx.previous_message_count,
+                ctx.current_message_count,
             ))
 
         hook_manager = HookManager()
@@ -1602,7 +1609,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("test")]
@@ -1639,7 +1646,7 @@ class TestEngineHooks:
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [event async for event in engine.run_turn("question")]
@@ -1698,9 +1705,6 @@ class TestEngineHooks:
         tool_result = next(e for e in events if e["type"] == "tool_result")
         assert "does not support live user input" in tool_result["data"]["content"]
         assert llm.call_count == 2
-        state = state_store.read_state()
-        assert state["status"] == "active"
-        assert state["pending_interactions"] == []
 
     @pytest.mark.asyncio
     async def test_explicit_permission_allows_one_matching_tool_call(
@@ -1891,13 +1895,8 @@ class TestEngineHooks:
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         _ = [e async for e in engine.run_turn("ask")]
-        state = state_store.read_state()
-        assert state["status"] == "active"
-        assert state["pending_interactions"] == []
-
         _ = [e async for e in engine.run_turn("continue")]
-
-        assert state_store.read_state()["status"] == "active"
+        assert llm.call_count == 3
 
     @pytest.mark.asyncio
     async def test_permission_request_event_reaches_client(self, state_store, temp_workspace):
@@ -1919,7 +1918,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="ask"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("need approval")]
@@ -1958,7 +1957,7 @@ class TestEngineHooks:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="ask"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [e async for e in engine.run_turn("need approval")]
@@ -2034,8 +2033,7 @@ class TestEngineState:
         hook_manager.register(HookStage.ON_SESSION_START, record_call)
         hook_manager.register(HookStage.ON_SESSION_CLOSE, record_call)
         plugin_loader = AsyncMock()
-        background_tasks = AsyncMock()
-        subagents = AsyncMock()
+        job_registry = AsyncMock()
 
         engine = Engine(
             llm=llm,
@@ -2045,10 +2043,9 @@ class TestEngineState:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
             plugin_loader=plugin_loader,
-            background_tasks=background_tasks,
-            subagents=subagents,
+            job_registry=job_registry,
         )
         await engine.start_session()
         await engine.close_session()
@@ -2056,8 +2053,7 @@ class TestEngineState:
         assert "on_session_start" in calls
         assert "on_session_close" in calls
         plugin_loader.unload_all.assert_awaited_once()
-        background_tasks.close.assert_awaited_once()
-        subagents.close.assert_awaited_once()
+        job_registry.shutdown.assert_awaited_once()
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio
@@ -2081,7 +2077,7 @@ class TestEngineState:
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
             plugin_loader=plugin_loader,
         )
         await engine.start_session()
@@ -2095,7 +2091,7 @@ class TestEngineState:
     @pytest.mark.asyncio
     async def test_start_session_resumes_event_only_state(self, state_store, temp_workspace):
         """Session with existing messages starts as a resume."""
-        state_store.append_message(Message(role="user", content="prior message"))
+        state_store.append_messages([Message(role="user", content="prior message")])
         llm = MockLLM(responses=[])
         registry = ToolRegistry()
         calls = []
@@ -2114,7 +2110,7 @@ class TestEngineState:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         await engine.start_session()
@@ -2152,7 +2148,7 @@ class TestEngineState:
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [e async for e in engine.run_turn("will fail")]

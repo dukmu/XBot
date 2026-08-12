@@ -100,7 +100,7 @@ class HookDecision:
 @dataclass
 class HookContext:
     stage: HookStage
-    state: dict[str, Any] = field(default_factory=dict)
+    messages: list[Message] = field(default_factory=list)
     config: Any | None = None
     tools: Any | None = None
     sandbox: Any | None = None
@@ -123,6 +123,8 @@ class HookContext:
     tool_result: Any | None = None
     stop_reason: str | None = None
     compact_reason: str | None = None
+    previous_message_count: int | None = None
+    current_message_count: int | None = None
     permission_decision: str | None = None
     client_event: dict[str, Any] | None = None
     error: Exception | None = None
@@ -130,7 +132,7 @@ class HookContext:
     request_id: str = ""
     mailbox_message: Any | None = None
 
-HookFn = Callable[[HookContext], Any]
+HookFn = Callable[[HookContext], Awaitable[Any]]
 
 __all__ = [
     "HookAction",

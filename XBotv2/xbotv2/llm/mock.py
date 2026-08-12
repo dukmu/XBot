@@ -2,52 +2,54 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, AsyncIterator
 
-from xbotv2.api.messages import ModelChunk, ModelResponse
+from xbotv2.api.messages import Message, ModelChunk, ModelResponse
+from xbotv2.api.providers import InputModality
 from xbotv2.api.tools import ToolCall, ToolCallDelta
 from xbotv2.llm.base import BaseProvider
 
 
 class MockLLM(BaseProvider):
-    """Deterministic provider with the same public test helpers as the old mock."""
+    """Deterministic streaming provider for tests."""
 
     supported_input_modalities = frozenset({"text", "image"})
 
-    def __init__(self, responses: list[dict[str, Any]] | None = None, **kwargs):
+    def __init__(
+        self,
+        responses: list[dict[str, Any]] | None = None,
+        *,
+        input_modalities: list[InputModality] | None = None,
+        media_root: Path | str | None = None,
+    ) -> None:
         super().__init__(
             model="mock",
             temperature=0,
             max_output_tokens=None,
-            input_modalities=kwargs.pop("input_modalities", None),
-            media_root=kwargs.pop("media_root", None),
+            input_modalities=input_modalities,
+            media_root=media_root,
         )
         self.responses = responses or []
         self.call_count = 0
-        self.call_history: list[dict[str, Any]] = []
-        self._mock_call_history = self.call_history
+        self.call_history: list[list[Message]] = []
 
-    def bind_tools(self, tools, **kwargs):
+    def bind_tools(
+        self,
+        tools: list[dict[str, Any]],
+        **_kwargs: Any,
+    ) -> MockLLM:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
-        response = self.next_response()
-        result = self.to_response(response)
-        self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
-        return result
-
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
-        return self.invoke(messages, **kwargs)
-
     async def _astream_once(
         self,
-        messages: list[Any],
-        **kwargs: Any,
+        messages: list[Message],
+        **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         response = self.next_response()
         result = self.to_response(response)
-        self.record_call(messages=messages, kwargs=kwargs, response=result, raw_response=response)
+        self.call_history.append(list(messages))
         chunks = response.get("chunks")
         if isinstance(chunks, list) and chunks:
             for chunk in chunks:
@@ -63,26 +65,8 @@ class MockLLM(BaseProvider):
             additional_kwargs=result.additional_kwargs,
         )
 
-    def get_call_messages(self, index: int) -> list[Any]:
-        return self.call_history[index].get("messages", [])
-
-    def verify_tool_call_made(self, tool_name: str, min_count: int = 1) -> bool:
-        count = sum(
-            1
-            for call in self.call_history
-            for tool_call in call.get("tool_calls", [])
-            if tool_call.name == tool_name
-        )
-        return count >= min_count
-
-    def reset(self) -> None:
-        self.call_count = 0
-        self.call_history = []
-        self._mock_call_history = self.call_history
-
-    def set_responses(self, responses: list[dict[str, Any]]) -> None:
-        self.responses = responses
-        self.reset()
+    def get_call_messages(self, index: int) -> list[Message]:
+        return self.call_history[index]
 
     def next_response(self) -> dict[str, Any]:
         if self.call_count >= len(self.responses):
@@ -126,22 +110,6 @@ class MockLLM(BaseProvider):
             usage_metadata=dict(raw.get("usage_metadata") or {}),
             additional_kwargs=dict(raw.get("additional_kwargs") or {}),
         )
-
-    def record_call(
-        self,
-        *,
-        messages: list[Any],
-        kwargs: dict[str, Any],
-        response: ModelResponse,
-        raw_response: dict[str, Any],
-    ) -> None:
-        self.call_history.append({
-            "messages": list(messages),
-            "kwargs": dict(kwargs),
-            "response": response,
-            "raw_response": raw_response,
-            "tool_calls": list(response.tool_calls),
-        })
 
 
 def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:

@@ -71,6 +71,8 @@ Thread status and history remain queryable after its runtime closes.
   contribute to cumulative session usage without replacing it. Live `usage`
   events are per-model-
   call deltas; clients add them to the restored totals.
+  `input_tokens` excludes cache reads and cache creation reported in their
+  dedicated fields; `total_tokens` includes all processed input and output.
   Core persists these totals independently in `state/usage.yaml`, so compact,
   clear, and undo do not erase token accounting.
 - Protocol/configuration text is UTF-8. Clients do not attempt Latin-1 or
@@ -155,27 +157,33 @@ submitted behind an active turn or existing queue receives `message_queued`;
 the server, rather than the TUI, controls delivery.
 
 `general` messages carry source and metadata inside their payload. When the
-session becomes idle, Core builds one explicitly labelled, non-persisted runtime
-input from the payload and the owning plugin's current state. The provider sees
-a transient user-role envelope because supported chat protocols need a final
-input to trigger generation, but its content and internal metadata state that it
-is not human input. It never enters conversation history as a user message.
-These turns cover Goal continuation and runtime notifications. Their output
+message is delivered, Core builds one explicitly labelled runtime input from
+the payload and the owning plugin's current state. The provider sees a user-role
+envelope because supported chat protocols need an input to trigger generation,
+while persisted `runtime` metadata distinguishes it from human input. These
+turns cover Goal continuation and runtime notifications. Their output
 uses `GET /sessions/{sid}/threads/{tid}/events`; queued human turns keep their
 originating message stream. The thread event stream remains open across separate `general`
 turns and closes only when the client disconnects or the session ends.
 
+After a complete ToolResult batch, Engine may accept one queued input before
+the next provider request. It never inserts input between an assistant ToolUse
+and its matching ToolResults. If no such boundary occurs, the mailbox worker
+delivers the input as the next turn. Human input remains an ordinary user
+message; `general` input uses `<runtime_event>`.
+
 The mailbox queue is not persistent state. Closing or losing the client
 connection drops queued messages, and `resume` starts with an empty mailbox.
 Once delivery starts, Core also appends a `mailbox_delivery` record to
-`state/messages.jsonl`; replay retains it as audit evidence but does not turn it
-back into a queued item or provider Message. The separate append-only
+`state/messages.jsonl`. The delivered Message is appended separately and is
+reconstructed on resume; the delivery record remains audit evidence and never
+requeues the item. The separate append-only
 `logs/mailbox.jsonl` file remains lower-level queue diagnostic evidence.
 
 XBot conversation history uses the provider-neutral roles `system`, `user`,
-`assistant`, and `tool`. Only human input is persisted with `user`; transient
-runtime input is source-labelled and excluded from history. Provider adapters
-own wire conversion. Messages contain ordered text, reasoning, image, and Tool
+`assistant`, and `tool`. Human and runtime inputs both use the standard `user`
+role, but runtime inputs carry structured source and event metadata in history.
+Provider adapters own wire conversion. Messages contain ordered text, reasoning, image, and Tool
 call parts; image payloads and uploaded attachments are stored as session
 artifacts rather than embedded in the append-only journal. Anthropic can carry
 images in Tool results; Chat Completions rejects that non-standard placement.

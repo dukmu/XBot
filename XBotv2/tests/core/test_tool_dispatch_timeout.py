@@ -33,16 +33,17 @@ async def test_sync_tool_does_not_block_event_loop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
-    import xbotv2.tools.runtime as runtime
-
+async def test_registered_timeout_is_reported_as_tool_error() -> None:
     def slow() -> str:
         time.sleep(0.3)
         return "late"
 
     registry = ToolRegistry()
-    registry.register(Tool.from_function(slow), sandbox_mode="host")
-    monkeypatch.setattr(runtime, "_TOOL_DISPATCH_TIMEOUT_SECONDS", 0.05)
+    registry.register(
+        Tool.from_function(slow),
+        sandbox_mode="host",
+        timeout_seconds=0.05,
+    )
 
     started = time.monotonic()
     results = await execute_tools(
@@ -53,33 +54,10 @@ async def test_runtime_timeout_is_reported_as_tool_error(monkeypatch) -> None:
     assert time.monotonic() - started < 0.2
     assert results[0].status == "error"
     assert "Tool slow timed out after 0.05s" in results[0].content
-    error = results[0].additional_kwargs["xbotv2_error"]
+    error = results[0].error
     assert error["code"] == "tool_timeout"
     assert error["message"] == "Tool slow timed out after 0.05s"
     assert error["details"] == {"timeout_seconds": 0.05}
-
-
-@pytest.mark.asyncio
-async def test_registered_tool_can_override_dispatch_timeout(monkeypatch) -> None:
-    import xbotv2.tools.runtime as runtime
-
-    async def slow() -> str:
-        await asyncio.sleep(0.2)
-        return "late"
-
-    registry = ToolRegistry()
-    registry.register(
-        Tool.from_function(slow),
-        sandbox_mode="host",
-        timeout_seconds=0.02,
-    )
-    monkeypatch.setattr(runtime, "_TOOL_DISPATCH_TIMEOUT_SECONDS", 1.0)
-
-    results = await execute_tools([ToolCall("call_1", "slow", {})], registry)
-
-    assert results[0].status == "error"
-    assert "Tool slow timed out after 0.02s" in results[0].content
-    assert results[0].additional_kwargs["xbotv2_error"]["code"] == "tool_timeout"
 
 
 @pytest.mark.asyncio

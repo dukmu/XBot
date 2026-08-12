@@ -81,7 +81,7 @@ def hook_context(session_info, tool_registry):
     """Basic HookContext for loop hooks."""
     return HookContext(
         stage=HookStage.BEFORE_AGENT,
-        state={"messages": []},
+        messages=[],
         config=None,
         tools=tool_registry,
         plugin_store=None,

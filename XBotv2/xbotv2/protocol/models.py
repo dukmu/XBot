@@ -53,6 +53,10 @@ class SessionHistoryItem(WireModel):
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     images: list[dict[str, Any]] = Field(default_factory=list)
+    runtime: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class UsageData(WireModel):

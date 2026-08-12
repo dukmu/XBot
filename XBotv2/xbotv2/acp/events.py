@@ -195,7 +195,7 @@ def replay_history(messages: list[Any]) -> list[Any]:
             continue
         if message.role != "tool" or not message.tool_call_id:
             continue
-        data = message.additional_kwargs.get("xbotv2_data")
+        data = message.data
         updates.append(update_tool_call(
             message.tool_call_id,
             status="completed" if message.status == "success" else "failed",

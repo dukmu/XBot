@@ -3,12 +3,11 @@
 from pathlib import Path
 
 import pytest
-import yaml
-
 from builtin_plugins.todolist.plugin import TodolistPlugin
 from xbotv2.api import PluginManifest
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
 from xbotv2.persistence.store import CoreStateStore
@@ -177,11 +176,10 @@ async def test_todolist_rejects_invalid_persisted_state(state_store):
 @pytest.mark.asyncio
 async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_store):
     plugins_root = tmp_path / "plugins"
-    plugin_dir = plugins_root / "todolist"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text(
-        yaml.safe_dump({"name": "todolist", "version": "1.0.0"}),
-        encoding="utf-8",
+    plugins_root.mkdir()
+    (plugins_root / "todolist").symlink_to(
+        Path(__file__).parents[2] / "builtin_plugins" / "todolist",
+        target_is_directory=True,
     )
     registry = ToolRegistry()
     loader = PluginLoader(
@@ -249,7 +247,7 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await engine.start_session()
 

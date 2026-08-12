@@ -16,6 +16,8 @@ class TuiMessage:
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
+    # True while assistant content is still streaming.
+    streaming: bool = False
 
 
 @dataclass
@@ -187,7 +189,14 @@ class TuiState:
             tool_calls = data.get("tool_calls")
             if content.strip():
                 if self._streaming_assistant_index is not None:
+                    index = self._streaming_assistant_index
                     self._streaming_assistant_index = None
+                    try:
+                        message = self.messages[index]
+                        message.content = content
+                        message.streaming = False
+                    except IndexError:
+                        pass
                 else:
                     self.append_message("assistant", content)
             elif tool_calls:
@@ -390,6 +399,20 @@ class TuiState:
             role = str(item.get("role") or "")
             if role == "user":
                 content = str(item.get("content") or "")
+                runtime = item.get("runtime")
+                if isinstance(runtime, dict):
+                    source = str(runtime.get("source") or "runtime")
+                    event = str(runtime.get("event") or "message")
+                    self.notices.append(TuiNotice(
+                        kind=f"{source}:{event}",
+                        text=f"{source} {event}",
+                        payload=runtime,
+                    ))
+                    self.transcript.append(TuiTranscriptEntry(
+                        kind="notice",
+                        key=str(len(self.notices) - 1),
+                    ))
+                    continue
                 images = item.get("images") or []
                 if images:
                     labels = [
@@ -429,6 +452,7 @@ class TuiState:
             self._streaming_assistant_index = len(self.messages) - 1
         try:
             msg = self.messages[self._streaming_assistant_index]
+            msg.streaming = True
             if content:
                 msg.content += content
             if reasoning:

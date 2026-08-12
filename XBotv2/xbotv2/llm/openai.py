@@ -6,7 +6,9 @@ import json
 from typing import Any, AsyncIterator, Callable
 
 from xbotv2.api.messages import (
+    ContentPart,
     ImagePart,
+    Message,
     ModelChunk,
     ModelResponse,
     ReasoningPart,
@@ -17,7 +19,6 @@ from xbotv2.api.tools import ToolCall, ToolCallDelta
 from xbotv2.llm.base import (
     BaseProvider,
     attachment_prompt,
-    message_role,
     usage_metadata,
 )
 
@@ -59,7 +60,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
     async def _astream_once(
         self,
-        messages: list[Any],
+        messages: list[Message],
         **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, Any] = {
@@ -106,7 +107,6 @@ class OpenAICompatibleProvider(BaseProvider):
                 yield ModelChunk(
                     reasoning=reasoning,
                 )
-                continue
 
             content = getattr(delta, "content", None) or ""
             if content:
@@ -174,24 +174,23 @@ class OpenAICompatibleProvider(BaseProvider):
 
 
 def openai_messages(
-    messages: list[Any],
+    messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     system_parts = [
-        str(getattr(message, "content", ""))
+        message.content
         for message in messages
-        if message_role(message) == "system"
-        and str(getattr(message, "content", "")).strip()
+        if message.role == "system" and message.content.strip()
     ]
     if system_parts:
         result.append({"role": "system", "content": "\n\n".join(system_parts)})
     for message in messages:
-        role = message_role(message)
+        role = message.role
         if role == "system":
             continue
-        content = getattr(message, "content", "")
+        content = message.content
         if role == "tool":
             if message.images:
                 raise ValueError(
@@ -201,7 +200,7 @@ def openai_messages(
                 {
                     "role": "tool",
                     "content": str(content),
-                    "tool_call_id": getattr(message, "tool_call_id", ""),
+                    "tool_call_id": message.tool_call_id,
                 }
             )
             continue
@@ -229,7 +228,7 @@ def openai_messages(
 
 
 def _openai_content(
-    parts: list[Any],
+    parts: list[ContentPart],
     image_loader: Callable[[str], str] | None,
     attachment_text: str = "",
 ) -> str | list[dict[str, Any]]:
@@ -272,6 +271,7 @@ def openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:
 def normalize_openai_usage(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     reported_total = getattr(usage, "total_tokens", None)
     cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
     if cache_read is None:
@@ -279,14 +279,17 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
     cache_creation = getattr(usage, "prompt_cache_miss_tokens", None)
     if cache_creation is None:
         cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+    cache_read = int(cache_read or 0)
+    cache_creation = int(cache_creation or 0)
     return usage_metadata(
-        input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+        input_tokens=max(0, prompt_tokens - cache_read - cache_creation),
         output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
         total_tokens=(
             int(reported_total) if reported_total is not None else None
         ),
-        cache_read_input_tokens=int(cache_read or 0),
-        cache_creation_input_tokens=int(cache_creation or 0),
+        context_tokens=prompt_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
         prompt_cache_write_tokens=int(
             getattr(usage, "prompt_cache_write_tokens", 0) or 0
         ),

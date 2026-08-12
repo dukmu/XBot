@@ -18,6 +18,7 @@ from xbotv2.core.builtin_tools.filesystem import (
 from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
 from xbotv2.api.messages import Message
@@ -28,7 +29,7 @@ from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.result_cache import make_tool_result_cache_hook
 from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import Tool, ToolCall
+from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
 
 
 async def large_output() -> str:
@@ -279,24 +280,15 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dictionary_tool_result_preserves_structured_fields() -> None:
-    async def structured_result() -> dict:
-        return {
-            "status": "error",
-            "content": "failed",
-            "data": {"attempt": 1},
-            "error": {
-                "code": "dict_error",
-                "message": "failed",
-                "retryable": False,
-                "details": {},
-            },
-            "artifacts": [{
-                "id": "artifact-1",
-                "media_type": "text/plain",
-                "name": "result.txt",
-            }],
-        }
+async def test_tool_result_preserves_structured_fields() -> None:
+    async def structured_result() -> ToolResult:
+        return ToolResult(
+            status="error",
+            content="failed",
+            data={"attempt": 1},
+            error=ToolError("dict_error", "failed"),
+            artifacts=(ArtifactRef("artifact-1", "text/plain", "result.txt"),),
+        )
 
     registry = ToolRegistry()
     registry.register(
@@ -311,9 +303,28 @@ async def test_dictionary_tool_result_preserves_structured_fields() -> None:
     )
 
     assert results[0].status == "error"
-    assert results[0].additional_kwargs["xbotv2_data"] == {"attempt": 1}
-    assert results[0].additional_kwargs["xbotv2_error"]["code"] == "dict_error"
-    assert results[0].artifact[0]["name"] == "result.txt"
+    assert results[0].data == {"attempt": 1}
+    assert results[0].error["code"] == "dict_error"
+    assert results[0].artifact[0].name == "result.txt"
+
+
+@pytest.mark.asyncio
+async def test_plain_dictionary_result_is_model_content() -> None:
+    async def plain_result() -> dict:
+        return {"data": {"value": 1}}
+
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(plain_result), sandbox_mode="host")
+
+    results = await execute_tools(
+        [ToolCall("c1", "plain_result", {})],
+        registry,
+        permission_system=PermissionSystem(default_decision="allow"),
+    )
+
+    assert results[0].status == "success"
+    assert json.loads(results[0].content) == {"data": {"value": 1}}
+    assert results[0].data is None
 
 
 @pytest.mark.asyncio
@@ -397,6 +408,57 @@ async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
         permission_interaction_handler=approve,
     )
     assert len(events) == 2
+
+
+@pytest.mark.asyncio
+async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxPolicy(
+        config={"external_write": "ask"},
+        workspace_root=workspace,
+    )
+    calls = []
+
+    async def shell(
+        sandbox_permissions: str,
+        justification: str,
+        cwd: str | None = None,
+    ) -> str:
+        del cwd
+        calls.append((sandbox_permissions, justification))
+        return "ran"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool.from_function(shell, name="shell"),
+        sandbox_mode="sandboxed",
+    )
+    events = []
+
+    async def approve(event, **kwargs):
+        events.append((event, kwargs))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "shell", {
+            "sandbox_permissions": "require_escalated",
+            "justification": "Install a required dependency.",
+        })],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+    )
+
+    assert results[0].status == "success"
+    assert calls == [(
+        "require_escalated",
+        "Install a required dependency.",
+    )]
+    event, _ = events[0]
+    assert event["data"]["source"] == "sandbox"
+    assert "Install a required dependency." in event["data"]["reason"]
 
 
 @pytest.mark.asyncio
@@ -592,7 +654,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
 
     events = [e async for e in engine.run_turn("run large")]
@@ -637,9 +699,9 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     }
     message = Message(
         role="tool",
-        content=json.dumps(data, ensure_ascii=False),
+        content=original,
         tool_call_id="filesystem-read",
-        additional_kwargs={"xbotv2_data": data},
+        data=data,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
@@ -652,15 +714,13 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     cached = ET.fromstring(message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["original_chars"] == str(len(original))
-    assert message.additional_kwargs["xbotv2_data"]["cache_path"].endswith(
-        cache_files[0].name
-    )
+    assert message.data == data
     assert message.artifact["kind"] == "cached_tool_result"
     assert message.artifact["cache_path"].endswith(cache_files[0].name)
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_serializes_original_object_data_as_json(state_store):
+async def test_cache_hook_ignores_large_sidecar_data(state_store):
     hook = make_tool_result_cache_hook(
         state_store,
         max_inline_chars=100,
@@ -671,23 +731,18 @@ async def test_cache_hook_serializes_original_object_data_as_json(state_store):
         role="tool",
         content="30 files found.",
         tool_call_id="filesystem-list",
-        additional_kwargs={"xbotv2_data": structured},
+        data=structured,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
-    data = message.additional_kwargs["xbotv2_data"]
-    assert ET.fromstring(message.content).tag == "cached_content"
-    assert data["cached"] is True
-    cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*.json")
-    )
-    assert len(cache_files) == 1
-    assert json.loads(cache_files[0].read_text(encoding="utf-8")) == structured
+    assert message.content == "30 files found."
+    assert message.data == structured
+    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_does_not_json_encode_string_data(state_store):
+async def test_cache_hook_ignores_string_sidecar_data(state_store):
     hook = make_tool_result_cache_hook(
         state_store,
         max_inline_chars=20,
@@ -698,16 +753,14 @@ async def test_cache_hook_does_not_json_encode_string_data(state_store):
         role="tool",
         content="Structured result.",
         tool_call_id="string-data",
-        additional_kwargs={"xbotv2_data": original},
+        data=original,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
-    cache_files = list(
-        (Path(state_store.artifacts_dir) / "tool_results").glob("*.txt")
-    )
-    assert len(cache_files) == 1
-    assert cache_files[0].read_text(encoding="utf-8") == original
+    assert message.content == "Structured result."
+    assert message.data == original
+    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 
 def _hook_context(stage, **kwargs):

@@ -202,6 +202,44 @@ class TestPermissionSystemBasics:
             "filesystem_write", {"path": str(outside / "report.txt")}
         ) == []
 
+    def test_shell_escalation_approval_updates_external_write_policy(
+        self,
+        tmp_path,
+    ):
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        sandbox = SandboxPolicy(
+            {"external_write": "ask"},
+            data_root=paths.data_dir,
+            workspace_root=workspace,
+        )
+        engine = SimpleNamespace(sandbox_policy=sandbox)
+
+        persist_permission_decision(
+            paths=paths,
+            session_id="shell-escalation",
+            client_event={"data": {"source": "sandbox"}},
+            decision="allow",
+            scope="session",
+            engine=engine,
+            sandbox_rules=[{
+                "setting": "external_write",
+                "access": "readwrite",
+            }],
+        )
+
+        policy = yaml.safe_load(
+            paths.session("shell-escalation").config_file.read_text(
+                encoding="utf-8"
+            )
+        )
+        assert policy["sandbox"] == {
+            "enabled": True,
+            "external_write": "allow",
+        }
+        assert sandbox.external_write == "allow"
+
 
 @pytest.mark.asyncio
 async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
@@ -219,12 +257,9 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
             session_root=paths.session("s").thread(thread_id).root,
         )
         engine = SimpleNamespace(
+            job_registry=None,
             permission_system=permissions,
             sandbox_policy=sandbox,
-            startup_config=SimpleNamespace(
-                permissions=base_permissions,
-                sandbox={},
-            ),
             config=SimpleNamespace(permissions={}, sandbox={}),
             state_store=SimpleNamespace(
                 read_thread_metadata=lambda: {

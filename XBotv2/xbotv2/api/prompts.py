@@ -91,8 +91,7 @@ def tool_result_display_content(content: str) -> str:
     cached = root.find("cached_content")
     if cached is not None:
         return _cached_content_display(cached)
-    data = root.findtext("data")
-    return _rendered_element_text(data) if data is not None else ""
+    return ""
 
 
 def _rendered_element_text(value: str) -> str:

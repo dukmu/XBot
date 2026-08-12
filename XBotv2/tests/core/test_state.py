@@ -23,10 +23,6 @@ class TestCoreStateStoreCreation:
         assert store.plugin_states_dir.exists()
         assert store.artifacts_dir.exists()
 
-    def test_create_is_idempotent(self, temp_data_dir):
-        paths = _session_paths(temp_data_dir)
-        CoreStateStore.create(paths, thread_id="t1", workspace_root="/workspace", provider="default")
-
     def test_threads_keep_independent_state(self, temp_data_dir):
         paths = _session_paths(temp_data_dir)
         first = CoreStateStore.create(
@@ -36,7 +32,7 @@ class TestCoreStateStoreCreation:
             paths, thread_id="second", workspace_root="/workspace", provider="default"
         )
 
-        first.append_message(Message(role="user", content="first thread"))
+        first.append_messages([Message(role="user", content="first thread")])
         first.set_plugin_state("sample", {"thread": "first"})
 
         assert second.read_messages() == []

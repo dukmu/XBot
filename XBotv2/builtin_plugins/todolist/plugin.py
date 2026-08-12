@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from typing import Any
 
 from xbotv2.api import (
@@ -58,19 +57,15 @@ class TodolistPlugin(PluginBase):
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
 
-        Use only for multi-step work or a human-requested checklist, normally
-        with 3-7 user-visible milestones. Each call replaces the list, so retain
-        unfinished milestones. Do not create items for individual reads, edits,
-        commands, replies, summaries, or bookkeeping.
+        Todo is persistent plan state for work with several distinct phases,
+        not an action log. Each call replaces the list, so include every
+        unfinished item. Update it only when a phase or scope changes.
 
-        Update the list when it is created, the scope materially changes, the
-        active phase changes, or all work has been verified. Do not update it
-        after every small action. Status records observed progress, not intent,
-        with exactly one item in_progress while work remains. Mark a milestone
-        completed only when its acceptance evidence exists; Todo status is not
-        itself evidence. When all milestones are verified, submit them all as
-        completed once and the plugin clears the list. Use an empty list only
-        to discard an obsolete checklist.
+        While work remains, exactly one item must be ``in_progress``. Mark
+        status from observed progress, not intent. Submitting a non-empty list
+        with every item ``completed`` clears the checklist. Submit an empty list
+        only to discard an obsolete checklist. Do not add an item for the final
+        reply or summary.
 
         Args:
             todos: Complete ordered checklist. Each item contains content and a
@@ -104,7 +99,7 @@ class TodolistPlugin(PluginBase):
             content = "Todo list cleared." if changed else "Todo list is already empty."
         else:
             action = "updated" if changed else "unchanged"
-            content = f"Todo list {action}:\n{json.dumps(active, ensure_ascii=False)}"
+            content = f"Todo list {action}."
             if not changed:
                 content += "\nDo not call update_todos again until the work changes."
         return ToolResult.success(content, data=data)

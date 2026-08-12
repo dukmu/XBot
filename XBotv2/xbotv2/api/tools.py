@@ -97,6 +97,7 @@ class ToolResult:
     client_events: tuple[ClientEvent, ...] = ()
     wait_for_user: bool = False
     timeout_seconds: float | None = None
+    turn_complete: bool = False
 
     @classmethod
     def success(

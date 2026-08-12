@@ -18,7 +18,7 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
         content = str(message.content or "")
         if (
             message.role == "tool"
-            and additional.get(MESSAGE_FORMAT_KEY) == "xml-v1"
+            and additional.get(MESSAGE_FORMAT_KEY)
         ):
             content = tool_result_display_content(content)
         item = {
@@ -36,9 +36,15 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
         }
         if message.role == "tool":
             item.update({
-                "data": additional.get("xbotv2_data"),
-                "error": additional.get("xbotv2_error"),
+                "data": message.data,
+                "error": message.error,
             })
+        runtime = additional.get("runtime_input")
+        if isinstance(runtime, dict):
+            item["runtime"] = {
+                str(key): str(value)
+                for key, value in runtime.items()
+            }
         history.append(item)
     return history
 

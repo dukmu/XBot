@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 from xbotv2.api import (
@@ -387,23 +388,15 @@ def _format_goal(goal: dict[str, Any]) -> str:
 
 
 def _goal_context(goal: dict[str, Any]) -> str:
-    lines = [
-        "## Session Goal",
-        f"Status: {goal['status']}",
-        f"Objective: {goal['objective']}",
-    ]
+    context = {
+        "objective": goal["objective"],
+        "status": goal["status"],
+    }
     if goal["token_budget"] is not None:
-        lines.append(f"Token budget: {goal['token_budget']}")
+        context["token_budget"] = goal["token_budget"]
     if goal["summary"]:
-        lines.append(f"Execution summary: {goal['summary']}")
-    lines.append(
-        "Continue the exact objective without rewriting it. Compare every outcome "
-        "with observed evidence before a terminal transition. Complete only after "
-        "all work and checks finish; block only when an exact external condition "
-        "still prevents progress after reasonable attempts. Otherwise keep working. "
-        "After the transition, give a concise evidence-based summary."
-    )
-    return "\n\n".join(lines)
+        context["summary"] = goal["summary"]
+    return json.dumps(context, ensure_ascii=False, separators=(",", ":"))
 
 
 def _no_active_goal() -> ToolResult:

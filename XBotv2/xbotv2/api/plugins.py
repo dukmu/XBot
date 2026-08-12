@@ -15,6 +15,7 @@ from xbotv2.api.commands import Command
 from xbotv2.api.agents import AgentDefinition, AgentRuntime
 from xbotv2.api.hooks import HookStage
 from xbotv2.api.context import PromptFragmentStage
+from xbotv2.api.jobs import JobRegistry
 from xbotv2.api.tools import Tool
 from xbotv2.api.variables import RuntimeVariables
 
@@ -155,6 +156,7 @@ class PluginSetupContext(Protocol):
     data_root: Path
     variables: RuntimeVariables
     agent_runtime: AgentRuntime | None
+    job_registry: JobRegistry | None
 
     def register_agent(self, definition: AgentDefinition) -> str: ...
     def register_hook(self, stage: HookStage, callback: Any) -> None: ...

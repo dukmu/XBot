@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from xbotv2.config.models import RuntimeConfig
+
 
 @pytest.fixture
 def skill_workspace(tmp_path):
@@ -209,7 +211,6 @@ Body
         assert runtime.commands["test-skill"].kind == "prompt"
         entry = registry.get("skills:project:test-skill")
         assert entry is not None
-        assert entry.tool.description == "A test skill for integration testing"
         assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80
@@ -298,7 +299,7 @@ Body
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="allow"),
-            config=None,
+            config=RuntimeConfig(),
         )
 
         events = [event async for event in engine.run_turn("load manual skill")]
@@ -435,7 +436,7 @@ Body
                 workspace_root=str(temp_workspace),
             ),
             permission_system=permissions,
-            config=None,
+            config=RuntimeConfig(),
         )
 
         _ = [event async for event in engine.run_turn("test restrictions")]

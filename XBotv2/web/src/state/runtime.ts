@@ -274,6 +274,13 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
     if (item.role === "user") {
+      if (item.runtime) {
+        entries.push(noticeEntry(
+          `${item.runtime.source ?? "runtime"}:${item.runtime.event ?? "message"}`,
+          "info",
+        ));
+        continue;
+      }
       entries.push({
         ...messageEntry("user", item.content),
         images: historyAttachments(item.images, item.artifacts),

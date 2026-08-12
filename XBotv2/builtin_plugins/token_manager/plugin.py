@@ -40,7 +40,7 @@ class TokenManagerPlugin(PluginBase):
         context_tokens, raw_estimate, source = calibrated_context_tokens(
             messages,
             tools,
-            list(ctx.state.get("messages") or []),
+            list(ctx.messages),
             provider=str(getattr(ctx.session, "provider", "") or ""),
             context_window=context_window,
         )

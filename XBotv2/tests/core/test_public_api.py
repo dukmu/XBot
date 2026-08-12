@@ -10,7 +10,6 @@ from pydantic import ValidationError
 import xbotv2.api as public_api
 
 from xbotv2.api import (
-    AgentRuntime,
     Command,
     CommandResult,
     ContextComponent,
@@ -20,7 +19,6 @@ from xbotv2.api import (
     HookStage,
     PluginConfigError,
     PluginManifest,
-    PromptFragmentStage,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -66,15 +64,9 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
-    assert AgentRuntime is not None
     assert HookDecision(HookAction.DENY, "policy").reason == "policy"
-    assert Tool is not None
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
-    assert RuntimePaths is not None
-    assert RuntimePluginContext is not None
-    assert RuntimeVariables is not None
-    assert PromptFragmentStage is not None
     assert hasattr(RuntimePluginContext, "register_tool")
     assert hasattr(RuntimePluginContext, "unregister_tool")
     assert hasattr(RuntimePluginContext, "register_command")

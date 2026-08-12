@@ -168,6 +168,10 @@ class Message(_PartBacked):
     response_metadata: dict[str, Any]
     usage_metadata: dict[str, Any]
     artifact: Any
+    data: Any
+    error: dict[str, Any] | None
+    client_events: list[dict[str, Any]]
+    turn_complete: bool
 
     def __init__(
         self,
@@ -184,6 +188,10 @@ class Message(_PartBacked):
         images: list[ImageContent] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
+        data: Any = None,
+        error: dict[str, Any] | None = None,
+        client_events: list[dict[str, Any]] | None = None,
+        turn_complete: bool = False,
     ) -> None:
         self.role = role
         self.tool_call_id = tool_call_id
@@ -193,6 +201,10 @@ class Message(_PartBacked):
         self.response_metadata = dict(response_metadata or {})
         self.usage_metadata = dict(usage_metadata or {})
         self.artifact = artifact
+        self.data = data
+        self.error = dict(error) if error is not None else None
+        self.client_events = list(client_events or [])
+        self.turn_complete = turn_complete
         if parts is not None:
             self.parts = list(parts)
             return
@@ -202,6 +214,26 @@ class Message(_PartBacked):
             images=images,
             tool_calls=tool_calls,
         )
+
+    def fingerprint(self) -> int:
+        """Cheap stable fingerprint for persisted-message change detection.
+
+        ``str`` hashes are cached, so fingerprinting large message content is
+        much cheaper than serializing it while still catching in-place edits.
+        """
+        return hash((
+            self.role,
+            str(self.content or ""),
+            self.tool_call_id,
+            self.status,
+            self.name,
+            len(self.parts),
+            len(self.additional_kwargs or {}),
+            len(self.usage_metadata or {}),
+            len(self.response_metadata or {}),
+            self.data is not None,
+            self.error is not None,
+        ))
 
 
 @dataclass(init=False)

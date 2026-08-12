@@ -21,7 +21,7 @@ def score_workspace(workspace: Path) -> dict[str, Any]:
         if report_path.is_file()
         else ""
     )
-    report_ok = all(term in report for term in ("bg-204", "task-", "completed"))
+    report_ok = all(term in report for term in ("bg-204", "sh_", "completed"))
     score = (0.7 if result_ok else 0.0) + (0.3 if report_ok else 0.0)
     return {
         "task": "xbot-background-shell",

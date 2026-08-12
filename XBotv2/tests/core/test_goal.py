@@ -1,5 +1,7 @@
 """Behavior tests for the built-in Goal plugin."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
@@ -10,6 +12,7 @@ from builtin_plugins.goal.plugin import GoalPlugin
 from xbotv2.api import ContextComponent, HookContext, HookStage, PluginManifest
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
+from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
 from xbotv2.core.mailbox import MailboxMessage
@@ -274,7 +277,7 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     item = MailboxMessage.create(
         "general",
@@ -299,11 +302,21 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
         "kind": "general",
         "source": "goal",
     }
-    assert runtime_event.find("payload").attrib["encoding"] == "text"
-    assert "not a human message" in runtime_input.content
+    payload = runtime_event.find("payload")
+    assert payload is not None
+    assert payload.attrib["encoding"] == "json"
+    assert json.loads(payload.text) == {
+        "objective": "finish the audit",
+        "status": "active",
+    }
+    assert runtime_event.find("instruction") is None
     assert "finish the audit" in runtime_input.content
     assert all(message.role != "user" for message in request[:-1])
-    assert all("finish the audit" not in message.content for message in engine.messages)
+    assert engine.messages[0].additional_kwargs["runtime_input"] == {
+        "kind": "general",
+        "source": "goal",
+        "event": "continue",
+    }
     records = [
         yaml.safe_load(line)
         for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
@@ -314,10 +327,9 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     )
     assert delivery["kind"] == "general"
     assert delivery["message"] == {"source": "goal", "event": "continue"}
-    assert all(
-        message.content != str(delivery["message"])
-        for message in state_store.read_messages()
-    )
+    restored = state_store.read_messages()
+    assert restored[0].content == runtime_input.content
+    assert restored[0].additional_kwargs["runtime_input"]["source"] == "goal"
 
 
 @pytest.mark.asyncio
@@ -360,11 +372,10 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
     state_store,
 ):
     plugins_root = tmp_path / "plugins"
-    plugin_dir = plugins_root / "goal"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text(
-        yaml.safe_dump({"name": "goal", "version": "1.0.0"}),
-        encoding="utf-8",
+    plugins_root.mkdir()
+    (plugins_root / "goal").symlink_to(
+        Path(__file__).parents[2] / "builtin_plugins" / "goal",
+        target_is_directory=True,
     )
     hooks = HookManager()
     registry = ToolRegistry()
@@ -423,7 +434,7 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=None,
+        config=RuntimeConfig(),
     )
     await engine.start_session()
 

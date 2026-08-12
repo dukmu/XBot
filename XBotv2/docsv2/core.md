@@ -84,8 +84,9 @@ example `shell`); non-core examples include `plugin:skills:skill`,
 `BubblewrapBackend` provides process isolation via `bwrap`.
 `SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
 `write_file`, `list_dir`. Tools call these directly via `sandbox` kwarg
-injection. Bwrap mounts enforce access control at OS level — no Python
-path extraction/checking.
+injection. Bwrap exposes the complete filesystem read-only, then overlays the
+workspace, `/tmp`, and configured writable resources. Filesystem Tools apply
+the separate path permission policy before entering that sandbox.
 
 ### Permissions (`tools/permissions.py`)
 
@@ -145,7 +146,8 @@ compatible ordering zones and do not describe wire positions or authority.
 Every synthetic section escapes its content and source metadata. The default
 prompt contains no clock or turn counter, so repeated model calls retain a
 deterministic provider prefix. Slash Skill expansion and runtime notifications
-use separate structured transient inputs. Runtime Tool results are stored as
+use separate structured inputs; delivered runtime inputs persist with explicit
+non-human metadata. Runtime Tool results are stored as
 `<tool_result>` content under their standard Tool role; both cache paths use
 `<cached_content>` with relative session paths. `_sanitize_history` removes
 orphaned tool messages before provider conversion. See

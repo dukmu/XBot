@@ -12,7 +12,6 @@ import os
 import signal
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,37 +43,10 @@ class BubblewrapBackend:
         if not bwrap:
             raise RuntimeError("Sandbox enabled but bubblewrap (bwrap) is not installed")
 
-        python_prefix = _active_python_prefix()
-        mounts = list(mount_specs)
-        if python_prefix is not None:
-            base_prefix = Path(sys.base_prefix).resolve()
-            python_mounts = (
-                (python_prefix,)
-                if (
-                    base_prefix == python_prefix
-                    or base_prefix.is_relative_to("/usr")
-                )
-                else (python_prefix, base_prefix)
-            )
-            mounts = [
-                mount for mount in mounts
-                if mount.target not in python_mounts
-            ]
-            mounts.extend(
-                SandboxMountSpec(
-                    source=prefix,
-                    target=prefix,
-                    access="readonly",
-                    kind="dir",
-                )
-                for prefix in python_mounts
-                if prefix.is_dir()
-            )
-
         return [
             bwrap,
             *_build_args(
-                mounts,
+                mount_specs,
                 self.network,
                 cwd or str(self.workspace_root),
             ),
@@ -167,15 +139,16 @@ def _build_args(
 ) -> list[str]:
     args = [
         "--die-with-parent",
-        "--unshare-user-try",
+        "--unshare-user",
         "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",
         "--unshare-cgroup",
         "--new-session",
-        "--proc", "/proc",
+        "--ro-bind", "/", "/",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
+        "--proc", "/proc",
+        "--bind", "/tmp", "/tmp",
     ]
     if network:
         # Share the host network namespace so DNS and TCP egress
@@ -188,107 +161,19 @@ def _build_args(
     else:
         args.append("--unshare-net")
 
-    args.extend(_system_mount_args())
-
-    mounted_targets = {mount.target for mount in mount_specs}
-    synthetic_parent_dirs: set[Path] = set()
-    for mount in mount_specs:
-        parent_args, parent_dirs = _parent_dirs(mount.target)
-        args.extend(parent_args)
-        synthetic_parent_dirs.update(parent_dirs)
+    mounts = sorted(mount_specs, key=lambda mount: len(mount.target.parts))
+    for mount in mounts:
+        if mount.target == Path("/") and mount.access == "readonly":
+            continue
         if mount.mask and mount.kind == "dir":
             args.extend(["--tmpfs", str(mount.target)])
             continue
         bind_flag = "--bind-try" if mount.access == "readwrite" else "--ro-bind-try"
         args.extend([bind_flag, str(mount.source), str(mount.target)])
 
-    for parent in sorted(synthetic_parent_dirs, key=lambda p: len(p.parts), reverse=True):
-        if _can_chmod(parent, mounted_targets):
-            args.extend(["--chmod", "0555", str(parent)])
-
     args.extend(["--chdir", cwd])
     return args
 
 
-def _system_mount_args() -> list[str]:
-    args: list[str] = []
-    usr = Path("/usr")
-    if usr.exists():
-        args.extend(["--ro-bind-try", str(usr), str(usr)])
-    for path_str in ["/bin", "/sbin", "/lib", "/lib64"]:
-        path = Path(path_str)
-        if path.is_symlink():
-            args.extend(["--symlink", os.readlink(path_str), path_str])
-        elif path.exists():
-            args.extend(["--ro-bind", path_str, path_str])
-    # DNS, name service switch, and TLS roots must be reachable
-    # inside the sandbox. Without these, ``curl example.com``
-    # fails with ``Could not resolve host`` even when
-    # ``--share-net`` is on. We bind individual files (not
-    # ``/etc``) so unrelated host config (e.g. ``/etc/passwd``)
-    # stays invisible to the sandbox.
-    for path_str in (
-        "/etc/resolv.conf",
-        "/etc/nsswitch.conf",
-        "/etc/hosts",
-        "/etc/host.conf",
-        "/etc/services",
-        "/etc/protocols",
-        "/etc/ssl/certs",
-        "/etc/ssl/openssl.cnf",
-    ):
-        path = Path(path_str)
-        if path.is_symlink():
-            real = os.path.realpath(path_str)
-            if os.path.exists(real):
-                # Follow the symlink to the real file and bind
-                # that at the expected path.  Without this, WSL
-                # symlinks like /etc/resolv.conf → /mnt/wsl/…
-                # stay dangling inside the sandbox.
-                args.extend(["--ro-bind-try", real, path_str])
-            else:
-                target = os.readlink(path_str)
-                args.extend(["--symlink", target, path_str])
-        elif path.exists():
-            args.extend(["--ro-bind-try", path_str, path_str])
-    return args
-
-
-def _parent_dirs(path: Path) -> tuple[list[str], list[Path]]:
-    args = []
-    dirs = []
-    current = Path("/")
-    for part in path.parts[1:-1]:
-        current = current / part
-        args.extend(["--dir", str(current)])
-        dirs.append(current)
-    return args, dirs
-
-
-def _can_chmod(path: Path, mounted_targets: set[Path]) -> bool:
-    if path in {Path("/"), Path("/tmp"), Path("/proc"), Path("/dev")}:
-        return False
-    if _is_under(path, Path("/tmp")):
-        return False
-    if any(path == target or _is_under(path, target) for target in mounted_targets):
-        return False
-    return True
-
-
-def _is_under(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
 def backend_available() -> bool:
     return shutil.which("bwrap") is not None
-
-
-def _active_python_prefix() -> Path | None:
-    prefix = Path(sys.prefix).resolve()
-    if sys.prefix == sys.base_prefix or not (prefix / "bin").is_dir():
-        return None
-    return prefix

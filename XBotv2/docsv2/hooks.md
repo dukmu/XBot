@@ -37,6 +37,10 @@ session lifecycle contexts use an empty value. Plugins register
 callbacks through `PluginSetupContext`; they do not receive the hook manager,
 tool registry, context builder, or engine implementation.
 
+`ctx.messages` is the current persisted conversation history. `POST_COMPACT`
+also exposes `previous_message_count` and `current_message_count`; Hook payloads
+do not use an untyped state dictionary.
+
 Engine-created contexts expose `invoke_model(messages)` for auxiliary work such
 as conversation summarization. It performs one unbound provider call and
 returns the public `ModelResponse`; it does not bind tools, recursively run

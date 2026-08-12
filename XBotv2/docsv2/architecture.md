@@ -85,6 +85,21 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
   `write_file`, `list_dir`.
 - **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
 
+### Job System (`xbotv2/api/jobs/`)
+
+Background shells and subagents share one unified job lifecycle. `JobRegistry`
+owns IDs, status transitions, waiting, cancellation, output storage, and
+cleanup for every kind; it is the only runtime entity for this subsystem.
+Kind-specific adapters implement a `JobRunner` and the typed, model-facing
+tools: the shell tools (`start_shell`, `list_shells`, `wait_shell`,
+`read_shell`, `cancel_shell`) live in `core/builtin_tools/shell.py`, and the
+subagent tools (`spawn_subagent`, `list_subagents`, `wait_subagent`,
+`read_subagent`, `cancel_subagent`) live in the `agents` plugin. The model never
+sees a generic `task`/`job` tool. List and wait responses carry only lightweight
+metadata; bulk output is read through the explicit `read_*` tools, each bounded
+by character limits. Child Engine sessions are spawned through the api
+`AgentRuntime`/`AgentSession` protocols, implemented in `core/agents.py`.
+
 ### Hooks (`xbotv2/hooks/`)
 
 43 `HookStage` values cover session, turn, mailbox, tool, context, and compaction
@@ -97,9 +112,11 @@ Buffers queued `user_message` and `general` inputs while a session is alive.
 Idle human input enters Engine directly; only submissions made behind an active
 turn or existing queue use the mailbox. A session worker turns one queued item
 at a time into an Engine turn, with user input ahead of runtime notifications.
+Engine may also accept one item after a complete ToolResult batch, immediately
+before the next provider call.
 Queue contents are destroyed on disconnect and are not restored. Deliveries
-that started are appended to the session message journal for reconstruction and
-analysis, but are never requeued on resume.
+that started and their accepted Messages are appended to the session journal
+for reconstruction and analysis, but are never requeued on resume.
 
 ### LLM Provider (`xbotv2/llm/`)
 

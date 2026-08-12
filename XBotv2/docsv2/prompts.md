@@ -8,7 +8,7 @@ roles already identify both source and semantics.
 
 ## System Context
 
-`ContextBuilder` emits one leading `<xbot_context version="1">` system message.
+`ContextBuilder` emits one leading `<xbot_context>` system message.
 Its sections have a fixed logical order:
 
 1. `core_instructions`: built into XBotv2 and present for every primary Agent
@@ -19,9 +19,10 @@ Its sections have a fixed logical order:
    `instructions` configuration.
 4. `agent_identity` and `agent_instructions`: the active `.agents/<name>.md`
    definition.
-5. `plugin_instruction`: startup-loaded workspace and plugin instructions.
-6. `memory`: advisory persistent context.
-7. `runtime_state`: small state that is included only when it exists.
+5. `workspace_instructions`: the dynamically loaded workspace `AGENTS.md`.
+6. `plugin_instruction`: other plugin-owned instructions.
+7. `memory`: advisory persistent context.
+8. `runtime_state`: small state that is included only when it exists.
 
 All section content and attributes are XML-escaped. A file or plugin fragment
 containing a closing tag therefore remains text and cannot create a higher
@@ -36,9 +37,9 @@ fragment is rendered as `plugin_instruction` with its owner and declared stage.
 
 Core, Agent, workspace, and startup plugin instructions form a deterministic
 prefix. Clocks and turn counters are excluded. Runtime mailbox notifications
-are transient `<runtime_event>` inputs and are not persisted as human history.
-An active Goal is injected only when its idle continuation is delivered, not on
-every provider call.
+are persisted `<runtime_event>` inputs with explicit non-human metadata. An
+active Goal schedules such an input only after a turn ends, not on every
+provider call or Tool result.
 
 Runtime paths are stable for the thread. The workspace is shown explicitly;
 cached artifacts use the read-only `session/artifacts/...` virtual namespace.
@@ -48,8 +49,9 @@ because Core has immutable runtime variables for them.
 Slash-invoked Skills use `<skill_invocation>` with separate
 `skill_instructions` and `user_arguments` children. Model-invoked Skills remain
 normal Tools. General Mailbox delivery uses `<runtime_event>` with explicit
-source, event, instruction, and encoded payload fields. Compact checkpoints use
-`<conversation_summary>` and preserve their structured marker across resume.
+source, event, and encoded payload fields. Compact checkpoints use
+`<historical_context source="compaction">` around `<conversation_summary>` and
+preserve their structured marker across resume.
 
 ## Tool Results
 
@@ -106,5 +108,5 @@ reconstructing provider blocks from display content.
 - Register durable plugin instructions during setup and identify their source.
 - Put external content in Tool results. If it must enter a synthetic prompt,
   render it with `prompt_element` so content and attributes are escaped.
-- Do not persist runtime events as human messages.
+- Persist delivered runtime events as source-labelled, non-human messages.
 - Do not add dynamic values to the stable context without a demonstrated need.

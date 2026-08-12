@@ -2,47 +2,53 @@ import asyncio
 
 import pytest
 
-from xbotv2.core.background_tasks import BackgroundTaskManager
-from xbotv2.core.builtin_tools.shell import run_shell_command
+from xbotv2.api.jobs import JobKind, JobRegistry, JobResult
+from xbotv2.api.tools import ToolCall
+from xbotv2.core.builtin_tools.shell import SHELL_TOOLS, run_shell_command
+from xbotv2.tools.permissions import PermissionSystem
+from xbotv2.tools.registry import ToolRegistry
+from xbotv2.tools.runtime import execute_tools
 from xbotv2.tools.sandbox import SandboxPolicy
 
 
+def make_tools(temp_workspace, *, sandbox=None):
+    registry = JobRegistry()
+    tools = {tool.name: tool for tool in SHELL_TOOLS}
+    return registry, tools
+
+
+def invoke(tools, name, args, registry, sandbox=None):
+    return tools[name].ainvoke(
+        args, job_registry=registry, sandbox=sandbox, sandbox_policy=sandbox
+    )
+
+
 @pytest.mark.asyncio
-async def test_background_task_lifecycle_and_full_result(temp_workspace, monkeypatch):
+async def test_background_shell_lifecycle_and_read(temp_workspace, monkeypatch):
     async def run(*args, **kwargs):
         return "background-output"
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
-    updates = []
-    completions = []
-    manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    registry, tools = make_tools(temp_workspace)
+    assert set(tools) == {
+        "shell", "start_shell", "list_shells",
+        "wait_shell", "read_shell", "cancel_shell",
+    }
+    assert "background" not in tools["shell"].parameters["properties"]
 
-    async def record_update(task):
-        updates.append(dict(task))
-
-    async def record_completion(task):
-        completions.append(dict(task))
-
-    manager.on_update = record_update
-    manager.on_complete = record_completion
-
-    tools = {tool.name: tool for tool in manager.tools}
-    assert set(tools) == {"shell", "list_tasks", "stop_task"}
-    background = tools["shell"].parameters["properties"]["background"]
-    assert background == {"type": "boolean"}
-
-    started = await manager.shell(
-        "printf background-output", background=True
+    started = await invoke(
+        tools, "start_shell", {"command": "printf background-output"}, registry
     )
-    task_id = started.data["task_id"]
-    await manager._tasks[task_id].runner
-
-    result = await manager.list_tasks(task_id)
-    assert [item["status"] for item in updates] == [
-        "pending", "running", "completed",
-    ]
-    assert completions[0]["status"] == "completed"
-    assert result.data["output"] == "background-output"
+    job_id = started.data["id"]
+    waited = await invoke(tools, "wait_shell", {"ids": [job_id]}, registry)
+    assert waited.data["ready"][0]["status"] == "completed"
+    assert waited.data["pending"] == []
+    assert waited.data["timed_out"] is False
+    read = await invoke(tools, "read_shell", {"id": job_id}, registry)
+    assert read.data["content"] == "background-output"
+    assert read.data["eof"] is True
+    listed = await invoke(tools, "list_shells", {}, registry)
+    assert [item["id"] for item in listed.data["shells"]] == [job_id]
 
 
 @pytest.mark.asyncio
@@ -50,19 +56,56 @@ async def test_foreground_shell_defaults_to_workspace_when_sandbox_is_disabled(
     temp_workspace,
 ):
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
-    manager = BackgroundTaskManager(
-        workspace_root=str(temp_workspace),
+    registry, tools = make_tools(temp_workspace, sandbox=sandbox)
+
+    result = await invoke(
+        tools, "shell", {"command": "pwd", "cwd": str(temp_workspace)}, registry,
         sandbox=sandbox,
     )
-
-    result = await manager.shell("pwd")
 
     assert result.status == "success"
     assert result.content.strip() == str(temp_workspace)
 
 
 @pytest.mark.asyncio
-async def test_task_events_bound_output_but_result_keeps_cacheable_content(
+async def test_escalated_shell_bypasses_sandbox_in_both_modes(
+    temp_workspace,
+    monkeypatch,
+):
+    sandboxes = []
+
+    async def run(*args, sandbox=None, **kwargs):
+        sandboxes.append(sandbox)
+        return "output"
+
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    registry, tools = make_tools(temp_workspace, sandbox=object())
+
+    foreground = await invoke(
+        tools, "shell",
+        {"command": "install dependency",
+         "sandbox_permissions": "require_escalated",
+         "justification": "Install a required dependency."},
+        registry,
+        sandbox=object(),
+    )
+    background = await invoke(
+        tools, "start_shell",
+        {"command": "install dependency",
+         "sandbox_permissions": "require_escalated",
+         "justification": "Install a required dependency."},
+        registry,
+        sandbox=object(),
+    )
+    await invoke(tools, "wait_shell", {"ids": [background.data["id"]]}, registry)
+
+    assert foreground.status == "success"
+    assert foreground.content == "output"
+    assert sandboxes == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_bounds_output_but_read_keeps_full_content(
     temp_workspace, monkeypatch
 ):
     full_output = "x" * 13_000
@@ -70,75 +113,162 @@ async def test_task_events_bound_output_but_result_keeps_cacheable_content(
     async def run(*args, **kwargs):
         return full_output
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
-    manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
-    updates = []
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    registry, tools = make_tools(temp_workspace)
+    started = await invoke(
+        tools, "start_shell", {"command": "generate output"}, registry
+    )
+    job = registry.get(started.data["id"])
+    await job.runner_task
+    await registry.wait([job.id])
 
-    async def record_update(task):
-        updates.append(task)
-
-    manager.on_update = record_update
-    started = await manager.start_task("generate output")
-    await manager._tasks[started.data["task_id"]].runner
-
-    result = await manager.list_tasks(started.data["task_id"])
-
-    assert len(updates[-1]["output"]) < 2_100
-    assert len(result.data["output"]) < 2_100
-    assert full_output in result.content
+    assert len(registry.snapshot(job)["output"]) < 2_100
+    read = await invoke(
+        tools, "read_shell", {"id": job.id, "max_bytes": 20_000}, registry
+    )
+    assert read.data["content"] == full_output
 
 
 @pytest.mark.asyncio
-async def test_stop_task_cancels_process_and_reports_stopped(
-    temp_workspace, monkeypatch
-):
+async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
-    running = asyncio.Event()
-    manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
-
-    async def record_update(task):
-        if task["status"] == "running":
-            running.set()
-
-    manager.on_update = record_update
-    started = await manager.start_task("sleep 30")
-    await asyncio.wait_for(running.wait(), timeout=1)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    registry, tools = make_tools(temp_workspace)
+    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
+    job = registry.get(started.data["id"])
+    while job.status.value != "running":
+        await asyncio.sleep(0)
 
     result = await asyncio.wait_for(
-        manager.stop_task(started.data["task_id"]), timeout=1
+        invoke(tools, "cancel_shell", {"id": job.id}, registry), timeout=1
     )
 
     assert result.status == "success"
-    assert result.data["status"] == "stopped"
-    assert manager._tasks[started.data["task_id"]].runner.done()
+    assert job.status.value == "cancelled"
+    assert job.runner_task.done()
 
 
 @pytest.mark.asyncio
-async def test_close_stops_tasks_without_completion_delivery(
+async def test_shutdown_stops_jobs_without_completion_delivery(
     temp_workspace, monkeypatch
 ):
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.background_tasks.run_shell_command", run)
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
     completions = []
-    manager = BackgroundTaskManager(workspace_root=str(temp_workspace))
+    registry, tools = make_tools(temp_workspace)
 
     async def record_completion(task):
         completions.append(task)
 
-    manager.on_complete = record_completion
-    started = await manager.start_task("sleep 30")
+    registry.on_complete = record_completion
+    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
     await asyncio.sleep(0)
 
-    await asyncio.wait_for(manager.close(), timeout=1)
+    await asyncio.wait_for(registry.shutdown(), timeout=1)
 
-    assert started.data["task_id"] in manager._tasks
-    assert manager._tasks[started.data["task_id"]].status == "stopped"
+    assert registry.get_or_none(started.data["id"]) is None
     assert completions == []
+
+
+@pytest.mark.asyncio
+async def test_wait_shell_returns_exit_code_for_completed_job(
+    temp_workspace, monkeypatch
+):
+    async def run(*args, **kwargs):
+        return "ok"
+
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    registry, tools = make_tools(temp_workspace)
+    started = await invoke(tools, "start_shell", {"command": "true"}, registry)
+    waited = await invoke(tools, "wait_shell", {"ids": [started.data["id"]]}, registry)
+    assert waited.data["ready"][0]["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_escalated_background_shell_requires_approval(
+    temp_workspace, monkeypatch
+):
+    async def run(*args, **kwargs):
+        return "ran"
+
+    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    sandbox = SandboxPolicy(
+        {"enabled": True, "external_write": "ask"},
+        workspace_root=str(temp_workspace),
+    )
+    registry = ToolRegistry()
+    registry.register(
+        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
+        sandbox_mode="sandboxed",
+    )
+    job_registry = JobRegistry()
+    events = []
+
+    async def approve(event, **kwargs):
+        events.append(event)
+        return {"status": "answered", "decision": "allow", "scope": "once"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "start_shell", {
+            "command": "pwd",
+            "sandbox_permissions": "require_escalated",
+            "justification": "Need host access.",
+        })],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=approve,
+        job_registry=job_registry,
+    )
+
+    assert results[0].status == "success"
+    assert events and events[0]["data"]["source"] == "sandbox"
+    assert "Need host access." in events[0]["data"]["reason"]
+    job = job_registry.get("sh_1")
+    assert job.metadata["escalated"] is True
+    await job.runner_task
+    assert job.status.value == "completed"
+
+
+@pytest.mark.asyncio
+async def test_denied_background_shell_escalation_creates_no_job(
+    temp_workspace,
+):
+    sandbox = SandboxPolicy(
+        {"enabled": True, "external_write": "ask"},
+        workspace_root=str(temp_workspace),
+    )
+    registry = ToolRegistry()
+    registry.register(
+        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
+        sandbox_mode="sandboxed",
+    )
+    job_registry = JobRegistry()
+
+    async def deny(event, **kwargs):
+        del event, kwargs
+        return {"status": "answered", "decision": "deny"}
+
+    results = await execute_tools(
+        [ToolCall("c1", "start_shell", {
+            "command": "pwd",
+            "sandbox_permissions": "require_escalated",
+            "justification": "Need host access.",
+        })],
+        registry,
+        sandbox_policy=sandbox,
+        permission_system=PermissionSystem(default_decision="allow"),
+        permission_interaction_handler=deny,
+        job_registry=job_registry,
+    )
+
+    assert results[0].status == "error"
+    assert "denied" in results[0].content
+    assert job_registry.all() == []
 
 
 @pytest.mark.asyncio
@@ -185,7 +315,9 @@ async def test_host_shell_cancellation_reaps_process_group(
 
 
 @pytest.mark.asyncio
-async def test_host_shell_returns_complete_output_for_common_cache(temp_workspace, monkeypatch):
+async def test_host_shell_returns_complete_output_for_common_cache(
+    temp_workspace, monkeypatch
+):
     class Process:
         pid = 123
         returncode = 0

@@ -24,6 +24,10 @@ type-only import inside XBotv2 itself.
 | `AgentDefinition` | dataclass | Plugin-registered primary or subagent definition. |
 | `AgentMode` | type alias | Supported primary/subagent visibility modes. |
 | `AgentRuntime` | protocol | Core subagent execution capability exposed to Agent plugins. |
+| `AgentSession` | protocol | One spawned child session exposed to Agent plugins. |
+| `AgentSessionResult` | dataclass | Outcome of one completed child agent session. |
+| `CancelResult` | dataclass | Idempotent outcome of cancelling one job. |
+| `ChildEngineFactory` | type alias | Callable creating a child Engine for a subagent session. |
 | `ClientEvent` | dataclass | Client-facing event emitted by tools. |
 | `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
 | `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
@@ -37,9 +41,24 @@ type-only import inside XBotv2 itself.
 | `ImageContent` | dataclass | Session-relative image artifact metadata. |
 | `ImagePart` | dataclass | Image entry in ordered message content. |
 | `InputModality` | type alias | Provider input modality name. |
+| `Job` | dataclass | One tracked workload in a JobRegistry. |
+| `JobContext` | class | Capabilities a JobRunner uses while executing one job. |
+| `JobError` | dataclass | Structured, model-safe error attached to a failed job. |
+| `JobId` | type alias | Stable job identifier string. |
+| `JobKind` | enum | Supported job kinds (subagent, shell). |
+| `JobNotFound` | exception | Raised when a job id is unknown to a JobRegistry. |
+| `JobRegistry` | class | Kind-agnostic lifecycle store for all jobs owned by an engine. |
+| `JobRegistryClosed` | exception | Raised when a job is created on a shutting-down registry. |
+| `JobResult` | dataclass | Workload-specific completion payload with bounded summary. |
+| `JobRunner` | protocol | Adapts one workload kind to the unified job lifecycle. |
+| `JobStatus` | enum | Unified pending/running/completed/failed/cancelled states. |
+| `JobSummary` | dataclass | Lightweight model-facing view of one job. |
 | `Message` | dataclass | Provider-neutral conversation message. |
+| `MESSAGE_FORMAT_KEY` | constant | Additional-message metadata key marking structured model content. |
 | `ModelChunk` | dataclass | Provider-neutral streaming model chunk. |
 | `ModelResponse` | dataclass | Provider-neutral model response. |
+| `OutputChunk` | dataclass | Bounded cursor-based output read from a job store. |
+| `OutputStore` | protocol | Cursor-based readable job output buffer. |
 | `PluginBase` | class | Plugin lifecycle base class. |
 | `PluginConfigError` | exception | Plugin configuration validation failure with plugin name and path. |
 | `PluginSetupContext` | protocol | Setup-time registration capabilities. |
@@ -61,6 +80,11 @@ type-only import inside XBotv2 itself.
 | `SessionPaths` | dataclass | Per-session filesystem layout. |
 | `ThreadPaths` | dataclass | Per-thread mutable state layout within a session. |
 | `TextPart` | dataclass | Text entry in ordered message content. |
+| `StreamOutputStore` | class | Growing stdout/stderr buffer with byte-cursor reads. |
+| `SubagentAgentError` | exception | Invalid subagent spawn request error code. |
+| `SubagentTurnError` | exception | Child turn failed without a usable response error code. |
+| `TERMINAL_STATES` | frozenset | Completed, failed, and cancelled job states. |
+| `TextOutputStore` | class | In-memory text buffer addressed by character cursor. |
 | `ToolCall` | dataclass | Parsed tool call request. |
 | `ToolCallDelta` | dataclass | Streaming tool call fragment. |
 | `ToolCallPart` | dataclass | Tool-call entry in ordered message content. |
@@ -68,6 +92,7 @@ type-only import inside XBotv2 itself.
 | `ToolResult` | dataclass | Tool output, error, artifacts, and events. |
 | `Tool` | dataclass | Tool definition and invocation wrapper. |
 | `ToolRegistrationOptions` | dataclass | Setup-time plugin tool registration options. |
+| `WaitResult` | dataclass | Lightweight result of waiting on one or more jobs. |
 
 `PluginBase.on_load` and `PluginBase.on_unload` have safe no-op defaults.
 `PluginBase.status_slots()` may return compact `dict[str, str]` display values;
@@ -75,6 +100,8 @@ the default is empty and failures do not break session execution.
 `HookContext.request_id` carries the current message/turn correlation id for
 turn-scoped hooks, including error and persistence hooks. Session lifecycle
 hooks use an empty value because they are not owned by one message request.
+`HookContext.messages` carries the current persisted history. `POST_COMPACT`
+also provides explicit before/after message counts.
 Engine-created contexts also expose `invoke_model(messages)` for one unbound
 auxiliary provider call. It returns `ModelResponse` without recursively running
 model Hooks or exposing the provider implementation.
@@ -105,7 +132,8 @@ add or replace built-in values. Markdown prompt fragments use fenced `var`
 blocks through `RuntimeVariables.expand_markdown`; ordinary Markdown references
 remain untouched.
 Tool registrations may set a positive `timeout_seconds`; the dispatcher applies
-it through the normal Tool execution path instead of special-casing long tools.
+it through the normal Tool execution path. `None` leaves the Tool without a
+dispatcher deadline, while turn cancellation still cancels the Tool.
 Duplicate canonical names or provider-visible tool names are rejected before
 registry mutation.
 Entered `on_load` callbacks receive best-effort `on_unload` after failure, and
@@ -132,10 +160,9 @@ the richer in-process representation.
 
 ## Current Gaps To Improve
 
-- `HookContext` still carries broad mutable fields. Improve it by documenting
-  stage-specific payloads and reusing existing public types. Add a new public
-  type only when multiple independent consumers share a gap that existing
-  fields cannot express.
+- Some `HookContext` stage fields remain broadly typed. Narrow them when the
+  producer and independent consumers share one stable public representation;
+  do not add wrapper payload types for plugin-local data.
 - Every current `ServerEvent.data` family has a typed DTO. New event types must
   add producer/consumer tests and join `TYPED_SERVER_EVENT_TYPES` deliberately.
 - Server-owned error codes are documented and stable in shape; Hook-provided

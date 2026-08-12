@@ -1,4 +1,8 @@
-"""Blocking subagent execution tests."""
+"""Subagent job execution tests.
+
+Subagents run as SUBAGENT jobs in the shared JobRegistry; the agents plugin
+owns the SubagentRunner, and core only provides the AgentRuntime spawn hook.
+"""
 
 import asyncio
 import json
@@ -6,22 +10,63 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.api import AgentDefinition, RuntimePaths
-from xbotv2.core.agents import AgentRegistry
+from xbotv2.api import AgentDefinition, JobKind, JobRegistry, RuntimePaths
+from xbotv2.api.messages import ModelChunk
+from xbotv2.core.agents import AgentRegistry, EngineAgentRuntime
 from xbotv2.core.bootstrap import bootstrap
-from xbotv2.core.subagents import SubagentManager
 from xbotv2.core.session import SessionRuntime
 from xbotv2.llm.mock import MockLLM
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
 
+from builtin_plugins.agents.plugin import SubagentRunner
+
+
+class RoutingLLM(MockLLM):
+    """Routes responses by the child's system prompt so parent and child turns
+    are deterministic even though the child runs asynchronously."""
+
+    def __init__(self, *, child_marker, parents, children):
+        super().__init__([])
+        self._child_marker = child_marker
+        self._parents = list(parents)
+        self._children = list(children)
+        self._pi = 0
+        self._ci = 0
+
+    async def _astream_once(self, messages, **_kwargs):
+        system = "\n".join(
+            str(message.content) for message in messages if message.role == "system"
+        )
+        if self._child_marker in system:
+            if self._ci >= len(self._children):
+                raise RuntimeError("child responses exhausted")
+            response = self._children[self._ci]
+            self._ci += 1
+        else:
+            if self._pi >= len(self._parents):
+                raise RuntimeError("parent responses exhausted")
+            response = self._parents[self._pi]
+            self._pi += 1
+        result = self.to_response(response)
+        self.call_history.append(list(messages))
+        yield ModelChunk(
+            content=result.content,
+            reasoning=result.reasoning,
+            tool_calls=result.tool_calls,
+            response_metadata=result.response_metadata,
+            usage_metadata=result.usage_metadata,
+            additional_kwargs=result.additional_kwargs,
+        )
+        yield result
+
 
 @pytest.mark.asyncio
-async def test_blocking_task_runs_child_thread_and_returns_to_parent(
+async def test_subagent_flow_runs_child_and_returns_to_parent(
     temp_data_dir, temp_workspace
 ):
     (temp_data_dir / "config" / "config.yaml").write_text(
-        "permissions:\n  allow:\n    - tool: task\n",
+        "permissions:\n  allow:\n    - tool: spawn_subagent\n    - tool: wait_subagent\n    - tool: read_subagent\n",
         encoding="utf-8",
     )
     agents_dir = temp_workspace / ".agents"
@@ -35,18 +80,37 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
         "Act as the workspace reviewer.",
         encoding="utf-8",
     )
-    llm = MockLLM(responses=[
-        {
-            "content": "Delegating review",
-            "tool_calls": [{
-                "name": "task",
-                "args": {"agent": "reviewer", "prompt": "Review change A"},
-                "id": "call_task",
-            }],
-        },
-        {"content": "Child review result"},
-        {"content": "Parent summary"},
-    ])
+    llm = RoutingLLM(
+        child_marker="Act as the workspace reviewer",
+        parents=[
+            {
+                "content": "Delegating review",
+                "tool_calls": [{
+                    "name": "spawn_subagent",
+                    "args": {"agent": "reviewer", "prompt": "Review change A"},
+                    "id": "call_spawn",
+                }],
+            },
+            {
+                "content": "Waiting",
+                "tool_calls": [{
+                    "name": "wait_subagent",
+                    "args": {"ids": ["sa_1"]},
+                    "id": "call_wait",
+                }],
+            },
+            {
+                "content": "Reading",
+                "tool_calls": [{
+                    "name": "read_subagent",
+                    "args": {"id": "sa_1"},
+                    "id": "call_read",
+                }],
+            },
+            {"content": "Parent summary"},
+        ],
+        children=[{"content": "Child review result"}],
+    )
     engine = await bootstrap(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="parent-session",
@@ -59,11 +123,13 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     events = [event async for event in engine.run_turn("Review this change")]
 
     assert events[-1]["type"] == "turn_finished"
-    assert any(
-        event["type"] == "tool_result"
-        and event["data"]["content"] == "Child review result"
-        for event in events
-    )
+    read_results = [
+        event for event in events
+        if event["type"] == "tool_result"
+        and event["data"]["name"] == "read_subagent"
+    ]
+    assert read_results
+    assert read_results[0]["data"]["content"] == "Child review result"
     assert any(
         event["type"] == "assistant_message"
         and event["data"]["content"] == "Parent summary"
@@ -71,9 +137,6 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     )
     assert "reviewer: Review a focused change" in "\n".join(
         str(message.content) for message in llm.get_call_messages(0)
-    )
-    assert "Act as the workspace reviewer." in "\n".join(
-        str(message.content) for message in llm.get_call_messages(1)
     )
     assert all(
         str(messages[0].content).count("<core_instructions>") == 1
@@ -97,14 +160,18 @@ async def test_blocking_task_runs_child_thread_and_returns_to_parent(
     assert "Review change A" in child_messages
     assert "Child review result" in child_messages
     assert engine.state_store.thread_id == "agent"
+    await engine.close_session()
 
 
 @pytest.mark.asyncio
-async def test_blocking_subagent_can_ask_user_through_parent_session(
+async def test_subagent_can_ask_user_through_parent_session(
     temp_data_dir, temp_workspace
 ):
     (temp_data_dir / "config" / "config.yaml").write_text(
-        "permissions:\n  allow:\n    - tool: task\n    - tool: ask_user\n",
+        "permissions:\n  allow:\n"
+        "    - tool: spawn_subagent\n"
+        "    - tool: wait_subagent\n"
+        "    - tool: ask_user\n",
         encoding="utf-8",
     )
     agents_dir = temp_workspace / ".agents"
@@ -118,32 +185,45 @@ async def test_blocking_subagent_can_ask_user_through_parent_session(
         "Ask for the missing detail before answering.",
         encoding="utf-8",
     )
-    llm = MockLLM(responses=[
-        {
-            "content": "Delegating",
-            "tool_calls": [{
-                "name": "task",
-                "args": {"agent": "interviewer", "prompt": "Clarify the target"},
-                "id": "call_task",
-            }],
-        },
-        {
-            "content": "Need input",
-            "tool_calls": [{
-                "name": "ask_user",
-                "args": {
-                    "question": "Which target?",
-                    "options": [
-                        {"label": "A", "description": "Use target A"},
-                        {"label": "B", "description": "Use target B"},
-                    ],
-                },
-                "id": "call_ask",
-            }],
-        },
-        {"content": "The target is A"},
-        {"content": "Parent received the clarification"},
-    ])
+    llm = RoutingLLM(
+        child_marker="Ask for the missing detail",
+        parents=[
+            {
+                "content": "Delegating",
+                "tool_calls": [{
+                    "name": "spawn_subagent",
+                    "args": {"agent": "interviewer", "prompt": "Clarify the target"},
+                    "id": "call_spawn",
+                }],
+            },
+            {
+                "content": "Waiting",
+                "tool_calls": [{
+                    "name": "wait_subagent",
+                    "args": {"ids": ["sa_1"]},
+                    "id": "call_wait",
+                }],
+            },
+            {"content": "Parent received the clarification"},
+        ],
+        children=[
+            {
+                "content": "Need input",
+                "tool_calls": [{
+                    "name": "ask_user",
+                    "args": {
+                        "question": "Which target?",
+                        "options": [
+                            {"label": "A", "description": "Use target A"},
+                            {"label": "B", "description": "Use target B"},
+                        ],
+                    },
+                    "id": "call_ask",
+                }],
+            },
+            {"content": "The target is A"},
+        ],
+    )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
     engine = await bootstrap(
         paths=paths,
@@ -182,11 +262,13 @@ async def test_blocking_subagent_can_ask_user_through_parent_session(
 
 
 @pytest.mark.asyncio
-async def test_blocking_subagent_can_request_permission_through_parent_session(
+async def test_subagent_can_request_permission_through_parent_session(
     temp_data_dir, temp_workspace
 ):
     (temp_data_dir / "config" / "config.yaml").write_text(
-        "permissions:\n  allow:\n    - tool: task\n"
+        "permissions:\n  allow:\n"
+        "    - tool: spawn_subagent\n"
+        "    - tool: wait_subagent\n"
         "  ask:\n    - tool: filesystem_read\n",
         encoding="utf-8",
     )
@@ -202,26 +284,39 @@ async def test_blocking_subagent_can_request_permission_through_parent_session(
         "Read only the requested file.",
         encoding="utf-8",
     )
-    llm = MockLLM(responses=[
-        {
-            "content": "Delegating",
-            "tool_calls": [{
-                "name": "task",
-                "args": {"agent": "reader", "prompt": "Read target.txt"},
-                "id": "call_task",
-            }],
-        },
-        {
-            "content": "Reading",
-            "tool_calls": [{
-                "name": "filesystem_read",
-                "args": {"path": "target.txt"},
-                "id": "call_read",
-            }],
-        },
-        {"content": "The file contains target content"},
-        {"content": "Parent received the file result"},
-    ])
+    llm = RoutingLLM(
+        child_marker="Read only the requested file",
+        parents=[
+            {
+                "content": "Delegating",
+                "tool_calls": [{
+                    "name": "spawn_subagent",
+                    "args": {"agent": "reader", "prompt": "Read target.txt"},
+                    "id": "call_spawn",
+                }],
+            },
+            {
+                "content": "Waiting",
+                "tool_calls": [{
+                    "name": "wait_subagent",
+                    "args": {"ids": ["sa_1"]},
+                    "id": "call_wait",
+                }],
+            },
+            {"content": "Parent received the file result"},
+        ],
+        children=[
+            {
+                "content": "Reading",
+                "tool_calls": [{
+                    "name": "filesystem_read",
+                    "args": {"path": "target.txt"},
+                    "id": "call_read",
+                }],
+            },
+            {"content": "The file contains target content"},
+        ],
+    )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
     engine = await bootstrap(
         paths=paths,
@@ -423,8 +518,8 @@ async def test_subagent_runtime_does_not_load_agents_plugin(
     )
 
     assert engine.plugin_loader.get_command("agent") is None
-    assert engine.tool_registry.get_registered("task") is None
-    assert engine.tool_registry.get_registered("list_agent_tasks") is None
+    assert engine.tool_registry.get_registered("spawn_subagent") is None
+    assert engine.tool_registry.get_registered("wait_subagent") is None
     await engine.close_session()
 
 
@@ -471,8 +566,17 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
     assert not paths.session("invalid-definition").root.exists()
 
 
+def _make_runtime(tmp_path, *, registry, factory):
+    return EngineAgentRuntime(
+        registry=registry,
+        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
+        parent_thread_id="agent",
+        engine_factory=factory,
+    )
+
+
 @pytest.mark.asyncio
-async def test_subagent_manager_rejects_unknown_and_primary_agents(tmp_path):
+async def test_agent_runtime_rejects_unknown_and_primary_agents(tmp_path):
     registry = AgentRegistry()
     registry.register(
         AgentDefinition(name="primary", description="Primary", mode="primary"),
@@ -482,54 +586,14 @@ async def test_subagent_manager_rejects_unknown_and_primary_agents(tmp_path):
     async def unused_factory(*_args):
         raise AssertionError("factory must not run")
 
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        parent_thread_id="agent",
-        engine_factory=unused_factory,
-    )
+    runtime = _make_runtime(tmp_path, registry=registry, factory=unused_factory)
 
-    assert (await manager.run("missing", "work")).error.code == "agent_not_found"
-    assert (await manager.run("primary", "work")).error.code == "agent_not_found"
-
-
-@pytest.mark.asyncio
-async def test_background_subagent_requires_live_mailbox(tmp_path):
-    registry = AgentRegistry()
-    registry.register(
-        AgentDefinition(name="worker", description="Do focused work"),
-        owner="test",
-    )
-
-    async def unused_factory(*_args):
-        raise AssertionError("factory must not run")
-
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        parent_thread_id="agent",
-        engine_factory=unused_factory,
-    )
-
-    result = await manager.run("worker", "work", background=True)
-
-    assert result.error.code == "background_unavailable"
-
-
-def test_child_permissions_cannot_expand_parent_policy():
-    parent = PermissionSystem({"ask": [{"tool": "shell"}]}, default_decision="allow")
-    child = PermissionSystem({"allow": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
-
-    assert permissions.check("shell", {"command": "pwd"}) == "ask"
-
-
-def test_child_permissions_can_restrict_parent_policy():
-    parent = PermissionSystem({"allow": [{"tool": "shell"}]})
-    child = PermissionSystem({"deny": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
-
-    assert permissions.check("shell", {"command": "pwd"}) == "deny"
+    with pytest.raises(Exception) as missing:
+        await runtime.spawn("missing", "work")
+    assert getattr(missing.value, "code", "") == "agent_not_found"
+    with pytest.raises(Exception) as primary:
+        await runtime.spawn("primary", "work")
+    assert getattr(primary.value, "code", "") == "agent_not_found"
 
 
 class _ChildEngine:
@@ -559,45 +623,43 @@ class _ChildEngine:
 
 @pytest.mark.asyncio
 async def test_background_subagent_returns_immediately_and_completes(tmp_path):
-    registry = AgentRegistry()
+    agent_registry = AgentRegistry()
     definition = AgentDefinition(name="worker", description="Do focused work")
-    registry.register(definition, owner="test")
+    agent_registry.register(definition, owner="test")
     release = asyncio.Event()
     child = _ChildEngine(wait=release)
-    background_mode = None
 
     async def factory(_definition, _thread_id, background):
-        nonlocal background_mode
-        background_mode = background
+        del background
         return child
 
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        parent_thread_id="agent",
-        engine_factory=factory,
+    runtime = _make_runtime(
+        tmp_path, registry=agent_registry, factory=factory
     )
-    completed = asyncio.Event()
-    manager.on_complete = lambda _task: _set_event(completed)
+    job_registry = JobRegistry()
+    job = await job_registry.create(
+        kind=JobKind.SUBAGENT, metadata={"agent": "worker"}
+    )
+    job_registry.start(
+        job.id,
+        SubagentRunner(runtime=runtime, agent="worker", prompt="Do work"),
+    )
 
-    started = await manager.run("worker", "Do work", background=True)
-
-    assert started.status == "success"
-    assert started.data["status"] == "pending"
+    assert job.status.value in {"pending", "running"}
     release.set()
-    await asyncio.wait_for(completed.wait(), timeout=1)
-    task = manager.snapshots()[0]
-    assert task["status"] == "completed"
-    assert task["output"] == "background result"
-    assert task["usage"] == {"total_tokens": 12}
+    await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
+
+    assert job.status.value == "completed"
+    assert job.result.data["usage"] == {"total_tokens": 12}
+    store = job.result.output_store
+    assert (await store.read(max_bytes=100_000)).data == "background result"
     assert child.closed is True
-    assert background_mode is True
 
 
 @pytest.mark.asyncio
 async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
-    registry = AgentRegistry()
-    registry.register(
+    agent_registry = AgentRegistry()
+    agent_registry.register(
         AgentDefinition(name="worker", description="Do focused work"),
         owner="test",
     )
@@ -612,19 +674,17 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         workspace_root=str(tmp_path),
         provider="default",
     )
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=paths.session("s"),
-        parent_thread_id="agent",
-        engine_factory=factory,
+    job_registry = JobRegistry()
+    runtime_impl = _make_runtime(
+        tmp_path, registry=agent_registry, factory=factory
     )
 
     class ParentEngine:
-        background_tasks = None
-        subagents = manager
+        plugin_loader = None
         enqueue_mailbox = None
 
     parent_engine = ParentEngine()
+    parent_engine.job_registry = job_registry
     parent_engine.state_store = state_store
 
     runtime = SessionRuntime(
@@ -637,38 +697,54 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         engine=parent_engine,
     )
 
-    await manager.run("worker", "Do work", background=True)
+    job = await job_registry.create(
+        kind=JobKind.SUBAGENT, metadata={"agent": "worker"}
+    )
+    job_registry.start(
+        job.id,
+        SubagentRunner(runtime=runtime_impl, agent="worker", prompt="Do work"),
+    )
     for _ in range(20):
-        if manager.snapshots()[0]["status"] == "completed":
+        if job.status.value == "completed":
             break
         await asyncio.sleep(0)
 
-    assert runtime.mailbox.size == 1
-    item = await runtime.mailbox.get()
-    assert item.kind == "general"
-    assert item.message["source"] == "subagent"
-    assert item.message["data"]["output"] == "background result"
-
+    # Hold the turn lock so completions aggregate instead of draining.
+    await runtime.turn_lock.acquire()
     await runtime._enqueue_subagent_completion({
-        "task_id": "agent-task-long",
+        "task_id": "sa_1",
+        "status": "completed",
+        "agent": "worker",
+        "output": "background result",
+    })
+    await runtime._enqueue_subagent_completion({
+        "task_id": "sa_2",
         "status": "completed",
         "agent": "worker",
         "output": "x" * 13_000,
     })
-    long_item = await runtime.mailbox.get()
-    bounded = long_item.message["data"]["output"]
-    cached = ET.fromstring(bounded)
+    assert runtime.mailbox.size == 0
+    by_task = {n["task_id"]: n for n in runtime._pending_notices}
+    assert "sa_1" in by_task
+    short_notice = by_task["sa_1"]
+    assert short_notice["kind"] == "subagent"
+    assert short_notice["data"]["output"] == "background result"
+    long_notice = by_task["sa_2"]
+    output = long_notice["data"]["output"]
+    cached = ET.fromstring(output)
     assert cached.attrib["kind"] == "subagent_output"
     assert cached.findtext("cache_path").strip().startswith(
         "session/artifacts/context/"
     )
     assert list((state_store.artifacts_dir / "context").glob("*.txt"))
+    runtime.turn_lock.release()
+    await runtime.close()
 
 
 @pytest.mark.asyncio
 async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
-    registry = AgentRegistry()
-    registry.register(
+    agent_registry = AgentRegistry()
+    agent_registry.register(
         AgentDefinition(name="worker", description="Do focused work"),
         owner="test",
     )
@@ -677,26 +753,40 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
     async def factory(*_args):
         return child
 
-    manager = SubagentManager(
-        registry=registry,
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        parent_thread_id="agent",
-        engine_factory=factory,
+    runtime = _make_runtime(
+        tmp_path, registry=agent_registry, factory=factory
     )
-    manager.on_complete = lambda _task: _set_event(asyncio.Event())
-    started = await manager.run("worker", "Wait", background=True)
-    task_id = started.data["task_id"]
+    job_registry = JobRegistry()
+    job = await job_registry.create(
+        kind=JobKind.SUBAGENT, metadata={"agent": "worker"}
+    )
+    job_registry.start(
+        job.id,
+        SubagentRunner(runtime=runtime, agent="worker", prompt="Wait"),
+    )
     for _ in range(20):
-        if manager.snapshots()[0]["status"] == "running":
+        if job.status.value == "running":
             break
         await asyncio.sleep(0)
 
-    stopped = await manager.stop_task(task_id)
+    result = await job_registry.cancel(job.id)
 
-    assert stopped.status == "success"
-    assert stopped.data["status"] == "stopped"
+    assert result.cancelled is True
+    assert job.status.value == "cancelled"
     assert child.closed is True
 
 
-async def _set_event(event: asyncio.Event) -> None:
-    event.set()
+def test_child_permissions_cannot_expand_parent_policy():
+    parent = PermissionSystem({"ask": [{"tool": "shell"}]}, default_decision="allow")
+    child = PermissionSystem({"allow": [{"tool": "shell"}]}, default_decision="allow")
+    permissions = PermissionIntersection(parent, child)
+
+    assert permissions.check("shell", {"command": "pwd"}) == "ask"
+
+
+def test_child_permissions_can_restrict_parent_policy():
+    parent = PermissionSystem({"allow": [{"tool": "shell"}]})
+    child = PermissionSystem({"deny": [{"tool": "shell"}]}, default_decision="allow")
+    permissions = PermissionIntersection(parent, child)
+
+    assert permissions.check("shell", {"command": "pwd"}) == "deny"

@@ -25,7 +25,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from xbotv2.config.models import RuntimeConfig, UserContext
+from xbotv2.core.agents import AgentRegistry
 from xbotv2.core.content_cache import bound_context_messages
+from xbotv2.core.context import ContextBuilder
 from xbotv2.core.interactions import (
     InteractionDisconnected,
     InteractionResult,
@@ -35,7 +38,16 @@ from xbotv2.core.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from xbotv2.core.mailbox import MailboxMessage
+from xbotv2.core.mailbox import MailboxMessage, decode_mailbox_message
+from xbotv2.hooks.manager import HookManager
+from xbotv2.llm.base import BaseProvider
+from xbotv2.persistence.store import CoreStateStore
+from xbotv2.plugin.loader import PluginLoader
+from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
+from xbotv2.tools.registry import ToolRegistry
+from xbotv2.tools.sandbox import SandboxPolicy
+from xbotv2.api.agents import AgentRuntime
+from xbotv2.api.jobs import JobRegistry
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.hooks import HookContext, HookStage
 from xbotv2.api.messages import ImageContent, Message, ModelChunk, ModelResponse
@@ -49,7 +61,6 @@ from xbotv2.api.tokens import (
 )
 from xbotv2.api.tools import ToolCall, ToolCallDelta, provider_tool_schema
 from xbotv2.api.variables import RuntimeVariables
-from xbotv2.persistence.store import message_to_dict
 
 DEFAULT_MAX_ITERATIONS = 200
 
@@ -82,6 +93,7 @@ class _ToolBatchResult:
     turn_complete: bool = False
 
 logger = logging.getLogger("xbotv2.engine")
+
 
 def merge_xbot_chunk(
     aggregate: ModelResponse | None,
@@ -139,11 +151,10 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
         ),
         "status": message.status or "success",
     }
-    metadata = message.additional_kwargs
-    if "xbotv2_data" in metadata:
-        data["data"] = metadata["xbotv2_data"]
-    if "xbotv2_error" in metadata:
-        data["error"] = metadata["xbotv2_error"]
+    if message.data is not None:
+        data["data"] = message.data
+    if message.error is not None:
+        data["error"] = message.error
     if message.artifact:
         artifacts = (
             message.artifact
@@ -179,26 +190,25 @@ class Engine:
     def __init__(
         self,
         *,
-        llm: Any,
-        tool_registry: Any,  # ToolRegistry
-        hook_manager: Any,  # HookManager
-        state_store: Any,  # CoreStateStore
-        context_builder: Any,  # ContextBuilder
-        sandbox_policy: Any,  # SandboxPolicy
-        permission_system: Any,  # PermissionSystem
-        config: Any,  # RuntimeConfig
+        llm: BaseProvider,
+        tool_registry: ToolRegistry,
+        hook_manager: HookManager,
+        state_store: CoreStateStore,
+        context_builder: ContextBuilder,
+        sandbox_policy: SandboxPolicy,
+        permission_system: PermissionSystem | PermissionIntersection,
+        config: RuntimeConfig,
         workspace_root: str | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
-        plugin_loader: Any | None = None,
-        background_tasks: Any | None = None,
-        subagents: Any | None = None,
-        agent_registry: Any | None = None,
-        startup_config: Any | None = None,
+        plugin_loader: PluginLoader | None = None,
+        job_registry: JobRegistry | None = None,
+        agent_runtime: AgentRuntime | None = None,
+        agent_registry: AgentRegistry | None = None,
         model: str = "",
         model_mode: str = "",
         context_window: int = 0,
         llm_is_override: bool = False,
-        user_context: Any | None = None,
+        user_context: UserContext | None = None,
         runtime_variables: RuntimeVariables | None = None,
     ) -> None:
         self.llm = llm
@@ -212,17 +222,14 @@ class Engine:
         self.workspace_root = workspace_root or ""
         self.max_iterations = max_iterations
         self.plugin_loader = plugin_loader
-        self.background_tasks = background_tasks
-        self.subagents = subagents
+        self.job_registry = job_registry
+        self.agent_runtime = agent_runtime
         self.agent_registry = agent_registry
-        self.startup_config = startup_config or config
         self.model = model
         self.model_mode = model_mode
-        self.context_window = context_window or int(
-            getattr(config, "max_context_tokens", 0) or 0
-        )
+        self.context_window = context_window or config.max_context_tokens
         self.llm_is_override = llm_is_override
-        self.user_context = user_context
+        self.user_context = user_context or UserContext()
         self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
             state_store.paths.runtime,
             self.workspace_root,
@@ -230,7 +237,10 @@ class Engine:
         )
 
         self.messages: list[Message] = []
-        self._persisted_messages: list[dict[str, Any]] = []
+        # Identity references and content fingerprints of the last persisted
+        # message state; None means unknown (rebuilt on next save).
+        self._persisted_refs: list[Message] | None = []
+        self._persisted_fingerprints: list[int] | None = []
         self.session: SessionInfo | None = None
         self.turn_count = 0
         self.session_usage = self._empty_usage()
@@ -241,6 +251,9 @@ class Engine:
         self.enqueue_mailbox: (
             Callable[[str | dict[str, Any]], Awaitable[Any]] | None
         ) = None
+        self.take_pending_mailbox: (
+            Callable[[], Awaitable[MailboxMessage | None]] | None
+        ) = None
         self.paths = state_store.paths.runtime
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -249,10 +262,6 @@ class Engine:
         self._mailbox_message: ContextVar[MailboxMessage | None] = ContextVar(
             f"xbotv2_mailbox_message_{id(self)}",
             default=None,
-        )
-        self._turn_instruction: ContextVar[str] = ContextVar(
-            f"xbotv2_turn_instruction_{id(self)}",
-            default="",
         )
 
     # ------------------------------------------------------------------
@@ -279,13 +288,14 @@ class Engine:
             session_id=self.state_store.session_id,
             thread_id=self.state_store.thread_id,
             workspace_root=self.workspace_root,
-            provider=str(getattr(self.config, "provider", "default")),
+            provider=self.config.provider,
         )
 
     async def _resume_from_store(self) -> None:
         self.messages = self.state_store.read_messages()
         self._restore_usage()
-        self._persisted_messages = self._message_snapshot()
+        self._persisted_refs = list(self.messages)
+        self._persisted_fingerprints = self._message_fingerprints()
         self._close_interrupted_tool_calls("session_restarted")
         self.turn_count = max(
             sum(1 for m in self.messages if m.role == "user"), 0
@@ -301,14 +311,9 @@ class Engine:
         self.cancel_pending_user_inputs("session_closed")
         self.cancel_pending_permissions("session_closed")
         errors: list[BaseException] = []
-        if self.background_tasks is not None:
+        if self.job_registry is not None:
             try:
-                await self.background_tasks.close()
-            except BaseException as exc:
-                errors.append(exc)
-        if self.subagents is not None:
-            try:
-                await self.subagents.close()
+                await self.job_registry.shutdown()
             except BaseException as exc:
                 errors.append(exc)
         try:
@@ -422,6 +427,7 @@ class Engine:
                 else None
             ),
             workspace_root=self.workspace_root,
+            job_registry=self.job_registry,
         )
         after_ctx = self._make_hook_context(
             HookStage.AFTER_TOOLS,
@@ -480,9 +486,13 @@ class Engine:
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
         mailbox_token = self._mailbox_message.set(mailbox_message)
-        instruction_token = self._turn_instruction.set("")
         if mailbox_message is not None:
-            self.state_store.append_mailbox_delivery(mailbox_message)
+            self.state_store.append_mailbox_delivery(
+                mailbox_id=mailbox_message.id,
+                kind=mailbox_message.kind,
+                message=mailbox_message.message,
+                request_id=mailbox_message.request_id,
+            )
         turn_started = False
         turn_ended = False
         try:
@@ -562,7 +572,6 @@ class Engine:
             finally:
                 self._request_id.reset(request_token)
                 self._mailbox_message.reset(mailbox_token)
-                self._turn_instruction.reset(instruction_token)
 
     async def _run_turn_impl(
         self,
@@ -679,7 +688,7 @@ class Engine:
                     short_circuit=False,
                 )
                 raise
-            content = response.content if hasattr(response, "content") else str(response)
+            content = response.content
             if finalizing and response.tool_calls:
                 names = ", ".join(call.name for call in response.tool_calls)
                 raise RuntimeError(
@@ -691,9 +700,9 @@ class Engine:
                 after_tool = bool(
                     self.messages and self.messages[-1].role == "tool"
                 )
-                stop_reason = (
-                    getattr(response, "response_metadata", None) or {}
-                ).get("stop_reason", "unknown")
+                stop_reason = response.response_metadata.get(
+                    "stop_reason", "unknown"
+                )
                 context = " after ToolResult" if after_tool else ""
                 logger.debug(
                     "invalid model response%s stop_reason=%s reasoning=%r",
@@ -705,24 +714,23 @@ class Engine:
                     f"LLM returned no assistant content or ToolUse{context} "
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
-            response_metadata = dict(
-                getattr(response, "response_metadata", None) or {}
-            )
+            response_metadata = dict(response.response_metadata)
             response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
                 context_messages,
                 list(model_request.get("tools") or []),
             )
             response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.context_window
-            response_metadata[REQUEST_PROVIDER_KEY] = str(
-                getattr(self.session, "provider", "")
-                or getattr(self.config, "provider", "")
+            response_metadata[REQUEST_PROVIDER_KEY] = (
+                self.session.provider
+                if self.session is not None
+                else self.config.provider
             )
             response_msg = Message(
                 role="assistant",
                 parts=response.parts,
-                usage_metadata=getattr(response, "usage_metadata", None) or {},
+                usage_metadata=response.usage_metadata,
                 response_metadata=response_metadata,
-                additional_kwargs=getattr(response, "additional_kwargs", None) or {},
+                additional_kwargs=response.additional_kwargs,
             )
             self.messages.append(response_msg)
             self._record_usage(response_msg.usage_metadata)
@@ -793,6 +801,8 @@ class Engine:
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
+            for event in await self._accept_pending_mailbox():
+                yield event
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -845,8 +855,8 @@ class Engine:
             "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
             self.turn_count,
             len(tool_messages),
-            [getattr(message, "tool_call_id", None) for message in tool_messages],
-            [getattr(message, "status", None) for message in tool_messages],
+            [message.tool_call_id for message in tool_messages],
+            [message.status for message in tool_messages],
         )
         self.messages.extend(tool_messages)
         # Commit tool responses before exposing them or requesting another model step.
@@ -857,10 +867,7 @@ class Engine:
             tool_event_payloads,
             strict=True,
         ):
-            client_events = getattr(message, "additional_kwargs", {}).get(
-                "xbotv2_events",
-                [],
-            )
+            client_events = message.client_events
             for client_event in client_events:
                 event_ctx = self._make_hook_context(
                     HookStage.ON_CLIENT_EVENT,
@@ -889,12 +896,7 @@ class Engine:
                 short_circuit=False,
             )
 
-        if any(
-            getattr(message, "additional_kwargs", {}).get(
-                "xbotv2_turn_complete"
-            )
-            for message in tool_messages
-        ):
+        if any(message.turn_complete for message in tool_messages):
             yield self._tool_batch_result_event(
                 _ToolBatchResult(stop_loop=True, turn_complete=True)
             )
@@ -932,64 +934,24 @@ class Engine:
                 user_input,
                 mailbox_message=self._mailbox_message.get(),
             )
-            self._turn_instruction.set(user_input)
+            self.messages.append(self._runtime_message(
+                user_input,
+                self._mailbox_message.get(),
+            ))
             return _TurnStartResult(
                 user_input,
                 [{"type": "turn_started", "data": {"turn": self.turn_count}}],
                 True,
             )
-        accept_ctx = self._make_hook_context(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
+        accepted = await self._accept_user_message(
+            user_input,
+            images=images,
+            artifacts=artifacts,
+            new_turn=True,
         )
-        accept_result = await self.hook_manager.run(
-            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
-            accept_ctx,
-            short_circuit=True,
-        )
-        events: list[dict[str, Any]] = []
-        if isinstance(accept_result, dict):
-            if "user_input" in accept_result:
-                user_input = str(accept_result["user_input"])
-            if "event" in accept_result:
-                events.append(accept_result["event"])
-                if accept_result.get("turn_complete", True):
-                    return _TurnStartResult(user_input, events, False)
-            elif accept_result.get("turn_complete"):
-                events.append(self._user_message_rejected_event())
-                return _TurnStartResult(user_input, events, False)
-        elif accept_result is not None:
-            events.append(self._user_message_rejected_event())
-            return _TurnStartResult(user_input, events, False)
-
-        self.turn_count += 1
-        if self.session is not None:
-            self.session.turn_count = self.turn_count
-        self.messages.append(Message(
-            role="user",
-            content=user_input,
-            images=list(images or []),
-            artifact=list(artifacts or []),
-        ))
-
-        accepted_ctx = self._make_hook_context(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            user_input=user_input,
-        )
-        await self.hook_manager.run(
-            HookStage.AFTER_USER_MESSAGE_ACCEPT,
-            accepted_ctx,
-            short_circuit=False,
-        )
-        user_ctx = self._make_hook_context(
-            HookStage.ON_USER_MESSAGE,
-            user_input=user_input,
-        )
-        await self.hook_manager.run(
-            HookStage.ON_USER_MESSAGE,
-            user_ctx,
-            short_circuit=False,
-        )
+        if not accepted.proceed:
+            return accepted
+        user_input = accepted.user_input
         turn_ctx = self._make_hook_context(
             HookStage.ON_TURN_START,
             user_input=user_input,
@@ -999,8 +961,11 @@ class Engine:
             turn_ctx,
             short_circuit=False,
         )
-        events.append({"type": "turn_started", "data": {"turn": self.turn_count}})
-        return _TurnStartResult(user_input, events, True)
+        accepted.events.append({
+            "type": "turn_started",
+            "data": {"turn": self.turn_count},
+        })
+        return accepted
 
     @staticmethod
     def _user_message_rejected_event() -> dict[str, Any]:
@@ -1024,32 +989,15 @@ class Engine:
             if event is not None:
                 return _ContextBuildResult(event=event, turn_complete=True)
 
-        turn_messages = list(self.messages)
-        turn_instruction = self._turn_instruction.get()
-        if turn_instruction:
-            mailbox_message = self._mailbox_message.get()
-            turn_messages.append(Message(
-                role=(
-                    "user"
-                    if mailbox_message is not None
-                    and mailbox_message.kind == "general"
-                    else "system"
-                ),
-                content=turn_instruction,
-                additional_kwargs={
-                    "xbotv2_source": "runtime_mailbox",
-                    "xbotv2_runtime_input": True,
-                },
-            ))
         context_kwargs = {
-            "messages": turn_messages,
-            "agent_name": getattr(self.config, "agent_name", "XBotv2"),
-            "agent_role": getattr(self.config, "agent_role", ""),
-            "user_name": getattr(self.user_context, "user_name", "User"),
-            "user_id": getattr(self.user_context, "user_id", "default-user"),
-            "developer_instructions": getattr(self.config, "instructions", ""),
-            "instructions": getattr(self.config, "agent_instructions", ""),
-            "memory": getattr(self.config, "memory", ""),
+            "messages": list(self.messages),
+            "agent_name": self.config.agent_name,
+            "agent_role": self.config.agent_role,
+            "user_name": self.user_context.user_name,
+            "user_id": self.user_context.user_id,
+            "developer_instructions": self.config.instructions,
+            "instructions": self.config.agent_instructions,
+            "memory": self.config.memory,
             "sandbox_summary": (
                 self.sandbox_policy.describe() if self.sandbox_policy else ""
             ),
@@ -1087,22 +1035,19 @@ class Engine:
                 turn_complete=True,
             )
 
-        if hasattr(self.context_builder, "build_components"):
-            components = self.context_builder.build_components(**context_kwargs)
-            component_ctx = self._make_hook_context(
-                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                context_components=components,
-            )
-            await self.hook_manager.run(
-                HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
-                component_ctx,
-                short_circuit=False,
-            )
-            if component_ctx.context_components is not None:
-                components = component_ctx.context_components
-            context_messages = self.context_builder.messages_from_components(components)
-        else:
-            context_messages = self.context_builder.build(**context_kwargs)
+        components = self.context_builder.build_components(**context_kwargs)
+        component_ctx = self._make_hook_context(
+            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+            context_components=components,
+        )
+        await self.hook_manager.run(
+            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+            component_ctx,
+            short_circuit=False,
+        )
+        if component_ctx.context_components is not None:
+            components = component_ctx.context_components
+        context_messages = self.context_builder.messages_from_components(components)
 
         context_messages = bound_context_messages(
             context_messages,
@@ -1150,7 +1095,7 @@ class Engine:
 
     def _agent_catalog_notice(self) -> str:
         registry = self.agent_registry
-        if registry is None or self.tool_registry.get("task") is None:
+        if registry is None or self.tool_registry.get("spawn_subagent") is None:
             return ""
         definitions = [
             definition
@@ -1159,7 +1104,7 @@ class Engine:
         ]
         if not definitions:
             return ""
-        lines = ["Available subagents for the task tool:"]
+        lines = ["Available subagents for the spawn_subagent tool:"]
         lines.extend(
             f"- {definition.name}: {definition.description}"
             for definition in definitions
@@ -1332,7 +1277,7 @@ class Engine:
         except NotImplementedError:
             return self.llm
 
-    def _llm_without_tools(self) -> Any:
+    def _llm_without_tools(self) -> BaseProvider:
         try:
             return self.llm.bind_tools([])
         except NotImplementedError:
@@ -1348,8 +1293,8 @@ class Engine:
 
     async def _stream_model_response(
         self,
-        llm: Any,
-        context_messages: list[Any],
+        llm: BaseProvider,
+        context_messages: list[Message],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
@@ -1432,11 +1377,9 @@ class Engine:
         post_compact_ctx = self._make_hook_context(
             HookStage.POST_COMPACT,
             compact_reason=compact_reason,
+            previous_message_count=previous_message_count,
+            current_message_count=len(self.messages),
         )
-        post_compact_ctx.state.update({
-            "previous_message_count": previous_message_count,
-            "current_message_count": len(self.messages),
-        })
         await self.hook_manager.run(HookStage.POST_COMPACT, post_compact_ctx, short_circuit=False)
         await self.save_messages(
             history_operation=(f"compact:{compact_reason}", 0)
@@ -1463,14 +1406,10 @@ class Engine:
         history_operation: tuple[str, int] | None = None,
     ) -> bool:
         """Persist changed message history and bracket the write with hooks."""
-        if (
-            history_operation is None
-            and self._message_snapshot() == self._persisted_messages
-        ):
+        if history_operation is None and self._messages_unchanged():
             return False
         before_ctx = self._make_hook_context(HookStage.BEFORE_STATE_PERSIST)
         await self.hook_manager.run(HookStage.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
-        snapshot = self._message_snapshot()
         if history_operation is None:
             self.state_store.sync_messages(self.messages)
         else:
@@ -1484,13 +1423,29 @@ class Engine:
                     self.messages,
                     reason=operation,
                 )
-        self._persisted_messages = snapshot
+        self._persisted_refs = list(self.messages)
+        self._persisted_fingerprints = self._message_fingerprints()
         after_ctx = self._make_hook_context(HookStage.AFTER_STATE_PERSIST)
         await self.hook_manager.run(HookStage.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
         return True
 
-    def _message_snapshot(self) -> list[dict[str, Any]]:
-        return [message_to_dict(message) for message in self.messages]
+    def _messages_unchanged(self) -> bool:
+        """Return whether messages match the last persisted state."""
+        refs = self._persisted_refs
+        fingerprints = self._persisted_fingerprints
+        if refs is None or fingerprints is None:
+            return False
+        if len(self.messages) != len(refs) or len(fingerprints) != len(refs):
+            return False
+        if not all(a is b for a, b in zip(self.messages, refs)):
+            return False
+        return all(
+            fingerprint == message.fingerprint()
+            for fingerprint, message in zip(fingerprints, self.messages)
+        )
+
+    def _message_fingerprints(self) -> list[int]:
+        return [message.fingerprint() for message in self.messages]
 
     def _close_interrupted_tool_calls(self, reason: str) -> None:
         """Append error results for an interrupted trailing tool batch."""
@@ -1685,6 +1640,8 @@ class Engine:
         tool_result: Any = None,
         stop_reason: str | None = None,
         compact_reason: str | None = None,
+        previous_message_count: int | None = None,
+        current_message_count: int | None = None,
         permission_decision: str | None = None,
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
@@ -1693,7 +1650,7 @@ class Engine:
         return HookContext(
             stage=stage,
             request_id=self._request_id.get(),
-            state={"messages": self.messages},
+            messages=self.messages,
             config=self.config,
             tools=self.tool_registry,
             sandbox=self.sandbox_policy,
@@ -1706,7 +1663,7 @@ class Engine:
                 session_id=self.state_store.session_id,
                 thread_id=self.state_store.thread_id,
                 workspace_root=self.workspace_root,
-                provider=str(getattr(self.config, "provider", "default")),
+                provider=self.config.provider,
                 turn_count=self.turn_count,
             ),
             user_input=user_input,
@@ -1721,6 +1678,8 @@ class Engine:
             tool_result=tool_result,
             stop_reason=stop_reason,
             compact_reason=compact_reason,
+            previous_message_count=previous_message_count,
+            current_message_count=current_message_count,
             permission_decision=permission_decision,
             client_event=client_event,
             error=error,
@@ -1745,14 +1704,119 @@ class Engine:
         )
         await self.hook_manager.run(stage, ctx, short_circuit=False)
 
+    async def _accept_pending_mailbox(self) -> list[dict[str, Any]]:
+        """Accept one queued input at a complete ToolResult boundary."""
+        if self.take_pending_mailbox is None:
+            return []
+        item = await self.take_pending_mailbox()
+        if item is None:
+            return []
+        self.state_store.append_mailbox_delivery(
+            mailbox_id=item.id,
+            kind=item.kind,
+            message=item.message,
+            request_id=item.request_id,
+        )
+        content, images, artifacts = decode_mailbox_message(item)
+        if item.kind == "general":
+            self.messages.append(self._runtime_message(
+                self._runtime_event_content(content, mailbox_message=item),
+                item,
+            ))
+            await self.save_messages()
+            return []
+
+        accepted = await self._accept_user_message(
+            content,
+            images=images,
+            artifacts=artifacts,
+        )
+        events = [{
+            "type": "turn_started",
+            "data": {"turn": self.turn_count},
+        }]
+        if accepted.proceed:
+            await self.save_messages()
+        events.extend(accepted.events)
+        return events
+
+    async def _accept_user_message(
+        self,
+        user_input: str,
+        *,
+        images: list[ImageContent] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        new_turn: bool = False,
+    ) -> _TurnStartResult:
+        accept_ctx = self._make_hook_context(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            user_input=user_input,
+        )
+        accept_result = await self.hook_manager.run(
+            HookStage.BEFORE_USER_MESSAGE_ACCEPT,
+            accept_ctx,
+            short_circuit=True,
+        )
+        events: list[dict[str, Any]] = []
+        if isinstance(accept_result, dict):
+            if "user_input" in accept_result:
+                user_input = str(accept_result["user_input"])
+            if "event" in accept_result:
+                events.append(accept_result["event"])
+                if accept_result.get("turn_complete", True):
+                    return _TurnStartResult(user_input, events, False)
+            elif accept_result.get("turn_complete"):
+                events.append(self._user_message_rejected_event())
+                return _TurnStartResult(user_input, events, False)
+        elif accept_result is not None:
+            events.append(self._user_message_rejected_event())
+            return _TurnStartResult(user_input, events, False)
+
+        if new_turn:
+            self.turn_count += 1
+            if self.session is not None:
+                self.session.turn_count = self.turn_count
+        self.messages.append(Message(
+            role="user",
+            content=user_input,
+            images=list(images or []),
+            artifact=list(artifacts or []),
+        ))
+        for stage in (
+            HookStage.AFTER_USER_MESSAGE_ACCEPT,
+            HookStage.ON_USER_MESSAGE,
+        ):
+            await self.hook_manager.run(
+                stage,
+                self._make_hook_context(stage, user_input=user_input),
+                short_circuit=False,
+            )
+        return _TurnStartResult(user_input, events, True)
+
     @staticmethod
-    def mailbox_content(message: MailboxMessage) -> str:
-        if isinstance(message.message, str):
-            return message.message
-        return json.dumps(
-            message.message,
-            ensure_ascii=False,
-            sort_keys=True,
+    def _runtime_message(
+        content: str,
+        item: MailboxMessage | None,
+    ) -> Message:
+        raw = item.message if item is not None else None
+        return Message(
+            role="user",
+            content=content,
+            additional_kwargs={
+                "runtime_input": {
+                    "kind": "general",
+                    "source": str(
+                        (raw.get("source") or "runtime")
+                        if isinstance(raw, dict)
+                        else "mailbox"
+                    ),
+                    "event": str(
+                        (raw.get("event") or "message")
+                        if isinstance(raw, dict)
+                        else "message"
+                    ),
+                },
+            },
         )
 
     @staticmethod
@@ -1761,8 +1825,14 @@ class Engine:
         *,
         mailbox_message: MailboxMessage | None = None,
     ) -> str:
-        message = getattr(mailbox_message, "message", None)
-        attributes = {"kind": "general", "source": "mailbox"}
+        message = (
+            mailbox_message.message if mailbox_message is not None else None
+        )
+        attributes = {
+            "kind": "general",
+            "source": "mailbox",
+            "event": "message",
+        }
         if isinstance(message, dict):
             attributes.update({
                 "source": str(message.get("source") or "runtime"),
@@ -1776,12 +1846,6 @@ class Engine:
         return prompt_container(
             "runtime_event",
             [
-                prompt_element(
-                    "instruction",
-                    "This is runtime-generated input, not a human message. "
-                    "Continue the active work using the event and do not ask "
-                    "the human to repeat the preceding request.",
-                ),
                 prompt_element(
                     "payload",
                     payload,
