@@ -420,6 +420,11 @@ class TranscriptScroll(VerticalScroll):
 
     Emits :class:`ReplayTopReached` when the user scrolls to the top while
     older replayed history is still unmounted, so the app can lazy-load it.
+    Emits :class:`Scrolled` after any user-initiated scroll so the app can
+    track whether it should keep following the live tail, and
+    :class:`HeightChanged` when the viewport height changes (e.g. the
+    slash-completion popup appears), so the app can re-pin a follower to the
+    bottom instead of leaving it stranded mid-scroll.
     """
 
     can_focus = False
@@ -430,25 +435,51 @@ class TranscriptScroll(VerticalScroll):
     class ReplayBottomReached(Message):
         pass
 
+    class Scrolled(Message):
+        """Posted after a user scroll; ``at_end`` is the resulting state."""
+
+        def __init__(self, at_end: bool) -> None:
+            self.at_end = at_end
+            super().__init__()
+
+    class HeightChanged(Message):
+        pass
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_height: int | None = None
+
+    def on_resize(self, event: events.Resize) -> None:
+        if self._last_height is not None and event.size.height != self._last_height:
+            self.post_message(self.HeightChanged())
+        self._last_height = event.size.height
+
+    def _post_scrolled(self) -> None:
+        self.post_message(self.Scrolled(at_end=self.is_vertical_scroll_end))
+
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         super()._on_mouse_scroll_up(event)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
+        self._post_scrolled()
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         super()._on_mouse_scroll_down(event)
         if self.is_vertical_scroll_end:
             self.post_message(self.ReplayBottomReached())
+        self._post_scrolled()
 
     def scroll_up(self, *args, **kwargs) -> None:
         super().scroll_up(*args, **kwargs)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
+        self._post_scrolled()
 
     def scroll_down(self, *args, **kwargs) -> None:
         super().scroll_down(*args, **kwargs)
         if self.is_vertical_scroll_end:
             self.post_message(self.ReplayBottomReached())
+        self._post_scrolled()
 
 
 @dataclass(frozen=True)

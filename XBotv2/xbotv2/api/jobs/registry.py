@@ -326,6 +326,10 @@ class JobRegistry:
         job.finished_at = time.time()
         if job.completion_event is not None:
             job.completion_event.set()
+        # Publish the terminal state so live clients (e.g. the TUI task panel)
+        # see the task leave "running"; ``on_complete`` alone only produces a
+        # completion notice that the TUI does not apply to its task map.
+        asyncio.create_task(self._notify_update(job))
         asyncio.create_task(self._notify_complete(job))
 
     # ------------------------------------------------------------------

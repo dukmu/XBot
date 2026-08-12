@@ -43,10 +43,6 @@ class GoalPlugin(PluginBase):
         ctx.register_hook(HookStage.ON_TURN_START, self._start_goal_turn)
         ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
         ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_goal)
-        ctx.register_hook(
-            HookStage.BEFORE_MAILBOX_DELIVERY,
-            self._on_mailbox_delivery,
-        )
         ctx.register_tool(
             Tool.from_function(self.create_goal, name="create_goal"),
             options=ToolRegistrationOptions(
@@ -160,7 +156,7 @@ class GoalPlugin(PluginBase):
         else:
             result = await self._finish(action, value)
         if result.status == "success" and action in {"set", "resume"}:
-            await self.start(ctx.enqueue_general)
+            await self.start(ctx.request_continuation)
         return _command_result(result)
 
     async def _get(self) -> ToolResult:
@@ -285,15 +281,9 @@ class GoalPlugin(PluginBase):
         }
 
     async def _start_goal_turn(self, ctx: HookContext) -> None:
-        item = ctx.mailbox_message
-        message = getattr(item, "message", None)
-        if not (
-            getattr(item, "kind", None) == "general"
-            and isinstance(message, dict)
-            and message.get("source") == "goal"
-            and message.get("event") == "continue"
-        ):
+        if not ctx.continuation:
             return
+        self._continuation_pending = False
         goal = await self._active_goal()
         if goal is not None:
             ctx.user_input = _goal_context(goal)
@@ -306,38 +296,15 @@ class GoalPlugin(PluginBase):
             goal["status"] = "paused"
             await self.store.set("goal", goal)
             return
-        item = ctx.mailbox_message
-        if getattr(item, "kind", None) == "general":
-            message = getattr(item, "message", None)
-            if not (
-                isinstance(message, dict)
-                and message.get("source") == "goal"
-                and message.get("event") == "continue"
-            ):
-                return
-        await self.start(ctx.enqueue_mailbox)
+        await self.start(ctx.request_continuation)
 
-    async def start(self, enqueue_mailbox) -> None:
+    async def start(self, request_continuation) -> None:
         """Schedule the next active-goal turn if one is not already pending."""
         goal = await self._active_goal()
-        if goal is None or self._continuation_pending or enqueue_mailbox is None:
+        if goal is None or self._continuation_pending or request_continuation is None:
             return
         self._continuation_pending = True
-        await enqueue_mailbox({
-            "source": "goal",
-            "event": "continue",
-        })
-
-    async def _on_mailbox_delivery(self, ctx: HookContext) -> None:
-        item = ctx.mailbox_message
-        message = getattr(item, "message", None)
-        if (
-            getattr(item, "kind", None) == "general"
-            and isinstance(message, dict)
-            and message.get("source") == "goal"
-            and message.get("event") == "continue"
-        ):
-            self._continuation_pending = False
+        await request_continuation()
 
     def diagnostics(self) -> dict[str, Any]:
         return {

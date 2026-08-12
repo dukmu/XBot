@@ -38,7 +38,6 @@ from xbotv2.core.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from xbotv2.core.mailbox import MailboxMessage, decode_mailbox_message
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.base import BaseProvider
 from xbotv2.persistence.store import CoreStateStore
@@ -248,20 +247,20 @@ class Engine:
         self.permission_waiter = InteractionWaiter()
         self.client_event_sink: Any | None = None
         self.runtime_event_sink: Callable[[dict[str, Any]], None] | None = None
-        self.enqueue_mailbox: (
-            Callable[[str | dict[str, Any]], Awaitable[Any]] | None
-        ) = None
-        self.take_pending_mailbox: (
-            Callable[[], Awaitable[MailboxMessage | None]] | None
-        ) = None
+        self.take_pending_fold: Callable[[], list[Any]] | None = None
+        # Drained into the turn context (all pending at once) before each LLM
+        # step; never used to start a turn.
+        self.drain_inbox: Callable[[], list[Any]] | None = None
+        # True only while a tool batch executes, when user input may be
+        # accepted for fusion into the turn at the next tool boundary.
+        self.input_window: bool = False
+        # Set by the session for goal-style automatic continuation turns.
+        self.request_continuation: Callable[[], Awaitable[None]] | None = None
+        self.continuation: bool = False
         self.paths = state_store.paths.runtime
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
-        )
-        self._mailbox_message: ContextVar[MailboxMessage | None] = ContextVar(
-            f"xbotv2_mailbox_message_{id(self)}",
-            default=None,
         )
 
     # ------------------------------------------------------------------
@@ -480,29 +479,16 @@ class Engine:
         user_input: str,
         *,
         request_id: str = "",
-        mailbox_message: MailboxMessage | None = None,
         images: list[ImageContent] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         request_token = self._request_id.set(request_id)
-        mailbox_token = self._mailbox_message.set(mailbox_message)
-        if mailbox_message is not None:
-            self.state_store.append_mailbox_delivery(
-                mailbox_id=mailbox_message.id,
-                kind=mailbox_message.kind,
-                message=mailbox_message.message,
-                request_id=mailbox_message.request_id,
-            )
         turn_started = False
         turn_ended = False
         try:
             async for event in self._run_turn_impl(
                 user_input,
-                input_kind=(
-                    mailbox_message.kind
-                    if mailbox_message is not None
-                    else "user_message"
-                ),
+                input_kind="user_message",
                 images=images,
                 artifacts=artifacts,
             ):
@@ -571,7 +557,6 @@ class Engine:
                 await self.save_messages()
             finally:
                 self._request_id.reset(request_token)
-                self._mailbox_message.reset(mailbox_token)
 
     async def _run_turn_impl(
         self,
@@ -782,11 +767,26 @@ class Engine:
                 else:
                     turn_complete = True
                 if turn_complete:
+                    fold_events = await self._accept_pending_fold()
+                    if fold_events:
+                        for event in fold_events:
+                            yield event
+                        self.input_window = False
+                        continue
                     break
 
             # Check for tool calls
             tool_calls = response.tool_calls
             if not tool_calls:
+                # A complete response: fold any pending input so it is
+                # answered in this same turn instead of waiting for a later
+                # one. This is the no-tool-boundary path.
+                fold_events = await self._accept_pending_fold()
+                if fold_events:
+                    for event in fold_events:
+                        yield event
+                    self.input_window = False
+                    continue
                 turn_complete = True
                 break
 
@@ -801,8 +801,9 @@ class Engine:
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
-            for event in await self._accept_pending_mailbox():
+            for event in await self._accept_pending_fold():
                 yield event
+            self.input_window = False
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -837,7 +838,13 @@ class Engine:
             call.id: call.name or "tool" for call in tool_calls
         }
 
-        tool_messages = await self._execute_tool_calls(tool_calls)
+        # User input is accepted only while tools execute; the fold at the
+        # tool boundary then fuses it into the turn.
+        self.input_window = True
+        try:
+            tool_messages = await self._execute_tool_calls(tool_calls)
+        finally:
+            self.input_window = False
         tool_event_payloads = [
             tool_result_event_data(
                 message,
@@ -916,33 +923,6 @@ class Engine:
         images: list[ImageContent] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
     ) -> _TurnStartResult:
-        if input_kind == "general":
-            self.turn_count += 1
-            if self.session is not None:
-                self.session.turn_count = self.turn_count
-            turn_ctx = self._make_hook_context(
-                HookStage.ON_TURN_START,
-                user_input=user_input,
-            )
-            await self.hook_manager.run(
-                HookStage.ON_TURN_START,
-                turn_ctx,
-                short_circuit=False,
-            )
-            user_input = str(turn_ctx.user_input or user_input)
-            user_input = self._runtime_event_content(
-                user_input,
-                mailbox_message=self._mailbox_message.get(),
-            )
-            self.messages.append(self._runtime_message(
-                user_input,
-                self._mailbox_message.get(),
-            ))
-            return _TurnStartResult(
-                user_input,
-                [{"type": "turn_started", "data": {"turn": self.turn_count}}],
-                True,
-            )
         accepted = await self._accept_user_message(
             user_input,
             images=images,
@@ -961,6 +941,16 @@ class Engine:
             turn_ctx,
             short_circuit=False,
         )
+        if (
+            turn_ctx.user_input is not None
+            and str(turn_ctx.user_input) != user_input
+            and self.messages
+            and self.messages[-1].role == "user"
+        ):
+            # A hook replaced the user input (e.g. the goal plugin injects the
+            # active goal context on a continuation turn); reflect it in the
+            # persisted message so the model sees it.
+            self.messages[-1] = Message(role="user", content=str(turn_ctx.user_input))
         accepted.events.append({
             "type": "turn_started",
             "data": {"turn": self.turn_count},
@@ -988,6 +978,8 @@ class Engine:
             event = await self._handle_compaction(compact_result)
             if event is not None:
                 return _ContextBuildResult(event=event, turn_complete=True)
+
+        await self._drain_inbox_into_messages()
 
         context_kwargs = {
             "messages": list(self.messages),
@@ -1645,7 +1637,6 @@ class Engine:
         permission_decision: str | None = None,
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
-        mailbox_message: MailboxMessage | None = None,
     ) -> HookContext:
         return HookContext(
             stage=stage,
@@ -1657,7 +1648,8 @@ class Engine:
             plugin_store=None,
             invoke_model=self._invoke_model,
             request_user_input=self._request_user_input,
-            enqueue_mailbox=self.enqueue_mailbox,
+            request_continuation=self.request_continuation,
+            continuation=self.continuation,
             emit=self.emit_runtime_event,
             session=self.session or SessionInfo(
                 session_id=self.state_store.session_id,
@@ -1683,62 +1675,76 @@ class Engine:
             permission_decision=permission_decision,
             client_event=client_event,
             error=error,
-            mailbox_message=(
-                mailbox_message
-                if mailbox_message is not None
-                else self._mailbox_message.get()
-            ),
         )
 
-    async def run_mailbox_hook(
-        self,
-        stage: HookStage,
-        message: MailboxMessage,
-        *,
-        error: Exception | None = None,
-    ) -> None:
-        ctx = self._make_hook_context(
-            stage,
-            mailbox_message=message,
-            error=error,
-        )
-        await self.hook_manager.run(stage, ctx, short_circuit=False)
+    async def _accept_pending_fold(self) -> list[dict[str, Any]]:
+        """Fuse every accepted input into the turn at a ToolResult boundary.
 
-    async def _accept_pending_mailbox(self) -> list[dict[str, Any]]:
-        """Accept one queued input at a complete ToolResult boundary."""
-        if self.take_pending_mailbox is None:
+        The agent cannot take input while thinking/replying, but inputs
+        accepted during the tool-execution window are fused into the turn
+        context here — each as a separate user message. The session router
+        handed each stream its ``turn_started`` boundary in
+        ``take_pending_fold``; the ``_fold_handoff`` marker below tells it
+        where the merged reply belongs.
+        """
+        if self.take_pending_fold is None:
             return []
-        item = await self.take_pending_mailbox()
-        if item is None:
+        items = self.take_pending_fold()
+        if not items:
             return []
-        self.state_store.append_mailbox_delivery(
-            mailbox_id=item.id,
-            kind=item.kind,
-            message=item.message,
-            request_id=item.request_id,
-        )
-        content, images, artifacts = decode_mailbox_message(item)
-        if item.kind == "general":
-            self.messages.append(self._runtime_message(
-                self._runtime_event_content(content, mailbox_message=item),
-                item,
+        for item in items:
+            await self._accept_user_message(
+                item.content,
+                images=item.images,
+                artifacts=item.artifacts,
+            )
+        await self.save_messages()
+        # ``_fold_handoff`` marks the turn boundary where the active turn
+        # hands its remaining event stream over to the final fused request's
+        # owner. It is an internal control event: the session router switches
+        # routing at exactly this point (and never forwards it), so events
+        # queued before it (the active turn's own tool results) stay with the
+        # active request instead of leaking into the fused stream.
+        return [{"type": "_fold_handoff", "data": {}}]
+
+    async def _drain_inbox_into_messages(self) -> None:
+        """Move every pending runtime notification into the turn history.
+
+        The agent inbox accumulates background-job / subagent completions
+        without waking a turn; the first turn that assembles its context
+        consumes them all at once as one XML-marked runtime message. The
+        result persists in ``self.messages`` so later steps see it too.
+        """
+        if self.drain_inbox is None:
+            return
+        items = self.drain_inbox()
+        if not items:
+            return
+        payloads = []
+        for message in items:
+            payload = message.payload if isinstance(message.payload, dict) else {}
+            payloads.append(prompt_element(
+                "payload",
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                attributes={"encoding": "json"},
             ))
-            await self.save_messages()
-            return []
-
-        accepted = await self._accept_user_message(
-            content,
-            images=images,
-            artifacts=artifacts,
+        fused = prompt_container(
+            "runtime_event",
+            payloads,
+            attributes={"source": "tasks", "event": "completed"},
         )
-        events = [{
-            "type": "turn_started",
-            "data": {"turn": self.turn_count},
-        }]
-        if accepted.proceed:
-            await self.save_messages()
-        events.extend(accepted.events)
-        return events
+        self.messages.append(Message(
+            role="user",
+            content=fused,
+            additional_kwargs={
+                "runtime_input": {
+                    "kind": "general",
+                    "source": "tasks",
+                    "event": "completed",
+                },
+            },
+        ))
+        await self.save_messages()
 
     async def _accept_user_message(
         self,
@@ -1792,68 +1798,6 @@ class Engine:
                 short_circuit=False,
             )
         return _TurnStartResult(user_input, events, True)
-
-    @staticmethod
-    def _runtime_message(
-        content: str,
-        item: MailboxMessage | None,
-    ) -> Message:
-        raw = item.message if item is not None else None
-        return Message(
-            role="user",
-            content=content,
-            additional_kwargs={
-                "runtime_input": {
-                    "kind": "general",
-                    "source": str(
-                        (raw.get("source") or "runtime")
-                        if isinstance(raw, dict)
-                        else "mailbox"
-                    ),
-                    "event": str(
-                        (raw.get("event") or "message")
-                        if isinstance(raw, dict)
-                        else "message"
-                    ),
-                },
-            },
-        )
-
-    @staticmethod
-    def _runtime_event_content(
-        payload: str,
-        *,
-        mailbox_message: MailboxMessage | None = None,
-    ) -> str:
-        message = (
-            mailbox_message.message if mailbox_message is not None else None
-        )
-        attributes = {
-            "kind": "general",
-            "source": "mailbox",
-            "event": "message",
-        }
-        if isinstance(message, dict):
-            attributes.update({
-                "source": str(message.get("source") or "runtime"),
-                "event": str(message.get("event") or "message"),
-            })
-        try:
-            json.loads(payload)
-            encoding = "json"
-        except (json.JSONDecodeError, TypeError):
-            encoding = "text"
-        return prompt_container(
-            "runtime_event",
-            [
-                prompt_element(
-                    "payload",
-                    payload,
-                    attributes={"encoding": encoding},
-                ),
-            ],
-            attributes=attributes,
-        )
 
     @staticmethod
     def _empty_usage() -> dict[str, int]:

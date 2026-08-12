@@ -410,7 +410,8 @@ ServerEventType = Literal[
     "compaction_started",
     "end",
     "error",
-    "message_queued",
+    "input_rejected",
+    "message",
     "permission_denied",
     "permission_request",
     "permission_response_recorded",
@@ -533,9 +534,9 @@ class CompactionFailedData(WireModel):
     message: str = Field(min_length=1)
 
 
-class MessageQueuedData(WireModel):
-    message_id: str = Field(min_length=1)
-    position: int = Field(ge=1)
+class InputRejectedData(WireModel):
+    reason: str
+    request_id: str = ""
 
 
 class ToolCallData(WireModel):
@@ -613,6 +614,12 @@ class EndData(WireModel):
     status: str = Field(min_length=1)
 
 
+class MessageData(WireModel):
+    id: str
+    role: str
+    content: str = ""
+
+
 _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "assistant_message": AssistantMessageData,
     "assistant_message_delta": AssistantMessageDeltaData,
@@ -622,7 +629,8 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "compaction_started": CompactionStartedData,
     "end": EndData,
     "error": ErrorEventData,
-    "message_queued": MessageQueuedData,
+    "input_rejected": InputRejectedData,
+    "message": MessageData,
     "permission_denied": PermissionDeniedData,
     "permission_request": PermissionRequestData,
     "permission_response_recorded": InteractionRecordedData,

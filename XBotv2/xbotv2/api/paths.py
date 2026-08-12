@@ -143,10 +143,6 @@ class ThreadPaths:
         return self.state_dir / "artifacts"
 
     @property
-    def mailbox_log(self) -> Path:
-        return self.root / "logs" / "mailbox.jsonl"
-
-    @property
     def metadata_file(self) -> Path:
         return self.root / "thread.yaml"
 

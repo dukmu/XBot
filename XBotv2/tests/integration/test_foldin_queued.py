@@ -81,18 +81,35 @@ async def _run_foldin(app, llm):
     ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
     ctx.engine.tool_registry.restrict(None)
 
+    ev_stream = ctx.attach_event_stream()
+
+    async def _collect_events(stream):
+        events = [event async for event in stream]
+        return events
+
     first_task = asyncio.create_task(
-        _collect(ctx.stream_message("first request", "req-1"))
+        _collect_events(ctx.stream_message("first request", "req-1"))
     )
     await asyncio.wait_for(tool_started.wait(), timeout=2)
-    second_stream = ctx.stream_message("second queued", "req-2")
-    queued = await anext(second_stream)
-    assert queued["type"] == "message_queued"
-    release_tool.set()
-    first_events, second_events = await asyncio.gather(
-        first_task, _collect(second_stream)
+    second_task = asyncio.create_task(
+        _collect_events(ctx.stream_message("second queued", "req-2"))
     )
-    return first_events, second_events
+    await asyncio.sleep(0)
+    assert len(ctx.pending_fold) == 1, "second request must be accepted for fold"
+    release_tool.set()
+    first_events, second_events = await asyncio.gather(first_task, second_task)
+    message_events = []
+    try:
+        async with asyncio.timeout(1):
+            while True:
+                event = await ev_stream.get()
+                if event is None:
+                    break
+                if event.get("type") == "message":
+                    message_events.append(event)
+    except TimeoutError:
+        pass
+    return first_events, second_events, message_events
 
 
 @pytest.mark.asyncio
@@ -121,13 +138,16 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
             },
         },
     ])
-    first_events, second_events = await _run_foldin(foldin_app, llm)
+    first_events, second_events, message_events = await _run_foldin(foldin_app, llm)
 
-    # The folded-in request must receive a turn boundary so the TUI can show
-    # the queued user text.
+    # The folded-in input is notified on the shared event stream with the
+    # server-side id and content, so the client renders it from the event.
     assert any(
-        event["type"] == "turn_started" for event in second_events
-    ), "folded-in request must receive turn_started"
+        event["data"].get("role") == "user"
+        and event["data"].get("content") == "second queued"
+        and event["data"].get("id")
+        for event in message_events
+    ), "folded-in input must receive a message event with an id"
 
     # The response must be delivered exactly once across both streams.
     combined = [
@@ -160,3 +180,156 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         for event in first_events
     )
     assert llm.call_count == 2
+
+
+async def _run_multi_queue(app, llm):
+    """First turn blocks on a tool; SECOND and THIRD are queued meanwhile."""
+    ctx = await app.state.manager.open_session(
+        session_id="multi",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    tool_started = asyncio.Event()
+    release_tool = asyncio.Event()
+
+    async def wait_for_release(value: str) -> str:
+        tool_started.set()
+        await release_tool.wait()
+        return value
+
+    ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
+    ctx.engine.tool_registry.restrict(None)
+
+    async def collect(stream):
+        events = []
+        async for event in stream:
+            events.append(event)
+        return events
+
+    ev_stream = ctx.attach_event_stream()
+    first_task = asyncio.create_task(collect(ctx.stream_message("first", "req-1")))
+    await asyncio.wait_for(tool_started.wait(), timeout=3)
+    second_task = asyncio.create_task(collect(ctx.stream_message("second", "req-2")))
+    third_task = asyncio.create_task(collect(ctx.stream_message("third", "req-3")))
+    await asyncio.sleep(0)
+    assert len(ctx.pending_fold) == 2, "both queued requests must be accepted"
+    release_tool.set()
+    first_events = await asyncio.wait_for(first_task, timeout=5)
+    second_events = await asyncio.wait_for(second_task, timeout=5)
+    third_events = await asyncio.wait_for(third_task, timeout=5)
+    message_events = []
+    try:
+        async with asyncio.timeout(1):
+            while True:
+                event = await ev_stream.get()
+                if event is None:
+                    break
+                if event.get("type") == "message":
+                    message_events.append(event.get("data", {}).get("content"))
+    except TimeoutError:
+        pass
+    return first_events, second_events, third_events, message_events
+
+
+@pytest.mark.asyncio
+async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
+    """Every queued message must be injected at once, fused into one turn.
+
+    While the agent is busy the mailbox holds the queue; at the tool
+    boundary ALL pending messages are fused into the turn context (one LLM
+    call), each queued stream receives a ``turn_started`` pop signal, and the
+    final queued stream owns the single merged reply.
+
+    Regression: only one queued message was folded per boundary, so the
+    second queued message never drained and the transcript did not update."""
+
+    llm = MockLLM(responses=[
+        {"tool_calls": [{"id": "w1", "name": "wait_for_release", "args": {"value": "x"}}]},
+        {"content": "handled first second and third"},
+    ])
+    first_events, second_events, third_events, message_events = await _run_multi_queue(foldin_app, llm)
+
+    # The active stream keeps its own tool result (no cross-stream leakage).
+    first_tool_results = [
+        event["data"].get("content")
+        for event in first_events
+        if event["type"] == "tool_result"
+    ]
+    assert first_tool_results == ["x"], first_tool_results
+    assert not any(
+        event["type"] == "tool_result"
+        for event in second_events + third_events
+    ), "fused streams must not receive the active turn's tool_result"
+
+    # All inputs are notified in submission order on the shared stream.
+    assert message_events == ["first", "second", "third"], message_events
+
+    # The fused reply is delivered exactly once, to the final queued stream.
+    third_replies = [
+        event["data"].get("content")
+        for event in third_events
+        if event["type"] == "assistant_message"
+    ]
+    assert "handled first second and third" in third_replies, third_replies
+    assert not any(
+        event["type"] == "assistant_message" and event["data"].get("content")
+        for event in second_events
+    ), "non-final queued stream must not receive the merged reply"
+
+    # Both queued messages were consumed by ONE model call after the fusion.
+    assert llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> None:
+    """A completed background job must publish a terminal ``task_updated`` so
+    the TUI task panel stops showing it as running.
+
+    Regression: ``JobRegistry._finish`` only fired ``on_complete`` (a
+    completion notice the TUI never applies); no terminal ``task_updated``
+    reached live clients, so tasks stayed "running" forever."""
+
+    from xbotv2.api.jobs import JobKind
+    from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
+    from xbotv2.tools.permissions import PermissionSystem
+
+    ctx = await foldin_app.state.manager.open_session(
+        session_id="task-panel",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "hi"}]),
+    )
+    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    events = ctx.attach_event_stream()
+
+    registry = ctx.engine.job_registry
+    assert registry is not None
+    tools = {tool.name: tool for tool in SHELL_TOOLS}
+    started = await tools["start_shell"].ainvoke(
+        {"command": "echo done"},
+        job_registry=registry,
+        sandbox=None,
+        sandbox_policy=None,
+    )
+    job_id = started.data["id"]
+    await registry.wait([job_id])
+
+    task_updates = []
+    async with asyncio.timeout(1):
+        while True:
+            event = await events.get()
+            if event is None:
+                break
+            if event.get("type") == "task_updated":
+                task_updates.append(event["data"].get("status"))
+            if "completed" in task_updates:
+                break
+    assert "completed" in task_updates, task_updates
+    assert "running" in task_updates, task_updates
+    assert task_updates.index("running") < task_updates.index("completed"), task_updates

@@ -871,6 +871,72 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "./run.log" in captured["cmd"]
 
 
+
+@pytest.mark.asyncio
+async def test_message_event_pops_queue_before_turn_end():
+    """When the server publishes a ``message`` event (delivery signal), the
+    TUI must pop the matching entry from the local queue AND append it to the
+    transcript immediately — not wait for the turn to finish.
+
+    Regression: the queue pop was tied to the per-message stream ending, so a
+    folded input stayed in the queue panel until the whole turn completed.
+    """
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def send_message(self, text):
+            # Mirrors a queued/folded input: the message is published on the
+            # event stream, then the stream stays quiet until turn end.
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            await asyncio.sleep(0.1)
+            yield {"type": "assistant_message", "data": {"content": "reply"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+    session = FakeSession()
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        await pilot.pause()
+        # Simulate a queued input whose delivery signal arrives while the turn
+        # is still running (before turn_finished).
+        app._pending_messages = {2: "queued input"}
+        app.state.turn_active = True
+        session._events.put_nowait({
+            "type": "message",
+            "data": {"id": "msg-2", "role": "user", "content": "queued input"},
+        })
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app._pending_messages == {}, (
+            "queue must clear when the message event arrives, not at turn end"
+        )
+        assert [m.content for m in app.state.messages if m.role == "user"] == [
+            "queued input",
+        ]
+
+
 @pytest.mark.asyncio
 async def test_textual_app_headless_preserves_message_order_and_chinese():
     from xbotv2.tui.textual_client import XBotTextualApp
@@ -886,6 +952,7 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
             return {"commands": []}
 
         async def send_message(self, text):
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -1030,6 +1097,7 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
             yield {
@@ -1153,6 +1221,7 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "tool_call_delta",
@@ -1224,6 +1293,7 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message_delta", "data": {"content": "a"}}
             yield {"type": "assistant_message_delta", "data": {"content": "b"}}
@@ -1280,6 +1350,7 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -1348,11 +1419,11 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
             return None
 
         async def send_message(self, text):
-            del text
             self.calls += 1
             if self.calls == 1:
                 # Active turn, superseded by the fold-in: stream ends after
                 # the tool batch without a turn boundary.
+                yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {"type": "assistant_message", "data": {"content": "starting tool"}}
                 yield {
@@ -1374,7 +1445,7 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
                     },
                 }
             else:
-                yield {"type": "message_queued", "data": {}}
+                yield {"type": "message", "data": {"id": "msg-2", "role": "user", "content": text}}
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {"type": "assistant_message", "data": {"content": "handled both"}}
                 yield {
@@ -1437,8 +1508,12 @@ async def test_textual_app_headless_renders_inline_permission_options():
         async def disconnect(self):
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             # Tool must exist before permission can be linked to it
             yield {
@@ -1781,8 +1856,11 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         async def disconnect(self):
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
-            del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
                 "request_id": "user_input:c1",
@@ -1930,6 +2008,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
             return None
 
         async def send_message(self, text):
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "assistant_message",
@@ -2354,6 +2433,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
         async def send_message(self, text):
             self.sent.append(text)
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "error",
@@ -3019,6 +3099,7 @@ class _ReplayFakeSession:
         return {"commands": []}
 
     async def send_message(self, text):
+        yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
         yield {"type": "turn_started", "data": {"turn": 1}}
         yield {"type": "assistant_message", "data": {"content": "ok"}}
         yield {"type": "turn_finished", "data": {"turn": 1}}

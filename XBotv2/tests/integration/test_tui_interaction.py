@@ -54,6 +54,14 @@ class _ScriptedSession:
         self.sent: list[str] = []
         self.session_id: str = "s"
         self.thread_id: str = "t"
+        self._message_events: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def session_events(self):
+        while True:
+            event = await self._message_events.get()
+            if event is None:
+                return
+            yield event
 
     async def connect(self) -> None:
         return None
@@ -78,6 +86,10 @@ class _ScriptedSession:
 
     async def send_message(self, text):
         self.sent.append(text)
+        self._message_events.put_nowait({
+            "type": "message",
+            "data": {"id": f"msg-{len(self.sent)}", "role": "user", "content": text},
+        })
         if self._scripts:
             events = self._scripts.pop(0)
         else:
@@ -133,9 +145,8 @@ async def test_status_bar_is_below_composer_and_keeps_tokens_on_narrow_screen(
         app.state.turn_active = True
         app._turn_started_at[123] = time.monotonic() - 1234.5
         app._pending_messages = {
-            1: "active",
-            2: "queued second",
-            3: "queued third",
+            1: "queued second",
+            2: "queued third",
         }
         app.state.usage.update(
             {"input_tokens": 1200, "output_tokens": 345, "total_tokens": 1545}
@@ -421,6 +432,86 @@ async def test_completion_popup_escape_dismisses(scripted_session) -> None:
         assert popup.visible is False
         # Composer text is preserved on dismiss.
         assert composer.text == "/h"
+
+
+@pytest.mark.asyncio
+async def test_completion_popup_does_not_break_transcript_auto_scroll(
+    scripted_session,
+) -> None:
+    """Opening the slash-completion popup must not knock a follower off the
+    tail of the transcript.
+
+    The popup shrinks the transcript viewport; without re-pinning, the scroll
+    offset points above the new bottom and ``is_vertical_scroll_end`` goes
+    stale, silently disabling auto-scroll for subsequent messages."""
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.state.append_message(
+                "assistant" if index % 2 else "user",
+                f"message number {index} with padding words",
+            )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        stream = app.query_one("#transcript")
+        stream.scroll_end(animate=False)
+        await pilot.pause()
+        assert stream.is_vertical_scroll_end
+        # In the real flow the render path pins the follow flag when it
+        # scrolls to the tail; mirror that here.
+        app._transcript_follow = True
+
+        composer = app.query_one("#input")
+        composer.load_text("/")
+        app._refresh_completion_popup(composer.text)
+        await pilot.pause()
+
+        assert app.query_one("#completion_popup").visible is True
+        # The viewport shrank; wait for the re-pin scheduled after the reflow.
+        for _ in range(20):
+            await pilot.pause()
+            if stream.is_vertical_scroll_end:
+                break
+        assert stream.is_vertical_scroll_end, (
+            "opening the completion popup must not disable auto-scroll"
+        )
+
+
+@pytest.mark.asyncio
+async def test_completion_popup_respects_scrolled_away_position(
+    scripted_session,
+) -> None:
+    """A user who scrolled away from the tail must not be yanked back to the
+    bottom when the completion popup changes the transcript height."""
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.state.append_message(
+                "assistant" if index % 2 else "user",
+                f"message number {index} with padding words",
+            )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        stream = app.query_one("#transcript")
+        stream.scroll_end(animate=False)
+        await pilot.pause()
+        app.scroll_transcript_page(down=False)
+        await pilot.pause()
+        assert not stream.is_vertical_scroll_end
+
+        composer = app.query_one("#input")
+        composer.load_text("/")
+        app._refresh_completion_popup(composer.text)
+        await pilot.pause()
+        assert not stream.is_vertical_scroll_end, (
+            "scrolled-away user must not be pulled back to the bottom"
+        )
 
 
 @pytest.mark.asyncio
@@ -718,7 +809,7 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
     """
 
     class SlowSession:
-        """Yields ``turn_started`` and blocks until released."""
+        """Yields a ``message`` event per submission and blocks until released."""
 
         def __init__(self) -> None:
             self.sent: list[str] = []
@@ -730,8 +821,15 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         async def disconnect(self) -> None:
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
             self.sent.append(text)
+            yield {
+                "type": "message",
+                "data": {"id": f"msg-{text}", "role": "user", "content": text},
+            }
             yield {"type": "turn_started", "data": {"turn": 1}}
             # Block the turn until the test releases it.
             await self.release.wait()
