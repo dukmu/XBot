@@ -512,9 +512,15 @@ async def run_turn_stream(
                     if event is None:
                         stream_completed = True
                         break
-                    mailbox_output = runtime.mailbox_output
-                    if mailbox_message is None and mailbox_output is not None:
-                        await mailbox_output.put(event)
+                    if (
+                        mailbox_message is None
+                        and runtime.mailbox_output is not None
+                    ):
+                        # This active turn has been superseded by a folded-in
+                        # queued input. Route the remaining events to the new
+                        # owner instead of duplicating them on this stream.
+                        await runtime.mailbox_output.put(event)
+                        continue
                     yield event
         finally:
             disconnected.set()

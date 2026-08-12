@@ -1184,6 +1184,166 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
 
 
 @pytest.mark.asyncio
+async def test_textual_app_new_entries_follow_only_when_at_bottom():
+    """New transcript entries must follow the tail only when the user is
+    already at the bottom; mounting entries while the user is scrolled up
+    must not yank the viewport down (regression: unconditional scroll_end)."""
+
+    from unittest.mock import PropertyMock, patch
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text):
+            del text
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            yield {"type": "assistant_message", "data": {"content": "reply"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        stream = app.query_one("#transcript")
+        scroll_ends = 0
+        original_scroll_end = stream.scroll_end
+
+        def spy_scroll_end(*args, **kwargs):
+            nonlocal scroll_ends
+            scroll_ends += 1
+            original_scroll_end(*args, **kwargs)
+
+        stream.scroll_end = spy_scroll_end
+
+        # Scrolled up to read older content: new entries must NOT yank down.
+        with patch.object(
+            type(stream), "is_vertical_scroll_end", new_callable=PropertyMock,
+            return_value=False,
+        ):
+            app.state.append_message("user", "scrolled up here")
+            await app._render_new_transcript_entries()
+            await pilot.pause()
+            await pilot.pause()
+        assert scroll_ends == 0, (
+            "scroll_end must not fire while the user is not at the bottom"
+        )
+
+        # At the bottom: follow behavior is preserved.
+        with patch.object(
+            type(stream), "is_vertical_scroll_end", new_callable=PropertyMock,
+            return_value=True,
+        ):
+            app.state.append_message("user", "following tail")
+            await app._render_new_transcript_entries()
+            await pilot.pause()
+            await pilot.pause()
+        assert scroll_ends >= 1, "scroll_end must fire while following the tail"
+
+
+@pytest.mark.asyncio
+async def test_textual_app_foldin_shows_queued_text_and_usage_once():
+    """Fold-in queued message: the queued user text is shown on its own
+    turn boundary, the response appears exactly once, and usage events are
+    applied exactly once (no duplication from the superseded active stream)."""
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send_message(self, text):
+            del text
+            self.calls += 1
+            if self.calls == 1:
+                # Active turn, superseded by the fold-in: stream ends after
+                # the tool batch without a turn boundary.
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "assistant_message", "data": {"content": "starting tool"}}
+                yield {
+                    "type": "usage",
+                    "data": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "total_tokens": 150,
+                        "requests": 1,
+                    },
+                }
+                yield {
+                    "type": "tool_result",
+                    "data": {
+                        "tool_call_id": "t1",
+                        "name": "shell",
+                        "content": "ok",
+                        "status": "completed",
+                    },
+                }
+            else:
+                yield {"type": "message_queued", "data": {}}
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "assistant_message", "data": {"content": "handled both"}}
+                yield {
+                    "type": "usage",
+                    "data": {
+                        "input_tokens": 200,
+                        "output_tokens": 80,
+                        "total_tokens": 280,
+                        "requests": 1,
+                    },
+                }
+                yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+        input_widget.load_text("first")
+        await app.submit_composer()
+        await pilot.pause()
+        input_widget.load_text("second queued")
+        await app.submit_composer()
+        for _ in range(6):
+            await pilot.pause()
+
+    user_texts = [m.content for m in app.state.messages if m.role == "user"]
+    assert user_texts.count("second queued") == 1, (
+        f"queued user text shown {user_texts.count('second queued')} times"
+    )
+    assistant_texts = [m.content for m in app.state.messages if m.role == "assistant"]
+    assert assistant_texts.count("handled both") == 1, (
+        f"fold-in response shown {assistant_texts.count('handled both')} times"
+    )
+    assert app.state.usage["total_tokens"] == 150 + 280, (
+        f"usage double counted: {app.state.usage}"
+    )
+
+
+
+
+@pytest.mark.asyncio
 async def test_textual_app_headless_renders_inline_permission_options():
     from textual.widgets import Button
     from xbotv2.tui.textual_client import XBotTextualApp

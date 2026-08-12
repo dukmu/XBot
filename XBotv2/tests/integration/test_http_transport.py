@@ -1812,15 +1812,21 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
         for message in llm.get_call_messages(1)
         if message.role == "user"
     ] == ["start the tool", "also include this"]
+    # The folded-in request receives its own turn boundary and owns the
+    # response events; the superseded active request must not observe them.
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "handled both requests"
-        for event in first_events
+        event["type"] == "turn_started"
+        for event in second_events
     )
     assert any(
         event["type"] == "assistant_message"
         and event["data"]["content"] == "handled both requests"
         for event in second_events
+    )
+    assert not any(
+        event["type"] == "assistant_message"
+        and event["data"]["content"] == "handled both requests"
+        for event in first_events
     )
 
 

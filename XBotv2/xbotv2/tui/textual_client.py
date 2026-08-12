@@ -1133,6 +1133,9 @@ class XBotTextualApp(App[None]):
             entries = self.state.transcript[start:]
             if not entries:
                 return False
+            # Follow the live tail only when the user is already at the bottom;
+            # never yank the viewport while they are reading older entries.
+            follow = stream.is_vertical_scroll_end
             self._rendered_transcript_entries = len(self.state.transcript)
             for entry in entries:
                 widget = self._widget_for_entry(entry)
@@ -1153,9 +1156,10 @@ class XBotTextualApp(App[None]):
                     except Exception:  # noqa: BLE001
                         pass
                 await stream.mount(widget)
-            self.call_after_refresh(
-                lambda: stream.scroll_end(animate=False)
-            )
+            if follow:
+                self.call_after_refresh(
+                    lambda: stream.scroll_end(animate=False)
+                )
             return True
 
     def _refresh_input_mode(self) -> None:

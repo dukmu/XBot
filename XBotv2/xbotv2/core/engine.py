@@ -1731,9 +1731,14 @@ class Engine:
             images=images,
             artifacts=artifacts,
         )
+        events = [{
+            "type": "turn_started",
+            "data": {"turn": self.turn_count},
+        }]
         if accepted.proceed:
             await self.save_messages()
-        return accepted.events
+        events.extend(accepted.events)
+        return events
 
     async def _accept_user_message(
         self,
