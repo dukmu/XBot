@@ -198,6 +198,8 @@ def test_tui_state_applies_usage_totals():
         "output_tokens": 8,
         "total_tokens": 20,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -975,6 +977,8 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
         "output_tokens": 20,
         "total_tokens": 120,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
     assert app.state.context_input_tokens == 8_000
     assert app.state.model_mode == ""
@@ -1056,6 +1060,80 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         await pilot.pause()
         status = app.query_one("#status_bar").content
         assert "tokens:20 (12 in / 8 out)" in str(status)
+
+
+
+@pytest.mark.asyncio
+async def test_textual_app_alt_c_copies_last_reply():
+    """alt+c (and /copy) copy the last assistant reply as plain text,
+    so text can be pulled out of the TUI even when the mouse cannot be used
+    to create a selection (e.g. under a terminal that captures ctrl+shift+c).
+    """
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return {}
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.state.append_message("assistant", "**last** reply with `code`")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        await pilot.press("alt+c")
+        await pilot.pause()
+        assert "last" in app.clipboard
+        assert "code" in app.clipboard
+        assert "**" not in app.clipboard, "markdown markers must be stripped"
+        assert "Copied" in app.state.status
+
+
+
+@pytest.mark.asyncio
+async def test_textual_app_ctrl_c_without_selection_clears_input():
+    """ctrl+c with no selection keeps clearing the composer (cancel_or_quit)."""
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return {}
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.query_one("#input").load_text("abc")
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.query_one("#input").text == ""
+        assert app.state.status != "Shutdown"
+
 
 
 @pytest.mark.asyncio
@@ -2492,6 +2570,8 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
         "output_tokens": 13,
         "total_tokens": 43,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -2552,6 +2632,87 @@ def test_usage_prefers_effective_context_tokens():
     })
 
     assert state.context_input_tokens == 800
+
+
+def test_usage_accumulates_cache_read_into_session_totals():
+    """Provider usage where almost all input is cache-read (e.g. deepseek)
+    must still report a meaningful full-input figure: uncached + cache-read.
+    """
+
+    state = TuiState()
+    state.apply_event({
+        "type": "usage",
+        "data": {
+            "input_tokens": 0,
+            "output_tokens": 215,
+            "total_tokens": 9909,
+            "requests": 1,
+            "context_tokens": 9694,
+            "cache_read_input_tokens": 9694,
+        },
+    })
+    assert state.usage["input_tokens"] == 0
+    assert state.usage["cache_read_input_tokens"] == 9694
+    assert state.usage["total_tokens"] == 9909
+    assert state.turn_usage["cache_read_input_tokens"] == 9694
+    # The full input shown by the status bar = uncached + cache-read.
+    full_input = (
+        state.usage["input_tokens"] + state.usage["cache_read_input_tokens"]
+    )
+    assert full_input == 9694
+
+
+def test_usage_compaction_total_includes_cache_keys():
+    """The compaction ``total`` replacement path must also set cache keys."""
+
+    state = TuiState()
+    state.apply_event({
+        "type": "usage",
+        "data": {
+            "total": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "requests": 1,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+            },
+        },
+    })
+    assert state.usage["input_tokens"] == 100
+    assert state.usage["cache_read_input_tokens"] == 40
+    assert state.usage["cache_creation_input_tokens"] == 10
+
+
+def test_usage_turn_cycle_with_cache_heavy_provider_does_not_error():
+    """A deepseek-style usage event (uncached input 0, all cache-read) across
+    full turn boundaries must not raise, must reset per-turn state on
+    turn_started, and must keep the session total accurate. Regression: the
+    turn_usage reset omitted the cache keys, so ``_apply_usage`` raised
+    KeyError and the turn never reached ``turn_finished`` (stuck "Running")."""
+
+    state = TuiState()
+    for turn in (1, 2):
+        state.apply_event({"type": "turn_started", "data": {"turn": turn}})
+        state.apply_event({
+            "type": "usage",
+            "data": {
+                "input_tokens": 0,
+                "output_tokens": 215,
+                "total_tokens": 9909,
+                "requests": 1,
+                "context_tokens": 9694,
+                "cache_read_input_tokens": 9694,
+            },
+        })
+        state.apply_event({"type": "turn_finished", "data": {"turn": turn}})
+
+    assert state.errors == []
+    assert state.turn_active is False
+    assert state.usage["cache_read_input_tokens"] == 2 * 9694
+    assert state.usage["total_tokens"] == 2 * 9909
+    assert state.turn_usage["cache_read_input_tokens"] == 9694
+    assert state.turn_usage["output_tokens"] == 215
 
 
 # ----------------------------------------------------------------------

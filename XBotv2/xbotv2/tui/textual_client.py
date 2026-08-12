@@ -48,6 +48,7 @@ from xbotv2.tui.textual_widgets import (
     TranscriptScroll,
     TaskListWidget,
     _build_title,
+    _markdown_plain_text,
     entry_widget,
     message_widget,
     notice_title,
@@ -136,6 +137,7 @@ class XBotTextualApp(App[None]):
 
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Clear input or quit"),
+        ("alt+c", "copy_last", "Copy last reply"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
         ("ctrl+p", "open_palette", "Command palette"),
@@ -420,7 +422,6 @@ class XBotTextualApp(App[None]):
 
     def action_interrupt_turn(self) -> None:
         """Cancel the running turn via the HTTP /interrupt endpoint.
-
         Textual's action system does not auto-await coroutine
         actions. We schedule the actual HTTP round-trip on a
         worker. The worker is ``exclusive=False`` so the in-flight
@@ -453,6 +454,31 @@ class XBotTextualApp(App[None]):
             name="tui_interrupt",
             description="ESC: cancel running turn",
         )
+
+    def action_copy_last(self) -> None:
+        """Copy the most recent assistant reply as plain text.
+
+        The TUI itself does not support text selection; this keyboard shortcut
+        (and the ``/copy`` command) lets the user pull text out of the app
+        when the terminal cannot select rendered content.
+        """
+        assistant = [m for m in self.state.messages if m.role == "assistant"]
+        if not assistant:
+            self._copy_feedback(0)
+            return
+        text = _markdown_plain_text(assistant[-1].content, width=self.size.width)
+        self.app.copy_to_clipboard(text)
+        self._copy_feedback(len(text))
+
+    def _copy_feedback(self, chars: int) -> None:
+        if not self.is_mounted:
+            return
+        if chars <= 0:
+            self.state.status = "Nothing to copy"
+            self._refresh_status()
+            return
+        self.state.status = f"Copied {chars} chars"
+        self._refresh_status()
 
     def action_open_palette(self) -> None:
         """Open the command palette modal (Ctrl+P)."""
@@ -489,6 +515,9 @@ class XBotTextualApp(App[None]):
             return
         if spec.name == "clear-screen" and spec.kind == "client":
             await self._cmd_clear()
+            return
+        if spec.name == "copy":
+            self.action_copy_last()
             return
         if spec.name == "help":
             await self._cmd_help(spec.args.strip() if spec.args else None)
@@ -738,9 +767,14 @@ class XBotTextualApp(App[None]):
     async def _collect_session_events(self) -> None:
         try:
             async for event in self.session.session_events():
-                self.state.apply_event(event)
-                await self._handle_stream_event(event)
-                await self._start_interaction_response(event)
+                try:
+                    self.state.apply_event(event)
+                    await self._handle_stream_event(event)
+                    await self._start_interaction_response(event)
+                except Exception:  # noqa: BLE001
+                    # A single malformed event must not abort the stream,
+                    # otherwise the turn state (e.g. turn_active) stays stuck.
+                    logger.exception("tui session event failed type=%s", event.get("type"))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -763,13 +797,19 @@ class XBotTextualApp(App[None]):
             )
             async for event in stream:
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
-                if queued_text is not None and event.get("type") == "turn_started":
-                    self.state.append_message("user", queued_text)
-                    queued_text = None
-                    await self._render_new_transcript_entries()
-                self.state.apply_event(event)
-                await self._handle_stream_event(event)
-                await self._start_interaction_response(event)
+                try:
+                    if queued_text is not None and event.get("type") == "turn_started":
+                        self.state.append_message("user", queued_text)
+                        queued_text = None
+                        await self._render_new_transcript_entries()
+                    self.state.apply_event(event)
+                    await self._handle_stream_event(event)
+                    await self._start_interaction_response(event)
+                except Exception:  # noqa: BLE001
+                    # Keep consuming the stream: a single bad event must not
+                    # skip turn_finished/turn_cancelled and leave turn_active
+                    # stuck in the "Running" state.
+                    logger.exception("tui.collect_response event failed type=%s", event.get("type"))
         except Exception as exc:
             logger.exception("tui.collect_response failed")
             self._record_error(exc)
@@ -1508,12 +1548,15 @@ class XBotTextualApp(App[None]):
     def _activity_text(self, *, final: bool) -> str:
         elapsed = self._turn_elapsed()
         usage = self.state.turn_usage
+        full_input = (
+            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+        )
         marker = "done" if final else spinner(self._spinner_index)
         verb = "completed" if final else "working"
         return (
             f"{marker} turn {self.state.turn} {verb} "
             f"{elapsed:.1f}s  "
-            f"tokens in:{usage['input_tokens']} out:{usage['output_tokens']} "
+            f"tokens in:{full_input} out:{usage['output_tokens']} "
             f"total:{usage['total_tokens']}"
         )
 

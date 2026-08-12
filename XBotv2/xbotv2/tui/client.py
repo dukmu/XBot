@@ -116,12 +116,16 @@ class TuiState:
         "output_tokens": 0,
         "total_tokens": 0,
         "requests": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     })
     turn_usage: dict[str, int] = field(default_factory=lambda: {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
         "requests": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     })
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
@@ -167,6 +171,8 @@ class TuiState:
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "requests": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
             }
             self._streaming_assistant_index = None
             self._streaming_tool_ids.clear()
@@ -673,22 +679,32 @@ class TuiState:
             self.context_input_tokens = int(
                 current.get("context_tokens") or current.get("input_tokens") or 0
             )
-        for key in ("input_tokens", "output_tokens", "total_tokens", "requests"):
+        keys = (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "requests",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+        for key in keys:
             val = int(usage.get(key) or 0)
             if key in usage:
                 if has_total:
                     self.usage[key] = val
                 else:
-                    self.usage[key] += val
+                    self.usage[key] = self.usage.get(key, 0) + val
             # When no ``delta`` sub-key exists, treat the flat data
             # itself as the delta — the engine sends one ``usage``
             # event per LLM call, and each event carries the current
             # provider-side consumption, which IS the turn-level delta.
             if isinstance(delta, dict):
                 if key in delta:
-                    self.turn_usage[key] += int(delta.get(key) or 0)
+                    self.turn_usage[key] = self.turn_usage.get(key, 0) + int(
+                        delta.get(key) or 0
+                    )
             elif key in usage:
-                self.turn_usage[key] += val
+                self.turn_usage[key] = self.turn_usage.get(key, 0) + val
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:
