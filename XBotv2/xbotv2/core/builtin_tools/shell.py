@@ -43,6 +43,12 @@ class ShellCommandError(RuntimeError):
         self.detail = f"exit_code={exit_code}" if exit_code is not None else None
 
 
+_ESCALATION_JUSTIFICATION_REQUIRED = (
+    "sandbox_permissions=require_escalated requires a non-empty justification "
+    "explaining why the command must run outside the sandbox"
+)
+
+
 class ShellRunner:
     """Runs one background SHELL job through the shared shell executor."""
 
@@ -98,9 +104,10 @@ async def shell(
     code; if a nonzero exit is an expected result, the command must verify
     that condition and then exit zero.
 
-    Commands run in the configured sandbox by default. To run the complete
-    command outside it, request ``require_escalated`` and provide a concrete
-    justification; XBot asks the human for approval before execution.
+    Commands run in the sandbox by default; writes outside it fail read-only.
+    When completing the user's request genuinely requires writing outside it,
+    request ``sandbox_permissions=require_escalated`` with a justification so
+    the human can approve.
 
     Args:
         command: Complete shell command to execute.
@@ -113,7 +120,7 @@ async def shell(
         if not justification or not justification.strip():
             return ToolResult.failure(
                 "invalid_sandbox_request",
-                "justification is required for an escalated shell command",
+                _ESCALATION_JUSTIFICATION_REQUIRED,
             )
     active_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
@@ -150,6 +157,10 @@ async def start_shell(
     background shell does not mean its command succeeded; check the returned
     status and exit code.
 
+    Writes outside the sandbox fail read-only. When completing the user's
+    request genuinely requires writing outside it, request
+    ``sandbox_permissions=require_escalated`` with a justification.
+
     Args:
         command: Complete shell command to execute.
         cwd: Working directory. Defaults to the session workspace root.
@@ -164,7 +175,7 @@ async def start_shell(
         if not justification or not justification.strip():
             return ToolResult.failure(
                 "invalid_sandbox_request",
-                "justification is required for an escalated shell command",
+                _ESCALATION_JUSTIFICATION_REQUIRED,
             )
     if job_registry is None:
         return ToolResult.failure(
