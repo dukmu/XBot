@@ -709,34 +709,37 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
             break
         await asyncio.sleep(0)
 
-    # Hold the turn lock so completions aggregate instead of draining.
+    # Completions stage into the agent inbox with a small notification; they
+    # do not wake a turn and do not carry the full subagent output.
     await runtime.turn_lock.acquire()
-    await runtime._enqueue_subagent_completion({
+    await runtime._collect_completion({
+        "type": "subagent",
+        "kind": "subagent",
         "task_id": "sa_1",
         "status": "completed",
         "agent": "worker",
-        "output": "background result",
+        "command": "",
+        "data": {"output": "background result"},
     })
-    await runtime._enqueue_subagent_completion({
+    await runtime._collect_completion({
+        "type": "subagent",
+        "kind": "subagent",
         "task_id": "sa_2",
         "status": "completed",
         "agent": "worker",
-        "output": "x" * 13_000,
+        "command": "",
+        "data": {"output": "x" * 13_000},
     })
-    assert runtime.mailbox.size == 0
-    by_task = {n["task_id"]: n for n in runtime._pending_notices}
-    assert "sa_1" in by_task
-    short_notice = by_task["sa_1"]
-    assert short_notice["kind"] == "subagent"
-    assert short_notice["data"]["output"] == "background result"
-    long_notice = by_task["sa_2"]
-    output = long_notice["data"]["output"]
-    cached = ET.fromstring(output)
-    assert cached.attrib["kind"] == "subagent_output"
-    assert cached.findtext("cache_path").strip().startswith(
-        "session/artifacts/context/"
-    )
-    assert list((state_store.artifacts_dir / "context").glob("*.txt"))
+    assert not runtime.pending_fold
+    assert len(runtime.inbox) == 2
+    staged = {message.source: message for message in runtime.inbox.pending}
+    assert "sa_1" in staged
+    short = staged["sa_1"]
+    assert short.type == "subagent"
+    assert short.payload["status"] == "completed"
+    assert short.payload["agent"] == "worker"
+    # The notification stays small; the full output is not staged.
+    assert "output" not in short.payload
     runtime.turn_lock.release()
     await runtime.close()
 

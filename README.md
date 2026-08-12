@@ -26,7 +26,7 @@ provide `xbot` through the standard Python console entrypoint.
 
 ACP mode exposes XBot as an Agent Client Protocol v1 process over stdin/stdout.
 The ACP client supplies the workspace when it creates or resumes a session.
-See the [ACP compatibility matrix](XBotv2/docsv2/acp_compatibility.md).
+See the [ACP compatibility matrix](XBotv2/docsv2/protocol/acp_compatibility.md).
 
 Web mode serves the compiled frontend through Python and automatically starts
 the API on an internal Unix socket unless `--server URL` is provided. Run

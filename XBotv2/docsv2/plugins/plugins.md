@@ -238,7 +238,7 @@ See [TodoList plugin](todolist.md).
 
 Maintains one durable session objective. `/goal` is the human control surface;
 `create_goal`, `get_goal`, and `update_goal` are Agent Tools. Active goals
-continue through Core mailbox turns; ESC pauses them and `/goal resume`
+continue through continuation turns; ESC pauses them and `/goal resume`
 reactivates them. Terminal context remains until resume, replacement, or clear.
 See [Goal plugin](goal.md).
 

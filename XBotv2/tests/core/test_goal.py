@@ -15,7 +15,7 @@ from xbotv2.core.engine import Engine
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
-from xbotv2.core.mailbox import MailboxMessage
+from xbotv2.core.inbox import InboxMessage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
 from xbotv2.plugin.store import PluginStore
@@ -80,10 +80,10 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
     queued = []
 
-    async def enqueue(message):
-        queued.append(message)
+    async def enqueue():
+        queued.append(True)
 
-    ctx = SimpleNamespace(enqueue_general=enqueue)
+    ctx = SimpleNamespace(request_continuation=enqueue)
 
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
@@ -129,7 +129,7 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
     long_summary = await plugin.update_goal("complete", "x" * 2_001)
     bad_budget = await plugin.create_goal("another", token_budget=0)
     bad_command_budget = await plugin._goal_command(
-        SimpleNamespace(enqueue_general=None),
+        SimpleNamespace(request_continuation=None),
         "--token-budget nope another objective",
     )
 
@@ -147,54 +147,51 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
 async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("iterate until complete")
-    queued = []
+    requests = []
 
-    async def enqueue(message):
-        queued.append(message)
+    async def request_continuation():
+        requests.append(True)
 
     turn_end = HookContext(
         stage=HookStage.ON_TURN_END,
         session=SimpleNamespace(),
         stop_reason="completed",
-        enqueue_mailbox=enqueue,
+        request_continuation=request_continuation,
     )
     await plugin._on_turn_end(turn_end)
     await plugin._on_turn_end(turn_end)
 
-    assert len(queued) == 1
-    assert queued[0]["source"] == "goal"
-    assert queued[0]["event"] == "continue"
+    assert len(requests) == 1
 
-    await plugin._on_mailbox_delivery(HookContext(
-        stage=HookStage.BEFORE_MAILBOX_DELIVERY,
+    # The continuation turn starting resets the pending flag; the next
+    # completed turn schedules another continuation.
+    await plugin._start_goal_turn(HookContext(
+        stage=HookStage.ON_TURN_START,
         session=SimpleNamespace(),
-        mailbox_message=SimpleNamespace(kind="general", message=queued[0]),
+        user_input="[goal continuation]",
+        continuation=True,
     ))
     await plugin._on_turn_end(turn_end)
-    assert len(queued) == 2
+    assert len(requests) == 2
 
 
 @pytest.mark.asyncio
 async def test_runtime_notification_does_not_drive_active_goal(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("iterate until complete")
-    queued = []
+    requests = []
+
+    async def request_continuation():
+        requests.append(True)
 
     await plugin._on_turn_end(HookContext(
         stage=HookStage.ON_TURN_END,
         session=SimpleNamespace(),
         stop_reason="completed",
-        enqueue_mailbox=queued.append,
-        mailbox_message=SimpleNamespace(
-            kind="general",
-            message={
-                "source": "background_task",
-                "event": "background_task_finished",
-            },
-        ),
+        request_continuation=request_continuation,
     ))
 
-    assert queued == []
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
@@ -212,31 +209,31 @@ async def test_goal_exposes_compact_status_slot(state_store):
 async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("pause on escape")
-    queued = []
+    requests = []
+
+    async def request_continuation():
+        requests.append(True)
 
     await plugin._on_turn_end(HookContext(
         stage=HookStage.ON_TURN_END,
         session=SimpleNamespace(),
         stop_reason="client_interrupt",
-        enqueue_mailbox=queued.append,
+        request_continuation=request_continuation,
     ))
 
-    assert queued == []
+    assert requests == []
     assert (await plugin.get_goal()).data["goal"]["status"] == "paused"
 
 
 @pytest.mark.asyncio
-async def test_goal_snapshot_is_added_only_to_goal_mailbox_turn(state_store):
+async def test_goal_snapshot_is_added_only_to_continuation_turn(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("output two greetings")
     active_ctx = HookContext(
         stage=HookStage.ON_TURN_START,
         session=SimpleNamespace(),
         user_input="wake",
-        mailbox_message=SimpleNamespace(
-            kind="general",
-            message={"source": "goal", "event": "continue"},
-        ),
+        continuation=True,
     )
 
     await plugin._start_goal_turn(active_ctx)
@@ -248,7 +245,7 @@ async def test_goal_snapshot_is_added_only_to_goal_mailbox_turn(state_store):
         stage=HookStage.ON_TURN_START,
         session=SimpleNamespace(),
         user_input="wake",
-        mailbox_message=active_ctx.mailbox_message,
+        continuation=False,
     )
 
     await plugin._start_goal_turn(ctx)
@@ -257,7 +254,7 @@ async def test_goal_snapshot_is_added_only_to_goal_mailbox_turn(state_store):
 
 
 @pytest.mark.asyncio
-async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
+async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     state_store,
     temp_workspace,
 ):
@@ -265,7 +262,10 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
     await plugin.create_goal("finish the audit")
     hooks = HookManager()
     hooks.register(HookStage.ON_TURN_START, setup.hooks[HookStage.ON_TURN_START])
-    llm = MockLLM(responses=[{"content": "Working on the audit."}])
+    llm = MockLLM(responses=[
+        {"content": "Working on the audit."},
+        {"content": "Plain reply."},
+    ])
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
@@ -279,57 +279,25 @@ async def test_goal_mailbox_snapshot_is_turn_scoped_and_delivery_is_journaled(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
-    item = MailboxMessage.create(
-        "general",
-        {"source": "goal", "event": "continue"},
-    )
 
+    # A continuation turn gets the active goal context as its prompt.
+    engine.continuation = True
     _ = [
         event
-        async for event in engine.run_turn(
-            "Mailbox wake",
-            mailbox_message=item,
-        )
+        async for event in engine.run_turn("[goal continuation]", request_id="goal")
     ]
-
-    request = llm.get_call_messages(0)
-    runtime_input = request[-1]
-    assert runtime_input.role == "user"
-    runtime_event = ET.fromstring(runtime_input.content)
-    assert runtime_event.tag == "runtime_event"
-    assert runtime_event.attrib == {
-        "event": "continue",
-        "kind": "general",
-        "source": "goal",
-    }
-    payload = runtime_event.find("payload")
-    assert payload is not None
-    assert payload.attrib["encoding"] == "json"
-    assert json.loads(payload.text) == {
+    last = llm.get_call_messages(0)[-1]
+    assert last.role == "user"
+    assert json.loads(last.content) == {
         "objective": "finish the audit",
         "status": "active",
     }
-    assert runtime_event.find("instruction") is None
-    assert "finish the audit" in runtime_input.content
-    assert all(message.role != "user" for message in request[:-1])
-    assert engine.messages[0].additional_kwargs["runtime_input"] == {
-        "kind": "general",
-        "source": "goal",
-        "event": "continue",
-    }
-    records = [
-        yaml.safe_load(line)
-        for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
-    ]
-    delivery = next(
-        record for record in records
-        if record.get("record_type") == "mailbox_delivery"
-    )
-    assert delivery["kind"] == "general"
-    assert delivery["message"] == {"source": "goal", "event": "continue"}
-    restored = state_store.read_messages()
-    assert restored[0].content == runtime_input.content
-    assert restored[0].additional_kwargs["runtime_input"]["source"] == "goal"
+    assert all(message.role != "user" for message in llm.get_call_messages(0)[:-1])
+
+    # A normal turn keeps its own prompt.
+    engine.continuation = False
+    _ = [event async for event in engine.run_turn("plain wake", request_id="plain")]
+    assert llm.get_call_messages(1)[-1].content == "plain wake"
 
 
 @pytest.mark.asyncio

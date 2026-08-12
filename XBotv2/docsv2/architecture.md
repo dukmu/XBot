@@ -18,6 +18,75 @@ Core defines interfaces; bootstrap wires plugins at runtime via manifests.
 `plugin_dirs=[]` disables plugin discovery (pure-core test mode).
 `--no-plugins` CLI flag equivalent.
 
+### System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Clients
+        TUI["TUI (xbotv2/tui/)"]
+        WEB["Web client (xbotv2/web_server.py)"]
+    end
+
+    subgraph Transport["Protocol / transport"]
+        UDS["Unix domain socket (__main__.py)"]
+        HTTP["HTTP/SSE server (protocol/http_server.py)"]
+        SCM["SessionManager (protocol/session_manager.py)"]
+    end
+
+    subgraph Core["Core"]
+        SRT["SessionRuntime (core/session.py)<br/>engine · inbox · interactions · event stream"]
+        ENG["Engine (core/engine.py) ReAct loop"]
+        CTX["ContextBuilder (core/context.py)"]
+        IBX["AgentInbox (core/inbox.py)"]
+        ITX["InteractionWaiter (core/interactions.py)"]
+        HKS["HookManager (hooks/manager.py)"]
+    end
+
+    subgraph ToolsLayer["Tool system"]
+        REG["ToolRegistry (tools/registry.py)"]
+        PERM["PermissionSystem (tools/permissions.py)"]
+        SBX["Sandbox + BubblewrapBackend (tools/)"]
+        BT["builtin tools (core/builtin_tools/)"]
+    end
+
+    subgraph ProvidersLayer["LLM providers"]
+        LLM["providers (llm/)<br/>openai · anthropic · mock"]
+    end
+
+    subgraph PersistenceLayer["Persistence"]
+        STORE["CoreStateStore (persistence/store.py)"]
+        JRNL["messages.jsonl (append-only)"]
+    end
+
+    subgraph PluginsLayer["Plugins (builtin_plugins/)"]
+        P["compact · todolist · goal · skills · mcp · agents"]
+    end
+
+    TUI -->|"local"| UDS
+    TUI -->|"remote --server"| HTTP
+    WEB -->|"loopback HTTP, proxies /api/*"| UDS
+    UDS --> SCM
+    HTTP --> SCM
+    SCM --> SRT
+    SRT --> ENG
+    ENG --> CTX
+    ENG --> IBX
+    ENG --> ITX
+    ENG --> HKS
+    ENG --> REG
+    REG --> PERM
+    REG --> SBX
+    REG --> BT
+    ENG --> LLM
+    ENG --> STORE
+    STORE --> JRNL
+    P -. "import stable api (xbotv2.api)" .-> ENG
+```
+
+Core never imports `builtin_plugins`; plugins import the stable `xbotv2.api`
+surface. The Web boundary never imports or calls Engine — it only transports
+public protocol requests.
+
 ## Client Processes
 
 The TUI and Web clients use the same HTTP/SSE protocol. Local TUI mode talks
@@ -102,21 +171,46 @@ by character limits. Child Engine sessions are spawned through the api
 
 ### Hooks (`xbotv2/hooks/`)
 
-43 `HookStage` values cover session, turn, mailbox, tool, context, and compaction
+`HookStage` values cover session, turn, tool, context, and compaction
 lifecycle. Guard control flow uses explicit `HookDecision`; critical lifecycle
 stages aggregate failures with `ExceptionGroup`.
 
-### Runtime Mailbox (`xbotv2/core/mailbox.py`)
+### Input acceptance and runtime inbox (`xbotv2/core/inbox.py`)
 
-Buffers queued `user_message` and `general` inputs while a session is alive.
-Idle human input enters Engine directly; only submissions made behind an active
-turn or existing queue use the mailbox. A session worker turns one queued item
-at a time into an Engine turn, with user input ahead of runtime notifications.
-Engine may also accept one item after a complete ToolResult batch, immediately
-before the next provider call.
-Queue contents are destroyed on disconnect and are not restored. Deliveries
-that started and their accepted Messages are appended to the session journal
-for reconstruction and analysis, but are never requeued on resume.
+While the agent is busy, new user input is held in the session's pending fold
+and fused into the running turn after the next ToolResult batch; a held input
+that no boundary fuses is rejected with `input_rejected` and the client
+retries. Runtime notifications are staged in the agent inbox and drained —
+all at once — into the next turn's context without starting a turn. Both
+buffers are runtime-only and destroyed on disconnect.
+
+```mermaid
+sequenceDiagram
+    participant Job as background job (shell / subagent)
+    participant Reg as JobRegistry (api/jobs/)
+    participant Ses as SessionRuntime (core/session.py)
+    participant IBX as AgentInbox
+    participant Ctx as next turn context
+    participant TUI
+    participant Goal as GoalPlugin
+
+    Note over Job,IBX: Completions never start a turn
+    Job-->>Reg: finishes
+    Reg-->>Ses: on_complete callback
+    Ses->>IBX: enqueue(InboxMessage)
+    Ses-->>TUI: completion_notice (task panel tracks status)
+
+    Note over Ctx,IBX: drained only when a turn already runs
+    Ses->>Ctx: later user message starts a turn
+    Ctx->>IBX: _drain_inbox_into_messages() drains ALL
+    IBX-->>Ctx: one <runtime_event> envelope in model context
+
+    Note over Goal,Ses: request_continuation is the one deliberate wake
+    Ses->>Goal: turn finishes (ON_TURN_END)
+    Goal->>Ses: request_continuation()
+    Ses->>Ses: schedule background continuation turn
+    Note over Ses,Ctx: never routed through AgentInbox
+```
 
 ### LLM Provider (`xbotv2/llm/`)
 
@@ -144,7 +238,7 @@ and metadata is escaped. Fragment stages are compatible ordering zones rather
 than provider positions or authority levels. The default core instructions are
 owned by `ContextBuilder` and apply to primary Agents and subagents; clocks and
 turn counters are excluded to keep the provider prefix deterministic. See
-[`prompts.md`](prompts.md) for the complete contract.
+[`prompts.md`](core/prompts.md) for the complete contract.
 
 Runtime-owned non-system content uses the same source-delimited convention
 inside its existing role: Tool results, cache references, Skill expansion,
@@ -174,7 +268,7 @@ ownership.
 Persists one session objective. Humans manage it through `/goal`; the Agent uses
 `create_goal`, `get_goal`, and `update_goal`. Both surfaces reuse plugin-owned
 state transitions but have separate dispatch paths. Active goals schedule their
-next turn through the Core mailbox until completed, blocked, or paused. Goal
+next continuation turn until completed, blocked, or paused. Goal
 preapproves its basic Agent Tools through `BEFORE_TOOL_CALL`; Core contains no
 Goal-specific permission or command logic. It does not own todo steps.
 

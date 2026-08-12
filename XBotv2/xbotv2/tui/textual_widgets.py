@@ -26,6 +26,12 @@ from xbotv2.tui.client import TuiMessage, TuiState, TuiTask, TuiTool, format_val
 _MARKDOWN_CACHE: OrderedDict[tuple[str, str], Text | Markdown] = OrderedDict()
 _MARKDOWN_CACHE_MAX = 64
 
+# Plain-text render of a Markdown body, used for copying text out of the TUI
+# (keyboard fallback; Textual's built-in extraction only handles Text/Content
+# visuals, so this renders Markdown at a given width itself).
+_PLAIN_CACHE: OrderedDict[tuple[int, str], str] = OrderedDict()
+_PLAIN_CACHE_MAX = 64
+
 
 def _cached_render_message(content: str, *, role: str) -> Text | Markdown:
     key = (role, content)
@@ -38,6 +44,30 @@ def _cached_render_message(content: str, *, role: str) -> Text | Markdown:
     if len(_MARKDOWN_CACHE) > _MARKDOWN_CACHE_MAX:
         _MARKDOWN_CACHE.popitem(last=False)
     return rendered
+
+
+def _markdown_plain_text(content: str, width: int) -> str:
+    """Render Markdown to plain text for clipboard extraction."""
+    key = (width, content)
+    cached = _PLAIN_CACHE.get(key)
+    if cached is not None:
+        _PLAIN_CACHE.move_to_end(key)
+        return cached
+    from rich.console import Console
+
+    console = Console(
+        force_terminal=False,
+        color_system=None,
+        legacy_windows=False,
+        width=max(10, width or 80),
+    )
+    with console.capture() as capture:
+        console.print(Markdown(content))
+    plain = "\n".join(line.rstrip() for line in capture.get().splitlines()).rstrip()
+    _PLAIN_CACHE[key] = plain
+    if len(_PLAIN_CACHE) > _PLAIN_CACHE_MAX:
+        _PLAIN_CACHE.popitem(last=False)
+    return plain
 
 
 _STATUS_BADGE_STYLE: dict[str, str] = {
@@ -103,9 +133,14 @@ def status_renderable(
         segments.insert(activity_index, (activity, ""))
 
     if width >= 80:
+        # "in" is the full prompt sent to the provider (uncached + cache-read);
+        # deepseek reports uncached input as 0 when everything is cached.
+        full_input = (
+            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+        )
         detailed_tokens = (
             f"tokens:{_compact_count(total)} "
-            f"({_compact_count(usage['input_tokens'])} in / "
+            f"({_compact_count(full_input)} in / "
             f"{_compact_count(usage['output_tokens'])} out)"
         )
         token_index = next(
@@ -385,6 +420,11 @@ class TranscriptScroll(VerticalScroll):
 
     Emits :class:`ReplayTopReached` when the user scrolls to the top while
     older replayed history is still unmounted, so the app can lazy-load it.
+    Emits :class:`Scrolled` after any user-initiated scroll so the app can
+    track whether it should keep following the live tail, and
+    :class:`HeightChanged` when the viewport height changes (e.g. the
+    slash-completion popup appears), so the app can re-pin a follower to the
+    bottom instead of leaving it stranded mid-scroll.
     """
 
     can_focus = False
@@ -395,25 +435,51 @@ class TranscriptScroll(VerticalScroll):
     class ReplayBottomReached(Message):
         pass
 
+    class Scrolled(Message):
+        """Posted after a user scroll; ``at_end`` is the resulting state."""
+
+        def __init__(self, at_end: bool) -> None:
+            self.at_end = at_end
+            super().__init__()
+
+    class HeightChanged(Message):
+        pass
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_height: int | None = None
+
+    def on_resize(self, event: events.Resize) -> None:
+        if self._last_height is not None and event.size.height != self._last_height:
+            self.post_message(self.HeightChanged())
+        self._last_height = event.size.height
+
+    def _post_scrolled(self) -> None:
+        self.post_message(self.Scrolled(at_end=self.is_vertical_scroll_end))
+
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         super()._on_mouse_scroll_up(event)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
+        self._post_scrolled()
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         super()._on_mouse_scroll_down(event)
         if self.is_vertical_scroll_end:
             self.post_message(self.ReplayBottomReached())
+        self._post_scrolled()
 
     def scroll_up(self, *args, **kwargs) -> None:
         super().scroll_up(*args, **kwargs)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
+        self._post_scrolled()
 
     def scroll_down(self, *args, **kwargs) -> None:
         super().scroll_down(*args, **kwargs)
         if self.is_vertical_scroll_end:
             self.post_message(self.ReplayBottomReached())
+        self._post_scrolled()
 
 
 @dataclass(frozen=True)

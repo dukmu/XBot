@@ -48,6 +48,7 @@ from xbotv2.tui.textual_widgets import (
     TranscriptScroll,
     TaskListWidget,
     _build_title,
+    _markdown_plain_text,
     entry_widget,
     message_widget,
     notice_title,
@@ -136,6 +137,7 @@ class XBotTextualApp(App[None]):
 
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Clear input or quit"),
+        ("alt+c", "copy_last", "Copy last reply"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
         ("ctrl+p", "open_palette", "Command palette"),
@@ -204,6 +206,7 @@ class XBotTextualApp(App[None]):
         self._reasoning_expanded = False
         self._tool_details_expanded = False
         self._pending_images: list[tuple[str, dict[str, str]]] = []
+        self._transcript_follow: bool = False
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
@@ -252,6 +255,27 @@ class XBotTextualApp(App[None]):
         if self._replay_loading or self._window_end >= len(self.state.transcript):
             return
         self.run_worker(self._load_newer_replay, exclusive=False)
+
+    @on(TranscriptScroll.Scrolled)
+    def _handle_transcript_scrolled(self, event: TranscriptScroll.Scrolled) -> None:
+        """Track whether the user is following the live tail."""
+        self._transcript_follow = event.at_end
+
+    @on(TranscriptScroll.HeightChanged)
+    def _handle_transcript_resized(self) -> None:
+        """Re-pin a follower to the tail when the viewport height changes.
+
+        Layout changes (the slash-completion popup, the runtime panels, a
+        taller composer) shrink the transcript viewport; the current scroll
+        offset then points above the new bottom and ``is_vertical_scroll_end``
+        goes stale, silently breaking auto-scroll until the next render. If
+        the user was following, scroll back to the end after the reflow.
+        """
+        if not self._transcript_follow:
+            return
+        stream = self._safe_query_one("#transcript", TranscriptScroll)
+        if stream is not None:
+            self.call_after_refresh(lambda s=stream: s.scroll_end(animate=False))
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
@@ -376,15 +400,17 @@ class XBotTextualApp(App[None]):
             visible_text,
             [name for name, _payload in attachments],
         )
-        if not append_on_start:
-            self.state.append_message("user", display_text)
-            await self._render_new_transcript_entries()
+        # The transcript is event-driven: the server emits a ``message``
+        # event (carrying the server-side id and content) when the input is
+        # accepted, and that event appends the text. Queued inputs stay in
+        # ``_pending_messages`` (queue panel) until their ``message`` event.
         self._request_sequence += 1
         sequence = self._request_sequence
-        self._pending_messages[sequence] = display_text
+        if append_on_start:
+            self._pending_messages[sequence] = display_text
         self._refresh_all()
         self.run_worker(
-            self._collect_queued_message(sequence, text, images, append_on_start),
+            self._collect_queued_message(sequence, text, images),
             exclusive=False,
             name=f"turn-{sequence}",
         )
@@ -420,7 +446,6 @@ class XBotTextualApp(App[None]):
 
     def action_interrupt_turn(self) -> None:
         """Cancel the running turn via the HTTP /interrupt endpoint.
-
         Textual's action system does not auto-await coroutine
         actions. We schedule the actual HTTP round-trip on a
         worker. The worker is ``exclusive=False`` so the in-flight
@@ -453,6 +478,31 @@ class XBotTextualApp(App[None]):
             name="tui_interrupt",
             description="ESC: cancel running turn",
         )
+
+    def action_copy_last(self) -> None:
+        """Copy the most recent assistant reply as plain text.
+
+        The TUI itself does not support text selection; this keyboard shortcut
+        (and the ``/copy`` command) lets the user pull text out of the app
+        when the terminal cannot select rendered content.
+        """
+        assistant = [m for m in self.state.messages if m.role == "assistant"]
+        if not assistant:
+            self._copy_feedback(0)
+            return
+        text = _markdown_plain_text(assistant[-1].content, width=self.size.width)
+        self.app.copy_to_clipboard(text)
+        self._copy_feedback(len(text))
+
+    def _copy_feedback(self, chars: int) -> None:
+        if not self.is_mounted:
+            return
+        if chars <= 0:
+            self.state.status = "Nothing to copy"
+            self._refresh_status()
+            return
+        self.state.status = f"Copied {chars} chars"
+        self._refresh_status()
 
     def action_open_palette(self) -> None:
         """Open the command palette modal (Ctrl+P)."""
@@ -489,6 +539,9 @@ class XBotTextualApp(App[None]):
             return
         if spec.name == "clear-screen" and spec.kind == "client":
             await self._cmd_clear()
+            return
+        if spec.name == "copy":
+            self.action_copy_last()
             return
         if spec.name == "help":
             await self._cmd_help(spec.args.strip() if spec.args else None)
@@ -723,24 +776,54 @@ class XBotTextualApp(App[None]):
         sequence: int,
         text: str,
         images: list[dict[str, str]],
-        append_on_start: bool,
     ) -> None:
-        try:
-            await self._collect_response(
-                text,
-                images=images,
-                queued_text=self._pending_messages.get(sequence) if append_on_start else None,
-            )
-        finally:
-            self._pending_messages.pop(sequence, None)
+        while True:
+            rejected = await self._collect_response(text, images=images)
+            if not rejected:
+                break
+            # The kernel was busy and no tool boundary fused the input before
+            # the turn ended. Keep the message queued and retry once the
+            # running turn finishes; this self-retry is race-free (no reliance
+            # on a cross-worker flush at turn_finished).
             self._refresh_all()
+            while self.state.turn_active and self._connected:
+                await asyncio.sleep(0.1)
+            if not self._connected:
+                return
+        self._pending_messages.pop(sequence, None)
+        self._refresh_all()
+
+    def _pop_pending_message(self, content: str) -> None:
+        """Drop the first locally queued input matching ``content``."""
+        for sequence, text in list(self._pending_messages.items()):
+            if text == content:
+                self._pending_messages.pop(sequence, None)
+                return
 
     async def _collect_session_events(self) -> None:
         try:
             async for event in self.session.session_events():
-                self.state.apply_event(event)
-                await self._handle_stream_event(event)
-                await self._start_interaction_response(event)
+                try:
+                    if event.get("type") == "message":
+                        data = event.get("data") or {}
+                        if data.get("role") == "user":
+                            # Render accepted inputs in the order the server
+                            # published them on this single stream, and pop the
+                            # matching entry from the local queue at the same
+                            # time so the queue panel clears at delivery.
+                            content = str(data.get("content") or "")
+                            self._pop_pending_message(content)
+                            self.state.append_message("user", content)
+                            await self._render_new_transcript_entries()
+                            self._refresh_all()
+                        continue
+                    self.state.apply_event(event)
+                    await self._handle_stream_event(event)
+                    await self._start_interaction_response(event)
+                except Exception:  # noqa: BLE001
+                    # A single malformed event must not abort the stream,
+                    # otherwise the turn state (e.g. turn_active) stays stuck.
+                    logger.exception("tui session event failed type=%s", event.get("type"))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -752,8 +835,14 @@ class XBotTextualApp(App[None]):
         text: str,
         *,
         images: list[dict[str, str]] | None = None,
-        queued_text: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Consume one message stream (turn events, tool events, reply).
+
+        The user text itself is rendered by the shared event stream's
+        ``message`` event, not here. Returns True when the input was rejected
+        (no fold boundary before the turn ended) so the caller retries.
+        """
+        rejected = False
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
             stream = (
@@ -763,16 +852,30 @@ class XBotTextualApp(App[None]):
             )
             async for event in stream:
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
-                if queued_text is not None and event.get("type") == "turn_started":
-                    self.state.append_message("user", queued_text)
-                    queued_text = None
-                    await self._render_new_transcript_entries()
-                self.state.apply_event(event)
-                await self._handle_stream_event(event)
-                await self._start_interaction_response(event)
+                try:
+                    if event.get("type") == "input_rejected":
+                        rejected = True
+                        continue
+                    if event.get("type") == "message":
+                        data = event.get("data") or {}
+                        if data.get("role") == "user":
+                            self.state.append_message(
+                                "user", str(data.get("content") or "")
+                            )
+                            await self._render_new_transcript_entries()
+                        continue
+                    self.state.apply_event(event)
+                    await self._handle_stream_event(event)
+                    await self._start_interaction_response(event)
+                except Exception:  # noqa: BLE001
+                    # Keep consuming the stream: a single bad event must not
+                    # skip turn_finished/turn_cancelled and leave turn_active
+                    # stuck in the "Running" state.
+                    logger.exception("tui.collect_response event failed type=%s", event.get("type"))
         except Exception as exc:
             logger.exception("tui.collect_response failed")
             self._record_error(exc)
+        return rejected
 
     async def _submit_live_input(self, payload: dict[str, Any]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")
@@ -1102,6 +1205,7 @@ class XBotTextualApp(App[None]):
         if self._replay_loading or self._window_start <= 0:
             return
         self._replay_loading = True
+        self._transcript_follow = False
         try:
             async with self._render_lock:
                 stream = self.query_one("#transcript", VerticalScroll)
@@ -1145,6 +1249,7 @@ class XBotTextualApp(App[None]):
             await self._mount_entries(stream, self._window_end, end)
             self._window_end = end
             await self._drop_leading_excess(stream, follow=True)
+            self._transcript_follow = True
             self.call_after_refresh(lambda: stream.scroll_end(animate=False))
 
     async def _render_new_transcript_entries(self) -> bool:
@@ -1157,9 +1262,10 @@ class XBotTextualApp(App[None]):
                 follow = stream.is_vertical_scroll_end
                 await self._drop_leading_excess(stream, follow)
                 return False
-            # Follow the live tail only when the user is already at the bottom;
-            # never yank the viewport while they are reading older entries.
+            # Follow the live tail only when the user is already at the
+            # bottom; never yank the viewport while reading older entries.
             follow = stream.is_vertical_scroll_end
+            self._transcript_follow = follow
             await self._mount_entries(stream, self._window_end, end)
             self._window_end = end
             await self._drop_leading_excess(stream, follow)
@@ -1304,8 +1410,7 @@ class XBotTextualApp(App[None]):
         return len(self._queued_messages())
 
     def _queued_messages(self) -> list[str]:
-        messages = list(self._pending_messages.values())
-        return messages[1:]
+        return list(self._pending_messages.values())
 
     def _set_input_placeholder(self, text: str) -> None:
         if not self.is_mounted:
@@ -1450,6 +1555,11 @@ class XBotTextualApp(App[None]):
             stream.scroll_page_down(animate=False)
         else:
             stream.scroll_page_up(animate=False)
+        self.call_after_refresh(
+            lambda s=stream: setattr(
+                self, "_transcript_follow", s.is_vertical_scroll_end
+            )
+        )
 
     def _remember_input(self, text: str) -> None:
         if not text:
@@ -1508,12 +1618,15 @@ class XBotTextualApp(App[None]):
     def _activity_text(self, *, final: bool) -> str:
         elapsed = self._turn_elapsed()
         usage = self.state.turn_usage
+        full_input = (
+            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+        )
         marker = "done" if final else spinner(self._spinner_index)
         verb = "completed" if final else "working"
         return (
             f"{marker} turn {self.state.turn} {verb} "
             f"{elapsed:.1f}s  "
-            f"tokens in:{usage['input_tokens']} out:{usage['output_tokens']} "
+            f"tokens in:{full_input} out:{usage['output_tokens']} "
             f"total:{usage['total_tokens']}"
         )
 

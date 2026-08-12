@@ -10,6 +10,44 @@ context construction, model-request preparation, streamed response handling,
 tool batches, and turn finish. Stage-specific methods retain their own Hook
 return rules; internal completion records are not protocol events.
 
+### Turn loop, fold, and inbox sequence
+
+```mermaid
+sequenceDiagram
+    participant Eng as _run_turn_impl
+    participant Ctx as _build_turn_context
+    participant LLM
+    participant Tools as _run_tool_batch
+    participant Fold as pending_fold (session)
+    participant Inbox as AgentInbox
+    participant Msg as engine.messages
+
+    Eng->>Ctx: build context
+    Ctx->>Inbox: drain all pending runtime notifications
+    Inbox-->>Ctx: <runtime_event> appended to messages
+    Ctx-->>LLM: model context
+    LLM-->>Eng: response
+
+    alt response has tool_calls
+        Eng->>Tools: execute tool batch (input_window=True)
+        Note over Fold: accepted inputs queue here while tools run
+        Tools-->>Eng: tool results (input_window=False)
+        Eng->>Fold: _accept_pending_fold() drain ALL pending
+        Fold-->>Eng: items (message events already published to session_events)
+        Eng->>Msg: fuse each as user message, save
+        Eng->>Eng: continue loop (fold_handoff routed to last stream)
+    else response complete, no tools
+        Eng->>Fold: fold pending at turn end
+        alt pending non-empty
+            Eng->>Msg: fuse, save
+            Eng->>Eng: continue loop to answer the folded input
+        else empty
+            Eng->>Eng: finish turn
+        end
+    end
+```
+
+
 ### Streaming
 
 Provider `stream=True` yields per-token `ModelChunk` objects.
@@ -39,7 +77,7 @@ externalization.
 
 Guard hooks return explicit `HookDecision` values. Transform hooks return a
 stage-specific dictionary. Observer hooks run all callbacks and ignore results.
-See [hooks.md](hooks.md).
+See [hooks.md](../hooks/hooks.md).
 
 ExceptionGroup from strict hooks (ON_SESSION_INIT, ON_SESSION_CLOSE,
 BEFORE_STATE_PERSIST, AFTER_STATE_PERSIST, ON_STOP) caught with BaseException.
@@ -109,7 +147,6 @@ data/sessions/<sid>/threads/<thread-id>/state/
 - `sync_messages()`: append normal message extensions
 - `append_checkpoint()`: append a Compact or explicit replacement baseline
 - `append_undo()` / `append_clear()`: append replayable stack operations
-- `append_mailbox_delivery()`: record delivered Mailbox input without requeueing it
 - `read_messages()`: replay the latest checkpoint, later messages, Undo, and Clear
 - `has_existing_session()`: session resume detection
 - `_max_msg_id` cached to avoid O(n) scan

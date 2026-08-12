@@ -4,7 +4,7 @@ Single source of truth for the high-level mode the TUI is in. The render log
 and the composer consult this module instead of recomputing state from
 scattered predicates.
 
-See ``docsv2/tui_opencode_requirements.md`` §8.
+See ``docsv2/protocol/tui_opencode_requirements.md`` §8.
 """
 
 from __future__ import annotations

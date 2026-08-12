@@ -73,7 +73,7 @@ class SessionManager:
                 for ctx in self._sessions.values()
                 if now - ctx.last_activity >= self.idle_timeout
                 and not ctx.turn_lock.locked()
-                and ctx.mailbox.size == 0
+                and not ctx.pending_fold
                 and ctx.session_events is None
             ]
             for ctx in due:

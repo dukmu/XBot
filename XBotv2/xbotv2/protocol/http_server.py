@@ -1,6 +1,6 @@
 """FastAPI HTTP server for the XBotv2 TUI protocol.
 
-Implements the endpoints in ``docsv2/tui_opencode_requirements.md``
+Implements the endpoints in ``docsv2/protocol/tui_opencode_requirements.md``
 §10.5.3, with SSE event streams per §10.5.4.
 
 v1 only binds to loopback (127.0.0.1); ``--bind 0.0.0.0`` is rejected

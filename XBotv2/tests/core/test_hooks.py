@@ -18,7 +18,7 @@ from xbotv2.api.hooks import (
 
 
 def _hook_stage_matrix_rows() -> dict[str, list[str]]:
-    matrix = Path(__file__).parents[2] / "docsv2" / "hook_stage_matrix.md"
+    matrix = Path(__file__).parents[2] / "docsv2" / "hooks" / "hook_stage_matrix.md"
     rows: dict[str, list[str]] = {}
     for line in matrix.read_text(encoding="utf-8").splitlines():
         match = re.match(r"^\| `([^`]+)` \| (.+) \|$", line)

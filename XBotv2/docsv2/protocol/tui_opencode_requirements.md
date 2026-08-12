@@ -115,7 +115,7 @@ Required behavior:
 - Queued follow-ups are visible in a compact Queue control above the composer.
   They enter the transcript only when their server turn starts. The control
   shows ordered message summaries and disappears as requests begin or finish;
-  the server mailbox remains authoritative for delivery.
+  the server decides acceptance (fold at a tool window, otherwise `input_rejected`).
 - During `user_input_required`, typed text is routed to the live interaction
   answer queue instead of starting a new user turn.
 - During `permission_request`, typed approval shortcuts are routed to the
@@ -287,7 +287,7 @@ runtime control. Failed rows remain available for diagnosis; server task state
 is unchanged and remains queryable through `/tasks`.
 
 The lifecycle comes from the session-owned task manager through the existing
-protocol envelope; the TUI does not infer it from tool text or mailbox
+protocol envelope; the TUI does not infer it from tool text
 messages. The `kind` field distinguishes shell and Agent rows.
 
 Tasks and queued follow-ups share one runtime band so they do not consume

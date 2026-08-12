@@ -198,6 +198,8 @@ def test_tui_state_applies_usage_totals():
         "output_tokens": 8,
         "total_tokens": 20,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -869,6 +871,72 @@ def test_spawn_server_propagates_log_args(monkeypatch):
     assert "./run.log" in captured["cmd"]
 
 
+
+@pytest.mark.asyncio
+async def test_message_event_pops_queue_before_turn_end():
+    """When the server publishes a ``message`` event (delivery signal), the
+    TUI must pop the matching entry from the local queue AND append it to the
+    transcript immediately — not wait for the turn to finish.
+
+    Regression: the queue pop was tied to the per-message stream ending, so a
+    folded input stayed in the queue panel until the whole turn completed.
+    """
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def send_message(self, text):
+            # Mirrors a queued/folded input: the message is published on the
+            # event stream, then the stream stays quiet until turn end.
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            await asyncio.sleep(0.1)
+            yield {"type": "assistant_message", "data": {"content": "reply"}}
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+    session = FakeSession()
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        await pilot.pause()
+        # Simulate a queued input whose delivery signal arrives while the turn
+        # is still running (before turn_finished).
+        app._pending_messages = {2: "queued input"}
+        app.state.turn_active = True
+        session._events.put_nowait({
+            "type": "message",
+            "data": {"id": "msg-2", "role": "user", "content": "queued input"},
+        })
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app._pending_messages == {}, (
+            "queue must clear when the message event arrives, not at turn end"
+        )
+        assert [m.content for m in app.state.messages if m.role == "user"] == [
+            "queued input",
+        ]
+
+
 @pytest.mark.asyncio
 async def test_textual_app_headless_preserves_message_order_and_chinese():
     from xbotv2.tui.textual_client import XBotTextualApp
@@ -884,6 +952,7 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
             return {"commands": []}
 
         async def send_message(self, text):
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -975,6 +1044,8 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
         "output_tokens": 20,
         "total_tokens": 120,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
     assert app.state.context_input_tokens == 8_000
     assert app.state.model_mode == ""
@@ -1026,6 +1097,7 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
             yield {
@@ -1058,6 +1130,80 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
         assert "tokens:20 (12 in / 8 out)" in str(status)
 
 
+
+@pytest.mark.asyncio
+async def test_textual_app_alt_c_copies_last_reply():
+    """alt+c (and /copy) copy the last assistant reply as plain text,
+    so text can be pulled out of the TUI even when the mouse cannot be used
+    to create a selection (e.g. under a terminal that captures ctrl+shift+c).
+    """
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return {}
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.state.append_message("assistant", "**last** reply with `code`")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        await pilot.press("alt+c")
+        await pilot.pause()
+        assert "last" in app.clipboard
+        assert "code" in app.clipboard
+        assert "**" not in app.clipboard, "markdown markers must be stripped"
+        assert "Copied" in app.state.status
+
+
+
+@pytest.mark.asyncio
+async def test_textual_app_ctrl_c_without_selection_clears_input():
+    """ctrl+c with no selection keeps clearing the composer (cancel_or_quit)."""
+
+    from xbotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return {}
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+        workspace_root=".",
+    )
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        app.query_one("#input").load_text("abc")
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.query_one("#input").text == ""
+        assert app.state.status != "Shutdown"
+
+
+
 @pytest.mark.asyncio
 async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
     """Regression for run.log: tool_call_delta must not crash when a
@@ -1075,6 +1221,7 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "tool_call_delta",
@@ -1146,6 +1293,7 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message_delta", "data": {"content": "a"}}
             yield {"type": "assistant_message_delta", "data": {"content": "b"}}
@@ -1202,6 +1350,7 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
 
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {"type": "assistant_message", "data": {"content": "reply"}}
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -1270,11 +1419,11 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
             return None
 
         async def send_message(self, text):
-            del text
             self.calls += 1
             if self.calls == 1:
                 # Active turn, superseded by the fold-in: stream ends after
                 # the tool batch without a turn boundary.
+                yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {"type": "assistant_message", "data": {"content": "starting tool"}}
                 yield {
@@ -1296,7 +1445,7 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
                     },
                 }
             else:
-                yield {"type": "message_queued", "data": {}}
+                yield {"type": "message", "data": {"id": "msg-2", "role": "user", "content": text}}
                 yield {"type": "turn_started", "data": {"turn": 1}}
                 yield {"type": "assistant_message", "data": {"content": "handled both"}}
                 yield {
@@ -1359,8 +1508,12 @@ async def test_textual_app_headless_renders_inline_permission_options():
         async def disconnect(self):
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
             del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             # Tool must exist before permission can be linked to it
             yield {
@@ -1703,8 +1856,11 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
         async def disconnect(self):
             return None
 
+        async def list_commands(self):
+            return {"commands": []}
+
         async def send_message(self, text):
-            del text
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
                 "request_id": "user_input:c1",
@@ -1852,6 +2008,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
             return None
 
         async def send_message(self, text):
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "assistant_message",
@@ -2276,6 +2433,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
         async def send_message(self, text):
             self.sent.append(text)
+            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
                 "type": "error",
@@ -2492,6 +2650,8 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
         "output_tokens": 13,
         "total_tokens": 43,
         "requests": 2,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -2552,6 +2712,87 @@ def test_usage_prefers_effective_context_tokens():
     })
 
     assert state.context_input_tokens == 800
+
+
+def test_usage_accumulates_cache_read_into_session_totals():
+    """Provider usage where almost all input is cache-read (e.g. deepseek)
+    must still report a meaningful full-input figure: uncached + cache-read.
+    """
+
+    state = TuiState()
+    state.apply_event({
+        "type": "usage",
+        "data": {
+            "input_tokens": 0,
+            "output_tokens": 215,
+            "total_tokens": 9909,
+            "requests": 1,
+            "context_tokens": 9694,
+            "cache_read_input_tokens": 9694,
+        },
+    })
+    assert state.usage["input_tokens"] == 0
+    assert state.usage["cache_read_input_tokens"] == 9694
+    assert state.usage["total_tokens"] == 9909
+    assert state.turn_usage["cache_read_input_tokens"] == 9694
+    # The full input shown by the status bar = uncached + cache-read.
+    full_input = (
+        state.usage["input_tokens"] + state.usage["cache_read_input_tokens"]
+    )
+    assert full_input == 9694
+
+
+def test_usage_compaction_total_includes_cache_keys():
+    """The compaction ``total`` replacement path must also set cache keys."""
+
+    state = TuiState()
+    state.apply_event({
+        "type": "usage",
+        "data": {
+            "total": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "requests": 1,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+            },
+        },
+    })
+    assert state.usage["input_tokens"] == 100
+    assert state.usage["cache_read_input_tokens"] == 40
+    assert state.usage["cache_creation_input_tokens"] == 10
+
+
+def test_usage_turn_cycle_with_cache_heavy_provider_does_not_error():
+    """A deepseek-style usage event (uncached input 0, all cache-read) across
+    full turn boundaries must not raise, must reset per-turn state on
+    turn_started, and must keep the session total accurate. Regression: the
+    turn_usage reset omitted the cache keys, so ``_apply_usage`` raised
+    KeyError and the turn never reached ``turn_finished`` (stuck "Running")."""
+
+    state = TuiState()
+    for turn in (1, 2):
+        state.apply_event({"type": "turn_started", "data": {"turn": turn}})
+        state.apply_event({
+            "type": "usage",
+            "data": {
+                "input_tokens": 0,
+                "output_tokens": 215,
+                "total_tokens": 9909,
+                "requests": 1,
+                "context_tokens": 9694,
+                "cache_read_input_tokens": 9694,
+            },
+        })
+        state.apply_event({"type": "turn_finished", "data": {"turn": turn}})
+
+    assert state.errors == []
+    assert state.turn_active is False
+    assert state.usage["cache_read_input_tokens"] == 2 * 9694
+    assert state.usage["total_tokens"] == 2 * 9909
+    assert state.turn_usage["cache_read_input_tokens"] == 9694
+    assert state.turn_usage["output_tokens"] == 215
 
 
 # ----------------------------------------------------------------------
@@ -2858,6 +3099,7 @@ class _ReplayFakeSession:
         return {"commands": []}
 
     async def send_message(self, text):
+        yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
         yield {"type": "turn_started", "data": {"turn": 1}}
         yield {"type": "assistant_message", "data": {"content": "ok"}}
         yield {"type": "turn_finished", "data": {"turn": 1}}

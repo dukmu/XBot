@@ -3,7 +3,7 @@
 The TUI does not know whether the server is in-process (loopback) or
 remote (SSH tunnel); it only knows the ``Transport`` interface.
 
-See ``docsv2/tui_opencode_requirements.md`` §10.5.5.
+See ``docsv2/protocol/tui_opencode_requirements.md`` §10.5.5.
 """
 
 from __future__ import annotations

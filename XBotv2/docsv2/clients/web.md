@@ -7,7 +7,7 @@ contain browser-specific routes.
 ## Protocol Boundary
 
 The client performs the `/hello` handshake and uses the public session/thread
-resource model described in [SDK contract](sdk.md). Message submission and
+resource model described in [SDK contract](../protocol/sdk.md). Message submission and
 server-initiated turns are separate SSE streams. Interaction responses use the
 typed permission and user-input endpoints while the original stream remains
 open.
@@ -42,4 +42,4 @@ adding CORS or static hosting behavior to Core. Because the current protocol
 does not define authentication, the HTTP server remains loopback-only.
 
 Commands and environment variables are documented in
-[`web/README.md`](../web/README.md).
+[`web/README.md`](../../web/README.md).
