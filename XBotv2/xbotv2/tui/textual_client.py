@@ -71,6 +71,10 @@ _STATUS_REFRESH_INTERVAL = 0.2
 _REPLAY_WINDOW = 50
 # Replay lazy-load batch size: entries mounted per scroll-to-top batch.
 _REPLAY_BATCH = 50
+# The transcript is windowed: at most this many entry widgets stay mounted.
+# Older/newer entries are re-mounted from ``state.transcript`` as the user
+# scrolls, so a long conversation never grows the DOM unboundedly.
+_MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -167,7 +171,13 @@ class XBotTextualApp(App[None]):
         self._connected = False
         self._request_sequence = 0
         self._pending_messages: dict[int, str] = {}
-        self._rendered_transcript_entries = 0
+        # Windowed transcript: ``state.transcript[_window_start:_window_end]``
+        # is what is mounted in the DOM (bounded by ``_MAX_MOUNTED_ENTRIES``).
+        # ``_mounted_entry_widgets`` runs in parallel to that slice so the
+        # DOM can be trimmed from either end without touching activity widgets.
+        self._window_start = 0
+        self._window_end = 0
+        self._mounted_entry_widgets: list[Any] = []
         self._render_lock = asyncio.Lock()
         self._activity_widgets: dict[int, Static] = {}
         self._tool_widgets: dict[str, Vertical] = {}
@@ -181,9 +191,6 @@ class XBotTextualApp(App[None]):
         self._stream_timer: asyncio.Task | None = None
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
-        # Start index of the rendered replay window. Entries before this are
-        # lazy-loaded in batches when the user scrolls to the top.
-        self._replay_start = 0
         self._replay_loading = False
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
@@ -235,9 +242,16 @@ class XBotTextualApp(App[None]):
     @on(TranscriptScroll.ReplayTopReached)
     def _handle_replay_top(self) -> None:
         """Lazy-load earlier replayed history when scrolled to the top."""
-        if self._replay_start <= 0 or self._replay_loading:
+        if self._window_start <= 0 or self._replay_loading:
             return
         self.run_worker(self._load_earlier_replay, exclusive=False)
+
+    @on(TranscriptScroll.ReplayBottomReached)
+    def _handle_replay_bottom(self) -> None:
+        """Re-mount the newest entries dropped while the user scrolled up."""
+        if self._replay_loading or self._window_end >= len(self.state.transcript):
+            return
+        self.run_worker(self._load_newer_replay, exclusive=False)
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
@@ -573,7 +587,9 @@ class XBotTextualApp(App[None]):
         self.state.tools.clear()
         self.state.notices.clear()
         self.state.errors.clear()
-        self._rendered_transcript_entries = 0
+        self._window_start = 0
+        self._window_end = 0
+        self._mounted_entry_widgets.clear()
         self._activity_widgets.clear()
         self._tool_widgets.clear()
         self._message_widgets.clear()
@@ -1067,100 +1083,170 @@ class XBotTextualApp(App[None]):
         """
         total = len(self.state.transcript)
         if total <= _REPLAY_WINDOW:
-            self._replay_start = 0
-            self._rendered_transcript_entries = 0
+            self._window_start = 0
+            self._window_end = 0
             await self._render_new_transcript_entries()
             return
-        self._replay_start = total - _REPLAY_WINDOW
-        self._rendered_transcript_entries = total
+        self._window_start = total - _REPLAY_WINDOW
+        self._window_end = self._window_start
         await self._render_new_transcript_entries()
 
     async def _load_earlier_replay(self) -> None:
-        """Lazily mount an earlier batch of replayed history.
+        """Shift the window to an earlier batch of replayed history.
 
         Called when the user scrolls to the top of the transcript. Mounts the
-        batch immediately before the current window and keeps the viewport
-        stable by compensating the scroll offset.
+        batch immediately before the current window, drops the newest entries
+        from the far end to keep the mounted window bounded, and keeps the
+        viewport stable by compensating the scroll offset.
         """
-        if self._replay_loading or self._replay_start <= 0:
+        if self._replay_loading or self._window_start <= 0:
             return
         self._replay_loading = True
         try:
             async with self._render_lock:
                 stream = self.query_one("#transcript", VerticalScroll)
-                batch_start = max(0, self._replay_start - _REPLAY_BATCH)
-                entries = self.state.transcript[batch_start:self._replay_start]
+                batch_start = max(0, self._window_start - _REPLAY_BATCH)
+                entries = self.state.transcript[batch_start:self._window_start]
                 if not entries:
-                    self._replay_start = 0
+                    self._window_start = 0
                     return
-                widgets = [self._widget_for_entry(e) for e in entries]
-                widgets = [w for w in widgets if w is not None]
+                widgets = await self._mount_entries(
+                    stream, batch_start, self._window_start, prepend=True
+                )
                 if not widgets:
-                    self._replay_start = batch_start
+                    self._window_start = batch_start
                     return
-                first = stream.children[0] if stream.children else None
-                for widget in widgets:
-                    if widget.parent is stream:
-                        continue
-                    if widget.parent is not None:
-                        try:
-                            await widget.remove()
-                        except Exception:  # noqa: BLE001
-                            pass
-                    if first is not None:
-                        await stream.mount(widget, before=first)
-                    else:
-                        await stream.mount(widget)
-                self._replay_start = batch_start
+                inserted_height = self._widgets_height(widgets)
+                self._window_start = batch_start
+                await self._drop_trailing_excess(stream)
                 # The inserted batch shifts content down; keep the viewport
                 # pinned where it was by scrolling down by the inserted size.
-                inserted_height = sum(
-                    (w.virtual_size.height if w.virtual_size else 1)
-                    for w in widgets
-                )
                 self.call_after_refresh(
                     lambda h=inserted_height: stream.scroll_to(
-                        y=stream.scroll_y + h, animate=False
+                        y=max(0, stream.scroll_y + h), animate=False
                     )
                 )
         finally:
             self._replay_loading = False
 
+    async def _load_newer_replay(self) -> None:
+        """Shift the window forward to re-mount the newest entries.
+
+        Called when the user scrolls back to the bottom after entries were
+        dropped while loading earlier history. Mounts the next batch of the
+        live tail and drops the oldest entries to keep the window bounded.
+        """
+        async with self._render_lock:
+            stream = self.query_one("#transcript", VerticalScroll)
+            if self._window_end >= len(self.state.transcript):
+                await self._drop_leading_excess(stream, follow=True)
+                return
+            end = min(len(self.state.transcript), self._window_end + _REPLAY_BATCH)
+            await self._mount_entries(stream, self._window_end, end)
+            self._window_end = end
+            await self._drop_leading_excess(stream, follow=True)
+            self.call_after_refresh(lambda: stream.scroll_end(animate=False))
+
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:
             stream = self.query_one("#transcript", VerticalScroll)
-            start = self._rendered_transcript_entries
-            entries = self.state.transcript[start:]
-            if not entries:
+            end = len(self.state.transcript)
+            if end <= self._window_end:
+                # Follow the live tail only when the user is already at the
+                # bottom; never yank the viewport while reading older entries.
+                follow = stream.is_vertical_scroll_end
+                await self._drop_leading_excess(stream, follow)
                 return False
             # Follow the live tail only when the user is already at the bottom;
             # never yank the viewport while they are reading older entries.
             follow = stream.is_vertical_scroll_end
-            self._rendered_transcript_entries = len(self.state.transcript)
-            for entry in entries:
-                widget = self._widget_for_entry(entry)
-                if widget is None:
-                    continue
-                # If this widget is already mounted in the DOM,
-                # skip the mount.  Textual's parent attribute is
-                # updated synchronously by ``mount()``, so a second
-                # mount of the SAME widget object would raise
-                # MountError.
-                if widget.parent is stream:
-                    continue
-                # If the widget is mounted somewhere else (orphan),
-                # detach it first.
-                if widget.parent is not None:
-                    try:
-                        await widget.remove()
-                    except Exception:  # noqa: BLE001
-                        pass
-                await stream.mount(widget)
+            await self._mount_entries(stream, self._window_end, end)
+            self._window_end = end
+            await self._drop_leading_excess(stream, follow)
             if follow:
                 self.call_after_refresh(
                     lambda: stream.scroll_end(animate=False)
                 )
             return True
+
+    async def _mount_entries(
+        self,
+        stream: VerticalScroll,
+        start: int,
+        end: int,
+        *,
+        prepend: bool = False,
+    ) -> list[Any]:
+        """Mount ``transcript[start:end]`` as widgets and track them.
+
+        ``prepend`` inserts the batch before the current first child (used when
+        loading earlier history); otherwise widgets are appended at the end.
+        Returns the successfully mounted widgets (in entry order).
+        """
+        widgets: list[Any] = []
+        reference = stream.children[0] if prepend and stream.children else None
+        for entry in self.state.transcript[start:end]:
+            widget = self._widget_for_entry(entry)
+            if widget is None:
+                continue
+            widgets.append(widget)
+            # Textual's ``parent`` attribute is updated synchronously by
+            # ``mount()``, so mounting the same widget twice raises.
+            if widget.parent is stream:
+                continue
+            if widget.parent is not None:
+                try:
+                    await widget.remove()
+                except Exception:  # noqa: BLE001
+                    pass
+            if reference is not None:
+                await stream.mount(widget, before=reference)
+            else:
+                await stream.mount(widget)
+        if prepend:
+            self._mounted_entry_widgets[0:0] = widgets
+        else:
+            self._mounted_entry_widgets.extend(widgets)
+        return widgets
+
+    @staticmethod
+    def _widgets_height(widgets: list[Any]) -> int:
+        return sum(
+            (w.virtual_size.height if w.virtual_size else 1)
+            for w in widgets
+        )
+
+    async def _drop_leading_excess(self, stream: VerticalScroll, follow: bool) -> int:
+        """Drop the oldest mounted entries when the window exceeds the cap.
+
+        Only trims while following the tail; while the user is scrolled up the
+        window may grow so their viewport never moves.
+        """
+        if not follow:
+            return 0
+        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
+        if excess <= 0:
+            return 0
+        removed = self._mounted_entry_widgets[:excess]
+        self._mounted_entry_widgets = self._mounted_entry_widgets[excess:]
+        for widget in removed:
+            if widget.parent is stream:
+                await widget.remove()
+        self._window_start += len(removed)
+        return len(removed)
+
+    async def _drop_trailing_excess(self, stream: VerticalScroll) -> int:
+        """Drop the newest mounted entries when the window exceeds the cap."""
+        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
+        if excess <= 0:
+            return 0
+        removed = self._mounted_entry_widgets[-excess:]
+        self._mounted_entry_widgets = self._mounted_entry_widgets[:-excess]
+        for widget in removed:
+            if widget.parent is stream:
+                await widget.remove()
+        self._window_end -= len(removed)
+        return len(removed)
 
     def _refresh_input_mode(self) -> None:
         if not self.is_mounted:

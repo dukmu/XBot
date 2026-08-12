@@ -392,15 +392,28 @@ class TranscriptScroll(VerticalScroll):
     class ReplayTopReached(Message):
         pass
 
+    class ReplayBottomReached(Message):
+        pass
+
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         super()._on_mouse_scroll_up(event)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
 
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        super()._on_mouse_scroll_down(event)
+        if self.is_vertical_scroll_end:
+            self.post_message(self.ReplayBottomReached())
+
     def scroll_up(self, *args, **kwargs) -> None:
         super().scroll_up(*args, **kwargs)
         if self.scroll_y == 0:
             self.post_message(self.ReplayTopReached())
+
+    def scroll_down(self, *args, **kwargs) -> None:
+        super().scroll_down(*args, **kwargs)
+        if self.is_vertical_scroll_end:
+            self.post_message(self.ReplayBottomReached())
 
 
 @dataclass(frozen=True)

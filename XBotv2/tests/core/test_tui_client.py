@@ -2873,6 +2873,7 @@ async def test_replay_window_mounts_only_tail_then_lazy_loads():
     from textual.containers import VerticalScroll
     from xbotv2.tui.textual_client import (
         XBotTextualApp,
+        _MAX_MOUNTED_ENTRIES,
         _REPLAY_BATCH,
         _REPLAY_WINDOW,
     )
@@ -2893,13 +2894,81 @@ async def test_replay_window_mounts_only_tail_then_lazy_loads():
         await pilot.pause()
         # restore_history creates 60 user + 60 assistant = 120 transcript entries
         assert len(app.state.transcript) == 120
-        # Only the tail window is mounted in the DOM
+        # The tail window IS mounted after resume (regression: the window must
+        # not be empty), bounded to the replay window.
         stream = app.query_one("#transcript", VerticalScroll)
         mounted = len(list(stream.children))
-        assert mounted <= _REPLAY_WINDOW, f"expected <= {_REPLAY_WINDOW}, got {mounted}"
-        assert app._replay_start == 120 - _REPLAY_WINDOW
-        # Lazy load: simulate scroll-to-top
+        assert mounted == _REPLAY_WINDOW, f"expected {_REPLAY_WINDOW}, got {mounted}"
+        assert app._window_start == 120 - _REPLAY_WINDOW
+        assert app._window_end == 120
+        # Lazy load: simulate scroll-to-top (shifts the window earlier)
         await app._load_earlier_replay()
         await pilot.pause()
-        assert app._replay_start <= 120 - _REPLAY_WINDOW - _REPLAY_BATCH
-        assert len(list(stream.children)) <= _REPLAY_WINDOW + _REPLAY_BATCH + 1
+        assert app._window_start <= 120 - _REPLAY_WINDOW - _REPLAY_BATCH
+        assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+        assert len(list(stream.children)) <= _MAX_MOUNTED_ENTRIES + 1
+        # The newest entries dropped from the far end are re-mountd when the
+        # user scrolls back to the bottom.
+        await app._load_newer_replay()
+        await pilot.pause()
+        assert app._window_end == 120
+        assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+
+
+@pytest.mark.asyncio
+async def test_replay_window_scrolls_all_the_way_to_the_beginning():
+    """Scrolling up repeatedly through a long history must eventually reach
+    the very first entry, keep the mounted window bounded, and never lose
+    contiguity (no gaps between batches)."""
+
+    from textual.containers import VerticalScroll
+    from xbotv2.tui.textual_client import (
+        XBotTextualApp,
+        _MAX_MOUNTED_ENTRIES,
+        _REPLAY_WINDOW,
+    )
+
+    session = _ReplayFakeSession()
+    # 300 entries: 150 user + 150 assistant
+    session.history = [
+        {"role": "user", "content": f"msg {i}"}
+        for i in range(150)
+    ] + [
+        {"role": "assistant", "content": f"ans {i}"}
+        for i in range(150)
+    ]
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = session
+    async with app.run_test(headless=True, size=(120, 50)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert len(app.state.transcript) == 300
+        stream = app.query_one("#transcript", VerticalScroll)
+        assert app._window_start == 300 - _REPLAY_WINDOW
+        # Scroll up in batches until the beginning is reached.
+        guard = 0
+        while app._window_start > 0:
+            await app._load_earlier_replay()
+            await pilot.pause()
+            # The window is contiguous and bounded at every step.
+            assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+            guard += 1
+            assert guard < 50, "scroll-up never reached the beginning"
+        # The very first entries are mounted and reachable.
+        first_texts = []
+        for widget in stream.children:
+            if widget.parent is stream:
+                first_texts.append(str(getattr(widget, "renderable", ""))[:40])
+        assert app._window_start == 0
+        assert len(list(stream.children)) <= _MAX_MOUNTED_ENTRIES + 1
+        # Scrolling back to the bottom re-mounts the newest tail in batches,
+        # again bounded at every step.
+        guard = 0
+        while app._window_end < 300:
+            await app._load_newer_replay()
+            await pilot.pause()
+            assert app._window_end - app._window_start <= _MAX_MOUNTED_ENTRIES
+            guard += 1
+            assert guard < 50, "scroll-down never re-mounted the tail"
+        assert app._window_end == 300
+
