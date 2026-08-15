@@ -37,3 +37,8 @@ evaluation/results/
 evaluation/.inspect/
 
 .xbot/
+
+# XCore local artifacts
+XCore/**/__pycache__/
+XCore/.pytest_cache/
+.research-cordis/
