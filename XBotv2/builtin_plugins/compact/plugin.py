@@ -17,8 +17,6 @@ from xbotv2.api import (
     MESSAGE_FORMAT_KEY,
     PluginBase,
     PluginManifest,
-    PluginSetupContext,
-    PluginStore,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
@@ -33,8 +31,8 @@ logger = logging.getLogger("xbotv2.compact")
 
 
 class CompactPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest: PluginManifest) -> None:
+        super().__init__(manifest)
         self._automatic = True
         self._output_reservation: int | None = None
         self._trigger_ratio = 0.8
@@ -61,13 +59,13 @@ class CompactPlugin(PluginBase):
         self._last_reason = ""
         self._last_compaction = {}
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.BEFORE_CONTEXT, self._on_before_context)
-        ctx.register_hook(
-            HookStage.BEFORE_MODEL_REQUEST,
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.BEFORE_CONTEXT.value, self._on_before_context)
+        ctx.on(
+            HookStage.BEFORE_MODEL_REQUEST.value,
             self._on_before_model_request,
         )
-        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_compact)
+        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
             """Request one semantic compaction before the next model call.
@@ -83,14 +81,14 @@ class CompactPlugin(PluginBase):
                 data={"requested": True},
             )
 
-        ctx.register_tool(
+        ctx.tools.register(
             Tool.from_function(request_compaction, name="compact"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
                 namespace="plugin:compact",
             ),
         )
-        ctx.register_command(Command(
+        ctx.commands.register(Command(
             name="compact",
             description="Compact conversation history immediately while idle.",
             handler=self._compact_command,

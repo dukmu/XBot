@@ -29,7 +29,7 @@ plugin needs.
 |---|---|---|
 | configuration | Declare `config_schema` in the manifest | Schema and values are validated before module import |
 | `on_load(config)` | Create plugin-owned resources from validated config; keep cleanup safe after partial initialization | No core registrations exist yet; `on_unload` is attempted if `on_load` raises |
-| `setup(ctx)` | Register hooks, tools, and prompt fragments through `ctx` | Registration is transactional |
+| `apply(ctx)` | Register hooks, tools, commands, prompt fragments, and agents through `ctx` services | Registration is a fiber effect; unload undoes it |
 | hook execution | Use `ctx.plugin_runtime` for dynamic tools | Dynamic resources join the same ownership record |
 | `on_unload()` | Close clients, subprocesses, and other external resources | Core resources are removed even if this callback raises; store data remains |
 
@@ -60,7 +60,9 @@ a plugin cannot accidentally replace a core or another plugin's tool.
 
 ## Plugin Store
 
-Each plugin receives one isolated `PluginStore` namespace. `set`, `delete`, and
+Each plugin receives one isolated namespace in the recoverable state service
+(`ctx.state.namespace(plugin_name)`, satisfying the `PluginStore` contract).
+`set`, `delete`, and
 `clear` persist immediately through atomic file replacement; there is no flush
 phase at unload. State survives plugin unload and session resume until the
 plugin explicitly clears it.
@@ -90,7 +92,7 @@ from xbotv2.api import (
     HookContext,
     HookStage,
     PluginBase,
-    PluginSetupContext,
+
     Tool,
     ToolRegistrationOptions,
 )
@@ -100,9 +102,9 @@ class ExamplePlugin(PluginBase):
     async def on_load(self, config: dict[str, Any]) -> None:
         self._config = dict(config)
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
-        ctx.register_tool(
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
+        ctx.tools.register(
             Tool.from_function(self._run, name="example"),
             options=ToolRegistrationOptions(namespace="plugin:example"),
         )
@@ -122,15 +124,18 @@ class ExamplePlugin(PluginBase):
         return {"status": "ready"}
 ```
 
-Manifest-only plugins declare hooks, tools, and prompt fragments in
-`plugin.yaml`. Python plugins override `setup(ctx)` and use
-`ctx.register_hook`, `ctx.register_tool`, `ctx.register_agent`, and
-`ctx.add_prompt_fragment`.
+Python plugins override `apply(ctx)` and register through the XCore context:
+`ctx.on(stage.value, callback)` for hooks, `ctx.tools.register(...)`,
+`ctx.commands.register(...)`, `ctx.prompts.add(...)`, and
+`ctx.agents.register(...)` for agents. Every registration is a fiber effect:
+unload (or a setup failure) undoes it automatically, and plugin `on_unload`
+runs once as the fiber disposer. The `plugin.yaml` manifest supplies metadata
+and the config schema; manifest-declared hooks/tools remain supported for
+declarative plugins.
 
-Agent definitions follow the same ownership rules as other setup resources:
-names are unique, setup failure rolls them back, and unload unregisters them.
-Core owns Agent execution; a plugin registers definitions, not a separate loop.
-The setup transaction should record every resource for rollback and unload.
+Agent definitions follow the same ownership rules as other resources: names
+are unique, setup failure rolls them back, and unload unregisters them. Core
+owns Agent execution; a plugin registers definitions, not a separate loop.
 
 Prompt fragments use the public `PromptFragmentStage` values as compatible
 ordering zones:
@@ -140,7 +145,7 @@ All fragments are rendered as escaped `plugin_instruction` sections in the one
 leading system context; no stage grants core authority or places a system
 message after history. Unknown stages are rejected during manifest validation.
 Python plugins receive the same validation from the context builder and may
-provide a source label through `ctx.add_prompt_fragment(..., source=...)`.
+provide a source label through `ctx.prompts.add(stage, text, source=...)`.
 After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
 `ContextComponent` values. A Hook may replace the component list, but every
 replacement entry must remain a `ContextComponent`; provider conversion does
@@ -170,7 +175,7 @@ Tool registration options are explicit:
 ```python
 from xbotv2.api import ToolRegistrationOptions
 
-ctx.register_tool(
+ctx.tools.register(
     tool,
     options=ToolRegistrationOptions(
         sandbox_mode="sandboxed",
@@ -377,17 +382,18 @@ commands:
 | `skills` | scope | `skills:global:find-skills` |
 | `mcp` | server-name | `mcp:github:mcp__github__search` |
 
-Plugins should register tools through setup or another recorded plugin
+Plugins should register tools through `apply` or another recorded plugin
 capability:
 ```python
-ctx.register_tool(
+ctx.tools.register(
     tool,
     options=ToolRegistrationOptions(namespace="plugin:skills"),
 )
 ```
 
-`PluginSetupContext` deliberately does not expose `ToolRegistry`, `HookManager`,
-or `ContextBuilder`. The loader owns those implementations and records every
+The plugin context deliberately does not expose `ToolRegistry`, `HookManager`,
+or `ContextBuilder` directly. They are provided through the capability
+services (`ctx.tools`, `ctx.commands`, `ctx.prompts`, `ctx.agents`) and every
 registration so a failed setup can be rolled back atomically.
 
 The built-in Skills, MCP, and token-manager plugins are the reference templates

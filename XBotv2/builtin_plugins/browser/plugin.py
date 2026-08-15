@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from xbotv2.api import (
     PluginBase,
-    PluginSetupContext,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
@@ -18,8 +17,8 @@ from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
 
 
 class BrowserPlugin(PluginBase):
-    def __init__(self, manifest, store) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest) -> None:
+        super().__init__(manifest)
         self._search = {"backend": "yandex", "region": "wt-wt", "safesearch": "moderate"}
         self._network_options = NetworkOptions()
         self._url_policy = UrlPolicy()
@@ -47,7 +46,7 @@ class BrowserPlugin(PluginBase):
         self._browser = None
         self._web = None
 
-    def setup(self, ctx: PluginSetupContext) -> None:
+    def apply(self, ctx) -> None:
         self._artifacts_dir = Path(ctx.variables["artifacts"])
         for function in (
             self.web_search,
@@ -61,7 +60,7 @@ class BrowserPlugin(PluginBase):
             self.browser_screenshot,
             self.browser_close,
         ):
-            ctx.register_tool(
+            ctx.tools.register(
                 Tool.from_function(function),
                 options=ToolRegistrationOptions(
                     namespace="plugin:browser",

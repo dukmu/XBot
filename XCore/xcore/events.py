@@ -311,6 +311,24 @@ class EventBus:
 
     # -- inspection ---------------------------------------------------------
 
+    def hooks_for(self, event: str) -> list[Hook]:
+        """Live hooks for an event in registration order (no session filtering).
+
+        Used by bridge layers (e.g. XBotv2's HookManager) that gather
+        listeners while keeping their own invocation contract.  ``once``
+        hooks are *not* consumed here -- consumption happens only in the
+        async dispatch primitives.
+        """
+        hooks: list[Hook] = []
+        exact = self._exact.get(event)
+        if exact:
+            hooks.extend(exact)
+        for pattern, wildcard_hooks in self._wildcards:
+            if _match_event(event, pattern):
+                hooks.extend(wildcard_hooks)
+        hooks.sort(key=lambda hook: hook.seq)
+        return [hook for hook in hooks if not hook.disposed]
+
     def listener_count(self, event: str) -> int:
         """Number of live listeners for an event (diagnostics)."""
         count = 0

@@ -14,8 +14,6 @@ from xbotv2.api import (
     HookStage,
     PluginBase,
     PluginManifest,
-    PluginSetupContext,
-    PluginStore,
     prompt_container,
     prompt_element,
     RuntimePluginContext,
@@ -30,8 +28,8 @@ from .skill_tool import load_skill
 
 
 class SkillsPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest: PluginManifest) -> None:
+        super().__init__(manifest)
         self._registry = SkillRegistry()
         self._permission_scope = SkillPermissionScope()
         self._active_skills: set[str] = set()
@@ -50,12 +48,12 @@ class SkillsPlugin(PluginBase):
         self._model_skill_names.clear()
         self._initialized = False
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
-        ctx.register_hook(HookStage.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
-        ctx.register_hook(HookStage.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
-        ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
-        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._on_before_tool)
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
+        ctx.on(HookStage.BEFORE_USER_MESSAGE_ACCEPT.value, self._on_before_user_message)
+        ctx.on(HookStage.BEFORE_TOOL_SCHEMA_BIND.value, self._on_before_tool_schema)
+        ctx.on(HookStage.ON_TURN_END.value, self._on_turn_end)
+        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._on_before_tool)
 
     async def _on_session_init(self, ctx: HookContext) -> None:
         if ctx.plugin_runtime is None:

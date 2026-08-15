@@ -61,7 +61,6 @@ type-only import inside XBotv2 itself.
 | `OutputStore` | protocol | Cursor-based readable job output buffer. |
 | `PluginBase` | class | Plugin lifecycle base class. |
 | `PluginConfigError` | exception | Plugin configuration validation failure with plugin name and path. |
-| `PluginSetupContext` | protocol | Setup-time registration capabilities. |
 | `PluginManifest` | pydantic model | Validated plugin manifest. |
 | `PluginStore` | protocol | Per-plugin persistent key-value storage. |
 | `ProviderCapabilities` | dataclass | Effective provider input capabilities. |
@@ -113,7 +112,7 @@ snapshot; repeated save attempts with no state change do not emit them.
 `PromptFragmentStage` contains `system_prefix`, `system_instructions`,
 `system_rules`, and `context_suffix` as compatible ordering zones. They do not
 grant authority or describe wire positions. Manifest declarations are validated
-against this list before plugin setup. `PluginSetupContext.add_prompt_fragment`
+against this list before plugin apply. `ctx.prompts.add`
 accepts an optional source label which is preserved in `ContextComponent` and
 the rendered system envelope.
 `HookContext.context_components` exposes a `list[ContextComponent]` at
@@ -122,11 +121,11 @@ replace the list with another list of public components. Invalid entries fail
 before provider-message conversion.
 Model-request Hooks inspect `HookContext.model_request`. Transform Hooks use
 their documented stage-specific return dictionaries for replacements.
-`PluginSetupContext` owns transactional setup registrations, including Agent
-definitions, while runtime
-Tool and Command registrations join the same unload record. Runtime unregister
-operations can remove only resources owned by that plugin.
-`PluginSetupContext.variables` exposes the immutable `RuntimeVariables` mapping
+Plugin ``apply(ctx)`` registrations are fiber effects: Agent definitions,
+hooks, Tools, Commands, and prompt fragments are undone automatically when the
+plugin unloads (XCore lifecycle). Runtime unregister operations can remove only
+resources owned by that plugin.
+``ctx.variables`` exposes the immutable `RuntimeVariables` mapping
 used by Core configuration consumers. Plugins may read and expand it but cannot
 add or replace built-in values. Markdown prompt fragments use fenced `var`
 blocks through `RuntimeVariables.expand_markdown`; ordinary Markdown references

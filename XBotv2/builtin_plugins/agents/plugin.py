@@ -26,7 +26,6 @@ from xbotv2.api import (
     JobRunner,
     JobStatus,
     PluginBase,
-    PluginSetupContext,
     RuntimeVariables,
     Tool,
     ToolRegistrationOptions,
@@ -97,14 +96,14 @@ class SubagentRunner:
 class AgentsPlugin(PluginBase):
     """Register workspace Agent definitions and subagent job tools."""
 
-    def __init__(self, manifest, store) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest) -> None:
+        super().__init__(manifest)
         self._timeout_seconds = 600.0
 
     async def on_load(self, config: dict[str, Any]) -> None:
         self._timeout_seconds = float(config.get("timeout_seconds", 600.0))
 
-    def setup(self, ctx: PluginSetupContext) -> None:
+    def apply(self, ctx) -> None:
         definitions = {
             definition.name: definition
             for definition in _load_definitions(
@@ -120,7 +119,7 @@ class AgentsPlugin(PluginBase):
             )
         })
         for definition in definitions.values():
-            ctx.register_agent(definition)
+            ctx.agents.register(definition)
         if ctx.agent_runtime is None or ctx.job_registry is None:
             return
 
@@ -296,7 +295,7 @@ class AgentsPlugin(PluginBase):
                 data=result.to_dict(),
             )
 
-        ctx.register_tool(
+        ctx.tools.register(
             Tool.from_function(spawn_subagent, name="spawn_subagent"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
@@ -310,7 +309,7 @@ class AgentsPlugin(PluginBase):
             read_subagent,
             cancel_subagent,
         ):
-            ctx.register_tool(
+            ctx.tools.register(
                 Tool.from_function(function),
                 options=ToolRegistrationOptions(
                     sandbox_mode="host",

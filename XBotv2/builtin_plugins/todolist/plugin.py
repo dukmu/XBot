@@ -7,7 +7,6 @@ from typing import Any
 
 from xbotv2.api import (
     PluginBase,
-    PluginSetupContext,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
@@ -40,8 +39,8 @@ _UPDATE_TODOS_SCHEMA = {
 
 
 class TodolistPlugin(PluginBase):
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_tool(
+    def apply(self, ctx) -> None:
+        ctx.tools.register(
             Tool(
                 name="update_todos",
                 description=inspect.getdoc(self.update_todos) or "",

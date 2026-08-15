@@ -19,10 +19,7 @@ from xbotv2.api.tokens import REQUEST_ESTIMATE_KEY
 
 
 def make_plugin() -> TokenManagerPlugin:
-    return TokenManagerPlugin(
-        PluginManifest(name="token_manager", version="1"),
-        store=None,
-    )
+    return TokenManagerPlugin(PluginManifest(name="token_manager", version="1"))
 
 
 def test_context_limit_uses_ratio_and_provider_output_reservation():

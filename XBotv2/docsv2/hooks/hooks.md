@@ -1,7 +1,7 @@
 # Hooks
 
 Hooks are synchronous-in-order asynchronous callbacks registered through
-`PluginSetupContext.register_hook`.
+`ctx.on(stage.value, callback)`.
 
 Hook stages have three contracts:
 
@@ -34,7 +34,7 @@ their matching tool results as soon as the batch commits.
 `HookContext` exposes session metadata and stage-specific data. Turn-scoped
 contexts also expose the message `request_id` used by the C/S event envelope;
 session lifecycle contexts use an empty value. Plugins register
-callbacks through `PluginSetupContext`; they do not receive the hook manager,
+callbacks through `ctx.on(stage.value, callback)`; they do not receive the hook manager,
 tool registry, context builder, or engine implementation.
 
 `ctx.messages` is the current persisted conversation history. `POST_COMPACT`

@@ -23,6 +23,8 @@ dependencies = [
     "trafilatura>=2.0",
     "playwright>=1.50",
     "agent-client-protocol>=0.11.1,<0.12",
+    # Plugin-centric runtime core (same repository, XCore/).
+    "xcore @ ./XCore",
 ]
 
 [project.scripts]
@@ -38,7 +40,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["XBotv2/tests"]
-pythonpath = ["XBotv2", "."]
+pythonpath = ["XBotv2", "XCore", "."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

@@ -286,7 +286,7 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
     from builtin_plugins.mcp.plugin import MCPPlugin
     from xbotv2.api import PluginManifest
 
-    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"), store=None)
+    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"))
     plugin._client.disconnect_all = AsyncMock()
     plugin._server_status["server"] = {"status": "ready"}
 
@@ -296,13 +296,49 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
     assert plugin._server_status == {}
 
 
+class _FakeRuntimeContext:
+    """Test double matching the runtime context contract plugins consume."""
+
+    def __init__(self, plugin_name, registry, tool_names):
+        self.plugin_name = plugin_name
+        self.registry = registry
+        self.tool_names = tool_names
+        self.commands = {}
+
+    def register_tool(self, tool, options=None):
+        from xbotv2.api.plugins import ToolRegistrationOptions
+
+        opts = options or ToolRegistrationOptions()
+        name = self.registry.register(
+            tool,
+            sandbox_mode=opts.sandbox_mode,
+            namespace=opts.namespace,
+            model_visible=opts.model_visible,
+            timeout_seconds=opts.timeout_seconds,
+        )
+        self.tool_names.append(name)
+        return name
+
+    def unregister_tool(self, registered_name):
+        if registered_name not in self.tool_names:
+            return False
+        self.tool_names.remove(registered_name)
+        return self.registry.unregister(registered_name)
+
+    def register_command(self, command):
+        self.commands[command.name] = command
+        return command.name
+
+    def unregister_command(self, name):
+        return self.commands.pop(name, None) is not None
+
+
 def _mcp_runtime():
-    from xbotv2.plugin.loader import _RuntimePluginContext
     from xbotv2.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     owned_names: list[str] = []
-    runtime = _RuntimePluginContext("mcp", registry, owned_names)
+    runtime = _FakeRuntimeContext("mcp", registry, owned_names)
     return runtime, registry, owned_names
 
 
@@ -310,7 +346,7 @@ def _mcp_plugin(servers):
     from builtin_plugins.mcp.plugin import MCPPlugin
     from xbotv2.api import PluginManifest
 
-    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"), store=None)
+    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"))
     plugin._config = {"servers": servers}
     plugin._client.connect_and_list = AsyncMock()
     plugin._client.server_capabilities = lambda _server: {"tools": {}}

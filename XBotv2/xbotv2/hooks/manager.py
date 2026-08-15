@@ -1,10 +1,30 @@
-"""HookManager: central hook registry and executor."""
+"""HookManager: 41-stage hook bridge backed by an XCore event bus.
+
+The engine-facing contract is unchanged: plugins and core code register
+callbacks per :class:`HookStage` and the engine calls ``run(stage, ctx, ...)``.
+What changed in the migration (see ``XCore/docs/05-migration-plan.md``):
+
+- Listener storage lives on the XCore event bus (one bus per session runtime).
+  A hook stage is a named event (``stage.value``); registration order, prepend
+  support, and ownership-based auto-cleanup (plugin unload removes its hooks)
+  come from the bus for free.
+- ``run()`` gathers listeners via ``EventBus.hooks_for`` and applies the
+  documented contract: observer/transform/guard result validation,
+  short-circuit stages, and strict-failure aggregation.
+- Plugin hooks receive a ``plugin_runtime`` on the ``HookContext`` so plugins
+  (skills, MCP) can register dynamic tools/commands during hooks; the runtime
+  context derives from the hook's owning plugin fiber.
+
+Without a bus (``bus=None``) the manager keeps a local dictionary so isolated
+contract tests keep working; production wiring always passes the bus.
+"""
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from xbotv2.api.hooks import (
     HookAction,
@@ -55,19 +75,65 @@ _RESULT_KEYS: dict[HookStage, frozenset[str]] = {
 
 
 class HookManager:
-    def __init__(self) -> None:
-        self._hooks: dict[HookStage, list[HookFn]] = defaultdict(list)
+    """Hook registry and executor, backed by an XCore event bus."""
+
+    def __init__(
+        self,
+        bus: Any = None,
+        *,
+        plugin_runtime_factory: Callable[[Any], Any] | None = None,
+    ) -> None:
+        """Create a hook manager.
+
+        Args:
+            bus: The XCore ``Context`` whose event bus stores listeners. When
+                ``None``, listeners stay in a local per-stage dictionary
+                (isolated use; plugin ownership is unavailable).
+            plugin_runtime_factory: Resolver from a hook's owning context to
+                the plugin runtime context injected on ``HookContext`` during
+                ``run`` (owned by the migration bridge).
+        """
+        self._context = bus
+        self._bus = getattr(bus, "_bus", None) if bus is not None else None
+        self._local: dict[HookStage, list[HookFn]] = defaultdict(list)
+        self._plugin_runtime_factory = plugin_runtime_factory
+
+    # -- registration -------------------------------------------------------
 
     def register(self, stage: HookStage, fn: HookFn) -> None:
-        self._hooks[stage].append(fn)
+        """Register a hook callback (registration order preserved)."""
+        if self._context is not None:
+            self._context.on(stage.value, fn, global_=True)
+        else:
+            self._local[stage].append(fn)
 
     def unregister(self, stage: HookStage, fn: HookFn) -> bool:
-        hooks = self._hooks.get(stage, [])
+        """Remove a hook callback by identity."""
+        if self._context is not None:
+            return self._context.off(stage.value, fn)
+        hooks = self._local.get(stage, [])
         for index in range(len(hooks) - 1, -1, -1):
             if hooks[index] is fn:
                 del hooks[index]
                 return True
         return False
+
+    def hook_count(self, stage: HookStage) -> int:
+        """Number of registered hooks for a stage (diagnostics)."""
+        if self._bus is not None:
+            return self._bus.listener_count(stage.value)
+        return len(self._local.get(stage, []))
+
+    # -- execution ----------------------------------------------------------
+
+    def _gather(self, stage: HookStage) -> list[tuple[HookFn, Any]]:
+        """Return ``(callback, owner_ctx)`` pairs in registration order."""
+        if self._bus is not None:
+            return [
+                (hook.callback, hook.owner)
+                for hook in self._bus.hooks_for(stage.value)
+            ]
+        return [(fn, None) for fn in self._local.get(stage, [])]
 
     async def run(
         self,
@@ -83,16 +149,23 @@ class HookManager:
         errors: list[BaseException] = []
         allowed_decision: HookDecision | None = None
         strict_failure = stage in STRICT_FAILURE_STAGES and not short_circuit
-        for hook in self._hooks.get(stage, []):
+        for callback, owner in self._gather(stage):
+            previous_runtime = getattr(ctx, "plugin_runtime", None)
+            if self._plugin_runtime_factory is not None and owner is not None:
+                ctx.plugin_runtime = self._plugin_runtime_factory(owner)
             try:
-                result = await hook(ctx)
+                result = callback(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
             except Exception as exc:
                 if short_circuit:
                     raise
                 if strict_failure:
                     errors.append(exc)
-                logger.exception("Hook %r failed for stage %s", hook, stage.value)
+                logger.exception("Hook %r failed for stage %s", callback, stage.value)
                 continue
+            finally:
+                ctx.plugin_runtime = previous_runtime
             self._validate_result(stage, result, short_circuit=short_circuit)
             if isinstance(result, HookDecision):
                 if result.action is HookAction.CONTINUE:

@@ -91,6 +91,49 @@ Invalid permission content.
     return ws
 
 
+
+class _FakeRuntimeContext:
+    """Test double matching the runtime context contract plugins consume.
+
+    Mirrors the pre-migration ``_RuntimePluginContext`` shape
+    (tool_names/commands bookkeeping) so plugin tests can drive
+    ``ctx.plugin_runtime`` without a full XCore wiring.
+    """
+
+    def __init__(self, plugin_name, registry, tool_names):
+        self.plugin_name = plugin_name
+        self.registry = registry
+        self.tool_names = tool_names
+        self.commands = {}
+
+    def register_tool(self, tool, options=None):
+        from xbotv2.api.plugins import ToolRegistrationOptions
+
+        opts = options or ToolRegistrationOptions()
+        name = self.registry.register(
+            tool,
+            sandbox_mode=opts.sandbox_mode,
+            namespace=opts.namespace,
+            model_visible=opts.model_visible,
+            timeout_seconds=opts.timeout_seconds,
+        )
+        self.tool_names.append(name)
+        return name
+
+    def unregister_tool(self, registered_name):
+        if registered_name not in self.tool_names:
+            return False
+        self.tool_names.remove(registered_name)
+        return self.registry.unregister(registered_name)
+
+    def register_command(self, command):
+        self.commands[command.name] = command
+        return command.name
+
+    def unregister_command(self, name):
+        return self.commands.pop(name, None) is not None
+
+
 class TestSkillRegistry:
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
         from builtin_plugins.skills.registry import SkillRegistry
@@ -165,7 +208,7 @@ Body
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._registry.discover(skill_workspace)
         plugin._active_skills.add("test-skill")
         plugin._permission_scope.add(allowed=["shell"], disallowed=[])
@@ -182,14 +225,13 @@ Body
     async def test_plugin_session_init_is_idempotent(self, skill_workspace):
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest
-        from xbotv2.plugin.loader import _RuntimePluginContext
         from xbotv2.tools.registry import ToolRegistry
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._registry._scan_global = lambda: None
         registry = ToolRegistry()
         owned_names: list[str] = []
-        runtime = _RuntimePluginContext("skills", registry, owned_names)
+        runtime = _FakeRuntimeContext("skills", registry, owned_names)
         ctx = SimpleNamespace(
             plugin_runtime=runtime,
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
@@ -231,7 +273,7 @@ Body
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._registry._scan_global = lambda: None
         plugin._registry.discover(skill_workspace)
         manual_result = await plugin._on_before_user_message(
@@ -270,11 +312,10 @@ Body
         from xbotv2.tools.sandbox import SandboxPolicy
 
         registry = ToolRegistry()
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._registry._scan_global = lambda: None
-        from xbotv2.plugin.loader import _RuntimePluginContext
         await plugin._on_session_init(SimpleNamespace(
-            plugin_runtime=_RuntimePluginContext("skills", registry, []),
+            plugin_runtime=_FakeRuntimeContext("skills", registry, []),
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=None,
         ))
@@ -313,7 +354,7 @@ Body
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest, Tool
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._model_skill_names = {"long-skill"}
         plugin._metadata_budget_chars = 14
 
@@ -346,7 +387,7 @@ Body
             ToolCall,
         )
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._active_skills.add("git-workflow")
         plugin._permission_scope.add(allowed=["shell(git *)"])
 
@@ -395,7 +436,7 @@ Body
         registry = ToolRegistry()
         registry.register(Tool.from_function(echo), sandbox_mode="host")
         registry.register(Tool.from_function(runner), sandbox_mode="host")
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._active_skills.add("restricted")
         plugin._permission_scope.add(allowed=["echo", "runner(git *)"])
         hooks = HookManager()
@@ -457,13 +498,12 @@ Body
     ):
         from builtin_plugins.skills.plugin import SkillsPlugin
         from xbotv2.api import PluginManifest, Tool
-        from xbotv2.plugin.loader import _RuntimePluginContext
         from xbotv2.tools.registry import ToolRegistry
 
         def existing_tool() -> str:
             return "existing"
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"))
         plugin._registry._scan_global = lambda: None
         registry = ToolRegistry()
         collision_name = registry.register(
@@ -471,7 +511,7 @@ Body
             namespace="skills:project",
         )
         owned_names: list[str] = []
-        runtime = _RuntimePluginContext("skills", registry, owned_names)
+        runtime = _FakeRuntimeContext("skills", registry, owned_names)
         ctx = SimpleNamespace(
             plugin_runtime=runtime,
             session=SimpleNamespace(workspace_root=str(skill_workspace)),

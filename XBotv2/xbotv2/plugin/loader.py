@@ -1,4 +1,12 @@
-"""Plugin discovery, dependency resolution, and registration."""
+"""Plugin discovery, dependency resolution, and XCore-based loading.
+
+The loader's job is unchanged -- discover ``plugin.yaml`` manifests, order by
+``depends_on``, validate configs, instantiate :class:`PluginBase` subclasses --
+but mounting now goes through the XCore plugin registry (``ctx.plugin``):
+lifecycle, hook/listener ownership, and cleanup are owned by XCore fibers
+(design: ``XCore/docs/05-migration-plan.md``).  The manual rollback tables
+(hook_refs / tool_names / ...) are gone; unload = dispose the fiber.
+"""
 
 from __future__ import annotations
 
@@ -7,230 +15,56 @@ import inspect
 import logging
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.agents import AgentRegistry
-from xbotv2.api.agents import AgentDefinition, AgentRuntime
-from xbotv2.api.commands import Command
-from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookStage
-from xbotv2.api.context import PromptFragmentStage
-from xbotv2.api.jobs import JobRegistry
-from xbotv2.api.variables import RuntimeVariables
+from xcore import Context
+
 from xbotv2.api.plugins import (
     PluginBase,
     PluginManifest,
-    ToolRegistrationOptions,
 )
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.store import PluginStore
-from xbotv2.tools.registry import ToolRegistry
+from xbotv2.plugin.bridge import PluginAdapter
 
 logger = logging.getLogger("xbotv2.plugin_loader")
 
 
-@dataclass
-class LoadedPluginRecord:
-    """Runtime resources registered by one plugin."""
-
-    plugin: Any
-    hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
-    tool_names: list[str] = field(default_factory=list)
-    command_names: list[str] = field(default_factory=list)
-    fragment_stages: list[str] = field(default_factory=list)
-    agent_names: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _RuntimePluginContext:
-    """Runtime adapter that records resources registered from plugin hooks."""
-
-    plugin_name: str
-    tools: ToolRegistry
-    tool_names: list[str]
-    commands: dict[str, Command] = field(default_factory=dict)
-    command_names: list[str] = field(default_factory=list)
-
-    def register_tool(
-        self,
-        tool: Any,
-        options: ToolRegistrationOptions | None = None,
-    ) -> str:
-        return _register_plugin_tool(
-            tools=self.tools,
-            plugin_name=self.plugin_name,
-            tool=tool,
-            options=options,
-            tool_names=self.tool_names,
-        )
-
-    def unregister_tool(self, registered_name: str) -> bool:
-        """Remove one runtime tool owned by this plugin."""
-        if registered_name not in self.tool_names:
-            return False
-        self.tool_names.remove(registered_name)
-        return self.tools.unregister(registered_name)
-
-    def register_command(self, command: Command) -> str:
-        return _register_plugin_command(
-            command, self.commands, self.command_names
-        )
-
-    def unregister_command(self, name: str) -> bool:
-        if name not in self.command_names:
-            return False
-        self.command_names.remove(name)
-        return self.commands.pop(name, None) is not None
-
-
-@dataclass
-class _PluginSetupContext:
-    """Transactional adapter from the public plugin API to core services."""
-
-    plugin_name: str
-    hooks: HookManager
-    tools: ToolRegistry
-    context: ContextBuilder
-    agents: AgentRegistry = field(default_factory=AgentRegistry)
-    workspace_root: Path = field(default_factory=Path.cwd)
-    data_root: Path = field(default_factory=Path.cwd)
-    variables: RuntimeVariables = field(default_factory=RuntimeVariables)
-    agent_runtime: AgentRuntime | None = None
-    job_registry: JobRegistry | None = None
-    commands: dict[str, Command] = field(default_factory=dict)
-    hook_refs: list[tuple[HookStage, Any]] = field(default_factory=list)
-    tool_names: list[str] = field(default_factory=list)
-    command_names: list[str] = field(default_factory=list)
-    fragment_stages: list[str] = field(default_factory=list)
-    agent_names: list[str] = field(default_factory=list)
-
-    def register_agent(self, definition: AgentDefinition) -> str:
-        name = self.agents.register(definition, owner=self.plugin_name)
-        self.agent_names.append(name)
-        return name
-
-    def register_hook(self, stage: HookStage, callback: Any) -> None:
-        async def plugin_hook(ctx: Any) -> Any:
-            previous_runtime = getattr(ctx, "plugin_runtime", None)
-            ctx.plugin_runtime = _RuntimePluginContext(
-                plugin_name=self.plugin_name,
-                tools=self.tools,
-                tool_names=self.tool_names,
-                commands=self.commands,
-                command_names=self.command_names,
-            )
-            try:
-                result = callback(ctx)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
-            finally:
-                ctx.plugin_runtime = previous_runtime
-
-        self.hooks.register(stage, plugin_hook)
-        self.hook_refs.append((stage, plugin_hook))
-
-    def register_tool(
-        self,
-        tool: Any,
-        options: ToolRegistrationOptions | None = None,
-    ) -> str:
-        return _register_plugin_tool(
-            tools=self.tools,
-            plugin_name=self.plugin_name,
-            tool=tool,
-            options=options,
-            tool_names=self.tool_names,
-        )
-
-    def add_prompt_fragment(
-        self,
-        stage: PromptFragmentStage,
-        text: str,
-        *,
-        source: str | None = None,
-    ) -> None:
-        self.context.register_fragment(
-            stage,
-            self.plugin_name,
-            text,
-            source=source,
-        )
-        if stage not in self.fragment_stages:
-            self.fragment_stages.append(stage)
-
-    def register_command(self, command: Command) -> str:
-        return _register_plugin_command(
-            command, self.commands, self.command_names
-        )
-
-    def rollback(self) -> None:
-        for stage, callback in reversed(self.hook_refs):
-            self.hooks.unregister(stage, callback)
-        for tool_name in reversed(self.tool_names):
-            self.tools.unregister(tool_name)
-        for command_name in reversed(self.command_names):
-            self.commands.pop(command_name, None)
-        for stage in reversed(self.fragment_stages):
-            self.context.unregister_fragment(stage, self.plugin_name)
-        for agent_name in reversed(self.agent_names):
-            self.agents.unregister(agent_name, owner=self.plugin_name)
-
-
 class PluginLoader:
-    """Discover, load, and wire plugins into core components."""
+    """Discover, load, and wire plugins into an XCore context."""
 
     def __init__(
         self,
         *,
+        ctx: Context,
         plugin_dirs: list[Path],
-        state_store: CoreStateStore,
-        hook_manager: HookManager,
-        tool_registry: ToolRegistry,
-        context_builder: ContextBuilder,
-        agent_registry: AgentRegistry | None = None,
-        workspace_root: Path | str | None = None,
-        runtime_variables: RuntimeVariables | None = None,
-        disabled_plugins: set[str] | None = None,
-        agent_runtime: AgentRuntime | None = None,
-        job_registry: JobRegistry | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
+        disabled_plugins: set[str] | None = None,
+        workspace_root: Path | str | None = None,
     ) -> None:
+        self.ctx = ctx
         self.plugin_dirs = plugin_dirs
-        self.state_store = state_store
-        self.hook_manager = hook_manager
-        self.tool_registry = tool_registry
-        self.context_builder = context_builder
-        self.agent_registry = agent_registry or AgentRegistry()
-        self.workspace_root = Path(workspace_root or state_store.workspace_root)
-        self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
-            state_store.paths.runtime,
-            self.workspace_root,
-            state_store.paths,
-        )
-        self.disabled_plugins = disabled_plugins or set()
-        self.agent_runtime = agent_runtime
-        self.job_registry = job_registry
         self.plugin_configs = plugin_configs or {}
-        self._records: dict[str, LoadedPluginRecord] = {}
-        self._commands: dict[str, Command] = {}
+        self.disabled_plugins = disabled_plugins or set()
+        self.workspace_root = Path(workspace_root or Path.cwd())
+        self._plugins: dict[str, PluginBase] = {}
+        self._handles: dict[str, Any] = {}
         self._import_paths: list[str] = []
+
+    # -- inspection ---------------------------------------------------------
 
     @property
     def loaded_plugins(self) -> list[Any]:
-        return [record.plugin for record in self._records.values()]
+        return list(self._plugins.values())
 
     @property
-    def commands(self) -> tuple[Command, ...]:
-        return tuple(self._commands.values())
+    def commands(self) -> tuple[Any, ...]:
+        """All registered commands (including dynamic ones)."""
+        return self.ctx.commands.all()
 
-    def get_command(self, name: str) -> Command | None:
-        return self._commands.get(name)
+    def get_command(self, name: str) -> Any | None:
+        return self.ctx.commands.get(name)
 
     def diagnostics(self) -> list[dict[str, Any]]:
         """Return serializable plugin health without exposing plugin objects."""
@@ -266,6 +100,8 @@ class PluginLoader:
                     slots[name] = value
         return slots
 
+    # -- discovery ----------------------------------------------------------
+
     def discover(self) -> list[tuple[PluginManifest, Path]]:
         """Scan plugin directories for plugin.yaml manifests."""
         manifests: list[tuple[PluginManifest, Path]] = []
@@ -287,23 +123,38 @@ class PluginLoader:
                 manifests.append((manifest, candidate))
         return manifests
 
+    # -- loading ------------------------------------------------------------
+
     async def load(self) -> list[Any]:
-        """Discover, instantiate, initialize, and register plugins."""
+        """Discover, instantiate, and mount plugins in dependency order.
+
+        The XCore context is started on first load so mounted plugins load
+        immediately (the loader owns plugin lifecycle; the engine owns
+        teardown through :meth:`unload_all`).
+        """
+        if not self.ctx.is_active:
+            await self.ctx.start()
         ordered = resolve_dependencies(self.discover())
         for manifest, plugin_dir in ordered:
             plugin = None
+            mounted = False
             try:
                 plugin_config = dict(self.plugin_configs.get(manifest.name, {}))
                 manifest.validate_config(plugin_config)
                 self._ensure_importable(manifest, plugin_dir)
-                plugin_store = PluginStore(self.state_store, manifest.name)
-                plugin = instantiate_plugin(manifest, plugin_store)
-
+                plugin = instantiate_plugin(manifest)
                 await plugin.on_load(plugin_config)
-                self._records[manifest.name] = self._register(plugin)
+                adapter = PluginAdapter(plugin)
+                handle = self.ctx.plugin(adapter, plugin_config)
+                mounted = True
+                await handle
+                self._plugins[manifest.name] = plugin
+                self._handles[manifest.name] = handle
             except BaseException as load_error:
                 cleanup_errors: list[BaseException] = []
-                if plugin is not None:
+                # ``on_unload`` is a fiber disposer once mounted; only call it
+                # directly when ``on_load`` failed before the adapter mounted.
+                if plugin is not None and not mounted:
                     try:
                         await plugin.on_unload()
                     except BaseException as cleanup_error:
@@ -319,54 +170,42 @@ class PluginLoader:
         return list(self.loaded_plugins)
 
     async def unload(self, plugin_name: str) -> bool:
-        """Unload one plugin and remove its registered resources.
+        """Unload one plugin (disposes its XCore fiber).
 
-        Returns ``True`` when a loaded plugin was found and unloaded.
+        ``on_unload`` runs once as the fiber's disposer (registered by the
+        plugin adapter); its failures are logged, never raised (XCore
+        lifecycle semantics).
         """
-        record = self._records.get(plugin_name)
-        if record is None:
+        handle = self._handles.pop(plugin_name, None)
+        if handle is None:
             return False
-
-        unload_error: BaseException | None = None
-        try:
-            await record.plugin.on_unload()
-        except BaseException as exc:
-            unload_error = exc
-        self._records.pop(plugin_name, None)
-        for stage, fn in reversed(record.hook_refs):
-            self.hook_manager.unregister(stage, fn)
-        for tool_name in reversed(record.tool_names):
-            self.tool_registry.unregister(tool_name)
-        for command_name in reversed(record.command_names):
-            self._commands.pop(command_name, None)
-        for stage in record.fragment_stages:
-            self.context_builder.unregister_fragment(stage, plugin_name)
-        for agent_name in reversed(record.agent_names):
-            self.agent_registry.unregister(agent_name, owner=plugin_name)
-        if not self._records:
+        self._plugins.pop(plugin_name, None)
+        await handle.dispose()
+        if not self._handles:
             self._release_import_paths()
-        if unload_error is not None:
-            raise unload_error
         return True
 
     async def reload(self, plugin_name: str) -> bool:
         """Reload one active plugin from its existing manifest."""
-        record = self._records.get(plugin_name)
+        record = self._plugins.get(plugin_name)
         if record is None:
             return False
-        manifest = record.plugin.manifest
+        manifest = record.manifest
         plugin_dir = manifest.plugin_dir
-        await self.unload(plugin_name)
+        was_unloaded = await self.unload(plugin_name)
+        if not was_unloaded:
+            return False
         self._ensure_importable(manifest, plugin_dir or Path.cwd())
-        plugin = instantiate_plugin(
-            manifest,
-            PluginStore(self.state_store, manifest.name),
-        )
+        plugin = instantiate_plugin(manifest)
         try:
             config = dict(self.plugin_configs.get(manifest.name, {}))
             manifest.validate_config(config)
             await plugin.on_load(config)
-            self._records[manifest.name] = self._register(plugin)
+            adapter = PluginAdapter(plugin)
+            handle = self.ctx.plugin(adapter, config)
+            await handle
+            self._plugins[manifest.name] = plugin
+            self._handles[manifest.name] = handle
         except BaseException as reload_error:
             try:
                 await plugin.on_unload()
@@ -381,11 +220,11 @@ class PluginLoader:
         """Unload all loaded plugins in reverse load order."""
         unloaded: list[str] = []
         errors: list[BaseException] = []
-        for plugin_name in reversed(list(self._records)):
+        for plugin_name in reversed(list(self._handles)):
             try:
                 was_unloaded = await self.unload(plugin_name)
             except BaseException as exc:
-                was_unloaded = plugin_name not in self._records
+                was_unloaded = plugin_name not in self._handles
                 errors.append(exc)
             if was_unloaded:
                 unloaded.append(plugin_name)
@@ -393,34 +232,7 @@ class PluginLoader:
             raise BaseExceptionGroup("One or more plugins failed during unload", errors)
         return unloaded
 
-    def _register(self, plugin: Any) -> LoadedPluginRecord:
-        plugin_name = plugin.manifest.name
-        setup = _PluginSetupContext(
-            plugin_name=plugin_name,
-            hooks=self.hook_manager,
-            tools=self.tool_registry,
-            context=self.context_builder,
-            agents=self.agent_registry,
-            workspace_root=self.workspace_root,
-            data_root=self.state_store.paths.runtime.data_dir,
-            variables=self.runtime_variables,
-            agent_runtime=self.agent_runtime,
-            job_registry=self.job_registry,
-            commands=self._commands,
-        )
-        try:
-            plugin.setup(setup)
-            return LoadedPluginRecord(
-                plugin=plugin,
-                hook_refs=setup.hook_refs,
-                tool_names=setup.tool_names,
-                command_names=setup.command_names,
-                fragment_stages=setup.fragment_stages,
-                agent_names=setup.agent_names,
-            )
-        except BaseException:
-            setup.rollback()
-            raise
+    # -- import path management ---------------------------------------------
 
     def _ensure_importable(self, manifest: PluginManifest, plugin_dir: Path) -> None:
         if _is_builtin_plugin_dir(plugin_dir):
@@ -493,7 +305,7 @@ def resolve_dependencies(
     return result
 
 
-def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> Any:
+def instantiate_plugin(manifest: PluginManifest) -> Any:
     """Instantiate a PluginBase subclass or manifest-driven default plugin."""
     class_name = "".join(part.title() for part in manifest.name.split("_")) + "Plugin"
     package = (
@@ -527,9 +339,9 @@ def instantiate_plugin(manifest: PluginManifest, plugin_store: PluginStore) -> A
             raise TypeError(
                 f"Plugin class {module_name}:{class_name} must inherit PluginBase"
             )
-        return cls(manifest, plugin_store)
+        return cls(manifest)
 
-    return _DefaultPlugin(manifest, plugin_store)
+    return _DefaultPlugin(manifest)
 
 
 def _is_builtin_plugin_dir(plugin_dir: Path) -> bool:
@@ -539,38 +351,6 @@ def _is_builtin_plugin_dir(plugin_dir: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _register_plugin_tool(
-    tools: ToolRegistry,
-    plugin_name: str,
-    tool: Any,
-    *,
-    options: ToolRegistrationOptions | None,
-    tool_names: list[str],
-) -> str:
-    registration = options or ToolRegistrationOptions()
-    registered_name = tools.register(
-        tool,
-        sandbox_mode=registration.sandbox_mode,
-        namespace=registration.namespace,
-        model_visible=registration.model_visible,
-        timeout_seconds=registration.timeout_seconds,
-    )
-    tool_names.append(registered_name)
-    return registered_name
-
-
-def _register_plugin_command(
-    command: Command,
-    commands: dict[str, Command],
-    command_names: list[str],
-) -> str:
-    if command.name in commands:
-        raise ValueError(f"Command {command.name!r} is already registered")
-    commands[command.name] = command
-    command_names.append(command.name)
-    return command.name
 
 
 def _module_belongs_to_path(module: Any, plugin_dir: Path) -> bool:
@@ -594,10 +374,37 @@ def _module_belongs_to_path(module: Any, plugin_dir: Path) -> bool:
 
 
 class _DefaultPlugin(PluginBase):
-    """Minimal plugin that uses manifest-driven hook/tool registration."""
+    """Minimal plugin that mounts manifest-declared resources in ``apply``."""
 
     async def on_load(self, _config: dict[str, Any]) -> None:
         """No-op: _DefaultPlugin needs no initialization."""
 
     async def on_unload(self) -> None:
-        """No-op: _DefaultPlugin has no resources outside registered core items."""
+        """No-op: registrations are fiber effects."""
+
+    def apply(self, ctx: Any) -> None:
+        """Register manifest-declared hooks and tools (none today)."""
+        from xbotv2.api.hooks import HookStage
+        from xbotv2.api.plugins import ToolRegistrationOptions
+
+        for declaration in self.manifest.hooks:
+            ctx.on(
+                HookStage(declaration.stage).value,
+                self._resolve(declaration.handler),
+            )
+        for declaration in self.manifest.tools:
+            ctx.tools.register(
+                self._resolve(declaration.handler),
+                options=ToolRegistrationOptions(
+                    sandbox_mode=declaration.sandbox_mode,
+                ),
+            )
+
+    @staticmethod
+    def _resolve(dotted_path: str) -> Any:
+        module_path, separator, attribute = dotted_path.partition(":")
+        if not separator or not attribute:
+            raise ValueError(
+                f"Invalid handler path (expected module:attribute): {dotted_path!r}"
+            )
+        return getattr(importlib.import_module(module_path), attribute)

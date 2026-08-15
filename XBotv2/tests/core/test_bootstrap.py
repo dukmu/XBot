@@ -187,8 +187,8 @@ def runtime_tool() -> str:
     return "ok"
 
 class InitFailPlugin(PluginBase):
-    def setup(self, ctx):
-        ctx.register_hook(HookStage.ON_SESSION_INIT, self.on_session_init)
+    def apply(self, ctx):
+        ctx.on(HookStage.ON_SESSION_INIT.value, self.on_session_init)
 
     async def on_session_init(self, ctx):
         ctx.plugin_runtime.register_tool(
@@ -244,9 +244,9 @@ def runtime_tool() -> str:
     return "ok"
 
 class NormalClosePlugin(PluginBase):
-    def setup(self, ctx):
-        ctx.register_hook(HookStage.ON_SESSION_INIT, self.on_session_init)
-        ctx.register_hook(HookStage.ON_SESSION_CLOSE, self.on_session_close)
+    def apply(self, ctx):
+        ctx.on(HookStage.ON_SESSION_INIT.value, self.on_session_init)
+        ctx.on(HookStage.ON_SESSION_CLOSE.value, self.on_session_close)
 
     async def on_session_init(self, ctx):
         ctx.plugin_runtime.register_tool(

@@ -9,15 +9,13 @@ from xbotv2.api import (
     HookStage,
     PluginBase,
     PluginManifest,
-    PluginSetupContext,
-    PluginStore,
     calibrated_context_tokens,
 )
 
 
 class TokenManagerPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest: PluginManifest) -> None:
+        super().__init__(manifest)
         self._latest: dict[str, Any] = {}
 
     async def on_load(self, config: dict[str, Any]) -> None:
@@ -26,9 +24,9 @@ class TokenManagerPlugin(PluginBase):
     async def on_unload(self) -> None:
         self._latest = {}
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.BEFORE_MODEL_REQUEST, self._on_before_model_request)
-        ctx.register_hook(HookStage.AFTER_MODEL_RESPONSE, self._on_after_model_response)
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.BEFORE_MODEL_REQUEST.value, self._on_before_model_request)
+        ctx.on(HookStage.AFTER_MODEL_RESPONSE.value, self._on_after_model_response)
 
     async def _on_before_model_request(self, ctx: HookContext) -> None:
         request = ctx.model_request or {}

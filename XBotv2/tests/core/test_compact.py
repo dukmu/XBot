@@ -29,6 +29,7 @@ from xbotv2.core.context import ContextBuilder
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import Engine
 from xbotv2.hooks.manager import HookManager
+from plugin_harness import mount_plugin_standalone
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -36,30 +37,32 @@ from xbotv2.tools.sandbox import SandboxPolicy
 
 
 def make_plugin() -> CompactPlugin:
-    return CompactPlugin(
-        PluginManifest(name="compact", version="1"),
-        store=None,
-    )
+    plugin = mount_plugin_standalone(CompactPlugin(PluginManifest(name="compact", version="1")))
+    return plugin
 
 
 class SetupContext:
-    def __init__(self) -> None:
-        self.hooks = {}
+    """Post-apply view of a plugin's registrations on a real XCore context."""
+
+    def __init__(self, ctx) -> None:
+        self.ctx = ctx
+        self.hooks: dict = {}
         self.tool = None
         self.options = None
-        self.commands = {}
-
-    def register_hook(self, stage, callback):
-        self.hooks[stage] = callback
-
-    def register_tool(self, tool, options=None):
-        self.tool = tool
-        self.options = options
-        return "plugin:compact:compact"
-
-    def register_command(self, command):
-        self.commands[command.name] = command
-        return command.name
+        self.commands: dict = {}
+        for stage in HookStage:
+            hooks = ctx._bus.hooks_for(stage.value)
+            if hooks:
+                self.hooks[stage] = hooks[0].callback
+        entries = ctx.tools.registry.registered_entries()
+        if entries:
+            entry = entries[0]
+            self.tool = entry.tool
+            self.options = type(
+                "Options", (), {"namespace": entry.namespace, "sandbox_mode": entry.sandbox_mode}
+            )()
+        for command in ctx.commands.all():
+            self.commands[command.name] = command
 
 
 def history(turns: int, *, content: str = "message") -> list[Message]:
@@ -95,8 +98,7 @@ def test_compact_prefix_preserves_recent_complete_turns():
 async def test_manual_tool_requests_compaction_below_threshold():
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext()
-    plugin.setup(setup)
+    setup = SetupContext(plugin.ctx)
     tool_result = await setup.tool.ainvoke({})
 
     async def invoke_model(messages):
@@ -131,8 +133,7 @@ async def test_human_command_compacts_and_persists_immediately(
     caplog.set_level("INFO", logger="xbotv2.compact")
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext()
-    plugin.setup(setup)
+    setup = SetupContext(plugin.ctx)
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     original = history(3)
@@ -221,8 +222,7 @@ async def test_human_command_compacts_and_persists_immediately(
 async def test_human_command_runs_when_active_turn_becomes_idle():
     plugin = make_plugin()
     await plugin.on_load({"automatic": False})
-    setup = SetupContext()
-    plugin.setup(setup)
+    setup = SetupContext(plugin.ctx)
     turn_lock = asyncio.Lock()
     await turn_lock.acquire()
     calls = 0
@@ -461,8 +461,7 @@ async def test_compact_tool_rewrites_and_persists_history(
 ):
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext()
-    plugin.setup(setup)
+    setup = SetupContext(plugin.ctx)
 
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
@@ -542,8 +541,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
 ):
     plugin = make_plugin()
     await plugin.on_load({"keep_recent_turns": 1, "trigger_ratio": 0.8})
-    setup = SetupContext()
-    plugin.setup(setup)
+    setup = SetupContext(plugin.ctx)
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     hooks.register(

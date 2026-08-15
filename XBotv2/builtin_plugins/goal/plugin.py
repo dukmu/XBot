@@ -14,8 +14,6 @@ from xbotv2.api import (
     HookStage,
     PluginBase,
     PluginManifest,
-    PluginSetupContext,
-    PluginStore,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
@@ -28,8 +26,8 @@ _GOAL_TOOLS = {"create_goal", "get_goal", "update_goal"}
 
 
 class GoalPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest: PluginManifest) -> None:
+        super().__init__(manifest)
         self._continuation_pending = False
 
     async def on_unload(self) -> None:
@@ -39,32 +37,32 @@ class GoalPlugin(PluginBase):
         goal = await self._read_goal()
         return {"goal": goal["status"]} if goal is not None else {}
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.ON_TURN_START, self._start_goal_turn)
-        ctx.register_hook(HookStage.ON_TURN_END, self._on_turn_end)
-        ctx.register_hook(HookStage.BEFORE_TOOL_CALL, self._allow_goal)
-        ctx.register_tool(
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.ON_TURN_START.value, self._start_goal_turn)
+        ctx.on(HookStage.ON_TURN_END.value, self._on_turn_end)
+        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._allow_goal)
+        ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
                 namespace="plugin:goal",
             ),
         )
-        ctx.register_tool(
+        ctx.tools.register(
             Tool.from_function(self.get_goal, name="get_goal"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
                 namespace="plugin:goal",
             ),
         )
-        ctx.register_tool(
+        ctx.tools.register(
             Tool.from_function(self.update_goal, name="update_goal"),
             options=ToolRegistrationOptions(
                 sandbox_mode="host",
                 namespace="plugin:goal",
             ),
         )
-        ctx.register_command(Command(
+        ctx.commands.register(Command(
             name="goal",
             description="Set or manage the persistent session goal.",
             handler=self._goal_command,

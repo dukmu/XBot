@@ -10,8 +10,6 @@ from xbotv2.api import (
     HookStage,
     PluginBase,
     PluginManifest,
-    PluginSetupContext,
-    PluginStore,
     RuntimePluginContext,
     Tool,
     ToolRegistrationOptions,
@@ -28,8 +26,8 @@ logger = logging.getLogger("xbotv2.mcp")
 
 
 class MCPPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest, store: PluginStore) -> None:
-        super().__init__(manifest, store)
+    def __init__(self, manifest: PluginManifest) -> None:
+        super().__init__(manifest)
         self._client = MCPClient()
         self._config: dict[str, Any] = {}
         self._server_status: dict[str, dict[str, Any]] = {}
@@ -45,9 +43,9 @@ class MCPPlugin(PluginBase):
         self._server_tools.clear()
         self._initialized = False
 
-    def setup(self, ctx: PluginSetupContext) -> None:
-        ctx.register_hook(HookStage.ON_SESSION_INIT, self._on_session_init)
-        ctx.register_hook(HookStage.ON_SESSION_CLOSE, self._on_session_close)
+    def apply(self, ctx) -> None:
+        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
+        ctx.on(HookStage.ON_SESSION_CLOSE.value, self._on_session_close)
 
     async def _on_session_init(self, ctx: HookContext) -> None:
         if ctx.plugin_runtime is None:

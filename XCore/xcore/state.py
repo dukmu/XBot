@@ -19,6 +19,7 @@ Design notes (from the design review, E1/E2):
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 from dataclasses import dataclass, field
@@ -99,10 +100,15 @@ class StateService:
     # -- public API ---------------------------------------------------------
 
     async def get(self, key: str, default: Any = None) -> Any:
-        """Read one key (``default`` when absent). Loads the file lazily."""
+        """Read one key (``default`` when absent). Loads the file lazily.
+
+        Returns a deep copy: mutating the result never mutates stored state
+        (plugins must use ``set`` to persist changes).
+        """
         async with self._shared.lock:
             data = await self._ensure_loaded()
-            return data.get(self._full_key(key), default)
+            value = data.get(self._full_key(key), default)
+            return copy.deepcopy(value)
 
     async def set(self, key: str, value: Any) -> None:
         """Write one key and persist immediately. Rejects non-JSON values."""
@@ -143,13 +149,13 @@ class StateService:
             return [k[len(self._prefix):] for k in data if k.startswith(self._prefix)]
 
     async def all(self) -> dict[str, Any]:
-        """Snapshot of the key-value pairs visible in this view."""
+        """Snapshot (deep-copied) of the key-value pairs in this view."""
         async with self._shared.lock:
             data = await self._ensure_loaded()
             if not self._prefix:
-                return dict(data)
+                return copy.deepcopy(data)
             return {
-                k[len(self._prefix):]: v
+                k[len(self._prefix):]: copy.deepcopy(v)
                 for k, v in data.items()
                 if k.startswith(self._prefix)
             }

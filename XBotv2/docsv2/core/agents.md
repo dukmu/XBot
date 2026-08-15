@@ -1,7 +1,7 @@
 # Agents And Subagents
 
 Agent definitions are extensions. Plugins register them during `setup()` with
-`PluginSetupContext.register_agent()`. Core owns definition uniqueness,
+`ctx.agents.register()` (via the plugin bridge). Core owns definition uniqueness,
 registration rollback, and later execution; plugins must not create a second
 agent loop.
 

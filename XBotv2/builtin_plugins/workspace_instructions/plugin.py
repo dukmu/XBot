@@ -7,14 +7,13 @@ from xbotv2.api import (
     HookContext,
     HookStage,
     PluginBase,
-    PluginSetupContext,
 )
 
 
 class WorkspaceInstructionsPlugin(PluginBase):
     """Inject the current workspace AGENTS.md into each model request."""
 
-    def setup(self, ctx: PluginSetupContext) -> None:
+    def apply(self, ctx) -> None:
         path = ctx.workspace_root / "AGENTS.md"
 
         def inject_workspace_instructions(hook_ctx: HookContext) -> None:
@@ -50,7 +49,7 @@ class WorkspaceInstructionsPlugin(PluginBase):
             )
             components.insert(index, component)
 
-        ctx.register_hook(
-            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        ctx.on(
+            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD.value,
             inject_workspace_instructions,
         )

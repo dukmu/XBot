@@ -18,45 +18,53 @@ from xbotv2.llm.mock import MockLLM
 from xbotv2.core.inbox import InboxMessage
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
-from xbotv2.plugin.store import PluginStore
+from plugin_harness import mount_ctx, mount_plugin
+from plugin_harness import mount_ctx, mount_plugin
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
 
 
+def _mount(plugin, state_store):
+    return mount_plugin(plugin, state_store)
+
+
 class SetupContext:
-    def __init__(self) -> None:
-        self.hooks = {}
-        self.tools = {}
-        self.options = {}
-        self.commands = {}
+    """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def register_hook(self, stage, callback):
-        self.hooks[stage] = callback
+    def __init__(self, ctx) -> None:
+        self.ctx = ctx
+        self.hooks: dict = {}
+        self.tools: dict = {}
+        self.options: dict = {}
+        self.commands: dict = {}
+        for stage in HookStage:
+            hooks = ctx._bus.hooks_for(stage.value)
+            if hooks:
+                self.hooks[stage] = hooks[0].callback
+        for entry in ctx.tools.registry.registered_entries():
+            self.tools[entry.tool.name] = entry.tool
+            self.options[entry.tool.name] = _EntryOptions(
+                namespace=entry.namespace,
+                sandbox_mode=entry.sandbox_mode,
+            )
+        for command in ctx.commands.all():
+            self.commands[command.name] = command
 
-    def register_tool(self, tool, options=None):
-        self.tools[tool.name] = tool
-        self.options[tool.name] = options
-        return f"plugin:goal:{tool.name}"
 
-    def register_command(self, command):
-        self.commands[command.name] = command
-        return command.name
-
+class _EntryOptions:
+    def __init__(self, *, namespace, sandbox_mode) -> None:
+        self.namespace = namespace
+        self.sandbox_mode = sandbox_mode
 
 
 def make_plugin(state_store) -> GoalPlugin:
-    return GoalPlugin(
-        PluginManifest(name="goal", version="1"),
-        PluginStore(state_store, "goal"),
-    )
+    return _mount(GoalPlugin(PluginManifest(name="goal", version="1")), state_store)
 
 
-def setup_plugin(state_store) -> tuple[GoalPlugin, SetupContext]:
+def setup_plugin(state_store):
     plugin = make_plugin(state_store)
-    setup = SetupContext()
-    plugin.setup(setup)
-    return plugin, setup
+    return plugin, SetupContext(plugin.ctx)
 
 
 def test_goal_registers_human_command_and_agent_tools(state_store):
@@ -345,23 +353,24 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
         Path(__file__).parents[2] / "builtin_plugins" / "goal",
         target_is_directory=True,
     )
-    hooks = HookManager()
-    registry = ToolRegistry()
+    ctx = mount_ctx(state_store)
+    registry = ctx.tools.registry
     loader = PluginLoader(
+        ctx=ctx,
         plugin_dirs=[plugins_root],
-        state_store=state_store,
-        hook_manager=hooks,
-        tool_registry=registry,
-        context_builder=ContextBuilder(),
+        workspace_root=tmp_path,
     )
 
     loaded = await loader.load()
     assert isinstance(loaded[0], GoalPlugin)
-    await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
+    await registry.get("plugin:goal:create_goal").tool.ainvoke({"objective": "retain me"})
 
     assert await loader.unload("goal") is True
     assert registry.registered_names() == []
-    assert state_store.get_plugin_state("goal")["goal"]["objective"] == "retain me"
+    import json as _json
+    state_path = state_store.paths.state_dir / "state.json"
+    data = _json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["goal.goal"]["objective"] == "retain me"
 
 
 @pytest.mark.asyncio

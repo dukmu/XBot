@@ -29,11 +29,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import xcore
+
 from xbotv2.config.loader import load_provider_config, load_runtime_config, load_user_context
 from xbotv2.config.models import HookConfig, RuntimeConfig, WorkspaceToolConfig
 from xbotv2.api.agents import AgentDefinition
 from xbotv2.api.jobs import JobKind, JobRegistry
 from xbotv2.api.paths import RuntimePaths
+from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.tools import Tool
 from xbotv2.api.variables import RuntimeVariables
 from xbotv2.core.context import ContextBuilder
@@ -48,6 +51,7 @@ from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
 from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
+from xbotv2.plugin.bridge import plugin_runtime_for, register_core_services
 from xbotv2.llm.base import BaseProvider
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
@@ -191,8 +195,12 @@ async def bootstrap(
     if selected_agent is None and agent_definition is None:
         selected_agent = stored_agent
 
-    # 3. Create empty core components
-    hook_manager = HookManager()
+    # 3. Create the XCore plugin context and empty core components
+    plugin_ctx = xcore.Context(data_dir=state_store.paths.state_dir)
+    hook_manager = HookManager(
+        plugin_ctx,
+        plugin_runtime_factory=plugin_runtime_for,
+    )
     tool_registry = ToolRegistry()
     context_builder = ContextBuilder()
     agent_registry = AgentRegistry()
@@ -273,6 +281,26 @@ async def bootstrap(
         )
     )
 
+    register_core_services(
+        plugin_ctx,
+        tool_registry=tool_registry,
+        context_builder=context_builder,
+        agent_registry=agent_registry,
+        job_registry=job_registry,
+        runtime_variables=runtime_variables,
+        workspace_root=workspace_root,
+        data_root=state_store.paths.runtime.data_dir,
+        session=SessionInfo(
+            session_id=session_id,
+            thread_id=thread_id,
+            workspace_root=str(workspace_root),
+            provider=provider_name,
+        ),
+        runtime_config=agent_config,
+        agent_runtime=agent_runtime,
+        paths=paths,
+    )
+
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # No-plugin mode used by isolated core tests and pure-core embeddings.
     resolved_plugin_dirs = _resolve_plugin_dirs(
@@ -287,18 +315,11 @@ async def bootstrap(
     try:
         if resolved_plugin_dirs:
             plugin_loader = PluginLoader(
+                ctx=plugin_ctx,
                 plugin_dirs=resolved_plugin_dirs,
-                state_store=state_store,
-                hook_manager=hook_manager,
-                tool_registry=tool_registry,
-                context_builder=context_builder,
                 plugin_configs=resolved_plugin_configs,
-                agent_registry=agent_registry,
-                workspace_root=workspace_root,
-                runtime_variables=runtime_variables,
                 disabled_plugins=disabled_plugins,
-                agent_runtime=agent_runtime,
-                job_registry=job_registry,
+                workspace_root=workspace_root,
             )
             await plugin_loader.load()
 
@@ -371,7 +392,6 @@ async def bootstrap(
             )
 
         # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
-        from xbotv2.api.runtime import SessionInfo
         init_ctx = HookContext(
             stage=HookStage.ON_SESSION_INIT,
             config=agent_config,
