@@ -35,10 +35,18 @@ def mount_plugin(plugin, state_store):
     """Bind a plugin to a real XCore context and run its apply body.
 
     Mirrors the loader's PluginAdapter binding (ctx + namespaced store) for
-    unit tests that drive the plugin directly.
+    unit tests that drive the plugin directly.  A bus-backed HookManager is
+    installed first so the plugin's hook registrations are contract-wrapped
+    and introspectable via ``plugin._hook_manager``.
     """
+    from xbotv2.hooks.manager import HookManager
+    from xbotv2.plugin.bridge import plugin_runtime_for
+
     ctx = mount_ctx(state_store)
     plugin.ctx = ctx
+    plugin._hook_manager = HookManager(
+        ctx, plugin_runtime_factory=plugin_runtime_for
+    )
     plugin.store = ctx.state.namespace(plugin.manifest.name)
     plugin.apply(ctx)
     return plugin

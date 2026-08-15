@@ -103,3 +103,24 @@
   「不是撤回」——恢复迁移并继续修 bug 至全绿。回滚导致未提交工作丢失，靠会话
   内完整内容重建；教训：未提交的进行中工作不要用破坏性 checkout 撤销，先确认
   意图或先 stash。
+
+### 2026-08-16 · 按用户指示重构：XCore 保持干净 + XBot 组件包化
+
+- **用户指示**：① "类似针对 hooks_for 的添加，破坏 XCore 契约和设计的做法不可取"；
+  ② "允许变更 XBot 的核心架构和数据结构。不必'打补丁'式迁移，全部采用组件包构建"。
+- **XCore 清理**：移除 `EventBus.hooks_for`（暴露内部 Hook 记录的访问器）；
+  `internal/listener` 改为 Cordis 一致 —— 注册 ctx 作为首参传入拦截处理器。
+  公开 API 不再泄漏总线内部结构。
+- **Hook 层重建（公开原语）**：`hooks/manager.py` 不再从总线收集回调；注册侧经
+  `internal/listener` 拦截把契约包装器装进总线（闭包 stage/owner，`__hook_contract__`
+  标记防递归），`run()` 只用 `ctx.emit`（observer）/ `ctx.serial`（short-circuit）
+  派发；strict 失败经 HookContext 收集器聚合；guard ALLOW 记录/CONTINUE 放行/
+  DENY/STOP bail。`HookManager.listeners(stage)` 为 XBot 侧自省（自有注册表，
+  不触碰总线内部）。41 阶段契约测试全绿。
+- **组件包化**：新增 `xbotv2/components/`（runtime/tools/hooks/core 四个 XCore
+  对象插件）；bootstrap 退化为装配器 —— 建 Context → 挂组件 → `start()` →
+  核心 Hook/工具 → PluginLoader 装载插件 → 挂 `EngineComponent`（`apply` 内完成
+  Agent 解析/LLM/ON_SESSION_INIT/工具过滤/Engine 组装）→ `ctx.engine`。
+  早期 `register_core_services` 生产路径被组件取代（保留为测试装配便利）。
+- **验证**：XBotv2 776 passed / 1 failed（既有环境失败 `MINIMAX_API_TOKEN`，
+  与重构无关）；XCore 103 passed；`05-migration-plan.md` 重写为组件架构。

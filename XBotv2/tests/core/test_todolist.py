@@ -24,23 +24,23 @@ from xbotv2.tools.sandbox import SandboxPolicy
 class SetupContext:
     """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def __init__(self, ctx) -> None:
-        self.ctx = ctx
+    def __init__(self, plugin) -> None:
+        self.ctx = plugin.ctx
         self.hooks: dict = {}
         self.tools: dict = {}
         self.options: dict = {}
         self.commands: dict = {}
         for stage in HookStage:
-            hooks = ctx._bus.hooks_for(stage.value)
-            if hooks:
-                self.hooks[stage] = hooks[0].callback
-        for entry in ctx.tools.registry.registered_entries():
+            callbacks = plugin._hook_manager.listeners(stage)
+            if callbacks:
+                self.hooks[stage] = callbacks[0]
+        for entry in self.ctx.tools.registry.registered_entries():
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
                 sandbox_mode=entry.sandbox_mode,
             )
-        for command in ctx.commands.all():
+        for command in self.ctx.commands.all():
             self.commands[command.name] = command
 
 
@@ -60,7 +60,7 @@ def make_plugin(state_store) -> TodolistPlugin:
 
 def setup_plugin(state_store) -> tuple[TodolistPlugin, SetupContext]:
     plugin = make_plugin(state_store)
-    return plugin, SetupContext(plugin.ctx)
+    return plugin, SetupContext(plugin)
 
 
 def todo(content: str, status: str) -> dict[str, str]:

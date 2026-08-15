@@ -98,9 +98,15 @@ class Context:
             parent._children.append(self)
 
     def _install_internal_listener(self) -> None:
-        """Handle ``internal/listener``: run ``ready`` immediately when active."""
+        """Handle ``internal/listener``: run ``ready`` immediately when active.
 
-        def handle(name: str, listener: Any, options: dict[str, Any]) -> Any:
+        Cordis parity: the interception receives the *registering* context as
+        its first argument, so listeners can react to who registers what.
+        """
+
+        def handle(
+            ctx: Any, name: str, listener: Any, options: dict[str, Any]
+        ) -> Any:
             if name == "ready" and self._is_active:
                 async def run() -> None:
                     result = listener()
@@ -252,7 +258,7 @@ class Context:
         """Register a listener; returns a disposer (also removed on unload)."""
         options = {"prepend": prepend, "global_": global_}
         intercepted = self._bus._bail_sync(
-            "internal/listener", event, listener, options
+            "internal/listener", self, event, listener, options
         )
         if intercepted is not None:
             return intercepted

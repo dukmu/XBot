@@ -44,24 +44,24 @@ def make_plugin() -> CompactPlugin:
 class SetupContext:
     """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def __init__(self, ctx) -> None:
-        self.ctx = ctx
+    def __init__(self, plugin) -> None:
+        self.ctx = plugin.ctx
         self.hooks: dict = {}
         self.tool = None
         self.options = None
         self.commands: dict = {}
         for stage in HookStage:
-            hooks = ctx._bus.hooks_for(stage.value)
-            if hooks:
-                self.hooks[stage] = hooks[0].callback
-        entries = ctx.tools.registry.registered_entries()
+            callbacks = plugin._hook_manager.listeners(stage)
+            if callbacks:
+                self.hooks[stage] = callbacks[0]
+        entries = self.ctx.tools.registry.registered_entries()
         if entries:
             entry = entries[0]
             self.tool = entry.tool
             self.options = type(
                 "Options", (), {"namespace": entry.namespace, "sandbox_mode": entry.sandbox_mode}
             )()
-        for command in ctx.commands.all():
+        for command in self.ctx.commands.all():
             self.commands[command.name] = command
 
 
@@ -98,7 +98,7 @@ def test_compact_prefix_preserves_recent_complete_turns():
 async def test_manual_tool_requests_compaction_below_threshold():
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin.ctx)
+    setup = SetupContext(plugin)
     tool_result = await setup.tool.ainvoke({})
 
     async def invoke_model(messages):
@@ -133,7 +133,7 @@ async def test_human_command_compacts_and_persists_immediately(
     caplog.set_level("INFO", logger="xbotv2.compact")
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin.ctx)
+    setup = SetupContext(plugin)
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     original = history(3)
@@ -222,7 +222,7 @@ async def test_human_command_compacts_and_persists_immediately(
 async def test_human_command_runs_when_active_turn_becomes_idle():
     plugin = make_plugin()
     await plugin.on_load({"automatic": False})
-    setup = SetupContext(plugin.ctx)
+    setup = SetupContext(plugin)
     turn_lock = asyncio.Lock()
     await turn_lock.acquire()
     calls = 0
@@ -461,7 +461,7 @@ async def test_compact_tool_rewrites_and_persists_history(
 ):
     plugin = make_plugin()
     await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin.ctx)
+    setup = SetupContext(plugin)
 
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
@@ -541,7 +541,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
 ):
     plugin = make_plugin()
     await plugin.on_load({"keep_recent_turns": 1, "trigger_ratio": 0.8})
-    setup = SetupContext(plugin.ctx)
+    setup = SetupContext(plugin)
     hooks = HookManager()
     hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     hooks.register(

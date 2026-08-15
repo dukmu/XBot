@@ -49,9 +49,14 @@ from xbotv2.core.agents import (
 )
 from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
 from xbotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
-from xbotv2.hooks.manager import HookManager
 from xbotv2.api.hooks import HookContext, HookStage
-from xbotv2.plugin.bridge import plugin_runtime_for, register_core_services
+from xbotv2.components import (
+    EngineComponent,
+    HooksComponent,
+    RuntimeComponent,
+    ToolsComponent,
+)
+from xbotv2.plugin.bridge import plugin_runtime_for
 from xbotv2.llm.base import BaseProvider
 from xbotv2.persistence.store import CoreStateStore
 from xbotv2.plugin.loader import PluginLoader
@@ -195,36 +200,14 @@ async def bootstrap(
     if selected_agent is None and agent_definition is None:
         selected_agent = stored_agent
 
-    # 3. Create the XCore plugin context and empty core components
+    # 3. Create the XCore plugin context and assemble the runtime components.
+    #    Core capabilities (hooks/tools/runtime info) are XCore services
+    #    provided by component packages; the engine itself is a component
+    #    mounted after the builtin plugins (see ``xbotv2/components/``).
     plugin_ctx = xcore.Context(data_dir=state_store.paths.state_dir)
-    hook_manager = HookManager(
-        plugin_ctx,
-        plugin_runtime_factory=plugin_runtime_for,
-    )
     tool_registry = ToolRegistry()
     context_builder = ContextBuilder()
     agent_registry = AgentRegistry()
-    hook_manager.register(
-        HookStage.AFTER_TOOLS,
-        make_tool_result_cache_hook(
-            state_store,
-            max_inline_chars=agent_config.tool_results.max_inline_chars,
-            preview_chars=agent_config.tool_results.preview_chars,
-        ),
-    )
-    _register_configured_hooks(agent_config, hook_manager)
-
-    # 4. Register core base tools (always available)
-    for tool, sandbox_mode in CORE_BASE_TOOLS:
-        if not interactive and tool.name in NON_INTERACTIVE_FORBIDDEN_TOOLS:
-            continue
-        tool_registry.register(
-            tool,
-            sandbox_mode=sandbox_mode,
-        )
-    _register_workspace_tools(agent_config, tool_registry)
-
-    # 5. Create SandboxPolicy + PermissionSystem
     sandbox = SandboxPolicy(
         agent_config.sandbox,
         data_root=paths.data_dir,
@@ -243,6 +226,51 @@ async def bootstrap(
             JobKind.SUBAGENT: agent_config.max_concurrent_subagents,
         },
     )
+
+    plugin_ctx.plugin(HooksComponent(plugin_runtime_factory=plugin_runtime_for))
+    plugin_ctx.plugin(ToolsComponent(
+        tool_registry=tool_registry,
+        context_builder=context_builder,
+        sandbox_policy=sandbox,
+        permissions=permissions,
+        job_registry=job_registry,
+        agent_registry=agent_registry,
+    ))
+    plugin_ctx.plugin(RuntimeComponent(
+        paths=paths,
+        session=SessionInfo(
+            session_id=session_id,
+            thread_id=thread_id,
+            workspace_root=str(workspace_root),
+            provider=provider_name,
+        ),
+        workspace_root=workspace_root,
+        data_root=state_store.paths.runtime.data_dir,
+        variables=runtime_variables,
+        runtime_config=agent_config,
+        state_store=state_store,
+    ))
+    await plugin_ctx.start()
+
+    # 4. Register core hooks and base tools on the shared components.
+    hook_manager = plugin_ctx.hooks
+    hook_manager.register(
+        HookStage.AFTER_TOOLS,
+        make_tool_result_cache_hook(
+            state_store,
+            max_inline_chars=agent_config.tool_results.max_inline_chars,
+            preview_chars=agent_config.tool_results.preview_chars,
+        ),
+    )
+    _register_configured_hooks(agent_config, hook_manager)
+    for tool, sandbox_mode in CORE_BASE_TOOLS:
+        if not interactive and tool.name in NON_INTERACTIVE_FORBIDDEN_TOOLS:
+            continue
+        tool_registry.register(
+            tool,
+            sandbox_mode=sandbox_mode,
+        )
+    _register_workspace_tools(agent_config, tool_registry)
 
     parent_engine: Engine | None = None
 
@@ -281,25 +309,8 @@ async def bootstrap(
         )
     )
 
-    register_core_services(
-        plugin_ctx,
-        tool_registry=tool_registry,
-        context_builder=context_builder,
-        agent_registry=agent_registry,
-        job_registry=job_registry,
-        runtime_variables=runtime_variables,
-        workspace_root=workspace_root,
-        data_root=state_store.paths.runtime.data_dir,
-        session=SessionInfo(
-            session_id=session_id,
-            thread_id=thread_id,
-            workspace_root=str(workspace_root),
-            provider=provider_name,
-        ),
-        runtime_config=agent_config,
-        agent_runtime=agent_runtime,
-        paths=paths,
-    )
+    if agent_runtime is not None:
+        plugin_ctx.set("agent_runtime", agent_runtime)
 
     # 6. Discover and load plugins. ``plugin_dirs=[]`` is a deliberate
     # No-plugin mode used by isolated core tests and pure-core embeddings.
@@ -323,135 +334,31 @@ async def bootstrap(
             )
             await plugin_loader.load()
 
-        if selected_agent is None and resolved_agent is None:
-            default_agent = agent_registry.get("default")
-            if default_agent is not None and default_agent.mode != "subagent":
-                selected_agent = default_agent.name
-
-        if selected_agent is not None:
-            registered_agent = agent_registry.get(selected_agent)
-            if resolved_agent is None:
-                if registered_agent is None or (
-                    registered_agent.mode == "subagent" and not is_subagent
-                ):
-                    raise ValueError(f"Unknown primary agent: {selected_agent}")
-                resolved_agent = registered_agent
-            elif resolved_agent.name != selected_agent:
-                raise ValueError(
-                    f"Stored Agent {resolved_agent.name!r} does not match "
-                    f"{selected_agent!r}"
-                )
-            elif resolved_agent.mode == "subagent" and not is_subagent:
-                raise ValueError(f"Unknown primary agent: {selected_agent}")
-            apply_agent_definition(agent_config, resolved_agent)
-            provider_name = resolved_agent.provider or provider_name
-            permissions = PermissionSystem(
-                agent_config.permissions,
-                variables=runtime_variables,
-            )
-            if parent_permission_system is not None:
-                permissions = PermissionIntersection(
-                    parent_permission_system, permissions
-                )
-
-        if thread_preexisting and stored_provider is not None:
-            provider_name = stored_provider
-        state_store.provider = provider_name
-        agent_config.provider = provider_name
-        provider_config = load_provider_config(paths, provider_name)
-        if resolved_agent is not None:
-            apply_agent_provider(provider_config, resolved_agent)
-        agent_config.max_context_tokens = (
-            resolved_agent.context_window
-            if resolved_agent is not None
-            and resolved_agent.context_window is not None
-            else provider_config.max_context_tokens
-        )
-        agent_config.max_output_tokens = provider_config.max_output_tokens
-        state_store.write_thread_metadata({
-            "agent": resolved_agent.name if resolved_agent is not None else "",
-            "agent_definition": (
-                asdict(resolved_agent) if resolved_agent is not None else None
-            ),
-            "provider": provider_name,
-            "parent_thread_id": parent_thread_id,
-            "workspace_root": str(workspace_root),
-            "model": provider_config.model,
-            "model_mode": provider_config.model_mode,
-            "context_window": agent_config.max_context_tokens,
-        })
-
-        # 7. Create LLM client
-        if llm_override is not None:
-            llm = llm_override
-        else:
-            from xbotv2.llm.client import create_llm
-            llm = create_llm(
-                provider_config,
-                media_root=str(state_store.root),
-            )
-
-        # 8. Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here)
-        init_ctx = HookContext(
-            stage=HookStage.ON_SESSION_INIT,
-            config=agent_config,
-            tools=tool_registry,
-            sandbox=sandbox,
-            plugin_store=None,
-            session=SessionInfo(
-                session_id=session_id,
-                thread_id=thread_id,
-                workspace_root=str(workspace_root),
-                provider=provider_name,
-            ),
-            emit=lambda e: None,
-        )
-        await hook_manager.run(
-            HookStage.ON_SESSION_INIT,
-            init_ctx,
-            short_circuit=False,
-        )
-
-        # Apply tool filter AFTER session init so plugin-discovered tools
-        # (skills, MCP) are registered before restrict runs.
-        if resolved_agent is not None:
-            apply_agent_tools(tool_registry, agent_config, resolved_agent)
-        elif agent_config.tools:
-            tool_registry.restrict(agent_config.tools)
-        if is_subagent:
-            for tool_name in SUBAGENT_FORBIDDEN_TOOLS:
-                entry = tool_registry.get(tool_name)
-                if entry is not None:
-                    tool_registry.unregister(entry.registered_name)
-
-        # 9. Build engine
-        engine = Engine(
-            llm=llm,
-            tool_registry=tool_registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=context_builder,
-            sandbox_policy=sandbox,
-            permission_system=permissions,
+        # 7. Assemble the engine: an XCore component mounted after the
+        #    builtin plugins (agent resolution, LLM, ON_SESSION_INIT hooks,
+        #    tool filtering, and Engine construction all happen inside its
+        #    ``apply``, reading capabilities from the context's services).
+        engine_handle = plugin_ctx.plugin(EngineComponent(
+            session_id=session_id,
+            thread_id=thread_id,
             workspace_root=str(workspace_root),
-            config=agent_config,
-            plugin_loader=plugin_loader,
-            job_registry=job_registry,
-            agent_runtime=agent_runtime,
-            agent_registry=agent_registry,
-            model=provider_config.model,
-            model_mode=provider_config.model_mode,
-            context_window=agent_config.max_context_tokens,
-            llm_is_override=llm_override is not None,
+            provider_name=provider_name,
+            agent_config=agent_config,
+            agent_definition=resolved_agent,
+            llm_override=llm_override,
+            selected_agent=selected_agent,
+            parent_permission_system=parent_permission_system,
+            parent_thread_id=parent_thread_id,
+            is_subagent=is_subagent,
+            interactive=interactive,
             user_context=user_context,
-            runtime_variables=runtime_variables,
-            max_iterations=(
-                resolved_agent.max_iterations
-                if resolved_agent is not None
-                and resolved_agent.max_iterations is not None
-                else DEFAULT_MAX_ITERATIONS
-            ),
-        )
+            plugin_loader=plugin_loader,
+            context_builder=context_builder,
+            thread_preexisting=thread_preexisting,
+            stored_provider=stored_provider,
+        ))
+        await engine_handle
+        engine = plugin_ctx.engine
         parent_engine = engine
         return engine
     except BaseException as bootstrap_error:
