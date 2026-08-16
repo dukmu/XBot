@@ -33,8 +33,13 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def _default_data_dir() -> str:
-    source_data = Path(__file__).resolve().parents[1] / "data"
-    return str(source_data if source_data.is_dir() else Path(sys.prefix) / "data")
+    """Runtime data root: ``~/.xbot`` (XDG-style home directory).
+
+    Sessions and memory live here by default; ``XBOT_DATA_DIR`` (or
+    ``--data-dir``) overrides.  The repository ``XBotv2/data/config`` files
+    are configuration templates, not the runtime location.
+    """
+    return str(Path(os.environ.get("XBOT_HOME") or Path.home() / ".xbot"))
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -247,14 +252,30 @@ def _run_server(args) -> None:
         print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    from XBotv2.protocol.http_server import create_app
+    paths = RuntimePaths.from_data_dir(args.data_dir)
+    workspace_root = str(_workspace_root(args))
+    protocol_config = {
+        "paths": paths,
+        "provider_name": args.provider,
+        "workspace_root": workspace_root,
+        "no_plugins": args.no_plugins,
+    }
 
-    app = create_app(
-        paths=RuntimePaths.from_data_dir(args.data_dir),
+    # Server-style root: the protocol plugin provides ctx.server; the agent
+    # loop and builtin plugins are excluded (each opened session bootstraps
+    # its own full runtime).
+    from XBotv2.bootstrap import bootstrap
+
+    root_ctx = asyncio.run(bootstrap(
+        paths=paths,
         provider_name=args.provider,
-        workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
-    )
+        workspace_root=workspace_root,
+        plugin_dirs=[],  # include_builtins=False
+        exclude_plugins={"agentloop"},
+        extra_plugins=[{"id": "protocol", "name": "protocol", "config": protocol_config}],
+        return_context=True,
+    ))
+    app = root_ctx.server
     uds = getattr(args, "uds", None)
     if uds:
         uds_path = Path(uds).expanduser()

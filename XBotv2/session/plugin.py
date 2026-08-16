@@ -29,7 +29,6 @@ class SessionComponent:
         session_id = config["session_id"]
         thread_id = config["thread_id"]
         workspace_root = config["workspace_root"]
-        runtime_config = config["runtime_config"]
         session_paths = config["session_paths"]
         parent_thread_id = config.get("parent_thread_id", "")
         engine_factory = config["engine_factory"]
@@ -47,7 +46,6 @@ class SessionComponent:
             paths=paths,
             variables=variables,
             state_store=state_store,
-            runtime_config=runtime_config,
             session_paths=session_paths,
             parent_thread_id=parent_thread_id,
             engine_factory=engine_factory,
@@ -58,7 +56,6 @@ class SessionComponent:
         ctx.set("workspace_root", workspace_root)
         ctx.set("data_root", data_root)
         ctx.set("variables", variables)
-        ctx.set("runtime", runtime_config)
 
 
 plugin = SessionComponent()

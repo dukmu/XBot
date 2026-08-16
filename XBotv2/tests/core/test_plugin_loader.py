@@ -323,10 +323,10 @@ class TestOrderIndependence:
         for entry in entries:
             lines.append(f"- id: {entry.id}\n  name: {entry.name}")
             if entry.config:
-                cfg = "\n".join(
-                    f"    {key}: {value}" for key, value in entry.config.items()
-                )
-                lines.append(f"  config:\n{cfg}")
+                cfg = yaml.safe_dump(entry.config, sort_keys=False).strip()
+                lines.append(f"  config:\n" + "\n".join(
+                    f"    {line}" for line in cfg.splitlines()
+                ))
             if entry.disabled:
                 lines.append("  disabled: true")
         shuffled = tmp_path / "shuffled.yaml"

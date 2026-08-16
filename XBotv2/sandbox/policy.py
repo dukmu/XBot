@@ -45,6 +45,7 @@ class SandboxPolicy:
     ) -> None:
         if hasattr(config, "model_dump"):
             config = config.model_dump()
+        self.config: dict[str, Any] | None = config
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()

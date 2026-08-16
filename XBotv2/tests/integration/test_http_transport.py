@@ -403,9 +403,27 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "config.yaml").write_text(
-        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
-        "sandbox:\n  enabled: false\n  resources: []\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "sandbox",
+                "name": "sandbox",
+                "config": {"sandbox": {"enabled": False, "resources": []}},
+            },
+            {
+                "id": "permissions",
+                "name": "permissions",
+                "config": {
+                    "permissions": {
+                        "ask": [
+                            {"tool": "ask_user"},
+                            {"tool": "request_permission"},
+                            {"tool": "filesystem_write"},
+                        ],
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
 
@@ -1444,9 +1462,27 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "config.yaml").write_text(
-        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
-        "sandbox:\n  enabled: false\n  resources: []\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "sandbox",
+                "name": "sandbox",
+                "config": {"sandbox": {"enabled": False, "resources": []}},
+            },
+            {
+                "id": "permissions",
+                "name": "permissions",
+                "config": {
+                    "permissions": {
+                        "ask": [
+                            {"tool": "ask_user"},
+                            {"tool": "request_permission"},
+                            {"tool": "filesystem_write"},
+                        ],
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
     app = create_app(
@@ -2293,11 +2329,29 @@ async def _real_terminal_session(
         "session_type: interactive\n",
         encoding="utf-8",
     )
-    sandbox = "true" if sandbox_enabled else "false"
-    (config_dir / "config.yaml").write_text(
-        "provider: default\n"
-        "tools: []\nplugins: {}\nhooks: []\n"
-        f"sandbox:\n  enabled: {sandbox}\n  resources: []\n",
+    (config_dir / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "sandbox",
+                "name": "sandbox",
+                "config": {"sandbox": {
+                    "enabled": sandbox_enabled, "resources": [],
+                }},
+            },
+            {
+                "id": "permissions",
+                "name": "permissions",
+                "config": {
+                    "permissions": {
+                        "ask": [
+                            {"tool": "ask_user"},
+                            {"tool": "request_permission"},
+                            {"tool": "filesystem_write"},
+                        ],
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
 
@@ -2602,9 +2656,27 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
         encoding="utf-8",
     )
-    (data_dir / "config" / "config.yaml").write_text(
-        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
-        "sandbox:\n  enabled: false\n  resources: []\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "sandbox",
+                "name": "sandbox",
+                "config": {"sandbox": {"enabled": False, "resources": []}},
+            },
+            {
+                "id": "permissions",
+                "name": "permissions",
+                "config": {
+                    "permissions": {
+                        "ask": [
+                            {"tool": "ask_user"},
+                            {"tool": "request_permission"},
+                            {"tool": "filesystem_write"},
+                        ],
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
 

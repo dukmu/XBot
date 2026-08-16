@@ -8,6 +8,7 @@ services, so even "core" setup is a plugin in the tree.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from XBotv2.core.events import Events
@@ -23,11 +24,26 @@ class CoreToolsComponent:
     name = "xbot.coretools"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        interactive = bool((config or {}).get("interactive", True))
-        tool_registry = ctx.tools.registry
-        runtime_config = ctx.runtime
-        state_store = ctx.state_store
+        from XBotv2.config.models import (
+            HookConfig,
+            ToolResultConfig,
+            WorkspaceToolConfig,
+        )
 
+        config = config or {}
+        interactive = bool(config.get("interactive", True))
+        tool_registry = ctx.tools.registry
+        state_store = ctx.state_store
+        tool_results = ToolResultConfig(**(config.get("tool_results") or {}))
+        workspace_xbot = Path(ctx.workspace_root) / ".xbot"
+        hooks = [
+            _default_base_dir(HookConfig(**item), workspace_xbot)
+            for item in config.get("hooks") or []
+        ]
+        workspace_tools = [
+            _default_base_dir(WorkspaceToolConfig(**item), workspace_xbot)
+            for item in config.get("workspace_tools") or []
+        ]
         from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
         from XBotv2.coretools.shell import SHELL_TOOLS
         from XBotv2.coretools.content import content_read_tool
@@ -52,22 +68,22 @@ class CoreToolsComponent:
         for tool, sandbox_mode in base_tools:
             if not interactive and tool.name in NON_INTERACTIVE_FORBIDDEN_TOOLS:
                 continue
-            tool_registry.register(tool, sandbox_mode=sandbox_mode)
+            ctx.tools.register(tool, sandbox_mode=sandbox_mode)
 
         ctx.on(
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
                 state_store,
-                max_inline_chars=runtime_config.tool_results.max_inline_chars,
-                preview_chars=runtime_config.tool_results.preview_chars,
+                max_inline_chars=tool_results.max_inline_chars,
+                preview_chars=tool_results.preview_chars,
             ),
         )
-        for declaration in runtime_config.hooks:
+        for declaration in hooks:
             ctx.on(
                 declaration.stage,
                 _resolve_hook_target(declaration),
             )
-        for declaration in runtime_config.workspace_tools:
+        for declaration in workspace_tools:
             exported = _resolve_workspace_target(declaration, directory="tools")
             tools = exported if isinstance(exported, (list, tuple)) else (exported,)
             if not tools:
@@ -80,7 +96,18 @@ class CoreToolsComponent:
                         f"Workspace Tool export {declaration.target!r} must contain "
                         "XBotv2.core.Tool values"
                     )
-                tool_registry.register(tool, namespace="workspace", sandbox_mode="host")
+                ctx.tools.register(tool, namespace="workspace", sandbox_mode="host")
+
+
+def _default_base_dir(declaration: Any, workspace_xbot: Path) -> Any:
+    """Workspace hooks/tools default to ``<workspace>/.xbot`` when undeclared."""
+    if getattr(declaration, "base_dir", None) is None:
+        try:
+            return declaration.model_copy(update={"base_dir": workspace_xbot})
+        except Exception:  # noqa: BLE001 - dict-like fallback
+            if isinstance(declaration, dict):
+                return {**declaration, "base_dir": workspace_xbot}
+    return declaration
 
 
 def _resolve_hook_target(declaration: Any) -> Any:
@@ -112,7 +139,7 @@ def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
     base_dir = declaration.base_dir
     if base_dir is None:
         raise ValueError(
-            f"Workspace {directory} target {source!r} must be declared in .xbot/config.yaml"
+            f"Workspace {directory} target {source!r} must be declared in the workspace overlay"
         )
     extension_dir = (Path(base_dir) / directory).resolve()
     path = (Path(base_dir) / source).resolve()

@@ -89,16 +89,21 @@ ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 
 ## 5. 插件树（xcore.yaml，cordis.yaml 机制，服务可用性驱动）
 
-`XBotv2/xcore.yaml` 声明全部条目（id/name/config/disabled/inject），动态值以
-`${name}` 引用；`loader/` 的 `PluginTree.from_yaml(path, values=...)` 解析
-引用，`Loader` 导入模块 → 解析 `plugin` 导出 → 挂载（可 isolate），
-`LoaderComponent` 提供 `ctx.loader`。组合根（bootstrap）**只做组装**：
-解析会话身份与树所需的组装事实（provider 默认、per-plugin config、disabled
-标记）+ 提供运行时值 + 合并外部插件目录与用户 `data/config/plugins.yaml`。
-**运行时初始化归插件**：persistence 插件自建 `ctx.state_store`（从 tree
-config 的 session_paths/thread_id/provider）；agentloop 插件自己读取线程
-metadata、恢复/校验 Agent 定义与 provider、解析 user_context —— bootstrap
-不再替插件创建状态或恢复会话。
+`XBotv2/xcore.yaml` 是**唯一配置文档**（插件树 + 每插件配置：权限/沙箱/
+任务限制/钩子/工具/agent 指令），动态值以 `${name}` 引用（未知引用保留字面，
+如 `${workspace}` 由权限服务运行时展开）；`loader/` 的
+`PluginTree.from_yaml(path, values=...)` 解析引用，`Loader` 导入模块 → 解析
+`plugin` 导出 → 挂载（可 isolate），`LoaderComponent` 提供 `ctx.loader`。
+
+**组合根（bootstrap）只做组装**：会话身份 + 运行时值 + 合并外部插件目录与
+全局 `~/.xbot/config/plugins.yaml`（`merged_with` 对 config 深度合并，覆盖
+单字段无需重写动态值）。**运行时初始化与工作区扩展归插件**：persistence
+插件自建 `ctx.state_store`；agentloop 插件读取线程 metadata、恢复/校验
+Agent、解析 user_context 与 provider 默认；**workspace_instructions 插件
+负责工作区一切扩展**——AGENTS.md 注入 + 应用工作区 `.xbot/plugins.yaml`
+树覆盖（经 `loader.apply_patch` 重载受影响条目 / 挂载新条目，也支持工作区
+禁用自身）。`config.yaml` 已取消（内容并入 xcore.yaml 对应条目）；
+运行时数据默认 `~/.xbot/`（sessions/memory/config）。
 
 **行序无语义**（DSH cordis.patch.yml 同款）：每个插件声明 `inject` 依赖
 （它消费的 ctx.* 服务名），XCore 在所需服务可用时自动激活 fiber——条目顺序

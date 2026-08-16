@@ -45,21 +45,35 @@ class PluginEntry:
     isolate: dict[str, Any] | None = None
 
 
+_MISSING = object()
+
+
 def _lookup(values: dict[str, Any] | None, ref: str) -> Any:
-    """Resolve ``a.b.c`` against a values mapping (set memberships allowed)."""
+    """Resolve ``a.b.c`` against a values mapping (set memberships allowed).
+
+    Returns :data:`_MISSING` when a key does not exist (so an existing key
+    with a ``None`` value stays resolvable).
+    """
     if values is None:
-        return None
+        return _MISSING
     parts = ref.split(".")
     target: Any = values
     for index, part in enumerate(parts):
         if isinstance(target, dict):
-            target = target.get(part)
+            if part not in target:
+                return _MISSING
+            target = target[part]
         elif isinstance(target, (set, frozenset)):
-            return part in target if index == len(parts) - 1 else None
+            if index != len(parts) - 1:
+                return _MISSING
+            return part in target
         elif isinstance(target, (list, tuple)) and part.isdigit():
-            target = target[int(part)]
+            position = int(part)
+            if position >= len(target):
+                return _MISSING
+            target = target[position]
         else:
-            return None
+            return _MISSING
     return target
 
 
@@ -79,7 +93,12 @@ def _resolve_ref(value: Any, values: dict[str, Any] | None) -> Any:
             ref = match.group(1)
             if ref.startswith("env:"):
                 return os.environ.get(ref[4:], "")
-            return _lookup(values, ref)
+            resolved = _lookup(values, ref)
+            if resolved is _MISSING:
+                # Unknown references stay literal: runtime variables such as
+                # ${workspace} are expanded by the consuming service.
+                return value
+            return resolved
         return value
     if isinstance(value, dict):
         return {key: _resolve_ref(item, values) for key, item in value.items()}
@@ -149,9 +168,25 @@ class PluginTree:
         return cls([_entry_from_dict(item, values) for item in raw])
 
     def merged_with(self, other: "PluginTree") -> "PluginTree":
-        """Later tree overrides entries with the same id; others append."""
-        merged = {entry.id: entry for entry in self.entries}
+        """Later tree overrides entries with the same id; others append.
+
+        The later entry's ``config`` is deep-merged into the base entry's
+        config (so an overlay can patch one field without restating the
+        session-dynamic values); ``disabled`` / ``inject`` / ``isolate`` are
+        replaced by the later entry.
+        """
+        merged: dict[str, PluginEntry] = {entry.id: entry for entry in self.entries}
         for entry in other.entries:
+            existing = merged.get(entry.id)
+            if existing is not None:
+                entry = PluginEntry(
+                    id=entry.id,
+                    name=entry.name,
+                    config={**existing.config, **entry.config},
+                    disabled=entry.disabled,
+                    inject=entry.inject if entry.inject is not None else existing.inject,
+                    isolate=entry.isolate if entry.isolate is not None else existing.isolate,
+                )
             merged[entry.id] = entry
         return PluginTree(list(merged.values()))
 
@@ -260,21 +295,22 @@ class Loader:
         """
         if not self.ctx.is_active:
             await self.ctx.start()
-        mounted: list[tuple[PluginEntry, Any]] = []
+        mounted_ids: list[str] = []
         for entry in self.tree.entries:
             if entry.disabled:
                 logger.info("loader: entry %s disabled, skipping", entry.id)
                 continue
-            mounted.append((entry, self._mount_handle(entry)))
+            self._mount_handle(entry)
+            mounted_ids.append(entry.id)
         # Activation is event-driven: each round drives every unsettled fiber
-        # and yields so the settle loops and service-provided events advance.
-        # Dependency chains are shallow (<= ~6 layers), so a fixed round cap
-        # is deterministic; a plugin still pending afterwards has unmet
-        # inject dependencies.
+        # (current handles — reloads replace them) and yields so the settle
+        # loops and service-provided events advance.  Dependency chains are
+        # shallow (<= ~6 layers), so a fixed round cap is deterministic; a
+        # plugin still pending afterwards has unmet inject dependencies.
         for _round in range(16):
             awaiting = [
                 handle
-                for _entry, handle in mounted
+                for handle in self._handles.values()
                 if handle.state
                 not in (FiberState.RUNNING, FiberState.FAILED)
             ]
@@ -282,11 +318,14 @@ class Loader:
                 break
             await asyncio.gather(*awaiting)
             await asyncio.sleep(0)
-        for entry, handle in mounted:
+        for entry_id in mounted_ids:
+            handle = self._handles.get(entry_id)
+            if handle is None:
+                continue
             if handle.state is FiberState.FAILED:
                 fiber = handle._fiber
                 raise LoadError(
-                    f"plugin {entry.id!r} failed to load: {fiber._error}"
+                    f"plugin {entry_id!r} failed to load: {fiber._error}"
                 )
             if handle.state is not FiberState.RUNNING:
                 fiber = handle._fiber
@@ -294,7 +333,7 @@ class Loader:
                     name for name, required in fiber.inject.items() if required
                 )
                 raise LoadError(
-                    f"plugin {entry.id!r} did not activate; "
+                    f"plugin {entry_id!r} did not activate; "
                     f"unmet inject dependencies: {missing}"
                 )
 
@@ -376,6 +415,35 @@ class Loader:
             logger.exception("loader: reload of entry %s failed", entry_id)
             return False
         return entry_id in self._handles
+
+    async def apply_patch(self, patch: "PluginTree") -> list[str]:
+        """Merge a tree patch and (re)apply the affected entries.
+
+        Used by the workspace_instructions plugin to apply a workspace
+        ``.xbot/plugins.yaml`` overlay after the tree is loaded: entries the
+        patch overrides are reloaded with their new config; new ids are
+        mounted.  The caller (the patch-applying plugin itself) is skipped so
+        it does not reload itself.
+        """
+        self.tree = self.tree.merged_with(patch)
+        affected: list[str] = []
+        for entry in patch.entries:
+            if entry.id == getattr(self, "_patch_owner", None):
+                continue
+            if entry.id in self._handles:
+                await self.reload(entry.id)
+            else:
+                await self._mount(entry)
+            affected.append(entry.id)
+        return affected
+
+    def patch_from_path(self, path: Path) -> "PluginTree":
+        """Parse a yaml patch file without touching the tree."""
+        return PluginTree.from_yaml(path)
+
+    async def apply_patch_path(self, path: Path) -> list[str]:
+        """Load a yaml patch file and apply it (see :meth:`apply_patch`)."""
+        return await self.apply_patch(self.patch_from_path(path))
 
     async def unload_all(self) -> list[str]:
         unloaded = []

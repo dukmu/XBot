@@ -142,6 +142,14 @@ class SessionManager:
                 raise SessionNotFound(f"{session_id}/{thread_id}")
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
+            extra_plugins = (
+                [
+                    {"id": name, "name": name, "config": cfg}
+                    for name, cfg in plugin_configs.items()
+                ]
+                if plugin_configs
+                else None
+            )
             engine = await bootstrap(
                 paths=self.paths,
                 provider_name=provider_name,
@@ -149,7 +157,7 @@ class SessionManager:
                 thread_id=thread_id,
                 workspace_root=workspace_root,
                 plugin_dirs=[] if no_plugins else None,
-                plugin_configs=plugin_configs,
+                extra_plugins=extra_plugins,
                 llm_override=llm_override,
                 selected_agent=selected_agent,
                 parent_thread_id=parent_thread_id,

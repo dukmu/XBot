@@ -23,8 +23,6 @@ from typing import Any
 
 import xcore
 
-from XBotv2.config.loader import load_runtime_config
-from XBotv2.config.models import RuntimeConfig
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.loader import LoaderComponent, PluginTree
@@ -33,6 +31,9 @@ DEFAULT_TREE = Path(__file__).resolve().parent / "xcore.yaml"
 
 SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 
+# Capability plugins excluded by --no-plugins.  workspace_instructions is a
+# core workspace-extension component (AGENTS.md + workspace overlay), like
+# coretools, so it is never excluded.
 BUILTIN_PLUGINS = [
     "goal",
     "todolist",
@@ -42,7 +43,6 @@ BUILTIN_PLUGINS = [
     "agents",
     "browser",
     "token_manager",
-    "workspace_instructions",
 ]
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
@@ -56,7 +56,6 @@ async def bootstrap(
     thread_id: str = "agent",
     workspace_root: Path | str | None = None,
     plugin_dirs: list[Path | str] | None = None,
-    plugin_configs: dict[str, dict[str, Any]] | None = None,
     llm_override=None,
     selected_agent: str | None = None,
     agent_definition: AgentDefinition | None = None,
@@ -64,39 +63,33 @@ async def bootstrap(
     parent_thread_id: str = "",
     is_subagent: bool = False,
     interactive: bool = True,
+    extra_plugins: list[dict[str, Any]] | None = None,
+    exclude_plugins: set[str] | None = None,
+    return_context: bool = False,
 ) -> Any:
-    """Assemble the XBot runtime on an XCore context; returns the Engine."""
+    """Assemble the XBot runtime on an XCore context.
+
+    Returns the Engine (or the XCore context when ``return_context`` is set,
+    for server-style roots).  ``extra_plugins`` appends tree entries (e.g. the
+    protocol server); ``exclude_plugins`` removes default entries (e.g. the
+    agent loop for a server root)."""
     _validate_identifier("provider_name", provider_name)
     session_id = session_id or _new_session_id()
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
     workspace_root = Path(workspace_root or Path.cwd()).resolve()
 
-    # 1. Load the assembly-time facts the tree needs (provider default,
-    #    per-plugin config, disabled flags); runtime initialization (state
-    #    store, thread metadata recovery, agent resolution) is owned by the
-    #    persistence / agentloop plugins, not the composition root.
-    agent_config = load_runtime_config(paths, workspace_root, session_id)
-    if provider_name == "default":
-        provider_name = agent_config.provider
-    if agent_definition is not None and agent_definition.provider:
-        provider_name = agent_definition.provider
-
-    resolved_agent = agent_definition
-    resolved_plugin_configs = {
-        **agent_config.plugin_configs,
-        **(plugin_configs or {}),
-    }
-
-    # 2. Session identity (filesystem roots the tree references).
+    # 1. Session identity (filesystem roots the tree references).  All plugin
+    #    configuration lives in xcore.yaml; runtime initialization (state
+    #    store, thread metadata recovery, agent resolution, provider default)
+    #    is owned by the persistence / agentloop plugins, not the root.
     session_paths = paths.session(session_id)
     session_preexisting = session_paths.root.exists()
     thread_preexisting = session_paths.has_thread(thread_id)
     thread_paths = session_paths.thread(thread_id)
 
-    disabled_plugins = set(agent_config.disabled_plugins)
-    if is_subagent:
-        disabled_plugins.update(SUBAGENT_FORBIDDEN_PLUGINS)
+    resolved_agent = agent_definition
+    disabled_plugins = SUBAGENT_FORBIDDEN_PLUGINS if is_subagent else set()
 
     parent_engine: Any | None = None
 
@@ -112,7 +105,6 @@ async def bootstrap(
             thread_id=child_thread_id,
             workspace_root=workspace_root,
             plugin_dirs=plugin_dirs,
-            plugin_configs=plugin_configs,
             llm_override=llm_override,
             agent_definition=definition,
             parent_permission_system=None,  # resolved via ctx.permissions below
@@ -138,7 +130,6 @@ async def bootstrap(
         thread_id=thread_id,
         workspace_root=workspace_root,
         provider_name=provider_name,
-        agent_config=agent_config,
         resolved_agent=resolved_agent,
         llm_override=llm_override,
         selected_agent=selected_agent,
@@ -146,12 +137,13 @@ async def bootstrap(
         parent_thread_id=parent_thread_id,
         interactive=interactive,
         is_subagent=is_subagent,
-        plugin_configs=resolved_plugin_configs,
         plugin_dirs=plugin_dirs,
         disabled_plugins=disabled_plugins,
         include_builtins=plugin_dirs is None,
         session_paths=session_paths,
         engine_factory=create_child_engine,
+        extra_plugins=extra_plugins,
+        exclude_plugins=exclude_plugins,
     )
 
     # 4. Create the XCore context, mount the loader, and load the tree.
@@ -161,6 +153,8 @@ async def bootstrap(
         await plugin_ctx.start()
         await plugin_ctx.loader.load()
 
+        if return_context:
+            return plugin_ctx
         engine = plugin_ctx.engine
         parent_engine = engine
         return engine
@@ -199,7 +193,6 @@ def _build_plugin_tree(
     thread_id: str,
     workspace_root: Path,
     provider_name: str,
-    agent_config: RuntimeConfig,
     resolved_agent: AgentDefinition | None,
     llm_override,
     selected_agent: str | None,
@@ -207,12 +200,13 @@ def _build_plugin_tree(
     parent_thread_id: str,
     interactive: bool,
     is_subagent: bool,
-    plugin_configs: dict[str, dict[str, Any]],
     plugin_dirs: list[Path | str] | None,
     disabled_plugins: set[str],
     include_builtins: bool,
     session_paths: Any,
     engine_factory: Any,
+    extra_plugins: list[dict[str, Any]] | None,
+    exclude_plugins: set[str] | None,
 ) -> PluginTree:
     """Load the bundled tree with runtime values, merge overlays.
 
@@ -229,7 +223,6 @@ def _build_plugin_tree(
         "thread_id": thread_id,
         "workspace_root": workspace_root,
         "provider_name": provider_name,
-        "agent_config": agent_config,
         "agent_definition": resolved_agent,
         "engine_factory": engine_factory,
         "parent_thread_id": parent_thread_id,
@@ -238,16 +231,15 @@ def _build_plugin_tree(
         "is_subagent": is_subagent,
         "selected_agent": selected_agent,
         "llm_override": llm_override,
-        "plugin_configs": plugin_configs,
         "disabled": disabled_plugins,
     }
     tree = PluginTree.from_yaml(DEFAULT_TREE, values=values)
     if not include_builtins:
         tree = tree.excluding(set(BUILTIN_PLUGINS))
 
-    external_entries = _plugin_dirs_to_entries(
-        plugin_dirs, plugin_configs, disabled_plugins
-    )
+    external_entries = _plugin_dirs_to_entries(plugin_dirs, disabled_plugins)
+    if exclude_plugins:
+        tree = tree.excluding(set(exclude_plugins))
     if external_entries:
         # External plugins mount before the engine (core mounts last).
         core_entry = next(
@@ -260,19 +252,20 @@ def _build_plugin_tree(
             )
         else:
             tree = tree.merged_with(PluginTree.from_dict(external_entries))
+    if extra_plugins:
+        tree = tree.merged_with(PluginTree.from_dict(extra_plugins))
 
-    # Optional cordis.yaml-style user tree: entries override same-id entries
-    # and new ids are appended.
+    # Optional cordis.yaml-style user tree (last write wins per id) at
+    # ~/.xbot/config/plugins.yaml.  Workspace overlays are applied by the
+    # workspace_instructions plugin, not the composition root.
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        user_tree = PluginTree.from_yaml(plugins_file, values=values)
-        tree = tree.merged_with(user_tree)
+        tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
     return tree
 
 
 def _plugin_dirs_to_entries(
     plugin_dirs: list[Path | str] | None,
-    plugin_configs: dict[str, dict[str, Any]],
     disabled_plugins: set[str],
 ) -> list[dict[str, Any]]:
     """Scan external plugin directories for ``<name>/plugin.py`` modules."""
@@ -297,7 +290,7 @@ def _plugin_dirs_to_entries(
             entries.append({
                 "id": name,
                 "name": name,
-                "config": dict(plugin_configs.get(name, {})),
+                "config": {},
             })
     return entries
 

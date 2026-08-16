@@ -36,7 +36,7 @@ SUBAGENT_FORBIDDEN_TOOLS = frozenset({
 
 
 class AgentLoopComponent:
-    inject = ['agents', 'tools', 'sandbox', 'permissions', 'jobs', 'loader', 'llm', 'settings', 'state_store', 'session', 'context_builder', 'commands', 'prompts', 'paths', 'variables', 'runtime']
+    inject = ['agents', 'tools', 'sandbox', 'permissions', 'jobs', 'loader', 'llm', 'settings', 'state_store', 'session', 'context_builder', 'commands', 'prompts', 'paths', 'variables']
     """Build the runtime Engine from the context's services.
 
     Configured by the plugin tree entry (``xbot.agentloop``): reads the engine
@@ -52,7 +52,6 @@ class AgentLoopComponent:
         self._thread_id = config["thread_id"]
         self._workspace_root = str(config["workspace_root"])
         self._provider_name = config["provider_name"]
-        self._agent_config = config["agent_config"]
         self._agent_definition = config.get("agent_definition")
         self._llm_override = config.get("llm_override")
         self._selected_agent = config.get("selected_agent")
@@ -60,6 +59,7 @@ class AgentLoopComponent:
         self._parent_thread_id = config.get("parent_thread_id", "")
         self._is_subagent = bool(config.get("is_subagent", False))
         self._interactive = bool(config.get("interactive", True))
+        self._tree_config = config
         await self._assemble(ctx)
 
     async def _assemble(self, ctx: Any) -> None:
@@ -73,13 +73,36 @@ class AgentLoopComponent:
         permissions = ctx.permissions
         context_builder = ctx.context_builder
 
-        agent_config = self._agent_config
+        from XBotv2.config.models import (
+            PermissionConfig,
+            RuntimeConfig,
+            SandboxConfig,
+        )
+
+        cfg = self._tree_config
+        provider_name = self._provider_name
+        if provider_name == "default":
+            provider_name, _names = ctx.settings.provider_names()
+        self._user_context = ctx.settings.user_context()
+        memory = cfg.get("memory", "")
+        if not memory:
+            memory_file = ctx.paths.memory_file
+            if memory_file.exists():
+                memory = memory_file.read_text(encoding="utf-8")
+        agent_config = RuntimeConfig(
+            provider=provider_name,
+            instructions=cfg.get("instructions", ""),
+            memory=memory,
+            tools=cfg.get("tools"),
+            permissions=PermissionConfig.model_validate(
+                ctx.permissions.config or {}
+            ),
+            sandbox=SandboxConfig.model_validate(ctx.sandbox.config or {}),
+        )
         resolved_agent = self._agent_definition
         selected_agent = self._selected_agent
-        provider_name = self._provider_name
         is_subagent = self._is_subagent
         parent_permission_system = self._parent_permission_system
-        self._user_context = ctx.settings.user_context()
 
         # Thread metadata recovery (the agent loop owns its own resume state):
         # restore the stored agent definition, validate the requested agent

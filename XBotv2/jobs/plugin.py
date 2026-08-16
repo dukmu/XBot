@@ -21,13 +21,11 @@ class JobsComponent:
     name = "xbot.jobs"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        runtime_config = ctx.runtime
+        max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
         ctx.set(
             "jobs",
             JobRegistry(
-                limits={
-                    JobKind.SUBAGENT: runtime_config.max_concurrent_subagents,
-                },
+                limits={JobKind.SUBAGENT: max_concurrent},
             ),
         )
 

@@ -77,6 +77,7 @@ class PermissionSystem:
     ) -> None:
         self.default_decision = default_decision
         self.variables = variables or RuntimeVariables()
+        self.config: Any = config  # original rules (dict / model) for consumers
         self._deny_rules: list[PermissionRule] = []
         self._allow_rules: list[PermissionRule] = []
         self._ask_rules: list[PermissionRule] = []
@@ -281,6 +282,11 @@ class PermissionIntersection:
         self.parent = parent
         self.child = child
         self._once_grants: list[PermissionRule] = []
+
+    @property
+    def config(self) -> Any:
+        """The child (session-scoped) rules for consumers."""
+        return self.child.config
 
     def grant_once(
         self,

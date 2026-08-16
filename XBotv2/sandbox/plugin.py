@@ -19,11 +19,10 @@ class SandboxComponent:
     name = "xbot.sandbox"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        runtime_config = ctx.runtime
         ctx.set(
             "sandbox",
             SandboxPolicy(
-                runtime_config.sandbox,
+                (config or {}).get("sandbox"),
                 data_root=ctx.data_root,
                 workspace_root=ctx.workspace_root,
                 session_root=ctx.state_store.root,

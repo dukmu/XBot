@@ -1,14 +1,15 @@
-# XBotv2 默认插件树（cordis.yaml 风格，bundled——类似 DeepSeek Harness 的
-# cordis.patch.yml）。行序无语义（activation is service-availability driven）：
-# 每个插件声明 inject 依赖，XCore 在所需服务可用时自动激活——条目顺序只是
-# 可读性分组，任何顺序都能正确启动。
+# XBotv2 默认插件树与统一配置（cordis.yaml 风格，bundled——类似 DeepSeek
+# Harness 的 cordis.patch.yml）。这是**唯一配置文档**：插件树 + 每插件配置
+# （权限/沙箱/任务限制/钩子/工具/agent 指令）。行序无语义（activation is
+# service-availability driven）：每个插件声明 inject 依赖，XCore 在所需服务
+# 可用时自动激活。
 #
 # 动态会话值以 ${name} 引用（${env:VAR} 读环境变量），由组合根（bootstrap）
-# 在装载时提供：paths/session_id/thread_id/workspace_root/provider_name/
-# agent_config/user_context/state_store/engine_factory/parent_thread_id/
-# parent_permission_system/interactive/selected_agent/llm_override/
-# agent_definition/stored_provider/thread_preexisting/plugin_configs/disabled。
-# 用户配置 data/config/plugins.yaml 可覆盖或追加条目。
+# 在装载时提供：paths/session_paths/session_id/thread_id/workspace_root/
+# provider_name/engine_factory/parent_thread_id/parent_permission_system/
+# interactive/selected_agent/llm_override/agent_definition/is_subagent/disabled。
+# 用户全局覆盖：~/.xbot/config/plugins.yaml；工作区覆盖：.xbot/plugins.yaml
+# （按 id 覆盖条目 config / disabled，或追加新插件）。
 
 - id: config
   name: config
@@ -30,13 +31,14 @@
     session_id: ${session_id}
     thread_id: ${thread_id}
     workspace_root: ${workspace_root}
-    runtime_config: ${agent_config}
     session_paths: ${session_paths}
     parent_thread_id: ${parent_thread_id}
     engine_factory: ${engine_factory}
 
 - id: jobs
   name: jobs
+  config:
+    max_concurrent_subagents: 4
 
 - id: llm
   name: llm
@@ -55,60 +57,85 @@
 
 - id: sandbox
   name: sandbox
+  config:
+    sandbox:
+      enabled: true
+      network: true
+      external_read: ask
+      external_write: ask
+      workspace_read: allow
+      workspace_write: allow
+      resources: []
 
 - id: permissions
   name: permissions
   config:
     parent_permission_system: ${parent_permission_system}
+    permissions:
+      allow:
+        - tool: (?:start_shell|list_shells|wait_shell|read_shell|cancel_shell)
+        - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
+        - tool: (?:send_message|ask_user|request_permission)
+        - tool: (?:search_text|find_files)
+        - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
+        - tool: update_todos
+        - tool: (?:filesystem_read|content_read|filesystem_stat|filesystem_list)
+        - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
+          paths: ${workspace}
+        - tool: shell
+      ask:
+        - tool: (?:browser_click|browser_fill|browser_press|browser_select)
+        - tool: (?:filesystem_write|filesystem_edit|filesystem_patch|filesystem_move|filesystem_copy|filesystem_delete|filesystem_mkdir)
+      deny:
+        - tool: .*
+          params:
+            command: rm -rf /.*
 
 - id: coretools
   name: coretools
   config:
     interactive: ${interactive}
+    tool_results:
+      max_inline_chars: 12000
+      preview_chars: 4000
+    hooks: []
+    tools: null
+    workspace_tools: []
 
 - id: agents
   name: agents
-  config: ${plugin_configs.agents}
   disabled: ${disabled.agents}
 
 - id: goal
   name: goal
-  config: ${plugin_configs.goal}
   disabled: ${disabled.goal}
 
 - id: todolist
   name: todolist
-  config: ${plugin_configs.todolist}
   disabled: ${disabled.todolist}
 
 - id: skills
   name: skills
-  config: ${plugin_configs.skills}
   disabled: ${disabled.skills}
 
 - id: mcp
   name: mcp
-  config: ${plugin_configs.mcp}
   disabled: ${disabled.mcp}
 
 - id: compact
   name: compact
-  config: ${plugin_configs.compact}
   disabled: ${disabled.compact}
 
 - id: browser
   name: browser
-  config: ${plugin_configs.browser}
   disabled: ${disabled.browser}
 
 - id: token_manager
   name: token_manager
-  config: ${plugin_configs.token_manager}
   disabled: ${disabled.token_manager}
 
 - id: workspace_instructions
   name: workspace_instructions
-  config: ${plugin_configs.workspace_instructions}
   disabled: ${disabled.workspace_instructions}
 
 - id: agentloop
@@ -118,7 +145,6 @@
     thread_id: ${thread_id}
     workspace_root: ${workspace_root}
     provider_name: ${provider_name}
-    agent_config: ${agent_config}
     agent_definition: ${agent_definition}
     llm_override: ${llm_override}
     selected_agent: ${selected_agent}
@@ -126,3 +152,5 @@
     parent_thread_id: ${parent_thread_id}
     interactive: ${interactive}
     is_subagent: ${is_subagent}
+    instructions: ""
+    memory: ""

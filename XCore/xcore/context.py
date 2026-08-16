@@ -208,7 +208,11 @@ class Context:
             raise ValueError("service name must be a non-empty string")
         label = self._isolate_label(name)
         self._services.set(label, name, value, owner=self.fiber)
-        asyncio.ensure_future(self._registry._refresh_dependents([name]))
+        # Only an active context has fibers waiting on dependencies; on a
+        # fresh (not-yet-started) context there is nothing to refresh and no
+        # event loop to schedule on.
+        if self.is_active:
+            asyncio.ensure_future(self._registry._refresh_dependents([name]))
 
         def release() -> bool:
             return self._services.unset(label, name, value)

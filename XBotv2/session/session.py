@@ -123,7 +123,6 @@ class Session:
         paths: Any,
         variables: Any,
         state_store: Any,
-        runtime_config: Any,
         session_paths: SessionPaths,
         parent_thread_id: str,
         engine_factory: Any,
@@ -135,7 +134,6 @@ class Session:
         self.paths = paths
         self.variables = variables
         self.state_store = state_store
-        self.runtime_config = runtime_config
         self.session_paths = session_paths
         self.parent_thread_id = parent_thread_id
         self.engine_factory = engine_factory

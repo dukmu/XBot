@@ -684,19 +684,9 @@ class XBotACPAgent:
             raise RequestError.invalid_params({
                 "mcpServers": "plugins are disabled"
             })
-        config = load_runtime_config(self.paths, workspace, session_id)
-        mcp_entry = config.plugins.get("mcp")
-        if mcp_entry is None or not mcp_entry.enabled:
-            raise RequestError.invalid_params({
-                "mcpServers": "the MCP plugin is disabled"
-            })
-        plugin_config = dict(mcp_entry.config)
-        configured_servers = plugin_config.get("servers") or {}
-        if not isinstance(configured_servers, dict):
-            raise RequestError.invalid_params({
-                "mcpServers": "configured MCP servers must be a mapping"
-            })
-        servers = dict(configured_servers)
+        # Plugin enablement is decided by the plugin tree (xcore.yaml /
+        # plugins.yaml); requested servers are injected directly.
+        servers: dict[str, Any] = {}
         for server in mcp_servers:
             name = str(getattr(server, "name", ""))
             if not _MCP_NAME.fullmatch(name):
@@ -732,8 +722,7 @@ class XBotACPAgent:
                 raise RequestError.invalid_params({
                     "mcpServers": f"unsupported server type: {type(server).__name__}"
                 })
-        plugin_config["servers"] = servers
-        return {"mcp": plugin_config}
+        return {"mcp": {"servers": servers}}
 
 
 def _workspace(cwd: str) -> str:

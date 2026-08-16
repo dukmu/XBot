@@ -18,12 +18,12 @@ class PermissionsComponent:
     name = "xbot.permissions"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        runtime_config = ctx.runtime
+        config = config or {}
         permissions = PermissionSystem(
-            runtime_config.permissions,
+            config.get("permissions"),
             variables=ctx.variables,
         )
-        parent = (config or {}).get("parent_permission_system")
+        parent = config.get("parent_permission_system")
         if parent is not None:
             permissions = PermissionIntersection(parent, permissions)
         ctx.set("permissions", permissions)

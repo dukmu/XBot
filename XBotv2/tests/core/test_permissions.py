@@ -404,11 +404,12 @@ class TestConfigLoading:
             })
 
     def test_shipped_policy_allows_internal_and_workspace_tools(self, tmp_path):
-        config = yaml.safe_load(
-            Path("XBotv2/data/config/config.yaml").read_text(
-                encoding="utf-8"
-            )
-        )["permissions"]
+        # xcore.yaml is the unified configuration document.
+        tree = yaml.safe_load(
+            Path("XBotv2/xcore.yaml").read_text(encoding="utf-8")
+        )
+        entry = next(item for item in tree if item.get("id") == "permissions")
+        config = entry["config"]["permissions"]
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         permissions = PermissionSystem(

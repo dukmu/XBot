@@ -267,13 +267,14 @@ async def test_subagent_can_ask_user_through_parent_session(
 async def test_subagent_can_request_permission_through_parent_session(
     temp_data_dir, temp_workspace
 ):
-    (temp_data_dir / "config" / "config.yaml").write_text(
-        "permissions:\n  allow:\n"
-        "    - tool: spawn_subagent\n"
-        "    - tool: wait_subagent\n"
-        "  ask:\n    - tool: filesystem_read\n",
-        encoding="utf-8",
-    )
+    from XBotv2.tests.core.test_bootstrap import _write_plugins
+
+    _write_plugins(temp_data_dir, {"permissions": {"config": {
+        "permissions": {
+            "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
+            "ask": [{"tool": "filesystem_read"}],
+        },
+    }}})
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")
     agents_dir = temp_workspace / ".agents"
     agents_dir.mkdir(parents=True)
@@ -583,7 +584,6 @@ def _make_session(tmp_path, *, registry, factory):
         paths=None,
         variables=None,
         state_store=None,
-        runtime_config=None,
         session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
         parent_thread_id="agent",
         engine_factory=factory,

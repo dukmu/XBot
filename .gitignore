@@ -45,3 +45,6 @@ XCore/.pytest_cache/
 
 # uv cache (local mirror used when the global cache is unavailable)
 .uv-cache/
+
+# local serve smoke-test runtime state
+.serve-test/

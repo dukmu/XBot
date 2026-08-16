@@ -261,3 +261,32 @@
     显式 agent_definition（子代理）不再被应用（prompt/权限丢失）——agentloop
     改为 resolved_agent 确定后统一 apply。
 - **验证**：XBotv2 735 passed；`uv run xbot tui` pty 实测 Ready 无错误。
+
+### 2026-08-17 · 配置统一到 xcore.yaml、~/.xbot 数据目录、server 插件化、工作区扩展归 workspace_instructions
+
+- **用户指示**：① 优化 data 和 config/，统一采用 xcore.yaml 配置；② sessions
+  和 memory 默认用 XDG HOME 的 .xbot 目录，允许工作区覆盖合并；③ 审查不符合
+  插件化的行为；④ server 也作为插件包。
+- **实施**：
+  - **统一配置**：`xcore.yaml` 成为唯一配置文档——每插件条目内联默认配置
+    （permissions/sandbox/jobs 任务限制/coretools 钩子工具/agentloop 指令）；
+    `data/config/config.yaml` 删除；`RuntimeConfig` 由 agentloop 从 tree
+    config + ctx.settings（provider 默认/user_context）+ ctx 服务
+    （permissions/sandbox 配置）组装；bootstrap 不再 load_runtime_config；
+    provider 默认由 agentloop 经 `ctx.settings.provider_names()` 解析。
+  - **数据目录**：默认运行时数据改 `~/.xbot/`（XBOT_DATA_DIR 可覆盖）；
+    全局用户树 `~/.xbot/config/plugins.yaml`；`merged_with` 对 config 深度
+    合并（覆盖单字段无需重写动态值）；loader 对未知 `${}` 引用保留字面
+    （`${workspace}` 等运行时变量由服务展开）。
+  - **工作区扩展归 workspace_instructions**：AGENTS.md 注入（已有）+ 应用
+    工作区 `.xbot/plugins.yaml` 树覆盖（`loader.apply_patch`：重载受影响
+    条目 / 挂载新条目 / 支持工作区禁用自身）；bootstrap 不再合并工作区
+    配置；workspace_instructions 移出内置插件列表（核心工作区组件）。
+  - **server 插件化**：`protocol/plugin.py` 提供 `ctx.server`（FastAPI app）；
+    `xbot serve` = bootstrap（排除 agentloop + 内置，追加 protocol 条目）+
+    uvicorn；bootstrap 新增 extra_plugins/exclude_plugins/return_context。
+  - **顺带修复**：XCore `ctx.set` 在未激活 ctx 上不再 ensure_future
+    （无事件循环崩溃）；coretools 基础工具改用 `ctx.tools.register`
+    （fiber 清理，reload 不重复注册）；acp 的 MCP 插件检查改用树启用语义。
+- **验证**：XBotv2 **735 passed**；XCore **105 passed**；`uv run xbot tui`
+  pty 实测 Ready 无错误；乱序树回归测试保持。

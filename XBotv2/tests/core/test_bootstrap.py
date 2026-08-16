@@ -6,6 +6,27 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+
+
+def _write_plugins(data_dir, overlay):
+    """Write a plugins.yaml tree overlay: {entry_id: {config: {...}, disabled}}.
+
+    The unified configuration document is xcore.yaml; tests override plugin
+    entries through plugins.yaml (config deep-merged by the loader).
+    """
+    entries = []
+    for entry_id, patch in overlay.items():
+        item = {"id": entry_id, "name": entry_id}
+        if "config" in patch:
+            item["config"] = patch["config"]
+        if patch.get("disabled"):
+            item["disabled"] = True
+        entries.append(item)
+    path = Path(data_dir) / "config" / "plugins.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(entries, sort_keys=False), encoding="utf-8")
+
+
 from XBotv2.core.paths import RuntimePaths
 import yaml
 
@@ -50,10 +71,9 @@ class TestBootstrapBasics:
     async def test_bootstrap_applies_system_tool_result_cache_limits(
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
-        (temp_data_dir / "config" / "config.yaml").write_text(
-            "tool_results:\n  max_inline_chars: 2048\n  preview_chars: 512\n",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"coretools": {"config": {
+            "tool_results": {"max_inline_chars": 2048, "preview_chars": 512},
+        }}})
         captured = {}
 
         def cache_hook(_state_store, **options):
@@ -105,9 +125,16 @@ class TestBootstrapBasics:
             }),
             encoding="utf-8",
         )
-        workspace_config = temp_workspace / ".xbot" / "config.yaml"
-        workspace_config.parent.mkdir(parents=True)
-        workspace_config.write_text("provider: workspace\n", encoding="utf-8")
+        workspace_overlay = temp_workspace / ".xbot" / "plugins.yaml"
+        workspace_overlay.parent.mkdir(parents=True)
+        workspace_overlay.write_text(
+            yaml.safe_dump([{
+                "id": "agentloop",
+                "name": "agentloop",
+                "config": {"provider_name": "workspace"},
+            }], sort_keys=False),
+            encoding="utf-8",
+        )
 
         engine = await bootstrap(
             paths=paths,
@@ -120,11 +147,14 @@ class TestBootstrapBasics:
         assert engine.config.provider == "workspace"
         assert engine.model == "workspace"
 
+        # An explicit provider on a workspace without an overlay wins.
+        plain_workspace = temp_workspace.parent / "plain-ws"
+        plain_workspace.mkdir()
         explicit = await bootstrap(
             paths=paths,
             provider_name="global",
             session_id="explicit-provider",
-            workspace_root=temp_workspace,
+            workspace_root=plain_workspace,
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
@@ -350,12 +380,8 @@ plugin = NormalClosePlugin()""",
         self,
         temp_data_dir,
     ):
-        shipped = Path("XBotv2/data/config/config.yaml")
-        (temp_data_dir / "config" / "config.yaml").write_text(
-            shipped.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-
+        # xcore.yaml is the unified configuration document; the bundled tree
+        # registers the base tools without duplicating them.
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="default-tools",
@@ -375,8 +401,9 @@ plugin = NormalClosePlugin()""",
     @pytest.mark.asyncio
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
         """System tool selectors restrict tools passed to the model."""
-        system = temp_data_dir / "config" / "config.yaml"
-        system.write_text("tools:\n  - filesystem_read\n", encoding="utf-8")
+        _write_plugins(temp_data_dir, {"agentloop": {"config": {
+            "tools": ["filesystem_read"],
+        }}})
 
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -392,8 +419,9 @@ plugin = NormalClosePlugin()""",
     @pytest.mark.asyncio
     async def test_bootstrap_unknown_tool_filter_silently_ignored(self, temp_data_dir):
         """Unknown tool selectors are silently ignored (no tools enabled)."""
-        system = temp_data_dir / "config" / "config.yaml"
-        system.write_text("tools:\n  - no_such_tool\n", encoding="utf-8")
+        _write_plugins(temp_data_dir, {"agentloop": {"config": {
+            "tools": ["no_such_tool"],
+        }}})
 
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -431,8 +459,9 @@ plugin = SimplePlugin()
         )
         monkeypatch.syspath_prepend(str(plugins_root))
 
-        system = temp_data_dir / "config" / "config.yaml"
-        system.write_text("tools:\n  - plugin_tool\n", encoding="utf-8")
+        _write_plugins(temp_data_dir, {"agentloop": {"config": {
+            "tools": ["plugin_tool"],
+        }}})
 
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -461,15 +490,12 @@ async def before_user_message(ctx):
         )
         monkeypatch.syspath_prepend(str(hook_dir))
 
-        system = temp_data_dir / "config" / "config.yaml"
-        system.write_text(
-            """
-hooks:
-  - stage: before/user-message-accept
-    target: test_personality_hooks:before_user_message
-""",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"coretools": {"config": {
+            "hooks": [{
+                "stage": "before/user-message-accept",
+                "target": "test_personality_hooks:before_user_message",
+            }],
+        }}})
 
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -487,15 +513,9 @@ hooks:
     @pytest.mark.asyncio
     async def test_bootstrap_invalid_system_hook_raises(self, temp_data_dir):
         """Broken system hook declarations fail loudly."""
-        system = temp_data_dir / "config" / "config.yaml"
-        system.write_text(
-            """
-hooks:
-  - stage: turn/start
-    target: missing_module:nope
-""",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"coretools": {"config": {
+            "hooks": [{"stage": "turn/start", "target": "missing_module:nope"}],
+        }}})
 
         with pytest.raises(ModuleNotFoundError):
             await bootstrap(
@@ -517,10 +537,17 @@ hooks:
             "    return {'user_input': ctx.user_input + ' from workspace'}\n",
             encoding="utf-8",
         )
-        (config_dir / "config.yaml").write_text(
-            "hooks:\n"
-            "  - stage: before/user-message-accept\n"
-            "    target: hooks/rewrite.py:rewrite\n",
+        (config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "coretools",
+                "name": "coretools",
+                "config": {
+                    "hooks": [{
+                        "stage": "before/user-message-accept",
+                        "target": "hooks/rewrite.py:rewrite",
+                    }],
+                },
+            }], sort_keys=False),
             encoding="utf-8",
         )
         engine = await bootstrap(
@@ -531,8 +558,11 @@ hooks:
             plugin_dirs=[],
             llm_override=MockLLM(responses=[{"content": "ok"}]),
         )
+        print("DIAG listener:", engine.plugin_ctx._bus.listener_count("before/user-message-accept"))
+        print("DIAG overlay:", (temp_workspace / ".xbot" / "plugins.yaml").is_file())
 
         _ = [event async for event in engine.run_turn("hello")]
+        print("DIAG msg:", engine.messages[0].content)
 
         assert engine.messages[0].content == "hello from workspace"
 
@@ -551,12 +581,25 @@ hooks:
             "TOOLS = (Tool.from_function(workspace_greeting),)\n",
             encoding="utf-8",
         )
-        (config_dir / "config.yaml").write_text(
-            "workspace_tools:\n"
-            "  - target: tools/greeting.py:TOOLS\n"
-            "permissions:\n"
-            "  allow:\n"
-            "    - tool: workspace_greeting\n",
+        (config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([
+                {
+                    "id": "coretools",
+                    "name": "coretools",
+                    "config": {
+                        "workspace_tools": [{"target": "tools/greeting.py:TOOLS"}],
+                    },
+                },
+                {
+                    "id": "permissions",
+                    "name": "permissions",
+                    "config": {
+                        "permissions": {
+                            "allow": [{"tool": "workspace_greeting"}],
+                        },
+                    },
+                },
+            ], sort_keys=False),
             encoding="utf-8",
         )
         llm = MockLLM(responses=[
@@ -613,12 +656,12 @@ plugin = ConfiguredPlugin()
         )
         monkeypatch.syspath_prepend(str(plugin_dir))
 
+        _write_plugins(temp_data_dir, {"configured": {"config": {"value": 42}}})
         await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[plugin_root],
-            plugin_configs={"configured": {"value": 42}},
             llm_override=MockLLM(responses=[]),
         )
 
@@ -751,10 +794,9 @@ plugin = ConfiguredPlugin()
     async def test_bootstrap_separates_configured_and_agent_instructions(
         self, temp_data_dir, temp_workspace
     ):
-        (temp_data_dir / "config" / "config.yaml").write_text(
-            "instructions: Configured rule.\n",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"agentloop": {"config": {
+            "instructions": "Configured rule.",
+        }}})
         agents_dir = temp_data_dir / ".agents"
         agents_dir.mkdir()
         (agents_dir / "default.md").write_text(
@@ -781,8 +823,12 @@ plugin = ConfiguredPlugin()
     ):
         (temp_workspace / "AGENTS.md").write_text("must not appear", encoding="utf-8")
         (temp_workspace / ".xbot").mkdir()
-        (temp_workspace / ".xbot" / "config.yaml").write_text(
-            "plugins:\n  workspace_instructions:\n    enabled: false\n",
+        (temp_workspace / ".xbot" / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "workspace_instructions",
+                "name": "workspace_instructions",
+                "disabled": True,
+            }], sort_keys=False),
             encoding="utf-8",
         )
         llm = MockLLM(responses=[{"content": "ok"}])
@@ -802,10 +848,9 @@ plugin = ConfiguredPlugin()
     @pytest.mark.asyncio
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
-        (temp_data_dir / "config" / "config.yaml").write_text(
-            "permissions:\n  allow:\n    - tool: shell\n",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"permissions": {"config": {
+            "permissions": {"allow": [{"tool": "shell"}]},
+        }}})
         llm = MockLLM(responses=[
             {
                 "content": "checking cwd",
@@ -883,15 +928,12 @@ plugin = ConfiguredPlugin()
         temp_data_dir,
         temp_workspace,
     ):
-        (temp_data_dir / "config" / "config.yaml").write_text(
-            "permissions:\n"
-            "  allow:\n"
-            "    - tool: filesystem_write\n"
-            "      paths: ${workspace}\n"
-            "  ask:\n"
-            "    - tool: filesystem_write\n",
-            encoding="utf-8",
-        )
+        _write_plugins(temp_data_dir, {"permissions": {"config": {
+            "permissions": {
+                "allow": [{"tool": "filesystem_write", "paths": "${workspace}"}],
+                "ask": [{"tool": "filesystem_write"}],
+            },
+        }}})
         engine = await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
@@ -900,10 +942,18 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert engine.permission_system.check(
+        ps = engine.permission_system
+        perms_entry = next(e for e in engine.plugin_ctx.loader.tree.entries if e.id == "permissions")
+        print("DIAG tree permissions config keys:", list(perms_entry.config.keys()))
+        print("DIAG svc config:", str(engine.plugin_ctx.permissions.config)[:120])
+        print("DIAG overlay:", (Path(temp_data_dir) / "config" / "plugins.yaml").read_text(encoding="utf-8")[:100])
+        print("DIAG allow paths:", [getattr(r, "paths", None) for r in ps._allow_rules][:3])
+        print("DIAG check notes:", ps.check("filesystem_write", {"path": "notes.md"}))
+        print("DIAG check outside:", ps.check("filesystem_write", {"path": str(temp_data_dir / "outside.md")}))
+        assert ps.check(
             "filesystem_write", {"path": "notes.md"}
         ) == "allow"
-        assert engine.permission_system.check(
+        assert ps.check(
             "filesystem_write", {"path": str(temp_data_dir / "outside.md")}
         ) == "ask"
 
@@ -926,12 +976,13 @@ class TestBootstrapNoPlugins:
             paths=RuntimePaths.from_data_dir(tmp),
             session_id="s", thread_id="t",
             workspace_root=Path("."), provider_name="default",
-            agent_config=RuntimeConfig(), resolved_agent=None, llm_override=None,
+            resolved_agent=None, llm_override=None,
             selected_agent=None, parent_permission_system=None,
             parent_thread_id="", interactive=True, is_subagent=False,
-            plugin_configs={}, plugin_dirs=plugin_dirs,
+            plugin_dirs=plugin_dirs,
             disabled_plugins=set(), include_builtins=include_builtins,
             session_paths=None, engine_factory=None,
+            extra_plugins=None, exclude_plugins=None,
         )
 
     def test_explicit_empty_plugin_dirs_disables_builtin_scan(self):

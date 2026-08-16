@@ -193,7 +193,10 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
         lambda app, **kwargs: served.update(app=app, **kwargs),
     )
 
-    cli._run_server(parse(["serve", "--uds", str(socket_path)]))
+    cli._run_server(parse([
+        "serve", "--uds", str(socket_path),
+        "--data-dir", str(tmp_path / "data"),
+    ]))
 
     assert socket_path.parent.is_dir()
     assert served["uds"] == str(socket_path)
