@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None):
     elif args.command == "once":
         asyncio.run(_run_once(args))
     elif args.command == "acp":
-        from acp import run_acp
+        from XBotv2.acp import run_acp
 
         asyncio.run(run_acp(
             data_dir=args.data_dir,
@@ -368,7 +368,7 @@ def _run_web(args) -> None:
     except ImportError as exc:
         raise SystemExit("Error: uvicorn is required for `xbotv2 web`") from exc
 
-    from web_server import create_web_app
+    from XBotv2.web_server import create_web_app
 
     web_url = f"http://{args.web_bind}:{args.web_port}"
     app = create_web_app(static_root, api_url=api_url, uds_path=uds_path)

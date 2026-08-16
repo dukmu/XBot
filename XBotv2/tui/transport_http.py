@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 from urllib.parse import quote
 
-from client import XBotClient
+from XBotv2.client import XBotClient
 from XBotv2.protocol.models import (
     CommandListResponse,
     CommandRequest,

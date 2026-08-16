@@ -94,7 +94,7 @@ Invalid permission content.
 
 class TestSkillRegistry:
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
-        from skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -107,7 +107,7 @@ class TestSkillRegistry:
         assert "invalid-permissions" not in names
 
     def test_skill_parses_frontmatter(self, skill_workspace):
-        from skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -124,7 +124,7 @@ class TestSkillRegistry:
         assert manual.disable_model_invocation is True
 
     def test_skill_found_via_agents_path(self, skill_workspace):
-        from skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -133,7 +133,7 @@ class TestSkillRegistry:
         assert "agents path" in skill.content.lower()
 
     def test_load_skill_returns_none_for_unknown(self, skill_workspace):
-        from skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -141,7 +141,7 @@ class TestSkillRegistry:
 
     def test_skill_registry_respects_name_directory_match(self, tmp_path):
         """Skill name must match the containing directory name."""
-        from skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -485,7 +485,7 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_expands_command(self):
-        from skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "hello !`echo world`", sandbox=self.FakeSandbox()
@@ -494,14 +494,14 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_no_backticks_unchanged(self):
-        from skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess("hello echo world")
         assert result == "hello echo world"
 
     @pytest.mark.asyncio
     async def test_shell_injection_multiple_commands(self):
-        from skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "a !`echo X` and !`echo Y` end", sandbox=self.FakeSandbox()
@@ -512,15 +512,15 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_without_sandbox_does_not_execute(self):
-        from skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess("hello !`echo unsafe`")
         assert result == "hello [shell injection unavailable: enabled sandbox required]"
 
     @pytest.mark.asyncio
     async def test_load_skill_returns_content(self):
-        from skills.registry import SkillRegistry
-        from skills.skill_tool import load_skill
+        from XBotv2.skills.registry import SkillRegistry
+        from XBotv2.skills.skill_tool import load_skill
 
         import tempfile
         ws = Path(tempfile.mkdtemp())
@@ -543,7 +543,7 @@ Demo content
 
 class TestSkillPermissionScope:
     def test_allowed_tools_match(self):
-        from skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell(git *)"])
@@ -552,7 +552,7 @@ class TestSkillPermissionScope:
         assert scope.check("read_file", {"path": "README.md"}) is None
 
     def test_disallowed_overrides_allowed(self):
-        from skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"], disallowed=["shell(git push *)"])
@@ -560,7 +560,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_disallowed_tools_do_not_create_an_allowlist(self):
-        from skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(disallowed=["shell(git push *)"])
@@ -568,7 +568,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_clear_resets(self):
-        from skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"])
@@ -577,7 +577,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell") is None
 
     def test_invalid_update_does_not_leave_partial_rules(self):
-        from skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
 

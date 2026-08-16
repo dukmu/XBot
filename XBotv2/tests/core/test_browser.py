@@ -6,8 +6,8 @@ from threading import Thread
 
 import pytest
 
-from browser.browser import BrowserSession
-from browser.network import NetworkOptions, UrlPolicy, WebAccess
+from XBotv2.browser.browser import BrowserSession
+from XBotv2.browser.network import NetworkOptions, UrlPolicy, WebAccess
 from XBotv2.core import ToolResult
 
 

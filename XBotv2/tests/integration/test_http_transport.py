@@ -29,14 +29,14 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-import client as client_module
+import XBotv2.client as client_module
 import yaml
 from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.events import Events
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import Tool
-from client import XBotClient, XBotClientError
+from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellRunner
 from XBotv2.agentloop.internal_messages import structure_tool_message
 from httpx import ASGITransport
