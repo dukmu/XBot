@@ -6,11 +6,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
-from xbotv2.api.paths import RuntimePaths
+from api.paths import RuntimePaths
 import yaml
 
-from xbotv2.core.bootstrap import bootstrap
-from xbotv2.llm.mock import MockLLM
+from core.bootstrap import bootstrap
+from llm.mock import MockLLM
 
 
 class TestBootstrapBasics:
@@ -64,7 +64,7 @@ class TestBootstrapBasics:
 
             return apply
 
-        monkeypatch.setattr("xbotv2.tools.result_cache.make_tool_result_cache_hook", cache_hook)
+        monkeypatch.setattr("tools.result_cache.make_tool_result_cache_hook", cache_hook)
 
         await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -138,7 +138,7 @@ class TestBootstrapBasics:
         monkeypatch,
         capsys,
     ):
-        from xbotv2.__main__ import main
+        from main import main
 
         monkeypatch.setattr(
             sys,
@@ -181,7 +181,7 @@ class TestBootstrapBasics:
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from xbotv2.api import Events, Tool
+from api import Events, Tool
 
 def runtime_tool() -> str:
     return "ok"
@@ -243,7 +243,7 @@ plugin = InitFailPlugin()""",
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from xbotv2.api import Events, Tool
+from api import Events, Tool
 
 LOG = Path({str(lifecycle_log)!r})
 
@@ -414,7 +414,7 @@ plugin = NormalClosePlugin()""",
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             """
-from xbotv2.api import Tool
+from api import Tool
 
 def _plugin_tool() -> str:
     '''Plugin tool.'''
@@ -544,7 +544,7 @@ hooks:
         tools_dir = config_dir / "tools"
         tools_dir.mkdir(parents=True)
         (tools_dir / "greeting.py").write_text(
-            "from xbotv2.api import Tool\n\n"
+            "from api import Tool\n\n"
             "async def workspace_greeting(name: str) -> str:\n"
             "    '''Greet one person from a workspace Tool.'''\n"
             "    return f'hello {name}'\n\n"
@@ -913,9 +913,9 @@ class TestBootstrapNoPlugins:
 
     def _make_tree(self, plugin_dirs, include_builtins):
         import tempfile
-        from xbotv2.core.bootstrap import _build_plugin_tree
-        from xbotv2.config.models import RuntimeConfig
-        from xbotv2.persistence.store import CoreStateStore
+        from core.bootstrap import _build_plugin_tree
+        from config.models import RuntimeConfig
+        from persistence.store import CoreStateStore
 
         tmp = Path(tempfile.mkdtemp())
         store = CoreStateStore.create(

@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     build: {
-      outDir: "../xbotv2/web_dist",
+      outDir: "../web_dist",
       emptyOutDir: true,
     },
     server: {

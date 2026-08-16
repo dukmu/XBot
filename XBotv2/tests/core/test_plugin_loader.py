@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from xbotv2.loader import (
+from loader import (
     Loader,
     PluginEntry,
     PluginTree,
@@ -29,17 +29,17 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
     from xcore import Context
-    from xbotv2.api.jobs import JobRegistry
-    from xbotv2.api.variables import RuntimeVariables
-    from xbotv2.core.agents import AgentRegistry
-    from xbotv2.core.context import ContextBuilder
-    from xbotv2.plugins.tools import (
+    from api.jobs import JobRegistry
+    from api.variables import RuntimeVariables
+    from core.agents import AgentRegistry
+    from core.context import ContextBuilder
+    from tools.plugin import (
         AgentsService,
         CommandsService,
         PromptsService,
         ToolsService,
     )
-    from xbotv2.tools.registry import ToolRegistry
+    from tools.registry import ToolRegistry
 
     ctx = Context(data_dir=tmp_path)
     ctx.set("tools", ToolsService(ToolRegistry()))
@@ -80,12 +80,12 @@ class TestPluginTree:
         path = tmp_path / "plugins.yaml"
         path.write_text(
             yaml.safe_dump([
-                {"id": "goal", "name": "builtin_plugins.goal"},
+                {"id": "goal", "name": "goal"},
             ]),
             encoding="utf-8",
         )
         tree = PluginTree.from_yaml(path)
-        assert tree.entries[0].name == "builtin_plugins.goal"
+        assert tree.entries[0].name == "goal"
 
     def test_duplicate_ids_rejected(self):
         with pytest.raises(ValueError, match="duplicate"):
@@ -121,7 +121,7 @@ class DemoPlugin:
 
 plugin = DemoPlugin()
 """)
-        from xbotv2.loader import Loader as _  # noqa
+        from loader import Loader as _  # noqa
         import importlib
 
         module = importlib.import_module("demo")
@@ -161,7 +161,7 @@ plugin = DemoPlugin()
 class TestLoader:
     async def test_load_mounts_entries_and_skips_disabled(self, tmp_path):
         _write_plugin(tmp_path, "alpha", """
-from xbotv2.api import Tool
+from api import Tool
 
 class AlphaPlugin:
     name = "alpha"
@@ -192,7 +192,7 @@ plugin = BetaPlugin()
 
     async def test_unload_cleans_registrations(self, tmp_path):
         _write_plugin(tmp_path, "gamma", """
-from xbotv2.api import Tool
+from api import Tool
 
 class GammaPlugin:
     name = "gamma"

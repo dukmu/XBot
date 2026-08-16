@@ -10,22 +10,22 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-import xbotv2.__main__ as xbot_main
-from xbotv2.tui.client import (
+import main as xbot_main
+from tui.client import (
     TuiState,
     TuiTask,
     TuiTool,
     TuiTranscriptEntry,
     _parse_permission_decision,
 )
-from xbotv2.tui.terminal import TerminalSession
-from xbotv2.tui.terminal import CommandOutcome
-from xbotv2.tui.command import CommandSpec
+from tui.terminal import TerminalSession
+from tui.terminal import CommandOutcome
+from tui.command import CommandSpec
 
 
 @pytest.mark.asyncio
 async def test_clear_dispatch_distinguishes_screen_and_history_commands():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class Handler:
         _cmd_clear = AsyncMock()
@@ -48,7 +48,7 @@ async def test_clear_dispatch_distinguishes_screen_and_history_commands():
 
 @pytest.mark.asyncio
 async def test_builtin_command_replaces_tui_history_from_typed_result():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     history = [{"role": "user", "content": "kept"}]
 
@@ -85,7 +85,7 @@ async def test_builtin_command_replaces_tui_history_from_typed_result():
 
 @pytest.mark.asyncio
 async def test_builtin_command_refreshes_status_metadata() -> None:
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class Handler:
         _connected = True
@@ -121,7 +121,7 @@ async def test_builtin_command_refreshes_status_metadata() -> None:
 
 @pytest.mark.asyncio
 async def test_invalid_builtin_syntax_is_a_notice_not_tui_error() -> None:
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class Handler:
         _connected = True
@@ -204,7 +204,7 @@ def test_tui_state_applies_usage_totals():
 
 
 def test_tool_details_preserve_full_structured_result():
-    from xbotv2.tui.textual_widgets import tool_detail
+    from tui.textual_widgets import tool_detail
 
     state = TuiState()
     content = "x" * 500
@@ -693,7 +693,7 @@ def test_terminal_events_clear_pending_interactions(
 
 @pytest.mark.asyncio
 async def test_textual_tool_refresh_treats_source_as_plain_text():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -728,7 +728,7 @@ async def test_textual_tool_refresh_treats_source_as_plain_text():
 
 
 def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
-    from xbotv2.tui.trace import trace_event
+    from tui.trace import trace_event
 
     trace_path = tmp_path / "tui-trace.jsonl"
     monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
@@ -745,10 +745,10 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
     """HttpTransport must preserve UTF-8 payload in tui.http trace events.
 
     Replaces the legacy ``test_protocol_trace_records_unicode_frames``
-    stdio test now that stdio is removed (docsv2 v2.2).
+    stdio test now that stdio is removed (docs v2.2).
     """
 
-    from xbotv2.tui.transport_http import HttpTransport
+    from tui.transport_http import HttpTransport
 
     trace_path = tmp_path / "http-trace.jsonl"
     monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
@@ -828,7 +828,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
 
 
 def test_mode_tui_imports_textual_client_lazily():
-    tree = ast.parse(Path("XBotv2/xbotv2/__main__.py").read_text(encoding="utf-8"))
+    tree = ast.parse(Path("XBotv2/main.py").read_text(encoding="utf-8"))
     run_tui = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_run_tui"
@@ -839,7 +839,7 @@ def test_mode_tui_imports_textual_client_lazily():
         if isinstance(node, ast.ImportFrom)
     ]
 
-    assert "xbotv2.tui.textual_client" in imports
+    assert "tui.textual_client" in imports
 
 
 def test_spawn_server_propagates_log_args(monkeypatch):
@@ -882,7 +882,7 @@ async def test_message_event_pops_queue_before_turn_end():
     folded input stayed in the queue panel until the whole turn completed.
     """
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -939,7 +939,7 @@ async def test_message_event_pops_queue_before_turn_end():
 
 @pytest.mark.asyncio
 async def test_textual_app_headless_preserves_message_order_and_chinese():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -980,7 +980,7 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
 
 @pytest.mark.asyncio
 async def test_textual_app_restores_session_usage_and_displays_server_command():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1059,7 +1059,7 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
 
 @pytest.mark.asyncio
 async def test_textual_app_headless_keeps_transcript_non_focusable():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1086,7 +1086,7 @@ async def test_textual_app_headless_keeps_transcript_non_focusable():
 
 @pytest.mark.asyncio
 async def test_textual_app_headless_shows_usage_in_status_bar():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1138,7 +1138,7 @@ async def test_textual_app_alt_c_copies_last_reply():
     to create a selection (e.g. under a terminal that captures ctrl+shift+c).
     """
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1175,7 +1175,7 @@ async def test_textual_app_alt_c_copies_last_reply():
 async def test_textual_app_ctrl_c_without_selection_clears_input():
     """ctrl+c with no selection keeps clearing the composer (cancel_or_quit)."""
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1210,7 +1210,7 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
     pending tool widget exists but has no .body child yet.
     """
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1282,7 +1282,7 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
 
 @pytest.mark.asyncio
 async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1339,7 +1339,7 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
 
     from unittest.mock import PropertyMock, patch
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1406,7 +1406,7 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
     turn boundary, the response appears exactly once, and usage events are
     applied exactly once (no duplication from the superseded active stream)."""
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1495,7 +1495,7 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
 @pytest.mark.asyncio
 async def test_textual_app_headless_renders_inline_permission_options():
     from textual.widgets import Button
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1591,7 +1591,7 @@ async def test_textual_app_headless_renders_inline_permission_options():
 
 @pytest.mark.asyncio
 async def test_textual_app_confirming_permission_twice_submits_once():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1639,7 +1639,7 @@ async def test_textual_app_confirming_permission_twice_submits_once():
 
 @pytest.mark.asyncio
 async def test_textual_app_starts_next_permission_after_previous_response():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1736,7 +1736,7 @@ async def test_textual_app_starts_next_permission_after_previous_response():
 
 @pytest.mark.asyncio
 async def test_textual_app_cancellation_clears_pending_permission_ui():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1790,7 +1790,7 @@ async def test_textual_app_cancellation_clears_pending_permission_ui():
 
 @pytest.mark.asyncio
 async def test_textual_app_turn_finished_clears_pending_user_input_ui():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -1843,7 +1843,7 @@ async def test_textual_app_turn_finished_clears_pending_user_input_ui():
 @pytest.mark.asyncio
 async def test_textual_app_headless_renders_inline_ask_user_options():
     from textual.widgets import Button
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1934,7 +1934,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
 
 @pytest.mark.asyncio
 async def test_textual_app_records_typed_answer_without_queued_notice():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -1994,7 +1994,7 @@ async def test_textual_app_records_typed_answer_without_queued_notice():
 
 @pytest.mark.asyncio
 async def test_textual_app_replays_tool_permission_sequence_without_swallowing_messages():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         def __init__(self):
@@ -2099,7 +2099,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
 @pytest.mark.asyncio
 async def test_textual_composer_history_and_multiline_resize():
     from textual.events import Key
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -2138,7 +2138,7 @@ async def test_textual_composer_history_and_multiline_resize():
 
 @pytest.mark.asyncio
 async def test_ctrl_c_clears_nonempty_composer_then_exits_when_empty():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -2284,12 +2284,12 @@ async def test_terminal_session_consumes_transport_end_sentinel():
 
 def test_tui_modules_do_not_import_core():
     for path in [
-        Path("XBotv2/xbotv2/tui/client.py"),
-        Path("XBotv2/xbotv2/tui/session_config.py"),
-        Path("XBotv2/xbotv2/tui/terminal.py"),
-        Path("XBotv2/xbotv2/tui/textual_theme.py"),
-        Path("XBotv2/xbotv2/tui/textual_client.py"),
-        Path("XBotv2/xbotv2/tui/textual_widgets.py"),
+        Path("XBotv2/tui/client.py"),
+        Path("XBotv2/tui/session_config.py"),
+        Path("XBotv2/tui/terminal.py"),
+        Path("XBotv2/tui/textual_theme.py"),
+        Path("XBotv2/tui/textual_client.py"),
+        Path("XBotv2/tui/textual_widgets.py"),
     ]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = []
@@ -2299,7 +2299,7 @@ def test_tui_modules_do_not_import_core():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
 
-        assert not any(name.startswith("xbotv2.core") for name in imports)
+        assert not any(name.startswith("core") for name in imports)
 
 
 def _frame(frame_type: str, payload: dict) -> dict:
@@ -2419,7 +2419,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
         "'invalid_request_error'}}"
     )
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class _ErrorSession:
         def __init__(self):
@@ -2567,7 +2567,7 @@ def test_permission_rule_request_is_rendered_without_a_tool_call():
 
 @pytest.mark.asyncio
 async def test_permission_before_tool_event_still_renders_inline_choices():
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         async def connect(self):
@@ -2883,7 +2883,7 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
     })
     assert state.tasks["agent-task-1"].kind == "agent"
 
-    from xbotv2.tui.textual_widgets import tasks_renderable
+    from tui.textual_widgets import tasks_renderable
 
     rendered = tasks_renderable(
         [state.tasks["agent-task-1"]], width=100
@@ -2894,8 +2894,8 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
 @pytest.mark.asyncio
 async def test_textual_task_panel_updates_in_place():
     from textual.widgets import Collapsible, Static
-    from xbotv2.tui.textual_client import XBotTextualApp
-    from xbotv2.tui.textual_widgets import TaskListWidget
+    from tui.textual_client import XBotTextualApp
+    from tui.textual_widgets import TaskListWidget
 
     class FakeSession:
         session_id = "s"
@@ -2982,8 +2982,8 @@ def test_tui_state_prunes_successful_tasks_but_keeps_failures():
 @pytest.mark.asyncio
 async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
     from textual.containers import VerticalScroll
-    from xbotv2.tui.textual_client import XBotTextualApp
-    from xbotv2.tui.textual_widgets import (
+    from tui.textual_client import XBotTextualApp
+    from tui.textual_widgets import (
         SubagentTaskWidget,
         TaskListWidget,
     )
@@ -3029,7 +3029,7 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
 @pytest.mark.asyncio
 async def test_narrow_task_panel_does_not_overlap_status_or_composer():
     from textual.widgets import Collapsible
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     class FakeSession:
         session_id = "s"
@@ -3113,7 +3113,7 @@ class _ReplayFakeSession:
 async def test_replay_window_mounts_only_tail_then_lazy_loads():
     from textual.containers import VerticalScroll
     from textual.containers import VerticalScroll
-    from xbotv2.tui.textual_client import (
+    from tui.textual_client import (
         XBotTextualApp,
         _MAX_MOUNTED_ENTRIES,
         _REPLAY_BATCH,
@@ -3164,7 +3164,7 @@ async def test_replay_window_scrolls_all_the_way_to_the_beginning():
     contiguity (no gaps between batches)."""
 
     from textual.containers import VerticalScroll
-    from xbotv2.tui.textual_client import (
+    from tui.textual_client import (
         XBotTextualApp,
         _MAX_MOUNTED_ENTRIES,
         _REPLAY_WINDOW,

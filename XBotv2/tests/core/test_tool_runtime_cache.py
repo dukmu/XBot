@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.core.builtin_tools.filesystem import (
+from core.builtin_tools.filesystem import (
     filesystem_copy,
     filesystem_find,
     filesystem_list,
@@ -15,22 +15,22 @@ from xbotv2.core.builtin_tools.filesystem import (
     filesystem_search,
     filesystem_write,
 )
-from xbotv2.core.builtin_tools.interaction import ask_user
-from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
+from core.builtin_tools.interaction import ask_user
+from core.engine import Engine
+from core.context import ContextBuilder
+from config.models import RuntimeConfig
 import xcore
-from xbotv2.api.events import EventContext, Events
-from xbotv2.api.runtime import SessionInfo
-from xbotv2.api.messages import Message
-from xbotv2.protocol.models import PermissionRequestData
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.result_cache import make_tool_result_cache_hook
-from xbotv2.tools.runtime import execute_tools
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
+from api.events import EventContext, Events
+from api.runtime import SessionInfo
+from api.messages import Message
+from protocol.models import PermissionRequestData
+from llm.mock import MockLLM
+from tools.permissions import PermissionSystem
+from tools.registry import ToolRegistry
+from tools.result_cache import make_tool_result_cache_hook
+from tools.runtime import execute_tools
+from tools.sandbox import SandboxPolicy
+from api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
 
 
 async def large_output() -> str:

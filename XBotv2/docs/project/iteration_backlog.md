@@ -1,0 +1,253 @@
+# Architecture Iteration Backlog
+
+This backlog tracks the next architecture iterations. It is ordered to reduce
+ambiguity before large implementation changes.
+
+## 1. API Inventory And Behavior Gate
+
+- Keep `api.__all__`, `api_inventory.md`, and public API tests aligned.
+- Add signature/serialization checks when a public type becomes part of plugin
+  examples or built-in plugin templates.
+- Reject new built-in plugin imports from runtime internals.
+
+## 2. C/S Protocol Unification
+
+- HTTP JSON plus SSE `ServerEvent` is now the only active C/S transport model;
+  the parallel JSONL frame model and compatibility event alias were removed.
+- Server and client use the shared `protocol.sse` codec, and fixtures
+  cover every current `ServerEventType`.
+- Extend the current `ServerEvent` envelope into one DTO family for
+  server-to-client events.
+- Message `request_id` now flows through HTTP submission, `Engine.run_turn`,
+  every turn-scoped Hook, and all SSE envelopes. Interaction payload ids remain
+  distinct from the outer turn correlation id.
+- Keep HTTP/SSE as the main transport path until alternate transports share the
+  same event contract.
+- Add producer-driven integration scenarios for tool call, permission, usage,
+  interrupt, and error payloads beyond the complete envelope fixture inventory.
+- Treat agent-initiated permission and user-input requests as first-class C/S
+  capabilities. The server now registers each request before publishing its
+  SSE event, and both response paths share the same coordination invariant.
+- Permission requests, user-input requests, recorded responses, and their two
+  HTTP request bodies now have typed DTOs while retaining the single
+  `ServerEvent` envelope.
+- Error, tool-result, and flat usage events now have typed payload DTOs. HTTP
+  exception handlers share `ErrorResponse` serialization.
+- Every current `ServerEventType` now has a typed payload DTO, and tests require
+  `TYPED_SERVER_EVENT_TYPES` to cover the complete known event inventory.
+- Unexpected engine exceptions now use `engine_error` with
+  `details.exception_type`; keep the documented server-owned code inventory in
+  sync when behavior changes.
+- Started turns now close after engine errors with `error` followed by
+  `turn_finished`. `TerminalSession` consumes the transport-only `end` sentinel,
+  and `TuiState` is the single owner of domain state transitions.
+- Interaction ids are treated as opaque correlation keys; the TUI associates
+  permission acknowledgements with request state instead of parsing id
+  prefixes. The HTTP turn bridge explicitly closes its Engine stream and
+  cancels it when the SSE consumer disconnects.
+- Real-socket tests cover both `ask_user` and permission response round trips,
+  including responses that outlive the transport's ordinary read timeout.
+- Keep live interactions connection-owned. Disconnect destroys pending requests
+  and the current runtime; resume rebuilds only from persisted message history.
+- Persisted message history is restored into subsequent provider requests.
+  Provider-request tests and a real Minimax TUI process restart verify this
+  separately from the deliberately unsupported in-flight interaction recovery.
+
+### Command Discovery And Dispatch
+
+- Keep the server authoritative for command discovery. Session discovery
+  combines built-in and plugin-owned human commands without exposing the Tool
+  registry as a command inventory.
+- Keep client-only commands local: the client may intercept commands such as
+  exit or visual transcript clearing, but it must query all server capabilities
+  instead of maintaining a parallel server-command inventory.
+- Execute only explicit server commands through the command endpoint. Prompt
+  commands expand deterministically before an Agent turn. Ordinary model Tools
+  and MCP Tools are not slash-command entries.
+- Keep Goal free of protocol-specific adapters. `/goal` is a plugin-owned human
+  command; its Agent Tools use the normal Tool guard and result pipeline.
+- Add contract tests proving server-command execution, prompt expansion,
+  exclusion of ordinary Tool/MCP registrations, and client interception of a
+  local command.
+
+## 3. Runtime Event Contract
+
+- Runtime extension points are named events (`api.events.Events`)
+  dispatched on the XCore context: `ctx.serial` for short-circuit events
+  whose first non-`None` result is interpreted by the caller, `ctx.emit` for
+  observer events. The payload is an `EventContext`.
+- Prefer existing `EventContext` fields and public types. Introduce another
+  payload field only for a repeated contract gap, not for one plugin's local
+  convenience.
+- Public immutable `ContextComponent` values back
+  `AFTER_CONTEXT_COMPONENTS_BUILD`; listeners may replace the typed list, and
+  invalid entries fail before provider conversion.
+- Keep caller-level contract tests for message, tool, and permission event
+  families. `BEFORE_TOOLS` exposes parsed `tool_calls` and the originating
+  `agent_response` directly.
+- Persistence events bracket changed-message checkpoints rather than every
+  save attempt. Normal completion no longer emits a duplicate unchanged
+  checkpoint, while tool batches retain immediate durability.
+- Move direct runtime access out of event payloads only after equivalent
+  plugin capabilities exist.
+- Engine turn orchestration delegates message admission, context building,
+  model-request preparation, tool batches, and finish behavior to explicit
+  stage methods. These methods retain stage-specific return contracts and do
+  not introduce a universal event result interpreter.
+
+## 4. Plugin Lifecycle Model
+
+- Setup and runtime registrations now share one ownership record; duplicate
+  tool keys fail before mutation, and unload removes core resources even when a
+  plugin cleanup callback fails.
+- A plugin whose `on_load` fails now receives best-effort `on_unload`, allowing
+  partial external resources to be released before loader-wide rollback.
+- Failures after plugin loading but before bootstrap completes now trigger
+  `unload_all`, including failures from runtime-registering `SESSION_INIT`
+  listeners.
+- Normal session close now attempts close hooks, message persistence, and
+  reverse plugin unload even when an earlier close phase fails.
+- Manifest `config_schema` and configured values now use Draft 2020-12
+  validation before plugin import.
+- `PluginStore` now has immediate atomic persistence, uncached snapshot reads,
+  explicit YAML mapping validation, and documented unload persistence.
+- Runtime/dynamic tool registrations are tracked by the plugin and
+  unregistered in its disposer so unload and rollback remain complete.
+- MCP initialization is idempotent and transactional per server. Optional
+  failures roll back that server; required failures roll back the complete init
+  attempt; session close removes tools and permits a fresh initialization.
+- MCP transports now share a required initialize/initialized handshake. Tool
+  schemas survive registration, call data survives normalization, and `isError`
+  maps to a structured failure. Stdio requests are serialized and response ids
+  are checked.
+- Treat the current MCP integration as tools-only. Adopt a maintained SDK or
+  design a complete Streamable HTTP/session layer before adding resources,
+  prompts, server requests, subscriptions, or HTTP SSE.
+- Skills discovery is idempotent per loaded session and rolls back every dynamic
+  tool from a partial registration attempt.
+- Keep built-in plugins using only the public API.
+
+## 5. Tool System Contract
+
+- Canonical registered names are stored on registry entries and exposed through
+  command discovery.
+- Provider-visible tool names are unique across namespaces, because model tool
+  calls do not carry registry namespaces.
+- Command discovery exposes registered-name metadata without changing existing
+  string selectors.
+- Manifest and runtime registration accept only execution metadata enforced by
+  the dispatcher; Hook declarations accept exactly the current stage inventory.
+- Built-in tools return `ToolResult`; structured data, errors, artifacts, and
+  client events retain their fields through runtime conversion.
+- Typed `ToolResult.data`, `error`, and `artifacts` now survive runtime
+  conversion and appear on `tool_result` events.
+- Large tool results use session-relative `artifacts/` paths through a
+  read-only virtual mount. Keep logical paths independent of backing locations.
+- Unimplemented `execution_mode` and `lock_fields` registration metadata were
+  removed. Define batch scheduling, stable output ordering, Hook concurrency,
+  live-interaction serialization, and lock semantics before adding a parallel
+  API.
+- Keep the core built-in tool set small and dependable.
+- Add a configured maximum number of model/tool rounds per user turn. Repeated
+  invalid tool calls must terminate with a structured error instead of allowing
+  an unbounded provider retry loop. Cover the limit with persistence and final
+  turn-event tests.
+- Maintain a provider-compatibility matrix for tool JSON Schema features.
+  Minimax's Anthropic-compatible endpoint did not reliably preserve arguments
+  with a `oneOf`/`const` Goal schema, so built-ins must not depend on advanced
+  schema keywords until real-provider contract tests pass.
+
+## 6. Built-in Plugin Templates
+
+- `PluginBase` has optional lifecycle defaults, and the built-ins now expose
+  consistent cleanup and diagnostics behavior documented in `plugins.md`.
+- Token Manager reads explicit Hook fields, uses collector methods for its own
+  statistics, and resets plugin-owned memory on unload.
+- Keep Skills as the template for prompt/tool capability plugins.
+- Keep MCP as the template for external tool provider plugins.
+- Keep token manager as the template for policy/observation plugins.
+- Keep each built-in plugin documented as an example of the lifecycle model.
+
+## 7. Built-in Workflow Plugins
+
+Implement these as public-API consumers and reference plugins, in this order:
+
+### Compact
+
+- The initial plugin supports a model-visible request tool and automatic
+  character-threshold invocation through `BEFORE_CONTEXT`.
+- It compacts only before a user-message boundary and preserves recent complete
+  turns, including tool calls, results, and the current request.
+- Engine-owned atomic persistence makes resume reconstruct the same summary and
+  recent tail. Failed auxiliary calls leave the original history intact.
+- Automatic compaction has been verified with a real provider. A shared
+  token-budget trigger remains; do not duplicate provider tokenizers inside
+  the plugin or add another Hook stage.
+
+### Todo List
+
+- The plugin provides one atomic `update_todos` Tool; every call supplies the
+  complete ordered checklist instead of per-item CRUD operations.
+- A single `PluginStore` value makes each changed list one immediate persisted
+  replacement. Resume retains only current active items.
+- Todo calls and results remain on the normal conversation path so the next
+  model call sees the update confirmation. The plugin does not repeatedly
+  inject the active list. Real-provider loop behavior still requires
+  verification.
+
+### Goal
+
+- `/goal` owns human lifecycle control. Agent-facing `create_goal`, `get_goal`,
+  and `update_goal` use structured schemas and the normal Tool runtime.
+- Active, complete, and blocked goals append concise non-persisted context;
+  completion retains its execution summary and explicitly prevents repetition.
+- Todo items remain concrete work tracking. Active Goal continuation uses the
+  runtime-only continuation; ESC pauses it and resume does not restore it. Real-provider tool selection, internal permission baseline,
+  restart recovery, context injection, and terminal retention are verified.
+- Connect an explicitly requested Goal `token_budget` to provider-reported
+  usage. `/goal` must distinguish declared, used, and remaining tokens before
+  any automatic pause or budget-exhaustion behavior is claimed.
+
+Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
+structured tool-result tests, public API boundary tests, and current
+documentation before it becomes a shipped default.
+
+## 8. Documentation As Implementation
+
+- Keep examples runnable against current CLI and protocol behavior.
+- Link each architecture claim to a typed model, test, or concrete file.
+- Remove stale phase-plan claims once their replacement documentation exists.
+- The unused planning-specific `dag_suffix` fragment name was replaced by the
+  domain-neutral `context_suffix`. `PromptFragmentStage` now enumerates all
+  supported values, manifests validate them before setup, and the old name is
+  rejected rather than retained as a permanent alias.
+
+## 9. TUI Semantic Views
+
+- Keep Textual while it satisfies measurable input, rendering, and performance
+  requirements. The HTTP/SSE transport remains the replacement boundary if a
+  second client is evaluated later.
+- Replace log-like presentation incrementally with semantic controls. Reasoning
+  and tool details now collapse while their summary and live status remain
+  visible. Full arguments, results, structured errors, data, and artifacts stay
+  available inside Details. Client-owned `/thinking` and `/details` commands
+  control current and future blocks without entering Agent history.
+- Render assistant Markdown and fenced code consistently during streaming and
+  resume while keeping user, reasoning, and tool payloads literal.
+- Keep the bottom status line driven by open-session metadata and usage events.
+  It now prioritizes run state, queue depth, token usage, current context
+  remaining, workspace, model, and provider, with session identifiers shown
+  only on wide terminals. Plan progress still requires authoritative runtime
+  data.
+- Background shell and subagent tasks expose stable IDs and authoritative
+  lifecycle snapshots through `task_updated`; the TUI updates one collapsible
+  Tasks control in place and distinguishes their `kind` without parsing text.
+- Queued follow-ups now render ordered summaries beside Tasks in one runtime
+  band. Their display lifecycle reuses the existing client request map while
+  acceptance and fold ordering remain owned by the session.
+- Narrow-terminal, long-transcript, semantic-control, and task-panel rendering
+  have headless screenshot or layout coverage. Visual polish remains secondary
+  to interaction behavior.
+- Consider a parallel TypeScript/Ink prototype only after a reproducible
+  Textual limitation or an independent Node client distribution requirement is
+  documented. Do not replace the working client with an unverified rewrite.

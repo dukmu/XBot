@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.api.messages import ImageContent, Message
-from xbotv2.core.bootstrap import bootstrap
-from xbotv2.core.builtin_tools.content import content_read
-from xbotv2.core.builtin_tools.filesystem import read_file
-from xbotv2.llm.anthropic import anthropic_request_messages
-from xbotv2.llm.mock import MockLLM
-from xbotv2.llm.openai import openai_messages
-from xbotv2.api.paths import RuntimePaths
+from api.messages import ImageContent, Message
+from core.bootstrap import bootstrap
+from core.builtin_tools.content import content_read
+from core.builtin_tools.filesystem import read_file
+from llm.anthropic import anthropic_request_messages
+from llm.mock import MockLLM
+from llm.openai import openai_messages
+from api.paths import RuntimePaths
 
 
 PNG_BASE64 = (

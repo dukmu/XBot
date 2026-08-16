@@ -19,22 +19,24 @@
 4. **无兼容层**：不保留旧机制的别名、包装或迁移垫片。
 5. **依赖用插件发现**：树条目按序挂载，服务依赖由条目顺序与 `inject` 表达。
 
-## 2. 目录结构（全插件）
+## 2. 目录结构（全插件，扁平布局）
 
 ```
-XBotv2/xbotv2/
-  app.py                     # 薄启动器：建根 Context → 挂 loader → 载树
+XBotv2/
+  main.py                    # 入口：xbot = main:main（CLI 分发）
+  api/                       # ★ 插件唯一稳定扩展面（public API 契约）
+  core/                      # 核心运行时 + engine 插件（core/plugin.py）
+  tools/                     # ToolRegistry/sandbox/permissions + tools 插件（tools/plugin.py）
+  runtime/                   # runtime 插件（xbot.runtime：paths/session/variables/config/state_store）
+  coretools/                 # coretools 插件（基础工具 + result-cache 监听 + 配置钩子）
+  agent_runtime/             # 子代理工厂插件
   loader/                    # 插件树 loader（cordis.yaml 机制）+ PluginTree
-  plugins/                   # 运行时能力插件（都是 XCore 插件）
-    runtime.py               # xbot.runtime：paths/session/variables/config/state_store
-    tools.py                 # xbot.tools：ToolRegistry/sandbox/permissions/jobs/agents
-                             #   + 工具服务（fiber-effect 清理，caller-tracking）
-    coretools.py             # xbot.coretools：基础工具 + result-cache 监听 + 配置钩子
-    provider.py              # xbot.provider：LLM 客户端（ctx.llm）
-    agent_runtime.py         # 子代理工厂
-    core.py                  # xbot.core：引擎插件（组装 Engine → ctx.engine）
-  api/events.py              # 事件目录（Events 常量）+ EventContext + ToolDecision
-  builtin_plugins/           # goal/todolist/skills/mcp/...（纯 XCore 插件）
+  config/  persistence/  llm/  protocol/  tui/  acp/
+  goal/  todolist/  skills/  mcp/  compact/  agents/  browser/
+    token_manager/  workspace_instructions/   # 内置插件（纯 XCore 插件）
+  data/                      # 运行时数据
+  docs/                      # 文档（原 docsv2/）
+  tests/                     # core/ integration/ bench/ acp/
 ```
 
 删除：`xbotv2/hooks/`（HookManager）、`xbotv2/api/hooks.py`（HookStage/HookContext/

@@ -163,7 +163,7 @@ function openSession() {
     status_slots: { goal: "active" },
     history: [
       { role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-      { role: "assistant", content: "I will inspect the public SDK surface.", tool_calls: [{ id: "call-read", name: "filesystem_read", args: { path: "docsv2/sdk.md" } }], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+      { role: "assistant", content: "I will inspect the public SDK surface.", tool_calls: [{ id: "call-read", name: "filesystem_read", args: { path: "docs/sdk.md" } }], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
       { role: "tool", content: "Protocol v3 is the source contract.", tool_calls: [], tool_call_id: "call-read", status: "success", data: null, error: null, artifacts: [] },
     ],
   };

@@ -15,8 +15,8 @@ import asyncio
 
 import pytest
 
-from xbotv2.tui.textual_client import XBotTextualApp
-from xbotv2.tui.transport import Transport
+from tui.textual_client import XBotTextualApp
+from tui.transport import Transport
 
 
 # ----------------------------------------------------------------------

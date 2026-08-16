@@ -10,16 +10,16 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.api import AgentDefinition, JobKind, JobRegistry, RuntimePaths
-from xbotv2.api.messages import ModelChunk
-from xbotv2.core.agents import AgentRegistry, EngineAgentRuntime
-from xbotv2.core.bootstrap import bootstrap
-from xbotv2.core.session import SessionRuntime
-from xbotv2.llm.mock import MockLLM
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.tools.permissions import PermissionIntersection, PermissionSystem
+from api import AgentDefinition, JobKind, JobRegistry, RuntimePaths
+from api.messages import ModelChunk
+from core.agents import AgentRegistry, EngineAgentRuntime
+from core.bootstrap import bootstrap
+from core.session import SessionRuntime
+from llm.mock import MockLLM
+from persistence.store import CoreStateStore
+from tools.permissions import PermissionIntersection, PermissionSystem
 
-from builtin_plugins.agents.plugin import SubagentRunner
+from agents.plugin import SubagentRunner
 
 
 class RoutingLLM(MockLLM):

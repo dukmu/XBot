@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.core.builtin_tools import content as content_module
-from xbotv2.core.builtin_tools.content import content_read
-from xbotv2.core.builtin_tools.filesystem import (
+from core.builtin_tools import content as content_module
+from core.builtin_tools.content import content_read
+from core.builtin_tools.filesystem import (
     copy_path,
     delete_path,
     edit_file,
@@ -24,7 +24,7 @@ from xbotv2.core.builtin_tools.filesystem import (
     filesystem_write,
     write_file,
 )
-from xbotv2.tools.sandbox import SandboxPolicy
+from tools.sandbox import SandboxPolicy
 
 
 class TestContentRead:

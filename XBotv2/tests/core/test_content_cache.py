@@ -5,21 +5,21 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.api.messages import Message, ReasoningPart
-from xbotv2.api.tools import ToolCall
-from xbotv2.core.content_cache import (
+from api.messages import Message, ReasoningPart
+from api.tools import ToolCall
+from core.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
     bound_context_messages,
 )
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.core.engine import Engine
+from core.context import ContextBuilder
+from config.models import RuntimeConfig
+from core.engine import Engine
 import xcore
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from llm.mock import MockLLM
+from tools.permissions import PermissionSystem
+from tools.registry import ToolRegistry
+from tools.sandbox import SandboxPolicy
 
 
 def test_externalizes_provider_copy_without_mutating_history(state_store):

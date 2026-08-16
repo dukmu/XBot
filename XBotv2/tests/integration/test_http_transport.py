@@ -12,7 +12,7 @@ The tests cover:
 - ESC interrupt: POST /sessions/{sid}/interrupt mid-turn yields
   ``turn_cancelled`` on the SSE stream (v1.2)
 
-See ``docsv2/protocol/tui_opencode_requirements.md`` §10.5 + Phase E DoD.
+See ``docs/protocol/tui_opencode_requirements.md`` §10.5 + Phase E DoD.
 """
 
 from __future__ import annotations
@@ -29,36 +29,36 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-import xbotv2
+import client as client_module
 import yaml
-from xbotv2.api.jobs import JobKind
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.events import Events
-from xbotv2.api.messages import Message
-from xbotv2.api.tools import Tool
-from xbotv2.client import XBotClient, XBotClientError
-from xbotv2.core.builtin_tools.shell import ShellRunner
-from xbotv2.core.internal_messages import structure_tool_message
+from api.jobs import JobKind
+from api.paths import RuntimePaths
+from api.events import Events
+from api.messages import Message
+from api.tools import Tool
+from client import XBotClient, XBotClientError
+from core.builtin_tools.shell import ShellRunner
+from core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
-from xbotv2.llm.mock import MockLLM
-from xbotv2.protocol.version import PROTOCOL_VERSION
-from xbotv2.protocol.http_server import (
+from llm.mock import MockLLM
+from protocol.version import PROTOCOL_VERSION
+from protocol.http_server import (
     _format_sse,
     create_app,
     set_llm_override,
 )
-from xbotv2.protocol.session_manager import ThreadNotActive
-from xbotv2.core.session import (
+from protocol.session_manager import ThreadNotActive
+from core.session import (
     PendingFold,
     SessionRuntime,
     _live_sink,
     run_turn_stream,
 )
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
-from xbotv2.tui.terminal import TerminalSession
-from xbotv2.tui.transport_http import HttpTransport
+from tools.permissions import PermissionSystem
+from protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
+from tui.terminal import TerminalSession
+from tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -79,7 +79,7 @@ async def _start_background_shell(engine: Any, command: str) -> str:
 
 @pytest.mark.asyncio
 async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
-    assert xbotv2.XBotClient is XBotClient
+    assert client_module.XBotClient is XBotClient
     set_llm_override(http_app, MockLLM(responses=[{"content": "sdk answer"}]))
     async with XBotClient(
         "http://test",
@@ -1209,7 +1209,7 @@ async def test_http_policy_api_updates_live_session_policy(
 
 @pytest.mark.asyncio
 async def test_http_permission_response_preserves_scope() -> None:
-    from xbotv2.protocol.http_server import _resolve_interaction
+    from protocol.http_server import _resolve_interaction
 
     request_id = "permission:scope"
     captured: dict[str, str] = {}
@@ -1217,7 +1217,7 @@ async def test_http_permission_response_preserves_scope() -> None:
     class _WaiterSpy:
         def answer(self, request_id: str, *, decision: str = "", scope: str = "once"):
             captured.update({"request_id": request_id, "decision": decision, "scope": scope})
-            from xbotv2.core.interactions import InteractionResult
+            from core.interactions import InteractionResult
 
             return InteractionResult(
                 request_id=request_id,
@@ -1287,7 +1287,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 ) -> None:
     from types import SimpleNamespace
 
-    from xbotv2.core.interactions import InteractionWaiter
+    from core.interactions import InteractionWaiter
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
     waiter = (
@@ -1334,7 +1334,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from xbotv2.protocol.http_server import _resolve_interaction
+    from protocol.http_server import _resolve_interaction
 
     class _Engine:
         permission_waiter = object()
@@ -1506,7 +1506,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from xbotv2.api import Events
+    from api import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1539,7 +1539,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from xbotv2.api import Events
+    from api import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1965,7 +1965,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         return "task output"
 
     monkeypatch.setattr(
-        "xbotv2.core.builtin_tools.shell.run_shell_command", run
+        "core.builtin_tools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "task acknowledged"}])
     set_llm_override(http_app, llm)
@@ -2032,7 +2032,7 @@ async def test_multiple_completions_aggregate_into_one_injection(
         return "task output"
 
     monkeypatch.setattr(
-        "xbotv2.core.builtin_tools.shell.run_shell_command", run
+        "core.builtin_tools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "ok"}])
     set_llm_override(http_app, llm)
@@ -2082,7 +2082,7 @@ async def test_typed_task_stop_is_idempotent(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    monkeypatch.setattr("core.builtin_tools.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
@@ -2931,8 +2931,8 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
     second queued message never drained and the transcript did not update).
     """
 
-    from xbotv2.tui.textual_client import XBotTextualApp
-    from xbotv2.tools.permissions import PermissionSystem
+    from tui.textual_client import XBotTextualApp
+    from tools.permissions import PermissionSystem
 
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
@@ -3015,7 +3015,7 @@ async def test_tui_input_submitted_while_busy_is_retried_after_turn(
     boundary) is rejected at turn end and the TUI retries it as its own turn,
     so it still reaches the transcript."""
 
-    from xbotv2.tui.textual_client import XBotTextualApp
+    from tui.textual_client import XBotTextualApp
 
     release_a = asyncio.Event()
     llm = _GatedMockLLM(release_a, responses=[

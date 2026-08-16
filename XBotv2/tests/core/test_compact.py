@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from builtin_plugins.compact.plugin import (
+from compact.plugin import (
     CompactPlugin,
     _compact_prefix_end,
     _history_chars,
 )
-from xbotv2.api import (
+from api import (
     EventContext,
     Events,
     Message,
@@ -20,23 +20,23 @@ from xbotv2.api import (
     ToolCall,
     estimate_request_tokens,
 )
-from xbotv2.api.tokens import (
+from api.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
 )
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.core.engine import Engine
+from core.context import ContextBuilder
+from config.models import RuntimeConfig
+from core.engine import Engine
 import xcore
 from plugin_harness import mount_plugin_standalone
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from llm.mock import MockLLM
+from tools.permissions import PermissionSystem
+from tools.registry import ToolRegistry
+from tools.sandbox import SandboxPolicy
 
 
 def make_plugin(config=None) -> CompactPlugin:
-    from builtin_plugins.compact.plugin import CompactPlugin
+    from compact.plugin import CompactPlugin
 
     return mount_plugin_standalone(CompactPlugin(), config)
 

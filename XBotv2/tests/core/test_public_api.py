@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import xbotv2.api as public_api
+import api as public_api
 
-from xbotv2.api import (
+from api import (
     Command,
     CommandResult,
     ContextComponent,
@@ -28,9 +28,9 @@ from xbotv2.api import (
     ToolResult,
     Tool,
 )
-from xbotv2.protocol.version import PROTOCOL_VERSION
-from xbotv2.protocol.http_server import create_app
-from xbotv2.protocol.models import (
+from protocol.version import PROTOCOL_VERSION
+from protocol.http_server import create_app
+from protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     HelloRequest,
     MessageRequest,
@@ -40,7 +40,7 @@ from xbotv2.protocol.models import (
 
 
 def test_public_api_inventory_is_explicit():
-    inventory = Path(__file__).parents[2] / "docsv2" / "api" / "api_inventory.md"
+    inventory = Path(__file__).parents[2] / "docs" / "api" / "api_inventory.md"
     documented = [
         match.group(1)
         for line in inventory.read_text(encoding="utf-8").splitlines()

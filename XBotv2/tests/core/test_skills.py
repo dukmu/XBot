@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from xbotv2.config.models import RuntimeConfig
+from config.models import RuntimeConfig
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ Invalid permission content.
 
 class TestSkillRegistry:
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -107,7 +107,7 @@ class TestSkillRegistry:
         assert "invalid-permissions" not in names
 
     def test_skill_parses_frontmatter(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -124,7 +124,7 @@ class TestSkillRegistry:
         assert manual.disable_model_invocation is True
 
     def test_skill_found_via_agents_path(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -133,7 +133,7 @@ class TestSkillRegistry:
         assert "agents path" in skill.content.lower()
 
     def test_load_skill_returns_none_for_unknown(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -141,7 +141,7 @@ class TestSkillRegistry:
 
     def test_skill_registry_respects_name_directory_match(self, tmp_path):
         """Skill name must match the containing directory name."""
-        from builtin_plugins.skills.registry import SkillRegistry
+        from skills.registry import SkillRegistry
 
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -163,7 +163,7 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_unload_resets_runtime_state(self, skill_workspace, state_store):
-        from builtin_plugins.skills.plugin import SkillsPlugin
+        from skills.plugin import SkillsPlugin
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -182,8 +182,8 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import EventContext
+        from skills.plugin import SkillsPlugin
+        from api import EventContext
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -227,7 +227,7 @@ Body
         self,
         skill_workspace,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
+        from skills.plugin import SkillsPlugin
         
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
@@ -257,14 +257,14 @@ Body
         state_store,
         temp_workspace,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import EventContext
-        from xbotv2.core.context import ContextBuilder
-        from xbotv2.core.engine import Engine
-        from xbotv2.llm.mock import MockLLM
-        from xbotv2.tools.permissions import PermissionSystem
-        from xbotv2.tools.registry import ToolRegistry
-        from xbotv2.tools.sandbox import SandboxPolicy
+        from skills.plugin import SkillsPlugin
+        from api import EventContext
+        from core.context import ContextBuilder
+        from core.engine import Engine
+        from llm.mock import MockLLM
+        from tools.permissions import PermissionSystem
+        from tools.registry import ToolRegistry
+        from tools.sandbox import SandboxPolicy
         from plugin_harness import mount_plugin
         from xcore import Context
 
@@ -307,8 +307,8 @@ Body
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import Tool
+        from skills.plugin import SkillsPlugin
+        from api import Tool
 
         plugin = SkillsPlugin()
         plugin._model_skill_names = {"long-skill"}
@@ -334,8 +334,8 @@ Body
 
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import (
+        from skills.plugin import SkillsPlugin
+        from api import (
             EventContext,
             ToolAction,
             ToolCall,
@@ -365,14 +365,14 @@ Body
         state_store,
         temp_workspace,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import Events, Tool
-        from xbotv2.core.context import ContextBuilder
-        from xbotv2.core.engine import Engine
-        from xbotv2.llm.mock import MockLLM
-        from xbotv2.tools.permissions import PermissionSystem
-        from xbotv2.tools.registry import ToolRegistry
-        from xbotv2.tools.sandbox import SandboxPolicy
+        from skills.plugin import SkillsPlugin
+        from api import Events, Tool
+        from core.context import ContextBuilder
+        from core.engine import Engine
+        from llm.mock import MockLLM
+        from tools.permissions import PermissionSystem
+        from tools.registry import ToolRegistry
+        from tools.sandbox import SandboxPolicy
         from xcore import Context
 
         invoked = []
@@ -448,8 +448,8 @@ Body
     async def test_plugin_session_init_rolls_back_partial_registration(
         self, skill_workspace, state_store
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import EventContext, Tool
+        from skills.plugin import SkillsPlugin
+        from api import EventContext, Tool
         from plugin_harness import mount_plugin
 
         def existing_tool() -> str:
@@ -485,7 +485,7 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_expands_command(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "hello !`echo world`", sandbox=self.FakeSandbox()
@@ -494,14 +494,14 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_no_backticks_unchanged(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from skills.skill_tool import _preprocess
 
         result = await _preprocess("hello echo world")
         assert result == "hello echo world"
 
     @pytest.mark.asyncio
     async def test_shell_injection_multiple_commands(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "a !`echo X` and !`echo Y` end", sandbox=self.FakeSandbox()
@@ -512,15 +512,15 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_without_sandbox_does_not_execute(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from skills.skill_tool import _preprocess
 
         result = await _preprocess("hello !`echo unsafe`")
         assert result == "hello [shell injection unavailable: enabled sandbox required]"
 
     @pytest.mark.asyncio
     async def test_load_skill_returns_content(self):
-        from builtin_plugins.skills.registry import SkillRegistry
-        from builtin_plugins.skills.skill_tool import load_skill
+        from skills.registry import SkillRegistry
+        from skills.skill_tool import load_skill
 
         import tempfile
         ws = Path(tempfile.mkdtemp())
@@ -543,7 +543,7 @@ Demo content
 
 class TestSkillPermissionScope:
     def test_allowed_tools_match(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell(git *)"])
@@ -552,7 +552,7 @@ class TestSkillPermissionScope:
         assert scope.check("read_file", {"path": "README.md"}) is None
 
     def test_disallowed_overrides_allowed(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"], disallowed=["shell(git push *)"])
@@ -560,7 +560,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_disallowed_tools_do_not_create_an_allowlist(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(disallowed=["shell(git push *)"])
@@ -568,7 +568,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_clear_resets(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"])
@@ -577,7 +577,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell") is None
 
     def test_invalid_update_does_not_leave_partial_rules(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
 

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.api.plugins import PluginStore
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.api.paths import RuntimePaths
+from api.plugins import PluginStore
+from persistence.store import CoreStateStore
+from api.paths import RuntimePaths
 from plugin_harness import mount_ctx
 
 

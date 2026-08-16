@@ -1,0 +1,214 @@
+# XBotv2 Core Runtime
+
+## Engine (`core/engine.py`)
+
+ReAct loop: user message → context → LLM → tools → repeat.
+Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.
+
+`_run_turn_impl()` coordinates explicit stage methods for message admission,
+context construction, model-request preparation, streamed response handling,
+tool batches, and turn finish. Stage-specific methods retain their own event
+return rules; internal completion records are not protocol events.
+
+### Turn loop, fold, and inbox sequence
+
+```mermaid
+sequenceDiagram
+    participant Eng as _run_turn_impl
+    participant Ctx as _build_turn_context
+    participant LLM
+    participant Tools as _run_tool_batch
+    participant Fold as pending_fold (session)
+    participant Inbox as AgentInbox
+    participant Msg as engine.messages
+
+    Eng->>Ctx: build context
+    Ctx->>Inbox: drain all pending runtime notifications
+    Inbox-->>Ctx: <runtime_event> appended to messages
+    Ctx-->>LLM: model context
+    LLM-->>Eng: response
+
+    alt response has tool_calls
+        Eng->>Tools: execute tool batch (input_window=True)
+        Note over Fold: accepted inputs queue here while tools run
+        Tools-->>Eng: tool results (input_window=False)
+        Eng->>Fold: _accept_pending_fold() drain ALL pending
+        Fold-->>Eng: items (message events already published to session_events)
+        Eng->>Msg: fuse each as user message, save
+        Eng->>Eng: continue loop (fold_handoff routed to last stream)
+    else response complete, no tools
+        Eng->>Fold: fold pending at turn end
+        alt pending non-empty
+            Eng->>Msg: fuse, save
+            Eng->>Eng: continue loop to answer the folded input
+        else empty
+            Eng->>Eng: finish turn
+        end
+    end
+```
+
+
+### Streaming
+
+Provider `stream=True` yields per-token `ModelChunk` objects.
+Engine emits `assistant_message_delta` events for each content delta and
+`tool_call_delta` for partial tool calls. Final response aggregated into
+`ModelResponse` and emitted as an `assistant_message` event.
+
+Timer-based TUI rendering (`_stream_timer` at 50ms intervals) ensures
+per-token overhead is near-zero.
+
+### Reasoning / Thinking
+
+Provider adapters normalize reasoning into `ReasoningPart` values and Engine
+emits it through the `reasoning` field of `assistant_message_delta`. OpenAI
+Chat Completions requests do not receive non-standard reasoning fields.
+Anthropic thinking and redacted-thinking blocks retain the protocol metadata
+needed for exact replay; signed reasoning is never rewritten by context
+externalization.
+
+### Runtime events
+
+Named events (`api.events.Events`) cover the existing lifecycle: session
+(`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
+(`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
+(`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building
+(`BEFORE_CONTEXT`/`BEFORE_CONTEXT_BUILD`/`AFTER_CONTEXT`/`PRE_COMPACT`/
+`POST_COMPACT`), model (`BEFORE_MODEL_REQUEST`/`AFTER_MODEL_RESPONSE`), and
+tools (`BEFORE_TOOLS`/`AFTER_TOOLS`/`BEFORE_TOOL_CALL`/`AFTER_TOOL_CALL`/
+`PERMISSION_REQUEST`/`TOOL_CALL_FAILURE`).
+
+Short-circuit events are dispatched with `ctx.serial` and their first
+non-`None` result is interpreted by the caller (a documented dictionary, or a
+`ToolDecision` at `BEFORE_TOOL_CALL`). Observer events are dispatched with
+`ctx.emit`; listeners must not return values. Failures in a short-circuit
+listener propagate immediately; observer failures propagate out of `emit`.
+
+### Compaction
+
+`_handle_compaction()` accepts manual rewrites from `BEFORE_CONTEXT` and
+provider-context-aware automatic rewrites from `BEFORE_MODEL_REQUEST`, then runs
+`PRE_COMPACT` → message replacement → `POST_COMPACT` → persistence. Automatic
+replacement rebuilds the final context before any provider request.
+
+## Tools
+
+### Tool (`api/tools.py`)
+
+```python
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    function: Callable
+    parameters: dict          # JSON Schema
+```
+
+`from_function()` extracts docstrings and signatures. Supports async functions
+via `ainvoke()`. Keyword-only parameters with defaults (like `sandbox=None`)
+are injected at invocation time.
+
+### ToolRegistry (`tools/registry.py`)
+
+Identity is the canonical registered name. Built-in core keys are bare (for
+example `shell`); non-core examples include `plugin:skills:skill`,
+`skills:global:find-skills`, and `mcp:github:search`.
+
+`restrict()` supports canonical keys, namespace selectors such as
+`skills:*` and `mcp:*`, and bare display-name fallbacks.
+
+`get()` matches by both registry key and display name (fallback).
+
+### Sandbox (`tools/sandbox.py`, `tools/sandbox_bwrap.py`)
+
+`BubblewrapBackend` provides process isolation via `bwrap`.
+`SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
+`write_file`, `list_dir`. Tools call these directly via `sandbox` kwarg
+injection. Bwrap exposes the complete filesystem read-only, then overlays the
+workspace, `/tmp`, and configured writable resources. Filesystem Tools apply
+the separate path permission policy before entering that sandbox.
+
+### Permissions (`tools/permissions.py`)
+
+Tri-state: deny → allow → ask → default. Regex pattern matching on
+tool names and parameters. `BEFORE_TOOL_CALL` may reject or transform a call;
+the permission system then checks the final tool name and arguments. Continuing
+from the hook does not bypass core permission policy.
+
+## Persistence
+
+```
+data/sessions/<sid>/threads/<thread-id>/state/
+├── messages.jsonl          # append-only messages and history operations
+├── usage.yaml              # provider usage for this thread
+├── plugin_states/          # per-plugin YAML files for this thread
+└── artifacts/              # cached large tool outputs and provider context
+```
+
+`CoreStateStore` (`persistence/store.py`):
+- `sync_messages()`: append normal message extensions
+- `append_checkpoint()`: append a Compact or explicit replacement baseline
+- `append_undo()` / `append_clear()`: append replayable stack operations
+- `read_messages()`: replay the latest checkpoint, later messages, Undo, and Clear
+- `has_existing_session()`: session resume detection
+- `_max_msg_id` cached to avoid O(n) scan
+
+Old message-only files remain readable. No operation removes earlier JSONL
+records; Compact replay starts at the last checkpoint for bounded reconstruction.
+There is no separate `events.jsonl` or `state.yaml`.
+
+`SessionRuntime` (`core/session.py`) owns live-only turn, Mailbox, interaction,
+and event-stream state for one thread. Engine owns the task managers registered
+in its Tool registry and closes them once after the Runtime has stopped active
+delivery. The Runtime is shared by HTTP and once mode, while resume still
+reconstructs only persisted Engine and plugin state. Mailbox queues and pending
+interaction waiters are never replayed. Started deliveries remain journal audit
+records separate from reconstructed provider Messages.
+
+## Context Builder (`core/context.py`)
+
+Assembly order:
+```
+[core instructions]
+[runtime environment and enforced sandbox facts]
+[configured developer instructions, if any]
+[active Agent identity and instructions]
+[source-tagged plugin/workspace fragments]
+[memory, if any]
+[runtime state, if any]
+[message history]
+```
+
+Final model messages contain one leading `<xbot_context>` system message,
+followed by non-system conversation history. Fragment stage names remain
+compatible ordering zones and do not describe wire positions or authority.
+Every synthetic section escapes its content and source metadata. The default
+prompt contains no clock or turn counter, so repeated model calls retain a
+deterministic provider prefix. Slash Skill expansion and runtime notifications
+use separate structured inputs; delivered runtime inputs persist with explicit
+non-human metadata. Runtime Tool results are stored as
+`<tool_result>` content under their standard Tool role; both cache paths use
+`<cached_content>` with relative session paths. `_sanitize_history` removes
+orphaned tool messages before provider conversion. See
+[Prompt assembly](prompts.md).
+
+## LLM Providers (`llm/`)
+
+`BaseProvider` defines shared model configuration, Tool binding, and the
+normalized stream contract. `OpenAICompatibleProvider` and
+`AnthropicProvider` each own native message conversion, Tool schema and call
+assembly, reasoning replay data, and per-request usage normalization.
+`llm/client.py` only selects and constructs the configured Provider.
+
+Provider conversion preserves only protocol data needed by ToolResult
+continuation. Anthropic thinking signatures and redacted-thinking blocks are
+replayed unchanged. OpenAI-compatible reasoning output is retained for display
+but is not added to subsequent Chat Completions requests.
+
+## Startup (`core/bootstrap.py`)
+
+Order: config → state store → hooks → tools → sandbox → permissions →
+plugins → LLM → ON_SESSION_INIT → restrict → engine.
+
+`restrict()` runs AFTER `ON_SESSION_INIT` so plugin-discovered tools
+are included in the enabled set.

@@ -3,15 +3,15 @@
 import pytest
 
 import xcore
-from xbotv2.api.events import EventContext, Events
-from xbotv2.api.runtime import SessionInfo
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.core.context import ContextBuilder
-from xbotv2.llm.mock import MockLLM
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.api.paths import RuntimePaths
+from api.events import EventContext, Events
+from api.runtime import SessionInfo
+from tools.registry import ToolRegistry
+from tools.permissions import PermissionSystem
+from tools.sandbox import SandboxPolicy
+from core.context import ContextBuilder
+from llm.mock import MockLLM
+from persistence.store import CoreStateStore
+from api.paths import RuntimePaths
 
 
 @pytest.fixture

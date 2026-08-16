@@ -8,18 +8,18 @@ import xml.etree.ElementTree as ET
 import pytest
 import yaml
 
-from builtin_plugins.goal.plugin import GoalPlugin
-from xbotv2.api import ContextComponent, EventContext, Events
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.engine import Engine
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.llm.mock import MockLLM
-from xbotv2.core.inbox import InboxMessage
-from xbotv2.persistence.store import CoreStateStore
+from goal.plugin import GoalPlugin
+from api import ContextComponent, EventContext, Events
+from core.context import ContextBuilder
+from core.engine import Engine
+from config.models import RuntimeConfig
+from llm.mock import MockLLM
+from core.inbox import InboxMessage
+from persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from tools.permissions import PermissionSystem
+from tools.registry import ToolRegistry
+from tools.sandbox import SandboxPolicy
 
 
 def _mount(plugin, state_store):
@@ -51,7 +51,7 @@ class _EntryOptions:
 
 
 def make_plugin(state_store) -> GoalPlugin:
-    from builtin_plugins.goal.plugin import GoalPlugin
+    from goal.plugin import GoalPlugin
 
     return _mount(GoalPlugin(), state_store)
 
@@ -336,15 +336,15 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
     (plugins_root / "goal").symlink_to(
-        Path(__file__).parents[2] / "builtin_plugins" / "goal",
+        Path(__file__).parents[2] / "goal",
         target_is_directory=True,
     )
-    from xbotv2.loader import Loader, PluginTree
+    from loader import Loader, PluginTree
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry
     loader = Loader(ctx, tree=PluginTree.from_dict([
-        {"id": "goal", "name": "builtin_plugins.goal"},
+        {"id": "goal", "name": "goal"},
     ]))
 
     await loader.load()

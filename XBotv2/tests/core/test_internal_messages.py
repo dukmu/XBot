@@ -2,13 +2,13 @@
 
 import xml.etree.ElementTree as ET
 
-from xbotv2.api.messages import Message
-from xbotv2.api.prompts import (
+from api.messages import Message
+from api.prompts import (
     CACHED_CONTENT_KEY,
     cached_content_prompt,
     tool_result_display_content,
 )
-from xbotv2.core.internal_messages import structure_tool_message
+from core.internal_messages import structure_tool_message
 
 
 def test_tool_result_keeps_content_and_data_separate():

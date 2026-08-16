@@ -19,12 +19,12 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from xbotv2.acp.agent import XBotACPAgent
-from xbotv2.acp.events import ACPEventMapper, replay_history
-from xbotv2.api.messages import Message
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.tools import ToolCall
-from xbotv2.llm.mock import MockLLM
+from acp.xbot_agent import XBotACPAgent
+from acp.events import ACPEventMapper, replay_history
+from api.messages import Message
+from api.paths import RuntimePaths
+from api.tools import ToolCall
+from llm.mock import MockLLM
 
 
 class FakeConnection:

@@ -8,21 +8,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from xbotv2.tools.permissions import (
+from tools.permissions import (
     PermissionIntersection,
     PermissionSystem,
 )
-from xbotv2.api import ToolCall
-from xbotv2.config.policy import (
+from api import ToolCall
+from config.policy import (
     _permission_rule_for_tool_call,
     persist_permission_decision,
 )
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.variables import RuntimeVariables
-from xbotv2.core.builtin_tools.filesystem import FILESYSTEM_TOOLS
-from xbotv2.core.operations import update_session_policy
-from xbotv2.tools.filesystem_ops import PATH_ACCESS, TOOL_OPERATIONS
-from xbotv2.tools.sandbox import SandboxPolicy
+from api.paths import RuntimePaths
+from api.variables import RuntimeVariables
+from core.builtin_tools.filesystem import FILESYSTEM_TOOLS
+from core.operations import update_session_policy
+from tools.filesystem_ops import PATH_ACCESS, TOOL_OPERATIONS
+from tools.sandbox import SandboxPolicy
 
 
 class TestPermissionSystemBasics:

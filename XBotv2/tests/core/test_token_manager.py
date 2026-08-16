@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from builtin_plugins.token_manager.plugin import TokenManagerPlugin
+from token_manager.plugin import TokenManagerPlugin
 
-from xbotv2.api import (
+from api import (
     EventContext,
     Events,
     Message,
@@ -15,11 +15,11 @@ from xbotv2.api import (
     context_token_limit,
     estimate_request_tokens,
 )
-from xbotv2.api.tokens import REQUEST_ESTIMATE_KEY
+from api.tokens import REQUEST_ESTIMATE_KEY
 
 
 def make_plugin() -> TokenManagerPlugin:
-    from builtin_plugins.token_manager.plugin import TokenManagerPlugin
+    from token_manager.plugin import TokenManagerPlugin
 
     return TokenManagerPlugin()
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from xbotv2 import web_server
+import web_server
 
 
 def _static_root(tmp_path: Path) -> Path:

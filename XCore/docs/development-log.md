@@ -133,14 +133,14 @@
   - 删除 `xbotv2/hooks/`（HookManager）、`xbotv2/api/hooks.py`（HookStage/
     HookContext/HookDecision）、`xbotv2/plugin/`（bridge.py/loader.py）、
     `components/`（并入 `plugins/`）、各 `plugin.yaml`。
-  - 新增 `xbotv2/api/events.py`：`Events` 事件目录（session/init、turn/start、
+  - 新增 `api/events.py`：`Events` 事件目录（session/init、turn/start、
     before/model-request、before/tool-call …）、`SHORT_CIRCUIT_EVENTS`、
     `EventContext`（事件载荷）、`ToolDecision/ToolAction`。
   - 引擎改为事件驱动：`Engine(plugin_ctx=...)`，`_dispatch` 用 `ctx.serial`
     （短路事件）/ `ctx.emit`（观察事件）；`tools/runtime.py` 在插件上下文上
     派发工具/权限事件；`config/models.py` 的 HookConfig.stage 变为任意事件名。
   - 四个服务类（Tools/Commands/Prompts/Agents）+ caller-tracking 移入
-    `plugins/tools.py`；`loader/` 为 cordis.yaml 式插件树 loader（含
+    `tools/plugin.py`；`loader/` 为 cordis.yaml 式插件树 loader（含
     reload/status_slots，挂载时克隆模块级插件对象以隔离状态）。
   - 9 个内置插件全部 `ctx.on(Events.X, ...)`；skills/MCP 动态工具自管理并
     `ctx.dispose` 清理（无 plugin_runtime）。

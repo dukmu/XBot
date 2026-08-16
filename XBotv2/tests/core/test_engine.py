@@ -5,21 +5,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
-from xbotv2.core.builtin_tools.interaction import request_permission
-from xbotv2.config.models import RuntimeConfig
+from core.engine import Engine
+from core.context import ContextBuilder
+from core.builtin_tools.shell import SHELL_TOOLS
+from core.builtin_tools.interaction import request_permission
+from config.models import RuntimeConfig
 import xcore
-from xbotv2.api.events import Events
-from xbotv2.llm.mock import MockLLM
-from xbotv2.api import ContextComponent
-from xbotv2.api.messages import Message, ModelResponse
-from xbotv2.llm.base import BaseProvider
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import (
+from api.events import Events
+from llm.mock import MockLLM
+from api import ContextComponent
+from api.messages import Message, ModelResponse
+from llm.base import BaseProvider
+from tools.registry import ToolRegistry
+from tools.permissions import PermissionSystem
+from tools.sandbox import SandboxPolicy
+from api.tools import (
     ArtifactRef,
     ClientEvent,
     Tool,
@@ -1047,7 +1047,7 @@ class TestEngineHooks:
 
         llm = FlakyLLM()
         sleep = AsyncMock()
-        monkeypatch.setattr("xbotv2.llm.base.asyncio.sleep", sleep)
+        monkeypatch.setattr("llm.base.asyncio.sleep", sleep)
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test")]

@@ -1,0 +1,156 @@
+"""Supported extension API for XBotv2.
+
+Applications and plugins should import from this package. Modules outside this
+package are implementation details and may change without a compatibility shim.
+"""
+
+from api.context import ContextComponent, PromptFragmentStage
+from api.jobs import (
+    CancelResult,
+    Job,
+    JobContext,
+    JobError,
+    JobId,
+    JobKind,
+    JobNotFound,
+    JobRegistry,
+    JobRegistryClosed,
+    JobResult,
+    JobRunner,
+    JobStatus,
+    JobSummary,
+    OutputChunk,
+    OutputStore,
+    StreamOutputStore,
+    TERMINAL_STATES,
+    TextOutputStore,
+    WaitResult,
+)
+from api.agents import (
+    AgentDefinition,
+    AgentMode,
+    AgentRuntime,
+    AgentSession,
+    AgentSessionResult,
+    ChildEngineFactory,
+    SubagentAgentError,
+    SubagentTurnError,
+)
+from api.commands import Command, CommandResult
+from api.plugins import (
+    PluginStore,
+    RuntimePluginContext,
+    ToolRegistrationOptions,
+)
+from api.paths import RuntimePaths, SessionPaths, ThreadPaths
+from api.variables import RuntimeVariables
+from api.tools import (
+    ArtifactRef,
+    ClientEvent,
+    JsonValue,
+    Tool,
+    ToolCall,
+    ToolCallDelta,
+    ToolError,
+    ToolResult,
+)
+from api.runtime import SessionInfo
+from api.events import (
+    EventContext,
+    Events,
+    SHORT_CIRCUIT_EVENTS,
+    ToolAction,
+    ToolDecision,
+)
+from api.messages import (
+    ContentPart,
+    ImageContent,
+    ImagePart,
+    Message,
+    ModelChunk,
+    ModelResponse,
+    ReasoningPart,
+    TextPart,
+    ToolCallPart,
+)
+from api.providers import InputModality, ProviderCapabilities
+from api.prompts import MESSAGE_FORMAT_KEY, prompt_container, prompt_element
+from api.tokens import (
+    calibrated_context_tokens,
+    context_token_limit,
+    estimate_messages_tokens,
+    estimate_request_tokens,
+)
+
+__all__ = [
+    "ArtifactRef",
+    "AgentDefinition",
+    "AgentMode",
+    "AgentRuntime",
+    "AgentSession",
+    "AgentSessionResult",
+    "CancelResult",
+    "ChildEngineFactory",
+    "ClientEvent",
+    "Command",
+    "CommandResult",
+    "ContentPart",
+    "ContextComponent",
+    "EventContext",
+    "Events",
+    "JsonValue",
+    "ImageContent",
+    "ImagePart",
+    "InputModality",
+    "Job",
+    "JobContext",
+    "JobError",
+    "JobId",
+    "JobKind",
+    "JobNotFound",
+    "JobRegistry",
+    "JobRegistryClosed",
+    "JobResult",
+    "JobRunner",
+    "JobStatus",
+    "JobSummary",
+    "Message",
+    "MESSAGE_FORMAT_KEY",
+    "ModelChunk",
+    "ModelResponse",
+    "OutputChunk",
+    "OutputStore",
+    "PluginStore",
+    "ProviderCapabilities",
+    "ReasoningPart",
+    "PromptFragmentStage",
+    "calibrated_context_tokens",
+    "context_token_limit",
+    "estimate_messages_tokens",
+    "estimate_request_tokens",
+    "prompt_container",
+    "prompt_element",
+    "RuntimePluginContext",
+    "RuntimePaths",
+    "RuntimeVariables",
+    "SessionInfo",
+    "SessionPaths",
+    "ThreadPaths",
+    "TextPart",
+    "SHORT_CIRCUIT_EVENTS",
+    "StreamOutputStore",
+    "SubagentAgentError",
+    "SubagentTurnError",
+    "TERMINAL_STATES",
+    "TextOutputStore",
+    "ToolAction",
+    "ToolCall",
+    "ToolCallDelta",
+    "ToolCallPart",
+    "ToolDecision",
+    "ToolError",
+    "ToolResult",
+    "Tool",
+    "ToolRegistrationOptions",
+    "WaitResult",
+]

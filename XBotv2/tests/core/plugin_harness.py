@@ -6,17 +6,17 @@ from __future__ import annotations
 def mount_ctx(state_store):
     """Real XCore context with the capability services, for plugin tests."""
     from xcore import Context
-    from xbotv2.plugins.tools import (
+    from tools.plugin import (
         AgentsService,
         CommandsService,
         PromptsService,
         ToolsService,
     )
-    from xbotv2.tools.registry import ToolRegistry
-    from xbotv2.core.context import ContextBuilder
-    from xbotv2.core.agents import AgentRegistry
-    from xbotv2.api.jobs import JobRegistry
-    from xbotv2.api.variables import RuntimeVariables
+    from tools.registry import ToolRegistry
+    from core.context import ContextBuilder
+    from core.agents import AgentRegistry
+    from api.jobs import JobRegistry
+    from api.variables import RuntimeVariables
 
     ctx = Context(data_dir=state_store.paths.state_dir)
     ctx.set("tools", ToolsService(ToolRegistry()))
@@ -54,8 +54,8 @@ def mount_plugin_standalone(plugin, config=None):
     import tempfile
     from pathlib import Path
 
-    from xbotv2.api.paths import RuntimePaths
-    from xbotv2.persistence.store import CoreStateStore
+    from api.paths import RuntimePaths
+    from persistence.store import CoreStateStore
 
     tmp = Path(tempfile.mkdtemp())
     store = CoreStateStore.create(

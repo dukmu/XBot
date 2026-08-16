@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-xbot = "xbotv2.__main__:main"
+xbot = "main:main"
 
 [dependency-groups]
 dev = [
@@ -51,16 +51,58 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["xbotv2", "builtin_plugins"]
+source = [
+    "api",
+    "core",
+    "tools",
+    "runtime",
+    "coretools",
+    "agent_runtime",
+    "loader",
+    "config",
+    "persistence",
+    "llm",
+    "protocol",
+    "tui",
+    "acp",
+    "goal",
+    "todolist",
+    "skills",
+    "mcp",
+    "compact",
+    "agents",
+    "browser",
+    "token_manager",
+    "workspace_instructions",
+]
 
 [tool.setuptools.packages.find]
 where = ["XBotv2"]
-include = ["xbotv2*", "builtin_plugins*"]
+include = [
+    "api*",
+    "core*",
+    "tools*",
+    "runtime*",
+    "coretools*",
+    "agent_runtime*",
+    "loader*",
+    "config*",
+    "persistence*",
+    "llm*",
+    "protocol*",
+    "tui*",
+    "acp*",
+    "goal*",
+    "todolist*",
+    "skills*",
+    "mcp*",
+    "compact*",
+    "agents*",
+    "browser*",
+    "token_manager*",
+    "workspace_instructions*",
+]
 namespaces = true
-
-[tool.setuptools.package-data]
-"builtin_plugins" = ["**/plugin.yaml"]
-"xbotv2" = ["web_dist/*", "web_dist/**/*"]
 
 [tool.setuptools.data-files]
 "data/config" = ["XBotv2/data/config/*.yaml"]

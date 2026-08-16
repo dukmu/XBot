@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from xbotv2.api.tools import Tool, ToolCall
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.runtime import execute_tools
+from api.tools import Tool, ToolCall
+from tools.registry import ToolRegistry
+from tools.runtime import execute_tools
 
 
 @pytest.mark.asyncio

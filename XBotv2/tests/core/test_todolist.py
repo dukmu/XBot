@@ -4,17 +4,17 @@ import json
 from pathlib import Path
 
 import pytest
-from builtin_plugins.todolist.plugin import TodolistPlugin
+from todolist.plugin import TodolistPlugin
 import xcore
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.engine import Engine
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.llm.mock import MockLLM
-from xbotv2.persistence.store import CoreStateStore
+from core.context import ContextBuilder
+from core.engine import Engine
+from config.models import RuntimeConfig
+from llm.mock import MockLLM
+from persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from tools.permissions import PermissionSystem
+from tools.registry import ToolRegistry
+from tools.sandbox import SandboxPolicy
 
 
 class SetupContext:
@@ -46,7 +46,7 @@ def _mount(plugin, state_store):
 
 
 def make_plugin(state_store) -> TodolistPlugin:
-    from builtin_plugins.todolist.plugin import TodolistPlugin
+    from todolist.plugin import TodolistPlugin
 
     return _mount(TodolistPlugin(), state_store)
 
@@ -191,15 +191,15 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
     (plugins_root / "todolist").symlink_to(
-        Path(__file__).parents[2] / "builtin_plugins" / "todolist",
+        Path(__file__).parents[2] / "todolist",
         target_is_directory=True,
     )
-    from xbotv2.loader import Loader, PluginTree
+    from loader import Loader, PluginTree
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry
     loader = Loader(ctx, tree=PluginTree.from_dict([
-        {"id": "todolist", "name": "builtin_plugins.todolist"},
+        {"id": "todolist", "name": "todolist"},
     ]))
 
     await loader.load()

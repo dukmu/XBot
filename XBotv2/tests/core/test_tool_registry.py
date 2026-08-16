@@ -2,8 +2,8 @@
 
 import pytest
 
-from xbotv2.api.tools import Tool
-from xbotv2.tools.registry import ToolRegistry
+from api.tools import Tool
+from tools.registry import ToolRegistry
 
 
 def _tool_a(x: int = 0) -> str:
