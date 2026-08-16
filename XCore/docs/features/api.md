@@ -14,6 +14,8 @@
 | `PluginDef` | `xcore.plugin` | 归一化插件定义（name/callback/Config/inject/provide） |
 | `FiberState` | `xcore.plugin` | pending/loading/running/failed/unloading/disposed |
 | `current_fiber` | `xcore.plugin` | 当前正在执行 apply 的 fiber（服务用于绑定 fiber 级清理；非 apply 期间为 None） |
+| `bound_effect` | `xcore.plugin` | 把 disposer 绑定到当前 apply fiber 的卸载（服务注册清理的一行封装；非 apply 期间 no-op） |
+| `current_plugin_name` | `xcore.plugin` | 当前正在 apply 的插件名（非 apply 期间为 `"unknown"`） |
 | `StateService` | `xcore.state` | 可恢复持久 KV（JSON 原子写 + 命名空间） |
 | `S` | `xcore.schema` | Schema DSL 命名空间 |
 | `SchemaValidationError` | `xcore.errors` | 配置校验失败（唯一校验错误类型，带 path） |

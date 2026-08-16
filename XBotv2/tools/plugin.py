@@ -10,34 +10,12 @@ cleanup, no loader-side context tracking.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from XBotv2.core.tools import Tool
 from XBotv2.tools.agents import AgentRegistry
 from XBotv2.tools.registry import RegisteredSandboxMode, ToolRegistry
-from xcore import current_fiber
-
-logger = logging.getLogger("xbot.tools")
-
-
-def _current_plugin_name() -> str:
-    fiber = current_fiber()
-    runtime = getattr(fiber, "runtime", None)
-    if runtime is not None:
-        return runtime.definition.name
-    return "unknown"
-
-
-def _bind_cleanup(disposer: Any) -> None:
-    """Register a disposer on the applying fiber (never raises)."""
-    fiber = current_fiber()
-    if fiber is None:
-        return
-    try:
-        fiber.effect(lambda: disposer)
-    except Exception:  # noqa: BLE001 - cleanup registration must not break setup
-        logger.exception("failed to register cleanup effect")
+from xcore import bound_effect, current_plugin_name
 
 
 class ToolsService:
@@ -68,7 +46,7 @@ class ToolsService:
             timeout_seconds=timeout_seconds,
             namespace=namespace,
         )
-        _bind_cleanup(lambda: self.registry.unregister(name))
+        bound_effect(lambda: self.registry.unregister(name))
         return name
 
     def unregister(self, name: str) -> bool:
@@ -85,13 +63,13 @@ class AgentsService:
         self.registry = registry
 
     def register(self, definition: Any) -> str:
-        owner = _current_plugin_name()
+        owner = current_plugin_name()
         name = self.registry.register(definition, owner=owner)
-        _bind_cleanup(lambda: self.registry.unregister(name, owner=owner))
+        bound_effect(lambda: self.registry.unregister(name, owner=owner))
         return name
 
     def unregister(self, name: str) -> bool:
-        owner = _current_plugin_name()
+        owner = current_plugin_name()
         return self.registry.unregister(name, owner=owner)
 
     def __getattr__(self, name: str) -> Any:

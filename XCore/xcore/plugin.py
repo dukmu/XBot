@@ -47,6 +47,33 @@ def current_fiber() -> "Fiber | None":
     return _current_fiber.get()
 
 
+def bound_effect(disposer: Callable[[], Any]) -> bool:
+    """Bind ``disposer`` to the currently applying fiber's unload.
+
+    Registration-time helper for capability services: during a plugin's
+    ``apply``, the returned disposer runs when that plugin's fiber unloads.
+    Outside ``apply`` (or when the fiber is already inactive) this is a
+    no-op returning ``False`` — the caller owns the cleanup.
+    """
+    fiber = _current_fiber.get()
+    if fiber is None:
+        return False
+    try:
+        fiber.effect(lambda: disposer)
+        return True
+    except InactiveEffectError:
+        return False
+
+
+def current_plugin_name() -> str:
+    """Name of the plugin whose ``apply`` is executing (``"unknown"`` outside)."""
+    fiber = _current_fiber.get()
+    runtime = getattr(fiber, "runtime", None)
+    if runtime is not None:
+        return runtime.definition.name
+    return "unknown"
+
+
 class FiberState(enum.Enum):
     """Lifecycle states of one plugin fiber (design §6.2)."""
 

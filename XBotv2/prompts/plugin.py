@@ -8,31 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import logging
-from typing import Any
-
-from xcore import current_fiber
-
-logger = logging.getLogger("xbot.prompts")
-
-
-def _current_plugin_name() -> str:
-    fiber = current_fiber()
-    runtime = getattr(fiber, "runtime", None)
-    if runtime is not None:
-        return runtime.definition.name
-    return "unknown"
-
-
-def _bind_cleanup(disposer: Any) -> None:
-    """Register a disposer on the applying fiber (never raises)."""
-    fiber = current_fiber()
-    if fiber is None:
-        return
-    try:
-        fiber.effect(lambda: disposer)
-    except Exception:  # noqa: BLE001 - cleanup registration must not break setup
-        logger.exception("failed to register cleanup effect")
+from xcore import bound_effect, current_plugin_name
 
 
 class PromptsService:
@@ -48,9 +24,9 @@ class PromptsService:
         *,
         source: str | None = None,
     ) -> None:
-        plugin_name = _current_plugin_name()
+        plugin_name = current_plugin_name()
         self._builder.register_fragment(stage, plugin_name, text, source=source)
-        _bind_cleanup(
+        bound_effect(
             lambda: self._builder.unregister_fragment(stage, plugin_name),
         )
 

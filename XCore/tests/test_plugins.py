@@ -179,6 +179,29 @@ async def test_apply_failure_is_isolated_and_awaitable():
     assert other_ran == ["fine"]
 
 
+async def test_bound_effect_and_current_plugin_name():
+    from xcore import bound_effect, current_plugin_name
+
+    ctx = Context()
+    cleaned: list[str] = []
+    names: list[str] = []
+
+    def applier(ctx_, config):
+        names.append(current_plugin_name())
+        assert bound_effect(lambda: cleaned.append("x")) is True
+
+    await ctx.start()
+    handle = ctx.plugin(applier)
+    await handle
+    assert names == ["applier"]
+    # Outside apply both helpers are safe no-ops.
+    assert current_plugin_name() == "unknown"
+    assert bound_effect(lambda: cleaned.append("y")) is False
+
+    await handle.dispose()
+    assert cleaned == ["x"]
+
+
 async def test_current_fiber_tracks_applying_plugin_and_binds_cleanup():
     from xcore import current_fiber
 

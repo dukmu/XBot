@@ -208,3 +208,13 @@
   **104 passed**；端到端冒烟通过（`ctx.llm.providers()` 返回 6 个内置 provider
   路由；`session.main_agent is engine` 成立）；api_inventory 重生成对齐
   `XBotv2.core.__all__`（新增 BaseProvider/ProviderRetryExhaustedError）。
+
+### 2026-08-17 · 消除 `_bind_cleanup` 重复 —— 封装为 XCore 公共 API
+
+- **用户指示**：`_bind_cleanup` 在 tools/commands/prompts 服务插件里重复。
+- **实施**：把"把 disposer 绑定到当前 apply fiber 的卸载"与"当前插件名"封装为
+  XCore 公共 API —— `xcore.bound_effect(disposer)`（非 apply 期间安全 no-op，
+  返回是否绑定成功）与 `xcore.current_plugin_name()`（非 apply 期间为
+  `"unknown"`）；三个服务插件各删掉本地重复助手，改为一行调用。
+- **验证**：XCore 105 passed（新增 bound_effect/current_plugin_name 契约测试）；
+  XBotv2 734 passed。

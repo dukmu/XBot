@@ -42,3 +42,6 @@ evaluation/.inspect/
 XCore/**/__pycache__/
 XCore/.pytest_cache/
 .research-cordis/
+
+# uv cache (local mirror used when the global cache is unavailable)
+.uv-cache/

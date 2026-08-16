@@ -22,7 +22,9 @@ from xcore.plugin import (
     PluginDef,
     PluginHandle,
     Registry,
+    bound_effect,
     current_fiber,
+    current_plugin_name,
 )
 from xcore.schema import S
 from xcore.service import Service
@@ -47,5 +49,7 @@ __all__ = [
     "StateService",
     "XCoreError",
     "__version__",
+    "bound_effect",
     "current_fiber",
+    "current_plugin_name",
 ]

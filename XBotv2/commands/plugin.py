@@ -9,24 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import logging
-from typing import Any
-
 from XBotv2.core.commands import Command
-from xcore import current_fiber
-
-logger = logging.getLogger("xbot.commands")
-
-
-def _bind_cleanup(disposer: Any) -> None:
-    """Register a disposer on the applying fiber (never raises)."""
-    fiber = current_fiber()
-    if fiber is None:
-        return
-    try:
-        fiber.effect(lambda: disposer)
-    except Exception:  # noqa: BLE001 - cleanup registration must not break setup
-        logger.exception("failed to register cleanup effect")
+from xcore import bound_effect
 
 
 class CommandsService:
@@ -39,7 +23,7 @@ class CommandsService:
         if command.name in self._commands:
             raise ValueError(f"Command {command.name!r} is already registered")
         self._commands[command.name] = command
-        _bind_cleanup(lambda: self._commands.pop(command.name, None))
+        bound_effect(lambda: self._commands.pop(command.name, None))
         return command.name
 
     def unregister(self, name: str) -> bool:
