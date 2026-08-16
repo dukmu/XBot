@@ -6,11 +6,11 @@ import inspect
 from typing import Any
 
 from xbotv2.api import (
-    PluginBase,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
 )
+from xcore import S
 
 
 _STATUSES = {"pending", "in_progress", "completed"}
@@ -38,8 +38,12 @@ _UPDATE_TODOS_SCHEMA = {
 }
 
 
-class TodolistPlugin(PluginBase):
-    def apply(self, ctx) -> None:
+class TodolistPlugin:
+    name = "todolist"
+
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        self.store = ctx.state.namespace("todolist")
         ctx.tools.register(
             Tool(
                 name="update_todos",
@@ -166,3 +170,6 @@ def _valid_item(item: Any) -> bool:
         and bool(item["content"].strip())
         and item.get("status") in _STATUSES
     )
+
+
+plugin = TodolistPlugin()

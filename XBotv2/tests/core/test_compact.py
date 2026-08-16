@@ -13,11 +13,10 @@ from builtin_plugins.compact.plugin import (
     _history_chars,
 )
 from xbotv2.api import (
-    HookContext,
-    HookStage,
+    EventContext,
+    Events,
     Message,
     ModelResponse,
-    PluginManifest,
     ToolCall,
     estimate_request_tokens,
 )
@@ -28,7 +27,7 @@ from xbotv2.api.tokens import (
 from xbotv2.core.context import ContextBuilder
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import Engine
-from xbotv2.hooks.manager import HookManager
+import xcore
 from plugin_harness import mount_plugin_standalone
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
@@ -36,9 +35,10 @@ from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.sandbox import SandboxPolicy
 
 
-def make_plugin() -> CompactPlugin:
-    plugin = mount_plugin_standalone(CompactPlugin(PluginManifest(name="compact", version="1")))
-    return plugin
+def make_plugin(config=None) -> CompactPlugin:
+    from builtin_plugins.compact.plugin import CompactPlugin
+
+    return mount_plugin_standalone(CompactPlugin(), config)
 
 
 class SetupContext:
@@ -46,14 +46,9 @@ class SetupContext:
 
     def __init__(self, plugin) -> None:
         self.ctx = plugin.ctx
-        self.hooks: dict = {}
         self.tool = None
         self.options = None
         self.commands: dict = {}
-        for stage in HookStage:
-            callbacks = plugin._hook_manager.listeners(stage)
-            if callbacks:
-                self.hooks[stage] = callbacks[0]
         entries = self.ctx.tools.registry.registered_entries()
         if entries:
             entry = entries[0]
@@ -96,8 +91,7 @@ def test_compact_prefix_preserves_recent_complete_turns():
 
 @pytest.mark.asyncio
 async def test_manual_tool_requests_compaction_below_threshold():
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext(plugin)
     tool_result = await setup.tool.ainvoke({})
 
@@ -108,13 +102,13 @@ async def test_manual_tool_requests_compaction_below_threshold():
         return ModelResponse(content="Important earlier context")
 
     original = history(3)
-    result = await setup.hooks[HookStage.BEFORE_CONTEXT](
-        HookContext(
-            stage=HookStage.BEFORE_CONTEXT,
+    result = await setup.ctx.serial(
+        Events.BEFORE_CONTEXT,
+        EventContext(
             messages=original,
             session=SimpleNamespace(turn_count=3),
             invoke_model=invoke_model,
-        )
+        ),
     )
 
     assert tool_result.data == {"requested": True}
@@ -131,11 +125,8 @@ async def test_human_command_compacts_and_persists_immediately(
     temp_workspace,
 ):
     caplog.set_level("INFO", logger="xbotv2.compact")
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext(plugin)
-    hooks = HookManager()
-    hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     original = history(3)
     state_store.sync_messages(original)
     llm = MockLLM(responses=[{
@@ -149,7 +140,7 @@ async def test_human_command_compacts_and_persists_immediately(
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=hooks,
+        plugin_ctx=setup.ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -220,8 +211,7 @@ async def test_human_command_compacts_and_persists_immediately(
 
 @pytest.mark.asyncio
 async def test_human_command_runs_when_active_turn_becomes_idle():
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False})
+    plugin = make_plugin({"automatic": False})
     setup = SetupContext(plugin)
     turn_lock = asyncio.Lock()
     await turn_lock.acquire()
@@ -254,8 +244,7 @@ async def test_human_command_runs_when_active_turn_becomes_idle():
 
 @pytest.mark.asyncio
 async def test_compaction_does_not_append_duplicate_human_directives():
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     plugin._manual_requested = True
     original = history(3)
     original[2].content = "Do not ask me again; decide the safest option."
@@ -265,8 +254,7 @@ async def test_compaction_does_not_append_duplicate_human_directives():
             content="## Conversation Summary\n\nOlder context only."
         )
 
-    result = await plugin._on_before_context(HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
+    result = await plugin._on_before_context(EventContext(
         messages=original,
         session=SimpleNamespace(turn_count=3),
         invoke_model=invoke_model,
@@ -283,13 +271,11 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 
 @pytest.mark.asyncio
 async def test_large_context_does_not_use_fixed_character_threshold():
-    plugin = make_plugin()
-    await plugin.on_load({"keep_recent_turns": 1})
+    plugin = make_plugin({"keep_recent_turns": 1})
     original = history(3, content="x" * 13_500)
     context = [Message(role="system", content="x" * 80_000), *original]
 
-    result = await plugin._on_before_model_request(HookContext(
-        stage=HookStage.BEFORE_MODEL_REQUEST,
+    result = await plugin._on_before_model_request(EventContext(
         messages=original,
         model_request={"messages": context, "tools": []},
         config=SimpleNamespace(
@@ -304,8 +290,7 @@ async def test_large_context_does_not_use_fixed_character_threshold():
 
 @pytest.mark.asyncio
 async def test_automatic_threshold_uses_provider_window_and_output_limit():
-    plugin = make_plugin()
-    await plugin.on_load({"keep_recent_turns": 1})
+    plugin = make_plugin({"keep_recent_turns": 1})
     original = history(3, content="x" * 5_000)
     context = [Message(role="system", content="stable"), *original]
     request_estimate = estimate_request_tokens(context)
@@ -323,8 +308,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
             "## Remaining Work\nContinue."
         ))
 
-    result = await plugin._on_before_model_request(HookContext(
-        stage=HookStage.BEFORE_MODEL_REQUEST,
+    result = await plugin._on_before_model_request(EventContext(
         messages=original,
         model_request={"messages": context, "tools": []},
         config=SimpleNamespace(
@@ -343,8 +327,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
 
 @pytest.mark.asyncio
 async def test_automatic_compaction_preserves_recent_tool_iterations():
-    plugin = make_plugin()
-    await plugin.on_load({"keep_recent_turns": 2, "trigger_ratio": 0.01})
+    plugin = make_plugin({"keep_recent_turns": 2, "trigger_ratio": 0.01})
     original = [Message(role="system", content="Goal continuation")]
     for index in range(6):
         call_id = f"call-{index}"
@@ -365,8 +348,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
             "## Remaining Work\nTwo steps remain."
         ))
 
-    result = await plugin._on_before_model_request(HookContext(
-        stage=HookStage.BEFORE_MODEL_REQUEST,
+    result = await plugin._on_before_model_request(EventContext(
         messages=original,
         model_request={
             "messages": [Message(role="system", content="stable"), *original],
@@ -387,16 +369,14 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
 
 @pytest.mark.asyncio
 async def test_failed_summary_leaves_history_untouched():
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     plugin._manual_requested = True
     original = history(2)
 
     async def fail(_messages):
         raise RuntimeError("summary unavailable")
 
-    ctx = HookContext(
-        stage=HookStage.BEFORE_CONTEXT,
+    ctx = EventContext(
         messages=original,
         session=SimpleNamespace(turn_count=2),
         invoke_model=fail,
@@ -412,15 +392,13 @@ async def test_failed_summary_leaves_history_untouched():
 
 @pytest.mark.asyncio
 async def test_failed_automatic_summary_continues_with_original_history():
-    plugin = make_plugin()
-    await plugin.on_load({"trigger_ratio": 0.1, "keep_recent_turns": 1})
+    plugin = make_plugin({"trigger_ratio": 0.1, "keep_recent_turns": 1})
     original = history(3, content="x" * 1_000)
 
     async def fail(_messages):
         raise ConnectionError("summary provider unavailable")
 
-    ctx = HookContext(
-        stage=HookStage.BEFORE_MODEL_REQUEST,
+    ctx = EventContext(
         messages=original,
         model_request={
             "messages": [Message(role="system", content="stable"), *original],
@@ -446,7 +424,7 @@ async def test_unload_resets_plugin_owned_state():
     plugin._compactions = 2
     plugin._last_reason = "automatic"
 
-    await plugin.on_unload()
+    await plugin._on_unload()
 
     assert plugin._manual_requested is False
     assert plugin.diagnostics()["compactions"] == 0
@@ -459,12 +437,9 @@ async def test_compact_tool_rewrites_and_persists_history(
     state_store,
     temp_workspace,
 ):
-    plugin = make_plugin()
-    await plugin.on_load({"automatic": False, "keep_recent_turns": 1})
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext(plugin)
 
-    hooks = HookManager()
-    hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
     registry = ToolRegistry()
     registry.register(
         setup.tool,
@@ -483,7 +458,7 @@ async def test_compact_tool_rewrites_and_persists_history(
     engine = Engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=hooks,
+        plugin_ctx=setup.ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -519,7 +494,7 @@ async def test_compact_tool_rewrites_and_persists_history(
     resumed = Engine(
         llm=MockLLM(responses=[]),
         tool_registry=ToolRegistry(),
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -539,15 +514,8 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
     state_store,
     temp_workspace,
 ):
-    plugin = make_plugin()
-    await plugin.on_load({"keep_recent_turns": 1, "trigger_ratio": 0.8})
+    plugin = make_plugin({"keep_recent_turns": 1, "trigger_ratio": 0.8})
     setup = SetupContext(plugin)
-    hooks = HookManager()
-    hooks.register(HookStage.BEFORE_CONTEXT, setup.hooks[HookStage.BEFORE_CONTEXT])
-    hooks.register(
-        HookStage.BEFORE_MODEL_REQUEST,
-        setup.hooks[HookStage.BEFORE_MODEL_REQUEST],
-    )
     state_store.sync_messages(history(3, content="x" * 5_000))
     llm = MockLLM(responses=[
         {"content": (
@@ -568,7 +536,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=hooks,
+        plugin_ctx=setup.ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(

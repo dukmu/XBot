@@ -1,4 +1,4 @@
-"""Tool execution node with hook integration."""
+"""Tool execution node with event integration."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from xbotv2.api.hooks import HookAction, HookDecision, HookStage
+from xbotv2.api.events import Events, ToolAction, ToolDecision
 from xbotv2.api.tools import ToolCall, ToolError, ToolResult, tool_parameters_schema
 from xbotv2.core.interactions import UserInputDisconnected
 from xbotv2.api.messages import Message
@@ -35,8 +35,8 @@ async def execute_tools(
     *,
     sandbox_policy: Any = None,  # SandboxPolicy
     permission_system: Any = None,  # PermissionSystem
-    hook_manager: Any = None,
-    hook_context_factory: Any = None,
+    plugin_ctx: Any = None,
+    context_factory: Any = None,
     client_interaction_handler: Any = None,
     permission_interaction_handler: Any = None,
     workspace_root: str = "/tmp/xbotv2-workspace",
@@ -46,7 +46,7 @@ async def execute_tools(
 
     Pipeline:
     1. Extract tool calls from the last assistant message.
-    2. Run per-call hooks and apply transformations.
+    2. Dispatch per-call events and apply transformations.
     3. Check core permissions for the final call.
     4. Execute approved tools with their registered sandbox mode.
     5. Return tool messages.
@@ -56,8 +56,9 @@ async def execute_tools(
         registry: ToolRegistry instance.
         sandbox_policy: SandboxPolicy instance (optional).
         permission_system: PermissionSystem instance (optional).
-        hook_manager: HookManager instance (optional).
-        hook_context_factory: callable that builds HookContext objects.
+        plugin_ctx: XCore context that dispatches runtime events
+            (``ctx.serial`` / ``ctx.emit``) (optional).
+        context_factory: callable that builds EventContext objects (optional).
         client_interaction_handler: async callable for blocking interaction
             events such as ask_user.
         permission_interaction_handler: async callable for live permission
@@ -79,7 +80,7 @@ async def execute_tools(
         )
 
         if entry is None:
-            await _emit_tool_denied(hook_manager, hook_context_factory, call, f"Tool not registered: {tool_name}")
+            await _emit_tool_denied(plugin_ctx, context_factory, call, f"Tool not registered: {tool_name}")
             results.append(_error_message(call, f"Tool not registered: {tool_name}"))
             observed_tool_calls.append(call)
             continue
@@ -87,34 +88,33 @@ async def execute_tools(
         await _execute_one_tool(
             call, entry, registry,
             sandbox_policy, permission_system,
-            hook_manager, hook_context_factory,
+            plugin_ctx, context_factory,
             client_interaction_handler, permission_interaction_handler,
             workspace_root,
             job_registry,
             results, observed_tool_calls,
         )
 
-    if hook_manager is not None and hook_context_factory is not None:
-        ctx = hook_context_factory(
-            HookStage.POST_TOOL_BATCH,
+    if plugin_ctx is not None and context_factory is not None:
+        ctx = context_factory(
             tool_calls=observed_tool_calls,
             tool_results=results,
         )
-        await hook_manager.run(HookStage.POST_TOOL_BATCH, ctx, short_circuit=False)
+        await plugin_ctx.emit(Events.POST_TOOL_BATCH, ctx)
 
     return results
 
 
 async def _emit_tool_denied(
-    hook_manager: Any,
-    hook_context_factory: Any,
+    plugin_ctx: Any,
+    context_factory: Any,
     tool_call: ToolCall,
     reason: str,
 ) -> None:
-    await _run_tool_hook(
-        hook_manager,
-        hook_context_factory,
-        HookStage.ON_TOOL_DENIED,
+    await _run_tool_event(
+        plugin_ctx,
+        context_factory,
+        Events.TOOL_DENIED,
         tool_call=tool_call,
         error=PermissionError(reason),
         short_circuit=False,
@@ -122,26 +122,25 @@ async def _emit_tool_denied(
 
 
 async def _emit_permission_event(
-    hook_manager: Any,
-    hook_context_factory: Any,
-    stage: HookStage,
+    plugin_ctx: Any,
+    context_factory: Any,
+    event: str,
     tool_call: ToolCall,
     decision: str,
     reason: str,
 ) -> None:
-    if hook_manager is None or hook_context_factory is None:
+    if plugin_ctx is None or context_factory is None:
         return
-    ctx = hook_context_factory(
-        stage,
+    ctx = context_factory(
         tool_call=tool_call,
         permission_decision=decision,
         error=PermissionError(reason),
     )
-    await hook_manager.run(stage, ctx, short_circuit=False)
+    await plugin_ctx.emit(event, ctx)
 
 
 def _permission_client_event(
-    stage: HookStage,
+    event: str,
     tool_call: ToolCall,
     decision: str,
     reason: str,
@@ -150,7 +149,7 @@ def _permission_client_event(
 ) -> dict[str, Any]:
     event_type = (
         "permission_request"
-        if stage == HookStage.ON_PERMISSION_REQUEST
+        if event == Events.PERMISSION_REQUEST
         else "permission_denied"
     )
     return {
@@ -341,8 +340,8 @@ async def _authorize_sandbox_tool(
     call: ToolCall,
     sandbox_policy: Any,
     permission_interaction_handler: Any,
-    hook_manager: Any,
-    hook_context_factory: Any,
+    plugin_ctx: Any,
+    context_factory: Any,
 ) -> tuple[bool, list[dict[str, Any]], str, list[Any]]:
     # Escalation authorizes this ToolCall's execution mode; it is not a path rule.
     escalation = (
@@ -401,13 +400,13 @@ async def _authorize_sandbox_tool(
             if denied
             else f"Path approval required: {approval_details}"
         )
-    stage = (
-        HookStage.ON_PERMISSION_DENIED
+    event_name = (
+        Events.PERMISSION_DENIED
         if denied
-        else HookStage.ON_PERMISSION_REQUEST
+        else Events.PERMISSION_REQUEST
     )
     event = _permission_client_event(
-        stage,
+        event_name,
         call,
         decision,
         reason,
@@ -415,9 +414,9 @@ async def _authorize_sandbox_tool(
     )
     events.append(event)
     await _emit_permission_event(
-        hook_manager,
-        hook_context_factory,
-        stage,
+        plugin_ctx,
+        context_factory,
+        event_name,
         call,
         decision,
         reason,
@@ -449,25 +448,27 @@ def _remove_sandbox_rules(sandbox_policy: Any, rules: list[Any]) -> None:
         sandbox_policy.remove_rule(rule)
 
 
-async def _run_tool_hook(
-    hook_manager: Any,
-    hook_context_factory: Any,
-    stage: HookStage,
+async def _run_tool_event(
+    plugin_ctx: Any,
+    context_factory: Any,
+    event: str,
     *,
     tool_call: ToolCall,
     tool_result: Message | None = None,
     error: Exception | None = None,
     short_circuit: bool,
 ) -> Any:
-    if hook_manager is None or hook_context_factory is None:
+    if plugin_ctx is None or context_factory is None:
         return None
-    ctx = hook_context_factory(
-        stage,
+    ctx = context_factory(
         tool_call=tool_call,
         tool_result=tool_result,
         error=error,
     )
-    return await hook_manager.run(stage, ctx, short_circuit=short_circuit)
+    if short_circuit:
+        return await plugin_ctx.serial(event, ctx)
+    await plugin_ctx.emit(event, ctx)
+    return None
 
 
 def _error_message(
@@ -489,7 +490,7 @@ def _error_message(
 async def _execute_one_tool(
     call: ToolCall, entry: Any, registry: Any,
     sandbox_policy: Any, permission_system: Any,
-    hook_manager: Any, hook_context_factory: Any,
+    plugin_ctx: Any, context_factory: Any,
     client_interaction_handler: Any, permission_interaction_handler: Any,
     workspace_root: str | None,
     job_registry: Any,
@@ -504,11 +505,15 @@ async def _execute_one_tool(
     if tool_name in {"shell", "start_shell"} and workspace_root:
         args.setdefault("cwd", workspace_root)
 
-    before_result = await _run_tool_hook(
-        hook_manager, hook_context_factory,
-        HookStage.BEFORE_TOOL_CALL,
-        tool_call=ToolCall(tool_id, tool_name, args),
-        short_circuit=True,
+    before_ctx = (
+        context_factory(tool_call=ToolCall(tool_id, tool_name, args))
+        if context_factory is not None
+        else None
+    )
+    before_result = (
+        await plugin_ctx.serial(Events.BEFORE_TOOL_CALL, before_ctx)
+        if plugin_ctx is not None and before_ctx is not None
+        else None
     )
     hook_allowed = False
     if isinstance(before_result, dict):
@@ -523,7 +528,7 @@ async def _execute_one_tool(
                 msg = _error_message(call, f"Tool not registered: {tool_name}")
                 observed_tool_calls.append(call)
                 results.append(msg)
-                await _emit_tool_denied(hook_manager, hook_context_factory, call, msg.content)
+                await _emit_tool_denied(plugin_ctx, context_factory, call, msg.content)
                 return
             tool = entry.tool
             args = dict(call.args)
@@ -538,28 +543,32 @@ async def _execute_one_tool(
             observed_call = ToolCall(tool_id, tool_name, args)
             observed_tool_calls.append(observed_call)
             results.append(message)
-            await _run_tool_hook(hook_manager, hook_context_factory, HookStage.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
+            await _run_tool_event(plugin_ctx, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
             return
         if "deny_reason" in before_result:
             observed_call = ToolCall(tool_id, tool_name, args)
             msg = _error_message(observed_call, str(before_result["deny_reason"]))
             observed_tool_calls.append(observed_call)
             results.append(msg)
-            await _emit_tool_denied(hook_manager, hook_context_factory, observed_call, str(before_result["deny_reason"]))
+            await _emit_tool_denied(plugin_ctx, context_factory, observed_call, str(before_result["deny_reason"]))
             return
-    elif isinstance(before_result, HookDecision):
-        if before_result.action is HookAction.ALLOW:
+    elif isinstance(before_result, ToolDecision):
+        if before_result.action is ToolAction.ALLOW:
             hook_allowed = True
-        elif before_result.action is HookAction.DENY:
+        elif before_result.action is ToolAction.DENY:
             reason = before_result.reason or f"Tool call denied by hook: {tool_name}"
+            if before_ctx is not None:
+                before_ctx.deny_reason = reason
             observed_call = ToolCall(tool_id, tool_name, args)
             msg = _error_message(observed_call, reason)
             observed_tool_calls.append(observed_call)
             results.append(msg)
-            await _emit_tool_denied(hook_manager, hook_context_factory, observed_call, reason)
+            await _emit_tool_denied(plugin_ctx, context_factory, observed_call, reason)
             return
-        if before_result.action is HookAction.STOP:
+        elif before_result.action is ToolAction.STOP:
             reason = before_result.reason or f"Tool call stopped by hook: {tool_name}"
+            if before_ctx is not None:
+                before_ctx.deny_reason = reason
             observed_call = ToolCall(tool_id, tool_name, args)
             msg = _error_message(observed_call, reason)
             observed_tool_calls.append(observed_call)
@@ -570,7 +579,7 @@ async def _execute_one_tool(
         msg = _error_message(observed_call, f"Tool call blocked by hook: {tool_name}")
         observed_tool_calls.append(observed_call)
         results.append(msg)
-        await _emit_tool_denied(hook_manager, hook_context_factory, observed_call, str(msg.content))
+        await _emit_tool_denied(plugin_ctx, context_factory, observed_call, str(msg.content))
         return
 
     call = ToolCall(tool_id, tool_name, args)
@@ -583,8 +592,8 @@ async def _execute_one_tool(
         observed_tool_calls.append(call)
         results.append(_error_message(call, reason))
         await _emit_tool_denied(
-            hook_manager,
-            hook_context_factory,
+            plugin_ctx,
+            context_factory,
             call,
             reason,
         )
@@ -593,22 +602,22 @@ async def _execute_one_tool(
         decision = permission_system.check(tool_name, args)
         if decision == "deny":
             reason = f"Permission denied for tool: {tool_name}"
-            events = [_permission_client_event(HookStage.ON_PERMISSION_DENIED, call, decision, reason)]
-            await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_DENIED, call, decision, reason)
-            await _emit_tool_denied(hook_manager, hook_context_factory, call, reason)
+            events = [_permission_client_event(Events.PERMISSION_DENIED, call, decision, reason)]
+            await _emit_permission_event(plugin_ctx, context_factory, Events.PERMISSION_DENIED, call, decision, reason)
+            await _emit_tool_denied(plugin_ctx, context_factory, call, reason)
             results.append(_error_message(call, reason, events=events))
             observed_tool_calls.append(call)
             return
         if decision == "ask" and not hook_allowed:
             reason = f"Permission approval required for tool: {tool_name}."
-            events = [_permission_client_event(HookStage.ON_PERMISSION_REQUEST, call, decision, reason)]
-            await _emit_permission_event(hook_manager, hook_context_factory, HookStage.ON_PERMISSION_REQUEST, call, decision, reason)
+            events = [_permission_client_event(Events.PERMISSION_REQUEST, call, decision, reason)]
+            await _emit_permission_event(plugin_ctx, context_factory, Events.PERMISSION_REQUEST, call, decision, reason)
             response = await _resolve_live_permission(
                 events[0], permission_interaction_handler, call.id
             )
             if response.get("decision") != "allow":
                 final_reason = _permission_denial_reason(response, reason)
-                await _emit_tool_denied(hook_manager, hook_context_factory, call, final_reason)
+                await _emit_tool_denied(plugin_ctx, context_factory, call, final_reason)
                 results.append(_error_message(call, final_reason, events=events))
                 observed_tool_calls.append(call)
                 return
@@ -628,13 +637,13 @@ async def _execute_one_tool(
             call,
             sandbox_policy,
             permission_interaction_handler,
-            hook_manager,
-            hook_context_factory,
+            plugin_ctx,
+            context_factory,
         )
         if not allowed:
             await _emit_tool_denied(
-                hook_manager,
-                hook_context_factory,
+                plugin_ctx,
+                context_factory,
                 call,
                 reason,
             )
@@ -661,7 +670,7 @@ async def _execute_one_tool(
             observed_call = ToolCall(tool_id, tool_name, args)
             observed_tool_calls.append(observed_call)
             results.append(message)
-            await _run_tool_hook(hook_manager, hook_context_factory, HookStage.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
+            await _run_tool_event(plugin_ctx, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
             return
 
         message = _coerce_tool_message(result, tool_id)
@@ -669,7 +678,7 @@ async def _execute_one_tool(
         observed_tool_calls.append(observed_call)
         results.append(message)
         logger.info("tool.execute finished id=%s name=%s status=%s content_len=%d", tool_id, tool_name, message.status, len(str(message.content)))
-        await _run_tool_hook(hook_manager, hook_context_factory, HookStage.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
+        await _run_tool_event(plugin_ctx, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
 
     except ToolDispatchTimeoutError as exc:
         logger.warning(
@@ -693,19 +702,19 @@ async def _execute_one_tool(
         )
         observed_tool_calls.append(observed_call)
         results.append(message)
-        await _run_tool_hook(
-            hook_manager,
-            hook_context_factory,
-            HookStage.ON_TOOL_CALL_FAILURE,
+        await _run_tool_event(
+            plugin_ctx,
+            context_factory,
+            Events.TOOL_CALL_FAILURE,
             tool_call=observed_call,
             tool_result=message,
             error=exc,
             short_circuit=False,
         )
-        await _run_tool_hook(
-            hook_manager,
-            hook_context_factory,
-            HookStage.AFTER_TOOL_CALL,
+        await _run_tool_event(
+            plugin_ctx,
+            context_factory,
+            Events.AFTER_TOOL_CALL,
             tool_call=observed_call,
             tool_result=message,
             error=exc,
@@ -719,8 +728,8 @@ async def _execute_one_tool(
         message = _error_message(observed_call, f"Error executing {tool_name}: {exc}")
         observed_tool_calls.append(observed_call)
         results.append(message)
-        await _run_tool_hook(hook_manager, hook_context_factory, HookStage.ON_TOOL_CALL_FAILURE, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
-        await _run_tool_hook(hook_manager, hook_context_factory, HookStage.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
+        await _run_tool_event(plugin_ctx, context_factory, Events.TOOL_CALL_FAILURE, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
+        await _run_tool_event(plugin_ctx, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
     finally:
         _remove_sandbox_rules(sandbox_policy, temporary_sandbox_rules)
 

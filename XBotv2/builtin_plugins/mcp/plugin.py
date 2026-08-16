@@ -6,15 +6,13 @@ import json
 from typing import Any
 
 from xbotv2.api import (
-    HookContext,
-    HookStage,
-    PluginBase,
-    PluginManifest,
-    RuntimePluginContext,
+    EventContext,
+    Events,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
 )
+from xcore import S
 
 from .client import MCPClient
 from .callbacks import client_callbacks
@@ -25,9 +23,13 @@ import logging
 logger = logging.getLogger("xbotv2.mcp")
 
 
-class MCPPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest) -> None:
-        super().__init__(manifest)
+class MCPPlugin:
+    name = "mcp"
+    Config = S.object({
+        "servers": S.any().optional(),
+    })
+
+    def __init__(self) -> None:
         self._client = MCPClient()
         self._config: dict[str, Any] = {}
         self._server_status: dict[str, dict[str, Any]] = {}
@@ -43,13 +45,14 @@ class MCPPlugin(PluginBase):
         self._server_tools.clear()
         self._initialized = False
 
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
-        ctx.on(HookStage.ON_SESSION_CLOSE.value, self._on_session_close)
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        self._config = dict(config or {})
+        ctx.dispose(self._on_unload)
+        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(Events.SESSION_CLOSE, self._on_session_close)
 
-    async def _on_session_init(self, ctx: HookContext) -> None:
-        if ctx.plugin_runtime is None:
-            raise RuntimeError("MCPPlugin requires plugin runtime registration capability")
+    async def _on_session_init(self, ctx: EventContext) -> None:
         if self._initialized:
             return
         servers = self._config.get("servers", {})
@@ -69,19 +72,18 @@ class MCPPlugin(PluginBase):
                     callbacks=client_callbacks(ctx),
                 )
                 registered_names = self._register_server_tools(
-                    ctx.plugin_runtime,
                     server_name,
                     tools,
                 )
             except Exception as exc:
-                await self._rollback_server(ctx.plugin_runtime, server_name)
+                await self._rollback_server(server_name)
                 self._server_status[server_name] = {
                     "status": "error",
                     "error": str(exc),
                 }
                 logger.error("MCP server %s initialization failed: %s", server_name, exc)
                 if server_cfg.get("required", False):
-                    await self._rollback_all(ctx.plugin_runtime)
+                    await self._rollback_all()
                     raise
                 continue
             self._server_status[server_name] = {
@@ -91,15 +93,12 @@ class MCPPlugin(PluginBase):
             }
         self._initialized = True
 
-    async def _on_session_close(self, ctx: HookContext) -> None:
-        if ctx.plugin_runtime is None:
-            raise RuntimeError("MCPPlugin requires plugin runtime registration capability")
-        await self._rollback_all(ctx.plugin_runtime)
+    async def _on_session_close(self, ctx: EventContext) -> None:
+        await self._rollback_all()
         self._server_status.clear()
 
     def _register_server_tools(
         self,
-        runtime: RuntimePluginContext,
         server_name: str,
         tools: list[dict[str, Any]],
     ) -> list[str]:
@@ -107,30 +106,33 @@ class MCPPlugin(PluginBase):
         for tool_def in tools:
             tool_name = f"mcp__{server_name}__{tool_def['name']}"
             mcp_tool = MCPTool(self._client, server_name, tool_def)
-            registered_name = runtime.register_tool(
+            registered_name = self._register_tool(
                 mcp_tool.as_tool(tool_name),
-                options=ToolRegistrationOptions(
-                    sandbox_mode="host",
-                    namespace=f"mcp:{server_name}",
-                ),
+                server_name,
             )
             registered_names.append(registered_name)
         capabilities = self._client.server_capabilities(server_name)
         if "resources" in capabilities:
             registered_names.append(self._register_resource_bridge(
-                runtime,
                 server_name,
                 capabilities["resources"],
             ))
         if "prompts" in capabilities:
-            registered_names.append(self._register_prompt_bridge(runtime, server_name))
+            registered_names.append(self._register_prompt_bridge(server_name))
         if "completions" in capabilities:
-            registered_names.append(self._register_completion_bridge(runtime, server_name))
+            registered_names.append(self._register_completion_bridge(server_name))
         return registered_names
+
+    def _register_tool(self, tool: Tool, server_name: str) -> str:
+        """Register one MCP tool on the raw registry (tracked for cleanup)."""
+        return self.ctx.tools.registry.register(
+            tool,
+            sandbox_mode="host",
+            namespace=f"mcp:{server_name}",
+        )
 
     def _register_resource_bridge(
         self,
-        runtime: RuntimePluginContext,
         server: str,
         capability: dict[str, Any],
     ) -> str:
@@ -154,7 +156,6 @@ class MCPPlugin(PluginBase):
             )
 
         return self._register_bridge(
-            runtime,
             server,
             Tool(
                 name=f"mcp__{server}__protocol_resources",
@@ -176,7 +177,6 @@ class MCPPlugin(PluginBase):
 
     def _register_prompt_bridge(
         self,
-        runtime: RuntimePluginContext,
         server: str,
     ) -> str:
         async def prompts(
@@ -199,7 +199,6 @@ class MCPPlugin(PluginBase):
             )
 
         return self._register_bridge(
-            runtime,
             server,
             Tool(
                 name=f"mcp__{server}__protocol_prompts",
@@ -222,7 +221,6 @@ class MCPPlugin(PluginBase):
 
     def _register_completion_bridge(
         self,
-        runtime: RuntimePluginContext,
         server: str,
     ) -> str:
         async def complete(
@@ -244,7 +242,6 @@ class MCPPlugin(PluginBase):
             ))
 
         return self._register_bridge(
-            runtime,
             server,
             Tool(
                 name=f"mcp__{server}__protocol_complete",
@@ -272,32 +269,24 @@ class MCPPlugin(PluginBase):
             ),
         )
 
-    @staticmethod
     def _register_bridge(
-        runtime: RuntimePluginContext,
+        self,
         server: str,
         tool: Tool,
     ) -> str:
-        return runtime.register_tool(
-            tool,
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace=f"mcp:{server}",
-            ),
-        )
+        return self._register_tool(tool, server)
 
     async def _rollback_server(
         self,
-        runtime: RuntimePluginContext,
         server_name: str,
     ) -> None:
         for registered_name in reversed(self._server_tools.pop(server_name, [])):
-            runtime.unregister_tool(registered_name)
+            self.ctx.tools.unregister(registered_name)
         await self._client.disconnect(server_name)
 
-    async def _rollback_all(self, runtime: RuntimePluginContext) -> None:
+    async def _rollback_all(self) -> None:
         for server_name in reversed(list(self._server_tools)):
-            await self._rollback_server(runtime, server_name)
+            await self._rollback_server(server_name)
         await self._client.disconnect_all()
         self._initialized = False
 
@@ -308,6 +297,16 @@ class MCPPlugin(PluginBase):
             "servers": dict(self._server_status),
         }
 
+    async def _on_unload(self) -> None:
+        await self._client.disconnect_all()
+        self._server_status.clear()
+        self._server_tools.clear()
+        self._initialized = False
+
 
 def _protocol_result(data: dict[str, Any]) -> ToolResult:
     return ToolResult.success(json.dumps(data, ensure_ascii=False), data=data)
+
+
+
+plugin = MCPPlugin()

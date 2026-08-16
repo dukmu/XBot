@@ -67,7 +67,7 @@ cannot represent 32K, 200K, and 1M provider windows consistently.
 ## Boundaries
 
 Compaction does not expose the provider client, Engine, state store, or message
-file to the plugin. `HookContext.invoke_model()` supplies one unbound auxiliary
+file to the plugin. `EventContext.invoke_model()` supplies one unbound auxiliary
 call, and the plugin returns the existing `BEFORE_CONTEXT` compaction result.
 Auxiliary calls do not recursively run model Hooks or stream assistant deltas.
 

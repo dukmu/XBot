@@ -70,30 +70,30 @@ ambiguity before large implementation changes.
   exclusion of ordinary Tool/MCP registrations, and client interception of a
   local command.
 
-## 3. Hook Contract Tightening
+## 3. Runtime Event Contract
 
-- Preserve the existing `HookStage` enum values.
-- Keep `hook_stage_matrix.md` aligned with every `HookStage` value, including
-  category, payload fields, allowed return value, short-circuit behavior,
-  failure behavior, and primary callers.
-- Prefer existing `HookContext` fields and public types. Introduce another
-  payload type only for a repeated contract gap, not for one plugin's local
+- Runtime extension points are named events (`xbotv2.api.events.Events`)
+  dispatched on the XCore context: `ctx.serial` for short-circuit events
+  whose first non-`None` result is interpreted by the caller, `ctx.emit` for
+  observer events. The payload is an `EventContext`.
+- Prefer existing `EventContext` fields and public types. Introduce another
+  payload field only for a repeated contract gap, not for one plugin's local
   convenience.
-- Public immutable `ContextComponent` values now back
-  `AFTER_CONTEXT_COMPONENTS_BUILD`; Hooks may replace the typed list, and
+- Public immutable `ContextComponent` values back
+  `AFTER_CONTEXT_COMPONENTS_BUILD`; listeners may replace the typed list, and
   invalid entries fail before provider conversion.
-- Keep caller-level contract tests for message, tool, and permission stage
-  families. `before_tools` now exposes parsed `tool_calls` and the originating
+- Keep caller-level contract tests for message, tool, and permission event
+  families. `BEFORE_TOOLS` exposes parsed `tool_calls` and the originating
   `agent_response` directly.
-- Persistence Hooks now bracket changed-message checkpoints rather than every
+- Persistence events bracket changed-message checkpoints rather than every
   save attempt. Normal completion no longer emits a duplicate unchanged
   checkpoint, while tool batches retain immediate durability.
-- Move direct runtime access out of hook contexts only after equivalent plugin
-  capabilities exist.
-- Engine turn orchestration now delegates message admission, context building,
+- Move direct runtime access out of event payloads only after equivalent
+  plugin capabilities exist.
+- Engine turn orchestration delegates message admission, context building,
   model-request preparation, tool batches, and finish behavior to explicit
   stage methods. These methods retain stage-specific return contracts and do
-  not introduce a universal Hook result interpreter.
+  not introduce a universal event result interpreter.
 
 ## 4. Plugin Lifecycle Model
 
@@ -103,19 +103,16 @@ ambiguity before large implementation changes.
 - A plugin whose `on_load` fails now receives best-effort `on_unload`, allowing
   partial external resources to be released before loader-wide rollback.
 - Failures after plugin loading but before bootstrap completes now trigger
-  `unload_all`, including failures from runtime-registering `ON_SESSION_INIT`
-  hooks.
+  `unload_all`, including failures from runtime-registering `SESSION_INIT`
+  listeners.
 - Normal session close now attempts close hooks, message persistence, and
   reverse plugin unload even when an earlier close phase fails.
 - Manifest `config_schema` and configured values now use Draft 2020-12
   validation before plugin import.
 - `PluginStore` now has immediate atomic persistence, uncached snapshot reads,
   explicit YAML mapping validation, and documented unload persistence.
-- Continue migrating runtime/dynamic tool registrations to `ctx.plugin_runtime`
-  so unload and rollback remain complete.
-- Runtime registration and ownership-limited unregistration now share the
-  plugin record, allowing dynamic resource providers to implement shorter
-  session lifetimes without direct registry access.
+- Runtime/dynamic tool registrations are tracked by the plugin and
+  unregistered in its disposer so unload and rollback remain complete.
 - MCP initialization is idempotent and transactional per server. Optional
   failures roll back that server; required failures roll back the complete init
   attempt; session close removes tools and permits a fresh initialization.

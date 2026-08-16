@@ -19,8 +19,9 @@ from xbotv2.core.builtin_tools.interaction import ask_user
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
+import xcore
+from xbotv2.api.events import EventContext, Events
+from xbotv2.api.runtime import SessionInfo
 from xbotv2.api.messages import Message
 from xbotv2.protocol.models import PermissionRequestData
 from xbotv2.llm.mock import MockLLM
@@ -332,7 +333,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     registry = ToolRegistry()
     registry.register(filesystem_write, sandbox_mode="sandboxed")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def permission_request(ctx):
@@ -344,17 +345,17 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     async def post_batch(ctx):
         calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
 
-    hook_manager.register(HookStage.ON_PERMISSION_REQUEST, permission_request)
-    hook_manager.register(HookStage.ON_TOOL_DENIED, tool_denied)
-    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
+    plugin_ctx.on(Events.PERMISSION_REQUEST, permission_request)
+    plugin_ctx.on(Events.TOOL_DENIED, tool_denied)
+    plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 
     results = await execute_tools(
         [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="ask"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        plugin_ctx=plugin_ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "error"
@@ -531,20 +532,20 @@ async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
 async def test_tool_failure_hook_fires(temp_workspace):
     registry = ToolRegistry()
     registry.register(failing_tool_tool, sandbox_mode="host")
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def failure(ctx):
         calls.append((ctx.tool_call.name, type(ctx.error).__name__, ctx.tool_result.status))
 
-    hook_manager.register(HookStage.ON_TOOL_CALL_FAILURE, failure)
+    plugin_ctx.on(Events.TOOL_CALL_FAILURE, failure)
 
     results = await execute_tools(
         [ToolCall("c1", "failing_tool", {})],
         registry,
         permission_system=PermissionSystem(default_decision="allow"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        plugin_ctx=plugin_ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "error"
@@ -556,7 +557,7 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     registry = ToolRegistry()
     registry.register(filesystem_write, sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def rewrite_tool_call(ctx):
@@ -588,9 +589,9 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
             ctx.tool_results[0].tool_call_id,
         ))
 
-    hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_tool_call)
-    hook_manager.register(HookStage.AFTER_TOOL_CALL, after_tool_call)
-    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, rewrite_tool_call)
+    plugin_ctx.on(Events.AFTER_TOOL_CALL, after_tool_call)
+    plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 
     results = await execute_tools(
         [
@@ -603,8 +604,8 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         registry,
         sandbox_policy=sandbox,
         permission_system=PermissionSystem(default_decision="allow"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        plugin_ctx=plugin_ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "success"
@@ -630,9 +631,9 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
 async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
     registry = ToolRegistry()
     registry.register(large_output_tool, sandbox_mode="host")
-    hook_manager = HookManager()
-    hook_manager.register(
-        HookStage.AFTER_TOOLS,
+    plugin_ctx = xcore.Context()
+    plugin_ctx.on(
+        Events.AFTER_TOOLS,
         make_tool_result_cache_hook(
             state_store,
             max_inline_chars=100,
@@ -649,7 +650,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     engine = Engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=hook_manager,
+        plugin_ctx=plugin_ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -763,9 +764,8 @@ async def test_cache_hook_ignores_string_sidecar_data(state_store):
     assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 
-def _hook_context(stage, **kwargs):
-    return HookContext(
-        stage=stage,
+def _event_context(**kwargs):
+    return EventContext(
         session=SessionInfo(session_id="s", thread_id="t", workspace_root="/workspace", provider="p"),
         **kwargs,
     )

@@ -14,7 +14,7 @@ from xbotv2.persistence.store import (
 from xbotv2.core.engine import Engine
 from xbotv2.core.context import ContextBuilder
 from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
+import xcore
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.registry import ToolRegistry
 from xbotv2.tools.permissions import PermissionSystem
@@ -332,11 +332,11 @@ def echo(message: str) -> str:
 echo_tool = Tool.from_function(echo, name="echo")
 
 
-def make_engine(llm, registry, store, workspace, hook_manager=None):
+def make_engine(llm, registry, store, workspace, plugin_ctx=None):
     return Engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=hook_manager or HookManager(),
+        plugin_ctx=plugin_ctx or xcore.Context(),
         state_store=store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(workspace)),

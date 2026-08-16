@@ -1,11 +1,12 @@
 """Core component: assembles the :class:`Engine` from XCore services.
 
 The engine is a component of the XCore application: mounted after the
-runtime/tools/hooks components and the builtin plugins, its ``apply`` resolves
-the selected Agent, creates the LLM client, runs ``ON_SESSION_INIT`` hooks,
+runtime/tools components and the builtin plugins, its ``apply`` resolves
+the selected Agent, creates the LLM client, dispatches ``SESSION_INIT``,
 applies the tool filter, builds the :class:`Engine` from the context's
 services, and provides it as ``ctx.engine``.  The turn loop therefore runs on
-an XCore context: hooks are XCore events, tools/state/config are services.
+an XCore context: extension points are XCore events, tools/state/config are
+services.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from dataclasses import asdict
 from typing import Any
 
 from xbotv2.api.agents import AgentDefinition
-from xbotv2.api.hooks import HookContext, HookStage
+from xbotv2.api.events import EventContext, Events
 from xbotv2.api.runtime import SessionInfo
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.agents import apply_agent_definition, apply_agent_provider, apply_agent_tools
@@ -31,59 +32,46 @@ SUBAGENT_FORBIDDEN_TOOLS = frozenset({
 
 
 class EngineComponent:
-    """Build the runtime Engine from the context's services."""
+    """Build the runtime Engine from the context's services.
 
-    def __init__(
-        self,
-        *,
-        session_id: str,
-        thread_id: str,
-        workspace_root: str,
-        provider_name: str,
-        agent_config: RuntimeConfig,
-        agent_definition: AgentDefinition | None,
-        llm_override: Any,
-        selected_agent: str | None,
-        parent_permission_system: Any,
-        parent_thread_id: str,
-        is_subagent: bool,
-        interactive: bool,
-        user_context: Any,
-        plugin_loader: Any,
-        context_builder: Any,
-        thread_preexisting: bool,
-        stored_provider: str | None,
-    ) -> None:
-        self._session_id = session_id
-        self._thread_id = thread_id
-        self._workspace_root = workspace_root
-        self._provider_name = provider_name
-        self._agent_config = agent_config
-        self._agent_definition = agent_definition
-        self._llm_override = llm_override
-        self._selected_agent = selected_agent
-        self._parent_permission_system = parent_permission_system
-        self._parent_thread_id = parent_thread_id
-        self._is_subagent = is_subagent
-        self._interactive = interactive
-        self._user_context = user_context
-        self._plugin_loader = plugin_loader
-        self._context_builder = context_builder
-        self._thread_preexisting = thread_preexisting
-        self._stored_provider = stored_provider
-        self.name = "xbot.core"
+    Configured by the plugin tree entry (``xbot.core``): reads the engine
+    parameters from its config, the tool layer / runtime info from services,
+    and provides the Engine as ``ctx.engine``.
+    """
+
+    name = "xbot.core"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
+        config = config or {}
+        self._session_id = config["session_id"]
+        self._thread_id = config["thread_id"]
+        self._workspace_root = config["workspace_root"]
+        self._provider_name = config["provider_name"]
+        self._agent_config = config["agent_config"]
+        self._agent_definition = config.get("agent_definition")
+        self._llm_override = config.get("llm_override")
+        self._selected_agent = config.get("selected_agent")
+        self._parent_permission_system = config.get("parent_permission_system")
+        self._parent_thread_id = config.get("parent_thread_id", "")
+        self._is_subagent = bool(config.get("is_subagent", False))
+        self._interactive = bool(config.get("interactive", True))
+        self._user_context = config.get("user_context")
+        self._thread_preexisting = bool(config.get("thread_preexisting", False))
+        self._stored_provider = config.get("stored_provider")
+        await self._assemble(ctx)
+
+    async def _assemble(self, ctx: Any) -> None:
         agent_registry = ctx.agents.registry
         state_store = ctx.state_store
         runtime_variables = ctx.variables
         tool_registry = ctx.tools.registry
         sandbox = ctx.sandbox
-        hook_manager = ctx.hooks
         job_registry = ctx.job_registry
         agent_runtime = ctx.get("agent_runtime")
+        plugin_loader = ctx.loader
         paths = ctx.paths
         permissions = ctx.permissions
+        context_builder = ctx.context_builder
 
         agent_config = self._agent_config
         resolved_agent = self._agent_definition
@@ -160,9 +148,8 @@ class EngineComponent:
                 media_root=str(state_store.root),
             )
 
-        # Run ON_SESSION_INIT hooks (plugins discover skills/MCP tools here).
-        init_ctx = HookContext(
-            stage=HookStage.ON_SESSION_INIT,
+        # Dispatch SESSION_INIT (plugins discover skills/MCP tools here).
+        init_ctx = EventContext(
             config=agent_config,
             tools=tool_registry,
             sandbox=sandbox,
@@ -175,11 +162,7 @@ class EngineComponent:
             ),
             emit=lambda e: None,
         )
-        await hook_manager.run(
-            HookStage.ON_SESSION_INIT,
-            init_ctx,
-            short_circuit=False,
-        )
+        await ctx.emit(Events.SESSION_INIT, init_ctx)
 
         # Apply tool filter AFTER session init so plugin-discovered tools
         # (skills, MCP) are registered before restrict runs.
@@ -196,14 +179,14 @@ class EngineComponent:
         engine = Engine(
             llm=llm,
             tool_registry=tool_registry,
-            hook_manager=hook_manager,
+            plugin_ctx=ctx,
             state_store=state_store,
-            context_builder=self._context_builder,
+            context_builder=context_builder,
             sandbox_policy=sandbox,
             permission_system=permissions,
             workspace_root=self._workspace_root,
             config=agent_config,
-            plugin_loader=self._plugin_loader,
+            plugin_loader=plugin_loader,
             job_registry=job_registry,
             agent_runtime=agent_runtime,
             agent_registry=agent_registry,
@@ -227,3 +210,6 @@ def load_provider_config(paths: Any, provider_name: str) -> Any:
     from xbotv2.config.loader import load_provider_config as _load
 
     return _load(paths, provider_name)
+
+
+plugin = EngineComponent()

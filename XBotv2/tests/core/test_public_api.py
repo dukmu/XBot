@@ -13,12 +13,10 @@ from xbotv2.api import (
     Command,
     CommandResult,
     ContextComponent,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
-    PluginConfigError,
-    PluginManifest,
+    ToolAction,
+    EventContext,
+    ToolDecision,
+    Events,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -64,7 +62,7 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
-    assert HookDecision(HookAction.DENY, "policy").reason == "policy"
+    assert ToolDecision(ToolAction.DENY, "policy").reason == "policy"
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
     assert hasattr(RuntimePluginContext, "register_tool")
@@ -75,10 +73,7 @@ def test_public_api_exports_core_extension_types():
         "root", [prompt_element("item", "a < b")]
     ) == "<root>\n<item>\na &lt; b\n</item>\n</root>"
     assert SessionPaths is not None
-    error = PluginConfigError("sample", ("limits", 0), "invalid")
-    assert error.path == ("limits", 0)
-    assert HookContext(
-        stage=HookStage.ON_TURN_START,
+    assert EventContext(
         request_id="request-1",
     ).request_id == "request-1"
 
@@ -138,8 +133,8 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     }
     assert schema["parameters"]["required"] == ["path"]
     assert schema["parameters"]["additionalProperties"] is False
-    assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
-    assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
+    assert EventContext().invoke_model is None
+    assert EventContext().request_user_input is None
 
 
 def test_tool_registration_options_validate_values():
@@ -184,71 +179,6 @@ def test_command_contract_separates_server_handlers_from_prompt_metadata():
         Command(name="prompt", description="Prompt", kind="prompt", handler=handler)
     with pytest.raises(ValueError, match="lowercase"):
         Command(name="/Invalid", description="Invalid", handler=handler)
-
-
-def test_plugin_manifest_rejects_unimplemented_tool_scheduling_metadata():
-    with pytest.raises(ValidationError, match="execution_mode"):
-        PluginManifest(
-            name="sample",
-            version="1",
-            tools=[{"handler": "sample:tool", "execution_mode": "parallel"}],
-        )
-
-
-@pytest.mark.parametrize(
-    "stage",
-    [
-        "system_prefix",
-        "system_instructions",
-        "system_rules",
-        "context_suffix",
-    ],
-)
-def test_plugin_manifest_accepts_supported_prompt_fragment_stages(stage):
-    manifest = PluginManifest(
-        name="sample",
-        version="1",
-        prompt_fragments=[{"stage": stage, "handler": "sample:render"}],
-    )
-
-    assert manifest.prompt_fragments[0].stage == stage
-
-
-def test_plugin_manifest_rejects_legacy_dag_suffix_stage():
-    with pytest.raises(ValidationError, match="dag_suffix"):
-        PluginManifest(
-            name="sample",
-            version="1",
-            prompt_fragments=[
-                {"stage": "dag_suffix", "handler": "sample:render"}
-            ],
-        )
-
-
-@pytest.mark.parametrize(
-    "fragment",
-    [
-        {"stage": "system_instructions"},
-        {
-            "stage": "system_instructions",
-            "file": "prompt.md",
-            "handler": "sample:render",
-        },
-        {"stage": "system_instructions", "file": ""},
-        {
-            "stage": "system_instructions",
-            "handler": "sample:render",
-            "unknown": True,
-        },
-    ],
-)
-def test_plugin_manifest_requires_one_prompt_fragment_source(fragment):
-    with pytest.raises(ValidationError):
-        PluginManifest(
-            name="sample",
-            version="1",
-            prompt_fragments=[fragment],
-        )
 
 
 def test_wire_models_reject_unknown_fields():

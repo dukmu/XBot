@@ -9,7 +9,7 @@ import pytest
 from xbotv2.api.paths import RuntimePaths
 import yaml
 
-from xbotv2.core.bootstrap import _resolve_plugin_dirs, bootstrap
+from xbotv2.core.bootstrap import bootstrap
 from xbotv2.llm.mock import MockLLM
 
 
@@ -64,7 +64,7 @@ class TestBootstrapBasics:
 
             return apply
 
-        monkeypatch.setattr("xbotv2.core.bootstrap.make_tool_result_cache_hook", cache_hook)
+        monkeypatch.setattr("xbotv2.tools.result_cache.make_tool_result_cache_hook", cache_hook)
 
         await bootstrap(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -181,25 +181,34 @@ class TestBootstrapBasics:
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from xbotv2.api import HookStage, PluginBase, Tool, ToolRegistrationOptions
+from xbotv2.api import Events, Tool
 
 def runtime_tool() -> str:
     return "ok"
 
-class InitFailPlugin(PluginBase):
-    def apply(self, ctx):
-        ctx.on(HookStage.ON_SESSION_INIT.value, self.on_session_init)
+class InitFailPlugin:
+    name = "init_fail"
+    def apply(self, ctx, config=None):
+        self.ctx = ctx
+        self._tool_names = []
+        ctx.dispose(self.on_unload)
+        ctx.on(Events.SESSION_INIT, self.on_session_init)
 
     async def on_session_init(self, ctx):
-        ctx.plugin_runtime.register_tool(
+        name = ctx.tools.register(
             Tool.from_function(runtime_tool),
-            options=ToolRegistrationOptions(namespace="plugin:init-fail"),
+            namespace="plugin:init-fail",
         )
+        self._tool_names.append(name)
         raise RuntimeError("session init failed")
 
     async def on_unload(self):
+        for name in reversed(self._tool_names):
+            self.ctx.tools.unregister(name)
         Path({str(unload_marker)!r}).write_text("unloaded", encoding="utf-8")
-""",
+
+
+plugin = InitFailPlugin()""",
             encoding="utf-8",
         )
         (plugin_dir / "plugin.yaml").write_text(
@@ -208,9 +217,9 @@ class InitFailPlugin(PluginBase):
         )
 
         with pytest.raises(
-            BaseExceptionGroup,
-            match="Hook failures for stage on_session_init",
-        ) as exc_info:
+            RuntimeError,
+            match="session init failed",
+        ):
             await bootstrap(
                 paths=RuntimePaths.from_data_dir(temp_data_dir),
                 session_id="init-fail",
@@ -218,8 +227,6 @@ class InitFailPlugin(PluginBase):
                 plugin_dirs=[plugins_root],
                 llm_override=MockLLM(responses=[]),
             )
-
-        assert "session init failed" in repr(exc_info.value.exceptions[0])
         assert unload_marker.read_text(encoding="utf-8") == "unloaded"
         assert str(plugins_root) not in sys.path
 
@@ -236,32 +243,41 @@ class InitFailPlugin(PluginBase):
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from xbotv2.api import HookStage, PluginBase, Tool, ToolRegistrationOptions
+from xbotv2.api import Events, Tool
 
 LOG = Path({str(lifecycle_log)!r})
 
 def runtime_tool() -> str:
     return "ok"
 
-class NormalClosePlugin(PluginBase):
-    def apply(self, ctx):
-        ctx.on(HookStage.ON_SESSION_INIT.value, self.on_session_init)
-        ctx.on(HookStage.ON_SESSION_CLOSE.value, self.on_session_close)
+class NormalClosePlugin:
+    name = "normal_close"
+    def apply(self, ctx, config=None):
+        self.ctx = ctx
+        self._tool_names = []
+        ctx.dispose(self.on_unload)
+        ctx.on(Events.SESSION_INIT, self.on_session_init)
+        ctx.on(Events.SESSION_CLOSE, self.on_session_close)
 
     async def on_session_init(self, ctx):
-        ctx.plugin_runtime.register_tool(
+        name = ctx.tools.register(
             Tool.from_function(runtime_tool),
-            options=ToolRegistrationOptions(namespace="plugin:normal-close"),
+            namespace="plugin:normal-close",
         )
+        self._tool_names.append(name)
 
     async def on_session_close(self, ctx):
         del ctx
         LOG.write_text("close\\n", encoding="utf-8")
 
     async def on_unload(self):
+        for name in reversed(self._tool_names):
+            self.ctx.tools.unregister(name)
         with LOG.open("a", encoding="utf-8") as stream:
             stream.write("unload\\n")
-""",
+
+
+plugin = NormalClosePlugin()""",
             encoding="utf-8",
         )
         (plugin_dir / "plugin.yaml").write_text(
@@ -289,7 +305,7 @@ class NormalClosePlugin(PluginBase):
             "unload",
         ]
         assert not engine.tool_registry.registered(tool_name)
-        assert loader.loaded_plugins == []
+        assert loader.loaded_ids == ()
         assert engine.plugin_loader is None
 
     @pytest.mark.asyncio
@@ -396,24 +412,22 @@ class NormalClosePlugin(PluginBase):
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "simple"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "__init__.py").write_text("")
-        (plugin_dir / "tools.py").write_text(
+        (plugin_dir / "__init__.py").write_text(
             """
-from xbotv2.api.tools import Tool
+from xbotv2.api import Tool
 
 def _plugin_tool() -> str:
-    \"\"\"Plugin tool.\"\"\"
+    '''Plugin tool.'''
     return "plugin ok"
 
-plugin_tool = Tool.from_function(_plugin_tool, name="plugin_tool")
+class SimplePlugin:
+    name = "simple"
+
+    def apply(self, ctx, config=None):
+        ctx.tools.register(Tool.from_function(_plugin_tool, name="plugin_tool"))
+
+plugin = SimplePlugin()
 """
-        )
-        (plugin_dir / "plugin.yaml").write_text(
-            yaml.safe_dump({
-                "name": "simple",
-                "version": "1.0.0",
-                "tools": [{"handler": "simple.tools:plugin_tool"}],
-            })
         )
         monkeypatch.syspath_prepend(str(plugins_root))
 
@@ -451,7 +465,7 @@ async def before_user_message(ctx):
         system.write_text(
             """
 hooks:
-  - stage: before_user_message_accept
+  - stage: before/user-message-accept
     target: test_personality_hooks:before_user_message
 """,
             encoding="utf-8",
@@ -477,7 +491,7 @@ hooks:
         system.write_text(
             """
 hooks:
-  - stage: on_turn_start
+  - stage: turn/start
     target: missing_module:nope
 """,
             encoding="utf-8",
@@ -505,7 +519,7 @@ hooks:
         )
         (config_dir / "config.yaml").write_text(
             "hooks:\n"
-            "  - stage: before_user_message_accept\n"
+            "  - stage: before/user-message-accept\n"
             "    target: hooks/rewrite.py:rewrite\n",
             encoding="utf-8",
         )
@@ -585,12 +599,16 @@ version: 0.1.0
         (plugin_dir / "__init__.py").write_text(
             f"""
 import json
-from xbotv2.api.plugins import PluginBase
 
-class ConfiguredPlugin(PluginBase):
-    async def on_load(self, config=None):
+class ConfiguredPlugin:
+    name = "configured"
+
+    def apply(self, ctx, config=None):
         with open({str(output_path)!r}, "w", encoding="utf-8") as fh:
             json.dump(config or {{}}, fh, sort_keys=True)
+
+
+plugin = ConfiguredPlugin()
 """
         )
         monkeypatch.syspath_prepend(str(plugin_dir))
@@ -893,19 +911,44 @@ class ConfiguredPlugin(PluginBase):
 class TestBootstrapNoPlugins:
     """Engine works correctly in explicit no-plugin mode."""
 
-    def test_explicit_empty_plugin_dirs_disables_builtin_scan(self, tmp_path):
+    def _make_tree(self, plugin_dirs, include_builtins):
+        import tempfile
+        from xbotv2.core.bootstrap import _build_plugin_tree
+        from xbotv2.config.models import RuntimeConfig
+        from xbotv2.persistence.store import CoreStateStore
+
+        tmp = Path(tempfile.mkdtemp())
+        store = CoreStateStore.create(
+            RuntimePaths.from_data_dir(tmp).session("s"),
+            thread_id="t", workspace_root=str(tmp), provider="default",
+        )
+        return _build_plugin_tree(
+            paths=RuntimePaths.from_data_dir(tmp), state_store=store,
+            session_id="s", thread_id="t",
+            workspace_root=Path("."), provider_name="default",
+            agent_config=RuntimeConfig(), resolved_agent=None, llm_override=None,
+            selected_agent=None, parent_permission_system=None,
+            parent_thread_id="", is_subagent=False, interactive=True,
+            user_context=None, plugin_configs={}, plugin_dirs=plugin_dirs,
+            disabled_plugins=set(), include_builtins=include_builtins,
+            thread_preexisting=False, stored_provider=None,
+            session_paths=None, engine_factory=None,
+        )
+
+    def test_explicit_empty_plugin_dirs_disables_builtin_scan(self):
         """Explicit no-plugin mode stays pure even when built-ins exist."""
-        builtin_dir = tmp_path / "builtin_plugins"
-        builtin_dir.mkdir()
+        tree = self._make_tree(plugin_dirs=[], include_builtins=False)
+        ids = {entry.id for entry in tree.entries}
+        assert "goal" not in ids
+        assert "core" in ids  # engine component remains
 
-        assert _resolve_plugin_dirs([], builtin_plugins_dir=builtin_dir) == []
-
-    def test_default_plugin_dirs_scan_builtins(self, tmp_path):
-        """Default runtime mode still discovers the built-in plugin root."""
-        builtin_dir = tmp_path / "builtin_plugins"
-        builtin_dir.mkdir()
-
-        assert _resolve_plugin_dirs(None, builtin_plugins_dir=builtin_dir) == [builtin_dir]
+    def test_default_plugin_dirs_scan_builtins(self):
+        """Default runtime mode includes the built-in plugins in the tree."""
+        tree = self._make_tree(plugin_dirs=None, include_builtins=True)
+        ids = {entry.id for entry in tree.entries}
+        assert "goal" in ids
+        assert "todolist" in ids
+        assert "core" in ids
 
     @pytest.mark.asyncio
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):

@@ -15,7 +15,7 @@ from xbotv2.core.content_cache import (
 from xbotv2.core.context import ContextBuilder
 from xbotv2.config.models import RuntimeConfig
 from xbotv2.core.engine import Engine
-from xbotv2.hooks.manager import HookManager
+import xcore
 from xbotv2.llm.mock import MockLLM
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -115,7 +115,7 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -149,7 +149,7 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     engine = Engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(

@@ -6,19 +6,36 @@ from pathlib import Path
 from typing import Any, Literal
 
 from xbotv2.api import (
-    PluginBase,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
 )
+from xcore import S
 
 from .browser import BrowserSession
 from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
 
 
-class BrowserPlugin(PluginBase):
-    def __init__(self, manifest) -> None:
-        super().__init__(manifest)
+class BrowserPlugin:
+    name = "browser"
+    Config = S.object({
+        "search": S.object({
+            "backend": S.string().optional(),
+            "region": S.string().optional(),
+            "safesearch": S.string().optional(),
+        }).optional(),
+        "network": S.object({
+            "timeout_seconds": S.number().optional(),
+            "max_response_bytes": S.number().optional(),
+            "allow_private": S.boolean().optional(),
+        }).optional(),
+        "browser": S.object({
+            "headless": S.boolean().optional(),
+            "timeout_seconds": S.number().optional(),
+        }).optional(),
+    })
+
+    def __init__(self) -> None:
         self._search = {"backend": "yandex", "region": "wt-wt", "safesearch": "moderate"}
         self._network_options = NetworkOptions()
         self._url_policy = UrlPolicy()
@@ -46,7 +63,19 @@ class BrowserPlugin(PluginBase):
         self._browser = None
         self._web = None
 
-    def apply(self, ctx) -> None:
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        config = config or {}
+        self._search.update(config.get("search") or {})
+        network = config.get("network") or {}
+        self._network_options = NetworkOptions(
+            timeout_seconds=float(network.get("timeout_seconds", 20)),
+            max_response_bytes=int(network.get("max_response_bytes", 5_000_000)),
+            allow_private=bool(network.get("allow_private", False)),
+        )
+        self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
+        self._browser_options.update(config.get("browser") or {})
+        ctx.dispose(self._on_unload)
         self._artifacts_dir = Path(ctx.variables["artifacts"])
         for function in (
             self.web_search,
@@ -210,3 +239,15 @@ class BrowserPlugin(PluginBase):
             "search_backend": self._search["backend"],
             "browser_active": bool(self._browser and self._browser.active),
         }
+
+
+    async def _on_unload(self) -> None:
+        if self._browser is not None:
+            await self._browser.shutdown()
+        if self._web is not None:
+            await self._web.close()
+        self._browser = None
+        self._web = None
+
+
+plugin = BrowserPlugin()

@@ -5,17 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from xbotv2.api import (
-    HookContext,
-    HookStage,
-    PluginBase,
-    PluginManifest,
+    EventContext,
+    Events,
     calibrated_context_tokens,
 )
 
 
-class TokenManagerPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest) -> None:
-        super().__init__(manifest)
+class TokenManagerPlugin:
+    name = "token_manager"
+
+    def __init__(self) -> None:
         self._latest: dict[str, Any] = {}
 
     async def on_load(self, config: dict[str, Any]) -> None:
@@ -24,11 +23,12 @@ class TokenManagerPlugin(PluginBase):
     async def on_unload(self) -> None:
         self._latest = {}
 
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.BEFORE_MODEL_REQUEST.value, self._on_before_model_request)
-        ctx.on(HookStage.AFTER_MODEL_RESPONSE.value, self._on_after_model_response)
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
+        ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 
-    async def _on_before_model_request(self, ctx: HookContext) -> None:
+    async def _on_before_model_request(self, ctx: EventContext) -> None:
         request = ctx.model_request or {}
         messages = list(request.get("messages") or [])
         tools = list(request.get("tools") or [])
@@ -55,7 +55,7 @@ class TokenManagerPlugin(PluginBase):
             ),
         }
 
-    async def _on_after_model_response(self, ctx: HookContext) -> None:
+    async def _on_after_model_response(self, ctx: EventContext) -> None:
         usage = getattr(ctx.model_response, "usage_metadata", None) or {}
         self._latest["provider_usage"] = {
             key: int(usage[key])
@@ -77,3 +77,6 @@ class TokenManagerPlugin(PluginBase):
             "mode": "observe_only",
             "latest_request": dict(self._latest),
         }
+
+
+plugin = TokenManagerPlugin()

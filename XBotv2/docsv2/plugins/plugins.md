@@ -30,7 +30,7 @@ plugin needs.
 | configuration | Declare `config_schema` in the manifest | Schema and values are validated before module import |
 | `on_load(config)` | Create plugin-owned resources from validated config; keep cleanup safe after partial initialization | No core registrations exist yet; `on_unload` is attempted if `on_load` raises |
 | `apply(ctx)` | Register hooks, tools, commands, prompt fragments, and agents through `ctx` services | Registration is a fiber effect; unload undoes it |
-| hook execution | Use `ctx.plugin_runtime` for dynamic tools | Dynamic resources join the same ownership record |
+| event listeners | Register `ctx.on(Events.X, handler)` listeners | Listeners are fiber effects; unload undoes them |
 | `on_unload()` | Close clients, subprocesses, and other external resources | Core resources are removed even if this callback raises; store data remains |
 
 Loading is atomic across dependency order. If a later plugin fails, already
@@ -39,9 +39,10 @@ the original load error instead of replacing it. Explicit `unload_all()` also
 continues after individual callback failures and reports an exception group
 after every plugin has been cleaned.
 
-The setup transaction also rolls back on task cancellation. Hooks, tools, and
-prompt fragments registered before a `CancelledError` are removed before the
-cancel propagates; the partially initialized plugin still receives
+The setup transaction also rolls back on task cancellation. Event
+listeners, tools, and prompt fragments registered before a `CancelledError`
+are removed before the cancel propagates; the partially initialized plugin
+still receives
 `on_unload()` for its own resources.
 
 Bootstrap remains transactional after loading: failures while creating the LLM
@@ -89,33 +90,41 @@ should retain explicit runtime defaults in `on_load`.
 from typing import Any
 
 from xbotv2.api import (
-    HookContext,
-    HookStage,
-    PluginBase,
-
+    EventContext,
+    Events,
     Tool,
     ToolRegistrationOptions,
 )
 
 
-class ExamplePlugin(PluginBase):
-    async def on_load(self, config: dict[str, Any]) -> None:
-        self._config = dict(config)
+class ExamplePlugin:
+    name = "example"
 
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
+    def __init__(self) -> None:
+        self._tool_names: list[str] = []
+
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        ctx.dispose(self._on_unload)
+        ctx.on(Events.SESSION_INIT, self._on_session_init)
         ctx.tools.register(
             Tool.from_function(self._run, name="example"),
             options=ToolRegistrationOptions(namespace="plugin:example"),
         )
 
-    async def on_unload(self) -> None:
+    async def _on_unload(self) -> None:
         # Close only resources owned directly by this plugin.
-        pass
+        for name in reversed(self._tool_names):
+            self.ctx.tools.unregister(name)
 
-    async def _on_session_init(self, ctx: HookContext) -> None:
-        # Dynamic tools, when needed, use ctx.plugin_runtime.register_tool(...).
-        pass
+    async def _on_session_init(self, ctx: EventContext) -> None:
+        # Runtime-discovered tools register on the raw registry and are
+        # tracked for cleanup in _on_unload.
+        name = ctx.tools.register(
+            Tool.from_function(self._run, name="example-runtime"),
+            options=ToolRegistrationOptions(namespace="plugin:example"),
+        )
+        self._tool_names.append(name)
 
     async def _run(self, value: str) -> str:
         return value
@@ -125,13 +134,13 @@ class ExamplePlugin(PluginBase):
 ```
 
 Python plugins override `apply(ctx)` and register through the XCore context:
-`ctx.on(stage.value, callback)` for hooks, `ctx.tools.register(...)`,
-`ctx.commands.register(...)`, `ctx.prompts.add(...)`, and
-`ctx.agents.register(...)` for agents. Every registration is a fiber effect:
-unload (or a setup failure) undoes it automatically, and plugin `on_unload`
-runs once as the fiber disposer. The `plugin.yaml` manifest supplies metadata
-and the config schema; manifest-declared hooks/tools remain supported for
-declarative plugins.
+`ctx.on(Events.X, callback)` for runtime event listeners,
+`ctx.tools.register(...)`, `ctx.commands.register(...)`,
+`ctx.prompts.add(...)`, and `ctx.agents.register(...)` for agents. Every
+registration is a fiber effect: unload (or a setup failure) undoes it
+automatically, and `ctx.dispose(...)` runs cleanup once as the fiber
+disposer. The `plugin.yaml` manifest supplies metadata and the config schema;
+manifest-declared hooks/tools remain supported for declarative plugins.
 
 Agent definitions follow the same ownership rules as other resources: names
 are unique, setup failure rolls them back, and unload unregisters them. Core
@@ -147,28 +156,29 @@ message after history. Unknown stages are rejected during manifest validation.
 Python plugins receive the same validation from the context builder and may
 provide a source label through `ctx.prompts.add(stage, text, source=...)`.
 After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
-`ContextComponent` values. A Hook may replace the component list, but every
-replacement entry must remain a `ContextComponent`; provider conversion does
-not accept ad hoc dictionaries or private core objects.
-Runtime registrations performed from hooks must either use a recorded plugin
-capability or be moved into setup; otherwise unload and failure rollback cannot
-be complete.
+`ContextComponent` values. A listener may replace the component list, but
+every replacement entry must remain a `ContextComponent`; provider conversion
+does not accept ad hoc dictionaries or private core objects.
+Runtime registrations performed from event listeners must be tracked by the
+plugin and unregistered in its disposer; otherwise unload and failure
+rollback cannot be complete.
 
-Plugin hooks receive `ctx.plugin_runtime` when they are invoked through the
-loader. Dynamic tools discovered at runtime must be registered through that
-capability:
+Dynamic tools discovered at runtime (for example at `SESSION_INIT`) register
+on the raw registry through `ctx.tools.registry.register(...)` (or
+`ctx.tools.register(...)` when the listener receives the plugin context) and
+the registered names are recorded:
 
 ```python
-ctx.plugin_runtime.register_tool(
+name = ctx.tools.registry.register(
     tool,
-    options=ToolRegistrationOptions(namespace="plugin:my-plugin"),
+    sandbox_mode="host",
+    namespace="plugin:my-plugin",
 )
+self._tool_names.append(name)
 ```
 
-Those runtime registrations are appended to the plugin record and are removed
-during plugin unload. A plugin that owns a shorter-lived dynamic resource may
-call `ctx.plugin_runtime.unregister_tool(registered_name)`. The capability
-rejects names outside that plugin's ownership record.
+The disposer (`ctx.dispose(...)`) unregisters those names, so a plugin that
+owns a shorter-lived dynamic resource removes it on unload or session close.
 
 Tool registration options are explicit:
 
@@ -258,8 +268,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - `skill_tool.py`: `load_skill()` with `` !`cmd` `` shell injection preprocessing
 - `permission_scope.py`: per-turn tool permission overrides
 
-**Hooks:**
-- `ON_SESSION_INIT`: transactionally discover SKILL.md files from 6 paths and
+**Events:**
+- `SESSION_INIT`: transactionally discover SKILL.md files from 6 paths and
   register each discovered skill once
 - `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
 - Skill content enters context through the normal prompt-expansion or Tool-result
@@ -308,8 +318,8 @@ Connects to MCP (Model Context Protocol) servers and registers their tools.
 - `client.py`: MCPClient with StdioTransport and HttpTransport
 - `tool.py`: MCP tool adapter returning `ToolResult`
 
-**Hooks:**
-- `ON_SESSION_INIT`: connect to enabled MCP servers, validate tool definitions,
+**Events:**
+- `SESSION_INIT`: connect to enabled MCP servers, validate tool definitions,
   and register each server transactionally
 - `ON_SESSION_CLOSE`: unregister session tools and disconnect all servers
 
@@ -364,8 +374,8 @@ plugins:
 
 ### TokenManagerPlugin (`builtin_plugins/token_manager/`)
 
-Uses public model-request and model-response Hooks to expose the latest
-provider-calibrated context estimate and provider usage. Engine owns cumulative
+Uses public model-request and model-response event listeners to expose the
+latest provider-calibrated context estimate and provider usage. Engine owns cumulative
 session accounting and Compact owns the automatic threshold; TokenManager does
 not duplicate either policy. Its ephemeral observation resets on unload. See
 [Token manager plugin](token_manager.md).
@@ -391,9 +401,9 @@ ctx.tools.register(
 )
 ```
 
-The plugin context deliberately does not expose `ToolRegistry`, `HookManager`,
-or `ContextBuilder` directly. They are provided through the capability
-services (`ctx.tools`, `ctx.commands`, `ctx.prompts`, `ctx.agents`) and every
+The plugin context deliberately does not expose `ToolRegistry` or
+`ContextBuilder` directly. They are provided through the capability services
+(`ctx.tools`, `ctx.commands`, `ctx.prompts`, `ctx.agents`) and every
 registration so a failed setup can be rolled back atomically.
 
 The built-in Skills, MCP, and token-manager plugins are the reference templates
@@ -402,14 +412,14 @@ cannot express, first verify that the gap is shared rather than plugin-local.
 Shared gaps belong in the public API; plugin-local concerns stay inside the
 plugin instead of receiving special runtime access or a new public wrapper.
 
-- Compact demonstrates an auxiliary model call, transform Hook, structured
-  request tool, and core-owned atomic persistence.
-- Skills demonstrates setup tools, lifecycle hooks, runtime-discovered tools,
-  per-turn state, diagnostics, and unload reset.
+- Compact demonstrates an auxiliary model call, transform event listener,
+  structured request tool, and core-owned atomic persistence.
+- Skills demonstrates setup tools, lifecycle listeners, runtime-discovered
+  tools, per-turn state, diagnostics, and unload reset.
 - MCP demonstrates external client ownership, degraded diagnostics, dynamic
   tools, session cleanup, and unload cleanup as a final safety net.
-- Token Manager demonstrates a hook-only plugin with configuration,
+- Token Manager demonstrates a listener-only plugin with configuration,
   diagnostics, model-request inspection, public collector methods, and
   unload-time in-memory state reset.
-  It reads `HookContext.messages` for history accounting and keeps its own
-  diagnostics; Hook payloads are not a plugin persistence channel.
+  It reads `EventContext.messages` for history accounting and keeps its own
+  diagnostics; event payloads are not a plugin persistence channel.

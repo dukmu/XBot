@@ -38,9 +38,6 @@ from xbotv2.api.agents import (
 )
 from xbotv2.api.commands import Command, CommandResult
 from xbotv2.api.plugins import (
-    PluginBase,
-    PluginConfigError,
-    PluginManifest,
     PluginStore,
     RuntimePluginContext,
     ToolRegistrationOptions,
@@ -58,11 +55,12 @@ from xbotv2.api.tools import (
     ToolResult,
 )
 from xbotv2.api.runtime import SessionInfo
-from xbotv2.api.hooks import (
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
+from xbotv2.api.events import (
+    EventContext,
+    Events,
+    SHORT_CIRCUIT_EVENTS,
+    ToolAction,
+    ToolDecision,
 )
 from xbotv2.api.messages import (
     ContentPart,
@@ -98,10 +96,8 @@ __all__ = [
     "CommandResult",
     "ContentPart",
     "ContextComponent",
-    "HookAction",
-    "HookContext",
-    "HookDecision",
-    "HookStage",
+    "EventContext",
+    "Events",
     "JsonValue",
     "ImageContent",
     "ImagePart",
@@ -124,9 +120,6 @@ __all__ = [
     "ModelResponse",
     "OutputChunk",
     "OutputStore",
-    "PluginBase",
-    "PluginConfigError",
-    "PluginManifest",
     "PluginStore",
     "ProviderCapabilities",
     "ReasoningPart",
@@ -144,14 +137,17 @@ __all__ = [
     "SessionPaths",
     "ThreadPaths",
     "TextPart",
+    "SHORT_CIRCUIT_EVENTS",
     "StreamOutputStore",
     "SubagentAgentError",
     "SubagentTurnError",
     "TERMINAL_STATES",
     "TextOutputStore",
+    "ToolAction",
     "ToolCall",
     "ToolCallDelta",
     "ToolCallPart",
+    "ToolDecision",
     "ToolError",
     "ToolResult",
     "Tool",

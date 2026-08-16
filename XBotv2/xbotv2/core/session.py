@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-from xbotv2.api.hooks import HookStage
 from xbotv2.api.messages import ImageContent
 from xbotv2.api.paths import RuntimePaths
 from xbotv2.core.engine import Engine
@@ -437,7 +436,9 @@ async def _pump_turn(
             if payload["type"] in {"turn_finished", "turn_cancelled"}:
                 loader = runtime.engine.plugin_loader
                 if loader is not None:
-                    payload["data"]["status_slots"] = await loader.status_slots()
+                    slots = await loader.status_slots()
+                    if slots:
+                        payload["data"]["status_slots"] = slots
             await events.put(payload)
     except asyncio.CancelledError:
         logger.info("Turn cancelled for session %s", runtime.session_id)

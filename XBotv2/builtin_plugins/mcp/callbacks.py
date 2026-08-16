@@ -9,12 +9,12 @@ from typing import Any
 
 from mcp import types
 
-from xbotv2.api import HookContext, Message, prompt_element
+from xbotv2.api import EventContext, Message, prompt_element
 
 logger = logging.getLogger("xbotv2.mcp")
 
 
-def client_callbacks(ctx: HookContext) -> dict[str, Any]:
+def client_callbacks(ctx: EventContext) -> dict[str, Any]:
     async def sample(_request_context: Any, params: Any) -> Any:
         if ctx.invoke_model is None:
             return types.ErrorData(code=-32603, message="Model invocation unavailable")

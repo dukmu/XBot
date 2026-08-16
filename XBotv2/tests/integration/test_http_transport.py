@@ -33,7 +33,7 @@ import xbotv2
 import yaml
 from xbotv2.api.jobs import JobKind
 from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.hooks import HookStage
+from xbotv2.api.events import Events
 from xbotv2.api.messages import Message
 from xbotv2.api.tools import Tool
 from xbotv2.client import XBotClient, XBotClientError
@@ -1506,7 +1506,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from xbotv2.api import HookStage
+    from xbotv2.api import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1517,10 +1517,10 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     observed = []
 
     async def record(ctx):
-        observed.append((ctx.stage, ctx.request_id))
+        observed.append(ctx.request_id)
 
-    session.engine.hook_manager.register(HookStage.ON_TURN_START, record)
-    session.engine.hook_manager.register(HookStage.AFTER_STATE_PERSIST, record)
+    session.engine.plugin_ctx.on(Events.TURN_START, record)
+    session.engine.plugin_ctx.on(Events.AFTER_STATE_PERSIST, record)
 
     async with client.stream(
         "POST",
@@ -1531,10 +1531,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
 
     events = _parse_sse(body)
     assert all(event["request_id"] == "request-http-1" for event in events)
-    assert observed == [
-        (HookStage.ON_TURN_START, "request-http-1"),
-        (HookStage.AFTER_STATE_PERSIST, "request-http-1"),
-    ]
+    assert observed == ["request-http-1", "request-http-1"]
 
 
 @pytest.mark.asyncio
@@ -1542,7 +1539,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from xbotv2.api import HookStage
+    from xbotv2.api import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1555,7 +1552,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     async def record(ctx):
         observed.append(ctx.request_id)
 
-    session.engine.hook_manager.register(HookStage.ON_TURN_START, record)
+    session.engine.plugin_ctx.on(Events.TURN_START, record)
 
     async with client.stream(
         "POST",
@@ -2712,11 +2709,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         if not ctx.turn_lock.locked():
             break
         await asyncio.sleep(0)
-    goal_plugin = next(
-        plugin
-        for plugin in ctx.engine.plugin_loader.loaded_plugins
-        if plugin.manifest.name == "goal"
-    )
+    goal_plugin = ctx.engine.plugin_loader.get("goal")
     assert (await goal_plugin.get_goal()).data["goal"] == {
         "objective": "ship the API",
         "status": "complete",

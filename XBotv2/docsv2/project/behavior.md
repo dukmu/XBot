@@ -7,7 +7,7 @@ discipline for continuous iteration.
 
 - Keep every touched file simple, consistent, and readable.
 - Prefer one clear contract over parallel partial contracts.
-- Preserve the current `HookStage` values while improving their contracts,
+- Dispatch runtime events through the XCore context (`ctx.serial`/`ctx.emit`) while improving their contracts,
   payloads, and tests.
 - Do not mark existing public stages as experimental just to avoid specifying
   behavior.

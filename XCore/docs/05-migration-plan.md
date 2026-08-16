@@ -1,85 +1,84 @@
-# 05 · XBot 组件化架构（XCore 之上的组件包构建）
+# 05 · XBot 组件化架构（全插件 + 事件驱动）
 
-> 状态：**已实施**（commit 见开发日志）。早期"桥接式迁移"方案已废弃：XBot 不再
-> 在 XCore 旁挂一个平行核心，而是**完全以组件包（XCore 插件/服务）构建**，包括
-> 核心 loop。XCore 保持干净的 Cordis 契约，不做任何面向迁移的内部暴露
-> （`hooks_for` 一类访问已移除）。
+> 状态：**已实施**。XBot 完全以 XCore 插件/事件/服务构建：**没有**独立的 hook
+> 系统（HookStage/HookManager 已删除）、**没有**兼容层（bridge.py 已删除）、
+> 引擎本身是插件，通过 XCore 事件对外扩展。XCore 保持干净契约，零内部暴露。
 
-## 1. 架构原则
+## 1. 架构原则（最终版）
 
-1. **XCore 是唯一核心**：Context/事件/服务/插件/生命周期/状态全部由 XCore 提供，
-   XCore 公共 API 不因 XBot 需求而污染（不暴露 EventBus 内部记录）。
-2. **一切能力都是服务**：工具、Hook、配置、状态、会话、引擎……均由组件在
-   Context 上注册，插件与引擎只通过服务消费。
-3. **Hook 即事件**：41 个 HookStage 是普通 XCore 事件；契约（observer/transform/
-   guard 校验、短路、strict 聚合、`plugin_runtime` 注入）在注册侧包装器中执行，
-   派发走公开原语（`emit`/`serial`）。
-4. **核心 loop 是组件**：Engine 由 `xbot.core` 组件从服务组装，以 `ctx.engine`
-   提供；turn 的 Hook 全部经 XCore 事件总线。
-5. **无补丁式迁移**：不再有"把旧核心接到 XCore 上"的适配层；运行时的装配就是
-   XCore 应用的装配。
+1. **全插件**：运行时的一切能力 —— 引擎（核心 loop）、工具、LLM、配置、状态、
+   基础工具、内置插件 —— 都是插件树（cordis.yaml 式）中的条目，挂载在同一个
+   XCore Context 上。
+2. **事件即扩展点**：引擎不再有 41 阶段 Hook 契约；turn/session 生命周期、
+   上下文构建、模型调用、工具调用都是 XCore 事件（`session/init`、
+   `before/model-request`、`before/tool-call` …）。插件用 `ctx.on(event, fn)`
+   监听/拦截；短路事件用 `ctx.serial`（首个非 None 结果由引擎解释），观察事件用
+   `ctx.emit`。
+3. **服务即能力**：`ctx.tools` / `ctx.llm` / `ctx.engine` / `ctx.state` /
+   `ctx.hooks`（不再有）… 全部由插件注册；插件注册即 fiber effect（卸载自动清理）。
+4. **无兼容层**：不保留旧机制的别名、包装或迁移垫片。
+5. **依赖用插件发现**：树条目按序挂载，服务依赖由条目顺序与 `inject` 表达。
 
-## 2. 模块布局
+## 2. 目录结构（全插件）
 
 ```
-xbotv2/
-  components/                  # 运行时组件包（每个都是 XCore 对象插件）
-    __init__.py
-    runtime.py                 # RuntimeComponent：paths/session/variables/runtime/state_store
-    hooks.py                   # HooksComponent：ctx.hooks（bus-backed HookManager）
-    tools.py                   # ToolsComponent：tools/commands/prompts/sandbox/permissions/job_registry/agents
-    core.py                    # EngineComponent：Agent 解析 → LLM → ON_SESSION_INIT →
-                               #   工具过滤 → 组装 Engine → ctx.engine（apply 即装配）
-  plugin/
-    bridge.py                  # 插件能力服务适配（ToolsService 等）+ PluginAdapter + plugin_runtime
-    loader.py                  # 发现/依赖/配置校验 + ctx.plugin(adapter) 挂载
-  hooks/manager.py             # 41 阶段契约：internal/listener 注册包装 + emit/serial 派发
-  core/bootstrap.py            # 装配器：建 Context → 挂组件 → 挂插件 → 挂 engine 组件
+XBotv2/xbotv2/
+  app.py                     # 薄启动器：建根 Context → 挂 loader → 载树
+  loader/                    # 插件树 loader（cordis.yaml 机制）+ PluginTree
+  plugins/                   # 运行时能力插件（都是 XCore 插件）
+    runtime.py               # xbot.runtime：paths/session/variables/config/state_store
+    tools.py                 # xbot.tools：ToolRegistry/sandbox/permissions/jobs/agents
+                             #   + 工具服务（fiber-effect 清理，caller-tracking）
+    coretools.py             # xbot.coretools：基础工具 + result-cache 监听 + 配置钩子
+    provider.py              # xbot.provider：LLM 客户端（ctx.llm）
+    agent_runtime.py         # 子代理工厂
+    core.py                  # xbot.core：引擎插件（组装 Engine → ctx.engine）
+  api/events.py              # 事件目录（Events 常量）+ EventContext + ToolDecision
+  builtin_plugins/           # goal/todolist/skills/mcp/...（纯 XCore 插件）
 ```
 
-装配顺序（bootstrap）：
+删除：`xbotv2/hooks/`（HookManager）、`xbotv2/api/hooks.py`（HookStage/HookContext/
+HookDecision）、`xbotv2/plugin/`（bridge.py/loader.py）、`components/`（并入
+`plugins/`）、各 `plugin.yaml`（配置走插件 Config S schema）。
 
-1. `xcore.Context(data_dir=会话 state 目录)`（`ctx.state` 由此获得持久路径）。
-2. 挂载 `HooksComponent` + `ToolsComponent` + `RuntimeComponent`（pending）。
-3. `await ctx.start()`：组件按注册序加载，注册全部服务。
-4. 注册核心 Hook（result-cache、configured hooks）与核心工具（写入共享注册表）。
-5. `PluginLoader(ctx=...)` 装载内置插件（XCore Fiber 生命周期）。
-6. 挂载 `EngineComponent`（注册序最后）：`apply` 内完成 Agent 解析 / 线程元数据
-   / LLM 创建 / `ON_SESSION_INIT` / 工具过滤 / Engine 组装，`ctx.set("engine",
-   engine)`。
+## 3. 事件目录（api/events.py）
 
-## 3. Hook 契约的公开原语实现（无 XCore 内部访问）
+`Events` 常量（`session/init`、`turn/start`、`before/context`、
+`before/model-request`、`before/tool-call`、`after/tools` …），
+`SHORT_CIRCUIT_EVENTS`（serial 派发），`EventContext`（事件载荷，
+替代 HookContext），`ToolDecision/ToolAction`（before/tool-call 的
+ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 
-- 注册拦截：`internal/listener`（XCore 公共事件，Cordis 语义 —— 注册 ctx 作为
-  首参传入）。HookManager 的拦截处理器对 HookStage 事件名返回**重新注册的包装
-  监听器**（bail 替代注册），包装器带 `__hook_contract__` 标记防递归。
-- 契约包装器（注册时闭包 stage/owner）：
-  - `plugin_runtime` 注入（owner = 注册 ctx → bridge 解析）；
-  - 返回校验（observer 必须 None；short-circuit 必须 dict/HookDecision，
-    键表校验）；guard 的 ALLOW 记录、CONTINUE 放行、DENY/STOP bail；
-  - 异常策略：short-circuit 传播；strict 收集到 HookContext 收集器；
-    其余记日志放行。
-- 派发（`HookManager.run`）：short-circuit 阶段 → `ctx.serial`（首个 bail 值）；
-  observer 阶段 → `ctx.emit`（全部执行）+ 收集器聚合 `ExceptionGroup`。
-- 卸载清理：监听器是 fiber effect，插件卸载自动移除（无需手工表）。
+## 4. 引擎 = 事件驱动插件
 
-## 4. 与早期桥接方案的差异（已消除）
+- `Engine` 构造改收 `plugin_ctx`（XCore Context），不再有 hook_manager。
+- 引擎在 `plugin_ctx` 上派发事件：短路事件 `await ctx.serial(...)`、观察事件
+  `await ctx.emit(...)`；结果由引擎按事件语义解释（与旧契约的行为一致，
+  但没有独立的校验层）。
+- 动态工具注册（skills/MCP 在 session/init 时）：插件自己跟踪注册名并
+  `ctx.dispose(...)` 清理 —— 没有 plugin_runtime 注入机制。
 
-| 早期（已废弃） | 现在 |
+## 5. 插件树（cordis.yaml 机制）
+
+`loader/`：`PluginTree`（id/name/config/disabled/inject/isolate 条目，YAML 或
+dict）、`Loader`（导入模块 → 解析 `plugin` 导出 → 按序挂载，可 isolate）、
+`LoaderComponent`（把 loader 作为插件提供 `ctx.loader`）。`.xbot/plugins.yaml`
+可追加/覆盖条目。默认树由启动器组装：hooks?（无）→ runtime → tools →
+coretools → agent_runtime → 内置插件 → core（引擎，最后）。
+
+## 6. 与早期版本的差异（全部消除）
+
+| 早期 | 现在 |
 | --- | --- |
-| `EventBus.hooks_for` 暴露内部 Hook 记录 | 无；契约在注册侧包装 + 公开原语派发 |
-| HookManager 从总线收集原始回调 + owner | 包装器闭包注册 ctx；run 只调 emit/serial |
-| bootstrap 构造一切 + 构造器注入 | 组件包挂载 + 服务解析；Engine 组件自组装 |
-| 引擎在 XCore 之外 | `ctx.engine` 服务（`xbot.core` 组件） |
-| `register_core_services`（生产路径） | 组件取代；该函数仅保留为测试装配便利 |
+| HookStage 枚举 + HookManager 契约层 | XCore 事件（Events 常量 + serial/emit） |
+| HookContext/HookDecision | EventContext + ToolDecision |
+| bridge.py（服务适配 + plugin_runtime + caller-tracking） | 服务类移入 plugins/tools.py；caller-tracking 由 loader 设置 |
+| PluginBase + plugin.yaml + 自研 loader | 纯 XCore 插件（模块导出 `plugin`）+ 插件树 loader |
+| 引擎在 XCore 之外 + hook_manager 注入 | 引擎是插件（ctx.engine），事件驱动 |
 
-## 5. 数据/服务清单
+## 7. 验证
 
-| 服务 | 提供方 | 说明 |
-| --- | --- | --- |
-| `paths` / `session` / `variables` / `runtime` / `state_store` / `workspace_root` / `data_root` | RuntimeComponent | 静态运行时信息 |
-| `tools` / `commands` / `prompts` / `sandbox` / `permissions` / `job_registry` / `agents` | ToolsComponent | 工具层能力（插件面服务 + 原对象） |
-| `hooks` | HooksComponent | bus-backed HookManager |
-| `agent_runtime` | bootstrap（非子代理时） | 子代理工厂 |
-| `state` | XCore 内建 | 可恢复状态（`data_dir/state.json`） |
-| `engine` | EngineComponent | 核心 loop |
+- XBotv2 全量测试绿（除既有环境依赖项 `MINIMAX_API_TOKEN`）。
+- XCore 103 测试全绿（零改动）。
+- Minimax 真实端到端冒烟（bootstrap → ctx.engine → 一轮 turn）通过；
+  ACP adapter 测试以 Minimax 跑通。

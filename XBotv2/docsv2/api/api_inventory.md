@@ -20,94 +20,91 @@ type-only import inside XBotv2 itself.
 
 | Symbol | Kind | Purpose |
 |---|---|---|
-| `ArtifactRef` | dataclass | Tool-produced artifact metadata. |
-| `AgentDefinition` | dataclass | Plugin-registered primary or subagent definition. |
-| `AgentMode` | type alias | Supported primary/subagent visibility modes. |
-| `AgentRuntime` | protocol | Core subagent execution capability exposed to Agent plugins. |
-| `AgentSession` | protocol | One spawned child session exposed to Agent plugins. |
-| `AgentSessionResult` | dataclass | Outcome of one completed child agent session. |
-| `CancelResult` | dataclass | Idempotent outcome of cancelling one job. |
-| `ChildEngineFactory` | type alias | Callable creating a child Engine for a subagent session. |
-| `ClientEvent` | dataclass | Client-facing event emitted by tools. |
-| `Command` | dataclass | Human-facing server command or prompt-expansion metadata. |
-| `CommandResult` | dataclass | Protocol-neutral result returned by a server command handler. |
-| `ContentPart` | type alias | Ordered provider-neutral message content part. |
-| `ContextComponent` | dataclass | Immutable, source-tagged context fragment exposed to Hooks. |
-| `HookAction` | enum | Hook control-flow action. |
-| `HookContext` | dataclass | Stage-specific hook payload envelope. |
-| `HookDecision` | dataclass | Guard hook decision with reason/value. |
-| `HookStage` | enum | Complete set of current hook stages. |
-| `JsonValue` | type alias | JSON-compatible tool data shape. |
-| `ImageContent` | dataclass | Session-relative image artifact metadata. |
-| `ImagePart` | dataclass | Image entry in ordered message content. |
-| `InputModality` | type alias | Provider input modality name. |
-| `Job` | dataclass | One tracked workload in a JobRegistry. |
-| `JobContext` | class | Capabilities a JobRunner uses while executing one job. |
-| `JobError` | dataclass | Structured, model-safe error attached to a failed job. |
-| `JobId` | type alias | Stable job identifier string. |
-| `JobKind` | enum | Supported job kinds (subagent, shell). |
-| `JobNotFound` | exception | Raised when a job id is unknown to a JobRegistry. |
-| `JobRegistry` | class | Kind-agnostic lifecycle store for all jobs owned by an engine. |
-| `JobRegistryClosed` | exception | Raised when a job is created on a shutting-down registry. |
-| `JobResult` | dataclass | Workload-specific completion payload with bounded summary. |
-| `JobRunner` | protocol | Adapts one workload kind to the unified job lifecycle. |
-| `JobStatus` | enum | Unified pending/running/completed/failed/cancelled states. |
-| `JobSummary` | dataclass | Lightweight model-facing view of one job. |
-| `Message` | dataclass | Provider-neutral conversation message. |
-| `MESSAGE_FORMAT_KEY` | constant | Additional-message metadata key marking structured model content. |
-| `ModelChunk` | dataclass | Provider-neutral streaming model chunk. |
-| `ModelResponse` | dataclass | Provider-neutral model response. |
-| `OutputChunk` | dataclass | Bounded cursor-based output read from a job store. |
-| `OutputStore` | protocol | Cursor-based readable job output buffer. |
-| `PluginBase` | class | Plugin lifecycle base class. |
-| `PluginConfigError` | exception | Plugin configuration validation failure with plugin name and path. |
-| `PluginManifest` | pydantic model | Validated plugin manifest. |
-| `PluginStore` | protocol | Per-plugin persistent key-value storage. |
-| `ProviderCapabilities` | dataclass | Effective provider input capabilities. |
-| `ReasoningPart` | dataclass | Reasoning entry with provider-required replay metadata. |
-| `PromptFragmentStage` | type alias | Supported plugin prompt insertion stages. |
-| `calibrated_context_tokens` | function | Calibrate the next request estimate from the latest provider context measurement. |
-| `context_token_limit` | function | Resolve one context threshold from window, ratio, and output reservation. |
-| `estimate_messages_tokens` | function | Conservatively estimate provider-neutral messages. |
-| `estimate_request_tokens` | function | Conservatively estimate messages and visible Tool schemas. |
-| `prompt_container` | function | Wrap pre-rendered prompt elements in a validated XML container. |
-| `prompt_element` | function | Render one XML prompt element with escaped content and attributes. |
-| `RuntimePluginContext` | protocol | Runtime hook capabilities owned by a plugin record. |
-| `RuntimePaths` | dataclass | Server process filesystem layout. |
-| `RuntimeVariables` | mapping | Immutable built-in runtime path variables and expansion API. |
-| `SessionInfo` | dataclass | Session identity and status metadata. |
-| `SessionPaths` | dataclass | Per-session filesystem layout. |
-| `ThreadPaths` | dataclass | Per-thread mutable state layout within a session. |
-| `TextPart` | dataclass | Text entry in ordered message content. |
-| `StreamOutputStore` | class | Growing stdout/stderr buffer with byte-cursor reads. |
-| `SubagentAgentError` | exception | Invalid subagent spawn request error code. |
-| `SubagentTurnError` | exception | Child turn failed without a usable response error code. |
-| `TERMINAL_STATES` | frozenset | Completed, failed, and cancelled job states. |
-| `TextOutputStore` | class | In-memory text buffer addressed by character cursor. |
-| `ToolCall` | dataclass | Parsed tool call request. |
-| `ToolCallDelta` | dataclass | Streaming tool call fragment. |
-| `ToolCallPart` | dataclass | Tool-call entry in ordered message content. |
-| `ToolError` | dataclass | Structured tool failure. |
-| `ToolResult` | dataclass | Tool output, error, artifacts, and events. |
-| `Tool` | dataclass | Tool definition and invocation wrapper. |
-| `ToolRegistrationOptions` | dataclass | Setup-time plugin tool registration options. |
-| `WaitResult` | dataclass | Lightweight result of waiting on one or more jobs. |
-
-`PluginBase.on_load` and `PluginBase.on_unload` have safe no-op defaults.
-`PluginBase.status_slots()` may return compact `dict[str, str]` display values;
+| `ArtifactRef` | dataclass |
+| `AgentDefinition` | dataclass |
+| `AgentMode` | type alias |
+| `AgentRuntime` | protocol |
+| `AgentSession` | protocol |
+| `AgentSessionResult` | dataclass |
+| `CancelResult` | dataclass |
+| `ChildEngineFactory` | type alias |
+| `ClientEvent` | dataclass |
+| `Command` | dataclass |
+| `CommandResult` | dataclass |
+| `ContentPart` | type alias |
+| `ContextComponent` | dataclass |
+| `EventContext` | dataclass | Payload object passed to runtime event listeners (replaces the hook context). |
+| `Events` | class | Runtime event names dispatched on the XCore context. |
+| `JsonValue` | type alias |
+| `ImageContent` | dataclass |
+| `ImagePart` | dataclass |
+| `InputModality` | type alias |
+| `Job` | dataclass |
+| `JobContext` | class |
+| `JobError` | dataclass |
+| `JobId` | type alias |
+| `JobKind` | enum |
+| `JobNotFound` | exception |
+| `JobRegistry` | class |
+| `JobRegistryClosed` | exception |
+| `JobResult` | dataclass |
+| `JobRunner` | protocol |
+| `JobStatus` | enum |
+| `JobSummary` | dataclass |
+| `Message` | dataclass |
+| `MESSAGE_FORMAT_KEY` | constant |
+| `ModelChunk` | dataclass |
+| `ModelResponse` | dataclass |
+| `OutputChunk` | dataclass |
+| `OutputStore` | protocol |
+| `PluginStore` | protocol |
+| `ProviderCapabilities` | dataclass |
+| `ReasoningPart` | dataclass |
+| `PromptFragmentStage` | type alias |
+| `calibrated_context_tokens` | function |
+| `context_token_limit` | function |
+| `estimate_messages_tokens` | function |
+| `estimate_request_tokens` | function |
+| `prompt_container` | function |
+| `prompt_element` | function |
+| `RuntimePluginContext` | protocol |
+| `RuntimePaths` | dataclass |
+| `RuntimeVariables` | mapping |
+| `SessionInfo` | dataclass |
+| `SessionPaths` | dataclass |
+| `ThreadPaths` | dataclass |
+| `TextPart` | dataclass |
+| `SHORT_CIRCUIT_EVENTS` | frozenset | Events dispatched with ctx.serial (first non-None result is the answer). |
+| `StreamOutputStore` | class |
+| `SubagentAgentError` | exception |
+| `SubagentTurnError` | exception |
+| `TERMINAL_STATES` | frozenset |
+| `TextOutputStore` | class |
+| `ToolAction` | enum | Permission decision for a tool call (returned by before/tool-call). |
+| `ToolCall` | dataclass |
+| `ToolCallDelta` | dataclass |
+| `ToolCallPart` | dataclass |
+| `ToolDecision` | dataclass | Decision returned by before/tool-call listeners. |
+| `ToolError` | dataclass |
+| `ToolResult` | dataclass |
+| `Tool` | dataclass |
+| `ToolRegistrationOptions` | dataclass |
+| `WaitResult` | dataclass |
+Plugins are plain XCore plugins (function/object/class) configured through the plugin tree; `apply(ctx, config)` is the plugin body and registrations are fiber effects.
+`status_slots()` may return compact `dict[str, str]` display values;
 the default is empty and failures do not break session execution.
-`HookContext.request_id` carries the current message/turn correlation id for
+`EventContext.request_id` carries the current message/turn correlation id for
 turn-scoped hooks, including error and persistence hooks. Session lifecycle
 hooks use an empty value because they are not owned by one message request.
-`HookContext.messages` carries the current persisted history. `POST_COMPACT`
+`EventContext.messages` carries the current persisted history. `POST_COMPACT`
 also provides explicit before/after message counts.
 Engine-created contexts also expose `invoke_model(messages)` for one unbound
 auxiliary provider call. It returns `ModelResponse` without recursively running
-model Hooks or exposing the provider implementation.
+model listeners or exposing the provider implementation.
 `request_user_input(question, ...)` uses the active C/S interaction channel and
 returns the structured live response. It is connection-owned: disconnect
 cancels the turn, and resume never restores the pending request.
-Persistence Hook contexts are emitted only for a changed normalized message
+Persistence event contexts are emitted only for a changed normalized message
 snapshot; repeated save attempts with no state change do not emit them.
 `PromptFragmentStage` contains `system_prefix`, `system_instructions`,
 `system_rules`, and `context_suffix` as compatible ordering zones. They do not
@@ -115,14 +112,14 @@ grant authority or describe wire positions. Manifest declarations are validated
 against this list before plugin apply. `ctx.prompts.add`
 accepts an optional source label which is preserved in `ContextComponent` and
 the rendered system envelope.
-`HookContext.context_components` exposes a `list[ContextComponent]` at
-`AFTER_CONTEXT_COMPONENTS_BUILD`. Components are immutable; the Hook may
+`EventContext.context_components` exposes a `list[ContextComponent]` at
+`AFTER_CONTEXT_COMPONENTS_BUILD`. Components are immutable; the listener may
 replace the list with another list of public components. Invalid entries fail
 before provider-message conversion.
-Model-request Hooks inspect `HookContext.model_request`. Transform Hooks use
+Model-request listeners inspect `EventContext.model_request`. Transform listeners use
 their documented stage-specific return dictionaries for replacements.
 Plugin ``apply(ctx)`` registrations are fiber effects: Agent definitions,
-hooks, Tools, Commands, and prompt fragments are undone automatically when the
+event listeners, Tools, Commands, and prompt fragments are undone automatically when the
 plugin unloads (XCore lifecycle). Runtime unregister operations can remove only
 resources owned by that plugin.
 ``ctx.variables`` exposes the immutable `RuntimeVariables` mapping
@@ -137,11 +134,11 @@ Duplicate canonical names or provider-visible tool names are rejected before
 registry mutation.
 Entered `on_load` callbacks receive best-effort `on_unload` after failure, and
 bootstrap failures after loading trigger reverse plugin unload, including
-runtime tools created by `ON_SESSION_INIT` hooks.
-`PluginManifest.config_schema` is checked as Draft 2020-12 JSON Schema when the
+runtime tools created by `SESSION_INIT` listeners.
+Plugin `Config` (an `xcore` `S` schema) is validated with defaults applied when the
 manifest is parsed, and configured values are validated before plugin import.
-Hook declarations accept every current `HookStage` value and reject unknown
-stages during manifest parsing. Tool declarations apply the same early
+Hook declarations accept any event name and reject unknown
+targets during manifest parsing. Tool declarations apply the same early
 validation to `host` and `sandboxed` execution modes.
 Prompt fragment declarations require exactly one non-empty `file` or `handler`;
 their stage remains limited to the complete `PromptFragmentStage` inventory.
@@ -159,12 +156,12 @@ the richer in-process representation.
 
 ## Current Gaps To Improve
 
-- Some `HookContext` stage fields remain broadly typed. Narrow them when the
+- Some `EventContext` fields remain broadly typed. Narrow them when the
   producer and independent consumers share one stable public representation;
   do not add wrapper payload types for plugin-local data.
 - Every current `ServerEvent.data` family has a typed DTO. New event types must
   add producer/consumer tests and join `TYPED_SERVER_EVENT_TYPES` deliberately.
-- Server-owned error codes are documented and stable in shape; Hook-provided
+- Server-owned error codes are documented and stable in shape; listener-provided
   error events may still use extension-defined string codes.
 - Typed and dictionary-returning tool results now preserve data, error,
   artifact, and client-event metadata through runtime normalization; new

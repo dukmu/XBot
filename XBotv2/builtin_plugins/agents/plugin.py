@@ -25,12 +25,12 @@ from xbotv2.api import (
     JobResult,
     JobRunner,
     JobStatus,
-    PluginBase,
     RuntimeVariables,
     Tool,
     ToolRegistrationOptions,
     ToolResult,
 )
+from xcore import S
 
 _FRONTMATTER = "---"
 _FIELDS = {
@@ -93,17 +93,20 @@ class SubagentRunner:
             await handle.cancel()
 
 
-class AgentsPlugin(PluginBase):
+class AgentsPlugin:
     """Register workspace Agent definitions and subagent job tools."""
 
-    def __init__(self, manifest) -> None:
-        super().__init__(manifest)
+    name = "agents"
+    Config = S.object({
+        "timeout_seconds": S.number().optional(),
+    })
+
+    def __init__(self) -> None:
         self._timeout_seconds = 600.0
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        self._timeout_seconds = float(config.get("timeout_seconds", 600.0))
-
-    def apply(self, ctx) -> None:
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
         definitions = {
             definition.name: definition
             for definition in _load_definitions(
@@ -482,3 +485,6 @@ def _preview(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[:limit]}[truncated]"
+
+
+plugin = AgentsPlugin()

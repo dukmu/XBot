@@ -8,13 +8,11 @@ from typing import Any, Literal
 from xbotv2.api import (
     Command,
     CommandResult,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
-    PluginBase,
-    PluginManifest,
+    EventContext,
+    Events,
     Tool,
+    ToolAction,
+    ToolDecision,
     ToolRegistrationOptions,
     ToolResult,
 )
@@ -25,9 +23,10 @@ _STATUSES = {"active", "complete", "blocked", "paused"}
 _GOAL_TOOLS = {"create_goal", "get_goal", "update_goal"}
 
 
-class GoalPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest) -> None:
-        super().__init__(manifest)
+class GoalPlugin:
+    name = "goal"
+
+    def __init__(self) -> None:
         self._continuation_pending = False
 
     async def on_unload(self) -> None:
@@ -37,10 +36,12 @@ class GoalPlugin(PluginBase):
         goal = await self._read_goal()
         return {"goal": goal["status"]} if goal is not None else {}
 
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.ON_TURN_START.value, self._start_goal_turn)
-        ctx.on(HookStage.ON_TURN_END.value, self._on_turn_end)
-        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._allow_goal)
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        self.store = ctx.state.namespace("goal")
+        ctx.on(Events.TURN_START, self._start_goal_turn)
+        ctx.on(Events.TURN_END, self._on_turn_end)
+        ctx.on(Events.BEFORE_TOOL_CALL, self._allow_goal)
         ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
             options=ToolRegistrationOptions(
@@ -132,10 +133,10 @@ class GoalPlugin(PluginBase):
             summary,
         )
 
-    async def _allow_goal(self, ctx: HookContext):
+    async def _allow_goal(self, ctx: EventContext):
         if ctx.tool_call is not None and ctx.tool_call.name in _GOAL_TOOLS:
-            return HookDecision(
-                HookAction.ALLOW,
+            return ToolDecision(
+                ToolAction.ALLOW,
                 "Goal state operations are pre-approved by the Goal plugin",
             )
 
@@ -278,7 +279,7 @@ class GoalPlugin(PluginBase):
             "token_budget": goal["token_budget"],
         }
 
-    async def _start_goal_turn(self, ctx: HookContext) -> None:
+    async def _start_goal_turn(self, ctx: EventContext) -> None:
         if not ctx.continuation:
             return
         self._continuation_pending = False
@@ -286,7 +287,7 @@ class GoalPlugin(PluginBase):
         if goal is not None:
             ctx.user_input = _goal_context(goal)
 
-    async def _on_turn_end(self, ctx: HookContext) -> None:
+    async def _on_turn_end(self, ctx: EventContext) -> None:
         if ctx.stop_reason == "client_interrupt":
             goal = await self._active_goal()
             if goal is None:
@@ -402,3 +403,6 @@ def _command_result(result: ToolResult) -> CommandResult:
         status="ok" if result.status == "success" else "error",
         data=result.data,
     )
+
+
+plugin = GoalPlugin()

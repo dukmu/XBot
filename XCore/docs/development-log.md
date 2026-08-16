@@ -124,3 +124,29 @@
   早期 `register_core_services` 生产路径被组件取代（保留为测试装配便利）。
 - **验证**：XBotv2 776 passed / 1 failed（既有环境失败 `MINIMAX_API_TOKEN`，
   与重构无关）；XCore 103 passed；`05-migration-plan.md` 重写为组件架构。
+
+### 2026-08-16 · 全插件 + 事件驱动重构（终版）
+
+- **用户指示**：① 目录结构要全插件；② HookStage 字段不再合理；③ 原 hook 机制
+  无价值存在；④ bridge.py 是兼容层，明确违反要求（不要假装完成迁移）。
+- **实施**（委托转换 + 独立验证）：
+  - 删除 `xbotv2/hooks/`（HookManager）、`xbotv2/api/hooks.py`（HookStage/
+    HookContext/HookDecision）、`xbotv2/plugin/`（bridge.py/loader.py）、
+    `components/`（并入 `plugins/`）、各 `plugin.yaml`。
+  - 新增 `xbotv2/api/events.py`：`Events` 事件目录（session/init、turn/start、
+    before/model-request、before/tool-call …）、`SHORT_CIRCUIT_EVENTS`、
+    `EventContext`（事件载荷）、`ToolDecision/ToolAction`。
+  - 引擎改为事件驱动：`Engine(plugin_ctx=...)`，`_dispatch` 用 `ctx.serial`
+    （短路事件）/ `ctx.emit`（观察事件）；`tools/runtime.py` 在插件上下文上
+    派发工具/权限事件；`config/models.py` 的 HookConfig.stage 变为任意事件名。
+  - 四个服务类（Tools/Commands/Prompts/Agents）+ caller-tracking 移入
+    `plugins/tools.py`；`loader/` 为 cordis.yaml 式插件树 loader（含
+    reload/status_slots，挂载时克隆模块级插件对象以隔离状态）。
+  - 9 个内置插件全部 `ctx.on(Events.X, ...)`；skills/MCP 动态工具自管理并
+    `ctx.dispose` 清理（无 plugin_runtime）。
+  - 测试：test_hooks.py 删除；全部转换到事件模型；api_inventory 重生成。
+- **验证**：XBotv2 全量 **735 passed（含 Minimax 环境）**；XCore 103 passed；
+  Minimax 真实端到端冒烟通过（回复 "ok"）；ACP adapter 测试以 Minimax 跑通。
+- **行为注记**：观察事件的 strict 失败不再聚合为 ExceptionGroup（emit 直接传播，
+  两个相关测试已更新）；引擎对短路事件返回的非法值仍抛 TypeError（保留原
+  引擎错误行为）。

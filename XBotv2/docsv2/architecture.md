@@ -39,7 +39,7 @@ flowchart TB
         CTX["ContextBuilder (core/context.py)"]
         IBX["AgentInbox (core/inbox.py)"]
         ITX["InteractionWaiter (core/interactions.py)"]
-        HKS["HookManager (hooks/manager.py)"]
+        EVT["Events (api/events.py) dispatch on XCore ctx"]
     end
 
     subgraph ToolsLayer["Tool system"]
@@ -135,8 +135,8 @@ LLM call (streaming) → tool execution → repeat. Uses the provider-neutral
 The turn implementation is an orchestrator over stage-specific methods:
 message admission/start, context construction, model-request preparation,
 streamed model handling, tool-batch execution, and turn finish. Each method
-interprets only the Hook stages it owns; there is no shared catch-all Hook
-result interpreter. Internal model/tool completion records are consumed by the
+interprets only the events it owns; there is no shared catch-all event result
+interpreter. Internal model/tool completion records are consumed by the
 orchestrator and never cross the C/S event boundary.
 
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
@@ -169,11 +169,13 @@ metadata; bulk output is read through the explicit `read_*` tools, each bounded
 by character limits. Child Engine sessions are spawned through the api
 `AgentRuntime`/`AgentSession` protocols, implemented in `core/agents.py`.
 
-### Hooks (`xbotv2/hooks/`)
+### Runtime events (`xbotv2/api/events.py`)
 
-`HookStage` values cover session, turn, tool, context, and compaction
-lifecycle. Guard control flow uses explicit `HookDecision`; critical lifecycle
-stages aggregate failures with `ExceptionGroup`.
+The engine and tool layer dispatch named events on the XCore context
+(`ctx.serial` for short-circuit events whose first non-`None` result is
+interpreted by the caller, `ctx.emit` for observer events). Plugins observe
+and intercept them with `ctx.on(Events.X, handler)`; the payload is an
+`EventContext`.
 
 ### Input acceptance and runtime inbox (`xbotv2/core/inbox.py`)
 
@@ -250,9 +252,9 @@ system messages.
 ### CompactPlugin (`builtin_plugins/compact/`)
 
 Uses the public `BEFORE_CONTEXT` compaction result and the controlled
-`HookContext.invoke_model()` capability to summarize a completed history
+`EventContext.invoke_model()` capability to summarize a completed history
 prefix. It supports a model-visible request tool and a configurable automatic
-character threshold. Core remains responsible for Hook bracketing and atomic
+character threshold. Core remains responsible for event bracketing and atomic
 history persistence.
 
 ### TodolistPlugin (`builtin_plugins/todolist/`)
@@ -260,7 +262,7 @@ history persistence.
 Provides one atomic `update_todos` Tool that replaces the complete ordered
 checklist after validation. One `PluginStore` value holds the active items;
 Tool calls and results use the normal conversation path without a repeated
-context Hook. It does not infer state from conversation text or duplicate goal
+context event. It does not infer state from conversation text or duplicate goal
 ownership.
 
 ### GoalPlugin (`builtin_plugins/goal/`)

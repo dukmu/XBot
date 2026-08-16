@@ -8,16 +8,13 @@ from typing import Any
 
 from xbotv2.api import (
     Command,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
-    PluginBase,
-    PluginManifest,
+    EventContext,
+    Events,
     prompt_container,
     prompt_element,
-    RuntimePluginContext,
     Tool,
+    ToolAction,
+    ToolDecision,
     ToolRegistrationOptions,
     ToolResult,
 )
@@ -27,9 +24,10 @@ from .registry import Skill, SkillRegistry
 from .skill_tool import load_skill
 
 
-class SkillsPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest) -> None:
-        super().__init__(manifest)
+class SkillsPlugin:
+    name = "skills"
+
+    def __init__(self) -> None:
         self._registry = SkillRegistry()
         self._permission_scope = SkillPermissionScope()
         self._active_skills: set[str] = set()
@@ -39,25 +37,30 @@ class SkillsPlugin(PluginBase):
         self._metadata_budget_chars = 8_000
         self._initialized = False
 
-    async def on_unload(self) -> None:
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        ctx.dispose(self._cleanup_runtime)
+        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
+        ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
+        ctx.on(Events.TURN_END, self._on_turn_end)
+        ctx.on(Events.BEFORE_TOOL_CALL, self._on_before_tool)
+
+    def _cleanup_runtime(self) -> None:
+        """Unregister session-registered skill tools/commands and reset state."""
+        for command_name in reversed(self._skill_commands):
+            self.ctx.commands.unregister(command_name)
+        self._skill_commands.clear()
+        for registered_name in reversed(self._skill_tools):
+            self.ctx.tools.unregister(registered_name)
+        self._skill_tools.clear()
         self._registry = SkillRegistry()
         self._active_skills.clear()
         self._permission_scope.clear()
-        self._skill_tools.clear()
-        self._skill_commands.clear()
         self._model_skill_names.clear()
         self._initialized = False
 
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.ON_SESSION_INIT.value, self._on_session_init)
-        ctx.on(HookStage.BEFORE_USER_MESSAGE_ACCEPT.value, self._on_before_user_message)
-        ctx.on(HookStage.BEFORE_TOOL_SCHEMA_BIND.value, self._on_before_tool_schema)
-        ctx.on(HookStage.ON_TURN_END.value, self._on_turn_end)
-        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._on_before_tool)
-
-    async def _on_session_init(self, ctx: HookContext) -> None:
-        if ctx.plugin_runtime is None:
-            raise RuntimeError("SkillsPlugin requires plugin runtime registration capability")
+    async def _on_session_init(self, ctx: EventContext) -> None:
         if self._initialized:
             return
         ws = getattr(ctx.session, "workspace_root", "") or str(Path.cwd())
@@ -73,17 +76,11 @@ class SkillsPlugin(PluginBase):
         try:
             for skill in self._registry.list_skills():
                 if not skill.disable_model_invocation:
-                    registered_name = ctx.plugin_runtime.register_tool(
-                        self._skill_as_tool(skill),
-                        options=ToolRegistrationOptions(
-                            sandbox_mode="sandboxed",
-                            namespace=f"skills:{skill.scope}",
-                        ),
-                    )
+                    registered_name = self._register_skill_tool(skill)
                     self._skill_tools.append(registered_name)
                     self._model_skill_names.add(skill.name)
                 if skill.user_invocable:
-                    command_name = ctx.plugin_runtime.register_command(Command(
+                    command_name = self.ctx.commands.register(Command(
                         name=skill.name,
                         kind="prompt",
                         description=skill.description,
@@ -91,12 +88,20 @@ class SkillsPlugin(PluginBase):
                     ))
                     self._skill_commands.append(command_name)
         except Exception:
-            self._rollback_skill_tools(ctx.plugin_runtime)
+            self._cleanup_runtime()
             self._registry = SkillRegistry()
             raise
         self._initialized = True
 
-    async def _on_before_tool_schema(self, ctx: HookContext):
+    def _register_skill_tool(self, skill: Skill) -> str:
+        """Register one skill tool on the raw registry (tracked for cleanup)."""
+        return self.ctx.tools.registry.register(
+            self._skill_as_tool(skill),
+            sandbox_mode="sandboxed",
+            namespace=f"skills:{skill.scope}",
+        )
+
+    async def _on_before_tool_schema(self, ctx: EventContext):
         request = ctx.model_request or {}
         tools = list(request.get("tools") or [])
         if not tools or not self._model_skill_names:
@@ -149,16 +154,8 @@ class SkillsPlugin(PluginBase):
             )
         self._active_skills.add(skill.name)
 
-    def _rollback_skill_tools(self, runtime: RuntimePluginContext) -> None:
-        for command_name in reversed(self._skill_commands):
-            runtime.unregister_command(command_name)
-        self._skill_commands.clear()
-        for registered_name in reversed(self._skill_tools):
-            runtime.unregister_tool(registered_name)
-        self._skill_tools.clear()
-        self._initialized = False
 
-    async def _on_before_user_message(self, ctx: HookContext):
+    async def _on_before_user_message(self, ctx: EventContext):
         """Expand /skill-name [instructions] with SKILL.md content."""
         text = (ctx.user_input or "").strip()
         if not text.startswith("/"):
@@ -202,11 +199,11 @@ class SkillsPlugin(PluginBase):
             )
         }
 
-    async def _on_turn_end(self, ctx: HookContext) -> None:
+    async def _on_turn_end(self, ctx: EventContext) -> None:
         self._active_skills.clear()
         self._permission_scope.clear()
 
-    async def _on_before_tool(self, ctx: HookContext) -> None:
+    async def _on_before_tool(self, ctx: EventContext) -> None:
         if not self._active_skills:
             return
         tool_name = ctx.tool_call.name if ctx.tool_call else ""
@@ -214,13 +211,13 @@ class SkillsPlugin(PluginBase):
             return
         decision = self._permission_scope.check(tool_name, ctx.tool_call.args)
         if decision == "allow":
-            return HookDecision(
-                HookAction.ALLOW,
+            return ToolDecision(
+                ToolAction.ALLOW,
                 f"Tool '{tool_name}' pre-approved by active skill",
             )
         if decision == "deny":
-            return HookDecision(
-                HookAction.DENY,
+            return ToolDecision(
+                ToolAction.DENY,
                 f"Tool '{tool_name}' not permitted by active skill",
             )
         return None
@@ -231,3 +228,6 @@ class SkillsPlugin(PluginBase):
             "skills": len(self._registry.list_skills()),
             "active_skills": len(self._active_skills),
         }
+
+
+plugin = SkillsPlugin()

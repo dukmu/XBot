@@ -7,8 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from xbotv2.api.hooks import HookStage
-
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -65,12 +63,6 @@ class HookConfig(StrictModel):
     stage: str
     target: str
     base_dir: Path | None = Field(default=None, exclude=True)
-
-    @field_validator("stage")
-    @classmethod
-    def _validate_stage(cls, value: str) -> str:
-        HookStage(value)
-        return value
 
     @field_validator("target")
     @classmethod

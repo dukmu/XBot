@@ -1,413 +1,305 @@
-"""Tests for PluginLoader — discovery, dependency resolution, XCore loading."""
+"""Tests for the plugin tree loader (cordis.yaml-style mechanism)."""
 
-import asyncio
 import sys
-import types
 from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
-from xbotv2.api.plugins import PluginBase, PluginConfigError, PluginManifest
-from xbotv2.api import (
-    Command,
-    CommandResult,
-    Tool,
-    ToolRegistrationOptions,
-    RuntimeVariables,
+from xbotv2.loader import (
+    Loader,
+    PluginEntry,
+    PluginTree,
+    resolve_plugin_from_module,
 )
-from xbotv2.core.agents import AgentRegistry
-from xbotv2.plugin.loader import (
-    PluginLoader,
-    _DefaultPlugin,
-    instantiate_plugin,
-    resolve_dependencies,
-)
-from xbotv2.core.context import ContextBuilder
-from xbotv2.api.hooks import HookContext, HookStage
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.plugin.bridge import register_core_services, RuntimePluginContext
-from xbotv2.api.jobs import JobRegistry
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-
-def _make_manifest(name: str, version: str = "1.0.0", deps: list[str] | None = None) -> PluginManifest:
-    return PluginManifest(name=name, version=version, depends_on=deps or [])
-
-
-def _make_manifest_tuple(name: str, deps: list[str] | None = None) -> tuple[PluginManifest, Path]:
-    return (_make_manifest(name, deps=deps), Path(f"/fake/{name}"))
-
-
-def make_plugin_ctx(tmp_path):
-    """A real XCore context with the bridge services, for loader tests."""
-    from xcore import Context
-
-    ctx = Context(data_dir=tmp_path)
-    tool_registry = ToolRegistry()
-    context_builder = ContextBuilder()
-    agent_registry = AgentRegistry()
-    job_registry = JobRegistry()
-    paths = RuntimePaths.from_data_dir(tmp_path)
-    register_core_services(
-        ctx,
-        tool_registry=tool_registry,
-        context_builder=context_builder,
-        agent_registry=agent_registry,
-        job_registry=job_registry,
-        runtime_variables=RuntimeVariables(),
-        workspace_root=tmp_path,
-        data_root=tmp_path,
-        session=None,
-        runtime_config=None,
-        agent_runtime=None,
-        paths=paths,
-    )
-    return ctx, tool_registry, context_builder, agent_registry
-
-
-def _write_plugin_dir(tmp_path, name: str, code: str, manifest: dict | None = None) -> Path:
-    """Write a plugin directory with plugin.py + plugin.yaml and make it importable."""
+def _write_plugin(tmp_path, name: str, code: str) -> Path:
+    """Write a plugin package exporting ``plugin`` and make it importable."""
     for stale in list(sys.modules):
         if stale == name or stale.startswith(f"{name}."):
             sys.modules.pop(stale, None)
     plugin_dir = tmp_path / name
     plugin_dir.mkdir()
-    (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
-    data = {"name": name, "version": "1.0.0", **(manifest or {})}
-    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(code, encoding="utf-8")
     sys.path.insert(0, str(tmp_path))
     return plugin_dir
 
 
-def _plugin_apply_ctx(ctx):
-    """Run a block as if inside a plugin apply (sets the caller-tracking ctx)."""
-    import contextlib
+def make_plugin_ctx(tmp_path):
+    """A real XCore context with the capability services, for loader tests."""
+    from xcore import Context
+    from xbotv2.api.jobs import JobRegistry
+    from xbotv2.api.variables import RuntimeVariables
+    from xbotv2.core.agents import AgentRegistry
+    from xbotv2.core.context import ContextBuilder
+    from xbotv2.plugins.tools import (
+        AgentsService,
+        CommandsService,
+        PromptsService,
+        ToolsService,
+    )
+    from xbotv2.tools.registry import ToolRegistry
 
-    @contextlib.contextmanager
-    def manager():
-        from xbotv2.plugin.bridge import _active_ctx
-
-        token = _active_ctx.set(ctx)
-        try:
-            yield
-        finally:
-            _active_ctx.reset(token)
-
-    return manager()
-
-
-# ------------------------------------------------------------------
-# Dependency resolution (unchanged semantics)
-# ------------------------------------------------------------------
-
-
-class TestResolveDependencies:
-    def test_no_dependencies(self):
-        manifests = [_make_manifest_tuple("a"), _make_manifest_tuple("b")]
-        assert [m.name for m, _ in resolve_dependencies(manifests)] == ["a", "b"]
-
-    def test_simple_dependency(self):
-        manifests = [
-            _make_manifest_tuple("a", deps=["b"]),
-            _make_manifest_tuple("b"),
-        ]
-        assert [m.name for m, _ in resolve_dependencies(manifests)] == ["b", "a"]
-
-    def test_diamond_dependency(self):
-        manifests = [
-            _make_manifest_tuple("a", deps=["b", "c"]),
-            _make_manifest_tuple("b", deps=["d"]),
-            _make_manifest_tuple("c", deps=["d"]),
-            _make_manifest_tuple("d"),
-        ]
-        result = [m.name for m, _ in resolve_dependencies(manifests)]
-        assert result.index("d") < result.index("b")
-        assert result.index("d") < result.index("c")
-        assert result.index("b") < result.index("a")
-        assert result.index("c") < result.index("a")
-
-    def test_missing_dependency_raises(self):
-        manifests = [_make_manifest_tuple("a", deps=["missing"])]
-        with pytest.raises(ValueError, match="depends on 'missing'"):
-            resolve_dependencies(manifests)
-
-    def test_duplicate_manifest_name_raises_explicitly(self):
-        manifests = [_make_manifest_tuple("a"), _make_manifest_tuple("a")]
-        with pytest.raises(ValueError, match="Duplicate plugin manifests"):
-            resolve_dependencies(manifests)
-
-    def test_circular_dependency_raises(self):
-        manifests = [
-            _make_manifest_tuple("a", deps=["b"]),
-            _make_manifest_tuple("b", deps=["a"]),
-        ]
-        with pytest.raises(ValueError, match="Circular dependency"):
-            resolve_dependencies(manifests)
+    ctx = Context(data_dir=tmp_path)
+    ctx.set("tools", ToolsService(ToolRegistry()))
+    ctx.set("commands", CommandsService())
+    ctx.set("prompts", PromptsService(ContextBuilder()))
+    ctx.set("agents", AgentsService(AgentRegistry()))
+    ctx.set("job_registry", JobRegistry())
+    ctx.set("variables", RuntimeVariables())
+    ctx.set("workspace_root", tmp_path)
+    ctx.set("data_root", tmp_path)
+    ctx.set("session", None)
+    ctx.set("runtime", None)
+    ctx.set("agent_runtime", None)
+    ctx.set("paths", None)
+    return ctx
 
 
 # ------------------------------------------------------------------
-# PluginBase / manifest defaults
+# PluginTree parsing
 # ------------------------------------------------------------------
 
 
-class TestPluginBase:
-    def test_minimal_manifest(self):
-        manifest = PluginManifest(name="x", version="1")
-        assert manifest.api_version == "1"
-        assert manifest.depends_on == []
+class TestPluginTree:
+    def test_from_dict_list_and_nested(self):
+        tree = PluginTree.from_dict([
+            {"id": "a", "name": "mod.a"},
+            {"id": "b", "name": "mod.b", "config": {"x": 1}, "disabled": True},
+        ])
+        assert [e.id for e in tree.entries] == ["a", "b"]
+        assert tree.entries[1].config == {"x": 1}
+        assert tree.entries[1].disabled is True
 
-    async def test_plugin_base_has_safe_lifecycle_defaults(self):
-        plugin = PluginBase(_make_manifest("x"))
-        await plugin.on_load({})
-        await plugin.on_unload()
-        assert plugin.apply(None) is None
-        assert await plugin.status_slots() == {}
-        assert plugin.diagnostics() == {"status": "ready"}
+    def test_from_dict_plugins_key(self):
+        tree = PluginTree.from_dict({"plugins": [{"id": "a", "name": "m"}]})
+        assert tree.entries[0].id == "a"
 
-    def test_manifest_from_yaml(self):
-        data = yaml.safe_load("name: demo\nversion: 1.2.3\n")
-        manifest = PluginManifest(**data)
-        assert manifest.name == "demo"
-        assert manifest.version == "1.2.3"
-
-    def test_manifest_rejects_invalid_config_schema(self):
-        with pytest.raises(ValueError, match="config_schema is invalid"):
-            PluginManifest(name="x", version="1", config_schema={"type": "nope"})
-
-    def test_manifest_accepts_every_hook_stage(self):
-        for stage in HookStage:
-            PluginManifest(name="x", version="1", hooks=[{"stage": stage.value, "handler": "m:h"}])
-
-    def test_manifest_rejects_unknown_hook_stage(self):
-        with pytest.raises(ValidationError):
-            PluginManifest(name="x", version="1", hooks=[{"stage": "unknown", "handler": "m:h"}])
-
-    def test_manifest_rejects_unknown_tool_sandbox_mode(self):
-        with pytest.raises(ValidationError):
-            PluginManifest(name="x", version="1", tools=[{"handler": "m:t", "sandbox_mode": "weird"}])
-
-    def test_manifest_rejects_unsafe_plugin_names(self):
-        for name in ("../escape", "a/b", "-lead"):
-            with pytest.raises(ValidationError):
-                PluginManifest(name=name, version="1")
-
-    def test_validate_config_reports_plugin_and_structured_path(self):
-        manifest = PluginManifest(
-            name="demo",
-            version="1",
-            config_schema={
-                "type": "object",
-                "properties": {"mode": {"type": "string"}},
-                "required": ["mode"],
-            },
+    def test_from_yaml(self, tmp_path):
+        path = tmp_path / "plugins.yaml"
+        path.write_text(
+            yaml.safe_dump([
+                {"id": "goal", "name": "builtin_plugins.goal"},
+            ]),
+            encoding="utf-8",
         )
-        with pytest.raises(PluginConfigError) as excinfo:
-            manifest.validate_config({})
-        assert excinfo.value.plugin_name == "demo"
-        assert "mode" in str(excinfo.value)
+        tree = PluginTree.from_yaml(path)
+        assert tree.entries[0].name == "builtin_plugins.goal"
+
+    def test_duplicate_ids_rejected(self):
+        with pytest.raises(ValueError, match="duplicate"):
+            PluginTree.from_dict([
+                {"id": "a", "name": "m1"},
+                {"id": "a", "name": "m2"},
+            ])
+
+    def test_merged_with_overrides_by_id(self):
+        base = PluginTree.from_dict([{"id": "a", "name": "m1"}])
+        override = PluginTree.from_dict([
+            {"id": "a", "name": "m2"},
+            {"id": "b", "name": "m3"},
+        ])
+        merged = base.merged_with(override)
+        ids = {e.id: e.name for e in merged.entries}
+        assert ids == {"a": "m2", "b": "m3"}
 
 
 # ------------------------------------------------------------------
-# XCore loader behavior
+# Module resolution
 # ------------------------------------------------------------------
 
 
-class TestLoaderXCore:
-    async def test_loader_mounts_plugin_and_registers_resources(self, tmp_path):
-        code = '''
-from xbotv2.api import PluginBase, Tool, ToolRegistrationOptions
-from xbotv2.api.hooks import HookStage
+class TestResolvePlugin:
+    def test_module_exports_plugin(self, tmp_path):
+        _write_plugin(tmp_path, "demo", """
+class DemoPlugin:
+    name = "demo"
 
-class DemoPlugin(PluginBase):
-    def apply(self, ctx):
-        ctx.on(HookStage.ON_TURN_START.value, lambda hook_ctx: None)
-        ctx.tools.register(
-            Tool.from_function(lambda x: "ok", name="demo_tool"),
-            options=ToolRegistrationOptions(sandbox_mode="host", namespace="plugin:demo"),
-        )
-'''
-        _write_plugin_dir(tmp_path, "demo", code)
-        ctx, tool_registry, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        await loader.load()
-        assert [p.manifest.name for p in loader.loaded_plugins] == ["demo"]
-        assert tool_registry.registered("plugin:demo:demo_tool")
-        assert ctx._bus.listener_count(HookStage.ON_TURN_START.value) == 1
-
-    async def test_loader_binds_store_and_unload_cleans_resources(self, tmp_path):
-        code = '''
-from xbotv2.api import PluginBase, Tool, ToolRegistrationOptions, Command, CommandResult
-from xbotv2.api.hooks import HookStage
-
-class DemoPlugin(PluginBase):
-    def apply(self, ctx):
-        assert self.store is not None
-        ctx.on(HookStage.ON_TURN_START.value, lambda hook_ctx: None)
-        ctx.tools.register(
-            Tool.from_function(lambda x: "ok", name="demo_tool"),
-            options=ToolRegistrationOptions(sandbox_mode="host", namespace="plugin:demo"),
-        )
-        ctx.commands.register(Command(name="demo", description="d", handler=lambda ctx, arg: CommandResult("ok")))
-'''
-        _write_plugin_dir(tmp_path, "demo", code)
-        ctx, tool_registry, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        await loader.load()
-        plugin = loader.loaded_plugins[0]
-        assert await plugin.store.all() == {}
-        await loader.unload("demo")
-        assert not tool_registry.registered("plugin:demo:demo_tool")
-        assert ctx._bus.listener_count(HookStage.ON_TURN_START.value) == 0
-        assert loader.get_command("demo") is None
-
-    async def test_loader_rolls_back_already_loaded_plugins_when_later_plugin_fails(self, tmp_path):
-        good = '''
-from xbotv2.api import PluginBase
-class GoodPlugin(PluginBase):
-    def apply(self, ctx):
-        ctx.on("good/event", lambda x: None)
-'''
-        bad = '''
-from xbotv2.api import PluginBase
-class BadPlugin(PluginBase):
-    def apply(self, ctx):
-        raise RuntimeError("apply exploded")
-'''
-        _write_plugin_dir(tmp_path, "good", good)
-        _write_plugin_dir(tmp_path, "bad", bad)
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        with pytest.raises(RuntimeError, match="apply exploded"):
-            await loader.load()
-        assert loader.loaded_plugins == []
-        assert ctx._bus.listener_count("good/event") == 0
-
-    async def test_invalid_config_fails_before_plugin_module_import(self, tmp_path):
-        code = '''
-from xbotv2.api import PluginBase
-class DemoPlugin(PluginBase):
-    pass
-'''
-        _write_plugin_dir(
-            tmp_path, "demo", code,
-            manifest={"config_schema": {"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]}},
-        )
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        with pytest.raises(PluginConfigError):
-            await loader.load()
-        assert loader.loaded_plugins == []
-
-    async def test_on_load_failure_cleans_partially_initialized_plugin(self, tmp_path):
-        code = '''
-from xbotv2.api import PluginBase
-class DemoPlugin(PluginBase):
-    async def on_load(self, config):
-        raise RuntimeError("on_load failed")
-'''
-        _write_plugin_dir(tmp_path, "demo", code)
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        with pytest.raises(RuntimeError, match="on_load failed"):
-            await loader.load()
-        assert loader.loaded_plugins == []
-
-    async def test_loader_unload_all_uses_reverse_load_order(self, tmp_path):
-        def make(name):
-            return f'''
-from xbotv2.api import PluginBase
-class {name.title()}Plugin(PluginBase):
-    def apply(self, ctx):
+    def apply(self, ctx, config=None):
         pass
-'''
-        _write_plugin_dir(tmp_path, "aaa", make("aaa"))
-        _write_plugin_dir(tmp_path, "bbb", make("bbb"))
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
-        await loader.load()
-        names = [p.manifest.name for p in loader.loaded_plugins]
-        assert names == ["aaa", "bbb"]
-        unloaded = await loader.unload_all()
-        assert unloaded == ["bbb", "aaa"]
-        assert loader.loaded_plugins == []
 
-    async def test_loader_calls_plugin_on_unload(self, tmp_path):
-        code = '''
+plugin = DemoPlugin()
+""")
+        from xbotv2.loader import Loader as _  # noqa
+        import importlib
+
+        module = importlib.import_module("demo")
+        resolved = resolve_plugin_from_module(module, "demo")
+        assert resolved.name == "demo"
+        assert callable(resolved.apply)
+
+    def test_module_exporting_plugin_class(self, tmp_path):
+        _write_plugin(tmp_path, "demo2", """
+class DemoPlugin:
+    name = "demo2"
+
+    def apply(self, ctx, config=None):
+        pass
+
+plugin = DemoPlugin()
+""")
+        import importlib
+
+        module = importlib.import_module("demo2")
+        assert resolve_plugin_from_module(module, "demo2").name == "demo2"
+
+    def test_module_without_plugin_raises(self, tmp_path):
+        _write_plugin(tmp_path, "empty_mod", "")
+        import importlib
+
+        module = importlib.import_module("empty_mod")
+        with pytest.raises(ImportError, match="must export"):
+            resolve_plugin_from_module(module, "empty_mod")
+
+
+# ------------------------------------------------------------------
+# Loader behavior
+# ------------------------------------------------------------------
+
+
+class TestLoader:
+    async def test_load_mounts_entries_and_skips_disabled(self, tmp_path):
+        _write_plugin(tmp_path, "alpha", """
+from xbotv2.api import Tool
+
+class AlphaPlugin:
+    name = "alpha"
+
+    def apply(self, ctx, config=None):
+        ctx.tools.register(Tool.from_function(lambda: "ok", name="alpha_tool"))
+
+plugin = AlphaPlugin()
+""")
+        _write_plugin(tmp_path, "beta", """
+class BetaPlugin:
+    name = "beta"
+
+    def apply(self, ctx, config=None):
+        pass
+
+plugin = BetaPlugin()
+""")
+        ctx = make_plugin_ctx(tmp_path)
+        loader = Loader(ctx, tree=PluginTree.from_dict([
+            {"id": "alpha", "name": "alpha"},
+            {"id": "beta", "name": "beta", "disabled": True},
+        ]))
+        await loader.load()
+        assert loader.loaded_ids == ("alpha",)
+        assert ctx.tools.registry.registered("alpha_tool")
+        assert loader.get("alpha").name == "alpha"
+
+    async def test_unload_cleans_registrations(self, tmp_path):
+        _write_plugin(tmp_path, "gamma", """
+from xbotv2.api import Tool
+
+class GammaPlugin:
+    name = "gamma"
+
+    def apply(self, ctx, config=None):
+        ctx.tools.register(Tool.from_function(lambda: "ok", name="gamma_tool"))
+
+plugin = GammaPlugin()
+""")
+        ctx = make_plugin_ctx(tmp_path)
+        loader = Loader(ctx, tree=PluginTree.from_dict([
+            {"id": "gamma", "name": "gamma"},
+        ]))
+        await loader.load()
+        assert ctx.tools.registry.registered("gamma_tool")
+        await loader.unload("gamma")
+        assert loader.loaded_ids == ()
+        assert not ctx.tools.registry.registered("gamma_tool")
+
+    async def test_config_reaches_apply(self, tmp_path):
+        _write_plugin(tmp_path, "delta", """
+class DeltaPlugin:
+    name = "delta"
+
+    def apply(self, ctx, config=None):
+        self.received = (config or {}).get("value")
+
+plugin = DeltaPlugin()
+""")
+        ctx = make_plugin_ctx(tmp_path)
+        loader = Loader(ctx, tree=PluginTree.from_dict([
+            {"id": "delta", "name": "delta", "config": {"value": 42}},
+        ]))
+        await loader.load()
+        assert loader.get("delta").received == 42
+
+    async def test_unload_all_reverse_order(self, tmp_path):
+        order = []
+
+        def make(name):
+            return f"""
+class {name.title()}Plugin:
+    name = "{name}"
+
+    def apply(self, ctx, config=None):
+        {name}_plugin = self
+        ctx.dispose(lambda: order.append("{name}"))
+
+plugin = {make("one").strip().splitlines()[0] if False else ""}{""}
+"""
+        marker_one = tmp_path / "one.txt"
+        marker_two = tmp_path / "two.txt"
+        _write_plugin(tmp_path, "one", f"""
 from pathlib import Path
-from xbotv2.api import PluginBase
-LOG = Path(r"%s")
-class DemoPlugin(PluginBase):
-    async def on_unload(self):
-        LOG.write_text("unloaded", encoding="utf-8")
-''' % str(tmp_path / "marker.txt")
-        _write_plugin_dir(tmp_path, "demo", code)
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        loader = PluginLoader(ctx=ctx, plugin_dirs=[tmp_path])
+class OnePlugin:
+    name = "one"
+
+    def apply(self, ctx, config=None):
+        ctx.dispose(lambda: Path({str(marker_one)!r}).write_text("x"))
+
+plugin = OnePlugin()
+""")
+        _write_plugin(tmp_path, "two", f"""
+from pathlib import Path
+class TwoPlugin:
+    name = "two"
+
+    def apply(self, ctx, config=None):
+        ctx.dispose(lambda: Path({str(marker_two)!r}).write_text("x"))
+
+plugin = TwoPlugin()
+""")
+        ctx = make_plugin_ctx(tmp_path)
+        loader = Loader(ctx, tree=PluginTree.from_dict([
+            {"id": "one", "name": "one"},
+            {"id": "two", "name": "two"},
+        ]))
         await loader.load()
-        await loader.unload("demo")
-        assert loader.loaded_plugins == []
-        assert (tmp_path / "marker.txt").read_text(encoding="utf-8") == "unloaded"
+        await loader.unload_all()
+        assert marker_two.exists()  # reverse load order: two unloads first
+        assert marker_one.exists()
 
+    async def test_isolate_entry_scopes_services(self, tmp_path):
+        _write_plugin(tmp_path, "provider", """
+class ProviderPlugin:
+    name = "provider"
 
-# ------------------------------------------------------------------
-# Registration ownership via services and plugin_runtime
-# ------------------------------------------------------------------
+    def apply(self, ctx, config=None):
+        ctx.set("thing", "root-thing")
 
+plugin = ProviderPlugin()
+""")
+        _write_plugin(tmp_path, "scoped_provider", """
+class ScopedProviderPlugin:
+    name = "scoped_provider"
 
-class TestRegistrationOwnership:
-    def test_register_tool_accepts_explicit_options(self, tmp_path):
-        ctx, tool_registry, _context, _agents = make_plugin_ctx(tmp_path)
-        tool = Tool.from_function(lambda: None, name="explicit_tool")
-        with _plugin_apply_ctx(ctx):
-            name = ctx.tools.register(
-                tool,
-                options=ToolRegistrationOptions(sandbox_mode="sandboxed", namespace="plugin:x"),
-            )
-        assert name == "plugin:x:explicit_tool"
-        entry = tool_registry.get(name)
-        assert entry.sandbox_mode == "sandboxed"
+    def apply(self, ctx, config=None):
+        ctx.set("thing", "scoped-thing")
 
-    async def test_runtime_register_tool_is_cleaned_on_fiber_unload(self, tmp_path):
-        ctx, tool_registry, _context, _agents = make_plugin_ctx(tmp_path)
-
-        async def plugin_body(plugin_ctx, config):
-            runtime = RuntimePluginContext(
-                plugin_name="demo",
-                ctx=plugin_ctx,
-                tools=plugin_ctx.tools,
-                commands=plugin_ctx.commands,
-            )
-            runtime.register_tool(
-                Tool.from_function(lambda: None, name="dynamic_tool"),
-                options=ToolRegistrationOptions(namespace="plugin:demo"),
-            )
-
-        await ctx.start()
-        handle = ctx.plugin(plugin_body)
-        await handle
-        assert tool_registry.registered("plugin:demo:dynamic_tool")
-        await handle.dispose()
-        assert not tool_registry.registered("plugin:demo:dynamic_tool")
-
-    def test_command_registration_uses_separate_owned_registry(self, tmp_path):
-        ctx, _tools, _context, _agents = make_plugin_ctx(tmp_path)
-        with _plugin_apply_ctx(ctx):
-            ctx.commands.register(Command(name="demo", description="d", handler=lambda ctx, arg: CommandResult("ok")))
-        assert ctx.commands.get("demo") is not None
-
-    def test_register_tool_collision_does_not_replace_existing_owner(self, tmp_path):
-        ctx, tool_registry, _context, _agents = make_plugin_ctx(tmp_path)
-        tool = Tool.from_function(lambda: None, name="collide")
-        with _plugin_apply_ctx(ctx):
-            ctx.tools.register(tool, options=ToolRegistrationOptions(namespace="plugin:a"))
-        with _plugin_apply_ctx(ctx):
-            with pytest.raises(ValueError, match="already registered"):
-                ctx.tools.register(tool, options=ToolRegistrationOptions(namespace="plugin:b"))
+plugin = ScopedProviderPlugin()
+""")
+        ctx = make_plugin_ctx(tmp_path)
+        loader = Loader(ctx, tree=PluginTree.from_dict([
+            {"id": "provider", "name": "provider"},
+            {"id": "scoped", "name": "scoped_provider", "isolate": {"thing": True}},
+        ]))
+        await loader.load()
+        assert ctx.get("thing") == "root-thing"
+        scoped_ctx = loader.handle("scoped")._fiber.ctx
+        assert scoped_ctx.get("thing") == "scoped-thing"

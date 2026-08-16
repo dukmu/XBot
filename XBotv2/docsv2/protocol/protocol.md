@@ -261,7 +261,7 @@ field is the same value as envelope `sequence`.
 `MessageRequest.request_id` is the correlation key for one submitted message
 and its turn. The server generates `req-<uuid>` when the client sends an empty
 value. That final id is passed to `Engine.run_turn`, exposed on every
-turn-scoped `HookContext`, and copied to every SSE envelope emitted for the
+turn-scoped `EventContext`, and copied to every SSE envelope emitted for the
 request, including errors and `end`.
 
 Interaction ids are a separate namespace and lifecycle. For example, a

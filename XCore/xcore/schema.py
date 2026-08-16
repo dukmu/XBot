@@ -185,6 +185,8 @@ class ObjectSchema(Schema):
         for key, schema in self._shape.items():
             if key in config:
                 result[key] = schema._validate(config[key], (*path, key))
+            elif schema._optional:
+                continue  # optional keys are omitted, not filled with None
             else:
                 result[key] = schema._apply_missing(_path_text((*path, key)))
         for key, value in config.items():

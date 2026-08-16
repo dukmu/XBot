@@ -9,15 +9,13 @@ from typing import Any
 from xbotv2.api import (
     Command,
     CommandResult,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
+    EventContext,
+    Events,
     Message,
     MESSAGE_FORMAT_KEY,
-    PluginBase,
-    PluginManifest,
     Tool,
+    ToolAction,
+    ToolDecision,
     ToolRegistrationOptions,
     ToolResult,
     calibrated_context_tokens,
@@ -26,13 +24,22 @@ from xbotv2.api import (
     prompt_container,
     prompt_element,
 )
+from xcore import S
 
 logger = logging.getLogger("xbotv2.compact")
 
 
-class CompactPlugin(PluginBase):
-    def __init__(self, manifest: PluginManifest) -> None:
-        super().__init__(manifest)
+class CompactPlugin:
+    name = "compact"
+    Config = S.object({
+        "automatic": S.boolean().optional(),
+        "output_reservation": S.number().optional(),
+        "trigger_ratio": S.number().optional(),
+        "keep_recent_turns": S.number().optional(),
+        "summary_max_chars": S.number().optional(),
+    })
+
+    def __init__(self) -> None:
         self._automatic = True
         self._output_reservation: int | None = None
         self._trigger_ratio = 0.8
@@ -43,7 +50,10 @@ class CompactPlugin(PluginBase):
         self._last_reason = ""
         self._last_compaction: dict[str, Any] = {}
 
-    async def on_load(self, config: dict[str, Any]) -> None:
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
+        self.store = ctx.state.namespace("compact")
+        config = config or {}
         self._automatic = bool(config.get("automatic", True))
         reservation = config.get("output_reservation")
         self._output_reservation = (
@@ -52,20 +62,13 @@ class CompactPlugin(PluginBase):
         self._trigger_ratio = float(config.get("trigger_ratio", 0.8))
         self._keep_recent_turns = int(config.get("keep_recent_turns", 4))
         self._summary_max_chars = int(config.get("summary_max_chars", 8_000))
-
-    async def on_unload(self) -> None:
-        self._manual_requested = False
-        self._compactions = 0
-        self._last_reason = ""
-        self._last_compaction = {}
-
-    def apply(self, ctx) -> None:
-        ctx.on(HookStage.BEFORE_CONTEXT.value, self._on_before_context)
+        ctx.dispose(self._on_unload)
+        ctx.on(Events.BEFORE_CONTEXT, self._on_before_context)
         ctx.on(
-            HookStage.BEFORE_MODEL_REQUEST.value,
+            Events.BEFORE_MODEL_REQUEST,
             self._on_before_model_request,
         )
-        ctx.on(HookStage.BEFORE_TOOL_CALL.value, self._allow_compact)
+        ctx.on(Events.BEFORE_TOOL_CALL, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
             """Request one semantic compaction before the next model call.
@@ -95,6 +98,12 @@ class CompactPlugin(PluginBase):
             usage="/compact",
             examples=("/compact",),
         ))
+
+    async def _on_unload(self) -> None:
+        self._manual_requested = False
+        self._compactions = 0
+        self._last_reason = ""
+        self._last_compaction = {}
 
     async def _compact_command(self, ctx: Any, raw_args: str) -> CommandResult:
         if raw_args.strip():
@@ -132,14 +141,14 @@ class CompactPlugin(PluginBase):
             data=data,
         )
 
-    async def _allow_compact(self, ctx: HookContext):
+    async def _allow_compact(self, ctx: EventContext):
         if ctx.tool_call is not None and ctx.tool_call.name == "compact":
-            return HookDecision(
-                HookAction.ALLOW,
+            return ToolDecision(
+                ToolAction.ALLOW,
                 "Compaction requests are pre-approved by the Compact plugin",
             )
 
-    async def _on_before_context(self, ctx: HookContext):
+    async def _on_before_context(self, ctx: EventContext):
         if not self._manual_requested:
             return None
         messages = list(ctx.messages)
@@ -152,7 +161,7 @@ class CompactPlugin(PluginBase):
             estimate_source="estimated_history",
         )
 
-    async def _on_before_model_request(self, ctx: HookContext):
+    async def _on_before_model_request(self, ctx: EventContext):
         if not self._automatic:
             return None
         messages = list(ctx.messages)
@@ -226,7 +235,7 @@ class CompactPlugin(PluginBase):
 
     async def _compact(
         self,
-        ctx: HookContext,
+        ctx: EventContext,
         messages: list[Message],
         *,
         reason: str,
@@ -243,7 +252,7 @@ class CompactPlugin(PluginBase):
         if split == 0:
             return None
         if ctx.invoke_model is None:
-            raise RuntimeError("CompactPlugin requires HookContext.invoke_model")
+            raise RuntimeError("CompactPlugin requires EventContext.invoke_model")
 
         turn = ctx.session.turn_count
         history_chars = _history_chars(messages)
@@ -517,3 +526,7 @@ def _limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
     head = remaining * 2 // 3
     tail = remaining - head
     return summary[:head].rstrip() + marker + summary[-tail:].lstrip(), True
+
+
+
+plugin = CompactPlugin()

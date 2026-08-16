@@ -4,19 +4,21 @@ from __future__ import annotations
 
 from xbotv2.api import (
     ContextComponent,
-    HookContext,
-    HookStage,
-    PluginBase,
+    EventContext,
+    Events,
 )
 
 
-class WorkspaceInstructionsPlugin(PluginBase):
+class WorkspaceInstructionsPlugin:
+    name = "workspace_instructions"
+
     """Inject the current workspace AGENTS.md into each model request."""
 
-    def apply(self, ctx) -> None:
+    def apply(self, ctx, config=None) -> None:
+        self.ctx = ctx
         path = ctx.workspace_root / "AGENTS.md"
 
-        def inject_workspace_instructions(hook_ctx: HookContext) -> None:
+        def inject_workspace_instructions(hook_ctx: EventContext) -> None:
             components = hook_ctx.context_components
             if components is None or not path.is_file():
                 return
@@ -30,7 +32,7 @@ class WorkspaceInstructionsPlugin(PluginBase):
                 role="system",
                 source="workspace_instructions",
                 content=text,
-                plugin_name=self.manifest.name,
+                plugin_name="workspace_instructions",
                 stage="system_instructions",
                 source_path="AGENTS.md",
             )
@@ -50,6 +52,9 @@ class WorkspaceInstructionsPlugin(PluginBase):
             components.insert(index, component)
 
         ctx.on(
-            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD.value,
+            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
             inject_workspace_instructions,
         )
+
+
+plugin = WorkspaceInstructionsPlugin()

@@ -5,16 +5,12 @@ from pathlib import Path
 
 import pytest
 from builtin_plugins.todolist.plugin import TodolistPlugin
-from xbotv2.api import PluginManifest
-from xbotv2.api.hooks import HookStage
+import xcore
 from xbotv2.core.context import ContextBuilder
 from xbotv2.core.engine import Engine
 from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
 from xbotv2.llm.mock import MockLLM
 from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.loader import PluginLoader
-from plugin_harness import mount_ctx, mount_plugin
 from plugin_harness import mount_ctx, mount_plugin
 from xbotv2.tools.permissions import PermissionSystem
 from xbotv2.tools.registry import ToolRegistry
@@ -26,14 +22,9 @@ class SetupContext:
 
     def __init__(self, plugin) -> None:
         self.ctx = plugin.ctx
-        self.hooks: dict = {}
         self.tools: dict = {}
         self.options: dict = {}
         self.commands: dict = {}
-        for stage in HookStage:
-            callbacks = plugin._hook_manager.listeners(stage)
-            if callbacks:
-                self.hooks[stage] = callbacks[0]
         for entry in self.ctx.tools.registry.registered_entries():
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
@@ -55,7 +46,9 @@ def _mount(plugin, state_store):
 
 
 def make_plugin(state_store) -> TodolistPlugin:
-    return _mount(TodolistPlugin(PluginManifest(name="todolist", version="1")), state_store)
+    from builtin_plugins.todolist.plugin import TodolistPlugin
+
+    return _mount(TodolistPlugin(), state_store)
 
 
 def setup_plugin(state_store) -> tuple[TodolistPlugin, SetupContext]:
@@ -201,16 +194,16 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
         Path(__file__).parents[2] / "builtin_plugins" / "todolist",
         target_is_directory=True,
     )
+    from xbotv2.loader import Loader, PluginTree
+
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry
-    loader = PluginLoader(
-        ctx=ctx,
-        plugin_dirs=[plugins_root],
-        workspace_root=tmp_path,
-    )
+    loader = Loader(ctx, tree=PluginTree.from_dict([
+        {"id": "todolist", "name": "builtin_plugins.todolist"},
+    ]))
 
-    loaded = await loader.load()
-    assert isinstance(loaded[0], TodolistPlugin)
+    await loader.load()
+    assert isinstance(loader.get("todolist"), TodolistPlugin)
     assert registry.registered_names() == ["plugin:todolist:update_todos"]
     active = [todo("survive unload", "in_progress")]
     await registry.get("plugin:todolist:update_todos").tool.ainvoke({"todos": active})
@@ -259,7 +252,7 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     engine = Engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(

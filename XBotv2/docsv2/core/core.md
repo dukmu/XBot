@@ -7,7 +7,7 @@ Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.
 
 `_run_turn_impl()` coordinates explicit stage methods for message admission,
 context construction, model-request preparation, streamed response handling,
-tool batches, and turn finish. Stage-specific methods retain their own Hook
+tool batches, and turn finish. Stage-specific methods retain their own event
 return rules; internal completion records are not protocol events.
 
 ### Turn loop, fold, and inbox sequence
@@ -67,20 +67,22 @@ Anthropic thinking and redacted-thinking blocks retain the protocol metadata
 needed for exact replay; signed reasoning is never rewritten by context
 externalization.
 
-### Hooks
+### Runtime events
 
-41 `HookStage` values cover the existing lifecycle. Key stages:
-`BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
-`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`,
-`ON_TOOL_CALL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `BEFORE_TOOL_CALL`,
-`ON_PERMISSION_REQUEST`, `ON_SESSION_INIT`.
+Named events (`xbotv2.api.events.Events`) cover the existing lifecycle: session
+(`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
+(`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
+(`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building
+(`BEFORE_CONTEXT`/`BEFORE_CONTEXT_BUILD`/`AFTER_CONTEXT`/`PRE_COMPACT`/
+`POST_COMPACT`), model (`BEFORE_MODEL_REQUEST`/`AFTER_MODEL_RESPONSE`), and
+tools (`BEFORE_TOOLS`/`AFTER_TOOLS`/`BEFORE_TOOL_CALL`/`AFTER_TOOL_CALL`/
+`PERMISSION_REQUEST`/`TOOL_CALL_FAILURE`).
 
-Guard hooks return explicit `HookDecision` values. Transform hooks return a
-stage-specific dictionary. Observer hooks run all callbacks and ignore results.
-See [hooks.md](../hooks/hooks.md).
-
-ExceptionGroup from strict hooks (ON_SESSION_INIT, ON_SESSION_CLOSE,
-BEFORE_STATE_PERSIST, AFTER_STATE_PERSIST, ON_STOP) caught with BaseException.
+Short-circuit events are dispatched with `ctx.serial` and their first
+non-`None` result is interpreted by the caller (a documented dictionary, or a
+`ToolDecision` at `BEFORE_TOOL_CALL`). Observer events are dispatched with
+`ctx.emit`; listeners must not return values. Failures in a short-circuit
+listener propagate immediately; observer failures propagate out of `emit`.
 
 ### Compaction
 

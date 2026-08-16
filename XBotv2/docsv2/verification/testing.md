@@ -36,7 +36,6 @@ tests/
 │   ├── test_sandbox.py      # SandboxPolicy, BubblewrapBackend capabilities
 │   ├── test_skills.py       # SkillRegistry, shell injection, permission scope
 │   ├── test_mcp.py          # MCPClient stdio/HTTP, MCPTool, result normalization
-│   ├── test_hooks.py        # HookManager registration, execution
 │   ├── test_permissions.py  # PermissionSystem, rule matching
 │   ├── test_protocol.py     # Provider and protocol-adjacent config
 │   ├── test_sse.py          # Shared SSE encoder/decoder
