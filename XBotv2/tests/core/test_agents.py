@@ -1,9 +1,8 @@
 """Agent definition and registry contract tests."""
 
-from pathlib import Path
-
 import pytest
 
+from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.core import AgentDefinition, RuntimeVariables
 from XBotv2.tools.agents import AgentRegistry
 from XBotv2.permissions.system import PermissionSystem
@@ -29,9 +28,16 @@ def test_registry_enforces_name_ownership():
     assert registry.unregister("reviewer", owner="agents")
 
 
-def test_shipped_explorer_definition_is_read_only():
-    definition = _load_definition(
-        Path(__file__).parents[2] / "data" / ".agents" / "Explorer.md"
+def test_builtin_agents_cover_default_and_explorer():
+    by_name = {definition.name: definition for definition in BUILTIN_AGENT_DEFINITIONS}
+    assert set(by_name) == {"default", "Explorer"}
+    assert by_name["default"].mode == "all"
+    assert by_name["Explorer"].mode == "all"
+
+
+def test_builtin_explorer_definition_is_read_only():
+    definition = next(
+        item for item in BUILTIN_AGENT_DEFINITIONS if item.name == "Explorer"
     )
 
     assert definition.mode == "all"
@@ -45,9 +51,9 @@ def test_shipped_explorer_definition_is_read_only():
     assert permissions.check("filesystem_read") == "ask"
 
 
-def test_shipped_default_definition_is_primary_capable():
-    definition = _load_definition(
-        Path(__file__).parents[2] / "data" / ".agents" / "default.md"
+def test_builtin_default_definition_is_primary_capable():
+    definition = next(
+        item for item in BUILTIN_AGENT_DEFINITIONS if item.name == "default"
     )
 
     assert definition.name == "default"

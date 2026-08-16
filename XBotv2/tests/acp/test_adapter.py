@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import socket
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -257,8 +255,6 @@ class ProtocolClient:
 
 
 async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
-    source_data = Path(__file__).parents[2] / "data"
-    shutil.copytree(source_data / "config", tmp_path / "config")
     agent = XBotACPAgent(
         paths=RuntimePaths.from_data_dir(tmp_path),
         provider_name="default",
@@ -348,9 +344,18 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    source_data = Path(__file__).parents[2] / "data"
-    shutil.copytree(source_data / "config", data_dir / "config")
-    shutil.copytree(source_data / ".agents", data_dir / ".agents")
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "config" / "providers.yaml").write_text(
+        "default: default\n"
+        "providers:\n"
+        "  default:\n"
+        "    provider: openai\n"
+        "    model: test\n"
+        "    base_url: http://test\n"
+        "    api_key: test\n"
+        "    max_context_tokens: 4096\n",
+        encoding="utf-8",
+    )
     agent = XBotACPAgent(
         paths=RuntimePaths.from_data_dir(data_dir),
         provider_name="default",

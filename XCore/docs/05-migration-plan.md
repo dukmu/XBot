@@ -105,6 +105,12 @@ Agent、解析 user_context 与 provider 默认；**workspace_instructions 插�
 禁用自身）。`config.yaml` 已取消（内容并入 xcore.yaml 对应条目）；
 运行时数据默认 `~/.xbot/`（sessions/memory/config）。
 
+**首次运行配置播种（DSH 同款）**：bootstrap 在首次运行时把全局配置写入
+`~/.xbot/config/`（`plugins.yaml` 用户树 + `providers.yaml`/`user.yaml`
+模板，缺失才写），用户编辑这些文件而非捆绑树。仓库 `XBotv2/data/` 已删除：
+两个默认子代理定义（`default`/`Explorer`）内建为代码（`agents/builtins.py`，
+同名 Markdown 覆盖内建），provider/user 模板进入播种模板。
+
 **行序无语义**（DSH cordis.patch.yml 同款）：每个插件声明 `inject` 依赖
 （它消费的 ctx.* 服务名），XCore 在所需服务可用时自动激活 fiber——条目顺序
 只是可读性分组，任何顺序都能正确启动（有乱序回归测试）。`loader.load()`

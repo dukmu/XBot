@@ -17,9 +17,11 @@ uv run xbot acp
 output. It is non-interactive: `ask_user` and `request_permission` are hidden,
 and permission rules that require confirmation fail closed without waiting.
 
-The repository entrypoint defaults to `XBotv2/data`; installed packages use the
-Python environment's `data` directory. The workspace defaults to the startup
-directory and the provider defaults to `default`. Use `--data-dir`,
+Runtime data (sessions, memory, global config) defaults to `~/.xbot`
+(`XBOT_DATA_DIR` / `XBOT_HOME` overrides). The workspace defaults to the
+startup directory and the provider defaults to `default`. On first run the
+global config files are written into `<data-dir>/config/` (`plugins.yaml`
+user tree, `providers.yaml`, `user.yaml` templates). Use `--data-dir`,
 `--workspace`, `--provider`, or the corresponding `XBOT_*` variables to select
 a run configuration. Run `uv run xbot --help` for all modes. Installed packages
 provide `xbot` through the standard Python console entrypoint.

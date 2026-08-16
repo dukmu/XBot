@@ -48,10 +48,14 @@ use the thread layout.
 
 ## Workspace Definitions
 
-The built-in `agents` plugin loads `data/.agents/*.md`, then
-`<workspace>/.agents/*.md` at startup. The filename is the Agent name; a
-workspace definition replaces a same-named built-in definition. YAML
-frontmatter contains configuration and the Markdown body is the Agent prompt:
+XBot ships two built-in definitions registered by the `agents` plugin:
+`default` (general-purpose coding agent, selected for a new primary thread
+when the client does not choose an Agent) and `Explorer` (read-only).  The
+plugin then loads `<data_dir>/.agents/*.md`, then `<workspace>/.agents/*.md`
+at startup — a same-named Markdown definition replaces the built-in (data root
+wins over the built-in, workspace wins over the data root).  The filename is
+the Agent name; the YAML frontmatter contains configuration and the Markdown
+body is the Agent prompt:
 
 ```markdown
 ---
@@ -125,10 +129,11 @@ A subagent shares the parent turn's live interaction sink, so its `ask_user`
 and permission requests use the normal ordered C/S interaction flow. Permission
 decisions that still require a human fail closed when no live sink is attached.
 
-The shipped `Explorer` definition has `mode: all` and exposes only read,
+The built-in `Explorer` definition has `mode: all` and exposes only read,
 `content_read`, list, search, and `ask_user` tools. It can be selected as a
 primary Agent or delegated to as a subagent; it cannot see filesystem writes,
 Shell, or subagent dispatch.
-The shipped `default` definition is selected for a new primary thread when the
+The built-in `default` definition is selected for a new primary thread when the
 client does not choose an Agent. Explicit selection, resume metadata, and child
-Agent definitions take precedence.
+Agent definitions take precedence. A same-named Markdown definition in
+`<data_dir>/.agents/` or `<workspace>/.agents/` replaces the built-in.

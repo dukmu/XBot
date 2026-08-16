@@ -111,16 +111,23 @@ provider: current-provider
 Configuration:
 
 ```text
-data/config/config.yaml
-data/config/providers.yaml
-data/sessions/<session-id>/config.yaml
+XBotv2/xcore.yaml                # bundled default plugin tree (single document)
+<data_dir>/config/plugins.yaml   # global user tree overlay (seeded on first run)
+<data_dir>/config/providers.yaml # provider definitions (seeded template)
+<data_dir>/config/user.yaml      # user context (seeded template)
+<data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
 <workspace_root>/AGENTS.md       # reloaded for each model context build
-<workspace_root>/.agents/*.md    # workspace Agent definitions
-<workspace_root>/.xbot/config.yaml
+<workspace_root>/.agents/*.md    # workspace Agent definitions (override built-ins)
+<workspace_root>/.xbot/plugins.yaml
 ```
 
-The runtime configuration priority is workspace, then session, then global.
-Provider definitions are global and use explicit `max_context_tokens` and
+`data_dir` defaults to `~/.xbot` (`--data-dir` / `XBOT_DATA_DIR` overrides).
+The bundled `xcore.yaml` is the default tree; the global
+`<data_dir>/config/plugins.yaml` overlay and the workspace
+`.xbot/plugins.yaml` overlay patch it (config deep-merged, later wins).  On
+first run the global config files are written if missing (DSH-style boot
+seed), so users edit those files instead of the bundled tree.  Provider
+definitions are global and use explicit `max_context_tokens` and
 `max_output_tokens`. Any unknown provider name fails at bootstrap; provider
 selection never silently falls back to a different model.
 

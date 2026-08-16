@@ -107,8 +107,9 @@ Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
 stored under the session's `state/artifacts/tool_results` directory before
 history persistence and SSE emission. `tool_results.preview_chars` controls the
 bounded beginning and ending preview (4,000 characters by default). Both are
-global settings in `data/config/config.yaml`, and the preview may not
-exceed the inline threshold. The model receives the preview plus a `cache_path` relative to
+configured in the `coretools` plugin entry of the plugin tree (`xcore.yaml` or
+a `plugins.yaml` overlay), and the preview may not exceed the inline
+threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
 callers should use `offset`, `char_offset`, `limit`, and `max_chars` to inspect

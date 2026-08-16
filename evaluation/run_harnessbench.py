@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=REPO_ROOT / "XBotv2" / "data",
+        default=EVALUATION_ROOT / "templates",
     )
     parser.add_argument("--agent-command", help="override the adapter executable")
     parser.add_argument(

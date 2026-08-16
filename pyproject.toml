@@ -65,7 +65,3 @@ source = [
 where = ["."]
 include = ["XBotv2*"]
 namespaces = true
-
-[tool.setuptools.data-files]
-"data/config" = ["XBotv2/data/config/*.yaml"]
-"data/.agents" = ["XBotv2/data/.agents/*.md"]

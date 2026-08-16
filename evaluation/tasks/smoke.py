@@ -30,7 +30,7 @@ def xbot_smoke() -> Task:
             ),
             data_dir=os.environ.get(
                 "XBOT_EVAL_DATA_DIR",
-                str(REPO_ROOT / "XBotv2" / "data"),
+                str(REPO_ROOT / "evaluation" / "templates"),
             ),
             provider=os.environ.get("XBOT_EVAL_PROVIDER", "minimax"),
             no_plugins=True,

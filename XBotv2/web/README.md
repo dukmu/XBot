@@ -10,7 +10,6 @@ Start the existing XBot server:
 
 ```bash
 uv run xbot serve \
-  --data-dir XBotv2/data \
   --workspace ./output \
   --provider minimax
 ```

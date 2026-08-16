@@ -1,80 +1,56 @@
 # Configuration
 
-XBot resolves one validated runtime configuration from these UTF-8 YAML files:
+XBot configures plugins declaratively through plugin-tree YAML documents.
+There is one bundled default tree and two overlay layers:
 
-1. `data/config/config.yaml` - global defaults
-2. `data/sessions/<session-id>/config.yaml` - session choices and approvals
-3. `<workspace>/.xbot/config.yaml` - workspace policy
+1. `XBotv2/xcore.yaml` - bundled default plugin tree (single config document)
+2. `<data_dir>/config/plugins.yaml` - global user tree overlay
+3. `<workspace>/.xbot/plugins.yaml` - workspace policy overlay
 
-Later layers have higher priority. Mappings merge recursively; scalar values and
-lists replace the lower-layer value. An explicit empty list therefore clears a
-lower-layer list. Unknown fields and invalid values stop startup instead of
-being silently ignored.
+`data_dir` defaults to `~/.xbot` (`--data-dir` / `XBOT_DATA_DIR` overrides).
+On first run the global config directory is seeded (DSH-style boot seed):
+`config/plugins.yaml` (empty user tree), `config/providers.yaml` and
+`config/user.yaml` templates are written when missing, so users edit those
+files instead of the bundled tree.
+
+Overlays merge per plugin id: the later entry's `config` is deep-merged into
+the base entry, and `disabled` / `inject` / `isolate` are replaced.  New ids
+mount additional plugins.  Unknown fields and invalid values stop startup
+instead of being silently ignored.  Order in the file has no meaning: every
+plugin with satisfied service dependencies loads.
 
 ```yaml
-provider: default
-max_concurrent_subagents: 4
-
-tool_results:
-  max_inline_chars: 12000
-  preview_chars: 4000
-
-plugins:
-  agents:
-    enabled: true
-    config: {}
-  sample:
-    enabled: false
-
-plugin_paths:
-  - .xbot/plugins
-
-workspace_tools:
-  - target: tools/release.py:TOOLS
-
-hooks:
-  - stage: before_tool_call
-    target: hooks/check_tool.py:check_tool
-
-permissions:
-  allow:
-    - tool: filesystem_(?:read|write)
-      paths: ${workspace}
-  ask:
-    - tool: .*
-  deny: []
-
-sandbox:
-  enabled: true
-  network: false
-  workspace_read: allow
-  workspace_write: allow
-  external_read: ask
-  external_write: deny
-  resources: []
+# <data_dir>/config/plugins.yaml — one entry per plugin id
+- id: agents
+  config:
+    timeout_seconds: 600
+- id: sample
+  disabled: true
 ```
 
-Workspace `plugin_paths` are relative to the workspace and may not escape it.
-The standard workspace plugin root is `.xbot/plugins`; additional roots remain
-supported when explicitly configured.
+Workspace overlays are applied by the `workspace_instructions` plugin, which
+also injects `<workspace>/AGENTS.md` into every model context build.  A
+workspace overlay may disable any plugin including `workspace_instructions`
+itself.
 
-`workspace_tools` explicitly loads trusted Tool exports from `.xbot/tools`.
-Each target uses `tools/module.py:export` syntax. The export is either one
-`api.Tool` or a non-empty list/tuple of Tools, conventionally named
-`TOOLS`. They enter the normal ToolRegistry, permission, Hook, result-cache,
-and ToolResult execution path under the `workspace` namespace. No ordinary
-functions are scanned implicitly.
+Plugin `config` values are per-plugin; `permissions`, `sandbox`, and
+`max_concurrent_subagents` live in the corresponding plugin entries
+(`permissions`, `sandbox`, `jobs`).  Provider and user documents are separate:
 
-Workspace Hook targets use `hooks/module.py:callback` and must stay inside
-`.xbot/hooks`. A Hook remains explicitly associated with a stage in `hooks`;
-filenames do not imply lifecycle stages or ordering. Workspace Tool and Hook
-modules are trusted startup code. Configuration is loaded when a thread starts;
-session policy changes are reloaded explicitly by the policy API.
+```text
+<data_dir>/config/providers.yaml   # provider definitions
+<data_dir>/config/user.yaml        # user context
+```
+
+Workspace Tool and Hook modules are trusted startup code. Configuration is
+loaded when a thread starts; session policy changes are reloaded explicitly by
+the policy API.
 
 ## Providers
 
-Provider definitions live only in `data/config/providers.yaml`. Runtime config
-selects one by name; it does not duplicate model limits.
+Provider definitions live only in `<data_dir>/config/providers.yaml` (seeded
+as a template on first run). Runtime config selects one by name; it does not
+duplicate model limits.
 
 ```yaml
 default: minimax
@@ -121,10 +97,13 @@ instead of replaying partial output.
 
 ## Agent Definitions
 
-`data/.agents/*.md` and `<workspace>/.agents/*.md` define Agents. Workspace
-definitions with the same filename override built-ins. Agent frontmatter may
-select a provider/model and override generation or context limits; these values
-do not belong in runtime `config.yaml`.
+XBot ships two built-in Agent definitions (`default` and `Explorer`) registered
+by the `agents` plugin.  `<data_dir>/.agents/*.md` and
+`<workspace>/.agents/*.md` define additional Agents; a same-named Markdown
+definition replaces the built-in (data root wins over the built-in, workspace
+wins over the data root). Agent frontmatter may select a provider/model and
+override generation or context limits; these values do not belong in plugin
+config.
 
 Agent definitions are immutable during a turn. Run `/agent reload` while the
 thread is idle to reload the Agent plugin and reapply the active definition.

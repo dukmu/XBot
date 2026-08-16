@@ -36,8 +36,9 @@ def _default_data_dir() -> str:
     """Runtime data root: ``~/.xbot`` (XDG-style home directory).
 
     Sessions and memory live here by default; ``XBOT_DATA_DIR`` (or
-    ``--data-dir``) overrides.  The repository ``XBotv2/data/config`` files
-    are configuration templates, not the runtime location.
+    ``--data-dir``) overrides.  The initial global config files
+    (``config/plugins.yaml``, ``providers.yaml``, ``user.yaml``) are written
+    into this directory on first run.
     """
     return str(Path(os.environ.get("XBOT_HOME") or Path.home() / ".xbot"))
 

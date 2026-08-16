@@ -290,3 +290,27 @@
     （fiber 清理，reload 不重复注册）；acp 的 MCP 插件检查改用树启用语义。
 - **验证**：XBotv2 **735 passed**；XCore **105 passed**；`uv run xbot tui`
   pty 实测 Ready 无错误；乱序树回归测试保持。
+
+### 2026-08-17 · 清理 XBotv2/data/、内建默认子代理、启动时全局初始配置写入
+
+- **用户指示**：① 清理 data/ 目录；② 内建两个默认子代理定义（default +
+  Explorer）；③ 启动时加入全局初始配置写入。
+- **实施**：
+  - **删除 `XBotv2/data/`**：`.agents/*.md`、`config/providers.yaml`、
+    `config/user.yaml` 模板全部移入代码；pyproject `data-files` 段删除；
+    `XBotv2/.gitignore` 简化为 `data/`。
+  - **内建默认子代理**：`XBotv2/agents/builtins.py` 定义 `default` 与
+    `Explorer` 两个 `AgentDefinition`（与原 Markdown 语义一致：Explorer
+    只读工具 + deny 写/shell/subagent）；agents 插件先注册内建、再叠加
+    data_root 与 workspace 的 `.agents/*.md`（同名 Markdown 覆盖内建）。
+  - **启动时全局初始配置写入**：`XBotv2/config/seed.py` 的
+    `ensure_initial_config(paths)` 在 bootstrap 首次运行时把
+    `~/.xbot/config/{plugins.yaml,providers.yaml,user.yaml}` 写入
+    （缺失才写；空树 overlay 与注释模板均为无副作用默认），DSH 在启动时
+    写入 profile root 的同款机制；子代理组装不重复播种。
+  - **eval 适配**：评估默认 `--data-dir` 改指 `evaluation/templates/`
+    （providers/user 模板保留），任务文件与 README 同步。
+- **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
+  `uv run xbot tui` 配好 provider 后 pty 实测 Ready 无错误；全新数据目录
+  无 provider 时报 "requires api_key" 与改动前一致（播种模板只是文档化，
+  不改变解析结果）。

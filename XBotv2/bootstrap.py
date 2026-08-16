@@ -23,6 +23,7 @@ from typing import Any
 
 import xcore
 
+from XBotv2.config.seed import ensure_initial_config
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.loader import LoaderComponent, PluginTree
@@ -78,6 +79,13 @@ async def bootstrap(
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
     workspace_root = Path(workspace_root or Path.cwd()).resolve()
+
+    # 0. Global initial config: materialize ~/.xbot/config/ (plugins.yaml
+    #    user tree + provider/user templates) on first run, DSH-style.
+    #    Subagent children share the parent's data dir; only the primary
+    #    assembly seeds it.
+    if not is_subagent:
+        ensure_initial_config(paths)
 
     # 1. Session identity (filesystem roots the tree references).  All plugin
     #    configuration lives in xcore.yaml; runtime initialization (state

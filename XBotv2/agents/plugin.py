@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.core import (
     AgentDefinition,
     RuntimeVariables,
@@ -109,13 +110,19 @@ class AgentsPlugin:
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
+        # Built-ins are the base layer; a same-named Markdown definition in the
+        # data root or workspace replaces them (workspace wins).
         definitions = {
+            definition.name: definition
+            for definition in BUILTIN_AGENT_DEFINITIONS
+        }
+        definitions.update({
             definition.name: definition
             for definition in _load_definitions(
                 ctx.data_root / ".agents",
                 ctx.variables,
             )
-        }
+        })
         definitions.update({
             definition.name: definition
             for definition in _load_definitions(
