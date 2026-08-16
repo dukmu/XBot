@@ -392,19 +392,38 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
 
-    # Minimal providers.yaml so bootstrap can pick a default
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n    api_key: test\n"
-        "    max_context_tokens: 4096\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
-        encoding="utf-8",
-    )
+    # Tree overlays: llm provider definitions + user context live in plugin
+    # config, not separate providers.yaml / user.yaml documents.
     (data_dir / "config" / "plugins.yaml").write_text(
         yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
             {
                 "id": "sandbox",
                 "name": "sandbox",
@@ -1117,7 +1136,7 @@ async def test_typed_history_mutations_validate_and_reject_busy_threads(
 
 
 @pytest.mark.asyncio
-async def test_http_provider_list_reads_providers_yaml(client: httpx.AsyncClient) -> None:
+async def test_http_provider_list_reads_tree_config(client: httpx.AsyncClient) -> None:
     open_response = await client.post(
         "/sessions", json={"session_id": "providers", "thread_id": "t"}
     )
@@ -1135,14 +1154,17 @@ async def test_typed_provider_selection_persists_across_resume(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    providers_file = http_app.state.paths.config_dir / "providers.yaml"
-    providers_file.write_text(
-        providers_file.read_text(encoding="utf-8")
-        + "  alternate:\n"
-        "    provider: openai\n"
-        "    model: alternate-model\n"
-        "    base_url: http://alternate\n"
-        "    api_key: test\n",
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    llm_entry = next(item for item in tree if item["id"] == "llm")
+    llm_entry["config"]["providers"]["alternate"] = {
+        "provider": "openai",
+        "model": "alternate-model",
+        "base_url": "http://alternate",
+        "api_key": "test",
+    }
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
         encoding="utf-8",
     )
     await client.post(
@@ -1453,17 +1475,34 @@ async def test_http_policy_api_rejects_invalid_permission_values(
 async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
-        encoding="utf-8",
-    )
     (data_dir / "config" / "plugins.yaml").write_text(
         yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
             {
                 "id": "sandbox",
                 "name": "sandbox",
@@ -2318,19 +2357,36 @@ async def _real_terminal_session(
     config_dir.mkdir(parents=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
-    (config_dir / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n    api_key: test\n"
-        "    max_context_tokens: 4096\n",
-        encoding="utf-8",
-    )
-    (config_dir / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\n"
-        "session_type: interactive\n",
-        encoding="utf-8",
-    )
     (config_dir / "plugins.yaml").write_text(
         yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
             {
                 "id": "sandbox",
                 "name": "sandbox",
@@ -2646,18 +2702,36 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A FastAPI app with plugins enabled and skills discoverable."""
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n    api_key: test\n"
-        "    max_context_tokens: 4096\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\nsession_type: interactive\n",
-        encoding="utf-8",
-    )
     (data_dir / "config" / "plugins.yaml").write_text(
         yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
             {
                 "id": "sandbox",
                 "name": "sandbox",

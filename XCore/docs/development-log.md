@@ -314,3 +314,33 @@
   `uv run xbot tui` 配好 provider 后 pty 实测 Ready 无错误；全新数据目录
   无 provider 时报 "requires api_key" 与改动前一致（播种模板只是文档化，
   不改变解析结果）。
+
+### 2026-08-17 · Provider 定义与用户上下文并入插件树，默认 provider=minimax
+
+- **用户指示**：① 默认 provider 应为 minimax；② llm 是插件，为什么还有
+  单独的 `providers.yaml`？
+- **实施**：
+  - **删除 `providers.yaml` / `user.yaml` 文档**：provider 定义是 `llm`
+    插件条目的树配置（`default: minimax` + `providers` 映射，xcore.yaml
+    内置 minimax/deepseek/openai/anthropic/lmstudio），用户上下文是
+    `config` 插件条目的 `config.user`；全局覆盖经
+    `~/.xbot/config/plugins.yaml` 的 `llm`/`config` 条目。
+  - **LlmService**：`configure(default, providers)` 存原始定义；
+    `default_name()` / `names()` / `provider_config(name, require_key=)`；
+    `"default"` 是默认 provider 别名；只有被选中 provider 才要求
+    `api_key_env`（`require_key=False` 供 `/providers` 列表，挂载不因
+    无关 provider 缺 key 失败）。解析逻辑移入 `config.loader.parse_provider_config`
+    （`resolve_llm_config(paths)` 从合并树取 llm 条目，供 main.py 启动校验
+    与服务器根 `/providers`）。
+  - **消费方**：agentloop 默认名与 provider 配置经 `ctx.llm`；
+    operations.select_provider/_activate_agent 经
+    `ctx.engine.plugin_ctx.llm`；http `/providers` 经 `app.state.llm`
+    （protocol 插件把 `ctx.llm` 传入 create_app，未传时从树解析）；
+    acp `_config_options` 经 runtime 引擎的 llm 服务；main.py 校验改为
+    从合并树解析。
+  - **seed.py**：只播种 `plugins.yaml`；`RuntimePaths.providers_config/
+    user_config` 删除；eval 模板改为 `config/plugins.yaml`（llm 条目），
+    adapter 读写 llm 条目（`_load_provider`/`_configure_bridge_provider`/
+    `_provider_config`）。
+- **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
+  `uv run xbot tui` pty 实测 Ready 无错误（默认 minimax，无需 providers.yaml）。

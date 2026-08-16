@@ -37,8 +37,7 @@ evaluation/results/
 evaluation/.inspect/
 
 # Runtime artifacts under the eval config template dir (used as the default
-# eval data dir; the committed files are config/providers.yaml + user.yaml)
-evaluation/templates/config/plugins.yaml
+# eval data dir; the committed files are config/plugins.yaml)
 evaluation/templates/sessions/
 evaluation/templates/memory/
 evaluation/templates/logs/
@@ -55,3 +54,7 @@ XCore/.pytest_cache/
 
 # local serve smoke-test runtime state
 .serve-test/
+
+# local TUI smoke-test runtime state
+.tui-data/
+.tui-state/

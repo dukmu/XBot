@@ -229,9 +229,9 @@ def _configure_bridge_provider(
     max_output_tokens = provider.get("max_output_tokens")
     if max_output_tokens is None and provider_type == "anthropic":
         max_output_tokens = 32_768
-    path = data_dir / "config" / "providers.yaml"
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    providers = document.setdefault("providers", {})
+    document = _load_plugins(data_dir / "config" / "plugins.yaml")
+    llm_entry = _find_entry(document, "llm")
+    providers = llm_entry.setdefault("config", {}).setdefault("providers", {})
     providers["inspect"] = {
         "provider": provider_type,
         "model": "inspect",
@@ -241,10 +241,7 @@ def _configure_bridge_provider(
         "max_output_tokens": max_output_tokens,
         "input_modalities": provider.get("input_modalities", ["text"]),
     }
-    path.write_text(
-        yaml.safe_dump(document, sort_keys=False),
-        encoding="utf-8",
-    )
+    _write_plugins(data_dir / "config" / "plugins.yaml", document)
 
 
 def _bridge_base_url(provider_type: str) -> str:
@@ -255,10 +252,18 @@ def _bridge_base_url(provider_type: str) -> str:
 
 
 def _load_provider(source: Path, provider_name: str | None) -> dict[str, Any]:
-    path = source / "config" / "providers.yaml"
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    providers = document.get("providers") or {}
-    selected = provider_name or str(document.get("default") or "")
+    """Read one provider definition from the llm plugin tree entry.
+
+    Providers live in the ``llm`` plugin's tree config (``plugins.yaml``
+    entry config, merged over the bundled ``xcore.yaml``) — there is no
+    separate ``providers.yaml`` document.
+    """
+    path = source / "config" / "plugins.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    llm_entry = _find_entry(document, "llm")
+    config = dict(llm_entry.get("config") or {})
+    providers = config.get("providers") or {}
+    selected = provider_name or str(config.get("default") or "")
     provider = providers.get(selected)
     if not isinstance(provider, dict):
         available = ", ".join(sorted(str(name) for name in providers))
@@ -267,6 +272,35 @@ def _load_provider(source: Path, provider_name: str | None) -> dict[str, Any]:
             f"available providers: {available or '(none)'}"
         )
     return provider
+
+
+def _load_plugins(path: Path) -> list[dict[str, Any]]:
+    """Read a plugins.yaml tree; a missing file is an empty tree."""
+    if not path.is_file():
+        return []
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if document is None:
+        return []
+    if not isinstance(document, list):
+        raise ValueError(f"{path} must contain a plugin entry list")
+    return document
+
+
+def _write_plugins(path: Path, document: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(document, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _find_entry(document: list[dict[str, Any]], entry_id: str) -> dict[str, Any]:
+    for entry in document:
+        if str(entry.get("id") or entry.get("name") or "") == entry_id:
+            return entry
+    entry: dict[str, Any] = {"id": entry_id, "name": entry_id, "config": {}}
+    document.append(entry)
+    return entry
 
 
 def _metadata(

@@ -113,8 +113,6 @@ Configuration:
 ```text
 XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 <data_dir>/config/plugins.yaml   # global user tree overlay (seeded on first run)
-<data_dir>/config/providers.yaml # provider definitions (seeded template)
-<data_dir>/config/user.yaml      # user context (seeded template)
 <data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
 <workspace_root>/AGENTS.md       # reloaded for each model context build
 <workspace_root>/.agents/*.md    # workspace Agent definitions (override built-ins)
@@ -125,11 +123,14 @@ XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 The bundled `xcore.yaml` is the default tree; the global
 `<data_dir>/config/plugins.yaml` overlay and the workspace
 `.xbot/plugins.yaml` overlay patch it (config deep-merged, later wins).  On
-first run the global config files are written if missing (DSH-style boot
-seed), so users edit those files instead of the bundled tree.  Provider
-definitions are global and use explicit `max_context_tokens` and
-`max_output_tokens`. Any unknown provider name fails at bootstrap; provider
-selection never silently falls back to a different model.
+first run the global user tree is written if missing (DSH-style boot seed),
+so users edit that file instead of the bundled tree.  Provider definitions
+are the ``llm`` plugin's tree config (``default`` + ``providers``) and the
+user context is the ``config`` plugin's tree config (``user``) — there are no
+separate ``providers.yaml`` / ``user.yaml`` documents. Provider definitions
+use explicit `max_context_tokens` and `max_output_tokens`. Any unknown
+provider name fails at bootstrap; provider selection never silently falls
+back to a different model.
 
 ## Core Components
 

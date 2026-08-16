@@ -82,7 +82,7 @@ class AgentLoopComponent:
         cfg = self._tree_config
         provider_name = self._provider_name
         if provider_name == "default":
-            provider_name, _names = ctx.settings.provider_names()
+            provider_name = ctx.llm.default_name()
         self._user_context = ctx.settings.user_context()
         memory = cfg.get("memory", "")
         if not memory:
@@ -165,7 +165,11 @@ class AgentLoopComponent:
             provider_name = stored_provider
         state_store.provider = provider_name
         agent_config.provider = provider_name
-        provider_config = ctx.settings.provider_config(provider_name)
+        # The API key is only required when a real client is created below;
+        # an explicit llm_override (tests / external wiring) needs no key.
+        provider_config = ctx.llm.provider_config(
+            provider_name, require_key=self._llm_override is None
+        )
         if resolved_agent is not None:
             apply_agent_provider(provider_config, resolved_agent)
         agent_config.max_context_tokens = (

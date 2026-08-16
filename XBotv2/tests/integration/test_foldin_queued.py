@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import yaml
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import Tool
@@ -29,15 +30,37 @@ from XBotv2.permissions.system import PermissionSystem
 async def foldin_app(tmp_path: Path):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n    api_key: test\n"
-        "    max_context_tokens: 4096\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\n"
-        "session_type: interactive\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
     (data_dir / "config" / "config.yaml").write_text(

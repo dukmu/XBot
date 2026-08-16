@@ -14,7 +14,6 @@ from XBotv2.config.models import (
     ConfigOverlay,
     ProviderConfig,
     RuntimeConfig,
-    UserContext,
 )
 from XBotv2.config.policy import merge_permission_config, merge_sandbox_config
 
@@ -58,60 +57,50 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def load_user_context(paths: RuntimePaths) -> UserContext:
-    return UserContext.model_validate(load_yaml(paths.user_config))
-
-
-def load_provider_config(
-    paths: RuntimePaths,
-    provider_name: str = "default",
+def parse_provider_config(
+    name: str,
+    raw: dict[str, Any],
+    *,
+    require_key: bool = True,
 ) -> ProviderConfig:
-    """Load one named provider from the canonical providers document."""
-    document = load_yaml(paths.providers_config)
-    if not document:
-        if provider_name != "default":
-            raise ValueError(
-                f"Unknown provider config: {provider_name}. "
-                "No providers are configured."
-            )
-        return ProviderConfig()
-    providers = document.get("providers")
-    if not isinstance(providers, dict):
-        raise ValueError("providers.yaml requires a providers mapping")
-    selected = (
-        str(document.get("default") or "")
-        if provider_name == "default"
-        else provider_name
-    )
-    section = providers.get(selected)
-    if not isinstance(section, dict):
-        available = ", ".join(sorted(str(name) for name in providers))
-        raise ValueError(
-            f"Unknown provider config: {provider_name}. "
-            f"Available providers: {available or '(none)'}."
-        )
-    values = _expand_env(section)
+    """Validate one provider definition (env expansion + api_key_env).
+
+    With ``require_key=True`` (a provider selection) an ``api_key_env``
+    variable must be set; with ``require_key=False`` (e.g. the ``/providers``
+    listing) the key is left unresolved so listing never fails on unrelated
+    providers.
+    """
+    values = _expand_env(dict(raw))
     api_key_env = values.pop("api_key_env", None)
     if api_key_env and not values.get("api_key"):
-        name = str(api_key_env)
-        if name not in os.environ:
-            raise ValueError(f"Environment variable {name} is not set")
-        values["api_key"] = os.environ[name]
+        env_name = str(api_key_env)
+        if require_key and env_name not in os.environ:
+            raise ValueError(f"Environment variable {env_name} is not set")
+        if env_name in os.environ:
+            values["api_key"] = os.environ[env_name]
     return ProviderConfig.model_validate(values)
 
 
-def load_provider_names(paths: RuntimePaths) -> tuple[str, list[str]]:
-    document = load_yaml(paths.providers_config)
-    if not document:
-        return "default", []
-    providers = document.get("providers")
-    if not isinstance(providers, dict):
-        raise ValueError("providers.yaml requires a providers mapping")
-    names = sorted(str(name) for name in providers)
-    default = str(document.get("default") or "")
-    if default not in providers:
-        raise ValueError(f"Unknown default provider: {default or '(empty)'}")
-    return default, names
+def resolve_llm_config(paths: RuntimePaths | Path) -> dict[str, Any]:
+    """Resolve the merged ``llm`` plugin entry config from the plugin tree.
+
+    Reads the bundled ``xcore.yaml`` merged with the global user tree
+    (``<data_dir>/config/plugins.yaml``) and returns the ``llm`` entry's
+    ``config`` block (``default`` + ``providers``).  Used by CLI startup
+    validation and server-root provider listing, which run before a session
+    mounts the llm plugin; the mounted plugin uses its own tree config.
+    """
+    from XBotv2.bootstrap import DEFAULT_TREE
+    from XBotv2.loader import PluginTree
+
+    if not isinstance(paths, RuntimePaths):
+        paths = RuntimePaths.from_data_dir(paths)
+    tree = PluginTree.from_yaml(DEFAULT_TREE)
+    plugins_file = paths.config_dir / "plugins.yaml"
+    if plugins_file.exists():
+        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
+    entry = next((item for item in tree.entries if item.id == "llm"), None)
+    return dict(entry.config or {}) if entry else {}
 
 
 def load_runtime_config(
@@ -200,9 +189,8 @@ def _workspace_path(workspace: Path, value: Any) -> Path:
 
 __all__ = [
     "expand_env",
-    "load_provider_config",
-    "load_provider_names",
     "load_runtime_config",
-    "load_user_context",
     "load_yaml",
+    "parse_provider_config",
+    "resolve_llm_config",
 ]

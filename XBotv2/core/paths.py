@@ -48,14 +48,6 @@ class RuntimePaths:
         return self.config_dir / "config.yaml"
 
     @property
-    def providers_config(self) -> Path:
-        return self.config_dir / "providers.yaml"
-
-    @property
-    def user_config(self) -> Path:
-        return self.config_dir / "user.yaml"
-
-    @property
     def memory_file(self) -> Path:
         return self.memory_dir / "MEMORY.md"
 

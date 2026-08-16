@@ -46,7 +46,8 @@ def _require_api_key(provider: str, model: str, api_key: str) -> None:
     if not api_key:
         raise ValueError(
             f"Provider {provider!r} for model {model!r} requires api_key. "
-            "Set the configured environment variable or providers.yaml api_key."
+            "Set the configured environment variable or the llm plugin's "
+            "providers.yaml api_key."
         )
 
 

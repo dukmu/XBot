@@ -105,11 +105,19 @@ Agent、解析 user_context 与 provider 默认；**workspace_instructions 插�
 禁用自身）。`config.yaml` 已取消（内容并入 xcore.yaml 对应条目）；
 运行时数据默认 `~/.xbot/`（sessions/memory/config）。
 
-**首次运行配置播种（DSH 同款）**：bootstrap 在首次运行时把全局配置写入
-`~/.xbot/config/`（`plugins.yaml` 用户树 + `providers.yaml`/`user.yaml`
-模板，缺失才写），用户编辑这些文件而非捆绑树。仓库 `XBotv2/data/` 已删除：
-两个默认子代理定义（`default`/`Explorer`）内建为代码（`agents/builtins.py`，
-同名 Markdown 覆盖内建），provider/user 模板进入播种模板。
+**首次运行配置播种（DSH 同款）**：bootstrap 在首次运行时把全局用户树
+`~/.xbot/config/plugins.yaml` 写入（缺失才写），用户编辑该文件而非捆绑树。
+仓库 `XBotv2/data/` 已删除：两个默认子代理定义（`default`/`Explorer`）内建
+为代码（`agents/builtins.py`，同名 Markdown 覆盖内建）。
+
+**Provider 定义与用户上下文都是插件树配置**：`providers.yaml` 与
+`user.yaml` 文档已取消——provider 定义是 `llm` 插件条目的 `config`
+（`default: minimax` + `providers` 映射），用户上下文是 `config` 插件条目的
+`config.user`。`LlmService.configure(default, providers)` 存储原始定义，
+`provider_config(name, require_key=...)` 按需解析（只有被选中的 provider
+才要求 `api_key_env` 已设置；`require_key=False` 用于 `/providers` 列表），
+`default` 名字是默认 provider 的别名。`main.py` 启动校验与服务器根
+`/providers` 通过 `resolve_llm_config(paths)` 从合并树解析 llm 条目。
 
 **行序无语义**（DSH cordis.patch.yml 同款）：每个插件声明 `inject` 依赖
 （它消费的 ctx.* 服务名），XCore 在所需服务可用时自动激活 fiber——条目顺序

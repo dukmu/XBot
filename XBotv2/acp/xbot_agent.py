@@ -57,7 +57,7 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.loader import load_provider_names, load_runtime_config
+from XBotv2.config.loader import load_runtime_config
 from XBotv2.agentloop.operations import (
     OperationError,
     fork_session as fork_runtime_session,
@@ -511,8 +511,8 @@ class XBotACPAgent:
                 ],
             ))
 
-        _default, provider_names = load_provider_names(self.paths)
-        if provider_names:
+        llm = getattr(getattr(runtime.engine, "plugin_ctx", None), "llm", None)
+        if llm is not None:
             options.append(SessionConfigOptionSelect(
                 id="provider",
                 name="Provider / model",
@@ -521,7 +521,7 @@ class XBotACPAgent:
                 current_value=runtime.provider_name,
                 options=[
                     SessionConfigSelectOption(value=name, name=name)
-                    for name in provider_names
+                    for name in llm.names()
                 ],
             ))
         return options

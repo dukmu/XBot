@@ -147,17 +147,18 @@ async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
 
 async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
-    from XBotv2.config.loader import load_provider_config, load_provider_names
     from XBotv2.llm.client import create_llm
 
-    _default, names = load_provider_names(ctx.paths)
-    if name not in names:
+    llm = ctx.engine.plugin_ctx.llm
+    if name not in llm.names():
         raise OperationError(
             "provider_not_found",
             f"Unknown provider: {name}",
         )
     async with ctx.turn_lock:
-        config = load_provider_config(ctx.paths, name)
+        config = llm.provider_config(
+            name, require_key=not ctx.engine.llm_is_override
+        )
         if not ctx.engine.llm_is_override:
             ctx.engine.llm = create_llm(
                 config,
@@ -256,7 +257,7 @@ async def update_session_policy(
 async def _activate_agent(
     ctx: SessionRuntime, definition: AgentDefinition
 ) -> None:
-    from XBotv2.config.loader import load_provider_config, load_runtime_config
+    from XBotv2.config.loader import load_runtime_config
     from XBotv2.agentloop.agents import (
         apply_agent_definition,
         apply_agent_provider,
@@ -270,7 +271,9 @@ async def _activate_agent(
     apply_agent_definition(config, definition)
     provider_name = definition.provider or ctx.provider_name
     config.provider = provider_name
-    provider = load_provider_config(ctx.paths, provider_name)
+    provider = ctx.engine.plugin_ctx.llm.provider_config(
+        provider_name, require_key=not ctx.engine.llm_is_override
+    )
     apply_agent_provider(provider, definition)
     config.max_context_tokens = (
         definition.context_window or provider.max_context_tokens

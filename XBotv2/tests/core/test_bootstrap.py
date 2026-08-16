@@ -112,17 +112,22 @@ class TestBootstrapBasics:
         self, temp_data_dir, temp_workspace
     ):
         paths = RuntimePaths.from_data_dir(temp_data_dir)
-        paths.providers_config.write_text(
-            yaml.safe_dump({
-                "default": "global",
-                "providers": {
-                    "global": {"provider": "mock", "model": "global"},
-                    "workspace": {
-                        "provider": "mock",
-                        "model": "workspace",
+        (paths.config_dir).mkdir(parents=True, exist_ok=True)
+        (paths.config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "global",
+                    "providers": {
+                        "global": {"provider": "mock", "model": "global"},
+                        "workspace": {
+                            "provider": "mock",
+                            "model": "workspace",
+                        },
                     },
                 },
-            }),
+            }]),
             encoding="utf-8",
         )
         workspace_overlay = temp_workspace / ".xbot" / "plugins.yaml"
@@ -192,7 +197,8 @@ class TestBootstrapBasics:
         assert exc_info.value.code == 2
         assert captured.out == ""
         assert captured.err == (
-            "Error: Unknown provider config: typo. No providers are configured.\n"
+            "Error: Unknown provider config: typo. "
+            "Configured providers: minimax, deepseek, openai, anthropic, lmstudio.\n"
         )
         assert "Traceback" not in captured.err
 
@@ -768,8 +774,19 @@ plugin = ConfiguredPlugin()
     async def test_bootstrap_uses_configured_human_identity(
         self, temp_data_dir, temp_workspace
     ):
-        (temp_data_dir / "config" / "user.yaml").write_text(
-            "user_id: human-7\nuser_name: Ada\nplatform: tui\n",
+        (temp_data_dir / "config").mkdir(parents=True, exist_ok=True)
+        (temp_data_dir / "config" / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "human-7",
+                        "user_name": "Ada",
+                        "platform": "tui",
+                    },
+                },
+            }]),
             encoding="utf-8",
         )
         llm = MockLLM(responses=[{"content": "ok"}])

@@ -1,5 +1,6 @@
 """Tests for protocol-adjacent provider and configuration behavior."""
 
+import yaml
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
@@ -81,65 +82,45 @@ class TestProviderConfig:
 
 
 class TestProviderConfigLoader:
-    """Provider config loading from multi-provider YAML — the original bug."""
+    """Provider config loading from the llm plugin's tree config — the original bug."""
 
     def test_selects_named_provider_section(self, tmp_path, monkeypatch):
-        """load_provider_config selects the correct YAML section."""
-        from XBotv2.config.loader import load_provider_config
+        """parse_provider_config selects the correct section."""
+        from XBotv2.config.loader import parse_provider_config
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
-        # data_dir is the data root; providers.yaml lives at <data_dir>/config/
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: deepseek
-providers:
-  deepseek:
-    provider: deepseek
-    model: deepseek-chat
-    base_url: https://XBotv2.core.deepseek.com/v1
-    api_key: ${TEST_API_KEY}
-  openai:
-    provider: openai
-    model: gpt-4o
-    api_key: sk-openai-xxx
-""")
+        deepseek = parse_provider_config("deepseek", {
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "base_url": "https://XBotv2.core.deepseek.com/v1",
+            "api_key": "${TEST_API_KEY}",
+        })
+        assert deepseek.provider == "deepseek"
+        assert deepseek.model == "deepseek-chat"
+        assert deepseek.base_url == "https://XBotv2.core.deepseek.com/v1"
+        assert deepseek.api_key == "sk-test-123"  # env var expanded
 
-        # Load default → should get deepseek
-        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "default")
-        assert c.provider == "deepseek"
-        assert c.model == "deepseek-chat"
-        assert c.base_url == "https://XBotv2.core.deepseek.com/v1"
-        assert c.api_key == "sk-test-123"  # env var expanded
+        openai = parse_provider_config("openai", {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "api_key": "sk-openai-xxx",
+        })
+        assert openai.provider == "openai"
+        assert openai.model == "gpt-4o"
+        assert openai.api_key == "sk-openai-xxx"
 
-        # Load openai → should get openai section
-        c2 = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "openai")
-        assert c2.provider == "openai"
-        assert c2.model == "gpt-4o"
-        assert c2.api_key == "sk-openai-xxx"
+    def test_preserves_reasoning_configuration(self):
+        from XBotv2.config.loader import parse_provider_config
 
-    def test_preserves_reasoning_configuration(self, tmp_path):
-        from XBotv2.config.loader import load_provider_config
-
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: minimax
-providers:
-  minimax:
-    provider: anthropic
-    model: MiniMax-M3
-    api_key: test-key
-    max_output_tokens: 8192
-    reasoning_effort: high
-    thinking_enabled: true
-""")
-
-        config = load_provider_config(
-            RuntimePaths.from_data_dir(tmp_path),
-            "minimax",
-        )
+        config = parse_provider_config("minimax", {
+            "provider": "anthropic",
+            "model": "MiniMax-M3",
+            "api_key": "test-key",
+            "max_output_tokens": 8192,
+            "reasoning_effort": "high",
+            "thinking_enabled": True,
+        })
 
         assert config.reasoning_effort == "high"
         assert config.thinking_enabled is True
@@ -151,91 +132,74 @@ providers:
         assert ProviderConfig().model_mode == ""
         assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
 
-    def test_provider_names(self, tmp_path):
-        from XBotv2.config.loader import load_provider_names
+    def test_llm_service_lists_configured_providers(self):
+        """LlmService.configure stores definitions; names()/default_name() reflect them."""
+        from XBotv2.llm.service import LlmService
 
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: default
-providers:
-  default:
-    provider: openai
-    model: test
-  other:
-    provider: anthropic
-    model: other
-""")
+        service = LlmService()
+        service.configure("default", {
+            "default": {"provider": "openai", "model": "test"},
+            "other": {"provider": "anthropic", "model": "other",
+                      "max_output_tokens": 8192},
+        })
 
-        assert load_provider_names(RuntimePaths.from_data_dir(tmp_path)) == (
-            "default",
-            ["default", "other"],
-        )
+        assert service.default_name() == "default"
+        assert set(service.names()) == {"default", "other"}
+        assert service.provider_config("default").model == "test"
 
-    def test_env_var_expansion_in_nested_section(self, tmp_path, monkeypatch):
-        """${VAR} patterns are expanded in provider sections."""
-        from XBotv2.config.loader import load_provider_config
+    def test_unknown_provider_is_rejected(self):
+        from XBotv2.llm.service import LlmService
 
-        monkeypatch.setenv("MY_KEY", "expanded-value")
+        service = LlmService()
+        service.configure("default", {
+            "default": {"provider": "openai", "model": "fallback-model"},
+        })
 
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: test
-providers:
-  test:
-    provider: openai
-    model: gpt-4
-    api_key: ${MY_KEY}
-""")
-
-        c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
-        assert c.api_key == "expanded-value"
-
-    def test_missing_env_var_is_rejected(self, tmp_path):
-        from XBotv2.config.loader import load_provider_config
-
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: test
-providers:
-  test:
-    provider: openai
-    model: gpt-4
-    api_key: ${NONEXISTENT_VAR}
-""")
+        with pytest.raises(
+            ValueError,
+            match="Unknown provider config: nonexistent_provider.*Configured providers: default",
+        ):
+            service.provider_config("nonexistent_provider")
+    def test_missing_env_var_is_rejected(self):
+        from XBotv2.config.loader import parse_provider_config
 
         with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
-            load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
+            parse_provider_config("test", {
+                "provider": "openai",
+                "model": "gpt-4",
+                "api_key": "${NONEXISTENT_VAR}",
+            })
 
-    def test_unknown_provider_is_rejected(self, tmp_path):
-        from XBotv2.config.loader import load_provider_config
+    def test_api_key_env_resolves_from_environment(self, monkeypatch):
+        from XBotv2.config.loader import parse_provider_config
 
-        config_subdir = tmp_path / "config"
-        config_subdir.mkdir(parents=True)
-        (config_subdir / "providers.yaml").write_text("""
-default: default
-providers:
-  default:
-    provider: openai
-    model: fallback-model
-""")
+        monkeypatch.setenv("PROVIDER_TEST_KEY", "sk-resolved")
+        config = parse_provider_config("minimax", {
+            "provider": "anthropic",
+            "model": "m3",
+            "api_key_env": "PROVIDER_TEST_KEY",
+            "max_output_tokens": 8192,
+        })
+        assert config.api_key == "sk-resolved"
 
-        with pytest.raises(
-            ValueError,
-            match="Unknown provider config: nonexistent_provider.*Available providers: default",
-        ):
-            load_provider_config(
-                RuntimePaths.from_data_dir(tmp_path),
-                "nonexistent_provider",
-            )
+    def test_resolve_llm_config_reads_merged_tree(self, tmp_path):
+        """resolve_llm_config merges xcore.yaml with the global plugins.yaml overlay."""
+        from XBotv2.config.loader import resolve_llm_config
 
-    def test_named_provider_requires_provider_configuration(self, tmp_path):
-        from XBotv2.config.loader import load_provider_config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([
+                {"id": "llm", "name": "llm", "config": {
+                    "default": "custom",
+                    "providers": {
+                        "custom": {"provider": "openai", "model": "custom-model"},
+                    },
+                }},
+            ]),
+            encoding="utf-8",
+        )
 
-        with pytest.raises(
-            ValueError,
-            match="Unknown provider config: minimax.*No providers are configured",
-        ):
-            load_provider_config(RuntimePaths.from_data_dir(tmp_path), "minimax")
+        resolved = resolve_llm_config(RuntimePaths.from_data_dir(tmp_path))
+        assert resolved["default"] == "custom"
+        assert resolved["providers"]["custom"]["model"] == "custom-model"

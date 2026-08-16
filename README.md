@@ -19,12 +19,13 @@ and permission rules that require confirmation fail closed without waiting.
 
 Runtime data (sessions, memory, global config) defaults to `~/.xbot`
 (`XBOT_DATA_DIR` / `XBOT_HOME` overrides). The workspace defaults to the
-startup directory and the provider defaults to `default`. On first run the
-global config files are written into `<data-dir>/config/` (`plugins.yaml`
-user tree, `providers.yaml`, `user.yaml` templates). Use `--data-dir`,
-`--workspace`, `--provider`, or the corresponding `XBOT_*` variables to select
-a run configuration. Run `uv run xbot --help` for all modes. Installed packages
-provide `xbot` through the standard Python console entrypoint.
+startup directory and the provider defaults to `minimax`. On first run the
+global user tree is written into `<data-dir>/config/plugins.yaml` (the
+bundled `xcore.yaml` is the base tree; provider definitions live in the `llm`
+plugin's tree config). Use `--data-dir`, `--workspace`, `--provider`, or the
+corresponding `XBOT_*` variables to select a run configuration. Run
+`uv run xbot --help` for all modes. Installed packages provide `xbot` through
+the standard Python console entrypoint.
 
 ACP mode exposes XBot as an Agent Client Protocol v1 process over stdin/stdout.
 The ACP client supplies the workspace when it creates or resumes a session.

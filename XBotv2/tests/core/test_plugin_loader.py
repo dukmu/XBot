@@ -335,8 +335,17 @@ class TestOrderIndependence:
 
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
         paths.config_dir.mkdir(parents=True, exist_ok=True)
-        (paths.config_dir / "providers.yaml").write_text(
-            "default: mock\nproviders:\n  mock:\n    provider: mock\n    model: mock\n",
+        (paths.config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "mock",
+                    "providers": {
+                        "mock": {"provider": "mock", "model": "mock"},
+                    },
+                },
+            }]),
             encoding="utf-8",
         )
         engine = await bootstrap(

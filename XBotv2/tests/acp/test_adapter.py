@@ -5,6 +5,7 @@ import socket
 from types import SimpleNamespace
 from typing import Any
 
+import yaml
 from acp import PROTOCOL_VERSION, connect_to_agent, run_agent, text_block
 from acp.schema import (
     AcceptElicitationResponse,
@@ -345,15 +346,23 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\n"
-        "providers:\n"
-        "  default:\n"
-        "    provider: openai\n"
-        "    model: test\n"
-        "    base_url: http://test\n"
-        "    api_key: test\n"
-        "    max_context_tokens: 4096\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "llm",
+            "name": "llm",
+            "config": {
+                "default": "default",
+                "providers": {
+                    "default": {
+                        "provider": "openai",
+                        "model": "test",
+                        "base_url": "http://test",
+                        "api_key": "test",
+                        "max_context_tokens": 4096,
+                    },
+                },
+            },
+        }]),
         encoding="utf-8",
     )
     agent = XBotACPAgent(

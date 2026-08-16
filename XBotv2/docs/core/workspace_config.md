@@ -8,10 +8,9 @@ There is one bundled default tree and two overlay layers:
 3. `<workspace>/.xbot/plugins.yaml` - workspace policy overlay
 
 `data_dir` defaults to `~/.xbot` (`--data-dir` / `XBOT_DATA_DIR` overrides).
-On first run the global config directory is seeded (DSH-style boot seed):
-`config/plugins.yaml` (empty user tree), `config/providers.yaml` and
-`config/user.yaml` templates are written when missing, so users edit those
-files instead of the bundled tree.
+On first run the global user tree is seeded (DSH-style boot seed):
+`config/plugins.yaml` is written when missing, so users edit that file
+instead of the bundled tree.
 
 Overlays merge per plugin id: the later entry's `config` is deep-merged into
 the base entry, and `disabled` / `inject` / `isolate` are replaced.  New ids
@@ -35,11 +34,13 @@ itself.
 
 Plugin `config` values are per-plugin; `permissions`, `sandbox`, and
 `max_concurrent_subagents` live in the corresponding plugin entries
-(`permissions`, `sandbox`, `jobs`).  Provider and user documents are separate:
+(`permissions`, `sandbox`, `jobs`).  Provider definitions are the ``llm``
+plugin's tree config (``default`` + ``providers``) and the user context is
+the ``config`` plugin's tree config (``user``) — there are no separate
+``providers.yaml`` / ``user.yaml`` documents:
 
 ```text
-<data_dir>/config/providers.yaml   # provider definitions
-<data_dir>/config/user.yaml        # user context
+<data_dir>/config/plugins.yaml   # global user tree overlay (llm/config entries)
 ```
 
 Workspace Tool and Hook modules are trusted startup code. Configuration is
@@ -48,9 +49,10 @@ the policy API.
 
 ## Providers
 
-Provider definitions live only in `<data_dir>/config/providers.yaml` (seeded
-as a template on first run). Runtime config selects one by name; it does not
-duplicate model limits.
+Provider definitions live in the `llm` plugin's tree config (`default` +
+`providers` in the `llm` entry of `xcore.yaml` or a `plugins.yaml` overlay —
+seeded as part of the global user tree on first run). Runtime config selects
+one by name; it does not duplicate model limits.
 
 ```yaml
 default: minimax

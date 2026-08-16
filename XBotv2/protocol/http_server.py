@@ -67,9 +67,8 @@ from XBotv2.protocol.models import (
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.loader import (
-    load_provider_config,
-    load_provider_names,
     load_runtime_config,
+    resolve_llm_config,
 )
 from XBotv2.agentloop.operations import (
     OperationError,
@@ -145,11 +144,14 @@ def create_app(
     no_plugins: bool = False,
     server_name: str = "xbotv2",
     llm_override: Any | None = None,
+    llm: Any | None = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
     A single ``SessionManager`` instance is shared across the process.
-    Tests can call this function with custom parameters.
+    Tests can call this function with custom parameters.  ``llm`` is the
+    provider directory used by the ``/providers`` route; when omitted it is
+    resolved from the merged plugin tree (``xcore.yaml`` + global overlay).
     """
 
     started_at = time.monotonic()
@@ -158,6 +160,10 @@ def create_app(
     # This is a test seam: production passes llm_override=None and the server
     # loads the configured provider. Tests pass a MockLLM to skip network.
     _llm_override_ref: dict[str, Any] = {"value": llm_override}
+    if llm is None:
+        from XBotv2.llm.plugin import build_llm_service
+
+        llm = build_llm_service(resolve_llm_config(paths))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -196,6 +202,7 @@ def create_app(
     app.state.no_plugins = no_plugins
     app.state.started_at = started_at
     app.state.llm_override = _llm_override_ref
+    app.state.llm = llm
 
     _register_routes(app)
     return app
@@ -221,10 +228,11 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/providers", operation_id="list_providers")
     async def list_providers_endpoint() -> ProviderListResponse:
-        default, names = load_provider_names(manager.paths)
+        llm = app.state.llm
+        default = llm.default_name()
         providers = []
-        for name in names:
-            config = load_provider_config(manager.paths, name)
+        for name in llm.names():
+            config = llm.provider_config(name, require_key=False)
             providers.append(ProviderInfo(
                 name=name,
                 provider=config.provider,

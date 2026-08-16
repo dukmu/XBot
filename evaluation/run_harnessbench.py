@@ -433,12 +433,19 @@ def _write_run_manifest(
 
 
 def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
-    path = data_dir / "config" / "providers.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    providers = data.get("providers") or {}
+    """Read one provider definition from the llm plugin tree entry.
+
+    Providers live in the ``llm`` plugin's tree config (the bundled
+    ``xcore.yaml`` merged with the data dir's ``plugins.yaml`` overlay) —
+    there is no separate ``providers.yaml`` document.
+    """
+    from XBotv2.config.loader import resolve_llm_config
+
+    config = resolve_llm_config(data_dir)
+    providers = config.get("providers") or {}
     provider = providers.get(name)
     if not isinstance(provider, dict):
-        raise ValueError(f"Unknown provider {name!r} in {path}")
+        raise ValueError(f"Unknown provider {name!r} in {data_dir}")
     return provider
 
 

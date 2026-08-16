@@ -36,9 +36,9 @@ def _default_data_dir() -> str:
     """Runtime data root: ``~/.xbot`` (XDG-style home directory).
 
     Sessions and memory live here by default; ``XBOT_DATA_DIR`` (or
-    ``--data-dir``) overrides.  The initial global config files
-    (``config/plugins.yaml``, ``providers.yaml``, ``user.yaml``) are written
-    into this directory on first run.
+    ``--data-dir``) overrides.  The initial global user tree
+    (``config/plugins.yaml``) is written into this directory on first run;
+    provider definitions and user context are plugin tree config.
     """
     return str(Path(os.environ.get("XBOT_HOME") or Path.home() / ".xbot"))
 
@@ -198,13 +198,21 @@ def main(argv: list[str] | None = None):
         args.command in {"tui", "web"}
         and getattr(args, "server", None)
     ):
-        from XBotv2.config.loader import load_provider_config
+        # Fail fast with a clear message when the requested provider is not
+        # configured or its API key is missing.  Providers live in the llm
+        # plugin's tree config (xcore.yaml + global overlay), not a separate
+        # providers.yaml document.
+        from XBotv2.config.loader import resolve_llm_config
+        from XBotv2.llm.plugin import build_llm_service
 
         try:
-            load_provider_config(
-                RuntimePaths.from_data_dir(args.data_dir),
-                args.provider,
-            )
+            llm = build_llm_service(resolve_llm_config(
+                RuntimePaths.from_data_dir(args.data_dir)
+            ))
+            name = args.provider
+            if name == "default":
+                name = llm.default_name()
+            llm.provider_config(name)
         except ValueError as exc:
             parser.exit(2, f"Error: {exc}\n")
 

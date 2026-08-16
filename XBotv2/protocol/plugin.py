@@ -27,6 +27,7 @@ class ServerComponent:
             workspace_root=config.get("workspace_root"),
             no_plugins=bool(config.get("no_plugins", False)),
             server_name=config.get("server_name", "xbotv2"),
+            llm=getattr(ctx, "llm", None),
         )
         ctx.set("server", app)
 
