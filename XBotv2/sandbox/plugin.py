@@ -13,6 +13,7 @@ from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class SandboxComponent:
+    inject = ['state_store', 'session']
     """Register the sandbox policy as ``ctx.sandbox``."""
 
     name = "xbot.sandbox"

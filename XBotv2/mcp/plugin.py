@@ -23,6 +23,7 @@ logger = logging.getLogger("xbotv2.mcp")
 
 
 class MCPPlugin:
+    inject = ['tools']
     name = "mcp"
     Config = S.object({
         "servers": S.any().optional(),

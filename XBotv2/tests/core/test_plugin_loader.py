@@ -299,3 +299,52 @@ plugin = ScopedProviderPlugin()
         assert ctx.get("thing") == "root-thing"
         scoped_ctx = loader.handle("scoped")._fiber.ctx
         assert scoped_ctx.get("thing") == "scoped-thing"
+
+
+class TestOrderIndependence:
+    """Activation is service-availability driven: row order has no semantics."""
+
+    @pytest.mark.asyncio
+    async def test_shuffled_tree_mounts_all_plugins(self, tmp_path, monkeypatch):
+        """A shuffled xcore.yaml still activates every plugin (inject-driven)."""
+        import random
+
+        from XBotv2 import bootstrap as bootstrap_module
+        from XBotv2.bootstrap import bootstrap
+        from XBotv2.core.paths import RuntimePaths
+        from XBotv2.llm.mock import MockLLM
+        from XBotv2.loader import PluginTree
+
+        # Shuffle the bundled tree (config preserved) into a temp yaml.
+        tree = PluginTree.from_yaml(bootstrap_module.DEFAULT_TREE)
+        entries = list(tree.entries)
+        random.Random(7).shuffle(entries)
+        lines = []
+        for entry in entries:
+            lines.append(f"- id: {entry.id}\n  name: {entry.name}")
+            if entry.config:
+                cfg = "\n".join(
+                    f"    {key}: {value}" for key, value in entry.config.items()
+                )
+                lines.append(f"  config:\n{cfg}")
+            if entry.disabled:
+                lines.append("  disabled: true")
+        shuffled = tmp_path / "shuffled.yaml"
+        shuffled.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setattr(bootstrap_module, "DEFAULT_TREE", shuffled)
+
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        paths.config_dir.mkdir(parents=True, exist_ok=True)
+        (paths.config_dir / "providers.yaml").write_text(
+            "default: mock\nproviders:\n  mock:\n    provider: mock\n    model: mock\n",
+            encoding="utf-8",
+        )
+        engine = await bootstrap(
+            paths=paths,
+            workspace_root=tmp_path / "ws",
+            provider_name="mock",
+            llm_override=MockLLM(responses=[{"content": "ok"}]),
+        )
+        # The engine is the main agent instance regardless of tree order.
+        assert engine.plugin_ctx.session.main_agent is engine
+        assert "agentloop" in engine.plugin_ctx.loader.loaded_ids

@@ -29,6 +29,7 @@ logger = logging.getLogger("xbotv2.compact")
 
 
 class CompactPlugin:
+    inject = ['tools', 'commands']
     name = "compact"
     Config = S.object({
         "automatic": S.boolean().optional(),

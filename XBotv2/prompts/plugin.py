@@ -35,6 +35,7 @@ class PromptsService:
 
 
 class PromptsComponent:
+    inject = ['context_builder']
     """Register the prompt-fragment registry as ``ctx.prompts``."""
 
     name = "xbot.prompts"

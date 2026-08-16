@@ -18,6 +18,7 @@ from XBotv2.session.session import Session
 
 
 class SessionComponent:
+    inject = ['state_store']
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"

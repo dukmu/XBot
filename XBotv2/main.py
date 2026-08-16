@@ -414,7 +414,7 @@ def _spawn_server(args) -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONPATH"] = _spawn_pythonpath()
     cmd = [
-        sys.executable, str(Path(__file__).resolve()),
+        sys.executable, "-m", "XBotv2.main",
         "serve",
         "--data-dir", args.data_dir,
         "--provider", args.provider,
@@ -470,7 +470,14 @@ def _wait_for_health(
 
 
 def _spawn_pythonpath() -> str:
-    paths = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parent.parent)]
+    """Subprocess import path: repo root + XCore, never XBotv2/.
+
+    XBotv2 is a package root (``XBotv2.<pkg>``); putting the directory itself
+    on PYTHONPATH would shadow the installed ``mcp``/``acp`` SDKs with the
+    XBot plugin packages of the same names.
+    """
+    root = Path(__file__).resolve().parent.parent
+    paths = [str(root), str(root / "XCore")]
     existing = os.environ.get("PYTHONPATH")
     if existing:
         paths.append(existing)

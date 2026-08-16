@@ -23,6 +23,7 @@ _GOAL_TOOLS = {"create_goal", "get_goal", "update_goal"}
 
 
 class GoalPlugin:
+    inject = ['tools', 'commands']
     name = "goal"
 
     def __init__(self) -> None:

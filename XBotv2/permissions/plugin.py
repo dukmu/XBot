@@ -12,6 +12,7 @@ from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
 
 
 class PermissionsComponent:
+    inject = ['session']
     """Register the permission system as ``ctx.permissions``."""
 
     name = "xbot.permissions"

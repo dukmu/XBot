@@ -10,6 +10,7 @@ from XBotv2.core import (
 
 
 class WorkspaceInstructionsPlugin:
+    inject = ['session']
     name = "workspace_instructions"
 
     """Inject the current workspace AGENTS.md into each model request."""

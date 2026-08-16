@@ -12,6 +12,7 @@ from XBotv2.core import (
 
 
 class TokenManagerPlugin:
+    inject = ['session']
     name = "token_manager"
 
     def __init__(self) -> None:

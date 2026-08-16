@@ -11,6 +11,7 @@ tree's load order -- there is no separate plugin system beside XCore's.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import os
@@ -23,9 +24,13 @@ from typing import Any
 
 import yaml
 
-from xcore import Context
+from xcore import Context, FiberState
 
 logger = logging.getLogger("loader")
+
+
+class LoadError(RuntimeError):
+    """A tree entry failed to load or did not activate."""
 
 
 @dataclass
@@ -87,6 +92,10 @@ def _entry_from_dict(
     data: dict[str, Any], values: dict[str, Any] | None = None
 ) -> PluginEntry:
     resolved_config = _resolve_ref(data.get("config") or {}, values)
+    if not isinstance(resolved_config, dict):
+        # A bare ${...} reference without runtime values stays literal;
+        # treat it as the default (no config).
+        resolved_config = {}
     entry = PluginEntry(
         id=str(data.get("id") or data.get("name")),
         name=str(data["name"]),
@@ -240,21 +249,57 @@ class Loader:
     # -- mounting -----------------------------------------------------------
 
     async def load(self) -> None:
-        """Mount every enabled entry in tree order (disables skipped).
+        """Mount every enabled entry; activation is service-availability driven.
 
-        Starts the context on first load so mounted entries load immediately
-        (the loader owns plugin lifecycle; the app owns teardown through
-        :meth:`unload_all`).
+        Row order in the tree is not load semantics: every entry is mounted
+        (declaring its ``inject`` dependencies), XCore activates each fiber as
+        its required services become available, and this method waits for all
+        fibers to converge.  An entry that fails or stays pending on unmet
+        dependencies raises a loader error naming it (Cordis/DSH parity:
+        "Row order carries no load semantics").
         """
         if not self.ctx.is_active:
             await self.ctx.start()
+        mounted: list[tuple[PluginEntry, Any]] = []
         for entry in self.tree.entries:
             if entry.disabled:
                 logger.info("loader: entry %s disabled, skipping", entry.id)
                 continue
-            await self._mount(entry)
+            mounted.append((entry, self._mount_handle(entry)))
+        # Activation is event-driven: each round drives every unsettled fiber
+        # and yields so the settle loops and service-provided events advance.
+        # Dependency chains are shallow (<= ~6 layers), so a fixed round cap
+        # is deterministic; a plugin still pending afterwards has unmet
+        # inject dependencies.
+        for _round in range(16):
+            awaiting = [
+                handle
+                for _entry, handle in mounted
+                if handle.state
+                not in (FiberState.RUNNING, FiberState.FAILED)
+            ]
+            if not awaiting:
+                break
+            await asyncio.gather(*awaiting)
+            await asyncio.sleep(0)
+        for entry, handle in mounted:
+            if handle.state is FiberState.FAILED:
+                fiber = handle._fiber
+                raise LoadError(
+                    f"plugin {entry.id!r} failed to load: {fiber._error}"
+                )
+            if handle.state is not FiberState.RUNNING:
+                fiber = handle._fiber
+                missing = sorted(
+                    name for name, required in fiber.inject.items() if required
+                )
+                raise LoadError(
+                    f"plugin {entry.id!r} did not activate; "
+                    f"unmet inject dependencies: {missing}"
+                )
 
-    async def _mount(self, entry: PluginEntry) -> None:
+    def _mount_handle(self, entry: PluginEntry) -> Any:
+        """Import, resolve, and mount one entry; returns its PluginHandle."""
         try:
             module = importlib.import_module(f"XBotv2.{entry.name}.plugin")
         except ModuleNotFoundError:
@@ -280,10 +325,17 @@ class Loader:
             for name, label in entry.isolate.items():
                 mount_ctx = mount_ctx.isolate(name, label if label is not True else None)
         handle = mount_ctx.plugin(_MountAdapter(plugin), entry.config)
-        await handle
         self._handles[entry.id] = handle
         self._plugins[entry.id] = plugin
         logger.info("loader: mounted entry %s (%s)", entry.id, entry.name)
+        return handle
+
+    async def _mount(self, entry: PluginEntry) -> None:
+        """Mount one entry and wait for it to converge (reload path)."""
+        handle = self._mount_handle(entry)
+        await handle
+        if handle.state is not FiberState.RUNNING:
+            raise LoadError(f"plugin {entry.id!r} did not activate")
 
     async def unload(self, entry_id: str) -> bool:
         handle = self._handles.pop(entry_id, None)
@@ -333,7 +385,7 @@ class Loader:
         return unloaded
 
 
-__all__ = ["Loader", "LoaderComponent", "PluginEntry", "PluginTree", "resolve_plugin_from_module"]
+__all__ = ["LoadError", "Loader", "LoaderComponent", "PluginEntry", "PluginTree", "resolve_plugin_from_module"]
 
 
 class LoaderComponent:

@@ -16,6 +16,7 @@ from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
 
 
 class BrowserPlugin:
+    inject = ['tools', 'session']
     name = "browser"
     Config = S.object({
         "search": S.object({

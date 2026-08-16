@@ -15,6 +15,7 @@ from XBotv2.jobs.registry import JobRegistry
 
 
 class JobsComponent:
+    inject = ['session']
     """Register the job registry as ``ctx.jobs``."""
 
     name = "xbot.jobs"

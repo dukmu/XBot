@@ -17,6 +17,7 @@ NON_INTERACTIVE_FORBIDDEN_TOOLS = frozenset({"ask_user", "request_permission"})
 
 
 class CoreToolsComponent:
+    inject = ['tools', 'session', 'state_store']
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"

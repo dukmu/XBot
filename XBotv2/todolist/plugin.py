@@ -38,6 +38,7 @@ _UPDATE_TODOS_SCHEMA = {
 
 
 class TodolistPlugin:
+    inject = ['tools']
     name = "todolist"
 
     def apply(self, ctx, config=None) -> None:

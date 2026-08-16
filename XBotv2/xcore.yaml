@@ -1,6 +1,7 @@
 # XBotv2 默认插件树（cordis.yaml 风格，bundled——类似 DeepSeek Harness 的
-# cordis.patch.yml）。行序 = 挂载顺序；依赖通过 XCore 服务注入表达
-# （后挂载的插件读取先挂载插件提供的 ctx.* 服务）。
+# cordis.patch.yml）。行序无语义（activation is service-availability driven）：
+# 每个插件声明 inject 依赖，XCore 在所需服务可用时自动激活——条目顺序只是
+# 可读性分组，任何顺序都能正确启动。
 #
 # 动态会话值以 ${name} 引用（${env:VAR} 读环境变量），由组合根（bootstrap）
 # 在装载时提供：paths/session_id/thread_id/workspace_root/provider_name/

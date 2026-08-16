@@ -218,3 +218,26 @@
   `"unknown"`）；三个服务插件各删掉本地重复助手，改为一行调用。
 - **验证**：XCore 105 passed（新增 bound_effect/current_plugin_name 契约测试）；
   XBotv2 734 passed。
+
+### 2026-08-17 · 启动验证：uv workspace、独立进程裸导入、loader 服务可用性驱动激活
+
+- **用户指示**：① bootstrap 没有充分利用插件自动加载设计（行序驱动）；②
+  `uv run xbot tui` 进入 TUI 后报错，要求认真验证。
+- **TUI 报错根因（真实复现）**：`session_open_failed: cannot import name
+  'ClientSession' from 'mcp' (XBotv2/mcp/__init__.py)` —— `_spawn_pythonpath`
+  把 `XBotv2/` 目录放入子进程 PYTHONPATH（旧裸布局残留），且 spawn 用脚本路径
+  `python XBotv2/main.py serve`（sys.path[0]=XBotv2/），`import mcp` 命中插件
+  包而非 SDK。修复：`_spawn_pythonpath` 只含 repo 根 + XCore；spawn 改
+  `python -m XBotv2.main serve`。同时清理测试/生产代码里依赖 pytest sys.path
+  魔法的裸导入（client/browser/skills/web_server/acp → XBotv2.*）。
+- **uv 依赖**：`xcore @ ./XCore` 在 uv 下报 "relative path without a working
+  directory" → 声明 uv workspace（`[tool.uv.workspace] members=["XCore"]` +
+  `[tool.uv.sources] xcore={workspace=true}`），`uv sync` 正常构建两个
+  editable 包。
+- **自动加载**：loader.load() 从"按 yaml 行序串行 await"改为"挂载全部 → 按轮
+  收敛等待 → 校验 RUNNING/FAILED"；22 个插件声明 `inject` 服务依赖（引擎
+  agentloop inject 全部服务），激活由 XCore 服务可用性驱动（Cordis/DSH
+  parity：行序无语义）。乱序 xcore.yaml 启动验证通过 + 回归测试。
+- **验证**：`uv run xbot tui` pty 实测：spawn server → TUI Connecting →
+  Ready（无错误）；serve 建会话 + SSE turn 流正常；XBotv2 734 passed（+乱序
+  回归测试）；XCore 105 passed。

@@ -95,6 +95,7 @@ class SubagentRunner:
 
 
 class AgentsPlugin:
+    inject = ['session', 'agents', 'jobs']
     """Register workspace Agent definitions and subagent job XBotv2.tools."""
 
     name = "agents"

@@ -24,6 +24,7 @@ from .skill_tool import load_skill
 
 
 class SkillsPlugin:
+    inject = ['tools', 'commands', 'sandbox']
     name = "skills"
 
     def __init__(self) -> None:

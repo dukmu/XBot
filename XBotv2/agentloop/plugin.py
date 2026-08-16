@@ -35,6 +35,7 @@ SUBAGENT_FORBIDDEN_TOOLS = frozenset({
 
 
 class AgentLoopComponent:
+    inject = ['agents', 'tools', 'sandbox', 'permissions', 'jobs', 'loader', 'llm', 'settings', 'state_store', 'session', 'context_builder', 'commands', 'prompts', 'paths', 'variables', 'runtime']
     """Build the runtime Engine from the context's services.
 
     Configured by the plugin tree entry (``xbot.agentloop``): reads the engine

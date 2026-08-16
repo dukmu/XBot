@@ -87,21 +87,20 @@ ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 - 动态工具注册（skills/MCP 在 session/init 时）：插件自己跟踪注册名并
   `ctx.dispose(...)` 清理 —— 没有 plugin_runtime 注入机制。
 
-## 5. 插件树（xcore.yaml，cordis.yaml 机制）
+## 5. 插件树（xcore.yaml，cordis.yaml 机制，服务可用性驱动）
 
-`XBotv2/xcore.yaml` 声明全部条目（id/name/config/disabled），动态值以
+`XBotv2/xcore.yaml` 声明全部条目（id/name/config/disabled/inject），动态值以
 `${name}` 引用；`loader/` 的 `PluginTree.from_yaml(path, values=...)` 解析
-引用，`Loader` 导入模块 → 解析 `plugin` 导出 → 按序挂载（可 isolate），
+引用，`Loader` 导入模块 → 解析 `plugin` 导出 → 挂载（可 isolate），
 `LoaderComponent` 提供 `ctx.loader`。组合根（bootstrap）只提供运行时值
 （身份/路径/状态/工厂）+ 合并外部插件目录与用户 `data/config/plugins.yaml`
-（覆盖/追加），不硬编码树结构。顺序：
+（覆盖/追加），不硬编码树结构。
 
-```
-config → persistence → session → jobs → llm → tools → commands →
-context_builder → prompts → sandbox → permissions → coretools → agents →
-goal/todolist/skills/mcp/compact/browser/token_manager/workspace_instructions
-→ agentloop（引擎，最后）
-```
+**行序无语义**（DSH cordis.patch.yml 同款）：每个插件声明 `inject` 依赖
+（它消费的 ctx.* 服务名），XCore 在所需服务可用时自动激活 fiber——条目顺序
+只是可读性分组，任何顺序都能正确启动（有乱序回归测试）。`loader.load()`
+挂载全部条目后按轮收敛等待，任一插件 FAILED 或依赖未满足时抛 `LoadError`
+（指出插件名与缺失依赖）。引擎（agentloop）inject 全部服务，保证最后就绪。
 
 ## 6. 服务绑定与卸载（XCore 原生）
 
