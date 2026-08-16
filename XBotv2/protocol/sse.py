@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from protocol.models import ServerEvent, server_event
+from XBotv2.protocol.models import ServerEvent, server_event
 
 
 @dataclass(frozen=True, slots=True)

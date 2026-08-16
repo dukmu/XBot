@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from protocol.models import (
+from XBotv2.protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     PermissionResponseRequest,
     ServerEvent,
@@ -13,7 +13,7 @@ from protocol.models import (
     UserInputResponseRequest,
     server_event,
 )
-from protocol.sse import (
+from XBotv2.protocol.sse import (
     SseDecoder,
     SseMessage,
     decode_server_event,

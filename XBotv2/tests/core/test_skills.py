@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from config.models import RuntimeConfig
+from XBotv2.config.models import RuntimeConfig
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_unload_resets_runtime_state(self, skill_workspace, state_store):
-        from skills.plugin import SkillsPlugin
+        from XBotv2.skills.plugin import SkillsPlugin
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -182,8 +182,8 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
-        from skills.plugin import SkillsPlugin
-        from api import EventContext
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -227,7 +227,7 @@ Body
         self,
         skill_workspace,
     ):
-        from skills.plugin import SkillsPlugin
+        from XBotv2.skills.plugin import SkillsPlugin
         
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
@@ -257,14 +257,14 @@ Body
         state_store,
         temp_workspace,
     ):
-        from skills.plugin import SkillsPlugin
-        from api import EventContext
-        from core.context import ContextBuilder
-        from core.engine import Engine
-        from llm.mock import MockLLM
-        from tools.permissions import PermissionSystem
-        from tools.registry import ToolRegistry
-        from tools.sandbox import SandboxPolicy
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext
+        from XBotv2.context_builder.builder import ContextBuilder
+        from XBotv2.core.engine import Engine
+        from XBotv2.llm.mock import MockLLM
+        from XBotv2.permissions.system import PermissionSystem
+        from XBotv2.tools.registry import ToolRegistry
+        from XBotv2.sandbox.policy import SandboxPolicy
         from plugin_harness import mount_plugin
         from xcore import Context
 
@@ -307,8 +307,8 @@ Body
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
-        from skills.plugin import SkillsPlugin
-        from api import Tool
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import Tool
 
         plugin = SkillsPlugin()
         plugin._model_skill_names = {"long-skill"}
@@ -334,12 +334,12 @@ Body
 
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
-        from skills.plugin import SkillsPlugin
-        from api import (
-            EventContext,
-            ToolAction,
-            ToolCall,
-        )
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import (
+    EventContext,
+    ToolAction,
+    ToolCall,
+)
 
         plugin = SkillsPlugin()
         plugin._active_skills.add("git-workflow")
@@ -365,14 +365,14 @@ Body
         state_store,
         temp_workspace,
     ):
-        from skills.plugin import SkillsPlugin
-        from api import Events, Tool
-        from core.context import ContextBuilder
-        from core.engine import Engine
-        from llm.mock import MockLLM
-        from tools.permissions import PermissionSystem
-        from tools.registry import ToolRegistry
-        from tools.sandbox import SandboxPolicy
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import Events, Tool
+        from XBotv2.context_builder.builder import ContextBuilder
+        from XBotv2.core.engine import Engine
+        from XBotv2.llm.mock import MockLLM
+        from XBotv2.permissions.system import PermissionSystem
+        from XBotv2.tools.registry import ToolRegistry
+        from XBotv2.sandbox.policy import SandboxPolicy
         from xcore import Context
 
         invoked = []
@@ -448,8 +448,8 @@ Body
     async def test_plugin_session_init_rolls_back_partial_registration(
         self, skill_workspace, state_store
     ):
-        from skills.plugin import SkillsPlugin
-        from api import EventContext, Tool
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext, Tool
         from plugin_harness import mount_plugin
 
         def existing_tool() -> str:

@@ -1,0 +1,126 @@
+# XBotv2 默认插件树（cordis.yaml 风格，bundled——类似 DeepSeek Harness 的
+# cordis.patch.yml）。行序 = 挂载顺序；依赖通过 XCore 服务注入表达
+# （后挂载的插件读取先挂载插件提供的 ctx.* 服务）。
+#
+# 动态会话值以 ${name} 引用（${env:VAR} 读环境变量），由组合根（bootstrap）
+# 在装载时提供：paths/session_id/thread_id/workspace_root/provider_name/
+# agent_config/user_context/state_store/engine_factory/parent_thread_id/
+# parent_permission_system/interactive/selected_agent/llm_override/
+# agent_definition/stored_provider/thread_preexisting/plugin_configs/disabled。
+# 用户配置 data/config/plugins.yaml 可覆盖或追加条目。
+
+- id: config
+  name: config
+  config:
+    paths: ${paths}
+
+- id: persistence
+  name: persistence
+  config:
+    state_store: ${state_store}
+
+- id: session
+  name: session
+  config:
+    paths: ${paths}
+    session_id: ${session_id}
+    thread_id: ${thread_id}
+    workspace_root: ${workspace_root}
+    runtime_config: ${agent_config}
+    session_paths: ${session_paths}
+    parent_thread_id: ${parent_thread_id}
+    engine_factory: ${engine_factory}
+
+- id: jobs
+  name: jobs
+
+- id: llm
+  name: llm
+
+- id: tools
+  name: tools
+
+- id: commands
+  name: commands
+
+- id: context_builder
+  name: context_builder
+
+- id: prompts
+  name: prompts
+
+- id: sandbox
+  name: sandbox
+
+- id: permissions
+  name: permissions
+  config:
+    parent_permission_system: ${parent_permission_system}
+
+- id: coretools
+  name: coretools
+  config:
+    interactive: ${interactive}
+
+- id: agents
+  name: agents
+  config: ${plugin_configs.agents}
+  disabled: ${disabled.agents}
+
+- id: goal
+  name: goal
+  config: ${plugin_configs.goal}
+  disabled: ${disabled.goal}
+
+- id: todolist
+  name: todolist
+  config: ${plugin_configs.todolist}
+  disabled: ${disabled.todolist}
+
+- id: skills
+  name: skills
+  config: ${plugin_configs.skills}
+  disabled: ${disabled.skills}
+
+- id: mcp
+  name: mcp
+  config: ${plugin_configs.mcp}
+  disabled: ${disabled.mcp}
+
+- id: compact
+  name: compact
+  config: ${plugin_configs.compact}
+  disabled: ${disabled.compact}
+
+- id: browser
+  name: browser
+  config: ${plugin_configs.browser}
+  disabled: ${disabled.browser}
+
+- id: token_manager
+  name: token_manager
+  config: ${plugin_configs.token_manager}
+  disabled: ${disabled.token_manager}
+
+- id: workspace_instructions
+  name: workspace_instructions
+  config: ${plugin_configs.workspace_instructions}
+  disabled: ${disabled.workspace_instructions}
+
+- id: core
+  name: core
+  config:
+    session_id: ${session_id}
+    thread_id: ${thread_id}
+    workspace_root: ${workspace_root}
+    provider_name: ${provider_name}
+    agent_config: ${agent_config}
+    agent_definition: ${agent_definition}
+    llm_override: ${llm_override}
+    selected_agent: ${selected_agent}
+    parent_permission_system: ${parent_permission_system}
+    parent_thread_id: ${parent_thread_id}
+    interactive: ${interactive}
+    user_context: ${user_context}
+    thread_preexisting: ${thread_preexisting}
+    stored_provider: ${stored_provider}

@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from api import (
+from XBotv2.core import (
     EventContext,
     Events,
     Tool,
-    ToolRegistrationOptions,
     ToolResult,
 )
 from xcore import S

@@ -8,18 +8,18 @@ import xml.etree.ElementTree as ET
 import pytest
 import yaml
 
-from goal.plugin import GoalPlugin
-from api import ContextComponent, EventContext, Events
-from core.context import ContextBuilder
-from core.engine import Engine
-from config.models import RuntimeConfig
-from llm.mock import MockLLM
-from core.inbox import InboxMessage
-from persistence.store import CoreStateStore
+from XBotv2.goal.plugin import GoalPlugin
+from XBotv2.core import ContextComponent, EventContext, Events
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.core.engine import Engine
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.llm.mock import MockLLM
+from XBotv2.core.inbox import InboxMessage
+from XBotv2.persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
-from tools.permissions import PermissionSystem
-from tools.registry import ToolRegistry
-from tools.sandbox import SandboxPolicy
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.tools.registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 def _mount(plugin, state_store):
@@ -51,7 +51,7 @@ class _EntryOptions:
 
 
 def make_plugin(state_store) -> GoalPlugin:
-    from goal.plugin import GoalPlugin
+    from XBotv2.goal.plugin import GoalPlugin
 
     return _mount(GoalPlugin(), state_store)
 
@@ -71,7 +71,7 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
         "complete", "blocked",
     ]
     assert all(
-        setup.options[name].namespace == "plugin:goal" for name in setup.tools
+        setup.options[name].sandbox_mode == "host" for name in setup.tools
     )
     assert list(setup.commands) == ["goal"]
     assert setup.commands["goal"].kind == "server"
@@ -339,7 +339,7 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
         Path(__file__).parents[2] / "goal",
         target_is_directory=True,
     )
-    from loader import Loader, PluginTree
+    from XBotv2.loader import Loader, PluginTree
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry
@@ -349,7 +349,7 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
 
     await loader.load()
     assert isinstance(loader.get("goal"), GoalPlugin)
-    await registry.get("plugin:goal:create_goal").tool.ainvoke({"objective": "retain me"})
+    await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
 
     assert await loader.unload("goal") is True
     assert registry.registered_names() == []

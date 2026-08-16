@@ -13,6 +13,7 @@ acyclic.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import enum
 import inspect
 import logging
@@ -26,6 +27,24 @@ from xcore.schema import validate_config
 logger = logging.getLogger("xcore.plugin")
 
 _SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
+
+#: The fiber whose ``apply`` callback is currently executing.  Set around the
+#: plugin callback in :meth:`Fiber._load` so capability services can bind
+#: fiber-scoped cleanup (registrations are undone on unload) without any
+#: loader-side context tracking (Cordis tracks the same "current ctx").
+_current_fiber: contextvars.ContextVar["Fiber | None"] = contextvars.ContextVar(
+    "xcore.current_fiber", default=None
+)
+
+
+def current_fiber() -> "Fiber | None":
+    """Return the fiber whose ``apply`` is currently executing (or ``None``).
+
+    Outside a plugin ``apply`` (e.g. inside event listeners or app code) this
+    returns ``None``: registrations made there are owned by the caller, which
+    must undo them explicitly (typically through ``ctx.dispose``).
+    """
+    return _current_fiber.get()
 
 
 class FiberState(enum.Enum):
@@ -562,9 +581,13 @@ class Fiber(EffectOwner):
             )
             self.config = config
             self._error = None
-            result = self._execute_callback()
-            if inspect.isawaitable(result):
-                result = await result
+            token = _current_fiber.set(self)
+            try:
+                result = self._execute_callback()
+                if inspect.isawaitable(result):
+                    result = await result
+            finally:
+                _current_fiber.reset(token)
             if callable(result):
                 self._disposers.append(result)
             self.ctx.registry._load_counter += 1

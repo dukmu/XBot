@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from api.messages import Message
-from api.prompts import (
+from XBotv2.core.messages import Message
+from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
     DISPLAY_CONTENT_KEY,
     MESSAGE_FORMAT_KEY,

@@ -9,7 +9,7 @@ from typing import Any
 
 from mcp import types
 
-from api import EventContext, Message, prompt_element
+from XBotv2.core import EventContext, Message, prompt_element
 
 logger = logging.getLogger("xbotv2.mcp")
 

@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from protocol.models import (
+from XBotv2.protocol.models import (
     AgentInfo,
     AgentListResponse,
     AgentSelectionRequest,
@@ -64,14 +64,14 @@ from protocol.models import (
     UserInputResponseRequest,
     server_event,
 )
-from protocol.sse import encode_server_event
-from api.paths import RuntimePaths
-from config.loader import (
+from XBotv2.protocol.sse import encode_server_event
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.loader import (
     load_provider_config,
     load_provider_names,
     load_runtime_config,
 )
-from core.operations import (
+from XBotv2.core.operations import (
     OperationError,
     clear_history,
     fork_session,
@@ -84,14 +84,14 @@ from core.operations import (
     undo_history,
     update_session_policy,
 )
-from config.policy import (
+from XBotv2.config.policy import (
     load_session_policy,
 )
-from core.session import SessionBusy, SessionRuntime, run_turn_stream
-from persistence.store import CoreStateStore
-from protocol.commands import execute_command, list_commands
-from protocol.history import display_history
-from protocol.session_manager import (
+from XBotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.protocol.commands import execute_command, list_commands
+from XBotv2.protocol.history import display_history
+from XBotv2.protocol.session_manager import (
     SessionExists,
     SessionManager,
     SessionNotFound,
@@ -101,7 +101,7 @@ from protocol.session_manager import (
     session_summary,
     thread_summary,
 )
-from protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.version import PROTOCOL_VERSION
 
 logger = logging.getLogger("xbotv2.http_server")
 

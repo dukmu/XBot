@@ -4,17 +4,17 @@ import json
 from pathlib import Path
 
 import pytest
-from todolist.plugin import TodolistPlugin
+from XBotv2.todolist.plugin import TodolistPlugin
 import xcore
-from core.context import ContextBuilder
-from core.engine import Engine
-from config.models import RuntimeConfig
-from llm.mock import MockLLM
-from persistence.store import CoreStateStore
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.core.engine import Engine
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.llm.mock import MockLLM
+from XBotv2.persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
-from tools.permissions import PermissionSystem
-from tools.registry import ToolRegistry
-from tools.sandbox import SandboxPolicy
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.tools.registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class SetupContext:
@@ -46,7 +46,7 @@ def _mount(plugin, state_store):
 
 
 def make_plugin(state_store) -> TodolistPlugin:
-    from todolist.plugin import TodolistPlugin
+    from XBotv2.todolist.plugin import TodolistPlugin
 
     return _mount(TodolistPlugin(), state_store)
 
@@ -66,7 +66,6 @@ def test_todolist_registers_one_atomic_host_tool(state_store):
     assert list(setup.tools) == ["update_todos"]
     tool = setup.tools["update_todos"]
     options = setup.options["update_todos"]
-    assert options.namespace == "plugin:todolist"
     assert options.sandbox_mode == "host"
     assert tool.parameters["required"] == ["todos"]
     item = tool.parameters["properties"]["todos"]["items"]
@@ -194,7 +193,7 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
         Path(__file__).parents[2] / "todolist",
         target_is_directory=True,
     )
-    from loader import Loader, PluginTree
+    from XBotv2.loader import Loader, PluginTree
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry
@@ -204,9 +203,9 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
 
     await loader.load()
     assert isinstance(loader.get("todolist"), TodolistPlugin)
-    assert registry.registered_names() == ["plugin:todolist:update_todos"]
+    assert registry.registered_names() == ["update_todos"]
     active = [todo("survive unload", "in_progress")]
-    await registry.get("plugin:todolist:update_todos").tool.ainvoke({"todos": active})
+    await registry.get("update_todos").tool.ainvoke({"todos": active})
 
     assert await loader.unload("todolist") is True
     assert registry.registered_names() == []
@@ -216,7 +215,7 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
     }
 
     await loader.load()
-    assert registry.registered_names() == ["plugin:todolist:update_todos"]
+    assert registry.registered_names() == ["update_todos"]
     await loader.unload_all()
 
 

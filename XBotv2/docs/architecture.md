@@ -260,7 +260,7 @@ history persistence.
 ### TodolistPlugin (`todolist/`)
 
 Provides one atomic `update_todos` Tool that replaces the complete ordered
-checklist after validation. One `PluginStore` value holds the active items;
+checklist after validation. One `ctx.state.namespace(...)` value holds the active items;
 Tool calls and results use the normal conversation path without a repeated
 context event. It does not infer state from conversation text or duplicate goal
 ownership.

@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from api import ToolResult
+from XBotv2.core import ToolResult
 
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
@@ -50,7 +50,7 @@ class UrlPolicy:
 
 
 class WebAccess:
-    """Own the HTTP client used by read-only Web tools."""
+    """Own the HTTP client used by read-only Web XBotv2.tools."""
 
     def __init__(self, options: NetworkOptions) -> None:
         self.options = options

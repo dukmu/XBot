@@ -31,34 +31,34 @@ import pytest
 import pytest_asyncio
 import client as client_module
 import yaml
-from api.jobs import JobKind
-from api.paths import RuntimePaths
-from api.events import Events
-from api.messages import Message
-from api.tools import Tool
+from XBotv2.jobs import JobKind
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.events import Events
+from XBotv2.core.messages import Message
+from XBotv2.core.tools import Tool
 from client import XBotClient, XBotClientError
-from core.builtin_tools.shell import ShellRunner
-from core.internal_messages import structure_tool_message
+from XBotv2.coretools.shell import ShellRunner
+from XBotv2.core.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
-from llm.mock import MockLLM
-from protocol.version import PROTOCOL_VERSION
-from protocol.http_server import (
+from XBotv2.llm.mock import MockLLM
+from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.http_server import (
     _format_sse,
     create_app,
     set_llm_override,
 )
-from protocol.session_manager import ThreadNotActive
-from core.session import (
+from XBotv2.protocol.session_manager import ThreadNotActive
+from XBotv2.core.session import (
     PendingFold,
     SessionRuntime,
     _live_sink,
     run_turn_stream,
 )
-from tools.permissions import PermissionSystem
-from protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
-from tui.terminal import TerminalSession
-from tui.transport_http import HttpTransport
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
+from XBotv2.tui.terminal import TerminalSession
+from XBotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -1209,7 +1209,7 @@ async def test_http_policy_api_updates_live_session_policy(
 
 @pytest.mark.asyncio
 async def test_http_permission_response_preserves_scope() -> None:
-    from protocol.http_server import _resolve_interaction
+    from XBotv2.protocol.http_server import _resolve_interaction
 
     request_id = "permission:scope"
     captured: dict[str, str] = {}
@@ -1217,7 +1217,7 @@ async def test_http_permission_response_preserves_scope() -> None:
     class _WaiterSpy:
         def answer(self, request_id: str, *, decision: str = "", scope: str = "once"):
             captured.update({"request_id": request_id, "decision": decision, "scope": scope})
-            from core.interactions import InteractionResult
+            from XBotv2.core.interactions import InteractionResult
 
             return InteractionResult(
                 request_id=request_id,
@@ -1287,7 +1287,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 ) -> None:
     from types import SimpleNamespace
 
-    from core.interactions import InteractionWaiter
+    from XBotv2.core.interactions import InteractionWaiter
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
     waiter = (
@@ -1334,7 +1334,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from protocol.http_server import _resolve_interaction
+    from XBotv2.protocol.http_server import _resolve_interaction
 
     class _Engine:
         permission_waiter = object()
@@ -1506,7 +1506,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from api import Events
+    from XBotv2.core import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1539,7 +1539,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from api import Events
+    from XBotv2.core import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -1965,7 +1965,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         return "task output"
 
     monkeypatch.setattr(
-        "core.builtin_tools.shell.run_shell_command", run
+        "XBotv2.coretools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "task acknowledged"}])
     set_llm_override(http_app, llm)
@@ -2032,7 +2032,7 @@ async def test_multiple_completions_aggregate_into_one_injection(
         return "task output"
 
     monkeypatch.setattr(
-        "core.builtin_tools.shell.run_shell_command", run
+        "XBotv2.coretools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "ok"}])
     set_llm_override(http_app, llm)
@@ -2082,7 +2082,7 @@ async def test_typed_task_stop_is_idempotent(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("core.builtin_tools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
@@ -2931,8 +2931,8 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
     second queued message never drained and the transcript did not update).
     """
 
-    from tui.textual_client import XBotTextualApp
-    from tools.permissions import PermissionSystem
+    from XBotv2.tui.textual_client import XBotTextualApp
+    from XBotv2.permissions.system import PermissionSystem
 
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
@@ -3015,7 +3015,7 @@ async def test_tui_input_submitted_while_busy_is_retried_after_turn(
     boundary) is rejected at turn end and the TUI retries it as its own turn,
     so it still reaches the transcript."""
 
-    from tui.textual_client import XBotTextualApp
+    from XBotv2.tui.textual_client import XBotTextualApp
 
     release_a = asyncio.Event()
     llm = _GatedMockLLM(release_a, responses=[

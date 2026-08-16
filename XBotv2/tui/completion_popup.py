@@ -6,7 +6,7 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
-from tui.command import CommandSpec, search_commands
+from XBotv2.tui.command import CommandSpec, search_commands
 
 
 _MAX_ROWS = 6

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from api import (
+from XBotv2.core import (
     Command,
     CommandResult,
     EventContext,
@@ -16,7 +16,6 @@ from api import (
     Tool,
     ToolAction,
     ToolDecision,
-    ToolRegistrationOptions,
     ToolResult,
     calibrated_context_tokens,
     context_token_limit,
@@ -86,10 +85,7 @@ class CompactPlugin:
 
         ctx.tools.register(
             Tool.from_function(request_compaction, name="compact"),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:compact",
-            ),
+            sandbox_mode="host",
         )
         ctx.commands.register(Command(
             name="compact",
@@ -489,7 +485,7 @@ def _summary_request(
         "remaining work. Include paths or errors only when needed to continue. "
         "Distinguish verified facts and completed work from plans or unverified claims. "
         "Omit repetition, superseded discussion, raw logs, and recoverable detail. "
-        "Do not continue the task or call tools. Return only concise Markdown using no "
+        "Do not continue the task or call XBotv2.tools. Return only concise Markdown using no "
         f"more than {max_chars} characters."
     )
     request = [

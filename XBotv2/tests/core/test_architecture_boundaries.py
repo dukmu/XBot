@@ -1,10 +1,23 @@
-"""Dependency direction gates for the stable extension architecture."""
+"""Dependency direction gates for the all-plugin extension architecture.
+
+Every capability is a plugin package under ``XBotv2`` (``<pkg>/plugin.py``
+exporting ``plugin``), wired by the declarative tree (``xcore.yaml``).
+Boundaries:
+
+* capability plugins (goal, skills, mcp, ...) only import the shared
+  contracts (``XBotv2.core`` / ``XBotv2.jobs``), ``xcore``, and third-party
+  libraries — never other plugin implementations (they use services via
+  ``ctx.*``);
+* service plugins never import capability plugins;
+* contract modules (the ``XBotv2.core`` surface) never import plugin
+  implementations (the shared ``XBotv2.config`` library is allowed).
+"""
 
 import ast
 from pathlib import Path
 
-# Top-level plugin packages (moved from builtin_plugins/ in the flat layout).
-_PLUGIN_PACKAGES = {
+# In-tree capability plugins (the "builtin" plugin set).
+_CAPABILITY_PLUGINS = {
     "goal",
     "todolist",
     "skills",
@@ -16,23 +29,45 @@ _PLUGIN_PACKAGES = {
     "workspace_instructions",
 }
 
-# Top-level runtime packages that are implementation, not public API.
-_RUNTIME_PACKAGES = {
-    "core",
-    "tools",
+# Service plugins (each provides XCore services / event listeners).
+_SERVICE_PLUGINS = {
     "config",
     "persistence",
+    "session",
+    "jobs",
     "llm",
-    "protocol",
-    "tui",
-    "acp",
-    "loader",
-    "client",
-    "web_server",
+    "tools",
+    "commands",
+    "prompts",
+    "sandbox",
+    "permissions",
+    "context_builder",
+    "coretools",
+    "core",
 }
 
-# Top-level directories that are not Python packages.
-_NON_PACKAGE_DIRS = {"tests", "data", "docs", "web", "web_dist"}
+# Shared contract packages plugins may import.
+_CONTRACT_PACKAGES = {"XBotv2.core", "XBotv2.jobs"}
+
+# The shared configuration library (types + parsing), allowed for contracts.
+_ALLOWED_CONTRACT_IMPORTS = _CONTRACT_PACKAGES | {"XBotv2.config"}
+
+# core/ modules that are engine implementation, not contract surface.
+_CORE_IMPLEMENTATION = {
+    "engine.py",
+    "operations.py",
+    "session.py",
+    "content_cache.py",
+    "inbox.py",
+    "interactions.py",
+    "internal_messages.py",
+    "logging_config.py",
+    "plugin.py",
+    "effects.py",
+}
+
+# Top-level directories that are not Python plugin packages.
+_NON_PACKAGE_DIRS = {"tests", "data", "docs", "web", "web_dist", "__pycache__"}
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:
@@ -45,44 +80,61 @@ def _imported_modules(tree: ast.AST) -> list[str]:
     return modules
 
 
-def test_builtin_plugins_only_import_public_xbot_api():
+def _first_segment(module: str) -> str:
+    return module.split(".", 1)[0]
+
+
+def test_capability_plugins_only_import_public_contracts():
     root = Path(__file__).parents[2]
     violations = []
-    for name in sorted(_PLUGIN_PACKAGES):
+    for name in sorted(_CAPABILITY_PLUGINS):
         pkg = root / name
         for path in pkg.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for module in _imported_modules(tree):
-                if module.split(".", 1)[0] in _RUNTIME_PACKAGES:
-                    violations.append(f"{name}/{path.relative_to(pkg)} imports {module}")
+                if module.startswith("XBotv2.") and not (
+                    module in _CONTRACT_PACKAGES
+                    or module.startswith("XBotv2.core.")
+                    or module.startswith("XBotv2.jobs.")
+                    or module.startswith(f"XBotv2.{name}.")
+                ):
+                    violations.append(
+                        f"{name}/{path.relative_to(pkg)} imports {module}"
+                    )
     assert violations == []
 
 
-def test_core_never_imports_builtin_plugins():
+def test_service_plugins_never_import_capability_plugins():
     root = Path(__file__).parents[2]
     violations = []
     for pkg_dir in sorted(root.iterdir()):
-        if not pkg_dir.is_dir() or pkg_dir.name.startswith("."):
+        if not pkg_dir.is_dir() or pkg_dir.name in _NON_PACKAGE_DIRS:
             continue
-        if pkg_dir.name in _PLUGIN_PACKAGES or pkg_dir.name in _NON_PACKAGE_DIRS:
+        if pkg_dir.name not in _SERVICE_PLUGINS:
             continue
         for path in pkg_dir.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for module in _imported_modules(tree):
-                if module.split(".", 1)[0] in _PLUGIN_PACKAGES:
-                    violations.append(f"{pkg_dir.name}/{path.relative_to(pkg_dir)}")
+                if _first_segment(module) in _CAPABILITY_PLUGINS:
+                    violations.append(
+                        f"{pkg_dir.name}/{path.relative_to(pkg_dir)} imports {module}"
+                    )
     assert violations == []
 
 
-def test_public_api_does_not_import_runtime_implementations():
-    root = Path(__file__).parents[2] / "api"
+def test_core_contract_modules_do_not_import_plugin_implementations():
+    root = Path(__file__).parents[2] / "core"
     violations = []
     for path in root.glob("*.py"):
+        if path.name in _CORE_IMPLEMENTATION or path.name == "__init__.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for module in _imported_modules(tree):
-            is_runtime_import = (
-                module.split(".", 1)[0] in _RUNTIME_PACKAGES
-            )
-            if is_runtime_import:
-                violations.append(f"{path.name} imports {module}")
+            if module.startswith("XBotv2."):
+                allowed = any(
+                    module == name or module.startswith(f"{name}.")
+                    for name in _ALLOWED_CONTRACT_IMPORTS
+                )
+                if not allowed:
+                    violations.append(f"{path.name} imports {module}")
     assert violations == []

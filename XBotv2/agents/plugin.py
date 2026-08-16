@@ -1,8 +1,8 @@
-"""Agent definition loading and model-facing subagent job tools.
+"""Agent definition loading and model-facing subagent job XBotv2.tools.
 
 Subagents run as SUBAGENT jobs in the shared JobRegistry. This plugin only
 implements the adapter: a JobRunner that spawns a child session through the
-core AgentRuntime, and the typed model-facing tools. It never owns lifecycle
+core AgentRuntime, and the typed model-facing XBotv2.tools. It never owns lifecycle
 state; waiting, cancellation, output storage, and listing live in the registry.
 """
 
@@ -14,8 +14,13 @@ from typing import Any
 
 import yaml
 
-from api import (
+from XBotv2.core import (
     AgentDefinition,
+    RuntimeVariables,
+    Tool,
+    ToolResult,
+)
+from XBotv2.jobs import (
     Job,
     JobContext,
     JobKind,
@@ -25,10 +30,6 @@ from api import (
     JobResult,
     JobRunner,
     JobStatus,
-    RuntimeVariables,
-    Tool,
-    ToolRegistrationOptions,
-    ToolResult,
 )
 from xcore import S
 
@@ -58,16 +59,16 @@ class SubagentRunner:
     def __init__(
         self,
         *,
-        runtime: Any,
+        session: Any,
         agent: str,
         prompt: str,
     ) -> None:
-        self.runtime = runtime
+        self.session = session
         self.agent = agent
         self.prompt = prompt
 
     async def run(self, job: Job, ctx: JobContext) -> JobResult:
-        session = await self.runtime.spawn(
+        session = await self.session.spawn_subagent(
             self.agent,
             self.prompt,
             parent_job_id=job.parent_job_id,
@@ -94,7 +95,7 @@ class SubagentRunner:
 
 
 class AgentsPlugin:
-    """Register workspace Agent definitions and subagent job tools."""
+    """Register workspace Agent definitions and subagent job XBotv2.tools."""
 
     name = "agents"
     Config = S.object({
@@ -123,11 +124,11 @@ class AgentsPlugin:
         })
         for definition in definitions.values():
             ctx.agents.register(definition)
-        if ctx.agent_runtime is None or ctx.job_registry is None:
+        if ctx.session is None or ctx.jobs is None:
             return
 
-        runtime = ctx.agent_runtime
-        registry: JobRegistry = ctx.job_registry
+        session = ctx.session
+        registry: JobRegistry = ctx.jobs
 
         async def spawn_subagent(
             agent: str,
@@ -152,7 +153,7 @@ class AgentsPlugin:
                 return ToolResult.failure(
                     "session_closing", "Session is closing"
                 )
-            definition = runtime.definitions()
+            definition = session.definitions()
             known = {item.name for item in definition}
             if agent not in known:
                 return ToolResult.failure(
@@ -177,7 +178,7 @@ class AgentsPlugin:
                 )
             registry.start(
                 job.id,
-                SubagentRunner(runtime=runtime, agent=agent, prompt=prompt),
+                SubagentRunner(session=session, agent=agent, prompt=prompt),
             )
             return ToolResult.success(
                 f"Started {job.id}",
@@ -300,11 +301,8 @@ class AgentsPlugin:
 
         ctx.tools.register(
             Tool.from_function(spawn_subagent, name="spawn_subagent"),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:agents",
-                timeout_seconds=self._timeout_seconds,
-            ),
+            sandbox_mode="host",
+            timeout_seconds=self._timeout_seconds,
         )
         for function in (
             list_subagents,
@@ -314,10 +312,7 @@ class AgentsPlugin:
         ):
             ctx.tools.register(
                 Tool.from_function(function),
-                options=ToolRegistrationOptions(
-                    sandbox_mode="host",
-                    namespace="plugin:agents",
-                ),
+                sandbox_mode="host",
             )
 
 

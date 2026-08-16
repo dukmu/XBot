@@ -1,4 +1,4 @@
-"""Behavioral tests for the core filesystem tools."""
+"""Behavioral tests for the core filesystem XBotv2.tools."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from core.builtin_tools import content as content_module
-from core.builtin_tools.content import content_read
-from core.builtin_tools.filesystem import (
+from XBotv2.coretools import content as content_module
+from XBotv2.coretools.content import content_read
+from XBotv2.coretools.filesystem import (
     copy_path,
     delete_path,
     edit_file,
@@ -24,7 +24,7 @@ from core.builtin_tools.filesystem import (
     filesystem_write,
     write_file,
 )
-from tools.sandbox import SandboxPolicy
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class TestContentRead:

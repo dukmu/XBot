@@ -8,8 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from api.messages import Message, ReasoningPart, TextPart
-from api.prompts import cached_content_prompt
+from XBotv2.core.messages import Message, ReasoningPart, TextPart
+from XBotv2.core.prompts import cached_content_prompt
 
 MAX_INLINE_CHARS = 12_000
 MAX_USER_INLINE_CHARS = 48_000

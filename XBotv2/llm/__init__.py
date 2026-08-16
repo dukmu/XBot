@@ -1,9 +1,9 @@
 """Model Provider contracts and built-in adapters."""
 
-from llm.anthropic import AnthropicProvider
-from llm.base import BaseProvider
-from llm.client import create_llm
-from llm.openai import OpenAICompatibleProvider
+from XBotv2.llm.anthropic import AnthropicProvider
+from XBotv2.llm.base import BaseProvider
+from XBotv2.llm.client import create_llm
+from XBotv2.llm.openai import OpenAICompatibleProvider
 
 __all__ = [
     "AnthropicProvider",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from api import Tool, ToolError, ToolResult
+from XBotv2.core import Tool, ToolError, ToolResult
 
 
 class MCPTool:

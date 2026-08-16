@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Callable
 
-from api.messages import (
+from XBotv2.core.messages import (
     ContentPart,
     Message,
     ImagePart,
@@ -15,8 +15,8 @@ from api.messages import (
     TextPart,
     ToolCallPart,
 )
-from api.tools import ToolCall
-from llm.base import BaseProvider, attachment_prompt, usage_metadata
+from XBotv2.core.tools import ToolCall
+from XBotv2.llm.base import BaseProvider, attachment_prompt, usage_metadata
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})

@@ -16,8 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from tui.transport import Transport
-from tui.transport_http import HttpTransport
+from XBotv2.tui.transport import Transport
+from XBotv2.tui.transport_http import HttpTransport
 
 
 @dataclass(frozen=True)

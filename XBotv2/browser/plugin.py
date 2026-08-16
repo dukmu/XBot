@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from api import (
+from XBotv2.core import (
     Tool,
-    ToolRegistrationOptions,
     ToolResult,
 )
 from xcore import S
@@ -91,10 +90,7 @@ class BrowserPlugin:
         ):
             ctx.tools.register(
                 Tool.from_function(function),
-                options=ToolRegistrationOptions(
-                    namespace="plugin:browser",
-                    sandbox_mode="sandboxed",
-                ),
+                sandbox_mode="sandboxed",
             )
 
     async def web_search(

@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from api.paths import RuntimePaths
-from api.tools import ToolCall
-from config.models import config_dict
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import ToolCall
+from XBotv2.config.models import config_dict
 
 
 PermissionScope = str

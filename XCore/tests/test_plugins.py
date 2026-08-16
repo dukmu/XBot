@@ -179,6 +179,33 @@ async def test_apply_failure_is_isolated_and_awaitable():
     assert other_ran == ["fine"]
 
 
+async def test_current_fiber_tracks_applying_plugin_and_binds_cleanup():
+    from xcore import current_fiber
+
+    ctx = Context()
+    seen: list[str | None] = []
+    registered: list[str] = []
+
+    def applier(ctx_, config):
+        # During apply the current fiber is this plugin's fiber.
+        fiber = current_fiber()
+        seen.append(fiber is not None)
+        if fiber is not None:
+            seen.append(fiber.runtime.definition.name)
+            fiber.effect(lambda: lambda: registered.append("cleaned"))
+        registered.append("setup")
+
+    await ctx.start()
+    handle = ctx.plugin(applier)
+    await handle
+    assert seen == [True, "applier"]
+    assert current_fiber() is None  # outside apply there is no current fiber
+    assert registered == ["setup"]
+
+    await handle.dispose()
+    assert registered == ["setup", "cleaned"]
+
+
 async def test_partial_effects_rolled_back_on_failure():
     ctx = Context()
     calls: list[str] = []

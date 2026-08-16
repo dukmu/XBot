@@ -17,7 +17,7 @@ from textual.message import Message
 from textual.events import Key
 from textual.widgets import Collapsible, Static, TextArea
 
-from tui.client import TuiMessage, TuiState, TuiTask, TuiTool, format_value
+from XBotv2.tui.client import TuiMessage, TuiState, TuiTask, TuiTool, format_value
 
 # Bound Markdown render cache: streaming assistant deltas re-render the same
 # growing content many times per second; memoizing the parsed render avoids

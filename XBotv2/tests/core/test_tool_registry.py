@@ -2,8 +2,8 @@
 
 import pytest
 
-from api.tools import Tool
-from tools.registry import ToolRegistry
+from XBotv2.core.tools import Tool
+from XBotv2.tools.registry import ToolRegistry
 
 
 def _tool_a(x: int = 0) -> str:
@@ -166,7 +166,7 @@ class TestQuery:
         assert set(tool_registry.names()) == {"tool_a", "tool_b"}
 
     def test_registered_names_ignores_restrictions(self, tool_registry):
-        """Introspection can see hidden registered tools."""
+        """Introspection can see hidden registered XBotv2.tools."""
         tool_registry.register(tool_a)
         tool_registry.register(tool_b)
         tool_registry.restrict(["tool_a"])

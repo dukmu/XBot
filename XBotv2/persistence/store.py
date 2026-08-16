@@ -20,12 +20,12 @@ from typing import Any
 
 import yaml
 
-from api.messages import (
+from XBotv2.core.messages import (
     ImageContent,
     Message,
     part_from_dict,
 )
-from api.paths import SessionPaths, ThreadPaths
+from XBotv2.core.paths import SessionPaths, ThreadPaths
 _PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
 
 

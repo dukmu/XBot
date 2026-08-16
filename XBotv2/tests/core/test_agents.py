@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from api import AgentDefinition, RuntimeVariables
-from core.agents import AgentRegistry
-from tools.permissions import PermissionSystem
-from agents.plugin import _load_definition
+from XBotv2.core import AgentDefinition, RuntimeVariables
+from XBotv2.core.agents import AgentRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agents.plugin import _load_definition
 
 
 def test_agent_definition_requires_stable_name_and_description():

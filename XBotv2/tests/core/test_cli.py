@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import main as cli
+import XBotv2.main as cli
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -183,7 +183,7 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from protocol import http_server
+    from XBotv2.protocol import http_server
 
     monkeypatch.setattr(http_server, "create_app", lambda **_kwargs: object())
     served = {}

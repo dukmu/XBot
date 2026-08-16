@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import api as public_api
+import XBotv2.core as public_api
 
-from api import (
+from XBotv2.core import (
     Command,
     CommandResult,
     ContextComponent,
@@ -20,17 +20,15 @@ from api import (
     prompt_container,
     prompt_element,
     RuntimePaths,
-    RuntimePluginContext,
     RuntimeVariables,
     SessionPaths,
     ToolCall,
-    ToolRegistrationOptions,
     ToolResult,
     Tool,
 )
-from protocol.version import PROTOCOL_VERSION
-from protocol.http_server import create_app
-from protocol.models import (
+from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.http_server import create_app
+from XBotv2.protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     HelloRequest,
     MessageRequest,
@@ -41,11 +39,14 @@ from protocol.models import (
 
 def test_public_api_inventory_is_explicit():
     inventory = Path(__file__).parents[2] / "docs" / "api" / "api_inventory.md"
-    documented = [
-        match.group(1)
-        for line in inventory.read_text(encoding="utf-8").splitlines()
-        if (match := re.match(r"^\| `([^`]+)` \|", line))
-    ]
+    documented = []
+    for line in inventory.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## Exported Symbols"):
+            if line.startswith("## Exported Symbols (XBotv2.jobs)"):
+                break
+            continue
+        if match := re.match(r"^\| `([^`]+)` \|", line):
+            documented.append(match.group(1))
 
     assert documented == public_api.__all__
     assert len(documented) == len(set(documented))
@@ -65,10 +66,6 @@ def test_public_api_exports_core_extension_types():
     assert ToolDecision(ToolAction.DENY, "policy").reason == "policy"
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
-    assert hasattr(RuntimePluginContext, "register_tool")
-    assert hasattr(RuntimePluginContext, "unregister_tool")
-    assert hasattr(RuntimePluginContext, "register_command")
-    assert hasattr(RuntimePluginContext, "unregister_command")
     assert prompt_container(
         "root", [prompt_element("item", "a < b")]
     ) == "<root>\n<item>\na &lt; b\n</item>\n</root>"
@@ -136,26 +133,6 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     assert EventContext().invoke_model is None
     assert EventContext().request_user_input is None
 
-
-def test_tool_registration_options_validate_values():
-    options = ToolRegistrationOptions(
-        sandbox_mode="sandboxed",
-        namespace="plugin:test",
-        timeout_seconds=120,
-    )
-
-    assert options.sandbox_mode == "sandboxed"
-    assert options.namespace == "plugin:test"
-    assert options.timeout_seconds == 120
-
-    with pytest.raises(ValueError, match="sandbox_mode"):
-        ToolRegistrationOptions(sandbox_mode="invalid")
-
-    with pytest.raises(TypeError, match="execution_mode"):
-        ToolRegistrationOptions(execution_mode="parallel")
-
-    with pytest.raises(ValueError, match="timeout_seconds"):
-        ToolRegistrationOptions(timeout_seconds=0)
 
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():

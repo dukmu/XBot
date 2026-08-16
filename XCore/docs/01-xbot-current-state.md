@@ -16,39 +16,37 @@
 ## 2. 目录结构与分层
 
 ```
-XBotv2/
-  main.py                  # 入口：xbot = main:main（CLI 分发）
-  api/                     # ★ 插件唯一稳定扩展面（public API 契约）
-    __init__.py            #   导出 Command/Tool/ToolResult/EventContext/...
-    events.py              #   Events 事件目录 + EventContext + ToolDecision
-    tools.py               #   Tool / ToolResult / ToolCall 契约
-    commands.py            #   Command（人机 slash 命令契约）
-    agents.py              #   AgentDefinition / AgentRuntime
-    context.py             #   PromptFragmentStage（prompt 展开契约）
-    jobs/                  #   JobRegistry（后台任务统一实体）
-    paths.py messages.py providers.py variables.py tokens.py plugins.py runtime.py prompts.py
-  core/                    # 核心运行时（不依赖插件）+ engine 插件
-    engine.py              #   _run_turn_impl 约 155 行编排器
-    session.py context.py agents.py inbox.py interactions.py
-    bootstrap.py           #   组装运行时、安装插件
-    internal_messages.py content_cache.py operations.py logging_config.py
-    builtin_tools/         #   shell / filesystem / content / interaction
-    plugin.py              #   xbot.core：引擎插件（组装 Engine → ctx.engine）
-  tools/                   # ToolRegistry / PermissionSystem / Sandbox / filesystem_ops
-                           # + tools 插件（tools/plugin.py：工具层服务）
-  runtime/                 # runtime 插件（xbot.runtime：paths/session/variables/...）
-  coretools/               # coretools 插件（基础工具 + result-cache 监听）
-  agent_runtime/           # 子代理工厂插件
-  loader/                  # 插件树 loader（cordis.yaml 机制）+ PluginTree
-  persistence/store.py     # CoreStateStore：messages.jsonl + plugin_states/ + artifacts/
-  protocol/                # HTTP/SSE/UDS 传输、SessionManager、v3 资源模型
-  config/                  # 全局/workspace/会话三层 YAML 配置
-  tui/  acp/  llm/  client.py  web_server.py  web_dist/
-  goal/  todolist/  skills/  mcp/  compact/  agents/
-    browser/  token_manager/  workspace_instructions/   # 内置插件
-  data/                    # 运行时数据
-  docs/                    # 文档（原 docsv2/）
-  tests/                   # core/ integration/ bench/ acp/
+XBotv2/                      # 包根（__init__.py），导入一律 XBotv2.<pkg>
+  xcore.yaml                 # 默认插件树（cordis.yaml 式，DSH cordis.patch.yml 等价物）
+  main.py                    # 入口：xbot = XBotv2.main:main（CLI 分发）
+  bootstrap.py               # 组合根：提供运行时值 → loader 按 xcore.yaml 装载
+  core/                      # 共享契约（Events/Tool/Command/AgentDefinition/...）
+                             # + 引擎插件（core/plugin.py → ctx.engine）
+    events.py                #   Events 事件目录 + EventContext + ToolDecision
+    tools.py commands.py agents.py context.py paths.py messages.py
+    providers.py variables.py tokens.py runtime.py prompts.py
+    engine.py operations.py session.py inbox.py interactions.py
+    internal_messages.py content_cache.py logging_config.py effects.py
+  config/                    # 插件：ctx.settings（配置解析服务）
+  persistence/               # 插件：ctx.state_store（jsonl 后端，可换）
+  session/                   # 插件：ctx.session（活动会话：主 agent + subagents）
+  jobs/                      # 插件：ctx.jobs（后台任务）+ jobs 服务契约
+  llm/                       # 插件：ctx.llm（provider 工厂 + 适配器）
+  tools/                     # 插件：ctx.tools + ctx.agents（注册表）
+  commands/  prompts/        # 插件：ctx.commands / ctx.prompts
+  sandbox/                   # 插件：ctx.sandbox（沙箱 + bwrap + filesystem_ops）
+  permissions/               # 插件：ctx.permissions（权限系统）
+  context_builder/           # 插件：ctx.context_builder
+  coretools/                 # 插件：基础工具注册 + 核心事件监听（含 shell/filesystem/...）
+  agents/                    # 插件：agent 定义加载 + subagent 工具
+  loader/                    # 容器机制：PluginTree/Loader（ctx.loader）
+  protocol/  tui/  acp/      # 应用层（serve/TUI/ACP，非插件）
+  goal/  todolist/  skills/  mcp/  compact/  browser/
+    token_manager/  workspace_instructions/    # 内置插件
+  client.py  web_server.py
+  data/                      # 运行时数据
+  docs/                      # 文档（原 docsv2/）
+  tests/                     # core/ integration/ bench/ acp/
 ```
 
 分层边界（AGENTS.md 与 architecture.md 明确定义）：

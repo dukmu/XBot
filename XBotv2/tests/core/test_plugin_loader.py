@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from loader import (
+from XBotv2.loader import (
     Loader,
     PluginEntry,
     PluginTree,
@@ -29,30 +29,26 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
     from xcore import Context
-    from api.jobs import JobRegistry
-    from api.variables import RuntimeVariables
-    from core.agents import AgentRegistry
-    from core.context import ContextBuilder
-    from tools.plugin import (
-        AgentsService,
-        CommandsService,
-        PromptsService,
-        ToolsService,
-    )
-    from tools.registry import ToolRegistry
+    from XBotv2.jobs import JobRegistry
+    from XBotv2.core.variables import RuntimeVariables
+    from XBotv2.core.agents import AgentRegistry
+    from XBotv2.context_builder.builder import ContextBuilder
+    from XBotv2.tools.plugin import AgentsService, ToolsService
+    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.prompts.plugin import PromptsService
+    from XBotv2.tools.registry import ToolRegistry
 
     ctx = Context(data_dir=tmp_path)
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
     ctx.set("agents", AgentsService(AgentRegistry()))
-    ctx.set("job_registry", JobRegistry())
+    ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", tmp_path)
     ctx.set("data_root", tmp_path)
     ctx.set("session", None)
     ctx.set("runtime", None)
-    ctx.set("agent_runtime", None)
     ctx.set("paths", None)
     return ctx
 
@@ -121,7 +117,7 @@ class DemoPlugin:
 
 plugin = DemoPlugin()
 """)
-        from loader import Loader as _  # noqa
+        from XBotv2.loader import Loader as _  # noqa
         import importlib
 
         module = importlib.import_module("demo")
@@ -161,7 +157,7 @@ plugin = DemoPlugin()
 class TestLoader:
     async def test_load_mounts_entries_and_skips_disabled(self, tmp_path):
         _write_plugin(tmp_path, "alpha", """
-from api import Tool
+from XBotv2.core import Tool
 
 class AlphaPlugin:
     name = "alpha"
@@ -192,7 +188,7 @@ plugin = BetaPlugin()
 
     async def test_unload_cleans_registrations(self, tmp_path):
         _write_plugin(tmp_path, "gamma", """
-from api import Tool
+from XBotv2.core import Tool
 
 class GammaPlugin:
     name = "gamma"

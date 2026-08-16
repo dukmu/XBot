@@ -11,7 +11,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from api.paths import RuntimePaths
+from XBotv2.core.paths import RuntimePaths
 
 __version__ = "0.2.0"
 
@@ -180,7 +180,7 @@ def _parse_args(
 def main(argv: list[str] | None = None):
     parser, args = _parse_args(argv)
 
-    from core.logging_config import setup_logging
+    from XBotv2.core.logging_config import setup_logging
 
     setup_logging(
         data_dir=args.data_dir,
@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None):
         args.command in {"tui", "web"}
         and getattr(args, "server", None)
     ):
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         try:
             load_provider_config(
@@ -247,7 +247,7 @@ def _run_server(args) -> None:
         print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    from protocol.http_server import create_app
+    from XBotv2.protocol.http_server import create_app
 
     app = create_app(
         paths=RuntimePaths.from_data_dir(args.data_dir),
@@ -308,7 +308,7 @@ def _run_tui(args) -> None:
             _cleanup_socket(uds_path)
             sys.exit(2)
 
-    from tui.textual_client import TextualTuiClient
+    from XBotv2.tui.textual_client import TextualTuiClient
 
     client = TextualTuiClient(
         session_id=getattr(args, "session", None),
@@ -483,7 +483,7 @@ def _workspace_root(args) -> Path:
 
 async def _terminal_loop(args):
     """Direct engine terminal session — reads from stdin, prints responses."""
-    from core.bootstrap import bootstrap
+    from XBotv2.bootstrap import bootstrap
 
     print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
 
@@ -603,8 +603,8 @@ async def _terminal_interaction(
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from core.bootstrap import bootstrap
-    from core.session import SessionRuntime
+    from XBotv2.bootstrap import bootstrap
+    from XBotv2.core.session import SessionRuntime
 
     engine = await bootstrap(
         paths=RuntimePaths.from_data_dir(args.data_dir),

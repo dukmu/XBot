@@ -5,22 +5,22 @@ import base64
 
 import pytest
 
-from api.messages import Message
-from persistence.store import (
+from XBotv2.core.messages import Message
+from XBotv2.persistence.store import (
     CoreStateStore,
     message_to_dict,
     dict_to_message,
 )
-from core.engine import Engine
-from core.context import ContextBuilder
-from config.models import RuntimeConfig
+from XBotv2.core.engine import Engine
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.config.models import RuntimeConfig
 import xcore
-from llm.mock import MockLLM
-from tools.registry import ToolRegistry
-from tools.permissions import PermissionSystem
-from tools.sandbox import SandboxPolicy
-from api.tools import Tool, ToolCall
-from api.paths import RuntimePaths
+from XBotv2.llm.mock import MockLLM
+from XBotv2.tools.registry import ToolRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.paths import RuntimePaths
 
 
 # ------------------------------------------------------------------

@@ -66,7 +66,7 @@ completion evidence.
 
 ## Continuation And Persistence
 
-Every successful transition persists immediately through `PluginStore`. Goal
+Every successful transition persists immediately through `ctx.state.namespace(...)`. Goal
 does not inject state during each context build. When an active Goal reaches an
 continuation turn causes `ON_TURN_START` to build one
 non-persisted Goal snapshot for that turn. ReAct iterations reuse that stable
@@ -76,7 +76,7 @@ but are not injected into unrelated model calls.
 After a human or Goal-owned turn, `ON_TURN_END` requests at most one
 continuation turn while the Goal remains active. Runtime notifications (background-task and subagent completions) do not
 drive the Goal state machine. The objective remains authoritative in
-`PluginStore` and is not duplicated in the turn payload. Delivery clears the
+`ctx.state.namespace(...)` and is not duplicated in the turn payload. Delivery clears the
 pending marker before the next turn. ESC pauses the Goal and schedules no
 successor. `/goal resume` activates it and schedules continuation again.
 Mailbox entries and turn snapshots are not restored by session resume.

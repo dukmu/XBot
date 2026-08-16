@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from api import (
+from XBotv2.core import (
     Command,
     EventContext,
     Events,
@@ -15,7 +15,6 @@ from api import (
     Tool,
     ToolAction,
     ToolDecision,
-    ToolRegistrationOptions,
     ToolResult,
 )
 

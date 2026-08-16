@@ -5,9 +5,8 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from api import (
+from XBotv2.core import (
     Tool,
-    ToolRegistrationOptions,
     ToolResult,
 )
 from xcore import S
@@ -51,10 +50,8 @@ class TodolistPlugin:
                 function=self.update_todos,
                 parameters=_UPDATE_TODOS_SCHEMA,
             ),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:todolist",
-            ),
+            sandbox_mode="host",
+
         )
 
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:

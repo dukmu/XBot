@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from protocol.models import (
+from XBotv2.protocol.models import (
     AgentListResponse,
     AgentSelectionRequest,
     AgentSelectionResponse,
@@ -50,8 +50,8 @@ from protocol.models import (
     UserInputResponseRequest,
     WireModel,
 )
-from protocol.sse import SseDecoder, decode_server_event
-from protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.sse import SseDecoder, decode_server_event
+from XBotv2.protocol.version import PROTOCOL_VERSION
 
 ResponseModel = TypeVar("ResponseModel", bound=WireModel)
 

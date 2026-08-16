@@ -4,28 +4,28 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm.anthropic import (
+from XBotv2.llm.anthropic import (
     AnthropicProvider,
     anthropic_request_messages,
     normalize_anthropic_usage,
 )
-from llm.base import BaseProvider, ProviderRetryExhaustedError
-from llm.openai import OpenAICompatibleProvider, openai_messages
-from api.messages import (
+from XBotv2.llm.base import BaseProvider, ProviderRetryExhaustedError
+from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
+from XBotv2.core.messages import (
     ImageContent,
     Message,
     ReasoningPart,
     TextPart,
     ToolCallPart,
 )
-from api.tools import ToolCall
-from core.internal_messages import structure_tool_message
+from XBotv2.core.tools import ToolCall
+from XBotv2.core.internal_messages import structure_tool_message
 
 
 def test_provider_retry_default_is_bounded(monkeypatch):
     monkeypatch.delenv("XBOT_PROVIDER_MAX_RETRIES", raising=False)
 
-    from llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
+    from XBotv2.llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
 
     assert _retry_settings()[0] == DEFAULT_PROVIDER_MAX_RETRIES
 

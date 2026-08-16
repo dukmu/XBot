@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from api.messages import Message
-from api.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
+from XBotv2.core.messages import Message
+from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
 
 
 def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:

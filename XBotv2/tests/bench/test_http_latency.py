@@ -27,11 +27,11 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-from api.paths import RuntimePaths
+from XBotv2.core.paths import RuntimePaths
 from httpx import ASGITransport
 
-from llm.mock import MockLLM
-from protocol.http_server import create_app, set_llm_override
+from XBotv2.llm.mock import MockLLM
+from XBotv2.protocol.http_server import create_app, set_llm_override
 
 
 # ----------------------------------------------------------------------

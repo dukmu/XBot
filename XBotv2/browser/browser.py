@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from api import ArtifactRef, ToolResult
+from XBotv2.core import ArtifactRef, ToolResult
 
 from .network import UrlPolicy, network_available
 

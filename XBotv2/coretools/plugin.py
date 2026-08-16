@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from api.events import Events
-from api.tools import Tool
+from XBotv2.core.events import Events
+from XBotv2.core.tools import Tool
 
 NON_INTERACTIVE_FORBIDDEN_TOOLS = frozenset({"ask_user", "request_permission"})
 
@@ -27,15 +27,15 @@ class CoreToolsComponent:
         runtime_config = ctx.runtime
         state_store = ctx.state_store
 
-        from core.builtin_tools.filesystem import FILESYSTEM_TOOLS
-        from core.builtin_tools.shell import SHELL_TOOLS
-        from core.builtin_tools.content import content_read_tool
-        from core.builtin_tools.interaction import (
+        from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
+        from XBotv2.coretools.shell import SHELL_TOOLS
+        from XBotv2.coretools.content import content_read_tool
+        from XBotv2.coretools.interaction import (
             ask_user,
             request_permission,
             send_message,
         )
-        from tools.result_cache import make_tool_result_cache_hook
+        from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
         base_tools = [
             *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
@@ -77,7 +77,7 @@ class CoreToolsComponent:
                 if not isinstance(tool, Tool):
                     raise TypeError(
                         f"Workspace Tool export {declaration.target!r} must contain "
-                        "api.Tool values"
+                        "XBotv2.core.Tool values"
                     )
                 tool_registry.register(tool, namespace="workspace", sandbox_mode="host")
 

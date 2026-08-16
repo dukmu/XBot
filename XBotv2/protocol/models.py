@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.version import PROTOCOL_VERSION
 
 
 class WireModel(BaseModel):

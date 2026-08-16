@@ -12,9 +12,9 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from api.messages import Message, ModelChunk
-from api.providers import InputModality, ProviderCapabilities
-from api.prompts import prompt_container, prompt_element
+from XBotv2.core.messages import Message, ModelChunk
+from XBotv2.core.providers import InputModality, ProviderCapabilities
+from XBotv2.core.prompts import prompt_container, prompt_element
 
 logger = logging.getLogger("llm")
 

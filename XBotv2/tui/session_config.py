@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from tui.terminal import TerminalSession
+from XBotv2.tui.terminal import TerminalSession
 
 
 @dataclass(frozen=True)

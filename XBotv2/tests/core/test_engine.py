@@ -5,21 +5,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.engine import Engine
-from core.context import ContextBuilder
-from core.builtin_tools.shell import SHELL_TOOLS
-from core.builtin_tools.interaction import request_permission
-from config.models import RuntimeConfig
+from XBotv2.core.engine import Engine
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.coretools.shell import SHELL_TOOLS
+from XBotv2.coretools.interaction import request_permission
+from XBotv2.config.models import RuntimeConfig
 import xcore
-from api.events import Events
-from llm.mock import MockLLM
-from api import ContextComponent
-from api.messages import Message, ModelResponse
-from llm.base import BaseProvider
-from tools.registry import ToolRegistry
-from tools.permissions import PermissionSystem
-from tools.sandbox import SandboxPolicy
-from api.tools import (
+from XBotv2.core.events import Events
+from XBotv2.llm.mock import MockLLM
+from XBotv2.core import ContextComponent
+from XBotv2.core.messages import Message, ModelResponse
+from XBotv2.llm.base import BaseProvider
+from XBotv2.tools.registry import ToolRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.tools import (
     ArtifactRef,
     ClientEvent,
     Tool,

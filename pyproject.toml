@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-xbot = "main:main"
+xbot = "XBotv2.main:main"
 
 [dependency-groups]
 dev = [
@@ -40,7 +40,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["XBotv2/tests"]
-pythonpath = ["XBotv2", "XCore", "."]
+pythonpath = [".", "XCore"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -52,56 +52,12 @@ markers = [
 
 [tool.coverage.run]
 source = [
-    "api",
-    "core",
-    "tools",
-    "runtime",
-    "coretools",
-    "agent_runtime",
-    "loader",
-    "config",
-    "persistence",
-    "llm",
-    "protocol",
-    "tui",
-    "acp",
-    "goal",
-    "todolist",
-    "skills",
-    "mcp",
-    "compact",
-    "agents",
-    "browser",
-    "token_manager",
-    "workspace_instructions",
+    "XBotv2",
 ]
 
 [tool.setuptools.packages.find]
-where = ["XBotv2"]
-include = [
-    "api*",
-    "core*",
-    "tools*",
-    "runtime*",
-    "coretools*",
-    "agent_runtime*",
-    "loader*",
-    "config*",
-    "persistence*",
-    "llm*",
-    "protocol*",
-    "tui*",
-    "acp*",
-    "goal*",
-    "todolist*",
-    "skills*",
-    "mcp*",
-    "compact*",
-    "agents*",
-    "browser*",
-    "token_manager*",
-    "workspace_instructions*",
-]
+where = ["."]
+include = ["XBotv2*"]
 namespaces = true
 
 [tool.setuptools.data-files]

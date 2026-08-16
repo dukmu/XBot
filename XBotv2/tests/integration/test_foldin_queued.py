@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from api.paths import RuntimePaths
-from api.tools import Tool
-from llm.mock import MockLLM
-from protocol.http_server import create_app
-from tools.permissions import PermissionSystem
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import Tool
+from XBotv2.llm.mock import MockLLM
+from XBotv2.protocol.http_server import create_app
+from XBotv2.permissions.system import PermissionSystem
 
 
 @pytest_asyncio.fixture
@@ -293,9 +293,9 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     completion notice the TUI never applies); no terminal ``task_updated``
     reached live clients, so tasks stayed "running" forever."""
 
-    from api.jobs import JobKind
-    from core.builtin_tools.shell import SHELL_TOOLS
-    from tools.permissions import PermissionSystem
+    from XBotv2.jobs import JobKind
+    from XBotv2.coretools.shell import SHELL_TOOLS
+    from XBotv2.permissions.system import PermissionSystem
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="task-panel",

@@ -9,14 +9,14 @@ from typing import Any
 
 import yaml
 
-from api.paths import RuntimePaths
-from config.models import (
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.models import (
     ConfigOverlay,
     ProviderConfig,
     RuntimeConfig,
     UserContext,
 )
-from config.policy import merge_permission_config, merge_sandbox_config
+from XBotv2.config.policy import merge_permission_config, merge_sandbox_config
 
 
 _ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")

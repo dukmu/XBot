@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from api import (
+from XBotv2.core import (
     ContextComponent,
     EventContext,
     Events,

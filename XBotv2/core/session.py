@@ -10,10 +10,10 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-from api.messages import ImageContent
-from api.paths import RuntimePaths
-from core.engine import Engine
-from core.inbox import AgentInbox, InboxMessage
+from XBotv2.core.messages import ImageContent
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.engine import Engine
+from XBotv2.core.inbox import AgentInbox, InboxMessage
 
 logger = logging.getLogger("xbotv2.session")
 

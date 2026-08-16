@@ -10,12 +10,12 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from api.events import Events, ToolAction, ToolDecision
-from api.tools import ToolCall, ToolError, ToolResult, tool_parameters_schema
-from core.interactions import UserInputDisconnected
-from api.messages import Message
+from XBotv2.core.events import Events, ToolAction, ToolDecision
+from XBotv2.core.tools import ToolCall, ToolError, ToolResult, tool_parameters_schema
+from XBotv2.core.interactions import UserInputDisconnected
+from XBotv2.core.messages import Message
 
-logger = logging.getLogger("tools.runtime")
+logger = logging.getLogger("XBotv2.tools.runtime")
 
 
 class ToolDispatchTimeoutError(TimeoutError):

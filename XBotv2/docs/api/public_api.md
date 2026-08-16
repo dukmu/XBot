@@ -3,19 +3,24 @@
 XBotv2 exposes one supported Python extension surface:
 
 ```python
-from api import PluginBase, Tool, ToolResult
+from XBotv2.core import Events, Tool, ToolResult, Command, EventContext
 ```
 
-Modules outside `api` are runtime implementation details for plugin
-authors. The current symbol list is maintained in
-[API inventory](api_inventory.md) and checked by
-`tests/core/test_public_api.py`.
+The job-system contract is its own plugin package:
+
+```python
+from XBotv2.jobs import Job, JobRegistry
+```
+
+Modules under `XBotv2.core` hold the implementation of these types. The
+current symbol list is maintained in [API inventory](api_inventory.md) and
+checked by `tests/core/test_public_api.py`.
 
 API v1 covers:
 
+- event names, payloads, and short-circuit dispatch (`Events`, `EventContext`);
 - tool definitions, calls, results, errors, artifacts, and client events;
-- hook stages, contexts, and explicit guard decisions;
-- plugin base class, manifest, setup/storage capabilities, and session information;
+- command, agent, and prompt contracts;
 - canonical runtime and session paths.
 
 The C/S wire API is separate. Request and response DTOs live in

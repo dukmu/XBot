@@ -2,7 +2,7 @@
 
 `todolist` provides session-scoped progress tracking through
 one atomic, model-facing Tool. It uses only the public Tool, Hook, and
-`PluginStore` APIs and does not infer tasks from assistant prose.
+`ctx.state.namespace(...)` APIs and does not infer tasks from assistant prose.
 
 ## Tool Contract
 
@@ -49,7 +49,7 @@ inject the active list as a system message.
 
 The plugin stores only the ordered active item list. Old ID-based state is read
 without exposing or continuing its identifiers. A changed list performs one
-immediate `PluginStore` write, so session resume observes the same current
+immediate `ctx.state.namespace(...)` write, so session resume observes the same current
 checklist. Unloading removes the Tool while retaining session data.
 
 Todo items track concrete work. They do not own the durable session objective;

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from api import (
+from XBotv2.core import (
     Command,
     CommandResult,
     EventContext,
@@ -13,7 +13,6 @@ from api import (
     Tool,
     ToolAction,
     ToolDecision,
-    ToolRegistrationOptions,
     ToolResult,
 )
 
@@ -44,24 +43,15 @@ class GoalPlugin:
         ctx.on(Events.BEFORE_TOOL_CALL, self._allow_goal)
         ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:goal",
-            ),
+            sandbox_mode="host",
         )
         ctx.tools.register(
             Tool.from_function(self.get_goal, name="get_goal"),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:goal",
-            ),
+            sandbox_mode="host",
         )
         ctx.tools.register(
             Tool.from_function(self.update_goal, name="update_goal"),
-            options=ToolRegistrationOptions(
-                sandbox_mode="host",
-                namespace="plugin:goal",
-            ),
+            sandbox_mode="host",
         )
         ctx.commands.register(Command(
             name="goal",

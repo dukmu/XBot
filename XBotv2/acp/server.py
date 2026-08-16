@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from acp import run_agent
 
-from acp.xbot_agent import XBotACPAgent
-from api.paths import RuntimePaths
+from XBotv2.acp.xbot_agent import XBotACPAgent
+from XBotv2.core.paths import RuntimePaths
 
 
 async def run_acp(

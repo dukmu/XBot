@@ -10,11 +10,11 @@ from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from tui.command import CommandSpec, search_commands
+from XBotv2.tui.command import CommandSpec, search_commands
 
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tui.textual_client import XBotTextualApp
+    from XBotv2.tui.textual_client import XBotTextualApp
 
 
 class CommandPalette(ModalScreen[None]):

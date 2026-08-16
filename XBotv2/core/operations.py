@@ -10,12 +10,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from api.agents import AgentDefinition
-from api.paths import RuntimePaths
-from config.models import RuntimeConfig
-from core.engine import DEFAULT_MAX_ITERATIONS
-from core.session import SessionRuntime
-from tools.permissions import PermissionIntersection
+from XBotv2.core.agents import AgentDefinition
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.core.engine import DEFAULT_MAX_ITERATIONS
+from XBotv2.core.session import SessionRuntime
+from XBotv2.permissions.system import PermissionIntersection
 
 
 class OperationError(RuntimeError):
@@ -147,8 +147,8 @@ async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
 
 async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
-    from config.loader import load_provider_config, load_provider_names
-    from llm.client import create_llm
+    from XBotv2.config.loader import load_provider_config, load_provider_names
+    from XBotv2.llm.client import create_llm
 
     _default, names = load_provider_names(ctx.paths)
     if name not in names:
@@ -224,7 +224,7 @@ async def update_session_policy(
     remove_sandbox: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persist a session policy patch and apply it to every live thread."""
-    from config.policy import patch_session_policy
+    from XBotv2.config.policy import patch_session_policy
 
     for ctx in contexts:
         _require_idle(ctx, "update session policy")
@@ -256,13 +256,13 @@ async def update_session_policy(
 async def _activate_agent(
     ctx: SessionRuntime, definition: AgentDefinition
 ) -> None:
-    from config.loader import load_provider_config, load_runtime_config
-    from core.agents import (
+    from XBotv2.config.loader import load_provider_config, load_runtime_config
+    from XBotv2.core.agents import (
         apply_agent_definition,
         apply_agent_provider,
         apply_agent_tools,
     )
-    from llm.client import create_llm
+    from XBotv2.llm.client import create_llm
 
     config = load_runtime_config(
         ctx.paths, Path(ctx.workspace_root), ctx.session_id
@@ -314,8 +314,8 @@ async def _activate_agent(
 
 def reload_live_policies(ctx: SessionRuntime) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
-    from config.loader import load_runtime_config
-    from core.agents import apply_agent_definition
+    from XBotv2.config.loader import load_runtime_config
+    from XBotv2.core.agents import apply_agent_definition
 
     base_config = load_runtime_config(
         ctx.paths, Path(ctx.workspace_root), ctx.session_id

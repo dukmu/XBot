@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from api.paths import RuntimePaths
-from core.session import SessionRuntime
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.session import SessionRuntime
 
 
 class FakeEngine:

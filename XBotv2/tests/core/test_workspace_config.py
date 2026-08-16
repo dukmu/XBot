@@ -3,8 +3,8 @@
 import pytest
 import yaml
 
-from api import RuntimePaths
-from config.loader import load_runtime_config
+from XBotv2.core import RuntimePaths
+from XBotv2.config.loader import load_runtime_config
 
 
 def _write_yaml(path, value):

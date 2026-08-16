@@ -10,16 +10,18 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from api import AgentDefinition, JobKind, JobRegistry, RuntimePaths
-from api.messages import ModelChunk
-from core.agents import AgentRegistry, EngineAgentRuntime
-from core.bootstrap import bootstrap
-from core.session import SessionRuntime
-from llm.mock import MockLLM
-from persistence.store import CoreStateStore
-from tools.permissions import PermissionIntersection, PermissionSystem
+from XBotv2.core import AgentDefinition, RuntimePaths
+from XBotv2.jobs import JobKind, JobRegistry
+from XBotv2.core.messages import ModelChunk
+from XBotv2.core.agents import AgentRegistry
+from XBotv2.session.session import Session
+from XBotv2.bootstrap import bootstrap
+from XBotv2.core.session import SessionRuntime
+from XBotv2.llm.mock import MockLLM
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
 
-from agents.plugin import SubagentRunner
+from XBotv2.agents.plugin import SubagentRunner
 
 
 class RoutingLLM(MockLLM):
@@ -566,9 +568,22 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
     assert not paths.session("invalid-definition").root.exists()
 
 
-def _make_runtime(tmp_path, *, registry, factory):
-    return EngineAgentRuntime(
-        registry=registry,
+def _make_session(tmp_path, *, registry, factory):
+    import types
+
+    class FakeCtx:
+        def __init__(self, registry):
+            self.agents = types.SimpleNamespace(registry=registry)
+
+    return Session(
+        FakeCtx(registry),
+        session_id="s",
+        thread_id="agent",
+        workspace_root=str(tmp_path),
+        paths=None,
+        variables=None,
+        state_store=None,
+        runtime_config=None,
         session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
         parent_thread_id="agent",
         engine_factory=factory,
@@ -586,13 +601,13 @@ async def test_agent_runtime_rejects_unknown_and_primary_agents(tmp_path):
     async def unused_factory(*_args):
         raise AssertionError("factory must not run")
 
-    runtime = _make_runtime(tmp_path, registry=registry, factory=unused_factory)
+    runtime = _make_session(tmp_path, registry=registry, factory=unused_factory)
 
     with pytest.raises(Exception) as missing:
-        await runtime.spawn("missing", "work")
+        await runtime.spawn_subagent("missing", "work")
     assert getattr(missing.value, "code", "") == "agent_not_found"
     with pytest.raises(Exception) as primary:
-        await runtime.spawn("primary", "work")
+        await runtime.spawn_subagent("primary", "work")
     assert getattr(primary.value, "code", "") == "agent_not_found"
 
 
@@ -633,7 +648,7 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
         del background
         return child
 
-    runtime = _make_runtime(
+    runtime = _make_session(
         tmp_path, registry=agent_registry, factory=factory
     )
     job_registry = JobRegistry()
@@ -642,7 +657,7 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
     )
     job_registry.start(
         job.id,
-        SubagentRunner(runtime=runtime, agent="worker", prompt="Do work"),
+        SubagentRunner(session=runtime, agent="worker", prompt="Do work"),
     )
 
     assert job.status.value in {"pending", "running"}
@@ -675,7 +690,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         provider="default",
     )
     job_registry = JobRegistry()
-    runtime_impl = _make_runtime(
+    runtime_impl = _make_session(
         tmp_path, registry=agent_registry, factory=factory
     )
 
@@ -702,7 +717,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
     )
     job_registry.start(
         job.id,
-        SubagentRunner(runtime=runtime_impl, agent="worker", prompt="Do work"),
+        SubagentRunner(session=runtime_impl, agent="worker", prompt="Do work"),
     )
     for _ in range(20):
         if job.status.value == "completed":
@@ -756,7 +771,7 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
     async def factory(*_args):
         return child
 
-    runtime = _make_runtime(
+    runtime = _make_session(
         tmp_path, registry=agent_registry, factory=factory
     )
     job_registry = JobRegistry()
@@ -765,7 +780,7 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
     )
     job_registry.start(
         job.id,
-        SubagentRunner(runtime=runtime, agent="worker", prompt="Wait"),
+        SubagentRunner(session=runtime, agent="worker", prompt="Wait"),
     )
     for _ in range(20):
         if job.status.value == "running":

@@ -2,9 +2,9 @@
 
 import pytest
 
-from persistence.store import CoreStateStore
-from api.messages import Message
-from api.paths import RuntimePaths
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.core.messages import Message
+from XBotv2.core.paths import RuntimePaths
 
 
 def _session_paths(data_dir, session_id="s1"):

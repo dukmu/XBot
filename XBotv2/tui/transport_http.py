@@ -6,13 +6,13 @@ from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 from client import XBotClient
-from protocol.models import (
+from XBotv2.protocol.models import (
     CommandListResponse,
     CommandRequest,
     CommandResponse,
     ServerEvent,
 )
-from tui.trace import trace_event
+from XBotv2.tui.trace import trace_event
 
 
 class HttpTransport:

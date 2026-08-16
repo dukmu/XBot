@@ -150,3 +150,34 @@
 - **行为注记**：观察事件的 strict 失败不再聚合为 ExceptionGroup（emit 直接传播，
   两个相关测试已更新）；引擎对短路事件返回的非法值仍抛 TypeError（保留原
   引擎错误行为）。
+
+### 2026-08-17 · XBotv2.<pkg> 包根 + 全服务插件 + xcore.yaml 声明式启动（二轮修正）
+
+- **用户指示（二轮）**：① 目录结构是 `XBotv2.[pkg]`（XBotv2 是包根，不是裸顶层
+  扁平包）；② 不要硬编码启动配置，从 xcore.yaml 读取启动（参考 DSH 的
+  cordis.patch.yml）；③ ToolRegistrationOptions/namespace 不必要 —— 直接
+  `ctx.tools.register(tool, sandbox_mode=...)`，层次与卸载由 XCore 自己处理；
+  ④ 沙箱/slash 命令/权限系统/context builder/config 都应是插件；
+  ⑤ persistence 应为插件（jsonl 后端可换 sqlite）；⑥ jobs 应为插件（提供
+  jobs 服务契约）；⑦ api 核心模型直接在 core/ 内；⑧ 不要过度依赖旧设计。
+- **实施**：
+  - `XBotv2/` 加 `__init__.py` 成为包根；全部导入改 `from XBotv2.<pkg> import ...`；
+    mcp/acp 与 SDK 同名冲突消失，删除 exec-shim。
+  - `api/` 并入 `core/`（契约 + 引擎插件）；jobs 契约移到 `XBotv2.jobs`。
+  - 拆分服务插件：`tools/`（ctx.tools/ctx.agents）、`commands/`、
+    `prompts/`、`sandbox/`、`permissions/`、`context_builder/`；
+    新增 `config/`（ctx.settings）、`persistence/`（ctx.state_store）、
+    `jobs/`（ctx.jobs）、`llm/`（ctx.llm）、`session/`（ctx.session）。
+  - 层次：`session/` = 活动会话（主 agent 实例 = ctx.engine + subagent 实例，
+    Session.spawn_subagent）；删除 `runtime/`、`agent_runtime/`。
+  - 启动：`xcore.yaml` 声明完整插件树，动态会话值以 `${name}` 引用
+    （`${env:VAR}` 读环境变量），loader 解析；bootstrap 只提供运行时值 +
+    合并外部插件目录与用户 plugins.yaml，不再逐条注入。
+  - XCore 新增 `current_fiber()`（apply 期间跟踪当前 fiber）：能力服务把注册
+    清理绑定到 fiber effect，删除 loader 侧 `_active_ctx` contextvar 耦合。
+  - 删除 `ToolRegistrationOptions`/`PluginStore`/`RuntimePluginContext` 与
+    `plugin:NAME` 归属型 namespace；功能型 namespace（mcp:server/skills:scope/
+    workspace）保留为直接 kwargs。
+- **验证**：XBotv2 全量 **734 passed（含 Minimax 真实 ACP 用例）**；XCore
+  **104 passed**（新增 current_fiber 契约测试）；api_inventory 重生成对齐
+  `XBotv2.core.__all__`。

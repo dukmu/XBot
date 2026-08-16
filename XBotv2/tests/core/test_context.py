@@ -3,10 +3,10 @@
 import xml.etree.ElementTree as ET
 import pytest
 
-from core.context import ContextBuilder
-from api.messages import ImageContent, Message
-from api.prompts import MESSAGE_FORMAT_KEY, prompt_element
-from api.tools import ToolCall
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.core.messages import ImageContent, Message
+from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, prompt_element
+from XBotv2.core.tools import ToolCall
 
 
 class TestContextBuilderBasics:

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
+import re
 import sys
 import logging
 from dataclasses import dataclass, field
@@ -38,14 +40,60 @@ class PluginEntry:
     isolate: dict[str, Any] | None = None
 
 
-def _entry_from_dict(data: dict[str, Any]) -> PluginEntry:
+def _lookup(values: dict[str, Any] | None, ref: str) -> Any:
+    """Resolve ``a.b.c`` against a values mapping (set memberships allowed)."""
+    if values is None:
+        return None
+    parts = ref.split(".")
+    target: Any = values
+    for index, part in enumerate(parts):
+        if isinstance(target, dict):
+            target = target.get(part)
+        elif isinstance(target, (set, frozenset)):
+            return part in target if index == len(parts) - 1 else None
+        elif isinstance(target, (list, tuple)) and part.isdigit():
+            target = target[int(part)]
+        else:
+            return None
+    return target
+
+
+def _resolve_ref(value: Any, values: dict[str, Any] | None) -> Any:
+    """Resolve ``${name}`` / ``${env:VAR}`` references in tree config.
+
+    Mirrors DeepSeek Harness's ``!!js`` expressions in cordis.patch.yml: the
+    tree is fully declarative and the composition root supplies the dynamic
+    session values (paths, state store, provider, child-engine factory, ...)
+    as a plain mapping.  ``${env:NAME}`` reads the process environment.
+    """
+    if values is None:
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"\$\{([^}]+)\}", value)
+        if match:
+            ref = match.group(1)
+            if ref.startswith("env:"):
+                return os.environ.get(ref[4:], "")
+            return _lookup(values, ref)
+        return value
+    if isinstance(value, dict):
+        return {key: _resolve_ref(item, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_ref(item, values) for item in value]
+    return value
+
+
+def _entry_from_dict(
+    data: dict[str, Any], values: dict[str, Any] | None = None
+) -> PluginEntry:
+    resolved_config = _resolve_ref(data.get("config") or {}, values)
     entry = PluginEntry(
         id=str(data.get("id") or data.get("name")),
         name=str(data["name"]),
-        config=dict(data.get("config") or {}),
-        disabled=bool(data.get("disabled", False)),
-        inject=data.get("inject"),
-        isolate=data.get("isolate"),
+        config=dict(resolved_config or {}),
+        disabled=bool(_resolve_ref(data.get("disabled", False), values)),
+        inject=_resolve_ref(data.get("inject"), values),
+        isolate=_resolve_ref(data.get("isolate"), values),
     )
     if not entry.id:
         raise ValueError("plugin tree entry requires an id or name")
@@ -78,10 +126,18 @@ class PluginTree:
         return cls([_entry_from_dict(item) for item in raw])
 
     @classmethod
-    def from_yaml(cls, path: Path | str) -> "PluginTree":
+    def from_yaml(
+        cls, path: Path | str, values: dict[str, Any] | None = None
+    ) -> "PluginTree":
         with open(path, encoding="utf-8") as stream:
             data = yaml.safe_load(stream)
-        return cls.from_dict(data)
+        if isinstance(data, dict):
+            raw = data.get("plugins") or data.get("entries") or []
+        elif isinstance(data, list):
+            raw = data
+        else:
+            raw = []
+        return cls([_entry_from_dict(item, values) for item in raw])
 
     def merged_with(self, other: "PluginTree") -> "PluginTree":
         """Later tree overrides entries with the same id; others append."""
@@ -89,6 +145,12 @@ class PluginTree:
         for entry in other.entries:
             merged[entry.id] = entry
         return PluginTree(list(merged.values()))
+
+    def excluding(self, entry_ids: set[str]) -> "PluginTree":
+        """Return a tree without the given entry ids."""
+        return PluginTree(
+            [entry for entry in self.entries if entry.id not in entry_ids]
+        )
 
 
 def resolve_plugin_from_module(module: Any, name: str) -> Any:
@@ -194,9 +256,15 @@ class Loader:
 
     async def _mount(self, entry: PluginEntry) -> None:
         try:
-            module = importlib.import_module(f"{entry.name}.plugin")
+            module = importlib.import_module(f"XBotv2.{entry.name}.plugin")
         except ModuleNotFoundError:
-            module = importlib.import_module(entry.name)
+            try:
+                module = importlib.import_module(f"{entry.name}.plugin")
+            except ModuleNotFoundError:
+                try:
+                    module = importlib.import_module(f"XBotv2.{entry.name}")
+                except ModuleNotFoundError:
+                    module = importlib.import_module(entry.name)
         plugin = resolve_plugin_from_module(module, entry.name)
         if not inspect.isclass(plugin) and not inspect.isfunction(plugin):
             # Module-level object plugins share one instance across mounts;
@@ -237,8 +305,17 @@ class Loader:
         )
         if entry is None or entry_id not in self._handles:
             return False
+        names = {
+            entry.name,
+            f"{entry.name}.plugin",
+            f"XBotv2.{entry.name}",
+            f"XBotv2.{entry.name}.plugin",
+        }
         for stale in list(sys.modules):
-            if stale == entry.name or stale.startswith(f"{entry.name}."):
+            if any(
+                stale == name or stale.startswith(f"{name}.")
+                for name in names
+            ):
                 sys.modules.pop(stale, None)
         await self.unload(entry_id)
         try:
@@ -272,13 +349,12 @@ class LoaderComponent:
 
 
 class _MountAdapter:
-    """Expose a plugin with caller-tracking during ``apply``.
+    """Expose a plugin object to XCore's plugin system.
 
-    XBot capability services (``ctx.tools`` etc.) attach fiber-scoped cleanup
-    based on the currently executing plugin context; the loader sets that
-    context for the duration of ``apply`` so registrations are undone on
-    unload.  Plugin metadata (``name`` / ``Config`` / ``inject``) is passed
-    through for XCore resolution.
+    XCore tracks the currently applying fiber (:func:`xcore.current_fiber`),
+    so capability services (``ctx.tools`` etc.) attach fiber-scoped cleanup
+    themselves — no caller-tracking here.  Plugin metadata (``name`` /
+    ``Config`` / ``inject``) is passed through for XCore resolution.
     """
 
     def __init__(self, plugin: Any) -> None:
@@ -288,13 +364,7 @@ class _MountAdapter:
         self.inject = getattr(plugin, "inject", None)
 
     async def apply(self, ctx: Context, config: Any) -> Any:
-        from tools.plugin import _active_ctx
-
-        token = _active_ctx.set(ctx)
-        try:
-            result = self._plugin.apply(ctx, config)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
-        finally:
-            _active_ctx.reset(token)
+        result = self._plugin.apply(ctx, config)
+        if inspect.isawaitable(result):
+            result = await result
+        return result

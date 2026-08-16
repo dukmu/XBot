@@ -1,12 +1,11 @@
 """Core component: assembles the :class:`Engine` from XCore services.
 
-The engine is a component of the XCore application: mounted after the
-runtime/tools components and the builtin plugins, its ``apply`` resolves
-the selected Agent, creates the LLM client, dispatches ``SESSION_INIT``,
-applies the tool filter, builds the :class:`Engine` from the context's
-services, and provides it as ``ctx.engine``.  The turn loop therefore runs on
-an XCore context: extension points are XCore events, tools/state/config are
-services.
+The engine is a plugin of the XCore application: mounted last, its ``apply``
+resolves the selected Agent, creates the LLM client through the ``ctx.llm``
+service, dispatches ``SESSION_INIT``, applies the tool filter, builds the
+:class:`Engine` from the context's services, and provides it as ``ctx.engine``
+(the main agent instance).  The turn loop therefore runs on an XCore context:
+extension points are XCore events, tools/state/config are services.
 """
 
 from __future__ import annotations
@@ -14,13 +13,16 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from api.agents import AgentDefinition
-from api.events import EventContext, Events
-from api.runtime import SessionInfo
-from config.models import RuntimeConfig
-from core.agents import apply_agent_definition, apply_agent_provider, apply_agent_tools
-from core.engine import DEFAULT_MAX_ITERATIONS, Engine
-from tools.permissions import PermissionIntersection, PermissionSystem
+from XBotv2.core.agents import (
+    AgentDefinition,
+    apply_agent_definition,
+    apply_agent_provider,
+    apply_agent_tools,
+)
+from XBotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
+from XBotv2.core.events import EventContext, Events
+from XBotv2.core.runtime import SessionInfo
+from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
 
 SUBAGENT_FORBIDDEN_TOOLS = frozenset({
     "spawn_subagent",
@@ -45,7 +47,7 @@ class EngineComponent:
         config = config or {}
         self._session_id = config["session_id"]
         self._thread_id = config["thread_id"]
-        self._workspace_root = config["workspace_root"]
+        self._workspace_root = str(config["workspace_root"])
         self._provider_name = config["provider_name"]
         self._agent_config = config["agent_config"]
         self._agent_definition = config.get("agent_definition")
@@ -66,10 +68,8 @@ class EngineComponent:
         runtime_variables = ctx.variables
         tool_registry = ctx.tools.registry
         sandbox = ctx.sandbox
-        job_registry = ctx.job_registry
-        agent_runtime = ctx.get("agent_runtime")
+        job_registry = ctx.jobs
         plugin_loader = ctx.loader
-        paths = ctx.paths
         permissions = ctx.permissions
         context_builder = ctx.context_builder
 
@@ -115,7 +115,7 @@ class EngineComponent:
             provider_name = self._stored_provider
         state_store.provider = provider_name
         agent_config.provider = provider_name
-        provider_config = load_provider_config(paths, provider_name)
+        provider_config = ctx.settings.provider_config(provider_name)
         if resolved_agent is not None:
             apply_agent_provider(provider_config, resolved_agent)
         agent_config.max_context_tokens = (
@@ -141,9 +141,7 @@ class EngineComponent:
         if self._llm_override is not None:
             llm = self._llm_override
         else:
-            from llm.client import create_llm
-
-            llm = create_llm(
+            llm = ctx.llm(
                 provider_config,
                 media_root=str(state_store.root),
             )
@@ -153,7 +151,6 @@ class EngineComponent:
             config=agent_config,
             tools=tool_registry,
             sandbox=sandbox,
-            plugin_store=None,
             session=SessionInfo(
                 session_id=self._session_id,
                 thread_id=self._thread_id,
@@ -188,7 +185,6 @@ class EngineComponent:
             config=agent_config,
             plugin_loader=plugin_loader,
             job_registry=job_registry,
-            agent_runtime=agent_runtime,
             agent_registry=agent_registry,
             model=provider_config.model,
             model_mode=provider_config.model_mode,
@@ -204,12 +200,6 @@ class EngineComponent:
             ),
         )
         ctx.set("engine", engine)
-
-
-def load_provider_config(paths: Any, provider_name: str) -> Any:
-    from config.loader import load_provider_config as _load
-
-    return _load(paths, provider_name)
 
 
 plugin = EngineComponent()

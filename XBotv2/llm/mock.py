@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from api.messages import Message, ModelChunk, ModelResponse
-from api.providers import InputModality
-from api.tools import ToolCall, ToolCallDelta
-from llm.base import BaseProvider
+from XBotv2.core.messages import Message, ModelChunk, ModelResponse
+from XBotv2.core.providers import InputModality
+from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.llm.base import BaseProvider
 
 
 class MockLLM(BaseProvider):

@@ -54,19 +54,19 @@ from acp.schema import (
     Usage,
 )
 
-from main import __version__
-from acp.events import ACPEventMapper, replay_history
-from api.paths import RuntimePaths
-from config.loader import load_provider_names, load_runtime_config
-from core.operations import (
+from XBotv2.main import __version__
+from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.loader import load_provider_names, load_runtime_config
+from XBotv2.core.operations import (
     OperationError,
     fork_session as fork_runtime_session,
     select_agent,
     select_provider,
 )
-from persistence.store import CoreStateStore
-from protocol.commands import execute_command, list_commands
-from protocol.session_manager import (
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.protocol.commands import execute_command, list_commands
+from XBotv2.protocol.session_manager import (
     SessionManager,
     SessionNotFound,
     ThreadNotActive,

@@ -62,7 +62,7 @@ a plugin cannot accidentally replace a core or another plugin's tool.
 ## Plugin Store
 
 Each plugin receives one isolated namespace in the recoverable state service
-(`ctx.state.namespace(plugin_name)`, satisfying the `PluginStore` contract).
+(`ctx.state.namespace(plugin_name)`).
 `set`, `delete`, and
 `clear` persist immediately through atomic file replacement; there is no flush
 phase at unload. State survives plugin unload and session resume until the
@@ -89,11 +89,10 @@ should retain explicit runtime defaults in `on_load`.
 ```python
 from typing import Any
 
-from api import (
+from XBotv2.core import (
     EventContext,
     Events,
     Tool,
-    ToolRegistrationOptions,
 )
 
 
@@ -107,10 +106,9 @@ class ExamplePlugin:
         self.ctx = ctx
         ctx.dispose(self._on_unload)
         ctx.on(Events.SESSION_INIT, self._on_session_init)
-        ctx.tools.register(
-            Tool.from_function(self._run, name="example"),
-            options=ToolRegistrationOptions(namespace="plugin:example"),
-        )
+        # Static registrations are fiber effects: undone automatically on
+        # unload (XCore current_fiber binds the cleanup).
+        ctx.tools.register(Tool.from_function(self._run, name="example"))
 
     async def _on_unload(self) -> None:
         # Close only resources owned directly by this plugin.
@@ -120,10 +118,7 @@ class ExamplePlugin:
     async def _on_session_init(self, ctx: EventContext) -> None:
         # Runtime-discovered tools register on the raw registry and are
         # tracked for cleanup in _on_unload.
-        name = ctx.tools.register(
-            Tool.from_function(self._run, name="example-runtime"),
-            options=ToolRegistrationOptions(namespace="plugin:example"),
-        )
+        name = ctx.tools.register(Tool.from_function(self._run, name="example-runtime"))
         self._tool_names.append(name)
 
     async def _run(self, value: str) -> str:
@@ -180,22 +175,15 @@ self._tool_names.append(name)
 The disposer (`ctx.dispose(...)`) unregisters those names, so a plugin that
 owns a shorter-lived dynamic resource removes it on unload or session close.
 
-Tool registration options are explicit:
+Tool registration is direct (sandbox mode included); registration is a fiber
+effect — XCore's `current_fiber()` binds the cleanup, so the tool is removed
+automatically when the plugin unloads:
 
 ```python
-from api import ToolRegistrationOptions
+from XBotv2.core import Tool
 
-ctx.tools.register(
-    tool,
-    options=ToolRegistrationOptions(
-        sandbox_mode="sandboxed",
-        namespace="plugin:my-plugin",
-    ),
-)
+ctx.tools.register(tool, sandbox_mode="sandboxed")
 ```
-
-The loader records each returned registered name in the plugin's single
-ownership record so unload and rollback can remove every resource.
 
 ## plugin.yaml Manifest
 
@@ -244,7 +232,7 @@ resume observes the same summary and recent tail without deleting raw records. S
 ### TodolistPlugin (`todolist/`)
 
 Provides one atomic `update_todos` Tool backed by an immediately persisted
-`PluginStore` value. Each call supplies the complete ordered checklist; invalid
+`ctx.state.namespace(...)` value. Each call supplies the complete ordered checklist; invalid
 lists cannot partially change stored state. Its normal Tool result confirms the
 update to the next model call; the plugin does not inject repeated context.
 See [TodoList plugin](todolist.md).
@@ -392,13 +380,10 @@ commands:
 | `skills` | scope | `skills:global:find-skills` |
 | `mcp` | server-name | `mcp:github:mcp__github__search` |
 
-Plugins should register tools through `apply` or another recorded plugin
-capability:
+Plugins should register tools through `apply` (or another recorded plugin
+capability); registration is a fiber effect, undone automatically on unload:
 ```python
-ctx.tools.register(
-    tool,
-    options=ToolRegistrationOptions(namespace="plugin:skills"),
-)
+ctx.tools.register(tool, sandbox_mode="host")
 ```
 
 The plugin context deliberately does not expose `ToolRegistry` or

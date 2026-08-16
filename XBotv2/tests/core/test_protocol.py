@@ -2,8 +2,8 @@
 
 import pytest
 
-from api.paths import RuntimePaths
-from config.models import ProviderConfig
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.models import ProviderConfig
 
 
 class TestProviderConfig:
@@ -11,25 +11,25 @@ class TestProviderConfig:
 
     def test_create_llm_deepseek(self):
         """DeepSeek provider config creates OpenAI client."""
-        from llm.client import create_llm
+        from XBotv2.llm.client import create_llm
 
         config = ProviderConfig(
             provider="deepseek",
             model="deepseek-chat",
-            base_url="https://api.deepseek.com/v1",
+            base_url="https://XBotv2.core.deepseek.com/v1",
             api_key="test-key",
             temperature=0.7,
             max_output_tokens=8192,
         )
         llm = create_llm(config)
-        from llm.openai import OpenAICompatibleProvider
+        from XBotv2.llm.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
         assert llm.model_name == "deepseek-chat"
 
     def test_create_llm_lmstudio(self):
         """LM Studio Anthropic protocol creates Anthropic client."""
-        from llm.client import create_llm
+        from XBotv2.llm.client import create_llm
 
         config = ProviderConfig(
             provider="lmstudio",
@@ -40,14 +40,14 @@ class TestProviderConfig:
             max_output_tokens=4096,
         )
         llm = create_llm(config)
-        from llm.anthropic import AnthropicProvider
+        from XBotv2.llm.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
         assert llm.model == "qwen2.5-coder-7b-instruct"
 
     def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
-        from llm.client import create_llm
+        from XBotv2.llm.client import create_llm
 
         monkeypatch.setenv("TEST_KEY", "expanded-key")
 
@@ -61,8 +61,8 @@ class TestProviderConfig:
 
     def test_create_llm_from_mock_provider_config(self):
         """Provider config can select deterministic MockLLM."""
-        from llm.client import create_llm
-        from llm.mock import MockLLM
+        from XBotv2.llm.client import create_llm
+        from XBotv2.llm.mock import MockLLM
 
         llm = create_llm(ProviderConfig(
             provider="mock",
@@ -74,7 +74,7 @@ class TestProviderConfig:
 
     def test_unknown_provider_raises(self):
         """Unknown provider names fail closed instead of silently using OpenAI."""
-        from llm.client import create_llm
+        from XBotv2.llm.client import create_llm
 
         with pytest.raises(ValueError, match="Unknown provider"):
             create_llm(ProviderConfig(provider="not-a-provider", model="x"))
@@ -85,7 +85,7 @@ class TestProviderConfigLoader:
 
     def test_selects_named_provider_section(self, tmp_path, monkeypatch):
         """load_provider_config selects the correct YAML section."""
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
@@ -98,7 +98,7 @@ providers:
   deepseek:
     provider: deepseek
     model: deepseek-chat
-    base_url: https://api.deepseek.com/v1
+    base_url: https://XBotv2.core.deepseek.com/v1
     api_key: ${TEST_API_KEY}
   openai:
     provider: openai
@@ -110,7 +110,7 @@ providers:
         c = load_provider_config(RuntimePaths.from_data_dir(tmp_path), "default")
         assert c.provider == "deepseek"
         assert c.model == "deepseek-chat"
-        assert c.base_url == "https://api.deepseek.com/v1"
+        assert c.base_url == "https://XBotv2.core.deepseek.com/v1"
         assert c.api_key == "sk-test-123"  # env var expanded
 
         # Load openai → should get openai section
@@ -120,7 +120,7 @@ providers:
         assert c2.api_key == "sk-openai-xxx"
 
     def test_preserves_reasoning_configuration(self, tmp_path):
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
@@ -146,13 +146,13 @@ providers:
         assert config.model_mode == "high"
 
     def test_model_mode_is_empty_without_explicit_provider_setting(self):
-        from config.models import ProviderConfig
+        from XBotv2.config.models import ProviderConfig
 
         assert ProviderConfig().model_mode == ""
         assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
 
     def test_provider_names(self, tmp_path):
-        from config.loader import load_provider_names
+        from XBotv2.config.loader import load_provider_names
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
@@ -174,7 +174,7 @@ providers:
 
     def test_env_var_expansion_in_nested_section(self, tmp_path, monkeypatch):
         """${VAR} patterns are expanded in provider sections."""
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         monkeypatch.setenv("MY_KEY", "expanded-value")
 
@@ -193,7 +193,7 @@ providers:
         assert c.api_key == "expanded-value"
 
     def test_missing_env_var_is_rejected(self, tmp_path):
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
@@ -210,7 +210,7 @@ providers:
             load_provider_config(RuntimePaths.from_data_dir(tmp_path), "test")
 
     def test_unknown_provider_is_rejected(self, tmp_path):
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         config_subdir = tmp_path / "config"
         config_subdir.mkdir(parents=True)
@@ -232,7 +232,7 @@ providers:
             )
 
     def test_named_provider_requires_provider_configuration(self, tmp_path):
-        from config.loader import load_provider_config
+        from XBotv2.config.loader import load_provider_config
 
         with pytest.raises(
             ValueError,

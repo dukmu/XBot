@@ -8,21 +8,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from tools.permissions import (
+from XBotv2.permissions.system import (
     PermissionIntersection,
     PermissionSystem,
 )
-from api import ToolCall
-from config.policy import (
+from XBotv2.core import ToolCall
+from XBotv2.config.policy import (
     _permission_rule_for_tool_call,
     persist_permission_decision,
 )
-from api.paths import RuntimePaths
-from api.variables import RuntimeVariables
-from core.builtin_tools.filesystem import FILESYSTEM_TOOLS
-from core.operations import update_session_policy
-from tools.filesystem_ops import PATH_ACCESS, TOOL_OPERATIONS
-from tools.sandbox import SandboxPolicy
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.variables import RuntimeVariables
+from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
+from XBotv2.core.operations import update_session_policy
+from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, TOOL_OPERATIONS
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class TestPermissionSystemBasics:
@@ -298,7 +298,7 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
 
 
 class TestConfigLoading:
-    """Loading rules from config."""
+    """Loading rules from XBotv2.config."""
 
     def test_load_from_dict(self):
         """Rules are loaded from a config dict."""

@@ -8,7 +8,7 @@ import pytest
 
 from browser.browser import BrowserSession
 from browser.network import NetworkOptions, UrlPolicy, WebAccess
-from api import ToolResult
+from XBotv2.core import ToolResult
 
 
 class FakeBrowserSandbox:

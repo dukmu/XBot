@@ -12,9 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from api.plugins import PluginStore
-from persistence.store import CoreStateStore
-from api.paths import RuntimePaths
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.core.paths import RuntimePaths
 from plugin_harness import mount_ctx
 
 
@@ -37,7 +36,7 @@ def _core_store(tmp_path) -> CoreStateStore:
 @pytest.mark.asyncio
 async def test_mutations_are_persisted_immediately(tmp_path) -> None:
     ctx = mount_ctx(_core_store(tmp_path))
-    store: PluginStore = ctx.state.namespace("sample")
+    store = ctx.state.namespace("sample")
 
     await store.set("enabled", True)
     state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
@@ -70,7 +69,7 @@ async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_event_loop_tasks_preserve_all_updates(tmp_path) -> None:
     ctx = mount_ctx(_core_store(tmp_path))
-    store: PluginStore = ctx.state.namespace("shared")
+    store = ctx.state.namespace("shared")
 
     await asyncio.gather(*(
         store.set(f"key_{index}", index) for index in range(10)
@@ -93,7 +92,7 @@ async def test_plugin_namespaces_are_isolated(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_read_values_cannot_mutate_store_without_set(tmp_path) -> None:
     ctx = mount_ctx(_core_store(tmp_path))
-    store: PluginStore = ctx.state.namespace("sample")
+    store = ctx.state.namespace("sample")
     await store.set("nested", {"count": 1})
 
     value = await store.get("nested")

@@ -26,40 +26,39 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from config.models import RuntimeConfig, UserContext
-from core.agents import AgentRegistry
-from core.content_cache import bound_context_messages
-from core.context import ContextBuilder
-from core.interactions import (
+from XBotv2.config.models import RuntimeConfig, UserContext
+from XBotv2.core.agents import AgentRegistry
+from XBotv2.core.content_cache import bound_context_messages
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.core.interactions import (
     InteractionDisconnected,
     InteractionResult,
     InteractionWaiter,
 )
-from core.internal_messages import (
+from XBotv2.core.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from llm.base import BaseProvider
-from persistence.store import CoreStateStore
-from loader import Loader
-from tools.permissions import PermissionIntersection, PermissionSystem
-from tools.registry import ToolRegistry
-from tools.sandbox import SandboxPolicy
-from api.agents import AgentRuntime
-from api.events import EventContext, Events, SHORT_CIRCUIT_EVENTS
-from api.jobs import JobRegistry
-from api.runtime import SessionInfo
-from api.messages import ImageContent, Message, ModelChunk, ModelResponse
-from api.context import ContextComponent
-from api.prompts import prompt_container, prompt_element
-from api.tokens import (
+from XBotv2.llm.base import BaseProvider
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.loader import Loader
+from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
+from XBotv2.tools.registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.events import EventContext, Events, SHORT_CIRCUIT_EVENTS
+from XBotv2.jobs import JobRegistry
+from XBotv2.core.runtime import SessionInfo
+from XBotv2.core.messages import ImageContent, Message, ModelChunk, ModelResponse
+from XBotv2.core.context import ContextComponent
+from XBotv2.core.prompts import prompt_container, prompt_element
+from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
     REQUEST_PROVIDER_KEY,
     estimate_request_tokens,
 )
-from api.tools import ToolCall, ToolCallDelta, provider_tool_schema
-from api.variables import RuntimeVariables
+from XBotv2.core.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from XBotv2.core.variables import RuntimeVariables
 
 DEFAULT_MAX_ITERATIONS = 200
 
@@ -201,7 +200,6 @@ class Engine:
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         plugin_loader: Loader | None = None,
         job_registry: JobRegistry | None = None,
-        agent_runtime: AgentRuntime | None = None,
         agent_registry: AgentRegistry | None = None,
         model: str = "",
         model_mode: str = "",
@@ -222,7 +220,6 @@ class Engine:
         self.max_iterations = max_iterations
         self.plugin_loader: Loader | None = plugin_loader
         self.job_registry = job_registry
-        self.agent_runtime = agent_runtime
         self.agent_registry = agent_registry
         self.model = model
         self.model_mode = model_mode
@@ -421,7 +418,7 @@ class Engine:
         self,
         tool_calls: list[ToolCall],
     ) -> list[Message]:
-        from tools.runtime import execute_tools
+        from XBotv2.tools.runtime import execute_tools
 
         results = await execute_tools(
             tool_calls,
@@ -1215,7 +1212,7 @@ class Engine:
         return (
             f"Iteration limit: the tool iteration budget of "
             f"{self.max_iterations} has been exhausted. Do not call more "
-            "tools. Give the human a concise status, clearly identify "
+            "XBotv2.tools. Give the human a concise status, clearly identify "
             "unfinished work, and state the next required action."
         )
 
@@ -1522,7 +1519,7 @@ class Engine:
             return
         try:
             from pathlib import Path
-            from config.policy import persist_permission_decision
+            from XBotv2.config.policy import persist_permission_decision
             persist_permission_decision(
                 paths=self.paths,
                 session_id=self.state_store.session_id,
@@ -1573,7 +1570,6 @@ class Engine:
             config=self.config,
             tools=self.tool_registry,
             sandbox=self.sandbox_policy,
-            plugin_store=None,
             invoke_model=self._invoke_model,
             request_user_input=self._request_user_input,
             request_continuation=self.request_continuation,

@@ -22,13 +22,13 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.widgets import Collapsible, Static, TextArea
 
-from tui.client import (
+from XBotv2.tui.client import (
     TuiNotice,
     TuiState,
     TuiTranscriptEntry,
     _parse_permission_decision,
 )
-from tui.command import (
+from XBotv2.tui.command import (
     CommandSpec,
     get_command,
     is_slash_command,
@@ -36,13 +36,13 @@ from tui.command import (
     parse_slash_command,
     register_server_commands,
 )
-from tui.command_palette import CommandPalette
-from tui.completion_popup import CompletionPopup
-from tui.mode import Mode
-from tui.session_config import TuiSessionConfig
-from tui.textual_theme import TEXTUAL_TUI_CSS
-from tui.trace import trace_event
-from tui.textual_widgets import (
+from XBotv2.tui.command_palette import CommandPalette
+from XBotv2.tui.completion_popup import CompletionPopup
+from XBotv2.tui.mode import Mode
+from XBotv2.tui.session_config import TuiSessionConfig
+from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
+from XBotv2.tui.trace import trace_event
+from XBotv2.tui.textual_widgets import (
     ComposerTextArea,
     InlineChoice,
     TranscriptScroll,

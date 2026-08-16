@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import os
 
-from config.loader import expand_env
-from config.models import ProviderConfig
-from llm.anthropic import AnthropicProvider
-from llm.base import BaseProvider
-from llm.openai import OpenAICompatibleProvider
+from XBotv2.config.loader import expand_env
+from XBotv2.config.models import ProviderConfig
+from XBotv2.llm.anthropic import AnthropicProvider
+from XBotv2.llm.base import BaseProvider
+from XBotv2.llm.openai import OpenAICompatibleProvider
 
 logger = logging.getLogger("llm")
 
@@ -35,7 +35,7 @@ def create_llm(
     base_url = expand_env(base_url) if base_url else None
 
     if provider == "mock":
-        from llm.mock import MockLLM
+        from XBotv2.llm.mock import MockLLM
 
         return MockLLM(
             responses=provider_config.mock_responses,

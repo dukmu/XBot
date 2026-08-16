@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from core.builtin_tools.shell import run_shell_command
-from tools.sandbox import SandboxPolicy
-from tools.sandbox_bwrap import _build_args
-from api.variables import RuntimeVariables
+from XBotv2.coretools.shell import run_shell_command
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.sandbox.bwrap import _build_args
+from XBotv2.core.variables import RuntimeVariables
 
 class TestSandboxPolicyBasics:
     def test_default_enabled(self, temp_workspace):
