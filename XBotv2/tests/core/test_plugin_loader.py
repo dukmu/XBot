@@ -31,7 +31,7 @@ def make_plugin_ctx(tmp_path):
     from xcore import Context
     from XBotv2.jobs import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.core.agents import AgentRegistry
+    from XBotv2.tools.agents import AgentRegistry
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.tools.plugin import AgentsService, ToolsService
     from XBotv2.commands.plugin import CommandsService

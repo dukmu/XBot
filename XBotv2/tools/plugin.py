@@ -2,19 +2,42 @@
 
 Creates the tool-layer registries (ToolRegistry, AgentRegistry) and registers
 them as services (``ctx.tools`` / ``ctx.agents``).  Registration through these
-services is a fiber effect: XCore tracks the currently applying fiber, so
-anything a plugin registers is undone automatically when the plugin's fiber
-unloads — the tool service itself binds the cleanup.
+services is a fiber effect: XCore tracks the currently applying fiber
+(:func:`xcore.current_fiber`), so anything a plugin registers is undone
+automatically when the plugin's fiber unloads — the service itself binds the
+cleanup, no loader-side context tracking.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from core.agents import AgentRegistry
-from core.effects import _active_fiber, _active_plugin_name, _effect_cleanup
-from core.tools import Tool
-from tools.registry import RegisteredSandboxMode, ToolRegistry
+from XBotv2.core.tools import Tool
+from XBotv2.tools.agents import AgentRegistry
+from XBotv2.tools.registry import RegisteredSandboxMode, ToolRegistry
+from xcore import current_fiber
+
+logger = logging.getLogger("xbot.tools")
+
+
+def _current_plugin_name() -> str:
+    fiber = current_fiber()
+    runtime = getattr(fiber, "runtime", None)
+    if runtime is not None:
+        return runtime.definition.name
+    return "unknown"
+
+
+def _bind_cleanup(disposer: Any) -> None:
+    """Register a disposer on the applying fiber (never raises)."""
+    fiber = current_fiber()
+    if fiber is None:
+        return
+    try:
+        fiber.effect(lambda: disposer)
+    except Exception:  # noqa: BLE001 - cleanup registration must not break setup
+        logger.exception("failed to register cleanup effect")
 
 
 class ToolsService:
@@ -45,7 +68,7 @@ class ToolsService:
             timeout_seconds=timeout_seconds,
             namespace=namespace,
         )
-        _effect_cleanup(_active_fiber(), lambda: self.registry.unregister(name))
+        _bind_cleanup(lambda: self.registry.unregister(name))
         return name
 
     def unregister(self, name: str) -> bool:
@@ -62,16 +85,13 @@ class AgentsService:
         self.registry = registry
 
     def register(self, definition: Any) -> str:
-        owner = _active_plugin_name()
+        owner = _current_plugin_name()
         name = self.registry.register(definition, owner=owner)
-        _effect_cleanup(
-            _active_fiber(),
-            lambda: self.registry.unregister(name, owner=owner),
-        )
+        _bind_cleanup(lambda: self.registry.unregister(name, owner=owner))
         return name
 
     def unregister(self, name: str) -> bool:
-        owner = _active_plugin_name()
+        owner = _current_plugin_name()
         return self.registry.unregister(name, owner=owner)
 
     def __getattr__(self, name: str) -> Any:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.core.commands import Command
-from XBotv2.core.session import SessionRuntime
+from XBotv2.agentloop.session import SessionRuntime
 
 
 def list_commands(*, extra: tuple[Command, ...] = ()) -> list[dict[str, Any]]:

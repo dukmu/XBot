@@ -58,7 +58,7 @@ from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.loader import load_provider_names, load_runtime_config
-from XBotv2.core.operations import (
+from XBotv2.agentloop.operations import (
     OperationError,
     fork_session as fork_runtime_session,
     select_agent,

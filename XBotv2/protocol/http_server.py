@@ -71,7 +71,7 @@ from XBotv2.config.loader import (
     load_provider_names,
     load_runtime_config,
 )
-from XBotv2.core.operations import (
+from XBotv2.agentloop.operations import (
     OperationError,
     clear_history,
     fork_session,
@@ -87,7 +87,7 @@ from XBotv2.core.operations import (
 from XBotv2.config.policy import (
     load_session_policy,
 )
-from XBotv2.core.session import SessionBusy, SessionRuntime, run_turn_stream
+from XBotv2.agentloop.session import SessionBusy, SessionRuntime, run_turn_stream
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.commands import execute_command, list_commands
 from XBotv2.protocol.history import display_history

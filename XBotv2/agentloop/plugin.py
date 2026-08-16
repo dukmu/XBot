@@ -1,11 +1,12 @@
-"""Core component: assembles the :class:`Engine` from XCore services.
+"""Agent loop component: assembles the :class:`Engine` from XCore services.
 
-The engine is a plugin of the XCore application: mounted last, its ``apply``
-resolves the selected Agent, creates the LLM client through the ``ctx.llm``
-service, dispatches ``SESSION_INIT``, applies the tool filter, builds the
-:class:`Engine` from the context's services, and provides it as ``ctx.engine``
-(the main agent instance).  The turn loop therefore runs on an XCore context:
-extension points are XCore events, tools/state/config are services.
+The agent loop (DSH's ``dsh-agent-loop``) is a plugin mounted last: its
+``apply`` resolves the selected Agent, creates the LLM client through the
+``ctx.llm`` service, dispatches ``SESSION_INIT``, applies the tool filter,
+builds the :class:`Engine` from the context's services, and provides it as
+``ctx.engine`` (the main agent instance).  The turn loop therefore runs on an
+XCore context: extension points are XCore events, tools/state/config are
+services.
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from XBotv2.core.agents import (
-    AgentDefinition,
+from XBotv2.agentloop.agents import (
     apply_agent_definition,
     apply_agent_provider,
     apply_agent_tools,
 )
-from XBotv2.core.engine import DEFAULT_MAX_ITERATIONS, Engine
+from XBotv2.agentloop.engine import DEFAULT_MAX_ITERATIONS, Engine
+from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
@@ -33,15 +34,15 @@ SUBAGENT_FORBIDDEN_TOOLS = frozenset({
 })
 
 
-class EngineComponent:
+class AgentLoopComponent:
     """Build the runtime Engine from the context's services.
 
-    Configured by the plugin tree entry (``xbot.core``): reads the engine
+    Configured by the plugin tree entry (``xbot.agentloop``): reads the engine
     parameters from its config, the tool layer / runtime info from services,
     and provides the Engine as ``ctx.engine``.
     """
 
-    name = "xbot.core"
+    name = "xbot.agentloop"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         config = config or {}
@@ -141,7 +142,7 @@ class EngineComponent:
         if self._llm_override is not None:
             llm = self._llm_override
         else:
-            llm = ctx.llm(
+            llm = ctx.llm.create(
                 provider_config,
                 media_root=str(state_store.root),
             )
@@ -202,4 +203,4 @@ class EngineComponent:
         ctx.set("engine", engine)
 
 
-plugin = EngineComponent()
+plugin = AgentLoopComponent()

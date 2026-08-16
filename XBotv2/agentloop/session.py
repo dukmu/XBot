@@ -12,8 +12,8 @@ from typing import Any, AsyncIterator
 
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.engine import Engine
-from XBotv2.core.inbox import AgentInbox, InboxMessage
+from XBotv2.agentloop.engine import Engine
+from XBotv2.agentloop.inbox import AgentInbox, InboxMessage
 
 logger = logging.getLogger("xbotv2.session")
 

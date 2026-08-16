@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from XBotv2.core.engine import Engine
+from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.coretools.shell import SHELL_TOOLS
 from XBotv2.coretools.interaction import request_permission
@@ -1047,7 +1047,7 @@ class TestEngineHooks:
 
         llm = FlakyLLM()
         sleep = AsyncMock()
-        monkeypatch.setattr("llm.base.asyncio.sleep", sleep)
+        monkeypatch.setattr("asyncio.sleep", sleep)
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test")]

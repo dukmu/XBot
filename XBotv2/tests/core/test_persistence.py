@@ -11,7 +11,7 @@ from XBotv2.persistence.store import (
     message_to_dict,
     dict_to_message,
 )
-from XBotv2.core.engine import Engine
+from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
 import xcore

@@ -19,7 +19,7 @@ from XBotv2.core.messages import (
     ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
-from XBotv2.core.internal_messages import structure_tool_message
+from XBotv2.agentloop.internal_messages import structure_tool_message
 
 
 def test_provider_retry_default_is_bounded(monkeypatch):
@@ -52,7 +52,7 @@ async def test_provider_retry_exhaustion_reports_clear_error(monkeypatch):
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("llm.base.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", no_sleep)
     llm = AlwaysFail()
 
     with pytest.raises(ProviderRetryExhaustedError) as raised:

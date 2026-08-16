@@ -120,3 +120,15 @@ def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
             default_id=f"call_{len(normalized)}",
         ))
     return normalized
+
+
+def create_mock_provider(provider_config, *, media_root=None):
+    """Factory for the deterministic mock route."""
+    return MockLLM(
+        responses=provider_config.mock_responses,
+        input_modalities=provider_config.input_modalities,
+        media_root=media_root,
+    )
+
+
+__all__ = [*globals().get("__all__", []), "create_mock_provider"]

@@ -13,8 +13,8 @@ from typing import Any
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.core.engine import DEFAULT_MAX_ITERATIONS
-from XBotv2.core.session import SessionRuntime
+from XBotv2.agentloop.engine import DEFAULT_MAX_ITERATIONS
+from XBotv2.agentloop.session import SessionRuntime
 from XBotv2.permissions.system import PermissionIntersection
 
 
@@ -257,7 +257,7 @@ async def _activate_agent(
     ctx: SessionRuntime, definition: AgentDefinition
 ) -> None:
     from XBotv2.config.loader import load_provider_config, load_runtime_config
-    from XBotv2.core.agents import (
+    from XBotv2.agentloop.agents import (
         apply_agent_definition,
         apply_agent_provider,
         apply_agent_tools,
@@ -315,7 +315,7 @@ async def _activate_agent(
 def reload_live_policies(ctx: SessionRuntime) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
     from XBotv2.config.loader import load_runtime_config
-    from XBotv2.core.agents import apply_agent_definition
+    from XBotv2.agentloop.agents import apply_agent_definition
 
     base_config = load_runtime_config(
         ctx.paths, Path(ctx.workspace_root), ctx.session_id

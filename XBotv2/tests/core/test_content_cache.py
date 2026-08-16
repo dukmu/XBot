@@ -7,14 +7,14 @@ import pytest
 
 from XBotv2.core.messages import Message, ReasoningPart
 from XBotv2.core.tools import ToolCall
-from XBotv2.core.content_cache import (
+from XBotv2.agentloop.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
     bound_context_messages,
 )
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.core.engine import Engine
+from XBotv2.agentloop.engine import Engine
 import xcore
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem

@@ -1,6 +1,6 @@
 # XBotv2 Core Runtime
 
-## Engine (`core/engine.py`)
+## Engine (`agentloop/engine.py`)
 
 ReAct loop: user message → context → LLM → tools → repeat.
 Uses XBot-owned `Message` dataclass exclusively. No LangChain dependency.

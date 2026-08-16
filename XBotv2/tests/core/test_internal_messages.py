@@ -8,7 +8,7 @@ from XBotv2.core.prompts import (
     cached_content_prompt,
     tool_result_display_content,
 )
-from XBotv2.core.internal_messages import structure_tool_message
+from XBotv2.agentloop.internal_messages import structure_tool_message
 
 
 def test_tool_result_keeps_content_and_data_separate():

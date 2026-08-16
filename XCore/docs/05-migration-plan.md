@@ -39,13 +39,17 @@ XBotv2/                      # 包根（__init__.py）
   xcore.yaml                 # 默认插件树（bundled，DSH cordis.patch.yml 等价物）
   main.py  client.py  web_server.py  bootstrap.py   # 应用入口 + 组合根（非插件）
   api/                       # ✗ 已删除 —— 契约并入 core/
-  core/                      # 共享契约（Events/Tool/Command/AgentDefinition/…）+ 引擎插件（core/plugin.py → ctx.engine）
+  core/                      # 纯契约：Events/Tool/Command/AgentDefinition/BaseProvider/…（含 llm 契约）
+  agentloop/                 # agent loop 引擎插件（DSH dsh-agent-loop 对应）：engine/operations/session/
+                             #   inbox/interactions/internal_messages/content_cache/logging_config/plugin.py
+                             #   （plugin.py → ctx.engine）+ apply_agent_* 装配助手
   config/                    # 插件：ctx.settings（配置解析服务）；解析函数组装期供 bootstrap
   persistence/               # 插件：ctx.state_store（会话持久化，jsonl 后端，可换）
   session/                   # 插件：ctx.session（活动会话：主 agent + subagents + 会话级 runtime）
   jobs/                      # 插件：ctx.jobs（后台任务）+ jobs 服务契约
-  llm/                       # 插件：ctx.llm（provider 工厂；openai/anthropic/mock 适配器）
-  tools/                     # 插件：ctx.tools + ctx.agents（工具/agent 注册表）
+  llm/                       # provider 实现包 + 插件：ctx.llm（LlmService provider 路由目录，
+                             #   DSH dsh-llm 对齐；内置 openai/anthropic/mock 适配器注册路由）
+  tools/                     # 插件：ctx.tools + ctx.agents（注册表；AgentRegistry 实现在此）
   commands/                  # 插件：ctx.commands（用户 slash 命令）
   prompts/                   # 插件：ctx.prompts（提示词片段）
   sandbox/                   # 插件：ctx.sandbox（沙箱策略 + bwrap + filesystem_ops）
@@ -60,8 +64,9 @@ XBotv2/                      # 包根（__init__.py）
 ```
 
 删除：`api/`（并入 core/）、`runtime/`（并入 session/）、`agent_runtime/`
-（并入 session/）、`core/builtin_tools/`（并入 coretools/）、`xbotv2/` 与
-`builtin_plugins/` 包壳、mcp/acp 的 SDK 合并 shim（XBotv2 命名空间下冲突消失）、
+（并入 session/）、`core/builtin_tools/`（并入 coretools/）、引擎实现移出
+`core/`（→ agentloop/，core 只剩契约）、`xbotv2/` 与 `builtin_plugins/`
+包壳、mcp/acp 的 SDK 合并 shim（XBotv2 命名空间下冲突消失）、
 `ToolRegistrationOptions`/`PluginStore`/`RuntimePluginContext`。
 
 ## 3. 事件目录（core/events.py）
@@ -72,7 +77,7 @@ XBotv2/                      # 包根（__init__.py）
 替代 HookContext），`ToolDecision/ToolAction`（before/tool-call 的
 ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 
-## 4. 引擎 = 事件驱动插件（core/plugin.py → ctx.engine）
+## 4. 引擎 = 事件驱动插件（agentloop/plugin.py → ctx.engine）
 
 - `Engine` 构造改收 `plugin_ctx`（XCore Context），不再有 hook_manager。
 - 引擎在 `plugin_ctx` 上派发事件：短路事件 `await ctx.serial(...)`、观察事件
@@ -95,7 +100,7 @@ ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 config → persistence → session → jobs → llm → tools → commands →
 context_builder → prompts → sandbox → permissions → coretools → agents →
 goal/todolist/skills/mcp/compact/browser/token_manager/workspace_instructions
-→ core（引擎，最后）
+→ agentloop（引擎，最后）
 ```
 
 ## 6. 服务绑定与卸载（XCore 原生）

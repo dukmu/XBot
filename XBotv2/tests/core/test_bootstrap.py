@@ -940,7 +940,7 @@ class TestBootstrapNoPlugins:
         tree = self._make_tree(plugin_dirs=[], include_builtins=False)
         ids = {entry.id for entry in tree.entries}
         assert "goal" not in ids
-        assert "core" in ids  # engine component remains
+        assert "agentloop" in ids  # engine component remains
 
     def test_default_plugin_dirs_scan_builtins(self):
         """Default runtime mode includes the built-in plugins in the tree."""
@@ -948,7 +948,7 @@ class TestBootstrapNoPlugins:
         ids = {entry.id for entry in tree.entries}
         assert "goal" in ids
         assert "todolist" in ids
-        assert "core" in ids
+        assert "agentloop" in ids
 
     @pytest.mark.asyncio
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):

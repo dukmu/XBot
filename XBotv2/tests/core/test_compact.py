@@ -26,7 +26,7 @@ from XBotv2.core.tokens import (
 )
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.core.engine import Engine
+from XBotv2.agentloop.engine import Engine
 import xcore
 from plugin_harness import mount_plugin_standalone
 from XBotv2.llm.mock import MockLLM

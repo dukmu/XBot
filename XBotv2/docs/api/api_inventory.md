@@ -26,54 +26,56 @@ type-only import.
 
 | Symbol | Kind | Purpose |
 |---|---|---|
-| `AgentDefinition` | dataclass | Declarative configuration for one primary agent or subagent. |
-| `AgentMode` | type alias | primary / subagent / all. |
-| `AgentRuntime` | protocol | Core execution capability exposed to Agent plugins. |
-| `AgentSession` | protocol | One spawned child session owned by a Session. |
-| `AgentSessionResult` | dataclass | Outcome of one completed child agent session. |
-| `ArtifactRef` | dataclass | Reference to a stored artifact. |
-| `ChildEngineFactory` | type alias | Child engine bootstrap factory used by the session plugin. |
-| `ClientEvent` | dataclass | Client-visible runtime event envelope. |
-| `Command` | dataclass | Human-facing slash command contract. |
-| `CommandResult` | dataclass | Slash command execution result. |
-| `ContentPart` | type alias | Union of model message content parts. |
-| `ContextComponent` | dataclass | One source-tagged context section before escaped provider rendering. |
-| `EventContext` | dataclass | Payload object passed to runtime event listeners (replaces the hook context). |
-| `Events` | class | Runtime event names dispatched on the XCore context. |
-| `ImageContent` | dataclass | Image content block for provider requests. |
-| `ImagePart` | dataclass | Image message part. |
-| `InputModality` | type alias | Provider input modalities. |
-| `JsonValue` | type alias | JSON-compatible value. |
-| `MESSAGE_FORMAT_KEY` | constant | Persisted message-format key. |
-| `Message` | dataclass | One model conversation message. |
-| `ModelChunk` | dataclass | Streamed model response chunk. |
-| `ModelResponse` | dataclass | Complete model response. |
-| `ProviderCapabilities` | dataclass | Provider capability flags. |
-| `PromptFragmentStage` | type alias | Prompt fragment stages. |
-| `ReasoningPart` | dataclass | Reasoning content part. |
-| `RuntimePaths` | class | Runtime filesystem layout (config/sessions/memory/logs). |
-| `RuntimeVariables` | class | Read-only runtime variable expansion. |
-| `SessionInfo` | dataclass | Session identity and provider info. |
-| `SessionPaths` | class | Session-scoped filesystem layout. |
-| `SHORT_CIRCUIT_EVENTS` | frozenset | Events dispatched with ctx.serial. |
-| `SubagentAgentError` | exception | Invalid subagent spawn request. |
-| `SubagentTurnError` | exception | Child turn finished without a usable assistant response. |
-| `TextPart` | dataclass | Text message part. |
-| `ThreadPaths` | class | Thread-scoped filesystem layout. |
-| `Tool` | class | Tool contract with provider schema generation. |
-| `ToolAction` | enum | Tool decision actions (allow / continue / deny / stop). |
-| `ToolCall` | dataclass | Parsed tool invocation. |
-| `ToolCallDelta` | dataclass | Streamed tool-call delta. |
-| `ToolCallPart` | dataclass | Tool-call message part. |
-| `ToolDecision` | dataclass | Tool permission decision. |
-| `ToolError` | exception | Tool execution failure. |
-| `ToolResult` | dataclass | Tool execution result. |
-| `calibrated_context_tokens` | function | Calibrated context token estimate. |
-| `context_token_limit` | function | Context window token limit. |
-| `estimate_messages_tokens` | function | Token estimate for a message list. |
-| `estimate_request_tokens` | function | Token estimate for a request. |
-| `prompt_container` | function | Render a prompt container element. |
-| `prompt_element` | function | Render a prompt element. |
+| `AgentDefinition` | dataclass |  |
+| `AgentMode` | type alias |  |
+| `AgentRuntime` | protocol |  |
+| `AgentSession` | protocol |  |
+| `AgentSessionResult` | dataclass |  |
+| `ArtifactRef` | dataclass |  |
+| `ChildEngineFactory` | type alias |  |
+| `ClientEvent` | dataclass |  |
+| `Command` | dataclass |  |
+| `CommandResult` | dataclass |  |
+| `ContentPart` | type alias |  |
+| `ContextComponent` | dataclass |  |
+| `EventContext` | dataclass |  |
+| `Events` | class |  |
+| `ImageContent` | dataclass |  |
+| `ImagePart` | dataclass |  |
+| `InputModality` | type alias |  |
+| `JsonValue` | type alias |  |
+| `MESSAGE_FORMAT_KEY` | constant |  |
+| `Message` | dataclass |  |
+| `ModelChunk` | dataclass |  |
+| `ModelResponse` | dataclass |  |
+| `BaseProvider` | abstract class | Provider-neutral configuration and Tool binding contract for model adapters. |
+| `ProviderRetryExhaustedError` | exception | A provider request failed after all configured retries were consumed. |
+| `ProviderCapabilities` | dataclass |  |
+| `PromptFragmentStage` | type alias |  |
+| `ReasoningPart` | dataclass |  |
+| `RuntimePaths` | class |  |
+| `RuntimeVariables` | class |  |
+| `SessionInfo` | dataclass |  |
+| `SessionPaths` | class |  |
+| `SHORT_CIRCUIT_EVENTS` | frozenset |  |
+| `SubagentAgentError` | exception |  |
+| `SubagentTurnError` | exception |  |
+| `TextPart` | dataclass |  |
+| `ThreadPaths` | class |  |
+| `Tool` | class |  |
+| `ToolAction` | enum |  |
+| `ToolCall` | dataclass |  |
+| `ToolCallDelta` | dataclass |  |
+| `ToolCallPart` | dataclass |  |
+| `ToolDecision` | dataclass |  |
+| `ToolError` | exception |  |
+| `ToolResult` | dataclass |  |
+| `calibrated_context_tokens` | function |  |
+| `context_token_limit` | function |  |
+| `estimate_messages_tokens` | function |  |
+| `estimate_request_tokens` | function |  |
+| `prompt_container` | function |  |
+| `prompt_element` | function |  |
 
 ## Exported Symbols (XBotv2.jobs)
 

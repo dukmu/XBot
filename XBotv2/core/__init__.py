@@ -38,7 +38,12 @@ from XBotv2.core.messages import (
 )
 from XBotv2.core.paths import RuntimePaths, SessionPaths, ThreadPaths
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, prompt_container, prompt_element
-from XBotv2.core.providers import InputModality, ProviderCapabilities
+from XBotv2.core.providers import (
+    BaseProvider,
+    InputModality,
+    ProviderCapabilities,
+    ProviderRetryExhaustedError,
+)
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.tokens import (
     calibrated_context_tokens,
@@ -81,6 +86,8 @@ __all__ = [
     "Message",
     "ModelChunk",
     "ModelResponse",
+    "BaseProvider",
+    "ProviderRetryExhaustedError",
     "ProviderCapabilities",
     "PromptFragmentStage",
     "ReasoningPart",

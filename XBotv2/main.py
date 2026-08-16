@@ -180,7 +180,7 @@ def _parse_args(
 def main(argv: list[str] | None = None):
     parser, args = _parse_args(argv)
 
-    from XBotv2.core.logging_config import setup_logging
+    from XBotv2.agentloop.logging_config import setup_logging
 
     setup_logging(
         data_dir=args.data_dir,
@@ -604,7 +604,7 @@ async def _terminal_interaction(
 async def _run_once(args):
     """Run a single prompt and exit."""
     from XBotv2.bootstrap import bootstrap
-    from XBotv2.core.session import SessionRuntime
+    from XBotv2.agentloop.session import SessionRuntime
 
     engine = await bootstrap(
         paths=RuntimePaths.from_data_dir(args.data_dir),

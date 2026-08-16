@@ -181,3 +181,30 @@
 - **验证**：XBotv2 全量 **734 passed（含 Minimax 真实 ACP 用例）**；XCore
   **104 passed**（新增 current_fiber 契约测试）；api_inventory 重生成对齐
   `XBotv2.core.__all__`。
+
+### 2026-08-17 · core 拆分为纯契约层 + agentloop 独立引擎插件 + llm provider services（三轮修正）
+
+- **用户指示**：① 继续拆分 core —— 只保留真正的公共类型和契约；② 将 agentloop
+  拆分（引擎 turn loop 独立成包，参考 DSH 的 dsh-agent-loop）；③ llm/ 的公共
+  类型和契约也移入 core；④ llm/ 包提供几个基础 provider，参考 DSH 的 provider
+  services（dsh-llm = ctx.llm 路由目录 + dsh-llm-deepseek 等适配器注册路由）。
+- **实施**：
+  - `core/` 只剩纯契约：events/tools/commands/messages/paths/prompts/providers
+    （+BaseProvider/ProviderRetryExhaustedError/retryable_provider_error）/
+    runtime/tokens/variables/context/agents（契约）+ __init__ 再导出。
+  - 新 `agentloop/` 包（DSH dsh-agent-loop 对应）：engine/operations/session/
+    inbox/interactions/internal_messages/content_cache/logging_config/plugin.py
+    （AgentLoopComponent → ctx.engine，name="xbot.agentloop"）+ agents.py
+    （apply_agent_definition/provider/tools 装配助手）。
+  - `AgentRegistry` 实现移至 `tools/agents.py`（ctx.agents 服务由 tools 提供）。
+  - llm 契约进 core；`llm/` 变为 provider 实现包：`LlmService`（provider 路由
+    目录，DSH dsh-llm 对齐：register(provider, factory) / create(config)）、
+    内置适配器（openai/anthropic/mock）各自带工厂注册路由、`create_llm`
+    保留为模块级便捷工厂（agentloop 动态切换 provider 用）。
+  - 删除 `core/effects.py`：`current_fiber()` 绑定清理内联进
+    tools/commands/prompts 服务插件（每服务自包含，无共享基础设施）。
+  - xcore.yaml：`core` 条目 → `agentloop`（id/name）。
+- **验证**：XBotv2 全量 **734 passed（含 Minimax 真实 ACP 用例）**；XCore
+  **104 passed**；端到端冒烟通过（`ctx.llm.providers()` 返回 6 个内置 provider
+  路由；`session.main_agent is engine` 成立）；api_inventory 重生成对齐
+  `XBotv2.core.__all__`（新增 BaseProvider/ProviderRetryExhaustedError）。

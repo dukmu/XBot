@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator, Callable
 
 from XBotv2.core.messages import (
@@ -307,3 +308,38 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
 
 
 __all__ = ["OpenAICompatibleProvider"]
+
+
+def create_openai_provider(provider_config, *, media_root=None):
+    """Factory for the openai-compatible route (openai / deepseek / lmstudio-openai)."""
+    from XBotv2.config.loader import expand_env
+    from XBotv2.llm.client import _require_api_key, _retry_settings
+
+    provider = provider_config.provider
+    api_key = expand_env(provider_config.api_key or "")
+    base_url = (
+        expand_env(provider_config.base_url)
+        if provider_config.base_url
+        else None
+    )
+    _require_api_key(provider, provider_config.model, api_key)
+    max_retries, retry_backoff_factor = _retry_settings()
+    logging.getLogger("llm").info(
+        "creating openai-compatible provider=%s model=%s", provider, provider_config.model
+    )
+    return OpenAICompatibleProvider(
+        model=provider_config.model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=provider_config.temperature,
+        max_output_tokens=provider_config.max_output_tokens,
+        reasoning_effort=provider_config.reasoning_effort,
+        thinking_enabled=provider_config.thinking_enabled,
+        max_retries=max_retries,
+        retry_backoff_factor=retry_backoff_factor,
+        input_modalities=provider_config.input_modalities,
+        media_root=media_root,
+    )
+
+
+__all__ = [*globals().get("__all__", []), "create_openai_provider"]

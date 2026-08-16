@@ -20,18 +20,17 @@ XBotv2/                      # 包根（__init__.py），导入一律 XBotv2.<pk
   xcore.yaml                 # 默认插件树（cordis.yaml 式，DSH cordis.patch.yml 等价物）
   main.py                    # 入口：xbot = XBotv2.main:main（CLI 分发）
   bootstrap.py               # 组合根：提供运行时值 → loader 按 xcore.yaml 装载
-  core/                      # 共享契约（Events/Tool/Command/AgentDefinition/...）
-                             # + 引擎插件（core/plugin.py → ctx.engine）
+  core/                      # 纯契约（Events/Tool/Command/AgentDefinition/BaseProvider/...）
     events.py                #   Events 事件目录 + EventContext + ToolDecision
     tools.py commands.py agents.py context.py paths.py messages.py
-    providers.py variables.py tokens.py runtime.py prompts.py
-    engine.py operations.py session.py inbox.py interactions.py
-    internal_messages.py content_cache.py logging_config.py effects.py
+    providers.py             #   InputModality/ProviderCapabilities/BaseProvider/...（llm 契约）
+    variables.py tokens.py runtime.py prompts.py
+  agentloop/                 # 引擎插件（ctx.engine）+ engine/operations/session/... + apply_agent_*
   config/                    # 插件：ctx.settings（配置解析服务）
   persistence/               # 插件：ctx.state_store（jsonl 后端，可换）
   session/                   # 插件：ctx.session（活动会话：主 agent + subagents）
   jobs/                      # 插件：ctx.jobs（后台任务）+ jobs 服务契约
-  llm/                       # 插件：ctx.llm（provider 工厂 + 适配器）
+  llm/                       # provider 实现包 + 插件：ctx.llm（LlmService 路由目录，内置适配器）
   tools/                     # 插件：ctx.tools + ctx.agents（注册表）
   commands/  prompts/        # 插件：ctx.commands / ctx.prompts
   sandbox/                   # 插件：ctx.sandbox（沙箱 + bwrap + filesystem_ops）

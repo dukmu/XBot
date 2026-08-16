@@ -25,7 +25,8 @@ import xcore
 
 from XBotv2.config.loader import load_runtime_config, load_user_context
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.core.agents import AgentDefinition, apply_agent_definition
+from XBotv2.agentloop.agents import apply_agent_definition
+from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.loader import LoaderComponent, PluginTree
 from XBotv2.persistence.store import CoreStateStore
@@ -282,10 +283,10 @@ def _build_plugin_tree(
     if external_entries:
         # External plugins mount before the engine (core mounts last).
         core_entry = next(
-            (entry for entry in tree.entries if entry.id == "core"), None
+            (entry for entry in tree.entries if entry.id == "agentloop"), None
         )
         if core_entry is not None:
-            rest = [entry for entry in tree.entries if entry.id != "core"]
+            rest = [entry for entry in tree.entries if entry.id != "agentloop"]
             tree = PluginTree(
                 [*rest, *PluginTree.from_dict(external_entries).entries, core_entry]
             )

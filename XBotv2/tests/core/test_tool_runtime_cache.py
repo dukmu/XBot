@@ -16,7 +16,7 @@ from XBotv2.coretools.filesystem import (
     filesystem_write,
 )
 from XBotv2.coretools.interaction import ask_user
-from XBotv2.core.engine import Engine
+from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
 import xcore

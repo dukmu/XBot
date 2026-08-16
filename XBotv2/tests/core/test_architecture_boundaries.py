@@ -43,6 +43,7 @@ _SERVICE_PLUGINS = {
     "permissions",
     "context_builder",
     "coretools",
+    "agentloop",
     "core",
 }
 
@@ -53,18 +54,8 @@ _CONTRACT_PACKAGES = {"XBotv2.core", "XBotv2.jobs"}
 _ALLOWED_CONTRACT_IMPORTS = _CONTRACT_PACKAGES | {"XBotv2.config"}
 
 # core/ modules that are engine implementation, not contract surface.
-_CORE_IMPLEMENTATION = {
-    "engine.py",
-    "operations.py",
-    "session.py",
-    "content_cache.py",
-    "inbox.py",
-    "interactions.py",
-    "internal_messages.py",
-    "logging_config.py",
-    "plugin.py",
-    "effects.py",
-}
+# (The engine implementation lives in XBotv2.agentloop; core holds contracts.)
+_CORE_IMPLEMENTATION: set[str] = set()
 
 # Top-level directories that are not Python plugin packages.
 _NON_PACKAGE_DIRS = {"tests", "data", "docs", "web", "web_dist", "__pycache__"}

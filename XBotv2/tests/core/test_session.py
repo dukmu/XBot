@@ -6,7 +6,7 @@ import json
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.session import SessionRuntime
+from XBotv2.agentloop.session import SessionRuntime
 
 
 class FakeEngine:

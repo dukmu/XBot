@@ -35,7 +35,7 @@ flowchart TB
 
     subgraph Core["Core"]
         SRT["SessionRuntime (core/session.py)<br/>engine · inbox · interactions · event stream"]
-        ENG["Engine (core/engine.py) ReAct loop"]
+        ENG["Engine (`agentloop/engine.py`) ReAct loop"]
         CTX["ContextBuilder (core/context.py)"]
         IBX["AgentInbox (core/inbox.py)"]
         ITX["InteractionWaiter (core/interactions.py)"]
@@ -126,7 +126,7 @@ selection never silently falls back to a different model.
 
 ## Core Components
 
-### Engine (`core/engine.py`)
+### Engine (`agentloop/engine.py`)
 
 ReAct loop: user message accept → context build (with hook injection) →
 LLM call (streaming) → tool execution → repeat. Uses the provider-neutral

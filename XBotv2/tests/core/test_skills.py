@@ -260,7 +260,7 @@ Body
         from XBotv2.skills.plugin import SkillsPlugin
         from XBotv2.core import EventContext
         from XBotv2.context_builder.builder import ContextBuilder
-        from XBotv2.core.engine import Engine
+        from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
         from XBotv2.permissions.system import PermissionSystem
         from XBotv2.tools.registry import ToolRegistry
@@ -368,7 +368,7 @@ Body
         from XBotv2.skills.plugin import SkillsPlugin
         from XBotv2.core import Events, Tool
         from XBotv2.context_builder.builder import ContextBuilder
-        from XBotv2.core.engine import Engine
+        from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
         from XBotv2.permissions.system import PermissionSystem
         from XBotv2.tools.registry import ToolRegistry

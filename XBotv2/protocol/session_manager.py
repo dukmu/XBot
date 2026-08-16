@@ -11,7 +11,7 @@ from typing import Any
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.bootstrap import bootstrap
-from XBotv2.core.session import SessionRuntime
+from XBotv2.agentloop.session import SessionRuntime
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.models import SessionSummary, ThreadSummary
 

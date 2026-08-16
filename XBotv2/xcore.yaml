@@ -107,8 +107,8 @@
   config: ${plugin_configs.workspace_instructions}
   disabled: ${disabled.workspace_instructions}
 
-- id: core
-  name: core
+- id: agentloop
+  name: agentloop
   config:
     session_id: ${session_id}
     thread_id: ${thread_id}

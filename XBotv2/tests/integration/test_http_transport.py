@@ -38,7 +38,7 @@ from XBotv2.core.messages import Message
 from XBotv2.core.tools import Tool
 from client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellRunner
-from XBotv2.core.internal_messages import structure_tool_message
+from XBotv2.agentloop.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
@@ -49,7 +49,7 @@ from XBotv2.protocol.http_server import (
     set_llm_override,
 )
 from XBotv2.protocol.session_manager import ThreadNotActive
-from XBotv2.core.session import (
+from XBotv2.agentloop.session import (
     PendingFold,
     SessionRuntime,
     _live_sink,
@@ -1217,7 +1217,7 @@ async def test_http_permission_response_preserves_scope() -> None:
     class _WaiterSpy:
         def answer(self, request_id: str, *, decision: str = "", scope: str = "once"):
             captured.update({"request_id": request_id, "decision": decision, "scope": scope})
-            from XBotv2.core.interactions import InteractionResult
+            from XBotv2.agentloop.interactions import InteractionResult
 
             return InteractionResult(
                 request_id=request_id,
@@ -1287,7 +1287,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 ) -> None:
     from types import SimpleNamespace
 
-    from XBotv2.core.interactions import InteractionWaiter
+    from XBotv2.agentloop.interactions import InteractionWaiter
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
     waiter = (

@@ -12,7 +12,7 @@ from jsonschema.exceptions import ValidationError
 
 from XBotv2.core.events import Events, ToolAction, ToolDecision
 from XBotv2.core.tools import ToolCall, ToolError, ToolResult, tool_parameters_schema
-from XBotv2.core.interactions import UserInputDisconnected
+from XBotv2.agentloop.interactions import UserInputDisconnected
 from XBotv2.core.messages import Message
 
 logger = logging.getLogger("XBotv2.tools.runtime")

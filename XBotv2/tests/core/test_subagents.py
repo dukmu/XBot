@@ -13,10 +13,10 @@ import pytest
 from XBotv2.core import AgentDefinition, RuntimePaths
 from XBotv2.jobs import JobKind, JobRegistry
 from XBotv2.core.messages import ModelChunk
-from XBotv2.core.agents import AgentRegistry
+from XBotv2.tools.agents import AgentRegistry
 from XBotv2.session.session import Session
 from XBotv2.bootstrap import bootstrap
-from XBotv2.core.session import SessionRuntime
+from XBotv2.agentloop.session import SessionRuntime
 from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.permissions.system import PermissionIntersection, PermissionSystem

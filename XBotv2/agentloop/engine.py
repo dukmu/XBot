@@ -27,15 +27,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from XBotv2.config.models import RuntimeConfig, UserContext
-from XBotv2.core.agents import AgentRegistry
-from XBotv2.core.content_cache import bound_context_messages
+from XBotv2.tools.agents import AgentRegistry
+from XBotv2.agentloop.content_cache import bound_context_messages
 from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.core.interactions import (
+from XBotv2.agentloop.interactions import (
     InteractionDisconnected,
     InteractionResult,
     InteractionWaiter,
 )
-from XBotv2.core.internal_messages import (
+from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
