@@ -92,9 +92,13 @@ ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 `XBotv2/xcore.yaml` 声明全部条目（id/name/config/disabled/inject），动态值以
 `${name}` 引用；`loader/` 的 `PluginTree.from_yaml(path, values=...)` 解析
 引用，`Loader` 导入模块 → 解析 `plugin` 导出 → 挂载（可 isolate），
-`LoaderComponent` 提供 `ctx.loader`。组合根（bootstrap）只提供运行时值
-（身份/路径/状态/工厂）+ 合并外部插件目录与用户 `data/config/plugins.yaml`
-（覆盖/追加），不硬编码树结构。
+`LoaderComponent` 提供 `ctx.loader`。组合根（bootstrap）**只做组装**：
+解析会话身份与树所需的组装事实（provider 默认、per-plugin config、disabled
+标记）+ 提供运行时值 + 合并外部插件目录与用户 `data/config/plugins.yaml`。
+**运行时初始化归插件**：persistence 插件自建 `ctx.state_store`（从 tree
+config 的 session_paths/thread_id/provider）；agentloop 插件自己读取线程
+metadata、恢复/校验 Agent 定义与 provider、解析 user_context —— bootstrap
+不再替插件创建状态或恢复会话。
 
 **行序无语义**（DSH cordis.patch.yml 同款）：每个插件声明 `inject` 依赖
 （它消费的 ctx.* 服务名），XCore 在所需服务可用时自动激活 fiber——条目顺序

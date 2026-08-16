@@ -51,4 +51,14 @@ def apply_agent_tools(registry: Any, config: Any, definition: AgentDefinition) -
         registry.exclude(list(definition.disabled_tools))
 
 
-__all__ = ["apply_agent_definition", "apply_agent_provider", "apply_agent_tools"]
+__all__ = ["_restore_agent_definition", "apply_agent_definition", "apply_agent_provider", "apply_agent_tools"]
+
+
+def _restore_agent_definition(data: dict[str, Any]) -> AgentDefinition:
+    """Rebuild an AgentDefinition from persisted thread metadata."""
+    values = dict(data)
+    for field_name in ("tools", "disabled_tools"):
+        value = values.get(field_name)
+        if isinstance(value, list):
+            values[field_name] = tuple(str(item) for item in value)
+    return AgentDefinition(**values)

@@ -1,14 +1,14 @@
 """Assemble the XBot runtime as an XCore application (composition root).
 
-The runtime is declared declaratively: the bundled ``xcore.yaml`` tree (a
-cordis.yaml-style mechanism, like DeepSeek Harness's ``cordis.patch.yml``)
-lists every plugin with its static configuration; the user's
-``data/config/plugins.yaml`` overrides or appends entries; bootstrap injects
-the session-dynamic values (paths, workspace, state store, provider,
-child-engine factory) by entry id; then the loader component is mounted on a
-fresh XCore context and the tree is loaded.  Everything else — events, tools,
-state, the engine — is provided by plugins/services on the context (design:
-``XCore/docs/05-migration-plan.md``).
+The composition root is deliberately thin: it resolves the session identity
+and the assembly-time facts the tree needs (provider default, per-plugin
+config, disabled flags), builds the declarative tree (``xcore.yaml`` +
+user ``plugins.yaml`` + external plugin dirs) with ``${name}`` runtime
+values, and mounts the loader on a fresh XCore context.  Everything else —
+the state store (persistence plugin), thread metadata recovery and agent
+resolution (agentloop plugin), config service (config plugin), subagent
+factory (a bootstrap closure injected into the session plugin) — is owned by
+the plugins themselves (design: ``XCore/docs/05-migration-plan.md``).
 """
 
 from __future__ import annotations
@@ -23,13 +23,11 @@ from typing import Any
 
 import xcore
 
-from XBotv2.config.loader import load_runtime_config, load_user_context
+from XBotv2.config.loader import load_runtime_config
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.agentloop.agents import apply_agent_definition
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.loader import LoaderComponent, PluginTree
-from XBotv2.persistence.store import CoreStateStore
 
 DEFAULT_TREE = Path(__file__).resolve().parent / "xcore.yaml"
 
@@ -74,48 +72,27 @@ async def bootstrap(
     _validate_identifier("thread_id", thread_id)
     workspace_root = Path(workspace_root or Path.cwd()).resolve()
 
-    # 1. Load configuration
+    # 1. Load the assembly-time facts the tree needs (provider default,
+    #    per-plugin config, disabled flags); runtime initialization (state
+    #    store, thread metadata recovery, agent resolution) is owned by the
+    #    persistence / agentloop plugins, not the composition root.
     agent_config = load_runtime_config(paths, workspace_root, session_id)
-    resolved_agent = agent_definition
     if provider_name == "default":
         provider_name = agent_config.provider
-    if resolved_agent is not None:
-        apply_agent_definition(agent_config, resolved_agent)
-        provider_name = agent_definition.provider or provider_name
-    user_context = load_user_context(paths)
+    if agent_definition is not None and agent_definition.provider:
+        provider_name = agent_definition.provider
 
+    resolved_agent = agent_definition
     resolved_plugin_configs = {
         **agent_config.plugin_configs,
         **(plugin_configs or {}),
     }
 
-    # 2. Session state
+    # 2. Session identity (filesystem roots the tree references).
     session_paths = paths.session(session_id)
     session_preexisting = session_paths.root.exists()
     thread_preexisting = session_paths.has_thread(thread_id)
-    state_store = CoreStateStore.create(
-        session_paths,
-        thread_id=thread_id,
-        workspace_root=str(workspace_root),
-        provider=provider_name,
-    )
-    metadata = state_store.read_thread_metadata()
-    stored_agent = str(metadata.get("agent") or "") or None
-    stored_provider = str(metadata.get("provider") or "") or None
-    stored_definition = metadata.get("agent_definition")
-    if resolved_agent is None and isinstance(stored_definition, dict):
-        resolved_agent = _restore_agent_definition(stored_definition)
-    if (
-        selected_agent is not None
-        and stored_agent is not None
-        and selected_agent != stored_agent
-    ):
-        raise ValueError(
-            f"Thread {thread_id!r} belongs to Agent {stored_agent!r}, "
-            f"not {selected_agent!r}"
-        )
-    if selected_agent is None and agent_definition is None:
-        selected_agent = stored_agent
+    thread_paths = session_paths.thread(thread_id)
 
     disabled_plugins = set(agent_config.disabled_plugins)
     if is_subagent:
@@ -157,7 +134,6 @@ async def bootstrap(
     # 3. Build the plugin tree from the declarative xcore.yaml + overlays.
     tree = _build_plugin_tree(
         paths=paths,
-        state_store=state_store,
         session_id=session_id,
         thread_id=thread_id,
         workspace_root=workspace_root,
@@ -169,19 +145,17 @@ async def bootstrap(
         parent_permission_system=parent_permission_system,
         parent_thread_id=parent_thread_id,
         interactive=interactive,
-        user_context=user_context,
+        is_subagent=is_subagent,
         plugin_configs=resolved_plugin_configs,
         plugin_dirs=plugin_dirs,
         disabled_plugins=disabled_plugins,
         include_builtins=plugin_dirs is None,
-        thread_preexisting=thread_preexisting,
-        stored_provider=stored_provider,
         session_paths=session_paths,
         engine_factory=create_child_engine,
     )
 
     # 4. Create the XCore context, mount the loader, and load the tree.
-    plugin_ctx = xcore.Context(data_dir=state_store.paths.state_dir)
+    plugin_ctx = xcore.Context(data_dir=thread_paths.state_dir)
     try:
         loader_handle = plugin_ctx.plugin(LoaderComponent(tree))
         await plugin_ctx.start()
@@ -209,7 +183,7 @@ async def bootstrap(
             if not session_preexisting:
                 shutil.rmtree(session_paths.root, ignore_errors=True)
             else:
-                shutil.rmtree(state_store.paths.root, ignore_errors=True)
+                shutil.rmtree(thread_paths.root, ignore_errors=True)
         raise
 
 
@@ -221,7 +195,6 @@ async def bootstrap(
 def _build_plugin_tree(
     *,
     paths,
-    state_store: CoreStateStore,
     session_id: str,
     thread_id: str,
     workspace_root: Path,
@@ -233,13 +206,11 @@ def _build_plugin_tree(
     parent_permission_system,
     parent_thread_id: str,
     interactive: bool,
-    user_context: Any,
+    is_subagent: bool,
     plugin_configs: dict[str, dict[str, Any]],
     plugin_dirs: list[Path | str] | None,
     disabled_plugins: set[str],
     include_builtins: bool,
-    thread_preexisting: bool,
-    stored_provider: str | None,
     session_paths: Any,
     engine_factory: Any,
 ) -> PluginTree:
@@ -254,22 +225,19 @@ def _build_plugin_tree(
     values: dict[str, Any] = {
         "paths": paths,
         "session_paths": session_paths,
-        "state_store": state_store,
         "session_id": session_id,
         "thread_id": thread_id,
         "workspace_root": workspace_root,
         "provider_name": provider_name,
         "agent_config": agent_config,
         "agent_definition": resolved_agent,
-        "user_context": user_context,
         "engine_factory": engine_factory,
         "parent_thread_id": parent_thread_id,
         "parent_permission_system": parent_permission_system,
         "interactive": interactive,
+        "is_subagent": is_subagent,
         "selected_agent": selected_agent,
         "llm_override": llm_override,
-        "stored_provider": stored_provider,
-        "thread_preexisting": thread_preexisting,
         "plugin_configs": plugin_configs,
         "disabled": disabled_plugins,
     }
@@ -337,14 +305,6 @@ def _plugin_dirs_to_entries(
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
-
-def _restore_agent_definition(data: dict[str, Any]) -> AgentDefinition:
-    values = dict(data)
-    for field_name in ("tools", "disabled_tools"):
-        value = values.get(field_name)
-        if isinstance(value, list):
-            values[field_name] = tuple(str(item) for item in value)
-    return AgentDefinition(**values)
 
 
 def _validate_identifier(field: str, value: str) -> None:

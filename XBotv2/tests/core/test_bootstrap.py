@@ -923,15 +923,14 @@ class TestBootstrapNoPlugins:
             thread_id="t", workspace_root=str(tmp), provider="default",
         )
         return _build_plugin_tree(
-            paths=RuntimePaths.from_data_dir(tmp), state_store=store,
+            paths=RuntimePaths.from_data_dir(tmp),
             session_id="s", thread_id="t",
             workspace_root=Path("."), provider_name="default",
             agent_config=RuntimeConfig(), resolved_agent=None, llm_override=None,
             selected_agent=None, parent_permission_system=None,
-            parent_thread_id="", interactive=True,
-            user_context=None, plugin_configs={}, plugin_dirs=plugin_dirs,
+            parent_thread_id="", interactive=True, is_subagent=False,
+            plugin_configs={}, plugin_dirs=plugin_dirs,
             disabled_plugins=set(), include_builtins=include_builtins,
-            thread_preexisting=False, stored_provider=None,
             session_paths=None, engine_factory=None,
         )
 

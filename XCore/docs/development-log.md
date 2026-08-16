@@ -241,3 +241,23 @@
 - **验证**：`uv run xbot tui` pty 实测：spawn server → TUI Connecting →
   Ready（无错误）；serve 建会话 + SSE turn 流正常；XBotv2 734 passed（+乱序
   回归测试）；XCore 105 passed。
+
+### 2026-08-17 · bootstrap 变薄：运行时初始化归还插件
+
+- **用户指示**：bootstrap 还是太长，在替插件做初始化。
+- **实施**：
+  - persistence 插件自己创建 CoreStateStore（tree config 传
+    session_paths/thread_id/workspace_root/provider），bootstrap 不再创建；
+    ctx data_dir 直接用 `session_paths.thread(thread_id).state_dir`。
+  - agentloop 插件接管线程元数据恢复：读 metadata、恢复 stored Agent
+    定义（_restore_agent_definition 移入 agentloop/agents.py）、校验
+    selected_agent 与线程归属、恢复 stored_provider、默认 selected_agent；
+    user_context 改经 `ctx.settings.user_context()` 获取。
+  - bootstrap 只保留：身份（session_id/workspace 校验）、组装事实
+    （load_runtime_config 的 provider 默认/plugin_configs/disabled）、
+    create_child_engine 子代理工厂、树组装（yaml + values + 外部 +
+    plugins.yaml）、XCore 装配与错误清理 —— 358 → 318 行。
+  - 修正一个隐性缺陷：原 bootstrap 提前 `apply_agent_definition`，删除后
+    显式 agent_definition（子代理）不再被应用（prompt/权限丢失）——agentloop
+    改为 resolved_agent 确定后统一 apply。
+- **验证**：XBotv2 735 passed；`uv run xbot tui` pty 实测 Ready 无错误。

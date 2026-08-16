@@ -18,7 +18,10 @@
 - id: persistence
   name: persistence
   config:
-    state_store: ${state_store}
+    session_paths: ${session_paths}
+    thread_id: ${thread_id}
+    workspace_root: ${workspace_root}
+    provider: ${provider_name}
 
 - id: session
   name: session
@@ -122,6 +125,4 @@
     parent_permission_system: ${parent_permission_system}
     parent_thread_id: ${parent_thread_id}
     interactive: ${interactive}
-    user_context: ${user_context}
-    thread_preexisting: ${thread_preexisting}
-    stored_provider: ${stored_provider}
+    is_subagent: ${is_subagent}

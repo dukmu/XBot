@@ -15,6 +15,7 @@ from dataclasses import asdict
 from typing import Any
 
 from XBotv2.agentloop.agents import (
+    _restore_agent_definition,
     apply_agent_definition,
     apply_agent_provider,
     apply_agent_tools,
@@ -59,9 +60,6 @@ class AgentLoopComponent:
         self._parent_thread_id = config.get("parent_thread_id", "")
         self._is_subagent = bool(config.get("is_subagent", False))
         self._interactive = bool(config.get("interactive", True))
-        self._user_context = config.get("user_context")
-        self._thread_preexisting = bool(config.get("thread_preexisting", False))
-        self._stored_provider = config.get("stored_provider")
         await self._assemble(ctx)
 
     async def _assemble(self, ctx: Any) -> None:
@@ -81,6 +79,29 @@ class AgentLoopComponent:
         provider_name = self._provider_name
         is_subagent = self._is_subagent
         parent_permission_system = self._parent_permission_system
+        self._user_context = ctx.settings.user_context()
+
+        # Thread metadata recovery (the agent loop owns its own resume state):
+        # restore the stored agent definition, validate the requested agent
+        # against the thread owner, and default the selection to the stored
+        # agent — no composition-root pre-initialization.
+        metadata = state_store.read_thread_metadata()
+        stored_agent = str(metadata.get("agent") or "") or None
+        stored_provider = str(metadata.get("provider") or "") or None
+        stored_definition = metadata.get("agent_definition")
+        if resolved_agent is None and isinstance(stored_definition, dict):
+            resolved_agent = _restore_agent_definition(stored_definition)
+        if (
+            selected_agent is not None
+            and stored_agent is not None
+            and selected_agent != stored_agent
+        ):
+            raise ValueError(
+                f"Thread {self._thread_id!r} belongs to Agent {stored_agent!r}, "
+                f"not {selected_agent!r}"
+            )
+        if selected_agent is None and self._agent_definition is None:
+            selected_agent = stored_agent
 
         if selected_agent is None and resolved_agent is None:
             default_agent = agent_registry.get("default")
@@ -102,6 +123,10 @@ class AgentLoopComponent:
                 )
             elif resolved_agent.mode == "subagent" and not is_subagent:
                 raise ValueError(f"Unknown primary agent: {selected_agent}")
+        # Apply the resolved Agent (selected or an explicit subagent
+        # definition) to the base config / permissions / provider default —
+        # the agent loop owns this, not the composition root.
+        if resolved_agent is not None:
             apply_agent_definition(agent_config, resolved_agent)
             provider_name = resolved_agent.provider or provider_name
             permissions = PermissionSystem(
@@ -113,8 +138,8 @@ class AgentLoopComponent:
                     parent_permission_system, permissions
                 )
 
-        if self._thread_preexisting and self._stored_provider is not None:
-            provider_name = self._stored_provider
+        if stored_provider is not None:
+            provider_name = stored_provider
         state_store.provider = provider_name
         agent_config.provider = provider_name
         provider_config = ctx.settings.provider_config(provider_name)
