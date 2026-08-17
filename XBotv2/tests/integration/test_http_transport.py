@@ -2452,9 +2452,14 @@ async def _real_terminal_session(
     *,
     llm: MockLLM,
     sandbox_enabled: bool,
-    timeout: float = 0.1,
+    timeout: float = 30.0,
 ) -> AsyncIterator[TerminalSession]:
-    """Run one connected TerminalSession against a real local HTTP server."""
+    """Run one connected TerminalSession against a real local HTTP server.
+
+    The default request timeout is generous: ``open_session`` cold-starts a
+    full XBot application, which can exceed a 100 ms client budget under
+    load. The 30 s default matches the production client.
+    """
     import socket
     import threading
 
