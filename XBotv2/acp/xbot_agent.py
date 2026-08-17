@@ -287,7 +287,7 @@ class XBotACPAgent:
         runtime = await self._runtime(session_id)
         content, images = _prompt_content(
             prompt,
-            getattr(runtime.engine, "state_store", None),
+            runtime.services.storage,
         )
         command = _slash_command(runtime, content)
         if command is not None:
@@ -750,7 +750,7 @@ def _session_metadata(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
     return store.read_thread_metadata()
 
 
-def _prompt_content(blocks: list[Any], state_store: Any) -> tuple[str, list[Any]]:
+def _prompt_content(blocks: list[Any], storage: Any) -> tuple[str, list[Any]]:
     parts: list[str] = []
     images = []
     for block in blocks:
@@ -758,12 +758,12 @@ def _prompt_content(blocks: list[Any], state_store: Any) -> tuple[str, list[Any]
         if block_type == "text":
             parts.append(str(block.text))
         elif block_type == "image":
-            if state_store is None:
+            if storage is None:
                 raise RequestError.invalid_params({
                     "prompt": "image storage is unavailable",
                 })
             try:
-                images.append(state_store.store_image(
+                images.append(storage.store_image(
                     str(block.data),
                     str(block.mime_type),
                 ))

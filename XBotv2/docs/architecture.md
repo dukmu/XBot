@@ -61,6 +61,7 @@ flowchart TB
     end
 
     subgraph PersistenceLayer["Persistence"]
+        STORAGE["ThreadStorage (filesystem/)<br/>artifacts · plugin state"]
         STORE["CoreStateStore (persistence/store.py)"]
         JRNL["messages.jsonl (append-only)"]
     end
@@ -87,6 +88,7 @@ flowchart TB
     REG --> SBX
     REG --> BT
     ENG --> LLM
+    SRT --> STORAGE
     EVT --> STORE
     STORE --> JRNL
     P -. "consume core contracts + events" .-> EVT
@@ -150,6 +152,13 @@ services, then passes provider-neutral core ports to the registered agentloop
 factory. The LLM plugin owns the mutable `ctx.model` binding; Engine and
 auxiliary model capabilities consume that port, while `ctx.llm` remains the
 provider route directory.
+
+The session service creates thread paths, `LoopState`, and the neutral
+`ThreadStorage` used for artifacts and plugin-local files. Message persistence
+is a separate optional projection: it hydrates `LoopState` when mounted and
+observes state changes, but sandbox, caches, tools, uploads, and usage do not
+depend on it. The default application mounts persistence; a profile may disable
+it for an in-memory conversation without disabling other capabilities.
 
 ## Core Components
 

@@ -1034,6 +1034,39 @@ class TestApplicationStartupNoPlugins:
         assert "turn_started" in types
         assert "assistant_message" in types
 
+    @pytest.mark.asyncio
+    async def test_runtime_can_start_without_message_persistence(
+        self,
+        temp_data_dir,
+        temp_workspace,
+    ):
+        paths = RuntimePaths.from_data_dir(temp_data_dir)
+        paths.config_dir.mkdir(parents=True, exist_ok=True)
+        (paths.config_dir / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "persistence",
+                "name": "persistence",
+                "disabled": True,
+            }]),
+            encoding="utf-8",
+        )
+        application = await start_application(
+            paths=paths,
+            session_id="memory-only",
+            thread_id="t",
+            workspace_root=temp_workspace,
+            llm_override=MockLLM(responses=[{"content": "in memory"}]),
+        )
+        assert application.get("state_store", strict=False) is None
+        assert application.storage.root.is_dir()
+        events = [
+            event async for event in application.engine.run_turn("hello")
+        ]
+        assert any(
+            event.get("type") == "assistant_message" for event in events
+        )
+        await application.stop()
+
 
 class TestMemoryLoading:
     @pytest.mark.asyncio

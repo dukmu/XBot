@@ -729,6 +729,17 @@ def check_plugin_imports() -> list[Violation]:
                 continue
             for node in ast.walk(_tree(path)):
                 if (
+                    owner != "persistence"
+                    and isinstance(node, ast.Attribute)
+                    and node.attr == "state_store"
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        "plugin-persistence-coupling",
+                        "capability plugins must consume storage/state contracts, not state_store",
+                    ))
+                if (
                     isinstance(node, ast.Attribute)
                     and isinstance(node.value, ast.Name)
                     and node.value.id == "Events"

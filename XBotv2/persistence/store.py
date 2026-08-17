@@ -1,16 +1,11 @@
 """Persistent message store.
 
-Manages:
-- messages.jsonl: append-only message and history-operation journal
-- plugin_states/: opaque per-plugin state files (core never interprets)
-- artifacts/: cached large tool outputs
+Manages messages.jsonl and runtime event records. Artifact and plugin-state
+files belong to the inherited thread storage capability.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import json
 import os
 import tempfile
@@ -20,12 +15,9 @@ from typing import Any
 
 import yaml
 
-from XBotv2.core.messages import (
-    ImageContent,
-    Message,
-    part_from_dict,
-)
+from XBotv2.core.messages import Message, part_from_dict
 from XBotv2.core.paths import SessionPaths, ThreadPaths
+from XBotv2.filesystem.storage import ThreadStorage
 _PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
 
 
@@ -104,7 +96,7 @@ def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
     return paths.thread(thread_id, legacy=legacy)
 
 
-class CoreStateStore:
+class CoreStateStore(ThreadStorage):
     def __init__(
         self,
         paths: SessionPaths | ThreadPaths,
@@ -115,16 +107,10 @@ class CoreStateStore:
     ) -> None:
         if isinstance(paths, SessionPaths):
             paths = _thread_paths(paths, thread_id)
-        self.paths = paths
-        self.root = paths.state_dir
-        self.session_id = paths.session_id
-        self.thread_id = paths.thread_id
-        self.workspace_root = workspace_root
+        super().__init__(paths, workspace_root=workspace_root)
         self.provider = provider
 
         self.messages_path = paths.messages_file
-        self.plugin_states_dir = paths.plugin_states_dir
-        self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
         # References to the messages already persisted in the journal.
         # None means unknown (rebuilt from disk on the next sync).
@@ -158,51 +144,6 @@ class CoreStateStore:
         if not store.messages_path.exists():
             store.messages_path.touch()
         return store
-
-    def store_image(self, data: str, media_type: str) -> ImageContent:
-        """Persist one base64 image and return its journal-safe reference."""
-        if not media_type.startswith("image/"):
-            raise ValueError("media_type must be an image MIME type")
-        try:
-            payload = base64.b64decode(data, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise ValueError("image data must be valid base64") from exc
-        if not payload:
-            raise ValueError("image data must not be empty")
-        media_dir = self.artifacts_dir / "media"
-        media_dir.mkdir(exist_ok=True)
-        name = hashlib.sha256(payload).hexdigest()
-        path = media_dir / name
-        if not path.exists():
-            path.write_bytes(payload)
-        return ImageContent(
-            path=str(path.relative_to(self.root)),
-            media_type=media_type,
-            size=len(payload),
-        )
-
-    def store_attachment(self, data: str, media_type: str, name: str) -> dict[str, Any]:
-        """Persist an uploaded file and return a session-relative reference."""
-        try:
-            payload = base64.b64decode(data, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise ValueError("attachment data must be valid base64") from exc
-        if not payload:
-            raise ValueError("attachment data must not be empty")
-        safe_name = Path(name).name
-        if not safe_name or safe_name in {".", ".."}:
-            raise ValueError("attachment name must be a file name")
-        digest = hashlib.sha256(payload).hexdigest()
-        path = self.artifacts_dir / "attachments" / digest
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_bytes(payload)
-        return {
-            "id": path.relative_to(self.root).as_posix(),
-            "name": safe_name,
-            "media_type": media_type or "application/octet-stream",
-            "size": len(payload),
-        }
 
     def append_messages(self, messages: list[Message]) -> int:
         if not messages:
@@ -371,39 +312,6 @@ class CoreStateStore:
     def write_thread_metadata(self, data: dict[str, Any]) -> None:
         self.paths.root.mkdir(parents=True, exist_ok=True)
         _atomic_write_yaml(self.paths.metadata_file, data)
-
-    def get_plugin_state(self, plugin_name: str) -> dict[str, Any]:
-        path = self._plugin_state_path(plugin_name)
-        if path.exists():
-            with open(path, encoding="utf-8") as stream:
-                state = yaml.safe_load(stream)
-            if state is None:
-                return {}
-            if not isinstance(state, dict):
-                raise ValueError(
-                    f"Plugin state for {plugin_name!r} must contain a mapping"
-                )
-            return state
-        return {}
-
-    def set_plugin_state(self, plugin_name: str, data: dict[str, Any]) -> None:
-        self.plugin_states_dir.mkdir(parents=True, exist_ok=True)
-        path = self._plugin_state_path(plugin_name)
-        _atomic_write_yaml(path, data)
-
-    def delete_plugin_state(self, plugin_name: str) -> None:
-        path = self._plugin_state_path(plugin_name)
-        if path.exists():
-            path.unlink()
-
-    def _plugin_state_path(self, plugin_name: str) -> Path:
-        if (
-            not plugin_name
-            or plugin_name in {".", ".."}
-            or Path(plugin_name).name != plugin_name
-        ):
-            raise ValueError(f"Invalid plugin state name: {plugin_name!r}")
-        return self.plugin_states_dir / f"{plugin_name}.yaml"
 
     def _next_message_id(self) -> int:
         if self._max_msg_id == 0 and self.messages_path.exists():

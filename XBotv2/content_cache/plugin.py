@@ -52,7 +52,7 @@ class ContentCacheService:
 class ContentCacheComponent:
     """Register the content cache service as ``ctx.content_cache``."""
 
-    inject = ["state_store"]
+    inject = ["storage"]
     name = "xbot.content_cache"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
@@ -65,7 +65,7 @@ class ContentCacheComponent:
                 return
             request["messages"] = service.bound_context_messages(
                 request["messages"],
-                ctx.state_store,
+                ctx.storage,
             )
 
         ctx.on(Events.MODEL_REQUEST_READY, bind_model_request)

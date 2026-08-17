@@ -16,14 +16,14 @@ from XBotv2.core.events import Events
 from XBotv2.core.tools import Tool
 
 class CoreToolsComponent:
-    inject = ["tools", "session", "state_store", "sandbox", "jobs"]
+    inject = ["tools", "session", "storage", "sandbox", "jobs"]
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         config = config or {}
-        state_store = ctx.state_store
+        storage = ctx.storage
         result_config = dict(config.get("tool_results") or {})
         max_inline_chars = int(result_config.get("max_inline_chars", 12_000))
         preview_chars = int(result_config.get("preview_chars", 4_000))
@@ -62,7 +62,7 @@ class CoreToolsComponent:
         ctx.on(
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
-                state_store,
+                storage,
                 max_inline_chars=max_inline_chars,
                 preview_chars=preview_chars,
             ),

@@ -770,13 +770,13 @@ def _register_routes(app: FastAPI) -> None:
         ctx = await manager.get(session_id, thread_id)
         try:
             images = [
-                ctx.services.state_store.store_image(
+                ctx.services.storage.store_image(
                     image.data, image.media_type
                 )
                 for image in payload.images
             ]
             attachments = [
-                ctx.services.state_store.store_attachment(
+                ctx.services.storage.store_attachment(
                     attachment.data,
                     attachment.media_type,
                     attachment.name,
