@@ -60,7 +60,12 @@ class FakeRuntime:
         self.engine = FakeEngine()
         self.interrupted = False
         self.session_events: asyncio.Queue | None = None
-        self.services = SimpleNamespace(get=lambda _name: None)
+        self.services = SimpleNamespace(
+            get=lambda _name: None,
+            storage=None,
+            agents=SimpleNamespace(definitions=lambda: ()),
+            loop_state=SimpleNamespace(metadata={}),
+        )
 
     async def stream_message(self, content: str, request_id: str, *, images=None):
         assert content == "hello"
