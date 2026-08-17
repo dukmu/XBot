@@ -141,6 +141,7 @@ class PermissionsComponent:
                 permissions.configure_agent(event.agent.permissions)
 
         ctx.on(Events.SESSION_INIT, configure_agent, prepend=True)
+        ctx.on(Events.AGENT_CONFIGURED, configure_agent, prepend=True)
 
         if bool(config.get("interactive", True)):
             from XBotv2.permissions.tools import request_permission

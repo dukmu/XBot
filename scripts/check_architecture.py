@@ -26,6 +26,7 @@ SESSION_PLUGIN = PACKAGE / "session" / "plugin.py"
 SESSION_ENTITY = PACKAGE / "session" / "session.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
+APPLICATION_OPERATIONS = PACKAGE / "application" / "operations.py"
 APPLICATION_AGENTS = PACKAGE / "application" / "agents.py"
 APPLICATION_MODEL = PACKAGE / "application" / "model.py"
 AGENTS_SERVICE = PACKAGE / "agents" / "service.py"
@@ -452,6 +453,41 @@ def check_application_startup() -> list[Violation]:
                 node.lineno,
                 "agents-loop-construction",
                 "agents service must delegate through its registered factory",
+            ))
+    for node in ast.walk(_tree(APPLICATION_OPERATIONS)):
+        if not isinstance(node, ast.Attribute):
+            continue
+        is_service_access = (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "services"
+        ) or (
+            isinstance(node.value, ast.Attribute)
+            and node.value.attr == "services"
+        )
+        if is_service_access and node.attr in {"llm", "model", "state_store"}:
+            violations.append(Violation(
+                APPLICATION_OPERATIONS,
+                node.lineno,
+                "application-agent-reassembly",
+                f"Agent operations must not assemble runtime service {node.attr!r}",
+            ))
+        if node.attr in {"apply_definition", "apply_provider", "apply_tools"}:
+            violations.append(Violation(
+                APPLICATION_OPERATIONS,
+                node.lineno,
+                "application-agent-reassembly",
+                f"Agent operations must use a high-level agents service, not {node.attr}()",
+            ))
+        if (
+            node.attr == "configure"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "engine"
+        ):
+            violations.append(Violation(
+                APPLICATION_OPERATIONS,
+                node.lineno,
+                "application-agent-reassembly",
+                "Agent operations must not configure Engine directly",
             ))
     for path in (SERVER_APP,):
         for node in ast.walk(_tree(path)):

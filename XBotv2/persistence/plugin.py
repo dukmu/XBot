@@ -107,6 +107,7 @@ class PersistenceComponent:
             store.write_thread_metadata(state.metadata)
 
         ctx.on(Events.SESSION_INIT, persist_session_metadata)
+        ctx.on(Events.AGENT_CONFIGURED, persist_session_metadata)
 
         async def persist_runtime_event(event: Any) -> None:
             record = event.client_event or {}

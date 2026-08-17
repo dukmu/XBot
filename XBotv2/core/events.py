@@ -28,6 +28,9 @@ class Events:
     SESSION_START = "session/start"
     SESSION_RESUME = "session/resume"
     SESSION_CLOSE = "session/close"
+    # The active Agent/model selection changed after startup. Capability
+    # owners update their own projections from this neutral notification.
+    AGENT_CONFIGURED = "agent/configured"
     # Turn lifecycle
     TURN_START = "turn/start"
     TURN_END = "turn/end"

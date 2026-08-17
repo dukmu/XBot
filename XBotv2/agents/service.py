@@ -169,6 +169,132 @@ class AgentsService:
         ctx.set("engine", engine)
         return engine
 
+    def definition(self, name: str) -> AgentDefinition | None:
+        return self.registry.get(name)
+
+    def active_definition(self) -> AgentDefinition | None:
+        stored = self.ctx.loop_state.metadata.get("agent_definition")
+        return (
+            self._restore_definition(stored)
+            if isinstance(stored, dict)
+            else None
+        )
+
+    def runtime_config(
+        self,
+        definition: AgentDefinition | None = None,
+    ) -> Any:
+        """Resolve current runtime config with the active Agent overlay."""
+        state = self.ctx.loop_state
+        config = self.ctx.settings.load_runtime_config(
+            state.session.workspace_root,
+            state.session.session_id,
+        )
+        definition = definition or self.active_definition()
+        if definition is not None:
+            self._apply_definition(config, definition)
+        return config
+
+    async def activate(self, name: str) -> dict[str, Any]:
+        """Atomically apply a registered primary Agent to the live driver."""
+        definition = self.registry.get(name)
+        if definition is None or definition.mode == "subagent":
+            raise ValueError(f"Unknown primary Agent: {name}")
+
+        ctx = self.ctx
+        engine = ctx.engine
+        state = ctx.loop_state
+        config = self.runtime_config(definition)
+        provider_name = definition.provider or engine.settings.provider
+        provider = ctx.llm.provider_config(
+            provider_name,
+            require_key=not engine.settings.llm_is_override,
+        )
+        self._apply_model(provider, definition)
+        config.provider = provider_name
+        config.max_context_tokens = (
+            definition.context_window or provider.max_context_tokens
+        )
+        config.max_output_tokens = provider.max_output_tokens
+        if not engine.settings.llm_is_override:
+            ctx.model.replace(ctx.llm.create(provider, media_root=state.media_root))
+
+        self._restrict_tools(ctx.tools.registry, config, definition)
+        engine.configure(
+            model_client=ctx.model,
+            max_iterations=definition.max_iterations or DEFAULT_MAX_ITERATIONS,
+            provider=provider_name,
+            model=provider.model,
+            model_mode=provider.model_mode,
+            context_window=config.max_context_tokens,
+            max_output_tokens=config.max_output_tokens or 0,
+            agent_name=config.agent_name,
+            agent_role=config.agent_role,
+            developer_instructions=config.instructions,
+            agent_instructions=config.agent_instructions,
+            memory=config.memory,
+        )
+        state.session.provider = provider_name
+        state.metadata.update({
+            "agent": definition.name,
+            "agent_definition": asdict(definition),
+            "provider": provider_name,
+            "model": provider.model,
+            "model_mode": provider.model_mode,
+            "context_window": config.max_context_tokens,
+        })
+        await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
+            config=config,
+            agent=definition,
+            tools=ctx.tools.registry,
+            session=state.session,
+        ))
+        return {
+            "agent": definition,
+            "provider": provider_name,
+            "model": provider.model,
+            "model_mode": provider.model_mode,
+            "context_window": config.max_context_tokens,
+        }
+
+    async def select_provider(self, name: str) -> dict[str, Any]:
+        """Apply a configured provider to the live Agent driver."""
+        ctx = self.ctx
+        if name not in ctx.llm.names():
+            raise ValueError(f"Unknown provider: {name}")
+        engine = ctx.engine
+        state = ctx.loop_state
+        provider = ctx.llm.provider_config(
+            name,
+            require_key=not engine.settings.llm_is_override,
+        )
+        if not engine.settings.llm_is_override:
+            ctx.model.replace(ctx.llm.create(provider, media_root=state.media_root))
+        engine.configure(
+            model_client=ctx.model,
+            provider=name,
+            model=provider.model,
+            model_mode=provider.model_mode,
+            context_window=provider.max_context_tokens,
+            max_output_tokens=provider.max_output_tokens or 0,
+        )
+        state.session.provider = name
+        state.metadata.update({
+            "provider": name,
+            "model": provider.model,
+            "model_mode": provider.model_mode,
+            "context_window": provider.max_context_tokens,
+        })
+        await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
+            config=engine.settings,
+            session=state.session,
+        ))
+        return {
+            "provider": name,
+            "model": provider.model,
+            "model_mode": provider.model_mode,
+        }
+
     def _resolve_definition(
         self,
         options: AgentCreateOptions,

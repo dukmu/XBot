@@ -5,12 +5,9 @@ from __future__ import annotations
 import secrets
 import shutil
 from contextlib import AsyncExitStack
-from dataclasses import asdict
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.paths import RuntimePaths
 
@@ -114,8 +111,7 @@ def require_forkable(*contexts: Any) -> None:
 
 async def select_agent(ctx: Any, name: str) -> dict[str, Any]:
     _require_idle(ctx, "switch Agent")
-    registry = ctx.services.agents.registry
-    definition = registry.get(name) if registry is not None else None
+    definition = ctx.services.agents.definition(name)
     if definition is None or definition.mode == "subagent":
         raise OperationError(
             "agent_not_found",
@@ -124,7 +120,8 @@ async def select_agent(ctx: Any, name: str) -> dict[str, Any]:
     active = ctx.engine.settings.agent_name
     if definition.name != active:
         async with ctx.turn_lock:
-            await _activate_agent(ctx, definition)
+            selected = await ctx.services.agents.activate(definition.name)
+            ctx.provider_name = selected["provider"]
     return {
         "active": definition.name,
         "agent_name": definition.name,
@@ -145,61 +142,32 @@ async def reload_agents(ctx: Any) -> dict[str, Any]:
     async with ctx.turn_lock:
         if not await loader.reload("agents"):
             raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
-        definition = ctx.services.agents.registry.get(active)
+        definition = ctx.services.agents.definition(active)
         if definition is None or definition.mode == "subagent":
             raise OperationError(
                 "agent_not_found",
                 f"Active Agent definition no longer exists: {active}",
             )
-        await _activate_agent(ctx, definition)
+        selected = await ctx.services.agents.activate(definition.name)
+        ctx.provider_name = selected["provider"]
     return {
         "active": active,
-        "agents": ctx.services.agents.registry.definitions(),
+        "agents": ctx.services.agents.definitions(),
     }
 
 
 async def select_provider(ctx: Any, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
-    llm = ctx.services.llm
-    store = ctx.services.state_store
-    if name not in llm.names():
-        raise OperationError(
-            "provider_not_found",
-            f"Unknown provider: {name}",
-        )
     async with ctx.turn_lock:
-        config = llm.provider_config(
-            name, require_key=not ctx.engine.settings.llm_is_override
-        )
-        if not ctx.engine.settings.llm_is_override:
-            ctx.services.model.replace(llm.create(
-                config,
-                media_root=str(store.root),
-            ))
-        ctx.engine.configure(
-            model_client=ctx.services.model,
-            provider=name,
-            model=config.model,
-            model_mode=config.model_mode,
-            context_window=config.max_context_tokens,
-            max_output_tokens=config.max_output_tokens,
-        )
-        ctx.provider_name = name
-        store.provider = name
-        ctx.engine.session.provider = name
-        metadata = store.read_thread_metadata()
-        metadata.update({
-            "provider": name,
-            "model": config.model,
-            "model_mode": config.model_mode,
-            "context_window": config.max_context_tokens,
-        })
-        store.write_thread_metadata(metadata)
-    return {
-        "provider": name,
-        "model": config.model,
-        "model_mode": config.model_mode,
-    }
+        try:
+            selected = await ctx.services.agents.select_provider(name)
+        except ValueError as error:
+            raise OperationError(
+                "provider_not_found",
+                str(error),
+            ) from error
+        ctx.provider_name = selected["provider"]
+    return selected
 
 
 def task_snapshots(ctx: Any) -> list[dict[str, Any]]:
@@ -269,84 +237,13 @@ async def update_session_policy(
     return policy
 
 
-async def _activate_agent(
-    ctx: Any, definition: AgentDefinition
-) -> None:
-    services = ctx.services
-    config = services.settings.load_runtime_config(
-        Path(ctx.workspace_root), ctx.session_id
-    )
-    services.agents.apply_definition(config, definition)
-    provider_name = definition.provider or ctx.provider_name
-    config.provider = provider_name
-    provider = ctx.services.llm.provider_config(
-        provider_name, require_key=not ctx.engine.settings.llm_is_override
-    )
-    services.agents.apply_provider(provider, definition)
-    config.max_context_tokens = (
-        definition.context_window or provider.max_context_tokens
-    )
-    config.max_output_tokens = provider.max_output_tokens
-    if not ctx.engine.settings.llm_is_override:
-        ctx.services.model.replace(ctx.services.llm.create(
-            provider,
-            media_root=str(ctx.services.state_store.root),
-        ))
-
-    _apply_live_policies(ctx, config)
-    ctx.services.permissions.configure_agent(definition.permissions)
-    ctx.engine.configure(
-        model_client=ctx.services.model,
-        max_iterations=definition.max_iterations or 200,
-        provider=provider_name,
-        model=provider.model,
-        model_mode=provider.model_mode,
-        context_window=config.max_context_tokens,
-        max_output_tokens=config.max_output_tokens,
-        agent_name=config.agent_name,
-        agent_role=config.agent_role,
-        developer_instructions=config.instructions,
-        agent_instructions=config.agent_instructions,
-        memory=config.memory,
-    )
-    services.agents.apply_tools(ctx.engine.tools.registry, config, definition)
-
-    ctx.provider_name = provider_name
-    store = ctx.services.state_store
-    store.provider = provider_name
-    ctx.engine.session.provider = provider_name
-    metadata = store.read_thread_metadata()
-    metadata.update({
-        "agent": definition.name,
-        "agent_definition": asdict(definition),
-        "provider": provider_name,
-        "model": provider.model,
-        "model_mode": provider.model_mode,
-        "context_window": config.max_context_tokens,
-    })
-    store.write_thread_metadata(metadata)
-
-
 def reload_live_policies(ctx: Any) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
     services = ctx.services
-    base_config = services.settings.load_runtime_config(
-        Path(ctx.workspace_root), ctx.session_id
-    )
-    metadata = ctx.services.state_store.read_thread_metadata()
-    stored_definition = metadata.get("agent_definition")
-    if isinstance(stored_definition, dict):
-        definition = AgentDefinition(**{
-            key: tuple(value) if key in {"tools", "disabled_tools"}
-            and isinstance(value, list) else value
-            for key, value in stored_definition.items()
-        })
-        services.agents.apply_definition(
-            base_config,
-            definition,
-        )
+    definition = services.agents.active_definition()
+    base_config = services.agents.runtime_config(definition)
     _apply_live_policies(ctx, base_config)
-    if isinstance(stored_definition, dict):
+    if definition is not None:
         ctx.services.permissions.configure_agent(definition.permissions)
 
 
