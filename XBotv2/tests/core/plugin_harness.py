@@ -27,6 +27,30 @@ def mount_ctx(state_store):
     ctx.set("session", None)
     ctx.set("runtime", None)
     ctx.set("paths", state_store.paths)
+    from XBotv2.core.loop import LoopState
+    from XBotv2.core.runtime import SessionInfo
+    from XBotv2.llm.service import ModelService
+    from XBotv2.sandbox.policy import SandboxPolicy
+
+    ctx.set("model", ModelService())
+    ctx.set("storage", state_store)
+    ctx.set("thread_paths", state_store.paths)
+    ctx.set("loop_state", LoopState(
+        session=SessionInfo(
+            session_id=state_store.session_id,
+            thread_id=state_store.thread_id,
+            workspace_root=str(state_store.workspace_root),
+            provider="default",
+        ),
+        media_root=str(state_store.root),
+    ))
+    ctx.set("sandbox", SandboxPolicy(
+        {"enabled": False, "resources": []},
+        data_root=state_store.paths.runtime.data_dir,
+        workspace_root=state_store.workspace_root,
+        session_root=state_store.root,
+        variables=ctx.variables,
+    ))
     return ctx
 
 

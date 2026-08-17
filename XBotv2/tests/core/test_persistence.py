@@ -1,5 +1,7 @@
 """Tests for message history persistence and session restore."""
 
+from XBotv2.tests.helpers import make_engine as helpers_make_engine
+
 import json
 import base64
 
@@ -333,16 +335,39 @@ echo_tool = Tool.from_function(echo, name="echo")
 
 
 def make_engine(llm, registry, store, workspace, plugin_ctx=None):
-    return Engine(
+    """Build an Engine with production-equivalent persistence wiring.
+
+    Persistence is an observer of ``STATE_CHANGED`` and hydrates ``LoopState``
+    when the store already holds a session; the loop driver never calls the
+    store directly.
+    """
+    from XBotv2.core.events import Events
+    from XBotv2.persistence.plugin import PersistenceService
+
+    ctx = plugin_ctx or xcore.Context()
+    engine = helpers_make_engine(
         llm=llm,
         tool_registry=registry,
-        plugin_ctx=plugin_ctx or xcore.Context(),
+        plugin_ctx=ctx,
         state_store=store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+    persistence = PersistenceService(store, engine.state)
+    ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    if store.has_existing_session():
+        messages = store.read_messages()
+        engine.state.messages = messages
+        engine.state.turn_count = sum(
+            1 for message in messages if message.role == "user"
+        )
+        engine.state.resumed = True
+        engine.state.metadata = store.read_thread_metadata()
+        engine.state.inbox_events = store.read_events(Events.INBOX_SPLICE)
+        engine.state.session.turn_count = engine.state.turn_count
+    return engine
 
 
 class TestEnginePersistence:

@@ -138,15 +138,16 @@ async def test_engine_smoke_persists_user_image_attachment(
         input_modalities=["text", "image"],
         media_root=temp_data_dir,
     )
-    engine = await start_application(
+    application = await start_application(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="multimodal-smoke",
         thread_id="agent",
         plugin_dirs=[],
         llm_override=llm,
     )
-    engine.plugin_ctx.sandbox.workspace_root = temp_workspace
-    image = engine.plugin_ctx.state_store.store_image(PNG_BASE64, "image/png")
+    engine = application.engine
+    application.sandbox.workspace_root = temp_workspace
+    image = application.state_store.store_image(PNG_BASE64, "image/png")
 
     events = [
         event
@@ -163,7 +164,7 @@ async def test_engine_smoke_persists_user_image_attachment(
         if message.role == "user"
     )
     assert provider_user.images == [image]
-    assert (engine.plugin_ctx.state_store.root / image.path).is_file()
+    assert (application.state_store.root / image.path).is_file()
 
-    persisted = engine.plugin_ctx.state_store.messages_path.read_text(encoding="utf-8")
+    persisted = application.state_store.messages_path.read_text(encoding="utf-8")
     assert '"type": "image"' in persisted

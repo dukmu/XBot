@@ -1,5 +1,7 @@
 """Behavior tests for the built-in Goal plugin."""
 
+from XBotv2.tests.helpers import make_engine
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,7 +256,7 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
         {"content": "Working on the audit."},
         {"content": "Plain reply."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
         plugin_ctx=setup.ctx,
@@ -269,10 +271,16 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     )
 
     # A continuation turn gets the active goal context as its prompt.
-    engine.continuation = True
+    # Continuation is carried by the agent-inbox input metadata, matching the
+    # goal plugin's production ``send_input(..., metadata={"continuation": True})``.
+    await engine.inject(
+        "[goal continuation]",
+        source="goal",
+        metadata={"continuation": True},
+    )
     _ = [
         event
-        async for event in engine.run_turn("[goal continuation]", request_id="goal")
+        async for event in engine.run_pending(request_id="goal")
     ]
     last = llm.get_call_messages(0)[-1]
     assert last.role == "user"
@@ -282,8 +290,10 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     }
     assert all(message.role != "user" for message in llm.get_call_messages(0)[:-1])
 
-    # A normal turn keeps its own prompt.
-    engine.continuation = False
+    # A normal turn keeps its own prompt. The goal plugin schedules the next
+    # active-goal continuation at TURN_END; drain it so the explicit input is
+    # the sole next-turn claim.
+    await engine.discard_inputs()
     _ = [event async for event in engine.run_turn("plain wake", request_id="plain")]
     assert llm.get_call_messages(1)[-1].content == "plain wake"
 
@@ -377,7 +387,7 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
         {"content": "The goal is complete; all required work passed."},
         {"content": "Starting the unrelated request."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=registry,
         plugin_ctx=setup.ctx,

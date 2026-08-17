@@ -1,5 +1,7 @@
 """Integration tests for SkillsPlugin — discovery, loading, and shell injection."""
 
+from XBotv2.tests.helpers import make_engine, make_tool_ctx
+
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -225,14 +227,17 @@ Body
     async def test_manual_only_skill_requires_explicit_user_invocation(
         self,
         skill_workspace,
+        state_store,
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        
+        from plugin_harness import mount_plugin
+
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         plugin._registry.discover(skill_workspace)
+        mount_plugin(plugin, state_store)
         manual_result = await plugin._on_before_user_message(
-            SimpleNamespace(user_input="/manual-only focus", sandbox=None)
+            SimpleNamespace(user_input="/manual-only focus")
         )
 
         invocation = manual_result["user_input"]
@@ -243,7 +248,7 @@ Body
         assert root.findtext("user_arguments").strip() == "focus"
 
         model_only_result = await plugin._on_before_user_message(
-            SimpleNamespace(user_input="/model-only", sandbox=None)
+            SimpleNamespace(user_input="/model-only")
         )
         assert model_only_result["event"]["data"]["code"] == (
             "skill_not_user_invocable"
@@ -274,7 +279,7 @@ Body
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=None,
         ))
-        engine = Engine(
+        engine = make_engine(
             llm=MockLLM(responses=[
                 {
                     "content": "",
@@ -384,10 +389,10 @@ Body
         registry.register(Tool.from_function(runner))
         plugin = SkillsPlugin()
         plugin._active_skills.add("restricted")
-        plugin._permission_scope.add(allowed=["echo", "runner(git *)"])
-        plugin_ctx = Context()
-        plugin_ctx.on(Events.BEFORE_TOOL_CALL, plugin._on_before_tool)
-        permissions = PermissionSystem(default_decision="ask")
+        plugin._permission_scope.add(disallowed=["runner(rm *)"])
+        plugin_ctx = make_tool_ctx(registry)
+        plugin_ctx.tools.guard(plugin._guard_tool_scope)
+        permissions = PermissionSystem(default_decision="allow")
         permissions.add_rule("deny", {"tool": "echo"})
         llm = MockLLM(responses=[
             {
@@ -399,20 +404,20 @@ Body
                         "args": {"message": "hi"},
                     },
                     {
+                        "id": "skill_denied",
+                        "name": "runner",
+                        "args": {"command": "rm build"},
+                    },
+                    {
                         "id": "allowed_by_skill",
                         "name": "runner",
                         "args": {"command": "git status"},
-                    },
-                    {
-                        "id": "normal_permission",
-                        "name": "runner",
-                        "args": {"command": "rm build"},
                     },
                 ],
             },
             {"content": "done"},
         ])
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
             plugin_ctx=plugin_ctx,
@@ -435,8 +440,8 @@ Body
         }
         assert invoked == [("runner", "git status")]
         assert "Permission denied" in results["core_denied"].content
+        assert "denied by the active skill" in results["skill_denied"].content
         assert results["allowed_by_skill"].status == "success"
-        assert "approval required" in results["normal_permission"].content
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_rolls_back_partial_registration(

@@ -161,7 +161,10 @@ class CompactPlugin:
         request = ctx.model_request or {}
         context_messages = list(request.get("messages") or [])
         tools = list(request.get("tools") or [])
-        max_context = int(getattr(ctx.config, "max_context_tokens", 32_000))
+        max_context = int(
+            getattr(ctx.config, "context_window", None)
+            or getattr(ctx.config, "max_context_tokens", 32_000)
+        )
         context_tokens, request_estimate, estimate_source = (
             calibrated_context_tokens(
                 context_messages,

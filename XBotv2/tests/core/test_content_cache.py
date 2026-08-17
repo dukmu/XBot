@@ -1,10 +1,13 @@
 """Provider-boundary tests for oversized context externalization."""
 
+from XBotv2.tests.helpers import make_engine
+
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pytest
 
+from XBotv2.core.events import Events
 from XBotv2.core.messages import Message, ReasoningPart
 from XBotv2.core.tools import ToolCall
 from XBotv2.content_cache.content_cache import (
@@ -112,7 +115,7 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
 ):
     user_input = "request:" + "z" * MAX_INLINE_CHARS
     llm = MockLLM(responses=[{"content": "done"}])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
         plugin_ctx=xcore.Context(),
@@ -125,6 +128,15 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+
+    from XBotv2.content_cache.plugin import ContentCacheComponent
+    from XBotv2.persistence.plugin import PersistenceService
+
+    plugin_ctx = engine._events
+    plugin_ctx.set("storage", state_store)
+    ContentCacheComponent().apply(plugin_ctx, None)
+    persistence = PersistenceService(state_store, engine.state)
+    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     events = [event async for event in engine.run_turn(user_input)]
 
@@ -146,7 +158,7 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
 ):
     user_input = "request:" + "z" * MAX_USER_INLINE_CHARS
     llm = MockLLM(responses=[{"content": "done"}])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
         plugin_ctx=xcore.Context(),
@@ -159,6 +171,15 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+
+    from XBotv2.content_cache.plugin import ContentCacheComponent
+    from XBotv2.persistence.plugin import PersistenceService
+
+    plugin_ctx = engine._events
+    plugin_ctx.set("storage", state_store)
+    ContentCacheComponent().apply(plugin_ctx, None)
+    persistence = PersistenceService(state_store, engine.state)
+    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     _events = [event async for event in engine.run_turn(user_input)]
 

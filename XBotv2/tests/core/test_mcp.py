@@ -223,32 +223,31 @@ def test_invalid_mcp_tool_schema_is_rejected():
 async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(tmp_path):
     from XBotv2.mcp.callbacks import client_callbacks
     from mcp import types
-    from XBotv2.core import EventContext, Events, ModelResponse, SessionInfo
+    from XBotv2.core import SessionInfo
+    from XBotv2.llm.mock import MockLLM
+    from xcore import Context
 
     requested = []
+    llm = MockLLM(responses=[{"content": "Done"}])
 
-    async def invoke_model(messages):
-        system = ET.fromstring(messages[0].content)
-        assert system.tag == "mcp_sampling_system_prompt"
-        assert system.attrib["source"] == "mcp_server"
-        assert system.text.strip() == "Be concise"
-        assert (messages[1].role, messages[1].content) == ("user", "Summarize")
-        return ModelResponse(content="Done")
+    class FakeInteractions:
+        async def request_user_input(self, question, **kwargs):
+            requested.append((question, kwargs))
+            return {"status": "answered", "answer": "focused"}
 
-    async def request_user_input(question, **kwargs):
-        requested.append((question, kwargs))
-        return {"status": "answered", "answer": "focused"}
+    services = Context()
+    services.set("llm", llm)
+    services.set("interactions", FakeInteractions())
 
-    callbacks = client_callbacks(EventContext(
-        invoke_model=invoke_model,
-        request_user_input=request_user_input,
-        session=SessionInfo(
+    callbacks = client_callbacks(
+        services,
+        SessionInfo(
             session_id="s",
             thread_id="t",
             workspace_root=str(tmp_path),
             provider="minimax",
         ),
-    ))
+    )
 
     sample = await callbacks["sampling_callback"](
         None,
@@ -274,6 +273,12 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
         ),
     )
 
+    sent = llm.get_call_messages(0)
+    system = ET.fromstring(sent[0].content)
+    assert system.tag == "mcp_sampling_system_prompt"
+    assert system.attrib["source"] == "mcp_server"
+    assert system.text.strip() == "Be concise"
+    assert (sent[1].role, sent[1].content) == ("user", "Summarize")
     assert sample.content.text == "Done"
     assert sample.model == "minimax"
     assert str(roots.roots[0].uri) == tmp_path.resolve().as_uri()

@@ -414,12 +414,24 @@ class Engine:
             raise
         except BaseException as exc:
             logger.exception("Turn failed")
+            current_input = next(
+                (
+                    item.content
+                    for item in claimed
+                    if item.target is InboxTarget.NEXT_TURN
+                ),
+                "",
+            )
             failure_ctx = self._make_event_context(
                 stop_reason="error",
                 error=exc,
+                user_input=current_input,
             )
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
-            ctx = self._make_event_context(error=exc)
+            ctx = self._make_event_context(
+                error=exc,
+                user_input=current_input,
+            )
             await self._dispatch(Events.ON_ERROR, ctx, short_circuit=False)
             yield {
                 "type": "error",

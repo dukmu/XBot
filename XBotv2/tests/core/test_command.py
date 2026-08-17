@@ -273,8 +273,16 @@ async def test_plugin_command_registry_owns_server_dispatch() -> None:
         description="Sample extension command.",
         handler=handler,
     )
-    loader = SimpleNamespace(get_command=lambda name: extension if name == "sample" else None)
-    ctx = SimpleNamespace(engine=SimpleNamespace(plugin_loader=loader))
+    loader = SimpleNamespace(
+        get_command=lambda name: extension if name == "sample" else None,
+        status_slots=lambda: {},
+    )
+    ctx = SimpleNamespace(
+        engine=SimpleNamespace(plugin_loader=loader),
+        services=SimpleNamespace(
+            get=lambda name: loader if name == "loader" else None
+        ),
+    )
 
     result = await execute_command(ctx, "sample", ["a", "b"], raw_args="a b")
 

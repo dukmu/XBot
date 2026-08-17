@@ -1,5 +1,7 @@
 """Behavior tests for the built-in TodoList plugin."""
 
+from XBotv2.tests.helpers import make_engine
+
 import json
 from pathlib import Path
 
@@ -243,7 +245,7 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
         },
         {"content": "Tracked."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=registry,
         plugin_ctx=xcore.Context(),

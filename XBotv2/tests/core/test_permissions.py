@@ -221,7 +221,13 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
             permissions=permissions,
             sandbox=SimpleNamespace(replace_config=lambda _config: None),
             agents=SimpleNamespace(
-                apply_definition=lambda _config, _definition: None
+                active_definition=lambda: SimpleNamespace(
+                    permissions=base_permissions
+                ),
+                runtime_config=lambda _definition: SimpleNamespace(
+                    permissions={"allow": [{"tool": "shell"}]},
+                    sandbox={},
+                ),
             ),
             state_store=SimpleNamespace(
                 read_thread_metadata=lambda: {
