@@ -283,6 +283,13 @@ def _register_routes(app: FastAPI) -> None:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
+        except OperationError as exc:
+            raise HttpServerError(
+                exc.code,
+                exc.message,
+                status=404 if exc.code.endswith("_not_found") else 400,
+                retryable=exc.retryable,
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             logger.exception("Session open failed for %s", raw_session_id or "<new>")
             raise HttpServerError(

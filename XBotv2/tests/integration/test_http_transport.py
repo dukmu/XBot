@@ -1555,6 +1555,101 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_resume_and_fork_without_persistence_fail_clearly(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
+            {
+                "id": "sandbox",
+                "name": "sandbox",
+                "config": {"sandbox": {"enabled": False, "resources": []}},
+            },
+            {
+                "id": "permissions",
+                "name": "permissions",
+                "config": {
+                    "permissions": {
+                        "ask": [
+                            {"tool": "ask_user"},
+                            {"tool": "request_permission"},
+                            {"tool": "edit"},
+                        ],
+                    },
+                },
+            },
+            {
+                "id": "persistence",
+                "name": "persistence",
+                "disabled": True,
+            },
+        ], sort_keys=False),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = await start_server_application(
+        provider_name="default",
+        paths=RuntimePaths.from_data_dir(data_dir),
+        workspace_root=str(workspace),
+        no_plugins=True,
+    )
+    app = server.server
+    set_llm_override(app, MockLLM(responses=[{"content": "memory only"}]))
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        opened = await ac.post(
+            "/sessions", json={"session_id": "mem", "thread_id": "t"}
+        )
+        assert opened.status_code == 200
+
+        forked = await ac.post("/sessions/mem/fork")
+        assert forked.status_code == 400
+        assert forked.json()["code"] == "persistence_unavailable"
+        assert "persistence" in forked.json()["message"]
+
+        resumed = await ac.post(
+            "/sessions",
+            json={"session_id": "mem", "thread_id": "t", "mode": "resume"},
+        )
+        assert resumed.status_code == 400
+        assert resumed.json()["code"] == "persistence_unavailable"
+        assert "persistence is not mounted" in resumed.json()["message"]
+    await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_http_messages_sse_stream_turn_events(
     client: httpx.AsyncClient,
 ) -> None:

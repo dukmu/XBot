@@ -91,7 +91,14 @@ async def fork_session(
         for ctx in sorted(contexts, key=lambda item: item.thread_id):
             await stack.enter_async_context(ctx.turn_lock)
         for ctx in contexts:
-            await ctx.services.persistence.flush()
+            persistence = ctx.services.get("persistence", strict=False)
+            if persistence is None:
+                raise OperationError(
+                    "persistence_unavailable",
+                    "Cannot fork a live session while message persistence "
+                    "is disabled",
+                )
+            await persistence.flush()
         return fork_persisted_session(paths, source_session_id)
 
 

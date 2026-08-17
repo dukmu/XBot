@@ -13,6 +13,7 @@ import yaml
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.application import start_application
+from XBotv2.application.operations import OperationError
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.models import SessionSummary, ThreadSummary
@@ -168,6 +169,13 @@ class SessionManager:
                 is_subagent=is_subagent,
             )
             engine = services.engine
+            if mode == "resume" and services.get("state_store", strict=False) is None:
+                await services.destroy()
+                raise OperationError(
+                    "persistence_unavailable",
+                    f"Cannot resume {session_id}/{thread_id}: "
+                    "message persistence is not mounted",
+                )
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
