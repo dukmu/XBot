@@ -932,6 +932,36 @@ async def test_http_resume_missing_session_returns_404(client: httpx.AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_http_resume_leftover_thread_dir_does_not_create_empty_session(
+    http_app,
+    tmp_path: Path,
+) -> None:
+    """A leftover state directory without metadata must not reopen empty."""
+    from XBotv2.core.paths import RuntimePaths
+
+    data_dir = RuntimePaths.from_data_dir(http_app.state.paths.data_dir)
+    leftover = (
+        data_dir.session("leftover").thread("agent").state_dir
+    )
+    leftover.mkdir(parents=True)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=http_app), base_url="http://test"
+    ) as ac:
+        response = await ac.post(
+            "/sessions",
+            json={
+                "session_id": "leftover",
+                "thread_id": "agent",
+                "mode": "resume",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "session_not_found"
+
+
+@pytest.mark.asyncio
 async def test_http_new_existing_session_returns_409(client: httpx.AsyncClient) -> None:
     payload = {"session_id": "duplicate", "thread_id": "t1", "mode": "new"}
     first = await client.post("/sessions", json=payload)

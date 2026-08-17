@@ -144,6 +144,15 @@ class SessionManager:
             session_paths = self.paths.session(session_id)
             if mode == "resume" and not session_paths.has_thread(thread_id):
                 raise SessionNotFound(f"{session_id}/{thread_id}")
+            if mode == "resume" and not _has_persisted_session(
+                session_paths, thread_id
+            ):
+                # A leftover thread directory (state/ exists but the session
+                # never committed thread metadata) must not silently reopen
+                # as an empty session on reconnect.
+                raise SessionNotFound(
+                    f"{session_id}/{thread_id} has no persisted session"
+                )
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
             extra_plugins = (
@@ -243,6 +252,17 @@ class SessionManager:
     async def active_threads(self) -> dict[tuple[str, str], SessionRuntime]:
         async with self._lock:
             return dict(self._sessions)
+
+
+def _has_persisted_session(
+    session_paths: Any,
+    thread_id: str,
+) -> bool:
+    """Whether a thread has committed real session evidence on disk."""
+    if session_paths.thread(thread_id).metadata_file.exists():
+        return True
+    legacy = session_paths.thread(thread_id, legacy=True)
+    return legacy.metadata_file.exists()
 
 
 def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:
