@@ -149,6 +149,9 @@ async def reload_agents(ctx: Any) -> dict[str, Any]:
     async with ctx.turn_lock:
         if not await loader.reload("agents"):
             raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
+        # Workspace Agent definitions are discovered by the workspace
+        # plugin; reload it so workspace edits apply with the same command.
+        await loader.reload("workspace_instructions")
         definition = ctx.services.agents.definition(active)
         if definition is None or definition.mode == "subagent":
             raise OperationError(

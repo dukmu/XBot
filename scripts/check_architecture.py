@@ -149,6 +149,17 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _string_values(node: ast.AST | None) -> set[str]:
+    """Extract string constants from a list/tuple node (empty on other nodes)."""
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return set()
+    return {
+        item.value
+        for item in node.elts
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    }
+
+
 def _module_root(module: str) -> str | None:
     parts = module.split(".")
     if len(parts) < 2 or parts[0] != "XBotv2":
@@ -744,14 +755,23 @@ def check_plugin_imports() -> list[Violation]:
                     if not any(
                         isinstance(target, ast.Name) and target.id == "inject"
                         for target in node.targets
-                    ) or not isinstance(node.value, (ast.List, ast.Tuple)):
+                    ):
                         continue
-                    declared.update(
-                        item.value
-                        for item in node.value.elts
-                        if isinstance(item, ast.Constant)
-                        and isinstance(item.value, str)
-                    )
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        declared.update(
+                            item.value
+                            for item in node.value.elts
+                            if isinstance(item, ast.Constant)
+                            and isinstance(item.value, str)
+                        )
+                    elif isinstance(node.value, ast.Dict):
+                        for key in node.value.keys:
+                            if not isinstance(key, ast.Constant):
+                                continue
+                            if key.value == "required":
+                                declared.update(_string_values(node.value.values[0]))
+                            elif key.value == "optional":
+                                declared.update(_string_values(node.value.values[0]))
                 for missing in sorted(REQUIRED_PLUGIN_INJECTIONS[owner] - declared):
                     violations.append(Violation(
                         path,

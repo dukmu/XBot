@@ -52,11 +52,12 @@ use the thread layout.
 XBot ships two built-in definitions registered by the `agents` plugin:
 `default` (general-purpose coding agent, selected for a new primary thread
 when the client does not choose an Agent) and `Explorer` (read-only).  The
-plugin then loads `<data_dir>/.agents/*.md`, then `<workspace>/.agents/*.md`
-at startup — a same-named Markdown definition replaces the built-in (data root
-wins over the built-in, workspace wins over the data root).  The filename is
-the Agent name; the YAML frontmatter contains configuration and the Markdown
-body is the Agent prompt:
+plugin then loads `<data_dir>/.agents/*.md`.  Workspace definitions are
+discovered by the `workspace_instructions` plugin and overlaid on top — a
+same-named Markdown definition replaces the built-in (data root wins over the
+built-in, workspace wins over the data root).  The filename is the Agent
+name; the YAML frontmatter contains configuration and the Markdown body is
+the Agent prompt:
 
 ```markdown
 ---
@@ -75,12 +76,15 @@ Unknown fields fail startup. Accepted behavioral fields are `description`,
 `mode`, `provider`, `model`, `temperature`, `max_output_tokens`,
 `context_window`, `max_iterations` (or OpenCode's `steps`), `tools`,
 `permission`, and `hidden`. `tools` may be an XBot selector list or an
-OpenCode-style boolean mapping. The legacy `permissions` spelling remains
-accepted with XBot's grouped rule schema. Standard `permission` keys are
-canonical XBot tool names or wildcard patterns; XBot does not guess aliases such
-as `bash` or `edit`. A `model` value may use `provider/model-id`. Credentials,
-provider URLs, plugin configuration, sandbox roots, and Hook paths do not belong
-in Agent Markdown.
+OpenCode-style boolean mapping (the `false` entries are excluded from the
+tool set).  Tool visibility is not a permission policy: allowed/denied/asked
+decisions are written with `permission` and are validated and normalized by
+the `permissions` plugin when the Agent activates.  The legacy `permissions`
+spelling remains accepted with XBot's grouped rule schema. Standard
+`permission` keys are canonical XBot tool names or wildcard patterns; XBot
+does not guess aliases such as `bash` or `edit`. A `model` value may use
+`provider/model-id`. Credentials, provider URLs, plugin configuration,
+sandbox roots, and Hook paths do not belong in Agent Markdown.
 
 The default Tool iteration budget is 200. When an Agent definition sets
 `max_iterations`, that value replaces the default. Exhausting the budget

@@ -8,6 +8,7 @@ filesystem paths. Path expressions may contain runtime-variable references.
 from __future__ import annotations
 
 import re
+import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +17,42 @@ from XBotv2.core.variables import RuntimeVariables
 from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
 
 PermissionDecision = Literal["allow", "deny", "ask"]
+_DECISIONS = {"allow", "deny", "ask"}
+
+
+def normalize_agent_permissions(value: Any) -> dict[str, list[dict[str, str]]]:
+    """Normalize an Agent definition's raw permission overlay.
+
+    Accepts the ``permission`` / ``permissions`` frontmatter shapes: a whole
+    decision string (``allow`` / ``ask`` / ``deny``), a ``{tool: decision}``
+    mapping, or XBot's grouped ``{decision: [rules]}`` schema.  Rules keep
+    regex patterns for tool names, so the permission system owns the policy
+    vocabulary while Agent definitions only carry raw data.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        if value not in _DECISIONS:
+            raise ValueError(f"Invalid permission decision: {value!r}")
+        return {value: [{"tool": ".*"}]}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"Agent permissions must be a mapping or decision: {value!r}"
+        )
+    if set(value).issubset(_DECISIONS) and all(
+        isinstance(rules, list) for rules in value.values()
+    ):
+        return dict(value)
+    normalized: dict[str, list[dict[str, str]]] = {}
+    for tool, decision in value.items():
+        if decision not in _DECISIONS:
+            raise ValueError(
+                f"Permission for {tool!r} must be allow, ask, or deny"
+            )
+        normalized.setdefault(str(decision), []).append(
+            {"tool": fnmatch.translate(str(tool))}
+        )
+    return normalized
 
 
 @dataclass

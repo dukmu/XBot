@@ -142,6 +142,9 @@ manifest-declared hooks/tools remain supported for declarative plugins.
 Agent definitions follow the same ownership rules as other resources: names
 are unique, setup failure rolls them back, and unload unregisters them. Core
 owns Agent execution; a plugin registers definitions, not a separate loop.
+Workspace-scoped plugins discover Markdown definitions outside the data root
+through `ctx.agents.register_markdown(directory, overlay=True)`, so workspace
+definitions replace a same-named base definition without mutating it.
 
 Prompt fragments use the public `PromptFragmentStage` values as compatible
 ordering zones:

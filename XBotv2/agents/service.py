@@ -12,6 +12,7 @@ from typing import Any
 
 from xcore import bound_effect, current_plugin_name
 
+from XBotv2.agents.loader import load_definitions
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.loop import (
@@ -23,31 +24,53 @@ from XBotv2.core.runtime import SessionInfo
 
 
 class AgentRegistry:
-    """Store immutable Agent definitions under their registering owner."""
+    """Store immutable Agent definitions under their registering owner.
+
+    Base definitions (built-ins, data root, programmatic registrations) and
+    workspace overlays live in separate layers: an overlay replaces a base
+    definition by name without mutating it, and unloading either side keeps
+    the other intact.
+    """
 
     def __init__(self) -> None:
-        self._definitions: dict[str, AgentDefinition] = {}
-        self._owners: dict[str, str] = {}
+        self._base: dict[str, AgentDefinition] = {}
+        self._base_owners: dict[str, str] = {}
+        self._overlay: dict[str, AgentDefinition] = {}
+        self._overlay_owners: dict[str, str] = {}
 
-    def register(self, definition: AgentDefinition, *, owner: str) -> str:
-        if definition.name in self._definitions:
+    def register(
+        self,
+        definition: AgentDefinition,
+        *,
+        owner: str,
+        overlay: bool = False,
+    ) -> str:
+        layer = self._overlay if overlay else self._base
+        owners = self._overlay_owners if overlay else self._base_owners
+        if definition.name in layer:
             raise ValueError(f"Agent {definition.name!r} is already registered")
-        self._definitions[definition.name] = definition
-        self._owners[definition.name] = owner
+        layer[definition.name] = definition
+        owners[definition.name] = owner
         return definition.name
 
     def unregister(self, name: str, *, owner: str) -> bool:
-        if self._owners.get(name) != owner:
-            return False
-        self._owners.pop(name, None)
-        self._definitions.pop(name, None)
-        return True
+        for layer, owners in (
+            (self._overlay, self._overlay_owners),
+            (self._base, self._base_owners),
+        ):
+            if owners.get(name) == owner:
+                owners.pop(name, None)
+                layer.pop(name, None)
+                return True
+        return False
 
     def get(self, name: str) -> AgentDefinition | None:
-        return self._definitions.get(name)
+        return self._overlay.get(name) or self._base.get(name)
 
     def definitions(self) -> tuple[AgentDefinition, ...]:
-        return tuple(self._definitions.values())
+        merged = dict(self._base)
+        merged.update(self._overlay)
+        return tuple(merged.values())
 
 
 class AgentsService:
@@ -397,11 +420,48 @@ class AgentsService:
         if definition is not None and definition.disabled_tools:
             registry.exclude(list(definition.disabled_tools))
 
-    def register(self, definition: AgentDefinition) -> str:
+    def register(
+        self,
+        definition: AgentDefinition,
+        *,
+        overlay: bool = False,
+    ) -> str:
         owner = current_plugin_name()
-        name = self.registry.register(definition, owner=owner)
+        name = self.registry.register(definition, owner=owner, overlay=overlay)
         bound_effect(lambda: self.registry.unregister(name, owner=owner))
         return name
+
+    def register_markdown(
+        self,
+        directory: Any,
+        *,
+        variables: Any = None,
+        overlay: bool = True,
+    ) -> tuple[str, ...]:
+        """Parse and register every Markdown definition in *directory*.
+
+        Used by workspace-scoped plugins (``workspace_instructions``) to
+        register definitions discovered outside the data root.  Overlay
+        registrations replace a same-named base definition without mutating
+        it, so unloading the discoverer restores the underlying definition.
+        """
+        owner = current_plugin_name()
+        names = [
+            self.registry.register(
+                definition,
+                owner=owner,
+                overlay=overlay,
+            )
+            for definition in load_definitions(directory, variables)
+        ]
+        if names:
+            bound_effect(
+                lambda: [
+                    self.registry.unregister(name, owner=owner)
+                    for name in names
+                ]
+            )
+        return tuple(names)
 
     def unregister(self, name: str) -> bool:
         return self.registry.unregister(name, owner=current_plugin_name())

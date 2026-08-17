@@ -4,6 +4,8 @@ This plugin owns everything workspace-scoped:
 
 * injecting ``<workspace>/AGENTS.md`` into each model request (context
   components);
+* discovering ``<workspace>/.agents/*.md`` and registering them as workspace
+  Agent overlays (workspace definitions win over data-root and built-ins);
 * applying the workspace overlay ``<workspace>/.xbot/plugins.yaml`` to the
   plugin tree after load — overriding entries (config deep-merged, e.g.
   workspace hooks / workspace tools / permissions / disabled plugins) and
@@ -24,7 +26,10 @@ from XBotv2.core import (
 
 
 class WorkspaceInstructionsPlugin:
-    inject = ['session', 'loader', 'variables', 'workspace_root']
+    inject = {
+        "required": ["session", "loader", "variables", "workspace_root"],
+        "optional": ["agents"],
+    }
     name = "workspace_instructions"
 
     """Inject the current workspace AGENTS.md into each model request."""
@@ -44,6 +49,8 @@ class WorkspaceInstructionsPlugin:
             # The workspace overlay disables this plugin: skip AGENTS.md
             # injection and do not apply the rest of the patch.
             return
+
+        self._register_workspace_agents(ctx)
 
         def inject_workspace_instructions(hook_ctx: EventContext) -> None:
             components = hook_ctx.context_components
@@ -83,6 +90,20 @@ class WorkspaceInstructionsPlugin:
             inject_workspace_instructions,
         )
         await self._apply_workspace_patch(ctx, overlay)
+
+    def _register_workspace_agents(self, ctx: Any) -> None:
+        """Discover and register workspace Agent definitions as overlays."""
+        agents = getattr(ctx, "agents", None)
+        if agents is None:
+            return
+        directory = self.workspace_root / ".agents"
+        if not directory.is_dir():
+            return
+        agents.register_markdown(
+            directory,
+            variables=ctx.variables,
+            overlay=True,
+        )
 
     async def _apply_workspace_patch(self, ctx: Any, overlay: Path) -> None:
         """Apply ``<workspace>/.xbot/plugins.yaml`` as a tree patch."""

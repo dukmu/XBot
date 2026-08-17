@@ -865,6 +865,63 @@ plugin = ConfiguredPlugin()
         assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
+    async def test_workspace_agents_are_discovered_by_workspace_instructions(
+        self, temp_data_dir, temp_workspace
+    ):
+        """Disabling workspace_instructions also disables workspace Agents."""
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+        (temp_workspace / ".xbot").mkdir()
+        (temp_workspace / ".xbot" / "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "workspace_instructions",
+                "name": "workspace_instructions",
+                "disabled": True,
+            }], sort_keys=False),
+            encoding="utf-8",
+        )
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="workspace-disabled-agents",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=MockLLM(responses=[]),
+        )
+
+        assert application.agents.definition("reviewer") is None
+        assert {item.name for item in application.agents.definitions()} == {
+            "default",
+            "Explorer",
+        }
+        await application.stop()
+
+    @pytest.mark.asyncio
+    async def test_workspace_subagent_appears_in_model_catalog(
+        self, temp_data_dir, temp_workspace
+    ):
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+        llm = MockLLM(responses=[{"content": "ok"}])
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="catalog",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+
+        _ = [event async for event in application.engine.run_turn("hello")]
+        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
+        assert "- reviewer: Workspace reviewer" in prompt
+        await application.stop()
+
+    @pytest.mark.asyncio
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
         _write_plugins(temp_data_dir, {"permissions": {"config": {

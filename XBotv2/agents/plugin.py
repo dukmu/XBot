@@ -1,23 +1,21 @@
-"""Agent definition loading and model-facing subagent job tools.
+"""Agent registration and model-facing subagent job tools.
 
 Subagents run as SUBAGENT jobs in the shared JobRegistry. This plugin only
 implements the adapter that requests a child session from the session service,
 and the typed model-facing tools. It never owns lifecycle
 state; waiting, cancellation, output storage, and listing live in the registry.
+It registers the built-in and data-root definitions; workspace definitions
+are discovered and overlaid by the ``workspace_instructions`` plugin.
 """
 
 from __future__ import annotations
 
-import fnmatch
-from pathlib import Path
 from typing import Any
 
-import yaml
-
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
+from XBotv2.agents.loader import load_definitions
 from XBotv2.core import (
-    AgentDefinition,
-    RuntimeVariables,
+    Events,
     Tool,
     ToolResult,
 )
@@ -31,22 +29,6 @@ from XBotv2.core.jobs import (
 )
 from xcore import S
 
-_FRONTMATTER = "---"
-_FIELDS = {
-    "description",
-    "mode",
-    "provider",
-    "model",
-    "temperature",
-    "max_output_tokens",
-    "context_window",
-    "max_iterations",
-    "steps",
-    "permission",
-    "permissions",
-    "tools",
-    "hidden",
-}
 _MAX_PROMPT_PREVIEW = 100
 _MAX_SUMMARY = 256
 
@@ -97,7 +79,7 @@ class AgentsPlugin:
         "session", "agents", "jobs", "tools", "prompts",
         "data_root", "variables", "workspace_root",
     ]
-    """Register workspace Agent definitions and subagent job tools."""
+    """Register built-in/data-root Agent definitions and subagent job tools."""
 
     name = "agents"
     Config = S.object({
@@ -111,43 +93,22 @@ class AgentsPlugin:
         self.ctx = ctx
         self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
         # Built-ins are the base layer; a same-named Markdown definition in the
-        # data root or workspace replaces them (workspace wins).
+        # data root replaces them.  Workspace definitions are discovered by
+        # workspace_instructions and registered as an overlay layer.
         definitions = {
             definition.name: definition
             for definition in BUILTIN_AGENT_DEFINITIONS
         }
         definitions.update({
             definition.name: definition
-            for definition in _load_definitions(
+            for definition in load_definitions(
                 ctx.data_root / ".agents",
-                ctx.variables,
-            )
-        })
-        definitions.update({
-            definition.name: definition
-            for definition in _load_definitions(
-                ctx.workspace_root / ".agents",
                 ctx.variables,
             )
         })
         for definition in definitions.values():
             ctx.agents.register(definition)
-        visible_subagents = [
-            definition
-            for definition in definitions.values()
-            if definition.mode in {"subagent", "all"} and not definition.hidden
-        ]
-        if visible_subagents:
-            lines = ["Available subagents for the spawn_subagent tool:"]
-            lines.extend(
-                f"- {definition.name}: {definition.description}"
-                for definition in visible_subagents
-            )
-            ctx.prompts.add(
-                "context_suffix",
-                "\n".join(lines),
-                source="available_subagents",
-            )
+        ctx.on(Events.SESSION_INIT, self._on_session_init)
         if ctx.session is None or ctx.jobs is None:
             return
 
@@ -337,6 +298,25 @@ class AgentsPlugin:
                 Tool.from_function(function),
             )
 
+    def _on_session_init(self, ctx: Any) -> None:
+        """Publish the subagent catalog once all definitions are registered."""
+        visible_subagents = [
+            definition
+            for definition in self.ctx.agents.definitions()
+            if definition.mode in {"subagent", "all"} and not definition.hidden
+        ]
+        if visible_subagents:
+            lines = ["Available subagents for the spawn_subagent tool:"]
+            lines.extend(
+                f"- {definition.name}: {definition.description}"
+                for definition in visible_subagents
+            )
+            self.ctx.prompts.add(
+                "context_suffix",
+                "\n".join(lines),
+                source="available_subagents",
+            )
+
 
 def _parse_status(value: str | None) -> JobStatus | None:
     if value is None:
@@ -345,157 +325,6 @@ def _parse_status(value: str | None) -> JobStatus | None:
         return JobStatus(value)
     except ValueError:
         return None
-
-
-def _load_definitions(
-    directory: Path,
-    variables: RuntimeVariables | None = None,
-) -> list[AgentDefinition]:
-    if not directory.is_dir():
-        return []
-    return [
-        _load_definition(path, variables)
-        for path in sorted(directory.glob("*.md"))
-    ]
-
-
-def _load_definition(
-    path: Path,
-    variables: RuntimeVariables | None = None,
-) -> AgentDefinition:
-    variables = variables or RuntimeVariables()
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith(f"{_FRONTMATTER}\n"):
-        raise ValueError(f"Agent definition requires YAML frontmatter: {path}")
-    marker = text.find(f"\n{_FRONTMATTER}\n", len(_FRONTMATTER) + 1)
-    if marker < 0:
-        raise ValueError(f"Agent definition has unclosed frontmatter: {path}")
-    metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
-    if not isinstance(metadata, dict):
-        raise ValueError(f"Agent frontmatter must be a mapping: {path}")
-    unknown = set(metadata) - _FIELDS
-    if unknown:
-        raise ValueError(
-            f"Unknown Agent fields in {path}: {', '.join(sorted(unknown))}"
-        )
-    prompt = variables.expand_markdown(
-        text[marker + len(_FRONTMATTER) + 2:].strip(),
-        source=str(path),
-    )
-    tools, disabled_tools, tool_permissions = _parse_tools(
-        metadata.get("tools"), path
-    )
-    if "permission" in metadata and "permissions" in metadata:
-        raise ValueError(f"Use either permission or permissions, not both: {path}")
-    permissions = _parse_permissions(
-        metadata.get("permission", metadata.get("permissions")), path
-    )
-    for decision, rules in tool_permissions.items():
-        permissions.setdefault(decision, []).extend(rules)
-    provider, model = _parse_model(metadata, path)
-    return AgentDefinition(
-        name=path.stem,
-        description=str(metadata.get("description") or ""),
-        mode=str(metadata.get("mode") or "all"),
-        prompt=prompt,
-        provider=provider,
-        model=model,
-        temperature=_optional_float(metadata, "temperature"),
-        max_output_tokens=_optional_int(metadata, "max_output_tokens"),
-        context_window=_optional_int(metadata, "context_window"),
-        max_iterations=_optional_int(
-            metadata, "max_iterations", alias="steps"
-        ),
-        permissions=permissions,
-        tools=tools,
-        disabled_tools=disabled_tools,
-        hidden=bool(metadata.get("hidden", False)),
-    )
-
-
-def _parse_tools(
-    value: Any,
-    path: Path,
-) -> tuple[tuple[str, ...] | None, tuple[str, ...], dict[str, list[dict[str, str]]]]:
-    if value is None:
-        return None, (), {}
-    if isinstance(value, list):
-        return tuple(str(tool) for tool in value), (), {}
-    if isinstance(value, dict) and all(
-        isinstance(enabled, bool) for enabled in value.values()
-    ):
-        disabled = tuple(str(tool) for tool, visible in value.items() if not visible)
-        permissions: dict[str, list[dict[str, str]]] = {}
-        for tool, visible in value.items():
-            decision = "allow" if visible else "deny"
-            permissions.setdefault(decision, []).append(
-                {"tool": _tool_pattern(str(tool))}
-            )
-        return None, disabled, permissions
-    raise ValueError(f"Agent tools must be a list or boolean mapping: {path}")
-
-
-def _parse_permissions(value: Any, path: Path) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, str):
-        if value not in {"allow", "ask", "deny"}:
-            raise ValueError(f"Invalid Agent permission decision in {path}: {value}")
-        return {value: [{"tool": ".*"}]}
-    if not isinstance(value, dict):
-        raise ValueError(f"Agent permissions must be a mapping or decision: {path}")
-    if set(value).issubset({"allow", "ask", "deny"}) and all(
-        isinstance(rules, list) for rules in value.values()
-    ):
-        return dict(value)
-
-    normalized: dict[str, list[dict[str, str]]] = {}
-    for tool, decision in value.items():
-        if decision not in {"allow", "ask", "deny"}:
-            raise ValueError(
-                f"Permission for {tool!r} must be allow, ask, or deny: {path}"
-            )
-        normalized.setdefault(str(decision), []).append(
-            {"tool": _tool_pattern(str(tool))}
-        )
-    return normalized
-
-
-def _tool_pattern(value: str) -> str:
-    return fnmatch.translate(value)
-
-
-def _parse_model(
-    metadata: dict[str, Any],
-    path: Path,
-) -> tuple[str | None, str | None]:
-    provider = str(metadata["provider"]) if metadata.get("provider") else None
-    model = str(metadata["model"]) if metadata.get("model") else None
-    if model is None or "/" not in model:
-        return provider, model
-    model_provider, model_name = model.split("/", 1)
-    if provider is not None and provider != model_provider:
-        raise ValueError(
-            f"Agent provider {provider!r} conflicts with model {model!r}: {path}"
-        )
-    return provider or model_provider, model_name
-
-
-def _optional_float(metadata: dict[str, Any], name: str) -> float | None:
-    value = metadata.get(name)
-    return float(value) if value is not None else None
-
-
-def _optional_int(
-    metadata: dict[str, Any],
-    name: str,
-    *,
-    alias: str | None = None,
-) -> int | None:
-    if alias and name in metadata and alias in metadata:
-        raise ValueError(f"Use either {name} or {alias}, not both")
-    value = metadata.get(name, metadata.get(alias) if alias else None)
-    return int(value) if value is not None else None
 
 
 def _preview(value: str, limit: int) -> str:

@@ -106,16 +106,19 @@ instead of replaying partial output.
 ## Agent Definitions
 
 XBot ships two built-in Agent definitions (`default` and `Explorer`) registered
-by the `agents` plugin.  `<data_dir>/.agents/*.md` and
-`<workspace>/.agents/*.md` define additional Agents; a same-named Markdown
-definition replaces the built-in (data root wins over the built-in, workspace
-wins over the data root). Agent frontmatter may select a provider/model and
-override generation or context limits; these values do not belong in plugin
-config.
+by the `agents` plugin, which also loads `<data_dir>/.agents/*.md`.  Workspace
+definitions are discovered by the `workspace_instructions` plugin — the owner
+of everything workspace-scoped — which registers `<workspace>/.agents/*.md`
+as an overlay.  A same-named Markdown definition replaces the built-in (data
+root wins over the built-in, workspace wins over the data root).  Disabling
+`workspace_instructions` also disables workspace Agent definitions.
 
-Agent definitions are immutable during a turn. Run `/agent reload` while the
-thread is idle to reload the Agent plugin and reapply the active definition.
-`/agent list` and `/agent use <name>` operate on the loaded definitions.
+Agent frontmatter may select a provider/model and override generation or
+context limits; these values do not belong in plugin config.  Agent
+definitions are immutable during a turn. Run `/agent reload` while the thread
+is idle to reload the Agent and workspace plugins and reapply the active
+definition.  `/agent list` and `/agent use <name>` operate on the loaded
+definitions.
 
 `<workspace>/AGENTS.md` is different: the `workspace_instructions` plugin reads
 it before every context build, so edits apply to the next model request without

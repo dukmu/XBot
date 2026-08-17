@@ -6,7 +6,7 @@ from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.core import AgentDefinition, RuntimeVariables
 from XBotv2.agents.service import AgentRegistry
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.agents.plugin import _load_definition
+from XBotv2.agents.loader import load_definition
 
 
 def test_agent_definition_requires_stable_name_and_description():
@@ -26,6 +26,51 @@ def test_registry_enforces_name_ownership():
     assert not registry.unregister("reviewer", owner="other")
     assert registry.get("reviewer") is definition
     assert registry.unregister("reviewer", owner="agents")
+
+
+def test_registry_workspace_overlay_replaces_and_restores_base():
+    registry = AgentRegistry()
+    base = AgentDefinition(name="reviewer", description="Base reviewer")
+    overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
+
+    registry.register(base, owner="agents")
+    registry.register(overlay, owner="workspace_instructions", overlay=True)
+
+    assert registry.get("reviewer") is overlay
+    assert registry.definitions() == (overlay,)
+    # Unloading the overlay reveals the untouched base definition.
+    assert registry.unregister("reviewer", owner="workspace_instructions")
+    assert registry.get("reviewer") is base
+    assert registry.unregister("reviewer", owner="agents")
+    assert registry.get("reviewer") is None
+
+
+def test_registry_base_unload_keeps_workspace_overlay():
+    registry = AgentRegistry()
+    base = AgentDefinition(name="reviewer", description="Base reviewer")
+    overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
+
+    registry.register(base, owner="agents")
+    registry.register(overlay, owner="workspace_instructions", overlay=True)
+
+    # Reloading the agents plugin removes its base layer only.
+    assert registry.unregister("reviewer", owner="agents")
+    assert registry.get("reviewer") is overlay
+    assert registry.unregister("reviewer", owner="workspace_instructions")
+    assert registry.get("reviewer") is None
+
+
+def test_registry_overlay_layer_rejects_duplicate_names():
+    registry = AgentRegistry()
+    registry.register(
+        AgentDefinition(name="worker", description="Worker"),
+        owner="agents",
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register(
+            AgentDefinition(name="worker", description="Other"),
+            owner="agents",
+        )
 
 
 def test_builtin_agents_cover_default_and_explorer():
@@ -82,7 +127,7 @@ def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_pa
         "tool_results": tmp_path / "state" / "artifacts" / "tool_results",
     })
 
-    definition = _load_definition(path, variables)
+    definition = load_definition(path, variables)
 
     assert definition.prompt == str(tmp_path / "state/artifacts/tool_results")
     assert definition.permissions["allow"][0]["paths"] == "${workspace}"

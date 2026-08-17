@@ -21,7 +21,11 @@ from XBotv2.application import start_application
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
 from XBotv2.agentloop.inbox import AgentInbox
-from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
+from XBotv2.permissions.system import (
+    PermissionIntersection,
+    PermissionSystem,
+    normalize_agent_permissions,
+)
 
 from XBotv2.agents.plugin import SubagentRunner
 
@@ -480,9 +484,14 @@ async def test_workspace_agent_overrides_builtin_definition(
     assert definition.temperature == 0.1
     assert definition.max_output_tokens == 2048
     assert definition.disabled_tools == ("edit",)
-    definition_permissions = PermissionSystem(definition.permissions)
-    assert definition_permissions.check("read") == "allow"
-    assert definition_permissions.check("edit") == "deny"
+    # Tool visibility is not permission policy: only the explicit deny rule
+    # for shell is carried from the frontmatter (raw, unnormalized).
+    assert definition.permissions == {"deny": [{"tool": "shell"}]}
+    definition_permissions = PermissionSystem(
+        normalize_agent_permissions(definition.permissions)
+    )
+    assert definition_permissions.check("read") == "ask"
+    assert definition_permissions.check("edit") == "ask"
     assert definition_permissions.check("shell") == "deny"
     assert engine.settings.model == "test-model"
     assert engine.settings.context_window == 64000

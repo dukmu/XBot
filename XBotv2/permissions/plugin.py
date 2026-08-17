@@ -18,7 +18,11 @@ from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
     requested_permission_rule,
 )
-from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
+from XBotv2.permissions.system import (
+    PermissionIntersection,
+    PermissionSystem,
+    normalize_agent_permissions,
+)
 
 _KEEP_PARENT = object()
 
@@ -53,7 +57,7 @@ class PermissionsService:
         *,
         parent: Any = _KEEP_PARENT,
     ) -> None:
-        overlay = self._as_dict(overlay)
+        overlay = normalize_agent_permissions(overlay)
         merged = {
             decision: [
                 *list(overlay.get(decision) or []),

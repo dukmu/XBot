@@ -127,7 +127,7 @@ XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 <data_dir>/config/config.yaml    # runtime Agent settings/policy
 <data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
 <workspace_root>/AGENTS.md       # reloaded for each model context build
-<workspace_root>/.agents/*.md    # workspace Agent definitions (override built-ins)
+<workspace_root>/.agents/*.md    # workspace Agent definitions (discovered by workspace_instructions)
 <workspace_root>/.xbot/plugins.yaml
 <workspace_root>/.xbot/config.yaml
 ```
