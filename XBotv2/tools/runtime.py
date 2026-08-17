@@ -345,7 +345,7 @@ async def _authorize_sandbox_tool(
 ) -> tuple[bool, list[dict[str, Any]], str, list[Any]]:
     # Escalation authorizes this ToolCall's execution mode; it is not a path rule.
     escalation = (
-        call.name in {"shell", "start_shell"}
+        call.name == "shell"
         and call.args.get("sandbox_permissions") == "require_escalated"
     )
     events: list[dict[str, Any]] = []
@@ -502,7 +502,7 @@ async def _execute_one_tool(
 
     tool = entry.tool
     args = dict(call.args)
-    if tool_name in {"shell", "start_shell"} and workspace_root:
+    if tool_name == "shell" and workspace_root:
         args.setdefault("cwd", workspace_root)
 
     before_ctx = (
@@ -532,11 +532,11 @@ async def _execute_one_tool(
                 return
             tool = entry.tool
             args = dict(call.args)
-            if tool_name in {"shell", "start_shell"} and workspace_root:
+            if tool_name == "shell" and workspace_root:
                 args.setdefault("cwd", workspace_root)
         if "args" in before_result:
             args = dict(before_result["args"])
-            if tool_name in {"shell", "start_shell"} and workspace_root:
+            if tool_name == "shell" and workspace_root:
                 args.setdefault("cwd", workspace_root)
         if "tool_result" in before_result:
             message = _coerce_tool_message(before_result["tool_result"], tool_id)

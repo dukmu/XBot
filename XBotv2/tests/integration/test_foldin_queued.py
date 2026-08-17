@@ -334,8 +334,8 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     registry = ctx.engine.job_registry
     assert registry is not None
     tools = {tool.name: tool for tool in SHELL_TOOLS}
-    started = await tools["start_shell"].ainvoke(
-        {"command": "echo done"},
+    started = await tools["shell"].ainvoke(
+        {"command": "echo done", "background": True},
         job_registry=registry,
         sandbox=None,
         sandbox_policy=None,

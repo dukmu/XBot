@@ -41,14 +41,15 @@ def test_builtin_explorer_definition_is_read_only():
     )
 
     assert definition.mode == "all"
-    assert "filesystem_stat" in definition.tools
-    assert "content_read" in definition.tools
+    assert "read" in definition.tools
+    assert "search" in definition.tools
     permissions = PermissionSystem(definition.permissions)
-    assert permissions.check("filesystem_write") == "deny"
+    assert permissions.check("edit") == "deny"
+    assert permissions.check("path") == "deny"
     assert permissions.check("shell") == "deny"
     assert permissions.check("spawn_subagent") == "deny"
     assert permissions.check("wait_subagent") == "deny"
-    assert permissions.check("filesystem_read") == "ask"
+    assert permissions.check("read") == "ask"
 
 
 def test_builtin_default_definition_is_primary_capable():

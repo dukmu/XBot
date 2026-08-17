@@ -168,7 +168,7 @@ Background shells and subagents share one unified job lifecycle. `JobRegistry`
 owns IDs, status transitions, waiting, cancellation, output storage, and
 cleanup for every kind; it is the only runtime entity for this subsystem.
 Kind-specific adapters implement a `JobRunner` and the typed, model-facing
-tools: the shell tools (`start_shell`, `list_shells`, `wait_shell`,
+tools: the shell tools (`shell` with `background=true`, `list_shells`, `wait_shell`,
 `read_shell`, `cancel_shell`) live in `core/builtin_tools/shell.py`, and the
 subagent tools (`spawn_subagent`, `list_subagents`, `wait_subagent`,
 `read_subagent`, `cancel_subagent`) live in the `agents` plugin. The model never

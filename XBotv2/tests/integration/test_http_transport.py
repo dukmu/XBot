@@ -168,7 +168,7 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         policy_path.write_text(
             yaml.safe_dump({
                 "permissions": {
-                    "allow": [{"tool": "filesystem_write", "params": {"path": "a\\.txt"}}],
+                    "allow": [{"tool": "edit", "params": {"path": "a\\.txt"}}],
                 },
                 "sandbox": {
                     "resources": [{"path": "/tmp/approved", "access": "readwrite"}],
@@ -179,22 +179,22 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
 
         updated = await sdk.update_session_policy(
             "sdk-policy",
-            permissions={"shell": "allow", "filesystem_write": "deny"},
+            permissions={"shell": "allow", "edit": "deny"},
             sandbox={"network": False, "external_write": "deny"},
         )
         ctx = await http_app.state.manager.get("sdk-policy", "main")
         sandbox = ctx.engine.sandbox_policy
 
         assert updated.permissions == {
-            "deny": [{"tool": "filesystem_write"}],
-            "allow": [{"tool": "shell"}, {"tool": "filesystem_write", "params": {"path": "a\\.txt"}}],
+            "deny": [{"tool": "edit"}],
+            "allow": [{"tool": "shell"}, {"tool": "edit", "params": {"path": "a\\.txt"}}],
         }
         assert updated.sandbox["resources"] == [
             {"path": "/tmp/approved", "access": "readwrite"}
         ]
         assert ctx.engine.permission_system.check("shell") == "allow"
         assert ctx.engine.permission_system.check(
-            "filesystem_write", {"path": "a.txt"}
+            "edit", {"path": "a.txt", "mode": "write"}
         ) == "deny"
         assert ctx.engine.sandbox_policy.network is False
         assert ctx.engine.sandbox_policy.external_write == "deny"
@@ -204,12 +204,12 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
 
         cleared = await sdk.update_session_policy(
             "sdk-policy",
-            remove_permissions=["shell", "filesystem_write"],
+            remove_permissions=["shell", "edit"],
             remove_sandbox=["network"],
         )
         assert cleared.permissions == {
             "allow": [
-                {"tool": "filesystem_write", "params": {"path": "a\\.txt"}}
+                {"tool": "edit", "params": {"path": "a\\.txt"}}
             ]
         }
         assert "network" not in cleared.sandbox
@@ -437,7 +437,7 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                         "ask": [
                             {"tool": "ask_user"},
                             {"tool": "request_permission"},
-                            {"tool": "filesystem_write"},
+                            {"tool": "edit"},
                         ],
                     },
                 },
@@ -728,8 +728,8 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         "mode: all\n"
         "model: default/explorer-model\n"
         "context_window: 64000\n"
-        "tools:\n  - filesystem_read\n  - filesystem_list\n"
-        "permission:\n  filesystem_write: deny\n  shell: deny\n"
+        "tools:\n  - read\n"
+        "permission:\n  edit: deny\n  shell: deny\n"
         "---\nExplore only.",
         encoding="utf-8",
     )
@@ -774,8 +774,8 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
             "keep this history",
             "existing answer",
         ]
-        assert ctx.engine.tool_registry.get("filesystem_read") is not None
-        assert ctx.engine.tool_registry.get("filesystem_write") is None
+        assert ctx.engine.tool_registry.get("read") is not None
+        assert ctx.engine.tool_registry.get("edit") is None
         assert ctx.engine.model == "explorer-model"
         assert ctx.engine.context_window == 64000
         assert ctx.engine.state_store.read_thread_metadata()["agent"] == "Explorer"
@@ -783,8 +783,8 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         explorer_path.write_text(
             "---\ndescription: Reloaded exploration\nmode: all\n"
             "model: default/explorer-model\ncontext_window: 48000\n"
-            "tools:\n  - filesystem_read\n  - filesystem_list\n"
-            "permission:\n  filesystem_write: deny\n  shell: deny\n"
+            "tools:\n  - read\n"
+            "permission:\n  edit: deny\n  shell: deny\n"
             "---\nExplore updated.",
             encoding="utf-8",
         )
@@ -1217,7 +1217,7 @@ async def test_http_policy_api_updates_live_session_policy(
     )
     cached_path.parent.mkdir(parents=True)
     cached_path.write_text("cached after policy reload", encoding="utf-8")
-    filesystem_entry = ctx.engine.tool_registry.get("filesystem_read")
+    filesystem_entry = ctx.engine.tool_registry.get("read")
     assert filesystem_entry is not None
     cached_result = await filesystem_entry.tool.ainvoke(
         {"path": "session/artifacts/tool_results/cached.txt"},
@@ -1516,7 +1516,7 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
                         "ask": [
                             {"tool": "ask_user"},
                             {"tool": "request_permission"},
-                            {"tool": "filesystem_write"},
+                            {"tool": "edit"},
                         ],
                     },
                 },
@@ -2402,7 +2402,7 @@ async def _real_terminal_session(
                         "ask": [
                             {"tool": "ask_user"},
                             {"tool": "request_permission"},
-                            {"tool": "filesystem_write"},
+                            {"tool": "edit"},
                         ],
                     },
                 },
@@ -2480,7 +2480,7 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         {
             "content": "listing",
             "tool_calls": [
-                {"name": "filesystem_list", "args": {"path": "."}, "id": "call_list"},
+                {"name": "read", "args": {"path": ".", "mode": "list"}, "id": "call_list"},
             ],
         },
         {"content": "done"},
@@ -2519,7 +2519,7 @@ async def test_real_http_interrupt_while_permission_waits(
         {
             "content": "listing",
             "tool_calls": [
-                {"name": "filesystem_list", "args": {"path": "."}, "id": "call_wait"},
+                {"name": "read", "args": {"path": ".", "mode": "list"}, "id": "call_wait"},
             ],
         },
     ])
@@ -2745,7 +2745,7 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                         "ask": [
                             {"tool": "ask_user"},
                             {"tool": "request_permission"},
-                            {"tool": "filesystem_write"},
+                            {"tool": "edit"},
                         ],
                     },
                 },

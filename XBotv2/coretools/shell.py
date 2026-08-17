@@ -91,18 +91,28 @@ class ShellRunner:
 async def shell(
     command: str,
     cwd: str | None = None,
+    background: bool = False,
+    name: str | None = None,
     sandbox_permissions: Literal[
         "use_default", "require_escalated"
     ] = "use_default",
     justification: str | None = None,
     *,
     sandbox: Any = None,
+    job_registry: Any = None,
 ) -> ToolResult:
-    """Run a shell command in the foreground and return its output.
+    """Run a shell command in the foreground, or start one in the background.
 
-    Commands must be non-interactive. Tool status follows the final exit
-    code; if a nonzero exit is an expected result, the command must verify
-    that condition and then exit zero.
+    Foreground (default) commands must be non-interactive and return their
+    output directly. Tool status follows the final exit code; if a nonzero
+    exit is an expected result, the command must verify that condition and
+    then exit zero.
+
+    With ``background=true`` the command runs as a session-owned job and the
+    tool returns only its job ID; use ``wait_shell`` when later work depends
+    on completion, ``list_shells`` to inspect it without waiting, and
+    ``read_shell`` to read captured output. Starting a background shell does
+    not mean its command succeeded; check the returned status and exit code.
 
     Commands run in the sandbox by default; writes outside it fail read-only.
     When completing the user's request genuinely requires writing outside it,
@@ -112,6 +122,8 @@ async def shell(
     Args:
         command: Complete shell command to execute.
         cwd: Working directory. Defaults to the session workspace root.
+        background: Start the command as a background job instead of waiting.
+        name: Optional short label for background jobs.
         sandbox_permissions: ``use_default`` runs inside the configured
             sandbox; ``require_escalated`` requests execution outside it.
         justification: Required explanation when requesting escalation.
@@ -122,6 +134,16 @@ async def shell(
                 "invalid_sandbox_request",
                 _ESCALATION_JUSTIFICATION_REQUIRED,
             )
+    if background:
+        return await start_shell(
+            command,
+            cwd=cwd,
+            name=name,
+            sandbox_permissions=sandbox_permissions,
+            justification=justification,
+            sandbox=sandbox,
+            job_registry=job_registry,
+        )
     active_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
     )
@@ -337,7 +359,6 @@ async def cancel_shell(id: str, *, job_registry: Any = None) -> ToolResult:
 
 SHELL_TOOLS: tuple[Tool, ...] = (
     Tool.from_function(shell, name="shell"),
-    Tool.from_function(start_shell, name="start_shell"),
     Tool.from_function(list_shells, name="list_shells"),
     Tool.from_function(wait_shell, name="wait_shell"),
     Tool.from_function(read_shell, name="read_shell"),

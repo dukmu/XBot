@@ -12,7 +12,7 @@ ctx.register_agent(AgentDefinition(
     mode="subagent",
     prompt="Inspect the requested change and report findings first.",
     permissions={"deny": [{
-        "tool": "filesystem_(?:write|edit|patch|move|copy|delete|mkdir)"
+        "tool": "edit|path"
     }]},
 ))
 ```
@@ -62,10 +62,10 @@ body is the Agent prompt:
 description: Review a focused change for correctness
 mode: subagent
 tools:
-  - filesystem_read
-  - search_text
+  - read
+  - search
 permission:
-  filesystem_write: deny
+  edit: deny
 ---
 Report findings first and cite the relevant files.
 ```

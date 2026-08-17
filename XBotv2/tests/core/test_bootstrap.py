@@ -371,8 +371,10 @@ plugin = NormalClosePlugin()""",
         tool_names = set(engine.tool_registry.names())
         assert {
             "shell",
-            "start_shell",
-            "filesystem_read",
+            "read",
+            "edit",
+            "path",
+            "search",
             "content_read",
             "ask_user",
             "request_permission",
@@ -397,7 +399,7 @@ plugin = NormalClosePlugin()""",
 
         assert {
             "ask_user",
-            "filesystem_mkdir",
+            "path",
             "list_shells",
             "request_permission",
             "wait_shell",
@@ -408,7 +410,7 @@ plugin = NormalClosePlugin()""",
     async def test_bootstrap_tool_filter_limits_visible_tools(self, temp_data_dir):
         """System tool selectors restrict tools passed to the model."""
         _write_plugins(temp_data_dir, {"agentloop": {"config": {
-            "tools": ["filesystem_read"],
+            "tools": ["read"],
         }}})
 
         engine = await bootstrap(
@@ -419,8 +421,8 @@ plugin = NormalClosePlugin()""",
             llm_override=MockLLM(responses=[]),
         )
 
-        assert engine.tool_registry.names() == ["filesystem_read"]
-        assert [tool.name for tool in engine.tool_registry.get_all()] == ["filesystem_read"]
+        assert engine.tool_registry.names() == ["read"]
+        assert [tool.name for tool in engine.tool_registry.get_all()] == ["read"]
 
     @pytest.mark.asyncio
     async def test_bootstrap_unknown_tool_filter_silently_ignored(self, temp_data_dir):
@@ -479,7 +481,7 @@ plugin = SimplePlugin()
 
         assert engine.tool_registry.names() == ["plugin_tool"]
         assert [tool.name for tool in engine.tool_registry.get_all()] == ["plugin_tool"]
-        assert engine.tool_registry.get("filesystem_read") is None
+        assert engine.tool_registry.get("read") is None
 
     @pytest.mark.asyncio
     async def test_bootstrap_registers_system_hooks(
@@ -917,12 +919,12 @@ plugin = ConfiguredPlugin()
     async def test_system_json_policy_files_are_ignored(self, temp_data_dir):
         """System policy has YAML sources of truth."""
         (temp_data_dir / "config" / "config.yaml").write_text(
-            "permissions:\n  allow:\n    - tool: filesystem_read\n"
+            "permissions:\n  allow:\n    - tool: read\n"
             "sandbox:\n  enabled: true\n",
             encoding="utf-8",
         )
         (temp_data_dir / "config" / "permissions.json").write_text(
-            '{"deny": [{"tool": "filesystem_read"}]}'
+            '{"deny": [{"tool": "read"}]}'
         )
         (temp_data_dir / "config" / "sandbox.json").write_text(
             '{"enabled": false}'
@@ -936,7 +938,7 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert engine.permission_system.check("filesystem_read", {}) == "allow"
+        assert engine.permission_system.check("read", {}) == "allow"
         assert engine.sandbox_policy.enabled is True
 
     @pytest.mark.asyncio
@@ -947,8 +949,8 @@ plugin = ConfiguredPlugin()
     ):
         _write_plugins(temp_data_dir, {"permissions": {"config": {
             "permissions": {
-                "allow": [{"tool": "filesystem_write", "paths": "${workspace}"}],
-                "ask": [{"tool": "filesystem_write"}],
+                "allow": [{"tool": "edit", "paths": "${workspace}"}],
+                "ask": [{"tool": "edit"}],
             },
         }}})
         engine = await bootstrap(
@@ -965,13 +967,13 @@ plugin = ConfiguredPlugin()
         print("DIAG svc config:", str(engine.plugin_ctx.permissions.config)[:120])
         print("DIAG overlay:", (Path(temp_data_dir) / "config" / "plugins.yaml").read_text(encoding="utf-8")[:100])
         print("DIAG allow paths:", [getattr(r, "paths", None) for r in ps._allow_rules][:3])
-        print("DIAG check notes:", ps.check("filesystem_write", {"path": "notes.md"}))
-        print("DIAG check outside:", ps.check("filesystem_write", {"path": str(temp_data_dir / "outside.md")}))
+        print("DIAG check notes:", ps.check("edit", {"path": "notes.md", "mode": "write"}))
+        print("DIAG check outside:", ps.check("edit", {"path": str(temp_data_dir / "outside.md"), "mode": "write"}))
         assert ps.check(
-            "filesystem_write", {"path": "notes.md"}
+            "edit", {"path": "notes.md", "mode": "write"}
         ) == "allow"
         assert ps.check(
-            "filesystem_write", {"path": str(temp_data_dir / "outside.md")}
+            "edit", {"path": str(temp_data_dir / "outside.md"), "mode": "write"}
         ) == "ask"
 
 

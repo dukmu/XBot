@@ -31,13 +31,13 @@ async def test_background_shell_lifecycle_and_read(temp_workspace, monkeypatch):
     monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
     registry, tools = make_tools(temp_workspace)
     assert set(tools) == {
-        "shell", "start_shell", "list_shells",
+        "shell", "list_shells",
         "wait_shell", "read_shell", "cancel_shell",
     }
-    assert "background" not in tools["shell"].parameters["properties"]
+    assert "background" in tools["shell"].parameters["properties"]
 
     started = await invoke(
-        tools, "start_shell", {"command": "printf background-output"}, registry
+        tools, "shell", {"command": "printf background-output", "background": True}, registry
     )
     job_id = started.data["id"]
     waited = await invoke(tools, "wait_shell", {"ids": [job_id]}, registry)
@@ -90,8 +90,9 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         sandbox=object(),
     )
     background = await invoke(
-        tools, "start_shell",
+        tools, "shell",
         {"command": "install dependency",
+         "background": True,
          "sandbox_permissions": "require_escalated",
          "justification": "Install a required dependency."},
         registry,
@@ -116,7 +117,7 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(
-        tools, "start_shell", {"command": "generate output"}, registry
+        tools, "shell", {"command": "generate output", "background": True}, registry
     )
     job = registry.get(started.data["id"])
     await job.runner_task
@@ -136,7 +137,7 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
 
     monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
     registry, tools = make_tools(temp_workspace)
-    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
+    started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
     job = registry.get(started.data["id"])
     while job.status.value != "running":
         await asyncio.sleep(0)
@@ -165,7 +166,7 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
         completions.append(task)
 
     registry.on_complete = record_completion
-    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
+    started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
     await asyncio.sleep(0)
 
     await asyncio.wait_for(registry.shutdown(), timeout=1)
@@ -183,7 +184,7 @@ async def test_wait_shell_returns_exit_code_for_completed_job(
 
     monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
     registry, tools = make_tools(temp_workspace)
-    started = await invoke(tools, "start_shell", {"command": "true"}, registry)
+    started = await invoke(tools, "shell", {"command": "true", "background": True}, registry)
     waited = await invoke(tools, "wait_shell", {"ids": [started.data["id"]]}, registry)
     assert waited.data["ready"][0]["exit_code"] == 0
 
@@ -202,7 +203,7 @@ async def test_escalated_background_shell_requires_approval(
     )
     registry = ToolRegistry()
     registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
+        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
         sandbox_mode="sandboxed",
     )
     job_registry = JobRegistry()
@@ -213,8 +214,9 @@ async def test_escalated_background_shell_requires_approval(
         return {"status": "answered", "decision": "allow", "scope": "once"}
 
     results = await execute_tools(
-        [ToolCall("c1", "start_shell", {
+        [ToolCall("c1", "shell", {
             "command": "pwd",
+            "background": True,
             "sandbox_permissions": "require_escalated",
             "justification": "Need host access.",
         })],
@@ -244,7 +246,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
     )
     registry = ToolRegistry()
     registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
+        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
         sandbox_mode="sandboxed",
     )
     job_registry = JobRegistry()
@@ -254,8 +256,9 @@ async def test_denied_background_shell_escalation_creates_no_job(
         return {"status": "answered", "decision": "deny"}
 
     results = await execute_tools(
-        [ToolCall("c1", "start_shell", {
+        [ToolCall("c1", "shell", {
             "command": "pwd",
+            "background": True,
             "sandbox_permissions": "require_escalated",
             "justification": "Need host access.",
         })],

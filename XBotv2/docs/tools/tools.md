@@ -4,33 +4,33 @@ Core registers these tools without plugins:
 
 | Tool | Execution | Purpose |
 |---|---|---|
-| `shell` | session runtime | Run a foreground command or start one with `background=true` |
-| `filesystem_read` | sandboxed, sequential | Read bounded UTF-8 text or return non-text metadata |
+| `read` | sandboxed, sequential | Read UTF-8 text, binary bytes, stat metadata, an image, or a directory listing (`mode`: utf8/binary/stat/image/list) |
+| `edit` | sandboxed, sequential | Edit one file: write whole content, replace exact text, or apply a unified diff (`mode`: write/replace/patch) |
+| `path` | sandboxed, sequential | Manage paths: move, copy, delete, or create a directory (`operation`) |
+| `search` | sandboxed, sequential | Search UTF-8 content or find paths by glob (`mode`: content/name) |
 | `content_read` | sandboxed, sequential | Read image content as a model-visible image part |
-| `filesystem_stat` | sandboxed, sequential | Inspect file, symlink, hash, MIME, and image metadata |
-| `filesystem_list` | sandboxed, sequential | List bounded directory entries |
-| `search_text` | sandboxed, sequential | Search UTF-8 text with structured locations |
-| `find_files` | sandboxed, sequential | Find bounded paths by glob |
-| `filesystem_write` | sandboxed, sequential | Atomically create or replace UTF-8 text |
-| `filesystem_edit` | sandboxed, sequential | Atomically replace exact text |
-| `filesystem_patch` | sandboxed, sequential | Apply a validated single-file unified diff |
-| `filesystem_move` | sandboxed, sequential | Move or rename a path |
-| `filesystem_copy` | sandboxed, sequential | Copy a path without decoding content |
-| `filesystem_delete` | sandboxed, sequential | Delete a path |
-| `filesystem_mkdir` | sandboxed, sequential | Create an empty directory |
-| `send_message` | host, sequential | Emit a non-blocking client message |
-| `ask_user` | host, sequential | Wait for client input |
-| `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
-| `start_shell` | session runtime | Start a background shell and return its job ID |
+| `shell` | session runtime | Run a foreground command or start one with `background=true` |
 | `list_shells` | session runtime | List background shells with lightweight metadata |
 | `wait_shell` | session runtime | Wait for background shells and return status/exit codes |
 | `read_shell` | session runtime | Read captured background shell output (bounded, cursor-based) |
 | `cancel_shell` | session runtime | Cancel one background shell job |
+| `send_message` | host, sequential | Emit a non-blocking client message |
+| `ask_user` | host, sequential | Wait for client input |
+| `request_permission` | host, sequential | Request an exact-tool, parameter-regex permission rule |
 
 The built-in Agents plugin adds `spawn_subagent`, `list_subagents`,
 `wait_subagent`, `read_subagent`, and `cancel_subagent`. Subagent and background
 shell jobs share one unified `JobRegistry` lifecycle; the generic `task`/`job`
 vocabulary is never exposed to the model.
+
+The four merged filesystem tools replace the previous twelve granular tools:
+`read` selects its backend operation from `mode` (utf8/binary/stat/image/list),
+`edit` from `mode` (write/replace/patch), `path` from `operation`
+(move/copy/delete/mkdir), and `search` from `mode` (content/name). Permission
+path checks resolve per call: each mode/operation maps to the concrete
+sandbox filesystem operation, so a `read` with `mode=list` checks the same
+read access as `mode=utf8`, and `path` with `operation=copy` checks both
+source and destination.
 
 Background shell and subagent jobs are runtime-only and end with the live
 session. They emit bounded previews through `task_updated`. Output is stored in
@@ -46,10 +46,10 @@ operation.
 
 Foreground Shell execution has no default time limit. It waits for process
 completion and is terminated when the current turn is cancelled. Use
-`start_shell` when other Agent work should continue before the command
+`shell` with `background=true` when other Agent work should continue before the command
 finishes, not as a workaround for a fixed foreground timeout.
 
-`start_shell` uses the same canonical command arguments, Hooks, and permission
+Background `shell` execution uses the same canonical command arguments, Hooks, and permission
 rules as foreground Shell execution. Background mode is not a permission alias
 or a second execution path around `shell` policy. An escalated background shell
 (`sandbox_permissions=require_escalated`) requests the same human approval as
@@ -95,12 +95,12 @@ Dictionary-returning external tools are normalized at the same boundary for
 `data`, `error`, `artifact`/`artifacts`, and `events`. New built-ins and plugin
 templates should return `ToolResult` directly.
 
-`filesystem_read` never attaches image bytes to provider messages. Use
-`content_read` for model-visible image input. It accepts exactly one of a local
+`read` (mode=utf8/binary/stat) never attaches image bytes to provider messages. Use
+`read` (mode=image) or `content_read` for model-visible image input. It accepts exactly one of a local
 path, an `http`/`https` URL, or base64 image data (optionally as a
 `data:image/*;base64,` URL). Supported types are GIF, JPEG, PNG, and WebP; the
 bytes are stored under `session/artifacts/media/` and sent to image-capable
-providers as a native image block. `filesystem_stat` still reports recognized
+providers as a native image block. `read` (mode=stat) still reports recognized
 image dimensions for discovery.
 
 Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
@@ -116,7 +116,7 @@ callers should use `offset`, `char_offset`, `limit`, and `max_chars` to inspect
 only the required range, including long single-line artifacts.
 Cached Tool results preserve their original representation. String results and
 explicit original text payloads, such as the `content` returned by
-`filesystem_read`, are stored verbatim in a `.txt` artifact without JSON
+`read`, are stored verbatim in a `.txt` artifact without JSON
 encoding or escaped lines. Only an original object or array is serialized as
 JSON. A string that already contains JSON text remains that exact string and is
 not encoded a second time. The cached value becomes a relative artifact
@@ -134,7 +134,7 @@ unchanged. Oversized values are stored under
 session-relative `cache_path` are sent to the provider. This projection does
 not mutate persisted messages, so resume retains the exact original input. The
 marker tells the Agent to inspect omitted sections with bounded
-`filesystem_read` calls before acting when needed.
+`read` calls before acting when needed.
 History compaction remains responsible for semantic summaries across many
 messages; context caching is deterministic externalization, not a second model
 summarizer.
@@ -147,7 +147,7 @@ the file changed since its previous observation. Non-text reads return MIME,
 size, hash, and recognized image metadata without placing binary content in
 context. Text must be valid UTF-8
 and must not contain binary control data. Existing files are read before
-mutation, complete content is sent only to `filesystem_write`, and relevant
+mutation, complete content is sent only to `edit` (mode=write), and relevant
 ranges are read again before a change is reported as verified.
 
 Disabling the session sandbox is an explicit policy choice. Permission checks
@@ -173,7 +173,7 @@ genuinely requires external writes must set
 `sandbox_permissions=require_escalated` with a justification. This checks the
 normal `external_write` allow, deny, or ask policy before starting the process.
 An approved command runs on the host, outside bwrap; this applies equally to
-foreground calls and `start_shell`. A denied request creates no process.
+foreground calls and background `shell`. A denied request creates no process.
 The default `use_default` mode always retains the configured sandbox.
 
 An allow-once decision applies only to that invocation. A session decision

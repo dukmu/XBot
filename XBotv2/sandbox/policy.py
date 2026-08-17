@@ -299,7 +299,7 @@ class SandboxPolicy:
         tool_name: str,
         args: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        operation = filesystem_ops.TOOL_OPERATIONS.get(tool_name)
+        operation = filesystem_ops.resolve_operation(tool_name, args)
         return self.check_filesystem_access(operation, args) if operation else []
 
     def _path_decision(self, path: Path, *, write: bool) -> str:

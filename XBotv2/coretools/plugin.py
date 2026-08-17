@@ -57,7 +57,7 @@ class CoreToolsComponent:
         base_tools = [
             *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
             *(
-                (tool, "sandboxed" if tool.name in {"shell", "start_shell"} else "host")
+                (tool, "sandboxed" if tool.name == "shell" else "host")
                 for tool in SHELL_TOOLS
             ),
             (content_read_tool, "sandboxed"),

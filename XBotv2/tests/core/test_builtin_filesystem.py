@@ -21,7 +21,6 @@ from XBotv2.coretools.filesystem import (
     read_file,
     search_text,
     stat_path,
-    filesystem_write,
     write_file,
 )
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -327,7 +326,9 @@ class TestFilesystemMutation:
         path.write_text("value = 1\n", encoding="utf-8")
         policy = SandboxPolicy(workspace_root=tmp_path, enabled=False)
 
-        assert "expected_sha256" not in filesystem_write.parameters["properties"]
+        import inspect
+
+        assert "expected_sha256" not in inspect.signature(write_file).parameters
         await read_file("code.py", sandbox=policy)
         path.write_text("value = external\n", encoding="utf-8")
 

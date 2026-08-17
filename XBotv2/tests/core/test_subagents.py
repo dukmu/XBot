@@ -272,7 +272,7 @@ async def test_subagent_can_request_permission_through_parent_session(
     _write_plugins(temp_data_dir, {"permissions": {"config": {
         "permissions": {
             "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
-            "ask": [{"tool": "filesystem_read"}],
+            "ask": [{"tool": "read"}],
         },
     }}})
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")
@@ -282,7 +282,7 @@ async def test_subagent_can_request_permission_through_parent_session(
         "---\n"
         "description: Read one requested file\n"
         "mode: subagent\n"
-        "tools:\n  - filesystem_read\n"
+        "tools:\n  - read\n"
         "---\n"
         "Read only the requested file.",
         encoding="utf-8",
@@ -312,7 +312,7 @@ async def test_subagent_can_request_permission_through_parent_session(
             {
                 "content": "Reading",
                 "tool_calls": [{
-                    "name": "filesystem_read",
+                    "name": "read",
                     "args": {"path": "target.txt"},
                     "id": "call_read",
                 }],
@@ -400,7 +400,7 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
         "---\n"
         "description: Changed builder\n"
         "mode: primary\n"
-        "tools:\n  - filesystem_read\n"
+        "tools:\n  - read\n"
         "---\n"
         "Changed instructions must not alter an existing thread.",
         encoding="utf-8",
@@ -446,8 +446,8 @@ async def test_workspace_agent_overrides_builtin_definition(
         "context_window: 64000\n"
         "steps: 7\n"
         "tools:\n"
-        "  filesystem_read: true\n"
-        "  filesystem_write: false\n"
+        "  read: true\n"
+        "  edit: false\n"
         "permission:\n  deny:\n    - tool: shell\n"
         "---\nWorkspace prompt.",
         encoding="utf-8",
@@ -466,15 +466,15 @@ async def test_workspace_agent_overrides_builtin_definition(
     assert definition.model == "test-model"
     assert definition.temperature == 0.1
     assert definition.max_output_tokens == 2048
-    assert definition.disabled_tools == ("filesystem_write",)
+    assert definition.disabled_tools == ("edit",)
     definition_permissions = PermissionSystem(definition.permissions)
-    assert definition_permissions.check("filesystem_read") == "allow"
-    assert definition_permissions.check("filesystem_write") == "deny"
+    assert definition_permissions.check("read") == "allow"
+    assert definition_permissions.check("edit") == "deny"
     assert definition_permissions.check("shell") == "deny"
     assert engine.model == "test-model"
     assert engine.context_window == 64000
     assert engine.max_iterations == 7
-    assert engine.tool_registry.get("filesystem_write") is None
+    assert engine.tool_registry.get("edit") is None
     await engine.close_session()
 
 

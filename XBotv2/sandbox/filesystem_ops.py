@@ -36,20 +36,54 @@ PATH_ACCESS: dict[str, tuple[tuple[str, PathAccess], ...]] = {
     "mkdir": (("path", "write"),),
 }
 TOOL_OPERATIONS = {
-    "filesystem_read": "read",
     "content_read": "read_bytes",
-    "filesystem_stat": "stat",
-    "filesystem_list": "list",
-    "search_text": "search",
-    "find_files": "find",
-    "filesystem_write": "write",
-    "filesystem_edit": "edit",
-    "filesystem_patch": "patch",
-    "filesystem_move": "move",
-    "filesystem_copy": "copy",
-    "filesystem_delete": "delete",
-    "filesystem_mkdir": "mkdir",
 }
+
+_MERGED_TOOL_OPERATIONS = {
+    "read": {
+        "utf8": "read",
+        "binary": "read_bytes",
+        "stat": "stat",
+        "image": "read_bytes",
+        "list": "list",
+    },
+    "edit": {
+        "write": "write",
+        "replace": "edit",
+        "patch": "patch",
+    },
+    "path": {
+        "move": "move",
+        "copy": "copy",
+        "delete": "delete",
+        "mkdir": "mkdir",
+    },
+    "search": {
+        "content": "search",
+        "name": "find",
+    },
+}
+
+
+def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
+    """Resolve the concrete filesystem operation one tool call performs.
+
+    Merged tools (``read`` / ``edit`` / ``path`` / ``search``) select the
+    backend operation from their ``mode`` / ``operation`` argument, so
+    permission path checks must resolve per call instead of per tool name.
+    """
+    modes = _MERGED_TOOL_OPERATIONS.get(tool_name)
+    if modes is not None:
+        selector = "operation" if tool_name == "path" else "mode"
+        return modes.get(str(args.get(selector) or ""), None) or modes.get(
+            "utf8" if tool_name == "read" else (
+                "replace" if tool_name == "edit" else (
+                    "mkdir" if tool_name == "path" else "content"
+                )
+            ),
+            None,
+        )
+    return TOOL_OPERATIONS.get(tool_name)
 
 
 class FilesystemError(Exception):
@@ -816,4 +850,10 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["DEFAULT_EXCLUDES", "PATH_ACCESS", "TOOL_OPERATIONS", "execute"]
+__all__ = [
+    "DEFAULT_EXCLUDES",
+    "PATH_ACCESS",
+    "TOOL_OPERATIONS",
+    "execute",
+    "resolve_operation",
+]

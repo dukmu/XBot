@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, TOOL_OPERATIONS
+from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, resolve_operation
 
 PermissionDecision = Literal["allow", "deny", "ask"]
 
@@ -235,7 +235,7 @@ class PermissionSystem:
         tool_name: str,
         args: dict[str, Any],
     ) -> bool:
-        operation = TOOL_OPERATIONS.get(tool_name)
+        operation = resolve_operation(tool_name, args)
         fields = PATH_ACCESS.get(operation or "", ())
         if not fields:
             return False

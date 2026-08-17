@@ -59,7 +59,7 @@ Tool results retain the standard `tool` role and `tool_call_id`, while their
 content is normalized before history persistence:
 
 ```xml
-<tool_result name="filesystem_read" status="success">
+<tool_result name="read" status="success">
   <data encoding="json">...</data>
 </tool_result>
 ```

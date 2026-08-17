@@ -30,17 +30,14 @@ BUILTIN_AGENT_DEFINITIONS: tuple[AgentDefinition, ...] = (
         mode="all",
         temperature=0.1,
         tools=(
-            "filesystem_read",
-            "content_read",
-            "filesystem_stat",
-            "filesystem_list",
-            "search_text",
-            "find_files",
+            "read",
+            "search",
             "ask_user",
         ),
         permissions={
             "deny": [
-                _tool_pattern("filesystem_write"),
+                _tool_pattern("edit"),
+                _tool_pattern("path"),
                 _tool_pattern("shell"),
                 _tool_pattern("*subagent*"),
             ],

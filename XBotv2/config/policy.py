@@ -255,16 +255,8 @@ def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
         return {}
     rule: dict[str, Any] = {"tool": re.escape(tool_name)}
     args = tool_call.args
-    if tool_name in {
-        "filesystem_write",
-        "filesystem_edit",
-        "filesystem_patch",
-        "filesystem_move",
-        "filesystem_copy",
-        "filesystem_delete",
-        "filesystem_mkdir",
-    }:
-        retained = {"path", "source", "destination", "overwrite", "recursive"}
+    if tool_name in {"edit", "path"}:
+        retained = {"path", "source", "destination", "overwrite", "recursive", "parents"}
         args = {key: value for key, value in args.items() if key in retained}
     params = {
         key: re.escape(str(value))
