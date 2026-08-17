@@ -161,11 +161,11 @@ Old message-only files remain readable. No operation removes earlier JSONL
 records; Compact replay starts at the last checkpoint for bounded reconstruction.
 There is no separate `events.jsonl` or `state.yaml`.
 
-`SessionRuntime` (`session/runtime.py`) owns transport waiters, event streams,
-the XCore application context, and teardown. Engine owns the agent inbox and
-core loop state but never the plugin service container. Persistence observes
-`STATE_CHANGED`; inbox splices are restored through `LoopState`. Interaction
-waiters remain runtime-only.
+`SessionRuntime` (`session/runtime.py`) owns transport waiters and event
+streams. The session service creates `LoopState`; Engine owns the agent inbox
+and consumes that state but never a plugin service container. Persistence may
+hydrate the state and observes `STATE_CHANGED`; inbox splices are restored
+through `LoopState`. Interaction waiters remain runtime-only.
 
 ## Context Builder (`core/context.py`)
 

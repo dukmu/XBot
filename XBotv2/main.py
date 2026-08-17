@@ -623,10 +623,10 @@ async def _run_once(args):
     )
     engine = services.engine
     await engine.start_session()
-    state_store = services.state_store
+    session = services.loop_state.session
     runtime = SessionRuntime(
-        session_id=state_store.session_id,
-        thread_id=state_store.thread_id,
+        session_id=session.session_id,
+        thread_id=session.thread_id,
         provider_name=args.provider,
         paths=RuntimePaths.from_data_dir(args.data_dir),
         workspace_root=str(_workspace_root(args)),

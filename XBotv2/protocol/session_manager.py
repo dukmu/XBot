@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import yaml
+
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.application import start_application
 from XBotv2.session.runtime import SessionRuntime
@@ -258,8 +260,7 @@ async def thread_summary(
         services = active.services
         loader = services.get("loader")
         status_slots = await loader.status_slots() if loader is not None else {}
-        store = services.state_store
-        metadata = store.read_thread_metadata()
+        metadata = services.loop_state.metadata
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
         return ThreadSummary(
             session_id=session_id,
@@ -302,8 +303,18 @@ async def thread_summary(
         model_mode=str(metadata.get("model_mode") or ""),
         context_window=int(metadata.get("context_window") or 0),
         message_count=store.message_count(),
-        usage=store.get_plugin_state("usage") or _empty_usage(),
+        usage=_read_usage(store.paths.usage_file),
     )
+
+
+def _read_usage(path: Any) -> dict[str, int]:
+    if not path.exists():
+        return _empty_usage()
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        return _empty_usage()
+    empty = _empty_usage()
+    return {key: int(loaded.get(key) or 0) for key in empty}
 
 
 async def session_summary(

@@ -486,8 +486,7 @@ class XBotACPAgent:
 
     def _config_options(self, runtime: Any) -> list[SessionConfigOptionSelect]:
         options: list[SessionConfigOptionSelect] = []
-        registry = runtime.services.agents.registry
-        definitions = registry.definitions() if registry is not None else ()
+        definitions = runtime.services.agents.definitions()
         agents = [
             definition
             for definition in definitions
@@ -495,7 +494,7 @@ class XBotACPAgent:
         ]
         if agents:
             active = str(
-                runtime.services.state_store.read_thread_metadata().get("agent")
+                runtime.services.loop_state.metadata.get("agent")
                 or agents[0].name
             )
             options.append(SessionConfigOptionSelect(

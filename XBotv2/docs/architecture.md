@@ -255,9 +255,10 @@ sequenceDiagram
   `additional_kwargs`.
 - `Message` dataclass (`api/messages.py`): XBot-owned, persisted to `messages.jsonl`.
 
-Core accumulates normalized usage across a session and decides whether a call
-updates the active context reading. Persistence stores Provider-neutral
-messages; neither layer interprets native Provider payloads.
+The usage capability accumulates normalized usage across a session and owns
+its thread-local snapshot. Persistence stores provider-neutral messages;
+neither capability interprets native provider payloads or depends on the
+other's storage.
 
 ### Context Builder (`core/context.py`)
 
