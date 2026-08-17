@@ -10,7 +10,7 @@ Core registers these tools without plugins:
 
 | Tool | Execution | Purpose |
 |---|---|---|
-| `read` | sandboxed, sequential | Read UTF-8 text, binary bytes, stat metadata, an image, or a directory listing (`mode`: utf8/binary/stat/image/list) |
+| `read` | sandboxed, sequential | Read UTF-8 text, binary bytes, stat metadata, media (images today), or a directory listing (`mode`: utf8/binary/stat/media/list) |
 | `edit` | sandboxed, sequential | Edit one file: write whole content, replace exact text, or apply a unified diff (`mode`: write/replace/patch) |
 | `path` | sandboxed, sequential | Manage paths: move, copy, delete, or create a directory (`operation`) |
 | `search` | sandboxed, sequential | Search UTF-8 content or find paths by glob (`mode`: content/name) |
@@ -102,7 +102,7 @@ Dictionary-returning external tools are normalized at the same boundary for
 templates should return `ToolResult` directly.
 
 `read` (mode=utf8/binary/stat) never attaches image bytes to provider messages. Use
-`read` (mode=image) for model-visible image input. It accepts exactly one of a local
+`read` (mode=media) for model-visible media input (images today). It accepts exactly one of a local
 path, an `http`/`https` URL, or base64 image data (optionally as a
 `data:image/*;base64,` URL). Supported types are GIF, JPEG, PNG, and WebP; the
 bytes are stored under `session/artifacts/media/` and sent to image-capable

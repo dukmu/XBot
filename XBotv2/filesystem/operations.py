@@ -35,14 +35,12 @@ PATH_ACCESS: dict[str, tuple[tuple[str, PathAccess], ...]] = {
     "delete": (("path", "write"),),
     "mkdir": (("path", "write"),),
 }
-TOOL_OPERATIONS: dict[str, str] = {}
-
 _MERGED_TOOL_OPERATIONS = {
     "read": {
         "utf8": "read",
         "binary": "read_bytes",
         "stat": "stat",
-        "image": "read_bytes",
+        "media": "read_bytes",
         "list": "list",
     },
     "edit": {
@@ -81,7 +79,7 @@ def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
             ),
             None,
         )
-    return TOOL_OPERATIONS.get(tool_name)
+    return None
 
 
 class FilesystemError(Exception):
@@ -851,7 +849,6 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_EXCLUDES",
     "PATH_ACCESS",
-    "TOOL_OPERATIONS",
     "execute",
     "resolve_operation",
 ]

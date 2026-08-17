@@ -9,7 +9,7 @@ import pytest
 
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.application import start_application
-from XBotv2.coretools.content import content_read
+from XBotv2.coretools.filesystem import read
 from XBotv2.coretools.filesystem import read_file
 from XBotv2.llm.anthropic import anthropic_request_messages
 from XBotv2.llm.mock import MockLLM
@@ -34,13 +34,13 @@ class MediaSandbox:
 
 
 @pytest.mark.asyncio
-async def test_content_read_path_produces_image_tool_result(tmp_path):
+async def test_read_image_path_produces_image_tool_result(tmp_path):
     payload = base64.b64decode(PNG_BASE64)
     path = tmp_path / "pixel.png"
     path.write_bytes(payload)
     sandbox = MediaSandbox(tmp_path / "session")
 
-    result = await content_read(path=str(path), sandbox=sandbox)
+    result = await read(path=str(path), mode="media", sandbox=sandbox)
 
     assert result.status == "success"
     assert len(result.images) == 1
@@ -55,12 +55,14 @@ async def test_content_read_path_produces_image_tool_result(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_content_read_accepts_base64_and_data_url(tmp_path):
+async def test_read_image_accepts_base64_and_data_url(tmp_path):
     encoded = PNG_BASE64
     sandbox = MediaSandbox(tmp_path / "session")
 
-    raw = await content_read(data=encoded, sandbox=sandbox)
-    data_url = await content_read(
+    raw = await read(path="", mode="media", data=encoded, sandbox=sandbox)
+    data_url = await read(
+        path="",
+        mode="media",
         data=f"data:image/png;base64,{encoded}",
         sandbox=sandbox,
     )
@@ -72,13 +74,15 @@ async def test_content_read_accepts_base64_and_data_url(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_content_read_url_requires_network(tmp_path):
+async def test_read_image_url_requires_network(tmp_path):
     class OfflineSandbox:
         session_root = tmp_path / "session"
         enabled = False
         network = False
 
-    result = await content_read(
+    result = await read(
+        path="",
+        mode="media",
         url="https://example.com/cat.png",
         sandbox=OfflineSandbox(),
     )

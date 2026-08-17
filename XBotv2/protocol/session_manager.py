@@ -144,15 +144,10 @@ class SessionManager:
             session_paths = self.paths.session(session_id)
             if mode == "resume" and not session_paths.has_thread(thread_id):
                 raise SessionNotFound(f"{session_id}/{thread_id}")
-            if mode == "resume" and not _has_persisted_session(
-                session_paths, thread_id
-            ):
-                # A leftover thread directory (state/ exists but the session
-                # never committed thread metadata) must not silently reopen
-                # as an empty session on reconnect.
-                raise SessionNotFound(
-                    f"{session_id}/{thread_id} has no persisted session"
-                )
+            had_persisted_session = (
+                mode == "resume"
+                and _has_persisted_session(session_paths, thread_id)
+            )
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
             extra_plugins = (
@@ -178,13 +173,29 @@ class SessionManager:
                 is_subagent=is_subagent,
             )
             engine = services.engine
-            if mode == "resume" and services.get("state_store", strict=False) is None:
-                await services.destroy()
-                raise OperationError(
-                    "persistence_unavailable",
-                    f"Cannot resume {session_id}/{thread_id}: "
-                    "message persistence is not mounted",
-                )
+            if mode == "resume":
+                if services.get("state_store", strict=False) is None:
+                    await services.destroy()
+                    raise OperationError(
+                        "persistence_unavailable",
+                        f"Cannot resume {session_id}/{thread_id}: "
+                        "message persistence is not mounted",
+                    )
+                if not had_persisted_session:
+                    # A leftover thread directory (state/ exists but the
+                    # session never committed thread metadata) must not
+                    # silently reopen as an empty session on reconnect.
+                    # Remove the fresh metadata the aborted start wrote so
+                    # the leftover stays untouched.
+                    for thread_paths in (
+                        session_paths.thread(thread_id),
+                        session_paths.thread(thread_id, legacy=True),
+                    ):
+                        thread_paths.metadata_file.unlink(missing_ok=True)
+                    await services.destroy()
+                    raise SessionNotFound(
+                        f"{session_id}/{thread_id} has no persisted session"
+                    )
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,

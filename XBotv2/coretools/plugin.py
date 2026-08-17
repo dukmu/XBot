@@ -46,8 +46,8 @@ class CoreToolsComponent:
         from XBotv2.coretools.shell import SHELL_TOOLS
         from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
-        # ``read(mode=image)`` is the single model-facing content tool; it
-        # covers path, URL, and base64 image input.
+        # ``read(mode=media)`` is the single model-facing content tool; it
+        # covers path, URL, and base64 media input (images today).
         sandboxed_tools = [*FILESYSTEM_TOOLS, *SHELL_TOOLS]
         for tool in sandboxed_tools:
             if tool.name == "shell":

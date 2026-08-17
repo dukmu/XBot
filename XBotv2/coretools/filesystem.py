@@ -17,15 +17,19 @@ and backend reuse.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
+import httpx
+
+from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.filesystem.operations import PATH_ACCESS, execute
-
-from XBotv2.coretools.content import content_read
 
 _FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
 
@@ -37,7 +41,7 @@ _FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
 
 async def read(
     path: str,
-    mode: Literal["utf8", "binary", "stat", "image", "list"] = "utf8",
+    mode: Literal["utf8", "binary", "stat", "media", "list"] = "utf8",
     offset: int = 0,
     limit: int = 2000,
     char_offset: int = 0,
@@ -64,8 +68,9 @@ async def read(
       encoding sidecar, not the payload.
     - ``stat``: return metadata for a file, directory, or symlink without
       reading content.
-    - ``image``: open one image (``path``, ``url``, or base64 ``data``) and
-      make it visible to the model as an image part.
+    - ``media``: open one media item by its type (``path``, ``url``, or
+      base64 ``data``) and make it visible to the model as a native part.
+      Images are supported today.
     - ``list``: list a directory's entries with bounded metadata; recursive
       traversal stops at ``max_entries`` and never follows symlinks.
 
@@ -77,9 +82,9 @@ async def read(
         char_offset: Character offset within the first selected line (utf8).
         max_chars: Maximum raw characters returned (utf8).
         line_numbers: Prefix displayed text with one-based line numbers (utf8).
-        url: Image URL (image).
-        data: Base64 image bytes or ``data:image/*;base64,`` URL (image).
-        media_type: Required when ``data`` cannot be inferred (image).
+        url: Media URL (media).
+        data: Base64 media bytes or ``data:*;base64,`` URL (media).
+        media_type: Required when ``data`` cannot be inferred (media).
         recursive: Include descendants (list).
         max_entries: Maximum returned entries (list).
         include_hidden: Include names beginning with a dot (list).
@@ -98,8 +103,8 @@ async def read(
         return await read_bytes_file(path, sandbox=sandbox)
     if mode == "stat":
         return await stat_path(path, sandbox=sandbox)
-    if mode == "image":
-        return await content_read(
+    if mode == "media":
+        return await _read_media(
             path=path,
             url=url,
             data=data,
@@ -115,6 +120,258 @@ async def read(
             sandbox=sandbox,
         )
     return ToolResult.failure("invalid_mode", f"Unknown read mode: {mode}")
+
+
+MAX_CONTENT_BYTES = 25 * 1024 * 1024
+SUPPORTED_IMAGE_TYPES = frozenset({
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+})
+
+
+class _ImageError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+async def _read_media(
+    path: str,
+    url: str | None,
+    data: str | None,
+    media_type: str | None,
+    sandbox: Any,
+) -> ToolResult:
+    """Open one media item by type and make it visible to the model.
+
+    ``read(mode=media)`` is the single model-facing content tool. Exactly one
+    of ``path``, ``url``, or ``data`` is required; images (GIF, JPEG, PNG,
+    WebP) are supported today. Bytes are stored under
+    ``session/artifacts/media/`` and returned as a model-visible part.
+    """
+    sources = [value for value in (path, url, data) if value]
+    if len(sources) != 1:
+        return ToolResult.failure(
+            "invalid_content_source",
+            "read media mode requires exactly one of path, url, or data",
+        )
+    try:
+        if url is not None:
+            payload, media_type, metadata = await _read_image_url(
+                url, media_type, sandbox
+            )
+        elif path:
+            payload, media_type, metadata = await _read_image_path(
+                path, media_type, sandbox
+            )
+        else:
+            payload, media_type, metadata = _decode_image_data(
+                str(data or ""), media_type
+            )
+        if len(payload) > MAX_CONTENT_BYTES:
+            return ToolResult.failure(
+                "content_too_large",
+                f"Content exceeds {MAX_CONTENT_BYTES} bytes",
+            )
+        selected = _image_type(payload, media_type)
+        image = _store_image(payload, selected, sandbox)
+    except _ImageError as exc:
+        return ToolResult.failure(exc.code, exc.message)
+
+    result_data: dict[str, Any] = {
+        "media_type": selected,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    result_data.update(metadata)
+    return ToolResult.success(
+        f"Image content loaded: {selected} ({len(payload)} bytes)",
+        data=result_data,
+        images=(image,),
+    )
+
+
+async def _read_image_path(
+    path: str,
+    media_type: str | None,
+    sandbox: Any,
+) -> tuple[bytes, str | None, dict[str, Any]]:
+    data = await _operation("read_bytes", {"path": path}, sandbox)
+    if not data.get("ok"):
+        error = data.get("error") or {}
+        raise _ImageError(
+            str(error.get("code") or "read_failed"),
+            str(error.get("message") or "Unable to read path"),
+        )
+    size = int(data.get("size_bytes") or 0)
+    if size > MAX_CONTENT_BYTES:
+        raise _ImageError(
+            "content_too_large",
+            f"Content exceeds {MAX_CONTENT_BYTES} bytes",
+        )
+    encoded = data.get("base64")
+    if not isinstance(encoded, str):
+        raise _ImageError(
+            "invalid_result",
+            "Filesystem backend returned no base64 content",
+        )
+    return (
+        base64.b64decode(encoded),
+        media_type or str(data.get("media_type") or ""),
+        {"path": path},
+    )
+
+
+async def _read_image_url(
+    url: str,
+    media_type: str | None,
+    sandbox: Any,
+) -> tuple[bytes, str | None, dict[str, Any]]:
+    if sandbox is not None and not sandbox.network:
+        raise _ImageError(
+            "network_disabled",
+            "Sandbox network access is disabled",
+        )
+    parsed = urlsplit(url.strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise _ImageError(
+            "invalid_url",
+            "URL must be an http or https image URL",
+        )
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            async with client.stream(
+                "GET",
+                url.strip(),
+                headers={
+                    "User-Agent": "XBotv2/0.2 read tool",
+                    "Accept": "image/*",
+                },
+            ) as response:
+                if response.status_code >= 400:
+                    raise _ImageError(
+                        "url_error",
+                        f"URL returned HTTP {response.status_code}",
+                    )
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > MAX_CONTENT_BYTES:
+                        raise _ImageError(
+                            "content_too_large",
+                            f"Content exceeds {MAX_CONTENT_BYTES} bytes",
+                        )
+                    chunks.append(chunk)
+                content_type = response.headers.get(
+                    "content-type",
+                    "",
+                ).split(";", 1)[0].strip().lower() or None
+        except _ImageError:
+            raise
+        except Exception as exc:
+            raise _ImageError("url_error", f"URL fetch failed: {exc}") from exc
+    return b"".join(chunks), media_type or content_type, {"url": url.strip()}
+
+
+def _decode_image_data(
+    value: str,
+    media_type: str | None,
+) -> tuple[bytes, str | None, dict[str, Any]]:
+    raw = value.strip()
+    if raw.startswith("data:"):
+        header, separator, encoded = raw.partition(",")
+        if not separator or not header.endswith(";base64"):
+            raise _ImageError(
+                "invalid_data_url",
+                "data URLs must use base64 encoding",
+            )
+        header_media_type = header[5:-len(";base64")] or ""
+        media_type = media_type or header_media_type
+        encoded = "".join(encoded.split())
+        source = "data_url"
+    else:
+        encoded = "".join(raw.split())
+        source = "base64"
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise _ImageError("invalid_base64", "data is not valid base64") from exc
+    if not payload:
+        raise _ImageError("empty_content", "data contains no image bytes")
+    return payload, media_type, {"source": source}
+
+
+def _image_type(payload: bytes, media_type: str | None) -> str:
+    inferred = _infer_image_type(payload)
+    if inferred is None:
+        hint = (
+            " Provide media_type for base64 input."
+            if media_type is None
+            else ""
+        )
+        raise _ImageError(
+            "unsupported_content",
+            f"Unsupported or unrecognized image content{hint}",
+        )
+    selected = (media_type or inferred).strip().lower()
+    if selected not in SUPPORTED_IMAGE_TYPES:
+        raise _ImageError(
+            "unsupported_content",
+            f"Unsupported image type {selected}",
+        )
+    if selected != inferred:
+        raise _ImageError(
+            "content_type_mismatch",
+            f"Content is {inferred}, not {selected}",
+        )
+    return selected
+
+
+def _infer_image_type(payload: bytes) -> str | None:
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _store_image(
+    payload: bytes,
+    media_type: str,
+    sandbox: Any,
+) -> ImageContent:
+    session_root = (
+        getattr(sandbox, "session_root", None) if sandbox is not None else None
+    )
+    if session_root is None:
+        raise _ImageError(
+            "content_storage_unavailable",
+            "Session media storage is not available",
+        )
+    root = Path(session_root)
+    digest = hashlib.sha256(payload).hexdigest()
+    target = root / "artifacts" / "media" / digest
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_bytes(payload)
+    return ImageContent(
+        path=target.relative_to(root).as_posix(),
+        media_type=media_type,
+        size=len(payload),
+    )
 
 
 async def read_file(
@@ -133,7 +390,7 @@ async def read_file(
     result is truncated, continue from the returned next offsets before
     relying on omitted content. Non-UTF-8 files return metadata instead of
     binary content, including MIME type, size, SHA-256, and recognized image
-    dimensions. Use ``read`` with ``mode="image"`` to send recognized image
+    dimensions. Use ``read`` with ``mode="media"`` to send recognized image
     files to the model. The ``session/`` virtual path is read-only.
 
     Args:
