@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import subprocess
+import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import timedelta
@@ -41,6 +44,28 @@ class _Connection:
 class MCPClient:
     def __init__(self) -> None:
         self._transports: dict[str, _Connection] = {}
+        self._stderr_handles: list[Any] = []
+
+    def _stderr_target(self, cfg: dict[str, Any]) -> Any:
+        """Pick a stderr target that always works with ``Popen``.
+
+        The MCP SDK forwards its ``errlog`` as the child process's stderr.
+        A captured ``sys.stderr`` (StringIO) has no ``fileno`` and makes
+        ``Popen`` raise; fall back to a dedicated log file or DEVNULL instead
+        of inheriting a non-file handle.
+        """
+        log_path = cfg.get("log_path")
+        if log_path:
+            handle = open(log_path, "a", encoding="utf-8")
+            self._stderr_handles.append(handle)
+            return handle
+        if sys.stderr is not None and hasattr(sys.stderr, "fileno"):
+            try:
+                sys.stderr.fileno()
+            except (OSError, ValueError, io.UnsupportedOperation):
+                return subprocess.DEVNULL
+            return sys.stderr
+        return subprocess.DEVNULL
 
     async def connect_and_list(
         self,
@@ -161,9 +186,16 @@ class MCPClient:
     async def disconnect_all(self) -> None:
         for name in list(self._transports):
             await self.disconnect(name)
+        for handle in self._stderr_handles:
+            handle.close()
+        self._stderr_handles.clear()
 
     async def disconnect(self, name: str) -> bool:
         connection = self._transports.pop(name, None)
+        if not self._transports:
+            for handle in self._stderr_handles:
+                handle.close()
+            self._stderr_handles.clear()
         if connection is None:
             return False
         try:
@@ -200,7 +232,9 @@ class MCPClient:
             env=dict(cfg.get("env") or {}) or None,
             cwd=cfg.get("cwd"),
         )
-        return await stack.enter_async_context(stdio_client(params))
+        return await stack.enter_async_context(
+            stdio_client(params, errlog=self._stderr_target(cfg))
+        )
 
     async def _list_tools(self, connection: _Connection) -> list[dict[str, Any]]:
         if connection.initialize_result.capabilities.tools is None:

@@ -54,10 +54,13 @@ class FakeRuntime:
     provider_name = "default"
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
+        from types import SimpleNamespace
+
         self.events = events
         self.engine = FakeEngine()
         self.interrupted = False
         self.session_events: asyncio.Queue | None = None
+        self.services = SimpleNamespace(get=lambda _name: None)
 
     async def stream_message(self, content: str, request_id: str, *, images=None):
         assert content == "hello"
