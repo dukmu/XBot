@@ -1,4 +1,4 @@
-"""Runtime state mutations shared by human and machine interfaces."""
+"""Application use cases shared by human and machine interfaces."""
 
 from __future__ import annotations
 
@@ -11,11 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from XBotv2.core.agents import AgentDefinition
+from XBotv2.core.events import EventContext, Events
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.models import RuntimeConfig
-from XBotv2.agentloop.engine import DEFAULT_MAX_ITERATIONS
-from XBotv2.agentloop.session import SessionRuntime
-from XBotv2.permissions.system import PermissionIntersection
 
 
 class OperationError(RuntimeError):
@@ -26,17 +23,17 @@ class OperationError(RuntimeError):
         self.retryable = retryable
 
 
-async def clear_history(ctx: SessionRuntime) -> int:
+async def clear_history(ctx: Any) -> int:
     _require_idle(ctx, "rewrite history")
     async with ctx.turn_lock:
         removed_turns = sum(
             message.role == "user" for message in ctx.engine.messages
         )
-        await ctx.engine.replace_history([], operation="clear")
+        await _replace_history(ctx, [], operation="clear")
     return removed_turns
 
 
-async def undo_history(ctx: SessionRuntime, count: int) -> list[Any]:
+async def undo_history(ctx: Any, count: int) -> list[Any]:
     _require_idle(ctx, "rewrite history")
     if count < 1:
         raise OperationError(
@@ -55,8 +52,24 @@ async def undo_history(ctx: SessionRuntime, count: int) -> list[Any]:
                 f"Cannot undo {count} turns; session has {len(user_indexes)}.",
             )
         kept = messages[:user_indexes[-count]]
-        await ctx.engine.replace_history(kept, operation="undo", turns=count)
+        await _replace_history(ctx, kept, operation="undo", turns=count)
     return kept
+
+
+async def _replace_history(
+    ctx: Any,
+    messages: list[Any],
+    *,
+    operation: str,
+    turns: int = 0,
+) -> None:
+    state = ctx.engine.state
+    state.replace_messages(messages)
+    await ctx.services.emit(Events.STATE_CHANGED, EventContext(
+        messages=state.messages,
+        session=state.session,
+        event={"history_operation": (operation, turns)},
+    ))
 
 
 def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
@@ -73,7 +86,7 @@ def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
 async def fork_session(
     paths: RuntimePaths,
     source_session_id: str,
-    *contexts: SessionRuntime,
+    *contexts: Any,
 ) -> str:
     """Persist and copy one idle session while all live threads are locked."""
     require_forkable(*contexts)
@@ -81,11 +94,11 @@ async def fork_session(
         for ctx in sorted(contexts, key=lambda item: item.thread_id):
             await stack.enter_async_context(ctx.turn_lock)
         for ctx in contexts:
-            await ctx.engine.save_messages()
+            await ctx.services.persistence.flush()
         return fork_persisted_session(paths, source_session_id)
 
 
-def require_forkable(*contexts: SessionRuntime) -> None:
+def require_forkable(*contexts: Any) -> None:
     for ctx in contexts:
         _require_idle(ctx, "fork")
         if any(
@@ -99,16 +112,16 @@ def require_forkable(*contexts: SessionRuntime) -> None:
             )
 
 
-async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
+async def select_agent(ctx: Any, name: str) -> dict[str, Any]:
     _require_idle(ctx, "switch Agent")
-    registry = ctx.engine.agent_registry
+    registry = ctx.services.agents.registry
     definition = registry.get(name) if registry is not None else None
     if definition is None or definition.mode == "subagent":
         raise OperationError(
             "agent_not_found",
             f"Unknown primary Agent: {name}",
         )
-    active = ctx.engine.config.agent_name
+    active = ctx.engine.settings.agent_name
     if definition.name != active:
         async with ctx.turn_lock:
             await _activate_agent(ctx, definition)
@@ -116,23 +129,23 @@ async def select_agent(ctx: SessionRuntime, name: str) -> dict[str, Any]:
         "active": definition.name,
         "agent_name": definition.name,
         "provider": ctx.provider_name,
-        "model": ctx.engine.model,
-        "model_mode": ctx.engine.model_mode,
+        "model": ctx.engine.settings.model,
+        "model_mode": ctx.engine.settings.model_mode,
         "context_window": ctx.engine.context_window,
     }
 
 
-async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
+async def reload_agents(ctx: Any) -> dict[str, Any]:
     """Reload Agent definitions and reapply the active primary Agent."""
     _require_idle(ctx, "reload Agents")
-    loader = ctx.engine.plugin_loader
+    loader = ctx.services.get("loader")
     if loader is None:
         raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
-    active = ctx.engine.config.agent_name
+    active = ctx.engine.settings.agent_name
     async with ctx.turn_lock:
         if not await loader.reload("agents"):
             raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
-        definition = ctx.engine.agent_registry.get(active)
+        definition = ctx.services.agents.registry.get(active)
         if definition is None or definition.mode == "subagent":
             raise OperationError(
                 "agent_not_found",
@@ -141,15 +154,14 @@ async def reload_agents(ctx: SessionRuntime) -> dict[str, Any]:
         await _activate_agent(ctx, definition)
     return {
         "active": active,
-        "agents": ctx.engine.agent_registry.definitions(),
+        "agents": ctx.services.agents.registry.definitions(),
     }
 
 
-async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
+async def select_provider(ctx: Any, name: str) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
-    from XBotv2.llm.client import create_llm
-
-    llm = ctx.engine.plugin_ctx.llm
+    llm = ctx.services.llm
+    store = ctx.services.state_store
     if name not in llm.names():
         raise OperationError(
             "provider_not_found",
@@ -157,31 +169,32 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
         )
     async with ctx.turn_lock:
         config = llm.provider_config(
-            name, require_key=not ctx.engine.llm_is_override
+            name, require_key=not ctx.engine.settings.llm_is_override
         )
-        if not ctx.engine.llm_is_override:
-            ctx.engine.llm = create_llm(
+        if not ctx.engine.settings.llm_is_override:
+            ctx.services.model.replace(llm.create(
                 config,
-                media_root=str(ctx.engine.state_store.root),
-            )
-        ctx.engine.model = config.model
-        ctx.engine.model_mode = config.model_mode
-        ctx.engine.context_window = config.max_context_tokens
-        ctx.engine.config.max_context_tokens = config.max_context_tokens
-        ctx.engine.config.max_output_tokens = config.max_output_tokens
+                media_root=str(store.root),
+            ))
+        ctx.engine.configure(
+            model_client=ctx.services.model,
+            provider=name,
+            model=config.model,
+            model_mode=config.model_mode,
+            context_window=config.max_context_tokens,
+            max_output_tokens=config.max_output_tokens,
+        )
         ctx.provider_name = name
-        ctx.engine.config.provider = name
-        ctx.engine.state_store.provider = name
-        if ctx.engine.session is not None:
-            ctx.engine.session.provider = name
-        metadata = ctx.engine.state_store.read_thread_metadata()
+        store.provider = name
+        ctx.engine.session.provider = name
+        metadata = store.read_thread_metadata()
         metadata.update({
             "provider": name,
             "model": config.model,
             "model_mode": config.model_mode,
             "context_window": config.max_context_tokens,
         })
-        ctx.engine.state_store.write_thread_metadata(metadata)
+        store.write_thread_metadata(metadata)
     return {
         "provider": name,
         "model": config.model,
@@ -189,15 +202,15 @@ async def select_provider(ctx: SessionRuntime, name: str) -> dict[str, str]:
     }
 
 
-def task_snapshots(ctx: SessionRuntime) -> list[dict[str, Any]]:
-    registry = ctx.engine.job_registry
+def task_snapshots(ctx: Any) -> list[dict[str, Any]]:
+    registry = ctx.services.get("jobs")
     if registry is None:
         return []
     return [registry.snapshot(job) for job in registry.all()]
 
 
-async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
-    registry = ctx.engine.job_registry
+async def stop_task(ctx: Any, task_id: str) -> dict[str, Any]:
+    registry = ctx.services.get("jobs")
     if registry is None:
         raise OperationError("task_not_found", f"Unknown task: {task_id}")
     job = registry.get_or_none(task_id)
@@ -207,8 +220,8 @@ async def stop_task(ctx: SessionRuntime, task_id: str) -> dict[str, Any]:
     return registry.snapshot(job)
 
 
-async def stop_all_tasks(ctx: SessionRuntime) -> list[dict[str, Any]]:
-    registry = ctx.engine.job_registry
+async def stop_all_tasks(ctx: Any) -> list[dict[str, Any]]:
+    registry = ctx.services.get("jobs")
     if registry is None:
         return []
     return await registry.stop_all()
@@ -218,15 +231,13 @@ async def update_session_policy(
     *,
     paths: RuntimePaths,
     session_id: str,
-    contexts: list[SessionRuntime],
+    contexts: list[Any],
     permissions: dict[str, str] | None = None,
     remove_permissions: list[str] | None = None,
     sandbox: dict[str, Any] | None = None,
     remove_sandbox: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persist a session policy patch and apply it to every live thread."""
-    from XBotv2.config.policy import patch_session_policy
-
     for ctx in contexts:
         _require_idle(ctx, "update session policy")
         if any(
@@ -241,8 +252,12 @@ async def update_session_policy(
     async with AsyncExitStack() as stack:
         for ctx in sorted(contexts, key=lambda item: item.thread_id):
             await stack.enter_async_context(ctx.turn_lock)
-        policy = patch_session_policy(
-            paths=paths,
+        if not contexts:
+            raise OperationError(
+                "thread_not_active",
+                "Session policy updates require one active thread.",
+            )
+        policy = contexts[0].services.settings.patch_session_policy(
             session_id=session_id,
             permissions=permissions,
             remove_permissions=remove_permissions or (),
@@ -255,55 +270,52 @@ async def update_session_policy(
 
 
 async def _activate_agent(
-    ctx: SessionRuntime, definition: AgentDefinition
+    ctx: Any, definition: AgentDefinition
 ) -> None:
-    from XBotv2.config.loader import load_runtime_config
-    from XBotv2.agentloop.agents import (
-        apply_agent_definition,
-        apply_agent_provider,
-        apply_agent_tools,
+    services = ctx.services
+    config = services.settings.load_runtime_config(
+        Path(ctx.workspace_root), ctx.session_id
     )
-    from XBotv2.llm.client import create_llm
-
-    config = load_runtime_config(
-        ctx.paths, Path(ctx.workspace_root), ctx.session_id
-    )
-    apply_agent_definition(config, definition)
+    services.agents.apply_definition(config, definition)
     provider_name = definition.provider or ctx.provider_name
     config.provider = provider_name
-    provider = ctx.engine.plugin_ctx.llm.provider_config(
-        provider_name, require_key=not ctx.engine.llm_is_override
+    provider = ctx.services.llm.provider_config(
+        provider_name, require_key=not ctx.engine.settings.llm_is_override
     )
-    apply_agent_provider(provider, definition)
+    services.agents.apply_provider(provider, definition)
     config.max_context_tokens = (
         definition.context_window or provider.max_context_tokens
     )
     config.max_output_tokens = provider.max_output_tokens
-    llm = (
-        ctx.engine.llm
-        if ctx.engine.llm_is_override
-        else create_llm(
+    if not ctx.engine.settings.llm_is_override:
+        ctx.services.model.replace(ctx.services.llm.create(
             provider,
-            media_root=str(ctx.engine.state_store.root),
-        )
-    )
+            media_root=str(ctx.services.state_store.root),
+        ))
 
-    ctx.engine.config = config
     _apply_live_policies(ctx, config)
-    ctx.engine.llm = llm
-    ctx.engine.model = provider.model
-    ctx.engine.model_mode = provider.model_mode
-    ctx.engine.context_window = config.max_context_tokens
-    ctx.engine.max_iterations = (
-        definition.max_iterations or DEFAULT_MAX_ITERATIONS
+    ctx.services.permissions.configure_agent(definition.permissions)
+    ctx.engine.configure(
+        model_client=ctx.services.model,
+        max_iterations=definition.max_iterations or 200,
+        provider=provider_name,
+        model=provider.model,
+        model_mode=provider.model_mode,
+        context_window=config.max_context_tokens,
+        max_output_tokens=config.max_output_tokens,
+        agent_name=config.agent_name,
+        agent_role=config.agent_role,
+        developer_instructions=config.instructions,
+        agent_instructions=config.agent_instructions,
+        memory=config.memory,
     )
-    apply_agent_tools(ctx.engine.tool_registry, config, definition)
+    services.agents.apply_tools(ctx.engine.tools.registry, config, definition)
 
     ctx.provider_name = provider_name
-    ctx.engine.state_store.provider = provider_name
-    if ctx.engine.session is not None:
-        ctx.engine.session.provider = provider_name
-    metadata = ctx.engine.state_store.read_thread_metadata()
+    store = ctx.services.state_store
+    store.provider = provider_name
+    ctx.engine.session.provider = provider_name
+    metadata = store.read_thread_metadata()
     metadata.update({
         "agent": definition.name,
         "agent_definition": asdict(definition),
@@ -312,46 +324,41 @@ async def _activate_agent(
         "model_mode": provider.model_mode,
         "context_window": config.max_context_tokens,
     })
-    ctx.engine.state_store.write_thread_metadata(metadata)
+    store.write_thread_metadata(metadata)
 
 
-def reload_live_policies(ctx: SessionRuntime) -> None:
+def reload_live_policies(ctx: Any) -> None:
     """Rebuild active permission and sandbox objects after config changes."""
-    from XBotv2.config.loader import load_runtime_config
-    from XBotv2.agentloop.agents import apply_agent_definition
-
-    base_config = load_runtime_config(
-        ctx.paths, Path(ctx.workspace_root), ctx.session_id
+    services = ctx.services
+    base_config = services.settings.load_runtime_config(
+        Path(ctx.workspace_root), ctx.session_id
     )
-    metadata = ctx.engine.state_store.read_thread_metadata()
+    metadata = ctx.services.state_store.read_thread_metadata()
     stored_definition = metadata.get("agent_definition")
     if isinstance(stored_definition, dict):
-        apply_agent_definition(
+        definition = AgentDefinition(**{
+            key: tuple(value) if key in {"tools", "disabled_tools"}
+            and isinstance(value, list) else value
+            for key, value in stored_definition.items()
+        })
+        services.agents.apply_definition(
             base_config,
-            AgentDefinition(**{
-                key: tuple(value) if key in {"tools", "disabled_tools"}
-                and isinstance(value, list) else value
-                for key, value in stored_definition.items()
-            }),
+            definition,
         )
     _apply_live_policies(ctx, base_config)
+    if isinstance(stored_definition, dict):
+        ctx.services.permissions.configure_agent(definition.permissions)
 
 
-def _apply_live_policies(ctx: SessionRuntime, config: RuntimeConfig) -> None:
+def _apply_live_policies(ctx: Any, config: Any) -> None:
     """Apply one already-resolved policy to live runtime objects."""
     permissions = config.permissions
     sandbox = config.sandbox
-    ctx.engine.config.permissions = permissions
-    ctx.engine.config.sandbox = sandbox
-    live_permissions = ctx.engine.permission_system
-    if isinstance(live_permissions, PermissionIntersection):
-        live_permissions.child.replace_rules(permissions)
-    else:
-        live_permissions.replace_rules(permissions)
-    ctx.engine.sandbox_policy.replace_config(sandbox)
+    ctx.services.permissions.replace_rules(permissions)
+    ctx.services.sandbox.replace_config(sandbox)
 
 
-def _require_idle(ctx: SessionRuntime, action: str) -> None:
+def _require_idle(ctx: Any, action: str) -> None:
     if ctx.turn_lock.locked():
         raise OperationError(
             "thread_busy",

@@ -91,7 +91,7 @@ class BrowserPlugin:
         ):
             ctx.tools.register(
                 Tool.from_function(function),
-                sandbox_mode="sandboxed",
+                injected={"sandbox": ctx.sandbox},
             )
 
     async def web_search(

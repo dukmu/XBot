@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.sandbox import filesystem_ops
+from XBotv2.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
-PathAccess = Literal["allow", "readwrite", "readonly", "deny", "ask"]
+PathAccess = Literal["allow", "readwrite", "readonly", "deny"]
 
 
 @dataclass
@@ -302,6 +302,41 @@ class SandboxPolicy:
         operation = filesystem_ops.resolve_operation(tool_name, args)
         return self.check_filesystem_access(operation, args) if operation else []
 
+    def make_guard(self) -> Any:
+        """Return a monotonic execution guard for the tool pipeline.
+
+        The guard receives ``(tool_call, entry)`` and returns ``None`` to
+        let the call through (including an escalated shell — the permission
+        layer owns that approval), or a ``deny`` :class:`GuardDecision` when
+        the policy rejects a path.  Enforcement-only: the sandbox never
+        asks; human approval is exclusively the permission layer's job.
+        """
+
+        def guard(tool_call: Any, entry: Any) -> Any:
+            args = dict(tool_call.args or {})
+            escalated = (
+                tool_call.name == "shell"
+                and args.get("sandbox_permissions") == "require_escalated"
+            )
+            if escalated:
+                return None
+            issues = self.check_tool_access(tool_call.name, args)
+            if not issues:
+                return None
+            details = "; ".join(
+                f"{'write' if issue['write'] else 'read'} access: {issue['path']}"
+                for issue in issues
+            )
+            from XBotv2.core.tools import GuardDecision
+
+            return GuardDecision(
+                "deny",
+                f"Sandbox denied {details}",
+                source="sandbox",
+            )
+
+        return guard
+
     def _path_decision(self, path: Path, *, write: bool) -> str:
         lexical = _absolute_path(path)
         if (
@@ -370,7 +405,7 @@ class SandboxPolicy:
         reapplied fully — the existing rule-list is rebuilt.
 
         This is the sibling of ``_load_config`` for
-        post-bootstrap live updates (e.g. ``/sandbox set``
+        post-startup live updates (e.g. ``/sandbox set``
         and session-policy reload).
         """
 
@@ -474,8 +509,14 @@ def _absolute_path(path: Path) -> Path:
 
 
 def _access_decision(access: str, *, write: bool) -> str:
+    """Enforce-only access decision: no approval channel in the sandbox.
+
+    ``allow``/``readwrite`` permit the access, ``readonly`` permits reads
+    only, and every other value (including legacy ``ask``) fails closed to
+    ``deny``.  Human approval belongs to the permission layer, never here.
+    """
     if access in {"allow", "readwrite"}:
         return "allow"
     if not write and access == "readonly":
         return "allow"
-    return "ask" if access == "ask" else "deny"
+    return "deny"

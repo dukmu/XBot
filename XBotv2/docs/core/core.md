@@ -10,7 +10,7 @@ context construction, model-request preparation, streamed response handling,
 tool batches, and turn finish. Stage-specific methods retain their own event
 return rules; internal completion records are not protocol events.
 
-### Turn loop, fold, and inbox sequence
+### Turn loop and agent-owned inbox
 
 ```mermaid
 sequenceDiagram
@@ -18,34 +18,38 @@ sequenceDiagram
     participant Ctx as _build_turn_context
     participant LLM
     participant Tools as _run_tool_batch
-    participant Fold as pending_fold (session)
-    participant Inbox as AgentInbox
+    participant Inbox as AgentInbox (agentloop)
     participant Msg as engine.messages
 
+    Eng->>Inbox: claim next-step + one next-turn
+    Inbox-->>Eng: atomic input batch
     Eng->>Ctx: build context
-    Ctx->>Inbox: drain all pending runtime notifications
-    Inbox-->>Ctx: <runtime_event> appended to messages
     Ctx-->>LLM: model context
     LLM-->>Eng: response
 
     alt response has tool_calls
-        Eng->>Tools: execute tool batch (input_window=True)
-        Note over Fold: accepted inputs queue here while tools run
-        Tools-->>Eng: tool results (input_window=False)
-        Eng->>Fold: _accept_pending_fold() drain ALL pending
-        Fold-->>Eng: items (message events already published to session_events)
-        Eng->>Msg: fuse each as user message, save
-        Eng->>Eng: continue loop (fold_handoff routed to last stream)
+        Eng->>Tools: execute tool batch
+        Tools-->>Eng: tool results
+        Eng->>Inbox: claim next-step
+        Inbox-->>Eng: steer/inject inputs
+        Eng->>Msg: append claimed inputs, save
+        Eng->>Eng: continue loop
     else response complete, no tools
-        Eng->>Fold: fold pending at turn end
-        alt pending non-empty
-            Eng->>Msg: fuse, save
-            Eng->>Eng: continue loop to answer the folded input
+        Eng->>Inbox: claim next-step
+        alt steer pending
+            Eng->>Msg: append, save
+            Eng->>Eng: continue loop to answer steering input
         else empty
             Eng->>Eng: finish turn
         end
     end
 ```
+
+`followup` appends to `next-turn` and wakes the driver; `steer` appends to
+`next-step` and wakes it; `inject` appends to `next-step` without waking it.
+Every mutation is durably recorded as `agent/inbox/spliced` before the live
+FIFO projection changes. Protocol code may retain response waiters keyed by
+message ID, but never duplicates message content in another queue.
 
 
 ### Streaming
@@ -69,7 +73,7 @@ externalization.
 
 ### Runtime events
 
-Named events (`api.events.Events`) cover the existing lifecycle: session
+Named events (`core.events.Events`) cover the existing lifecycle: session
 (`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
 (`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
 (`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building
@@ -86,14 +90,14 @@ listener propagate immediately; observer failures propagate out of `emit`.
 
 ### Compaction
 
-`_handle_compaction()` accepts manual rewrites from `BEFORE_CONTEXT` and
-provider-context-aware automatic rewrites from `BEFORE_MODEL_REQUEST`, then runs
-`PRE_COMPACT` → message replacement → `POST_COMPACT` → persistence. Automatic
-replacement rebuilds the final context before any provider request.
+The compact plugin observes `BEFORE_CONTEXT` or `BEFORE_MODEL_REQUEST`, runs
+`PRE_COMPACT`, replaces core history, emits `POST_COMPACT` and `STATE_CHANGED`,
+then requests a generic rebuild. Engine has no compaction branch or persistence
+call.
 
 ## Tools
 
-### Tool (`api/tools.py`)
+### Tool (`core/tools.py`)
 
 ```python
 @dataclass(frozen=True)
@@ -108,7 +112,7 @@ class Tool:
 via `ainvoke()`. Keyword-only parameters with defaults (like `sandbox=None`)
 are injected at invocation time.
 
-### ToolRegistry (`tools/registry.py`)
+### ToolRegistry (`agentloop/tool_registry.py`)
 
 Identity is the canonical registered name. Built-in core keys are bare (for
 example `shell`); non-core examples include `plugin:skills:skill`,
@@ -119,7 +123,7 @@ example `shell`); non-core examples include `plugin:skills:skill`,
 
 `get()` matches by both registry key and display name (fallback).
 
-### Sandbox (`tools/sandbox.py`, `tools/sandbox_bwrap.py`)
+### Sandbox (`sandbox/` plugin)
 
 `BubblewrapBackend` provides process isolation via `bwrap`.
 `SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
@@ -128,7 +132,7 @@ injection. Bwrap exposes the complete filesystem read-only, then overlays the
 workspace, `/tmp`, and configured writable resources. Filesystem Tools apply
 the separate path permission policy before entering that sandbox.
 
-### Permissions (`tools/permissions.py`)
+### Permissions (`permissions/` plugin)
 
 Tri-state: deny → allow → ask → default. Regex pattern matching on
 tool names and parameters. `BEFORE_TOOL_CALL` may reject or transform a call;
@@ -157,13 +161,11 @@ Old message-only files remain readable. No operation removes earlier JSONL
 records; Compact replay starts at the last checkpoint for bounded reconstruction.
 There is no separate `events.jsonl` or `state.yaml`.
 
-`SessionRuntime` (`core/session.py`) owns live-only turn, Mailbox, interaction,
-and event-stream state for one thread. Engine owns the task managers registered
-in its Tool registry and closes them once after the Runtime has stopped active
-delivery. The Runtime is shared by HTTP and once mode, while resume still
-reconstructs only persisted Engine and plugin state. Mailbox queues and pending
-interaction waiters are never replayed. Started deliveries remain journal audit
-records separate from reconstructed provider Messages.
+`SessionRuntime` (`session/runtime.py`) owns transport waiters, event streams,
+the XCore application context, and teardown. Engine owns the agent inbox and
+core loop state but never the plugin service container. Persistence observes
+`STATE_CHANGED`; inbox splices are restored through `LoopState`. Interaction
+waiters remain runtime-only.
 
 ## Context Builder (`core/context.py`)
 
@@ -205,10 +207,20 @@ continuation. Anthropic thinking signatures and redacted-thinking blocks are
 replayed unchanged. OpenAI-compatible reasoning output is retained for display
 but is not added to subsequent Chat Completions requests.
 
-## Startup (`core/bootstrap.py`)
+## Startup (`config/tree.py`, `application/boot.py`, `application/app.py`)
 
-Order: config → state store → hooks → tools → sandbox → permissions →
-plugins → LLM → ON_SESSION_INIT → restrict → engine.
+`config/tree.py` owns reading the bundled tree and applying user overlays.
+The Agent app supplies launch facts, `boot_application()` creates the Context
+and settles the Loader, then the app creates one Agent instance from the
+mounted services. Order: config tree → boot → services converge → Agent
+construction → `SESSION_INIT` → tool restriction → Engine. Application passes
+only the model port, tool service, event port, loop state, and loop settings
+into Engine.
+
+`application/server.py` uses the same boot primitive with a minimal
+`llm + server` tree. The `server/` package remains a pure plugin package; the
+provider directory is injected into the HTTP host, and the protocol does not
+parse the Agent tree or create a fake session.
 
 `restrict()` runs AFTER `ON_SESSION_INIT` so plugin-discovered tools
 are included in the enabled set.

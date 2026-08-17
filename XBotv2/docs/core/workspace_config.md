@@ -32,6 +32,12 @@ also injects `<workspace>/AGENTS.md` into every model context build.  A
 workspace overlay may disable any plugin including `workspace_instructions`
 itself.
 
+Agent runtime values are a config-service concern. Global, session, and
+workspace `config.yaml` layers select the provider and configure instructions,
+tool selectors, and policy. Application startup asks `ctx.settings` for the
+resolved `RuntimeConfig`; there is no `application_config` plugin or launch
+parameter entry in `xcore.yaml`.
+
 Plugin `config` values are per-plugin; `permissions`, `sandbox`, and
 `max_concurrent_subagents` live in the corresponding plugin entries
 (`permissions`, `sandbox`, `jobs`).  Provider definitions are the ``llm``

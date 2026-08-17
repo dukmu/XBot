@@ -17,7 +17,8 @@ from XBotv2.core.messages import (
     ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
-from XBotv2.llm.base import BaseProvider, attachment_prompt, usage_metadata
+from XBotv2.core.providers import BaseProvider
+from XBotv2.llm.base import attachment_prompt, usage_metadata
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
@@ -426,7 +427,7 @@ __all__ = ["AnthropicProvider"]
 
 def create_anthropic_provider(provider_config, *, media_root=None):
     """Factory for the anthropic route (anthropic / lmstudio)."""
-    from XBotv2.config.loader import expand_env
+    from XBotv2.llm.config import expand_env
     from XBotv2.llm.client import _require_api_key, _retry_settings
 
     provider = provider_config.provider

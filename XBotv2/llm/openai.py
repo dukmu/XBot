@@ -17,8 +17,8 @@ from XBotv2.core.messages import (
     ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.core.providers import BaseProvider
 from XBotv2.llm.base import (
-    BaseProvider,
     attachment_prompt,
     usage_metadata,
 )
@@ -312,7 +312,7 @@ __all__ = ["OpenAICompatibleProvider"]
 
 def create_openai_provider(provider_config, *, media_root=None):
     """Factory for the openai-compatible route (openai / deepseek / lmstudio-openai)."""
-    from XBotv2.config.loader import expand_env
+    from XBotv2.llm.config import expand_env
     from XBotv2.llm.client import _require_api_key, _retry_settings
 
     provider = provider_config.provider

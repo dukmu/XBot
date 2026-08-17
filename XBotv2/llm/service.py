@@ -2,7 +2,8 @@
 
 Aligns with DeepSeek Harness's ``dsh-llm``: the service is a provider
 directory — adapter routes register their factories (``ctx.llm.register``)
-and the agent loop creates a client through ``ctx.llm.create(...)``.  The
+and application composition creates a client through ``ctx.llm.create(...)``.
+The
 service also carries the *configured* providers from the ``llm`` plugin's
 tree config (``default`` + ``providers``), so runtime code can resolve a
 provider by name without reading a separate ``providers.yaml`` document.
@@ -17,8 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from XBotv2.config.loader import parse_provider_config
-from XBotv2.config.models import ProviderConfig
+from XBotv2.llm.config import ProviderConfig, parse_provider_config
 from XBotv2.core.providers import BaseProvider
 
 ProviderFactory = Callable[..., BaseProvider]
@@ -89,7 +89,7 @@ class LlmService:
                 f"Unknown provider config: {name}. "
                 f"Configured providers: {available}."
             )
-        return parse_provider_config(name, raw, require_key=require_key)
+        return parse_provider_config(raw, require_key=require_key)
 
     def create(
         self,
@@ -105,4 +105,23 @@ class LlmService:
         return factory(provider_config, media_root=media_root)
 
 
-__all__ = ["LlmService"]
+class ModelService:
+    """Mutable binding for the model selected for the active Agent."""
+
+    def __init__(self) -> None:
+        self._provider: BaseProvider | None = None
+
+    def replace(self, provider: BaseProvider) -> None:
+        self._provider = provider
+
+    @property
+    def provider(self) -> BaseProvider:
+        if self._provider is None:
+            raise RuntimeError("model port is not bound")
+        return self._provider
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.provider, name)
+
+
+__all__ = ["LlmService", "ModelService"]

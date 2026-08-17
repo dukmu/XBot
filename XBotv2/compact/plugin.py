@@ -14,8 +14,6 @@ from XBotv2.core import (
     Message,
     MESSAGE_FORMAT_KEY,
     Tool,
-    ToolAction,
-    ToolDecision,
     ToolResult,
     calibrated_context_tokens,
     context_token_limit,
@@ -29,7 +27,7 @@ logger = logging.getLogger("xbotv2.compact")
 
 
 class CompactPlugin:
-    inject = ['tools', 'commands']
+    inject = ['tools', 'commands', 'model']
     name = "compact"
     Config = S.object({
         "automatic": S.boolean().optional(),
@@ -52,6 +50,7 @@ class CompactPlugin:
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
+        self.model = ctx.model
         self.store = ctx.state.namespace("compact")
         config = config or {}
         self._automatic = bool(config.get("automatic", True))
@@ -68,7 +67,6 @@ class CompactPlugin:
             Events.BEFORE_MODEL_REQUEST,
             self._on_before_model_request,
         )
-        ctx.on(Events.BEFORE_TOOL_CALL, self._allow_compact)
 
         async def request_compaction() -> ToolResult:
             """Request one semantic compaction before the next model call.
@@ -86,7 +84,6 @@ class CompactPlugin:
 
         ctx.tools.register(
             Tool.from_function(request_compaction, name="compact"),
-            sandbox_mode="host",
         )
         ctx.commands.register(Command(
             name="compact",
@@ -113,7 +110,12 @@ class CompactPlugin:
         try:
             self._manual_requested = True
             try:
-                compacted = await ctx.engine.run_context_maintenance()
+                result = await self._on_before_context(EventContext(
+                    messages=ctx.engine.messages,
+                    config=ctx.engine.settings,
+                    session=ctx.engine.session,
+                ))
+                compacted = bool(result and result.get("rebuild"))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -138,25 +140,19 @@ class CompactPlugin:
             data=data,
         )
 
-    async def _allow_compact(self, ctx: EventContext):
-        if ctx.tool_call is not None and ctx.tool_call.name == "compact":
-            return ToolDecision(
-                ToolAction.ALLOW,
-                "Compaction requests are pre-approved by the Compact plugin",
-            )
-
     async def _on_before_context(self, ctx: EventContext):
         if not self._manual_requested:
             return None
         messages = list(ctx.messages)
         self._manual_requested = False
-        return await self._compact(
+        proposal = await self._compact(
             ctx,
             messages,
             reason="manual",
             context_tokens_before=estimate_messages_tokens(messages),
             estimate_source="estimated_history",
         )
+        return await self._commit(ctx, proposal)
 
     async def _on_before_model_request(self, ctx: EventContext):
         if not self._automatic:
@@ -216,7 +212,7 @@ class CompactPlugin:
             for message in prefix_messages
             if message.role == "system"
         ])
-        return await self._compact(
+        proposal = await self._compact(
             ctx,
             messages,
             reason="automatic",
@@ -229,6 +225,63 @@ class CompactPlugin:
             stable_prefix=stable_prefix,
             removable_estimate=removable_estimate,
         )
+        return await self._commit(ctx, proposal)
+
+    async def _commit(
+        self,
+        ctx: EventContext,
+        proposal: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Own the complete compaction transaction outside the loop."""
+        if proposal is None:
+            return None
+        reason = str(proposal.get("compact_reason") or "context")
+        messages = list(proposal["messages"])
+        pre = EventContext(
+            messages=messages,
+            session=ctx.session,
+            event={"reason": reason},
+        )
+        pre_result = await self.ctx.serial(Events.PRE_COMPACT, pre)
+        if isinstance(pre_result, dict):
+            messages = list(pre_result.get("messages", messages))
+            reason = str(pre_result.get("compact_reason") or reason)
+        elif pre_result is not None:
+            return {
+                "event": {
+                    "type": "error",
+                    "data": {
+                        "code": "hook_rejected",
+                        "message": "Compaction was rejected before commit.",
+                        "stage": Events.PRE_COMPACT,
+                    },
+                },
+                "turn_complete": True,
+            }
+
+        previous_count = len(ctx.messages)
+        ctx.messages[:] = messages
+        committed = EventContext(
+            messages=ctx.messages,
+            session=ctx.session,
+            event={
+                "reason": reason,
+                "metrics": dict(proposal.get("compact_metrics") or {}),
+                "previous_message_count": previous_count,
+                "current_message_count": len(ctx.messages),
+                "history_operation": (f"compact:{reason}", 0),
+            },
+        )
+        await self.ctx.emit(Events.POST_COMPACT, committed)
+        await self.ctx.emit(Events.STATE_CHANGED, committed)
+        await self._publish_runtime_event({
+            "type": "compaction_completed",
+            "data": {
+                "reason": reason,
+                "metrics": committed.event["metrics"],
+            },
+        })
+        return {"rebuild": True}
 
     async def _compact(
         self,
@@ -248,8 +301,7 @@ class CompactPlugin:
         split = _compact_prefix_end(messages, self._keep_recent_turns)
         if split == 0:
             return None
-        if ctx.invoke_model is None:
-            raise RuntimeError("CompactPlugin requires EventContext.invoke_model")
+        llm = self.model
 
         turn = ctx.session.turn_count
         history_chars = _history_chars(messages)
@@ -264,7 +316,7 @@ class CompactPlugin:
             context_limit,
             estimate_source,
         )
-        ctx.emit({
+        await self._publish_runtime_event({
             "type": "compaction_started",
             "data": {
                 "reason": reason,
@@ -282,7 +334,8 @@ class CompactPlugin:
                     for message in summary_messages
                     if message.role != "system"
                 ]
-            response = await ctx.invoke_model(
+            response = await _invoke_llm(
+                llm,
                 _summary_request(
                     summary_messages,
                     self._summary_max_chars,
@@ -295,13 +348,13 @@ class CompactPlugin:
             if not summary:
                 raise RuntimeError("Compaction model returned an empty summary")
         except asyncio.CancelledError:
-            ctx.emit({
+            await self._publish_runtime_event({
                 "type": "compaction_failed",
                 "data": {"reason": reason, "message": "Compaction cancelled."},
             })
             raise
         except Exception as exc:
-            ctx.emit({
+            await self._publish_runtime_event({
                 "type": "compaction_failed",
                 "data": {"reason": reason, "message": str(exc)},
             })
@@ -349,7 +402,7 @@ class CompactPlugin:
                 "the retained prefix or tool schemas dominate the request."
             )
             logger.warning(message)
-            ctx.emit({
+            await self._publish_runtime_event({
                 "type": "compaction_failed",
                 "data": {"reason": reason, "message": message},
             })
@@ -401,6 +454,12 @@ class CompactPlugin:
             "compact_reason": reason,
             "compact_metrics": metrics,
         }
+
+    async def _publish_runtime_event(self, event: dict[str, Any]) -> None:
+        await self.ctx.emit(
+            Events.RUNTIME_EVENT,
+            EventContext(client_event=event),
+        )
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -486,7 +545,7 @@ def _summary_request(
         "remaining work. Include paths or errors only when needed to continue. "
         "Distinguish verified facts and completed work from plans or unverified claims. "
         "Omit repetition, superseded discussion, raw logs, and recoverable detail. "
-        "Do not continue the task or call XBotv2.tools. Return only concise Markdown using no "
+        "Do not continue the task or call tools. Return only concise Markdown using no "
         f"more than {max_chars} characters."
     )
     request = [
@@ -524,6 +583,17 @@ def _limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
     tail = remaining - head
     return summary[:head].rstrip() + marker + summary[-tail:].lstrip(), True
 
+
+async def _invoke_llm(llm: Any, messages: list[Any]) -> Any:
+    """Run one unbound auxiliary model call for compaction."""
+    from XBotv2.core.messages import merge_model_chunk
+
+    aggregate: Any = None
+    async for chunk in llm.astream(messages):
+        aggregate = merge_model_chunk(aggregate, chunk)
+    if aggregate is None:
+        raise RuntimeError("Compaction model produced no response")
+    return aggregate
 
 
 plugin = CompactPlugin()

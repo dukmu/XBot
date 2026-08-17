@@ -130,10 +130,6 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     }
     assert schema["parameters"]["required"] == ["path"]
     assert schema["parameters"]["additionalProperties"] is False
-    assert EventContext().invoke_model is None
-    assert EventContext().request_user_input is None
-
-
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():
     async def handler(_ctx, _raw_args):
@@ -248,7 +244,13 @@ def test_server_event_type_inventory_covers_current_stream_events():
 
 
 def test_openapi_uses_typed_request_contracts():
-    schema = create_app(paths=RuntimePaths.from_data_dir("data"), no_plugins=True).openapi()
+    from XBotv2.llm.service import LlmService
+
+    schema = create_app(
+        paths=RuntimePaths.from_data_dir("data"),
+        no_plugins=True,
+        llm=LlmService(),
+    ).openapi()
     assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
     assert set(paths) == {

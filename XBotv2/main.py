@@ -16,8 +16,7 @@ from XBotv2.core.paths import RuntimePaths
 __version__ = "0.2.0"
 
 
-_COMMAND_ALIASES = {"server": "serve"}
-_COMMANDS = {"serve", "server", "tui", "web", "once", "terminal", "acp"}
+_COMMANDS = {"serve", "tui", "web", "once", "terminal", "acp"}
 _WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
 # $HOME/.local/state/xbotv2 is the default state dir on Linux
 # on Windows, it will be %LOCALAPPDATA%\xbotv2\state
@@ -28,8 +27,8 @@ else:
 
 
 def _env(name: str, default: str | None = None) -> str | None:
-    """Read an XBOT setting, accepting the old XBOTV2 prefix as fallback."""
-    return os.environ.get(f"XBOT_{name}", os.environ.get(f"XBOTV2_{name}", default))
+    """Read one XBot environment setting."""
+    return os.environ.get(f"XBOT_{name}", default)
 
 
 def _default_data_dir() -> str:
@@ -113,7 +112,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     serve = commands.add_parser(
         "serve",
-        aliases=["server"],
         parents=[common],
         help="run the HTTP/SSE API server",
     )
@@ -159,18 +157,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    """Translate the legacy --mode form and default to terminal mode."""
+    """Default invocations without a named command to terminal mode."""
     if argv in (["-h"], ["--help"], ["--version"]):
         return argv
-    if "--mode" in argv:
-        index = argv.index("--mode")
-        if index + 1 >= len(argv):
-            return argv
-        command = _COMMAND_ALIASES.get(argv[index + 1], argv[index + 1])
-        return [command, *argv[:index], *argv[index + 2:]]
     if not argv or argv[0] not in _COMMANDS:
         return ["terminal", *argv]
-    argv[0] = _COMMAND_ALIASES.get(argv[0], argv[0])
     return argv
 
 
@@ -186,7 +177,7 @@ def _parse_args(
 def main(argv: list[str] | None = None):
     parser, args = _parse_args(argv)
 
-    from XBotv2.agentloop.logging_config import setup_logging
+    from XBotv2.application.logging import setup_logging
 
     setup_logging(
         data_dir=args.data_dir,
@@ -194,49 +185,30 @@ def main(argv: list[str] | None = None):
         log_file=args.log_file,
     )
 
-    if not (
-        args.command in {"tui", "web"}
-        and getattr(args, "server", None)
-    ):
-        # Fail fast with a clear message when the requested provider is not
-        # configured or its API key is missing.  Providers live in the llm
-        # plugin's tree config (xcore.yaml + global overlay), not a separate
-        # providers.yaml document.
-        from XBotv2.config.loader import resolve_llm_config
-        from XBotv2.llm.plugin import build_llm_service
+    try:
+        if args.command == "serve":
+            _run_server(args)
+        elif args.command == "tui":
+            _run_tui(args)
+        elif args.command == "web":
+            _run_web(args)
+        elif args.command == "terminal":
+            asyncio.run(_terminal_loop(args))
+        elif args.command == "once":
+            asyncio.run(_run_once(args))
+        elif args.command == "acp":
+            from XBotv2.acp import run_acp
 
-        try:
-            llm = build_llm_service(resolve_llm_config(
-                RuntimePaths.from_data_dir(args.data_dir)
+            asyncio.run(run_acp(
+                data_dir=args.data_dir,
+                provider_name=args.provider,
+                no_plugins=args.no_plugins,
+                selected_agent=args.agent,
             ))
-            name = args.provider
-            if name == "default":
-                name = llm.default_name()
-            llm.provider_config(name)
-        except ValueError as exc:
-            parser.exit(2, f"Error: {exc}\n")
-
-    if args.command == "serve":
-        _run_server(args)
-    elif args.command == "tui":
-        _run_tui(args)
-    elif args.command == "web":
-        _run_web(args)
-    elif args.command == "terminal":
-        asyncio.run(_terminal_loop(args))
-    elif args.command == "once":
-        asyncio.run(_run_once(args))
-    elif args.command == "acp":
-        from XBotv2.acp import run_acp
-
-        asyncio.run(run_acp(
-            data_dir=args.data_dir,
-            provider_name=args.provider,
-            no_plugins=args.no_plugins,
-            selected_agent=args.agent,
-        ))
-    else:
-        parser.print_help()
+        else:
+            parser.print_help()
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
 
 
 def _run_server(args) -> None:
@@ -263,42 +235,32 @@ def _run_server(args) -> None:
 
     paths = RuntimePaths.from_data_dir(args.data_dir)
     workspace_root = str(_workspace_root(args))
-    protocol_config = {
-        "paths": paths,
-        "provider_name": args.provider,
-        "workspace_root": workspace_root,
-        "no_plugins": args.no_plugins,
-    }
+    from XBotv2.application.server import start_server_application
 
-    # Server-style root: the protocol plugin provides ctx.server; the agent
-    # loop and builtin plugins are excluded (each opened session bootstraps
-    # its own full runtime).
-    from XBotv2.bootstrap import bootstrap
-
-    root_ctx = asyncio.run(bootstrap(
+    root_ctx = asyncio.run(start_server_application(
         paths=paths,
         provider_name=args.provider,
         workspace_root=workspace_root,
-        plugin_dirs=[],  # include_builtins=False
-        exclude_plugins={"agentloop"},
-        extra_plugins=[{"id": "protocol", "name": "protocol", "config": protocol_config}],
-        return_context=True,
+        no_plugins=args.no_plugins,
     ))
     app = root_ctx.server
     uds = getattr(args, "uds", None)
-    if uds:
-        uds_path = Path(uds).expanduser()
-        uds_path.parent.mkdir(parents=True, exist_ok=True)
-        uvicorn.run(
-            app,
-            uds=str(uds_path),
-            log_level="warning",
-            ws="none",
-        )
-    else:
-        uvicorn.run(
-            app, host=args.bind, port=args.port, log_level="warning", ws="none"
-        )
+    try:
+        if uds:
+            uds_path = Path(uds).expanduser()
+            uds_path.parent.mkdir(parents=True, exist_ok=True)
+            uvicorn.run(
+                app,
+                uds=str(uds_path),
+                log_level="warning",
+                ws="none",
+            )
+        else:
+            uvicorn.run(
+                app, host=args.bind, port=args.port, log_level="warning", ws="none"
+            )
+    finally:
+        asyncio.run(root_ctx.stop())
 
 
 def _run_tui(args) -> None:
@@ -520,12 +482,12 @@ def _workspace_root(args) -> Path:
 
 async def _terminal_loop(args):
     """Direct engine terminal session — reads from stdin, prints responses."""
-    from XBotv2.bootstrap import bootstrap
+    from XBotv2.application import start_application
 
     print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
 
     try:
-        engine = await bootstrap(
+        services = await start_application(
             paths=RuntimePaths.from_data_dir(args.data_dir),
             provider_name=args.provider,
             session_id=getattr(args, "session", None),
@@ -534,8 +496,11 @@ async def _terminal_loop(args):
             plugin_dirs=[] if args.no_plugins else None,
             selected_agent=getattr(args, "agent", None),
         )
+        engine = services.engine
         await engine.start_session()
-        engine.set_client_event_sink(_terminal_interaction)
+        from XBotv2.session.runtime import install_client_event_sink
+
+        install_client_event_sink(services, _terminal_interaction)
     except Exception as exc:
         print(f"Error starting engine: {exc}")
         return
@@ -582,7 +547,10 @@ async def _terminal_loop(args):
         except Exception as exc:
             print(f"\nError: {exc}")
 
-    await engine.close_session()
+    try:
+        await engine.close_session()
+    finally:
+        await services.stop()
 
 
 async def _terminal_interaction(
@@ -640,10 +608,10 @@ async def _terminal_interaction(
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.bootstrap import bootstrap
-    from XBotv2.agentloop.session import SessionRuntime
+    from XBotv2.application import start_application
+    from XBotv2.session.runtime import SessionRuntime
 
-    engine = await bootstrap(
+    services = await start_application(
         paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
@@ -653,20 +621,20 @@ async def _run_once(args):
         selected_agent=getattr(args, "agent", None),
         interactive=False,
     )
+    engine = services.engine
     await engine.start_session()
+    state_store = services.state_store
     runtime = SessionRuntime(
-        session_id=engine.state_store.session_id,
-        thread_id=engine.state_store.thread_id,
+        session_id=state_store.session_id,
+        thread_id=state_store.thread_id,
         provider_name=args.provider,
-        paths=engine.paths,
+        paths=RuntimePaths.from_data_dir(args.data_dir),
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
+        services=services,
         engine=engine,
         interactive=False,
     )
-    if engine.job_registry is not None:
-        engine.job_registry.on_complete = None
-
     try:
         async for event in runtime.stream_message(args.prompt, "once"):
             etype = event.get("type", "")

@@ -8,8 +8,8 @@ import time
 import pytest
 
 from XBotv2.core.tools import Tool, ToolCall
-from XBotv2.tools.registry import ToolRegistry
-from XBotv2.tools.runtime import execute_tools
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.agentloop.tool_runtime import execute_tools
 
 
 @pytest.mark.asyncio
@@ -41,7 +41,6 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
     registry = ToolRegistry()
     registry.register(
         Tool.from_function(slow),
-        sandbox_mode="host",
         timeout_seconds=0.05,
     )
 
@@ -70,7 +69,7 @@ async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
         return options[0]
 
     registry = ToolRegistry()
-    registry.register(Tool.from_function(choose), sandbox_mode="host")
+    registry.register(Tool.from_function(choose))
 
     results = await execute_tools([
         ToolCall("call_1", "choose", {"options": [["nested"]]}),

@@ -58,7 +58,7 @@ from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.loader import load_runtime_config
-from XBotv2.session.operations import (
+from XBotv2.application.operations import (
     OperationError,
     fork_session as fork_runtime_session,
     select_agent,
@@ -417,10 +417,13 @@ class XBotACPAgent:
         # ACP owns interaction requests on its connection. Disabling the SSE
         # interaction bridge leaves Engine's public client sink in control.
         runtime.interactive = False
-        runtime.engine.set_client_event_sink(
+        from XBotv2.session.runtime import install_client_event_sink
+
+        install_client_event_sink(
+            runtime.services,
             lambda event, **kwargs: self._handle_interaction(
                 runtime.session_id, event, **kwargs
-            )
+            ),
         )
         existing = self._event_tasks.get(runtime.session_id)
         if existing is not None:
@@ -463,7 +466,7 @@ class XBotACPAgent:
         await self.connection.session_update(session_id=session_id, update=update)
 
     async def _announce_commands(self, runtime: Any) -> None:
-        loader = runtime.engine.plugin_loader
+        loader = runtime.services.get("loader")
         commands = list_commands(extra=loader.commands if loader is not None else ())
         if not commands:
             return
@@ -483,7 +486,7 @@ class XBotACPAgent:
 
     def _config_options(self, runtime: Any) -> list[SessionConfigOptionSelect]:
         options: list[SessionConfigOptionSelect] = []
-        registry = getattr(runtime.engine, "agent_registry", None)
+        registry = runtime.services.agents.registry
         definitions = registry.definitions() if registry is not None else ()
         agents = [
             definition
@@ -492,7 +495,7 @@ class XBotACPAgent:
         ]
         if agents:
             active = str(
-                runtime.engine.state_store.read_thread_metadata().get("agent")
+                runtime.services.state_store.read_thread_metadata().get("agent")
                 or agents[0].name
             )
             options.append(SessionConfigOptionSelect(
@@ -511,7 +514,7 @@ class XBotACPAgent:
                 ],
             ))
 
-        llm = getattr(getattr(runtime.engine, "plugin_ctx", None), "llm", None)
+        llm = runtime.services.get("llm")
         if llm is not None:
             options.append(SessionConfigOptionSelect(
                 id="provider",
@@ -801,7 +804,7 @@ def _slash_command(runtime: Any, content: str) -> tuple[str, str] | None:
         return None
     raw = content[1:]
     name, _, args = raw.partition(" ")
-    loader = runtime.engine.plugin_loader
+    loader = runtime.services.get("loader")
     command = loader.get_command(name) if loader is not None else None
     if command is None or command.kind != "server":
         return None

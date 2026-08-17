@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from XBotv2.jobs.model import Job, JobResult
+from XBotv2.core.jobs import Job, JobResult
 from XBotv2.jobs.output import StreamOutputStore, TextOutputStore
 
 

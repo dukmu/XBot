@@ -1,81 +1,70 @@
 """Core tools component: base tools and core event listeners as a plugin.
 
-Registers the always-available base tools (filesystem/shell/content/
-interaction), the tool-result cache event listener, and the
+Registers the always-available filesystem, shell, and content tools, the
+tool-result cache event listener, and the
 startup-configured hooks from the runtime config -- all through the shared
 services, so even "core" setup is a plugin in the tree.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from XBotv2.core.events import Events
 from XBotv2.core.tools import Tool
 
-NON_INTERACTIVE_FORBIDDEN_TOOLS = frozenset({"ask_user", "request_permission"})
-
-
 class CoreToolsComponent:
-    inject = ['tools', 'session', 'state_store']
+    inject = ["tools", "session", "state_store", "sandbox", "jobs"]
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        from XBotv2.config.models import (
-            HookConfig,
-            ToolResultConfig,
-            WorkspaceToolConfig,
-        )
-
         config = config or {}
-        interactive = bool(config.get("interactive", True))
-        tool_registry = ctx.tools.registry
         state_store = ctx.state_store
-        tool_results = ToolResultConfig(**(config.get("tool_results") or {}))
+        result_config = dict(config.get("tool_results") or {})
+        max_inline_chars = int(result_config.get("max_inline_chars", 12_000))
+        preview_chars = int(result_config.get("preview_chars", 4_000))
+        if max_inline_chars < 1 or preview_chars < 0:
+            raise ValueError("Invalid tool result size limits")
+        if preview_chars > max_inline_chars:
+            raise ValueError("preview_chars cannot exceed max_inline_chars")
         workspace_xbot = Path(ctx.workspace_root) / ".xbot"
         hooks = [
-            _default_base_dir(HookConfig(**item), workspace_xbot)
+            _declaration(item, workspace_xbot, hook=True)
             for item in config.get("hooks") or []
         ]
         workspace_tools = [
-            _default_base_dir(WorkspaceToolConfig(**item), workspace_xbot)
+            _declaration(item, workspace_xbot)
             for item in config.get("workspace_tools") or []
         ]
         from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
         from XBotv2.coretools.shell import SHELL_TOOLS
         from XBotv2.coretools.content import content_read_tool
-        from XBotv2.coretools.interaction import (
-            ask_user,
-            request_permission,
-            send_message,
-        )
         from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
-        base_tools = [
-            *((tool, "sandboxed") for tool in FILESYSTEM_TOOLS),
-            *(
-                (tool, "sandboxed" if tool.name == "shell" else "host")
-                for tool in SHELL_TOOLS
-            ),
-            (content_read_tool, "sandboxed"),
-            (send_message, "host"),
-            (ask_user, "host"),
-            (request_permission, "host"),
-        ]
-        for tool, sandbox_mode in base_tools:
-            if not interactive and tool.name in NON_INTERACTIVE_FORBIDDEN_TOOLS:
-                continue
-            ctx.tools.register(tool, sandbox_mode=sandbox_mode)
+        sandboxed_tools = [*FILESYSTEM_TOOLS, *SHELL_TOOLS, content_read_tool]
+        for tool in sandboxed_tools:
+            if tool.name == "shell":
+                injected = {
+                    "sandbox": ctx.sandbox,
+                    "job_registry": ctx.jobs,
+                    "default_cwd": str(ctx.workspace_root),
+                }
+            elif tool in sandboxed_tools:
+                injected = {"sandbox": ctx.sandbox, "job_registry": ctx.jobs}
+            else:
+                injected = None
+            ctx.tools.register(tool, injected=injected)
 
         ctx.on(
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
                 state_store,
-                max_inline_chars=tool_results.max_inline_chars,
-                preview_chars=tool_results.preview_chars,
+                max_inline_chars=max_inline_chars,
+                preview_chars=preview_chars,
             ),
         )
         for declaration in hooks:
@@ -96,18 +85,34 @@ class CoreToolsComponent:
                         f"Workspace Tool export {declaration.target!r} must contain "
                         "XBotv2.core.Tool values"
                     )
-                ctx.tools.register(tool, namespace="workspace", sandbox_mode="host")
+                ctx.tools.register(tool, namespace="workspace")
 
 
-def _default_base_dir(declaration: Any, workspace_xbot: Path) -> Any:
-    """Workspace hooks/tools default to ``<workspace>/.xbot`` when undeclared."""
-    if getattr(declaration, "base_dir", None) is None:
-        try:
-            return declaration.model_copy(update={"base_dir": workspace_xbot})
-        except Exception:  # noqa: BLE001 - dict-like fallback
-            if isinstance(declaration, dict):
-                return {**declaration, "base_dir": workspace_xbot}
-    return declaration
+@dataclass(frozen=True)
+class _Declaration:
+    target: str
+    base_dir: Path
+    stage: str = ""
+
+
+def _declaration(
+    raw: dict[str, Any],
+    workspace_xbot: Path,
+    *,
+    hook: bool = False,
+) -> _Declaration:
+    target = str(raw.get("target") or "")
+    source, separator, export = target.partition(":")
+    if not separator or not source or not export:
+        raise ValueError("target must use source:export syntax")
+    stage = str(raw.get("stage") or "")
+    if hook and not stage:
+        raise ValueError("hook stage must not be empty")
+    return _Declaration(
+        target=target,
+        base_dir=Path(raw.get("base_dir") or workspace_xbot),
+        stage=stage,
+    )
 
 
 def _resolve_hook_target(declaration: Any) -> Any:

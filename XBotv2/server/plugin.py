@@ -1,10 +1,9 @@
-"""Protocol component: the HTTP/SSE server as a plugin (``ctx.server``).
+"""Server root component exposing the HTTP/SSE protocol as ``ctx.server``.
 
 The wire protocol types and handlers stay in this package; this plugin
 assembles the FastAPI application (SessionManager + routes) from its tree
-config and provides it as ``ctx.server``.  A server-style root mounts this
-entry via the composition root's ``extra_plugins`` (with the agent loop
-excluded); each session the server opens bootstraps its own full runtime.
+config and provides it as ``ctx.server``. The server app mounts the provider
+directory and this host; each opened session starts its own Agent application.
 """
 
 from __future__ import annotations
@@ -15,7 +14,8 @@ from typing import Any
 class ServerComponent:
     """Build the HTTP/SSE FastAPI app and register it as ``ctx.server``."""
 
-    name = "xbot.protocol"
+    name = "xbot.server"
+    inject = ["llm"]
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         from XBotv2.protocol.http_server import create_app
@@ -27,7 +27,7 @@ class ServerComponent:
             workspace_root=config.get("workspace_root"),
             no_plugins=bool(config.get("no_plugins", False)),
             server_name=config.get("server_name", "xbotv2"),
-            llm=getattr(ctx, "llm", None),
+            llm=ctx.llm,
         )
         ctx.set("server", app)
 

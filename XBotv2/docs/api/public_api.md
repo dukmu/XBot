@@ -6,13 +6,15 @@ XBotv2 exposes one supported Python extension surface:
 from XBotv2.core import Events, Tool, ToolResult, Command, EventContext
 ```
 
-The job-system contract is its own plugin package:
+Job data and lifecycle contracts come directly from core; the plugin package
+exports only runtime implementations:
 
 ```python
-from XBotv2.jobs import Job, JobRegistry
+from XBotv2.core.jobs import Job, JobKind, JobStatus
+from XBotv2.jobs import JobRegistry
 ```
 
-Modules under `XBotv2.core` hold the implementation of these types. The
+`XBotv2.jobs` does not re-export core models. The
 current symbol list is maintained in [API inventory](api_inventory.md) and
 checked by `tests/core/test_public_api.py`.
 
@@ -33,5 +35,5 @@ manifests declare `api_version: "1"`.
 The API is an explicit inventory that must be updated with behavior, docs, and
 tests whenever the extension surface changes. Additive fields need defaults.
 Shape changes need a migration note and a contract test that proves the
-intended behavior. The public API must own its types and never re-export
-runtime implementations.
+intended behavior. The public API must own its types; feature plugins must not
+re-export core contracts as plugin APIs.

@@ -53,21 +53,8 @@ def test_once_requires_and_preserves_prompt():
     assert args.prompt == "review this repository"
 
 
-def test_legacy_mode_form_remains_compatible():
-    args = parse([
-        "--data-dir", "runtime", "--provider", "minimax",
-        "--mode", "server", "--port", "4100",
-    ])
-
-    assert args.command == "serve"
-    assert args.data_dir == "runtime"
-    assert args.provider == "minimax"
-    assert args.port == 4100
-
-
-def test_xbot_environment_defaults_override_legacy_prefix(monkeypatch):
+def test_xbot_environment_defaults(monkeypatch):
     monkeypatch.setenv("XBOT_PROVIDER", "current")
-    monkeypatch.setenv("XBOTV2_PROVIDER", "legacy")
     monkeypatch.setenv("XBOT_PORT", "4200")
 
     args = parse(["serve"])

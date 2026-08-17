@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
 from XBotv2.core.context import ContextComponent
+from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.tools import ToolCall
@@ -41,6 +42,7 @@ class Events:
     PRE_COMPACT = "before/compact"
     POST_COMPACT = "after/compact"
     BEFORE_CONTEXT_BUILD = "before/context-build"
+    CONTEXT_BUILD = "context/build"
     AFTER_CONTEXT = "after/context"
     AFTER_CONTEXT_COMPONENTS_BUILD = "after/context-components-build"
     AFTER_CONTEXT_BUILD = "after/context-build"
@@ -49,12 +51,14 @@ class Events:
     BEFORE_TOOL_SCHEMA_BIND = "before/tool-schema-bind"
     AFTER_TOOL_SCHEMA_BIND = "after/tool-schema-bind"
     BEFORE_MODEL_REQUEST = "before/model-request"
+    MODEL_REQUEST_READY = "model/request-ready"
     AFTER_MODEL_RESPONSE = "after/model-response"
     MODEL_REQUEST_ERROR = "model/request-error"
     AFTER_AGENT = "after/agent"
     # Tools
     BEFORE_TOOLS = "before/tools"
     AFTER_TOOLS = "after/tools"
+    INBOX_SPLICE = "agent/inbox/spliced"
     TOOL_CALLS_PARSED = "tool/calls-parsed"
     BEFORE_TOOL_CALL = "before/tool-call"
     AFTER_TOOL_CALL = "after/tool-call"
@@ -67,11 +71,27 @@ class Events:
     TOOL_MESSAGE = "tool/message"
     # Permissions / client
     PERMISSION_REQUEST = "permission/request"
+    PERMISSION_DECIDED = "permission/decided"
     PERMISSION_DENIED = "permission/denied"
     CLIENT_EVENT = "client/event"
-    # Persistence
-    BEFORE_STATE_PERSIST = "before/state-persist"
-    AFTER_STATE_PERSIST = "after/state-persist"
+    # Non-blocking application output projected by live transports. Feature
+    # plugins publish a payload; neither they nor Engine own a client sink.
+    RUNTIME_EVENT = "runtime/event"
+    # Application runtime jobs. The jobs plugin owns lifecycle and publishes
+    # neutral snapshots; transports observe them without locating the plugin.
+    JOB_UPDATED = "job/updated"
+    JOB_COMPLETED = "job/completed"
+    # Core state projection changed. Persistence is one possible observer;
+    # the loop does not request or name storage operations.
+    STATE_CHANGED = "state/changed"
+
+
+class EventPort(Protocol):
+    """Narrow event surface consumed by the concrete loop driver."""
+
+    async def emit(self, event: str, *args: Any) -> Any: ...
+
+    async def serial(self, event: str, *args: Any) -> Any: ...
 
 
 #: Events dispatched with ``ctx.serial`` (first non-None result is the answer).
@@ -113,20 +133,17 @@ class ToolDecision:
 class EventContext:
     """Payload object passed to runtime event listeners.
 
-    Replaces the legacy hook context: the same state the runtime carries at
-    each dispatch point, without a stage contract.
+    Plugin listeners capture their injected services when they register;
+    event payloads never expose the application service container.
     """
 
     messages: list[Message] = field(default_factory=list)
     config: Any | None = None
     tools: Any | None = None
-    sandbox: Any | None = None
-    invoke_model: Callable[[list[Message]], Awaitable[ModelResponse]] | None = None
-    request_user_input: Callable[..., Awaitable[dict[str, Any]]] | None = None
-    request_continuation: Callable[[], Awaitable[None]] | None = None
+    agent: AgentDefinition | None = None
+    send_input: Callable[..., Awaitable[Any]] | None = None
     continuation: bool = False
     session: SessionInfo | None = None
-    emit: Callable[[Any], None] = field(default=lambda _: None)
     user_input: str | None = None
     event: Any | None = None
     turn_complete: bool = False
@@ -136,7 +153,6 @@ class EventContext:
     model_request: dict[str, Any] | None = None
     model_response: Any | None = None
     tool_calls: list[ToolCall] | None = None
-    llm: Any | None = None
     tool_call: ToolCall | None = None
     args: dict[str, Any] | None = None
     tool_result: Any | None = None
@@ -144,12 +160,8 @@ class EventContext:
     tool_results: list[Any] | None = None
     reason: Any | None = None
     error: Any | None = None
-    compact_reason: str | None = None
-    compact_metrics: dict[str, Any] | None = None
     context_kwargs: dict[str, Any] | None = None
-    previous_message_count: int | None = None
-    current_message_count: int | None = None
-    permission_decision: str | None = None
+    rebuild: bool = False
     client_event: dict[str, Any] | None = None
     stop_reason: str | None = None
     response: ModelResponse | None = None
@@ -159,6 +171,7 @@ class EventContext:
 
 __all__ = [
     "EventContext",
+    "EventPort",
     "Events",
     "SHORT_CIRCUIT_EVENTS",
     "ToolAction",

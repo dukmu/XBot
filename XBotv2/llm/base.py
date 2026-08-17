@@ -1,10 +1,4 @@
-"""Provider adapter shared helpers.
-
-The provider contract (``BaseProvider`` / ``ProviderRetryExhaustedError`` /
-``retryable_provider_error``) lives in ``XBotv2.core.providers``; this module
-keeps the adapter-side rendering helpers and re-exports the contract for
-convenience.
-"""
+"""Provider-adapter rendering helpers."""
 
 from __future__ import annotations
 
@@ -13,21 +7,6 @@ from typing import Any
 
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.core.providers import (
-    BaseProvider,
-    ProviderRetryExhaustedError,
-    retryable_provider_error,
-)
-
-__all__ = [
-    "BaseProvider",
-    "ProviderRetryExhaustedError",
-    "attachment_prompt",
-    "retryable_provider_error",
-    "usage_metadata",
-]
-
-
 def attachment_prompt(message: Message) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []

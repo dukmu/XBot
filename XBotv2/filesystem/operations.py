@@ -1,4 +1,4 @@
-"""Canonical UTF-8 filesystem operations used on the host and in bwrap."""
+"""Shared UTF-8 filesystem operations used by tools and sandbox workers."""
 
 from __future__ import annotations
 

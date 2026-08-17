@@ -1,18 +1,16 @@
 """Shared contracts for XBotv2.
 
 Plugins and applications import the stable contracts from this package
-(``XBotv2.core``).  Event names live in ``XBotv2.core.events``; the job-system
-contract lives in ``XBotv2.jobs``; engine internals are implementation
+(``XBotv2.core``). Event names live in ``XBotv2.core.events`` and job models
+live in ``XBotv2.core.jobs``; engine internals are implementation
 details and may change without a compatibility shim.
 """
 
 from XBotv2.core.agents import (
     AgentDefinition,
     AgentMode,
-    AgentRuntime,
     AgentSession,
     AgentSessionResult,
-    ChildEngineFactory,
     SubagentAgentError,
     SubagentTurnError,
 )
@@ -66,11 +64,9 @@ from XBotv2.core.variables import RuntimeVariables
 __all__ = [
     "AgentDefinition",
     "AgentMode",
-    "AgentRuntime",
     "AgentSession",
     "AgentSessionResult",
     "ArtifactRef",
-    "ChildEngineFactory",
     "ClientEvent",
     "Command",
     "CommandResult",

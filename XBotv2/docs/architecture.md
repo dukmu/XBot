@@ -2,19 +2,21 @@
 
 ## Overview
 
-XBotv2 is a plugin-extensible AI agent runtime with a minimal core ReAct loop.
-The core owns provider calls, tool execution, permissions, sandboxing (BubblewrapBackend),
-protocol streaming (HTTP/SSE + Unix domain socket), and append-only persistence
-(`messages.jsonl`). Skills, MCP tools, and plugin extensions live in ``.
+XBotv2 is a plugin-extensible AI agent runtime. The agent-loop package owns
+only the ReAct cycle and its tool-execution service: call the model, execute
+the returned tools, and repeat. `core/` contains shared data contracts.
+Permissions, sandboxing, interactions, persistence, providers, protocol, and
+individual tool implementations remain separately owned capabilities.
 
 ## Architecture Principle
 
 ```text
-Plugins -> import -> Stable API (api)
-Core -> never imports -> Plugins (goal/, todolist/, skills/, ...)
+Plugins -> import -> core data contracts
+Plugins -> communicate -> injected services or events
+Agent loop -> never imports -> concrete plugins
 ```
 
-Core defines interfaces; bootstrap wires plugins at runtime via manifests.
+Core defines interfaces; application startup wires plugins from manifests.
 `plugin_dirs=[]` disables plugin discovery (pure-core test mode).
 `--no-plugins` CLI flag equivalent.
 
@@ -34,20 +36,24 @@ flowchart TB
     end
 
     subgraph Core["Core"]
-        SRT["SessionRuntime (core/session.py)<br/>engine · inbox · interactions · event stream"]
         ENG["Engine (`agentloop/engine.py`) ReAct loop"]
-        CTX["ContextBuilder (core/context.py)"]
-        IBX["AgentInbox (inbox/ plugin)"]
-        ITX["InteractionWaiter (interactions/ plugin)"]
-        CCH["ContentCache (content_cache/ plugin)"]
-        EVT["Events (api/events.py) dispatch on XCore ctx"]
+        IBX["AgentInbox (agentloop/inbox.py)<br/>single input entry"]
+        EVT["Event contracts (core/events.py)"]
+    end
+
+    subgraph Application["Application composition"]
+        APP["application/app.py<br/>launcher facts · mount · settle"]
+        AGS["agents service<br/>registry · create seam"]
+        FAC["agentloop factory<br/>Engine construction"]
+        SRT["SessionRuntime (session/runtime.py)<br/>response routing · event stream"]
+        CER["ClientEventRouter<br/>parent/child live-event routing"]
     end
 
     subgraph ToolsLayer["Tool system"]
-        REG["ToolRegistry (tools/registry.py)"]
-        PERM["PermissionSystem (tools/permissions.py)"]
-        SBX["Sandbox + BubblewrapBackend (tools/)"]
-        BT["builtin tools (core/builtin_tools/)"]
+        REG["ToolsService (agentloop/tool_service.py)"]
+        PERM["permissions plugin"]
+        SBX["sandbox plugin"]
+        BT["tool-owner plugins"]
     end
 
     subgraph ProvidersLayer["LLM providers"]
@@ -69,19 +75,21 @@ flowchart TB
     UDS --> SCM
     HTTP --> SCM
     SCM --> SRT
+    APP -->|"agents.create"| AGS
+    AGS -->|"resolved core ports"| FAC
+    FAC --> ENG
     SRT --> ENG
+    SRT --> CER
     ENG --> CTX
     ENG --> IBX
-    ENG --> ITX
-    ENG --> HKS
     ENG --> REG
     REG --> PERM
     REG --> SBX
     REG --> BT
     ENG --> LLM
-    ENG --> STORE
+    EVT --> STORE
     STORE --> JRNL
-    P -. "import stable api (api)" .-> ENG
+    P -. "consume core contracts + events" .-> EVT
 ```
 
 Core never imports the built-in plugins; plugins import the stable `api`
@@ -114,10 +122,12 @@ Configuration:
 ```text
 XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 <data_dir>/config/plugins.yaml   # global user tree overlay (seeded on first run)
+<data_dir>/config/config.yaml    # runtime Agent settings/policy
 <data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
 <workspace_root>/AGENTS.md       # reloaded for each model context build
 <workspace_root>/.agents/*.md    # workspace Agent definitions (override built-ins)
 <workspace_root>/.xbot/plugins.yaml
+<workspace_root>/.xbot/config.yaml
 ```
 
 `data_dir` defaults to `~/.xbot` (`--data-dir` / `XBOT_DATA_DIR` overrides).
@@ -130,8 +140,16 @@ are the ``llm`` plugin's tree config (``default`` + ``providers``) and the
 user context is the ``config`` plugin's tree config (``user``) — there are no
 separate ``providers.yaml`` / ``user.yaml`` documents. Provider definitions
 use explicit `max_context_tokens` and `max_output_tokens`. Any unknown
-provider name fails at bootstrap; provider selection never silently falls
-back to a different model.
+provider name fails during application startup; provider selection never
+silently falls back to a different model. Agent settings such as provider
+selection, instructions, tool selectors, and policy are resolved by
+`ctx.settings`; they are not copied through an application config plugin.
+
+The agents service resolves that selection through the mounted config and LLM
+services, then passes provider-neutral core ports to the registered agentloop
+factory. The LLM plugin owns the mutable `ctx.model` binding; Engine and
+auxiliary model capabilities consume that port, while `ctx.llm` remains the
+provider route directory.
 
 ## Core Components
 
@@ -139,7 +157,7 @@ back to a different model.
 
 ReAct loop: user message accept → context build (with hook injection) →
 LLM call (streaming) → tool execution → repeat. Uses the provider-neutral
-`Message`, `ToolCall`, and `Tool` types from `api`.
+`Message`, `ToolCall`, and `Tool` contracts from `core`.
 
 The turn implementation is an orchestrator over stage-specific methods:
 message admission/start, context construction, model-request preparation,
@@ -149,12 +167,13 @@ interpreter. Internal model/tool completion records are consumed by the
 orchestrator and never cross the C/S event boundary.
 
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
-`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, `ON_STOP_FAILURE`, `ON_TOOL_CALL_FAILURE`,
-`PRE_COMPACT`, `POST_COMPACT`.
+`AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, and `ON_STOP_FAILURE`. Compact owns
+its own `PRE_COMPACT`/`POST_COMPACT` transaction; persistence observes the
+neutral `STATE_CHANGED` event.
 
-### Tool System (`tools/`)
+### Tool System (`agentloop/tool_*.py`)
 
-- **Tool** (`api/tools.py`): native tool dataclass with `from_function()`, supports
+- **Tool** (`core/tools.py`): native tool dataclass with `from_function()`, supports
   async functions and keyword-only parameter injection (sandbox, skill_registry).
 - **ToolRegistry** (`registry.py`): namespace-aware canonical names and
   `restrict()` with wildcard selectors.
@@ -163,7 +182,7 @@ Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`
   `write_file`, `list_dir`.
 - **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
 
-### Job System (`api/jobs/`)
+### Job System (`core/jobs.py`, `jobs/`)
 
 Background shells and subagents share one unified job lifecycle. `JobRegistry`
 owns IDs, status transitions, waiting, cancellation, output storage, and
@@ -175,10 +194,11 @@ subagent tools (`spawn_subagent`, `list_subagents`, `wait_subagent`,
 `read_subagent`, `cancel_subagent`) live in the `agents` plugin. The model never
 sees a generic `task`/`job` tool. List and wait responses carry only lightweight
 metadata; bulk output is read through the explicit `read_*` tools, each bounded
-by character limits. Child Engine sessions are spawned through the api
-`AgentRuntime`/`AgentSession` protocols, implemented in `core/agents.py`.
+by character limits. The application-owned `ChildApplications` service starts
+and closes child Agent applications and returns the core `AgentSession`
+contract; `session/` keeps only session identity and the child hierarchy.
 
-### Runtime events (`api/events.py`)
+### Runtime events (`core/events.py`)
 
 The engine and tool layer dispatch named events on the XCore context
 (`ctx.serial` for short-circuit events whose first non-`None` result is
@@ -186,42 +206,40 @@ interpreted by the caller, `ctx.emit` for observer events). Plugins observe
 and intercept them with `ctx.on(Events.X, handler)`; the payload is an
 `EventContext`.
 
-### Input acceptance and runtime inbox (`inbox/` plugin)
+### Unified input (`agentloop/inbox.py`)
 
-While the agent is busy, new user input is held in the session's pending fold
-and fused into the running turn after the next ToolResult batch; a held input
-that no boundary fuses is rejected with `input_rejected` and the client
-retries. Runtime notifications are staged in the agent inbox (provided by the
-`inbox` plugin as `ctx.inbox`) and drained — all at once — into the next
-turn's context without starting a turn. Both buffers are runtime-only and
-destroyed on disconnect.
+The concrete loop owns the only model-visible input queue. User messages,
+steering input, goal continuations, and runtime notifications all enter via
+`send(target, wakeup)`. Fixed aliases mirror DSH: `followup` is
+`next-turn + wake`, `steer` is `next-step + wake`, and `inject` is
+`next-step + no wake`. Session transport retains only reply waiters keyed by
+message ID. Inbox splices are journaled before the live projection mutates and
+are replayed on resume.
 
 ```mermaid
 sequenceDiagram
     participant Job as background job (shell / subagent)
-    participant Reg as JobRegistry (api/jobs/)
-    participant Ses as SessionRuntime (core/session.py)
+    participant Reg as JobRegistry (jobs/)
+    participant Ses as SessionRuntime (session/runtime.py)
     participant IBX as AgentInbox
-    participant Ctx as next turn context
+    participant Loop as agent loop
     participant TUI
     participant Goal as GoalPlugin
 
     Note over Job,IBX: Completions never start a turn
     Job-->>Reg: finishes
-    Reg-->>Ses: on_complete callback
-    Ses->>IBX: enqueue(InboxMessage)
+    Reg-->>Ses: JOB_COMPLETED event
+    Ses->>IBX: inject(notification)
     Ses-->>TUI: completion_notice (task panel tracks status)
 
-    Note over Ctx,IBX: drained only when a turn already runs
-    Ses->>Ctx: later user message starts a turn
-    Ctx->>IBX: _drain_inbox_into_messages() drains ALL
-    IBX-->>Ctx: one <runtime_event> envelope in model context
+    Note over Loop,IBX: inject does not wake an idle loop
+    Ses->>IBX: followup(user message)
+    Loop->>IBX: claim next-step + one next-turn
+    IBX-->>Loop: notification + user message
 
-    Note over Goal,Ses: request_continuation is the one deliberate wake
-    Ses->>Goal: turn finishes (ON_TURN_END)
-    Goal->>Ses: request_continuation()
-    Ses->>Ses: schedule background continuation turn
-    Note over Ses,Ctx: never routed through AgentInbox
+    Note over Goal,IBX: goal continuation uses the same entry
+    Goal->>IBX: followup(goal continuation)
+    IBX->>Loop: wake driver
 ```
 
 ### LLM Provider (`llm/`)
@@ -261,11 +279,9 @@ system messages.
 
 ### CompactPlugin (`compact/`)
 
-Uses the public `BEFORE_CONTEXT` compaction result and the controlled
-`EventContext.invoke_model()` capability to summarize a completed history
-prefix. It supports a model-visible request tool and a configurable automatic
-character threshold. Core remains responsible for event bracketing and atomic
-history persistence.
+Observes context pressure and uses its injected LLM service to summarize a
+completed history prefix. It owns pre/post bracketing, core-history replacement,
+and `STATE_CHANGED`; persistence independently records the checkpoint.
 
 ### TodolistPlugin (`todolist/`)
 
@@ -293,9 +309,9 @@ Discovers SKILL.md files (agentskills.io standard) from:
   (namespace `skills:<scope>:<name>`)
 - BEFORE_USER_MESSAGE_ACCEPT hook: detects `/skill-name` prefix, expands SKILL.md content
 - Shell injection via `` !`cmd` `` syntax in SKILL.md (sandboxed)
-- standard `allowed-tools` preapproval and namespaced
-  `xbotv2-disallowed-tools` restrictions, applied before the authoritative core
-  permission check
+- standard `allowed-tools` metadata and namespaced
+  `xbotv2-disallowed-tools` monotonic restrictions; neither bypasses the
+  authoritative permission guard
 - `disable-model-invocation: true` for skills available only through explicit
   `/skill-name` user invocation
 - `user-invocable: false` for model-only skills and a bounded provider metadata
@@ -307,7 +323,7 @@ Connects through the official MCP SDK using stdio or Streamable HTTP.
 - The SDK owns lifecycle negotiation, pagination, cancellation, progress, and
   server notifications.
 - Registers MCP tools in ToolRegistry (namespace `mcp:<server>:<tool>`)
-- Eager connection at bootstrap with per-server diagnostics. Optional failures
+- Eager connection at Agent startup with per-server diagnostics. Optional failures
   mark the plugin degraded; servers configured with `required: true` fail startup.
 - Performs the required initialize/initialized handshake before discovery
 - Preserves MCP input schemas and adapts call data/errors to `ToolResult`
@@ -327,14 +343,13 @@ and description. A Tool namespace is never interpreted as a slash-command path.
 
 ### HTTP/SSE (`protocol/http_server.py`)
 
-FastAPI app with SSE streaming. `SessionManager` owns one core `SessionRuntime`
-per live thread, grouped by session ID. `SessionRuntime` owns the Engine,
-runtime-only Mailbox, turn task, interaction sink, and event stream; HTTP only
-maps that lifecycle to wire requests. The Runtime is bound before Engine start
-and stops active delivery before Engine-owned task managers and plugins close.
+FastAPI app with SSE streaming. `SessionManager` owns one `SessionRuntime` per
+live thread. It owns the XCore application, Engine handle, turn task,
+client-event sink, and event stream; the agent inbox belongs to Engine. Runtime
+stops active delivery before stopping the application and plugin fibers.
 Once mode uses the same runtime so immediate Goal continuations are not lost
 after the first model turn.
-Wire DTOs are owned by `protocol/models.py`; `api/` contains no transport types.
+Wire DTOs are owned by `protocol/models.py`; `core/` contains no transport types.
 The HTTP bridge owns the Engine async stream and closes it when the SSE
 consumer completes or disconnects.
 

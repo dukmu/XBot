@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, resolve_operation
+from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
 
 PermissionDecision = Literal["allow", "deny", "ask"]
 
@@ -213,6 +213,65 @@ class PermissionSystem:
 
         return self.default_decision
 
+    def explicit_allow(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        constrain_param: str | None = None,
+    ) -> bool:
+        """Whether an explicit rule (or one-shot grant) permits the call.
+
+        Unlike :meth:`check`, the configured default decision never counts
+        as an explicit allow.  When *constrain_param* is given, only rules
+        that constrain that parameter count — a generic tool-level allow
+        (e.g. ``shell`` without params) never covers the constrained case
+        (e.g. sandbox escalation).  Used for actions that must be approved
+        by a human unless a rule deliberately permits them.
+        """
+        args = args or {}
+        if any(
+            (constrain_param is None or constrain_param in grant.param_patterns)
+            and self._rule_matches(grant, tool_name, args)
+            for grant in self._once_grants
+        ):
+            return True
+        return any(
+            (constrain_param is None or constrain_param in rule.param_patterns)
+            and self._rule_matches(rule, tool_name, args)
+            for rule in self._allow_rules
+        )
+
+    # ------------------------------------------------------------------
+    # Tool-call policy
+    # ------------------------------------------------------------------
+
+    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
+        """Return the plugin-local policy decision and human-facing reason."""
+        tool_name = tool_call.name
+        args = dict(tool_call.args or {})
+        escalated = (
+            tool_name == "shell"
+            and args.get("sandbox_permissions") == "require_escalated"
+        )
+        decision = self.check(tool_name, args)
+        if escalated and decision == "allow" and not self.explicit_allow(
+            tool_name, args, constrain_param="sandbox_permissions"
+        ):
+            decision = "ask"
+        if decision == "deny":
+            return decision, f"Permission denied for tool: {tool_name}"
+        if decision == "ask" and escalated:
+            justification = str(args.get("justification") or "").strip()
+            return decision, (
+                f"Sandbox escape requires human approval: {justification}"
+                if justification
+                else "Sandbox escape requires human approval."
+            )
+        if decision == "ask":
+            return decision, f"Permission approval required for tool: {tool_name}."
+        return decision, ""
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -324,3 +383,51 @@ class PermissionIntersection:
         if "ask" in decisions:
             return "ask"
         return "allow"
+
+    def explicit_allow(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        constrain_param: str | None = None,
+    ) -> bool:
+        """Whether either policy explicitly permits the call.
+
+        See :meth:`PermissionSystem.explicit_allow` for *constrain_param*.
+        """
+        args = args or {}
+        if any(
+            (constrain_param is None or constrain_param in grant.param_patterns)
+            and _matches_name_and_params(grant, tool_name, args)
+            for grant in self._once_grants
+        ):
+            return True
+        return self.parent.explicit_allow(
+            tool_name, args, constrain_param=constrain_param
+        ) or self.child.explicit_allow(tool_name, args, constrain_param=constrain_param)
+
+    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
+        """Apply intersection policy with the same escalation constraint."""
+        tool_name = tool_call.name
+        args = dict(tool_call.args or {})
+        escalated = (
+            tool_name == "shell"
+            and args.get("sandbox_permissions") == "require_escalated"
+        )
+        decision = self.check(tool_name, args)
+        if escalated and decision == "allow" and not self.explicit_allow(
+            tool_name, args, constrain_param="sandbox_permissions"
+        ):
+            decision = "ask"
+        if decision == "deny":
+            return decision, f"Permission denied for tool: {tool_name}"
+        if decision == "ask" and escalated:
+            justification = str(args.get("justification") or "").strip()
+            return decision, (
+                f"Sandbox escape requires human approval: {justification}"
+                if justification
+                else "Sandbox escape requires human approval."
+            )
+        if decision == "ask":
+            return decision, f"Permission approval required for tool: {tool_name}."
+        return decision, ""

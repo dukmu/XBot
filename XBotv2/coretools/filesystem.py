@@ -23,7 +23,7 @@ from typing import Any, Literal
 from weakref import WeakKeyDictionary
 
 from XBotv2.core.tools import Tool, ToolResult
-from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, execute
+from XBotv2.filesystem.operations import PATH_ACCESS, execute
 
 from XBotv2.coretools.content import content_read
 

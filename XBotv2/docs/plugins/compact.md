@@ -1,8 +1,8 @@
 # Compact Plugin
 
 `compact` replaces an old, completed conversation prefix with
-one model-generated summary. It uses only the public plugin and Hook API; core
-owns history replacement and persistence.
+one model-generated summary. The plugin owns history replacement and publishes
+the resulting core-state mutation for persistence observers.
 
 ## Behavior
 
@@ -30,8 +30,9 @@ owns history replacement and persistence.
   allowing provider prefix caches to be reused. The summary instruction retains
   requirements, decisions, feedback, verified results, current state, remaining
   work, and known unknowns while distinguishing evidence from plans.
-- The summary becomes a system history message. The Engine runs the existing
-  `PRE_COMPACT` and `POST_COMPACT` Hooks and appends a `history_checkpoint`
+- The summary becomes a system history message. The plugin runs
+  `PRE_COMPACT` and `POST_COMPACT`, then publishes `STATE_CHANGED`; persistence
+  appends a `history_checkpoint`
   record. Earlier raw records remain available, while resume starts replay at
   the latest checkpoint.
 - The summary instruction explicitly requires preservation of human directives;
@@ -66,9 +67,9 @@ cannot represent 32K, 200K, and 1M provider windows consistently.
 
 ## Boundaries
 
-Compaction does not expose the provider client, Engine, state store, or message
-file to the plugin. `EventContext.invoke_model()` supplies one unbound auxiliary
-call, and the plugin returns the existing `BEFORE_CONTEXT` compaction result.
+Compaction captures its injected `ctx.llm` service when mounted; event payloads
+do not expose the application container or an Engine callback. The plugin
+commits the replacement and returns only a generic request-rebuild decision.
 Auxiliary calls do not recursively run model Hooks or stream assistant deltas.
 
 The agent Tool and human `/compact` command are separate registrations owned by
@@ -76,7 +77,7 @@ the same plugin. Only the Agent path enters Tool Hooks and permissions; it sets
 the manual-request flag for the next safe `BEFORE_CONTEXT` boundary. The plugin
 preapproves that Tool request at `BEFORE_TOOL_CALL`. The human command acquires
 the session turn lock and immediately runs the same `BEFORE_CONTEXT`,
-`PRE_COMPACT`, `POST_COMPACT`, and persistence path without starting a model
+`PRE_COMPACT`, `POST_COMPACT`, and `STATE_CHANGED` path without starting a model
 turn. If another turn owns the lock, the command runs as soon as that turn ends.
 Automatic requests are evaluated at `BEFORE_MODEL_REQUEST`; a successful replacement
 causes Core to rebuild context before issuing any provider request.

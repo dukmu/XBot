@@ -66,11 +66,8 @@ from XBotv2.protocol.models import (
 )
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.loader import (
-    load_runtime_config,
-    resolve_llm_config,
-)
-from XBotv2.session.operations import (
+from XBotv2.config.loader import load_runtime_config
+from XBotv2.application.operations import (
     OperationError,
     clear_history,
     fork_session,
@@ -86,7 +83,7 @@ from XBotv2.session.operations import (
 from XBotv2.config.policy import (
     load_session_policy,
 )
-from XBotv2.agentloop.session import SessionBusy, SessionRuntime, run_turn_stream
+from XBotv2.session.runtime import SessionBusy, SessionRuntime, run_turn_stream
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.commands import execute_command, list_commands
 from XBotv2.protocol.history import display_history
@@ -144,14 +141,14 @@ def create_app(
     no_plugins: bool = False,
     server_name: str = "xbotv2",
     llm_override: Any | None = None,
-    llm: Any | None = None,
+    llm: Any,
 ) -> FastAPI:
     """Build the FastAPI app.
 
     A single ``SessionManager`` instance is shared across the process.
     Tests can call this function with custom parameters.  ``llm`` is the
-    provider directory used by the ``/providers`` route; when omitted it is
-    resolved from the merged plugin tree (``xcore.yaml`` + global overlay).
+    provider directory used by the ``/providers`` route and is supplied by
+    the server application.
     """
 
     started_at = time.monotonic()
@@ -160,11 +157,6 @@ def create_app(
     # This is a test seam: production passes llm_override=None and the server
     # loads the configured provider. Tests pass a MockLLM to skip network.
     _llm_override_ref: dict[str, Any] = {"value": llm_override}
-    if llm is None:
-        from XBotv2.llm.plugin import build_llm_service
-
-        llm = build_llm_service(resolve_llm_config(paths))
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         manager.start_reaper()
@@ -450,7 +442,7 @@ def _register_routes(app: FastAPI) -> None:
                 no_plugins=app.state.no_plugins,
                 llm_override=app.state.llm_override.get("value"),
                 parent_thread_id=parent_thread_id,
-                parent_permission_system=parent.engine.permission_system,
+                parent_permission_system=parent.services.permissions,
                 is_subagent=True,
             )
         except SessionNotFound as exc:
@@ -478,10 +470,10 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> AgentListResponse:
         ctx = await manager.get(session_id, thread_id)
-        registry = ctx.engine.agent_registry
+        registry = ctx.services.agents.registry
         definitions = registry.definitions() if registry is not None else ()
         return AgentListResponse(
-            active=str(getattr(ctx.engine.config, "agent_name", "")),
+            active=ctx.engine.settings.agent_name,
             agents=[
                 AgentInfo(
                     name=definition.name,
@@ -569,7 +561,7 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> ToolListResponse:
         ctx = await manager.get(session_id, thread_id)
-        registry = ctx.engine.tool_registry
+        registry = ctx.engine.tools.registry
         enabled = set(registry.names())
         return ToolListResponse(tools=[
             ToolInfo(
@@ -578,7 +570,6 @@ def _register_routes(app: FastAPI) -> None:
                 namespace=entry.namespace,
                 description=str(getattr(entry.tool, "description", "") or ""),
                 parameters=dict(getattr(entry.tool, "parameters", {}) or {}),
-                sandbox_mode=entry.sandbox_mode,
                 timeout_seconds=entry.timeout_seconds,
             )
             for entry in registry.registered_entries()
@@ -708,7 +699,7 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> CommandListResponse:
         ctx = await manager.get(session_id, thread_id)
-        loader = ctx.engine.plugin_loader
+        loader = ctx.services.get("loader")
         return CommandListResponse(
             commands=list_commands(extra=loader.commands if loader is not None else ())
         )
@@ -779,11 +770,13 @@ def _register_routes(app: FastAPI) -> None:
         ctx = await manager.get(session_id, thread_id)
         try:
             images = [
-                ctx.engine.state_store.store_image(image.data, image.media_type)
+                ctx.services.state_store.store_image(
+                    image.data, image.media_type
+                )
                 for image in payload.images
             ]
             attachments = [
-                ctx.engine.state_store.store_attachment(
+                ctx.services.state_store.store_attachment(
                     attachment.data,
                     attachment.media_type,
                     attachment.name,
@@ -1079,18 +1072,18 @@ def _error_payload(
 
 
 async def _open_session_response(ctx: SessionRuntime) -> OpenSessionResponse:
-    loader = getattr(ctx.engine, "plugin_loader", None)
+    loader = ctx.services.get("loader")
     status_slots = await loader.status_slots() if loader is not None else {}
     return OpenSessionResponse(
         session_id=ctx.session_id,
         thread_id=ctx.thread_id,
-        agent_name=getattr(ctx.engine.config, "agent_name", "XBotv2"),
+        agent_name=ctx.engine.settings.agent_name,
         workspace_root=ctx.workspace_root,
         provider=ctx.provider_name,
-        model=str(getattr(ctx.engine, "model", "")),
-        model_mode=str(getattr(ctx.engine, "model_mode", "")),
-        context_window=int(getattr(ctx.engine, "context_window", 0)),
-        usage=ctx.engine.session_usage,
+        model=ctx.engine.settings.model,
+        model_mode=ctx.engine.settings.model_mode,
+        context_window=ctx.engine.settings.context_window,
+        usage=ctx.services.usage.snapshot(),
         history=display_history(ctx.engine.messages),
         status_slots=status_slots,
     )
@@ -1170,9 +1163,10 @@ async def _resolve_interaction(
                 status=400,
             )
         try:
-            ctx.engine.permission_waiter.answer(  # noqa: SLF001
-                request_id, decision=decision, scope=scope
-            )
+            approval = _plugin_service(ctx, "approval")
+            if approval is None or not hasattr(approval, "submit"):
+                raise RuntimeError("Required approval service is unavailable")
+            approval.submit(request_id, decision, scope)
         except Exception as exc:  # noqa: BLE001
             raise HttpServerError(
                 "interaction_no_longer_pending",
@@ -1186,9 +1180,10 @@ async def _resolve_interaction(
 
     answer = payload.get("answer", "")
     try:
-        ctx.engine.user_input_waiter.answer(  # noqa: SLF001
-            request_id, answer=answer
-        )
+        interactions = _plugin_service(ctx, "interactions")
+        if interactions is None or not hasattr(interactions, "submit_user_input"):
+            raise RuntimeError("Required interactions service is unavailable")
+        interactions.submit_user_input(request_id, answer)
     except Exception as exc:  # noqa: BLE001
         raise HttpServerError(
             "interaction_no_longer_pending",
@@ -1199,6 +1194,14 @@ async def _resolve_interaction(
         request_id=request_id,
         pending_interactions=pending_interactions(ctx),
     )
+
+
+def _plugin_service(ctx: Any, name: str) -> Any:
+    """Resolve one plugin service from the owning session application."""
+    services = getattr(ctx, "services", None)
+    if services is None or not hasattr(services, "get"):
+        return None
+    return services.get(name)
 
 
 def _format_sse(

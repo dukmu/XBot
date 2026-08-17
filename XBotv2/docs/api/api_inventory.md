@@ -12,15 +12,16 @@ Plugins and external extensions import the shared contracts from:
 from XBotv2.core import ...
 ```
 
-The job-system contract is a plugin package of its own:
+Job contracts are imported from core, while the jobs package exposes runtime
+implementations only:
 
 ```python
-from XBotv2.jobs import ...
+from XBotv2.core.jobs import ...
+from XBotv2.jobs import JobRegistry, JobRunner
 ```
 
-Modules under `XBotv2.core` may hold the implementation of these types, but
-new plugin examples should use the aggregate package unless they need a local
-type-only import.
+Feature plugins must not import these contracts from `XBotv2.jobs`; that would
+make a plugin masquerade as their owner.
 
 ## Exported Symbols (XBotv2.core)
 
@@ -28,11 +29,9 @@ type-only import.
 |---|---|---|
 | `AgentDefinition` | dataclass |  |
 | `AgentMode` | type alias |  |
-| `AgentRuntime` | protocol |  |
 | `AgentSession` | protocol |  |
 | `AgentSessionResult` | dataclass |  |
 | `ArtifactRef` | dataclass |  |
-| `ChildEngineFactory` | type alias |  |
 | `ClientEvent` | dataclass |  |
 | `Command` | dataclass |  |
 | `CommandResult` | dataclass |  |
@@ -77,11 +76,15 @@ type-only import.
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |
 
-## Exported Symbols (XBotv2.jobs)
+## Exported Symbols (`XBotv2.core.jobs`)
 
-The background job subsystem contract: `Job`, `JobContext`, `JobRunner`,
-`JobRegistry`, `JobStatus`, `JobKind`, `JobResult`, `JobSummary`, `JobError`,
+The background job subsystem contract: `Job`, `JobStatus`, `JobKind`,
+`JobResult`, `JobSummary`, `JobError`,
 `JobId`, `JobNotFound`, `JobRegistryClosed`, `CancelResult`, `WaitResult`,
+`TERMINAL_STATES`, and `MAX_SUMMARY_CHARS`.
+
+## Exported Symbols (`XBotv2.jobs`)
+
+Runtime implementations only: `JobRegistry`, `JobContext`, `JobRunner`,
 `OutputStore`, `TextOutputStore`, `StreamOutputStore`, `OutputChunk`,
-`CombinedShellOutput`, `TERMINAL_STATES`, `MAX_SUMMARY_CHARS`, `job_summary`,
-`normalize_error`.
+`CombinedShellOutput`, `job_summary`, and `normalize_error`.

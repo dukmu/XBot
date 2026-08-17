@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.config.models import UserContext
+from XBotv2.config.models import (
+    RuntimeConfig,
+    UserContext,
+)
 
 
 class ConfigService:
@@ -22,6 +25,16 @@ class ConfigService:
 
     def user_context(self) -> UserContext:
         return self._user_context
+
+    def load_runtime_config(self, workspace: Any, session_id: str) -> RuntimeConfig:
+        from XBotv2.config.loader import load_runtime_config
+
+        return load_runtime_config(self.paths, workspace, session_id)
+
+    def patch_session_policy(self, **kwargs: Any) -> dict[str, Any]:
+        from XBotv2.config.policy import patch_session_policy
+
+        return patch_session_policy(paths=self.paths, **kwargs)
 
 
 __all__ = ["ConfigService"]

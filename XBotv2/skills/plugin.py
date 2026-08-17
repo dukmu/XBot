@@ -13,10 +13,9 @@ from XBotv2.core import (
     prompt_container,
     prompt_element,
     Tool,
-    ToolAction,
-    ToolDecision,
     ToolResult,
 )
+from XBotv2.core.tools import GuardDecision
 
 from .permission_scope import SkillPermissionScope
 from .registry import Skill, SkillRegistry
@@ -44,7 +43,7 @@ class SkillsPlugin:
         ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
         ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
         ctx.on(Events.TURN_END, self._on_turn_end)
-        ctx.on(Events.BEFORE_TOOL_CALL, self._on_before_tool)
+        ctx.tools.guard(self._guard_tool_scope)
 
     def _cleanup_runtime(self) -> None:
         """Unregister session-registered skill tools/commands and reset state."""
@@ -97,7 +96,7 @@ class SkillsPlugin:
         """Register one skill tool on the raw registry (tracked for cleanup)."""
         return self.ctx.tools.registry.register(
             self._skill_as_tool(skill),
-            sandbox_mode="sandboxed",
+            injected={"sandbox": self.ctx.sandbox},
             namespace=f"skills:{skill.scope}",
         )
 
@@ -181,7 +180,7 @@ class SkillsPlugin:
             skill_name,
             arguments=instructions,
             skill_registry=self._registry,
-            sandbox=ctx.sandbox,
+            sandbox=self.ctx.sandbox,
         )
         self._activate_skill(skill)
         return {
@@ -203,22 +202,18 @@ class SkillsPlugin:
         self._active_skills.clear()
         self._permission_scope.clear()
 
-    async def _on_before_tool(self, ctx: EventContext) -> None:
+    async def _guard_tool_scope(self, tool_call: Any, _entry: Any) -> Any:
         if not self._active_skills:
             return
-        tool_name = ctx.tool_call.name if ctx.tool_call else ""
+        tool_name = tool_call.name
         if not tool_name:
             return
-        decision = self._permission_scope.check(tool_name, ctx.tool_call.args)
-        if decision == "allow":
-            return ToolDecision(
-                ToolAction.ALLOW,
-                f"Tool '{tool_name}' pre-approved by active skill",
-            )
+        decision = self._permission_scope.check(tool_name, tool_call.args)
         if decision == "deny":
-            return ToolDecision(
-                ToolAction.DENY,
-                f"Tool '{tool_name}' not permitted by active skill",
+            return GuardDecision(
+                "deny",
+                f"Tool '{tool_name}' is denied by the active skill",
+                source="skills",
             )
         return None
 

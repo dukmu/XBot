@@ -1,17 +1,14 @@
 """Agent contracts: definitions, modes, and the subagent protocols.
 
-Pure contracts only — the agent registry implementation lives in
-``XBotv2.tools`` (``AgentRegistry``, provided as ``ctx.agents``) and the
-engine-side application helpers in ``XBotv2.agentloop``.  Child-session
-spawning lives in ``XBotv2.session`` (``Session.spawn_subagent`` /
-``ChildEngineSession``).
+Pure contracts only — the agent registry and child-application lifecycle
+implementations live in the application layer.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 AgentMode = Literal["primary", "subagent", "all"]
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -53,9 +50,6 @@ class AgentDefinition:
                 raise ValueError(f"Agent {field_name} must be positive")
 
 
-ChildEngineFactory = Callable[[AgentDefinition, str, bool], Awaitable[Any]]
-
-
 class SubagentAgentError(RuntimeError):
     """Invalid subagent spawn request; the job fails with this error code."""
 
@@ -83,32 +77,32 @@ class AgentSession(Protocol):
     async def cancel(self) -> None: ...
 
 
-class AgentRuntime(Protocol):
-    """Core execution capability exposed to Agent plugins.
+@dataclass(frozen=True, slots=True)
+class AgentCreateOptions:
+    """Launcher facts needed to create one Agent instance.
 
-    The runtime spawns child sessions; it does not own job lifecycle state.
-    Job tracking, waiting, cancellation, and output storage live in the
-    shared jobs service (``ctx.jobs``).
+    These are not user configuration.  The agents service resolves them
+    against the mounted Agent definitions and runtime services before asking
+    the registered loop factory to construct the driver.
     """
 
-    async def spawn(
-        self,
-        agent: str,
-        prompt: str,
-        *,
-        parent_job_id: str | None = None,
-    ) -> AgentSession: ...
-
-    def definitions(self) -> tuple[AgentDefinition, ...]: ...
+    session_id: str
+    thread_id: str
+    workspace_root: str
+    provider_name: str = "default"
+    selected_agent: str | None = None
+    agent_definition: AgentDefinition | None = None
+    model_override: Any = None
+    parent_thread_id: str = ""
+    is_subagent: bool = False
 
 
 __all__ = [
     "AgentDefinition",
+    "AgentCreateOptions",
     "AgentMode",
-    "AgentRuntime",
     "AgentSession",
     "AgentSessionResult",
-    "ChildEngineFactory",
     "SubagentAgentError",
     "SubagentTurnError",
 ]

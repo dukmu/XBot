@@ -11,15 +11,12 @@ from XBotv2.core import (
     EventContext,
     Events,
     Tool,
-    ToolAction,
-    ToolDecision,
     ToolResult,
 )
 
 
 _MAX_TEXT_CHARS = 2_000
 _STATUSES = {"active", "complete", "blocked", "paused"}
-_GOAL_TOOLS = {"create_goal", "get_goal", "update_goal"}
 
 
 class GoalPlugin:
@@ -41,18 +38,14 @@ class GoalPlugin:
         self.store = ctx.state.namespace("goal")
         ctx.on(Events.TURN_START, self._start_goal_turn)
         ctx.on(Events.TURN_END, self._on_turn_end)
-        ctx.on(Events.BEFORE_TOOL_CALL, self._allow_goal)
         ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
-            sandbox_mode="host",
         )
         ctx.tools.register(
             Tool.from_function(self.get_goal, name="get_goal"),
-            sandbox_mode="host",
         )
         ctx.tools.register(
             Tool.from_function(self.update_goal, name="update_goal"),
-            sandbox_mode="host",
         )
         ctx.commands.register(Command(
             name="goal",
@@ -124,13 +117,6 @@ class GoalPlugin:
             summary,
         )
 
-    async def _allow_goal(self, ctx: EventContext):
-        if ctx.tool_call is not None and ctx.tool_call.name in _GOAL_TOOLS:
-            return ToolDecision(
-                ToolAction.ALLOW,
-                "Goal state operations are pre-approved by the Goal plugin",
-            )
-
     async def _goal_command(self, ctx: Any, raw_args: str) -> CommandResult:
         action, value, token_budget = _parse_goal_command(raw_args)
         if action == "get":
@@ -146,7 +132,7 @@ class GoalPlugin:
         else:
             result = await self._finish(action, value)
         if result.status == "success" and action in {"set", "resume"}:
-            await self.start(ctx.request_continuation)
+            await self.start(ctx.send_input)
         return _command_result(result)
 
     async def _get(self) -> ToolResult:
@@ -286,15 +272,19 @@ class GoalPlugin:
             goal["status"] = "paused"
             await self.store.set("goal", goal)
             return
-        await self.start(ctx.request_continuation)
+        await self.start(ctx.send_input)
 
-    async def start(self, request_continuation) -> None:
+    async def start(self, send_input) -> None:
         """Schedule the next active-goal turn if one is not already pending."""
         goal = await self._active_goal()
-        if goal is None or self._continuation_pending or request_continuation is None:
+        if goal is None or self._continuation_pending or send_input is None:
             return
         self._continuation_pending = True
-        await request_continuation()
+        await send_input(
+            "[goal continuation]",
+            source="goal",
+            metadata={"continuation": True},
+        )
 
     def diagnostics(self) -> dict[str, Any]:
         return {

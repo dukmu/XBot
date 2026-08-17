@@ -10,8 +10,8 @@ from datetime import datetime
 from typing import Any
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.bootstrap import bootstrap
-from XBotv2.agentloop.session import SessionRuntime
+from XBotv2.application import start_application
+from XBotv2.session.runtime import SessionRuntime
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.models import SessionSummary, ThreadSummary
 
@@ -73,7 +73,8 @@ class SessionManager:
                 for ctx in self._sessions.values()
                 if now - ctx.last_activity >= self.idle_timeout
                 and not ctx.turn_lock.locked()
-                and not ctx.pending_fold
+                and not ctx.pending_responses
+                and ctx.engine.pending_input_count == 0
                 and ctx.session_events is None
             ]
             for ctx in due:
@@ -150,7 +151,7 @@ class SessionManager:
                 if plugin_configs
                 else None
             )
-            engine = await bootstrap(
+            services = await start_application(
                 paths=self.paths,
                 provider_name=provider_name,
                 session_id=session_id,
@@ -164,13 +165,15 @@ class SessionManager:
                 parent_permission_system=parent_permission_system,
                 is_subagent=is_subagent,
             )
+            engine = services.engine
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
-                provider_name=engine.config.provider,
+                provider_name=engine.settings.provider,
                 paths=self.paths,
                 workspace_root=workspace_root,
                 no_plugins=no_plugins,
+                services=services,
                 engine=engine,
             )
             try:
@@ -252,9 +255,11 @@ async def thread_summary(
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
         engine = active.engine
-        loader = engine.plugin_loader
+        services = active.services
+        loader = services.get("loader")
         status_slots = await loader.status_slots() if loader is not None else {}
-        metadata = engine.state_store.read_thread_metadata()
+        store = services.state_store
+        metadata = store.read_thread_metadata()
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
         return ThreadSummary(
             session_id=session_id,
@@ -263,13 +268,13 @@ async def thread_summary(
             kind="subagent" if parent_thread_id else "main",
             turn_status="running" if active.turn_lock.locked() else "idle",
             parent_thread_id=parent_thread_id,
-            agent=str(metadata.get("agent") or engine.config.agent_name),
+            agent=str(metadata.get("agent") or engine.settings.agent_name),
             provider=active.provider_name,
-            model=engine.model,
-            model_mode=engine.model_mode,
+            model=engine.settings.model,
+            model_mode=engine.settings.model_mode,
             context_window=engine.context_window,
             message_count=len(engine.messages),
-            usage=engine.session_usage,
+            usage=services.usage.snapshot(),
             pending_interactions=pending_interactions(active),
             status_slots=status_slots,
         )
@@ -297,7 +302,7 @@ async def thread_summary(
         model_mode=str(metadata.get("model_mode") or ""),
         context_window=int(metadata.get("context_window") or 0),
         message_count=store.message_count(),
-        usage=store.read_usage() or _empty_usage(),
+        usage=store.get_plugin_state("usage") or _empty_usage(),
     )
 
 
@@ -322,9 +327,9 @@ async def session_summary(
 
 
 def pending_interactions(ctx: SessionRuntime) -> list[str]:
-    return list(ctx.engine.user_input_waiter.pending_request_ids()) + list(
-        ctx.engine.permission_waiter.pending_request_ids()
-    )
+    """List pending requests through the application client-event router."""
+    router = ctx.services.get("client_events")
+    return router.pending_request_ids() if router is not None else []
 
 
 def _empty_usage() -> dict[str, int]:

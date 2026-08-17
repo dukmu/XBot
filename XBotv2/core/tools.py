@@ -13,6 +13,21 @@ JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "Jso
 
 
 @dataclass(frozen=True)
+class GuardDecision:
+    """Monotonic denial returned by a tool-execution guard plugin.
+
+    Guards are registered on ``ctx.tools`` (``ToolsService.guard``) and
+    evaluated in registration order before dispatch. ``None`` means the guard
+    does not gate this call. A denial cannot be reversed by another guard.
+    """
+
+    action: Literal["deny"] = "deny"
+    reason: str = ""
+    source: str = "guard"
+    client_events: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
 class ToolCall:
     id: str
     name: str
@@ -95,8 +110,6 @@ class ToolResult:
     artifacts: tuple[ArtifactRef, ...] = ()
     images: tuple["ImageContent", ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
-    wait_for_user: bool = False
-    timeout_seconds: float | None = None
     turn_complete: bool = False
 
     @classmethod
@@ -191,7 +204,7 @@ def provider_tool_schema(tool: Any) -> Any:
 
 
 def tool_parameters_schema(tool: Any) -> dict[str, Any]:
-    """Return one JSON Schema for XBot and compatible external XBotv2.tools."""
+    """Return one JSON Schema for XBot and compatible external tools."""
     if isinstance(tool, Tool):
         return tool.parameters
     args_schema = getattr(tool, "args_schema", None)

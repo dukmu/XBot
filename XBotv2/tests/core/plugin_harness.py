@@ -6,12 +6,12 @@ from __future__ import annotations
 def mount_ctx(state_store):
     """Real XCore context with the capability services, for plugin tests."""
     from xcore import Context
-    from XBotv2.tools.plugin import AgentsService, ToolsService
+    from XBotv2.agentloop.tool_service import ToolsService
+    from XBotv2.agents.service import AgentRegistry, AgentsService
     from XBotv2.commands.plugin import CommandsService
     from XBotv2.prompts.plugin import PromptsService
-    from XBotv2.tools.registry import ToolRegistry
+    from XBotv2.agentloop.tool_registry import ToolRegistry
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.tools.agents import AgentRegistry
     from XBotv2.jobs import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
 
@@ -19,7 +19,7 @@ def mount_ctx(state_store):
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agents", AgentsService(AgentRegistry()))
+    ctx.set("agents", AgentsService(ctx, AgentRegistry()))
     ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", state_store.workspace_root)

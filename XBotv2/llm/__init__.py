@@ -8,17 +8,16 @@ adapters (openai-compatible / anthropic / mock), the module-level factory
 """
 
 from XBotv2.llm.anthropic import AnthropicProvider
-from XBotv2.llm.base import BaseProvider
 from XBotv2.llm.client import create_llm
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import OpenAICompatibleProvider
-from XBotv2.llm.service import LlmService
+from XBotv2.llm.service import LlmService, ModelService
 
 __all__ = [
     "AnthropicProvider",
-    "BaseProvider",
     "LlmService",
     "MockLLM",
+    "ModelService",
     "OpenAICompatibleProvider",
     "create_llm",
 ]

@@ -10,7 +10,7 @@ project discipline and verification.
 
 ## Core Runtime
 
-- [Core](core/core.md) — engine turn loop, streaming, folding, inbox, and persistence
+- [Core](core/core.md) — core models and the agent loop's streaming/input contract
 - [Prompt assembly](core/prompts.md) — context builder contract
 - [Agents](core/agents.md) — Agent and subagent definitions
 - [Configuration](core/workspace_config.md) — global / session / workspace YAML layers

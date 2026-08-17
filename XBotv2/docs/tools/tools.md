@@ -1,5 +1,11 @@
 # Built-in Tools
 
+Tool registration, guard composition, schema validation, and dispatch are the
+`agentloop` tool service. There is no standalone `XBotv2/tools` package.
+Individual plugins own their tools and capture their invocation dependencies
+when registering them. The generic executor never looks up permissions,
+sandbox, approval, interaction, job, or other plugin services.
+
 Core registers these tools without plugins:
 
 | Tool | Execution | Purpose |
@@ -61,8 +67,9 @@ shipped configuration keeps both client-interaction tools visible so an agent
 can send progress and ask for missing information without a custom tool list.
 
 Tools return `ToolResult`. It separates model-visible text from structured data,
-errors, artifacts, and client events. The dispatcher honors each registry
-entry's `sandbox_mode`; host tools are never injected with a sandbox backend.
+errors, artifacts, and client events. A tool owner passes keyword-only runtime
+dependencies with `ctx.tools.register(tool, injected={...})`; the executor
+does not infer behavior from a tool name or a sandbox-mode flag.
 
 Provider-visible built-ins use their function docstring as the single source of
 Tool guidance. The description covers intended use, limits, result behavior,

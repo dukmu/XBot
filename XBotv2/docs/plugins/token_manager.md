@@ -1,7 +1,7 @@
 # Token Manager Plugin
 
 `token_manager` is a small observe-only view of the latest
-model request. Engine persistence remains authoritative for session usage;
+model request. The independent usage plugin is authoritative for session usage;
 Compact owns the only automatic context threshold.
 
 ## Behavior

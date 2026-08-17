@@ -148,50 +148,41 @@ Tool call.
 Typed history mutations return `HistoryMutationResponse.messages`, which is the
 same display-safe state the next provider request will use.
 
-## Input acceptance, fold, and runtime inbox
+## Unified input and response routing
 
-While the agent is busy, new user input is **held** in the session's pending
-fold and fused into the running turn at the next complete ToolResult batch, so
-it is injected mid-turn. A held input that no tool boundary ever fuses (a
-turn with no tool calls) is rejected with `input_rejected` at turn end and the
-client retries it as a later turn. No `message_queued` event exists; the
-server does not hold a mailbox of pending user messages.
-
-Runtime notifications (background-task / subagent completions) do not start
-turns. They are staged in the session's agent inbox and drained — all at
-once — into the next turn's model context as one `<runtime_event>` envelope.
-Goal automatic continuation is the one deliberate wake: a plugin requests a
-new turn via `request_continuation`, never through the inbox.
-
-The pending-fold buffer and the inbox are runtime-only state. Closing or
-losing the client connection drops both, and `resume` starts empty.
+There is no protocol-owned message queue or pending-fold content buffer.
+Idle user input uses `followup`; busy user input uses `steer`; background
+completion notices use non-waking `inject`. The loop atomically claims
+`next-step` input between steps and claims pending `next-step` plus one
+`next-turn` input at a turn boundary. The protocol retains only SSE response
+waiters keyed by the inbox message ID. Durable `agent/inbox/spliced` records
+restore unclaimed input on resume.
 
 ### Core ↔ TUI sequence
 
 ```mermaid
 sequenceDiagram
     participant TUI
-    participant Core as session (core/session.py)
+    participant Core as session runtime (session/runtime.py)
     participant Turn as engine turn
-    participant Fold as pending_fold
+    participant Inbox as agent-owned inbox
     participant Ev as session_events stream
 
     Note over TUI,Ev: Submitting while idle runs a fresh turn directly
     TUI->>Core: send_message(A) POST /messages
     Core->>Ev: publish message(A) {id, role:user, content:A}
-    Core->>Turn: run_turn_stream(A)
+    Core->>Inbox: followup(A)
+    Inbox->>Turn: wake + claim turn
     Turn-->>TUI: turn_started, assistant_message, turn_finished
     Note over TUI: renders A from message(A) on the event stream
 
-    Note over TUI,Fold: Submitting while busy holds input for the fold
+    Note over TUI,Inbox: Submitting while busy steers the running loop
     TUI->>Core: send_message(B), send_message(C)
-    Core->>Fold: append B, C (FIFO)
-    Note over Fold: queue drains only at a tool batch boundary or turn end
-    Turn->>Fold: _accept_pending_fold() drains ALL pending
-    Fold->>Ev: publish message(B), message(C) in order
-    Fold-->>Turn: items (content/images/artifacts)
-    Turn->>Turn: fuse each as a user message, save
-    Turn-->>TUI: _fold_handoff → merged reply routed to last stream
+    Core->>Inbox: steer(B), steer(C)
+    Turn->>Inbox: claim next-step FIFO
+    Inbox-->>Turn: B, C
+    Turn->>Turn: append each as user input, save
+    Turn-->>TUI: merged reply routed by claimed message IDs
     Ev-->>TUI: message events → pop queue + append transcript (in order)
     Turn-->>TUI: assistant_message (merged reply), turn_finished
 ```

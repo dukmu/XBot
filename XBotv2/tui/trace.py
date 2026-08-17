@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-TRACE_ENV = "XBOTV2_TUI_TRACE"
+TRACE_ENV = "XBOT_TUI_TRACE"
 
 
 def trace_event(stage: str, payload: dict[str, Any]) -> None:
-    """Append a diagnostic event when XBOTV2_TUI_TRACE is set."""
+    """Append a diagnostic event when XBOT_TUI_TRACE is set."""
     target = os.environ.get(TRACE_ENV)
     if not target:
         return

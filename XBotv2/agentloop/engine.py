@@ -1,9 +1,7 @@
 """Core ReAct loop engine.
 
 The engine runs a 3-node ReAct loop and contains no planning, DAG, skill,
-compaction, memory, summary, or subagent concepts. A session-owned background
-shell manager is attached only for tool access and lifecycle cleanup; it does
-not participate in ReAct state.
+compaction, memory, summary, persistence, or subagent concepts.
 
 Without plugins, the engine implements:
     prepare_context → agent → tools → repeat (ReAct loop)
@@ -12,7 +10,8 @@ Each stage dispatches runtime events on the plugin context. Loop events
 (before/after context/agent/tools) are short-circuit: the first non-None result
 is interpreted by the engine.
 
-Architecture constraint: Engine NEVER imports from 
+Architecture constraint: Engine imports only loop-owned services and core
+contracts. Application composition resolves all feature-plugin dependencies.
 """
 
 from __future__ import annotations
@@ -21,34 +20,27 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from XBotv2.config.models import RuntimeConfig, UserContext
-from XBotv2.content_cache.content_cache import bound_context_messages
-from XBotv2.tools.agents import AgentRegistry
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.interactions.interactions import (
-    InteractionDisconnected,
-    InteractionResult,
-    InteractionWaiter,
-)
 from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from XBotv2.llm.base import BaseProvider
-from XBotv2.persistence.store import CoreStateStore
-from XBotv2.loader import Loader
-from XBotv2.permissions.system import PermissionIntersection, PermissionSystem
-from XBotv2.tools.registry import ToolRegistry
-from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.core.events import EventContext, Events, SHORT_CIRCUIT_EVENTS
-from XBotv2.jobs import JobRegistry
+from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
+from XBotv2.core.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
+from XBotv2.core.loop import DEFAULT_MAX_ITERATIONS, LoopSettings, LoopState
+from XBotv2.core.providers import BaseProvider
 from XBotv2.core.runtime import SessionInfo
-from XBotv2.core.messages import ImageContent, Message, ModelChunk, ModelResponse
+from XBotv2.core.messages import (
+    ImageContent,
+    Message,
+    ModelChunk,
+    ModelResponse,
+    merge_model_chunk,
+)
 from XBotv2.core.context import ContextComponent
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.tokens import (
@@ -58,9 +50,8 @@ from XBotv2.core.tokens import (
     estimate_request_tokens,
 )
 from XBotv2.core.tools import ToolCall, ToolCallDelta, provider_tool_schema
-from XBotv2.core.variables import RuntimeVariables
 
-DEFAULT_MAX_ITERATIONS = 200
+_UNCHANGED = object()
 
 
 @dataclass(slots=True)
@@ -91,25 +82,6 @@ class _ToolBatchResult:
     turn_complete: bool = False
 
 logger = logging.getLogger("xbotv2.engine")
-
-
-def merge_xbot_chunk(
-    aggregate: ModelResponse | None,
-    chunk: ModelChunk,
-) -> ModelResponse:
-    if not isinstance(aggregate, ModelResponse):
-        aggregate = ModelResponse()
-    aggregate.reasoning += chunk.reasoning
-    aggregate.content += chunk.content
-    if chunk.tool_calls:
-        aggregate.tool_calls = chunk.tool_calls
-    if chunk.response_metadata:
-        aggregate.response_metadata.update(chunk.response_metadata)
-    if chunk.usage_metadata:
-        aggregate.usage_metadata.update(chunk.usage_metadata)
-    if chunk.additional_kwargs:
-        aggregate.additional_kwargs.update(chunk.additional_kwargs)
-    return aggregate
 
 
 def xbot_tool_call_deltas(
@@ -180,7 +152,8 @@ class Engine:
 
     Usage::
 
-        engine = await bootstrap(...)
+        services = await start_application(...)
+        engine = services.engine
         async for event in engine.run_turn("list files"):
             print(event)
     """
@@ -188,107 +161,49 @@ class Engine:
     def __init__(
         self,
         *,
-        llm: BaseProvider,
-        tool_registry: ToolRegistry,
-        plugin_ctx: Any,
-        state_store: CoreStateStore,
-        context_builder: ContextBuilder,
-        sandbox_policy: SandboxPolicy,
-        permission_system: PermissionSystem | PermissionIntersection,
-        config: RuntimeConfig,
-        workspace_root: str | None = None,
+        model_client: BaseProvider,
+        tools: Any,
+        events: EventPort,
+        state: LoopState,
+        settings: LoopSettings,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
-        plugin_loader: Loader | None = None,
-        job_registry: JobRegistry | None = None,
-        agent_registry: AgentRegistry | None = None,
-        model: str = "",
-        model_mode: str = "",
-        context_window: int = 0,
-        llm_is_override: bool = False,
-        user_context: UserContext | None = None,
-        runtime_variables: RuntimeVariables | None = None,
     ) -> None:
-        self.llm = llm
-        self.tool_registry = tool_registry
-        self.plugin_ctx = plugin_ctx
-        self.state_store = state_store
-        self.context_builder = context_builder
-        self.sandbox_policy = sandbox_policy
-        self.permission_system = permission_system
-        self.config = config
-        self.workspace_root = workspace_root or ""
+        self.model_client = model_client
+        self.tools = tools
+        self._events = events
+        self.state = state
+        self.settings = settings
         self.max_iterations = max_iterations
-        self.plugin_loader: Loader | None = plugin_loader
-        self.job_registry = job_registry
-        self.agent_registry = agent_registry
-        self.model = model
-        self.model_mode = model_mode
-        self.context_window = context_window or config.max_context_tokens
-        self.llm_is_override = llm_is_override
-        self.user_context = user_context or UserContext()
-        self.runtime_variables = runtime_variables or RuntimeVariables.for_thread(
-            state_store.paths.runtime,
-            self.workspace_root,
-            state_store.paths,
-        )
-
-        self.messages: list[Message] = []
-        # Identity references and content fingerprints of the last persisted
-        # message state; None means unknown (rebuilt on next save).
-        self._persisted_refs: list[Message] | None = []
-        self._persisted_fingerprints: list[int] | None = []
-        self.session: SessionInfo | None = None
-        self.turn_count = 0
-        self.session_usage = self._empty_usage()
-        interactions = (
-            plugin_ctx.get("interactions") if hasattr(plugin_ctx, "get") else None
-        )
-        self.user_input_waiter = (
-            interactions.new_waiter()
-            if interactions is not None
-            else InteractionWaiter()
-        )
-        self.permission_waiter = (
-            interactions.new_waiter()
-            if interactions is not None
-            else InteractionWaiter()
-        )
-        self.content_cache = (
-            plugin_ctx.get("content_cache") if hasattr(plugin_ctx, "get") else None
-        )
-        self.client_event_sink: Any | None = None
-        self.runtime_event_sink: Callable[[dict[str, Any]], None] | None = None
-        self.take_pending_fold: Callable[[], list[Any]] | None = None
-        # Drained into the turn context (all pending at once) before each LLM
-        # step; never used to start a turn.
-        self.drain_inbox: Callable[[], list[Any]] | None = None
-        # True only while a tool batch executes, when user input may be
-        # accepted for fusion into the turn at the next tool boundary.
-        self.input_window: bool = False
-        # Set by the session for goal-style automatic continuation turns.
-        self.request_continuation: Callable[[], Awaitable[None]] | None = None
+        self.inbox = AgentInbox(record_splice=self._record_inbox_splice)
         self.continuation: bool = False
-        self.paths = state_store.paths.runtime
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
         )
 
-    def _bind_context_messages(
-        self,
-        messages: list[Any],
-        state_store: Any,
-        *,
-        max_inline_chars: int = 12_000,
-    ) -> list[Any]:
-        """Bind model messages through the content cache service."""
-        if self.content_cache is not None:
-            return self.content_cache.bound_context_messages(
-                messages, state_store, max_inline_chars=max_inline_chars
-            )
-        return bound_context_messages(
-            messages, state_store, max_inline_chars=max_inline_chars
-        )
+    @property
+    def messages(self) -> list[Message]:
+        return self.state.messages
+
+    @messages.setter
+    def messages(self, value: list[Message]) -> None:
+        self.state.messages = value
+
+    @property
+    def turn_count(self) -> int:
+        return self.state.turn_count
+
+    @turn_count.setter
+    def turn_count(self, value: int) -> None:
+        self.state.turn_count = value
+
+    @property
+    def session(self) -> SessionInfo:
+        return self.state.session
+
+    @property
+    def context_window(self) -> int:
+        return self.settings.context_window
 
     async def _dispatch(
         self,
@@ -305,14 +220,14 @@ class Engine:
         if short_circuit is None:
             short_circuit = event in SHORT_CIRCUIT_EVENTS
         if short_circuit:
-            result = await self.plugin_ctx.serial(event, payload)
+            result = await self._events.serial(event, payload)
             if result is not None and not isinstance(result, dict):
                 raise TypeError(
                     f"Short-circuit hook {event} must return a dict or "
                     f"ToolDecision, got {type(result).__name__}"
                 )
             return result
-        await self.plugin_ctx.emit(event, payload)
+        await self._events.emit(event, payload)
         return None
 
     # ------------------------------------------------------------------
@@ -320,106 +235,29 @@ class Engine:
     # ------------------------------------------------------------------
 
     async def start_session(self) -> None:
-        """Create a new session. Dispatches SESSION_START."""
-        self.session = self._session_info()
-        if self.state_store.has_existing_session():
-            await self._resume_from_store()
-        else:
-            self._restore_usage()
-            ctx = self._make_event_context()
-            await self._dispatch(Events.SESSION_START, ctx, short_circuit=False)
+        """Dispatch lifecycle for the already-prepared loop state."""
+        if self.state.resumed:
+            await self._resume_loaded_state()
+            return
+        ctx = self._make_event_context()
+        await self._dispatch(Events.SESSION_START, ctx, short_circuit=False)
 
     async def resume_session(self) -> None:
-        """Explicit resume: load persisted messages and dispatch SESSION_RESUME."""
-        self.session = self._session_info()
-        await self._resume_from_store()
+        """Dispatch resume for state loaded by its owning plugin."""
+        await self._resume_loaded_state()
 
-    def _session_info(self) -> SessionInfo:
-        return SessionInfo(
-            session_id=self.state_store.session_id,
-            thread_id=self.state_store.thread_id,
-            workspace_root=self.workspace_root,
-            provider=self.config.provider,
-        )
-
-    async def _resume_from_store(self) -> None:
-        self.messages = self.state_store.read_messages()
-        self._restore_usage()
-        self._persisted_refs = list(self.messages)
-        self._persisted_fingerprints = self._message_fingerprints()
+    async def _resume_loaded_state(self) -> None:
         self._close_interrupted_tool_calls("session_restarted")
-        self.turn_count = max(
-            sum(1 for m in self.messages if m.role == "user"), 0
-        )
-        assert self.session is not None
         self.session.turn_count = self.turn_count
         ctx = self._make_event_context()
         await self._dispatch(Events.SESSION_RESUME, ctx, short_circuit=False)
-        await self.save_messages()
+        await self._publish_state_change()
 
     async def close_session(self) -> None:
-        """Dispatch SESSION_CLOSE, persist messages, and release plugin resources."""
-        self.cancel_pending_user_inputs("session_closed")
-        self.cancel_pending_permissions("session_closed")
-        errors: list[BaseException] = []
-        if self.job_registry is not None:
-            try:
-                await self.job_registry.shutdown()
-            except BaseException as exc:
-                errors.append(exc)
-        try:
-            ctx = self._make_event_context()
-            await self._dispatch(Events.SESSION_CLOSE, ctx, short_circuit=False)
-        except BaseException as exc:
-            errors.append(exc)
-        try:
-            await self.save_messages()
-        except BaseException as exc:
-            errors.append(exc)
-
-        plugin_loader = self.plugin_loader
-        self.plugin_loader = None
-        if plugin_loader is not None:
-            try:
-                await plugin_loader.unload_all()
-            except BaseException as exc:
-                errors.append(exc)
-
-        if len(errors) == 1:
-            raise errors[0]
-        if errors:
-            raise BaseExceptionGroup("Session close failed", errors)
-
-    async def replace_history(
-        self,
-        messages: list[Message],
-        *,
-        operation: str = "checkpoint",
-        turns: int = 0,
-    ) -> None:
-        """Replace persisted conversation history at an idle command boundary."""
-        self.messages = list(messages)
-        self.turn_count = sum(1 for message in self.messages if message.role == "user")
-        if self.session is not None:
-            self.session.turn_count = self.turn_count
-        await self.save_messages(history_operation=(operation, turns))
-
-    async def run_context_maintenance(self) -> bool:
-        """Apply a pending ``BEFORE_CONTEXT`` rewrite at an idle boundary."""
-        before_ctx = self._make_event_context()
-        result = await self._dispatch(Events.BEFORE_CONTEXT, before_ctx,
-            short_circuit=True,
-        )
-        if result is None:
-            return False
-        event = await self._handle_compaction(result)
-        if event is not None:
-            message = event.get("data", {}).get(
-                "message",
-                "Context maintenance was rejected by a hook.",
-            )
-            raise RuntimeError(message)
-        return True
+        """Dispatch the loop lifecycle close boundary."""
+        ctx = self._make_event_context()
+        await self._dispatch(Events.SESSION_CLOSE, ctx, short_circuit=False)
+        await self._publish_state_change()
 
     async def _prepare_tool_calls(
         self,
@@ -448,27 +286,9 @@ class Engine:
         self,
         tool_calls: list[ToolCall],
     ) -> list[Message]:
-        from XBotv2.tools.runtime import execute_tools
-
-        results = await execute_tools(
+        results = await self.tools.execute_all(
             tool_calls,
-            self.tool_registry,
-            sandbox_policy=self.sandbox_policy,
-            permission_system=self.permission_system,
-            plugin_ctx=self.plugin_ctx,
             context_factory=self._make_event_context,
-            client_interaction_handler=(
-                self._handle_user_input_request
-                if self.client_event_sink is not None
-                else None
-            ),
-            permission_interaction_handler=(
-                self._handle_permission_request
-                if self.client_event_sink is not None
-                else None
-            ),
-            workspace_root=self.workspace_root,
-            job_registry=self.job_registry,
         )
         after_ctx = self._make_event_context(tool_results=results)
         after_result = await self._dispatch(
@@ -480,34 +300,47 @@ class Engine:
             results = list(after_result["tool_results"])
         return results
 
-    def set_client_event_sink(self, sink: Any | None) -> Any | None:
-        """Install a live protocol sink for client-directed events."""
-        previous = self.client_event_sink
-        self.client_event_sink = sink
-        return previous
+    async def _record_inbox_splice(self, event: dict[str, Any]) -> None:
+        """Publish an inbox mutation before its live projection changes."""
+        await self._dispatch(
+            Events.INBOX_SPLICE,
+            self._make_event_context(client_event=event),
+            short_circuit=False,
+        )
 
-    def emit_runtime_event(self, event: dict[str, Any]) -> None:
-        if self.runtime_event_sink is not None:
-            self.runtime_event_sink(event)
+    def set_wake_driver(self, wake_driver: Callable[[], None] | None) -> None:
+        self.inbox.set_wake_driver(wake_driver)
 
-    def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
-        return self.user_input_waiter.answer(request_id, answer=answer)
+    async def followup(self, content: str, **kwargs: Any) -> InboxInput:
+        return await self.inbox.followup(content, **kwargs)
 
-    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        return self.user_input_waiter.cancel(request_id, reason)
+    async def steer(self, content: str, **kwargs: Any) -> InboxInput:
+        return await self.inbox.steer(content, **kwargs)
 
-    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self.user_input_waiter.cancel_all(reason)
+    async def inject(self, content: str, **kwargs: Any) -> InboxInput:
+        return await self.inbox.inject(content, **kwargs)
 
-    def submit_permission_response(
+    @property
+    def pending_input_count(self) -> int:
+        return len(self.inbox)
+
+    async def discard_inputs(self) -> None:
+        await self.inbox.discard()
+
+    def configure(
         self,
-        request_id: str,
-        decision: str,
-    ) -> InteractionResult:
-        return self.permission_waiter.answer(request_id, decision=decision)
-
-    def cancel_pending_permissions(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self.permission_waiter.cancel_all(reason)
+        *,
+        model_client: Any = _UNCHANGED,
+        max_iterations: int | None = None,
+        **settings: Any,
+    ) -> None:
+        """Replace loop-owned model/settings without acquiring plugin state."""
+        if model_client is not _UNCHANGED:
+            self.model_client = model_client
+        if settings:
+            self.settings = replace(self.settings, **settings)
+        if max_iterations is not None:
+            self.max_iterations = max_iterations
 
     # ------------------------------------------------------------------
     # Turn execution
@@ -521,15 +354,41 @@ class Engine:
         images: list[ImageContent] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
+        await self.inbox.send(
+            user_input,
+            target=InboxTarget.NEXT_TURN,
+            wakeup=False,
+            source="user",
+            message_id=request_id,
+            images=images,
+            artifacts=artifacts,
+        )
+        initial_claim = True
+        async for event in self.run_pending(request_id=request_id):
+            if initial_claim and event.get("type") == "_inbox_claimed":
+                initial_claim = False
+                continue
+            initial_claim = False
+            yield event
+
+    async def run_pending(
+        self,
+        *,
+        request_id: str = "",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run one turn claimed from the agent-owned inbox."""
+        claimed = await self.inbox.claim_turn()
+        if not claimed:
+            return
         request_token = self._request_id.set(request_id)
         turn_started = False
         turn_ended = False
+        self.continuation = any(
+            bool(item.metadata.get("continuation")) for item in claimed
+        )
         try:
             async for event in self._run_turn_impl(
-                user_input,
-                input_kind="user_message",
-                images=images,
-                artifacts=artifacts,
+                claimed,
             ):
                 if event.get("type") == "turn_started":
                     turn_started = True
@@ -553,24 +412,14 @@ class Engine:
                 },
             }
             raise
-        except InteractionDisconnected:
-            logger.info("Turn stopped because the client disconnected during an interaction")
-            self._close_interrupted_tool_calls("client_disconnected")
-            yield {
-                "type": "turn_cancelled",
-                "data": {
-                    "turn": self.turn_count,
-                    "reason": "client_disconnected",
-                },
-            }
         except BaseException as exc:
             logger.exception("Turn failed")
-            failure_ctx = self._make_event_context(user_input=user_input,
+            failure_ctx = self._make_event_context(
                 stop_reason="error",
                 error=exc,
             )
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
-            ctx = self._make_event_context(user_input=user_input, error=exc)
+            ctx = self._make_event_context(error=exc)
             await self._dispatch(Events.ON_ERROR, ctx, short_circuit=False)
             yield {
                 "type": "error",
@@ -587,34 +436,24 @@ class Engine:
                 }
         finally:
             try:
-                await self.save_messages()
+                await self._publish_state_change()
             finally:
+                self.continuation = False
                 self._request_id.reset(request_token)
 
     async def _run_turn_impl(
         self,
-        user_input: str,
-        *,
-        input_kind: str = "user_message",
-        images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        claimed: list[InboxInput],
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
         """
-        turn_start = await self._start_turn(
-            user_input,
-            input_kind=input_kind,
-            images=images,
-            artifacts=artifacts,
-        )
+        turn_start = await self._start_claimed_turn(claimed)
         for event in turn_start.events:
             yield event
         if not turn_start.proceed:
             return
-        user_input = turn_start.user_input
-
         # 4. ReAct loop
         iteration = 0
         turn_complete = False
@@ -733,11 +572,9 @@ class Engine:
                 context_messages,
                 list(model_request.get("tools") or []),
             )
-            response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.context_window
+            response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.settings.context_window
             response_metadata[REQUEST_PROVIDER_KEY] = (
                 self.session.provider
-                if self.session is not None
-                else self.config.provider
             )
             response_msg = Message(
                 role="assistant",
@@ -747,8 +584,6 @@ class Engine:
                 additional_kwargs=response.additional_kwargs,
             )
             self.messages.append(response_msg)
-            self._record_usage(response_msg.usage_metadata)
-
             yield {
                 "type": "assistant_message",
                 "data": {
@@ -790,11 +625,9 @@ class Engine:
                 else:
                     turn_complete = True
                 if turn_complete:
-                    fold_events = await self._accept_pending_fold()
-                    if fold_events:
-                        for event in fold_events:
-                            yield event
-                        self.input_window = False
+                    claimed_event = await self._claim_step_inputs()
+                    if claimed_event is not None:
+                        yield claimed_event
                         continue
                     break
 
@@ -804,11 +637,9 @@ class Engine:
                 # A complete response: fold any pending input so it is
                 # answered in this same turn instead of waiting for a later
                 # one. This is the no-tool-boundary path.
-                fold_events = await self._accept_pending_fold()
-                if fold_events:
-                    for event in fold_events:
-                        yield event
-                    self.input_window = False
+                claimed_event = await self._claim_step_inputs()
+                if claimed_event is not None:
+                    yield claimed_event
                     continue
                 turn_complete = True
                 break
@@ -824,9 +655,9 @@ class Engine:
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
-            for event in await self._accept_pending_fold():
-                yield event
-            self.input_window = False
+            claimed_event = await self._claim_step_inputs()
+            if claimed_event is not None:
+                yield claimed_event
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -861,13 +692,7 @@ class Engine:
             call.id: call.name or "tool" for call in tool_calls
         }
 
-        # User input is accepted only while tools execute; the fold at the
-        # tool boundary then fuses it into the turn.
-        self.input_window = True
-        try:
-            tool_messages = await self._execute_tool_calls(tool_calls)
-        finally:
-            self.input_window = False
+        tool_messages = await self._execute_tool_calls(tool_calls)
         tool_event_payloads = [
             tool_result_event_data(
                 message,
@@ -889,8 +714,10 @@ class Engine:
             [message.status for message in tool_messages],
         )
         self.messages.extend(tool_messages)
-        # Commit tool responses before exposing them or requesting another model step.
-        await self.save_messages()
+        # Announce committed state before exposing results or requesting the
+        # next model step. Persistence, UIs, and other observers decide how
+        # to project that state.
+        await self._publish_state_change()
 
         for message, event_payload in zip(
             tool_messages,
@@ -960,13 +787,52 @@ class Engine:
         ):
             # A hook replaced the user input (e.g. the goal plugin injects the
             # active goal context on a continuation turn); reflect it in the
-            # persisted message so the model sees it.
+            # retained message so the model sees it on the next step.
             self.messages[-1] = Message(role="user", content=str(turn_ctx.user_input))
         accepted.events.append({
             "type": "turn_started",
             "data": {"turn": self.turn_count},
         })
         return accepted
+
+    async def _start_claimed_turn(
+        self,
+        claimed: list[InboxInput],
+    ) -> _TurnStartResult:
+        """Start a turn from one atomic DSH-style boundary claim."""
+        primary_index = next(
+            (
+                index
+                for index, item in enumerate(claimed)
+                if item.target is InboxTarget.NEXT_TURN
+            ),
+            len(claimed) - 1,
+        )
+        events: list[dict[str, Any]] = []
+        for item in claimed[:primary_index]:
+            accepted = await self._accept_user_message(
+                item.content,
+                images=item.images,
+                artifacts=item.artifacts,
+            )
+            events.extend(accepted.events)
+            if not accepted.proceed:
+                return _TurnStartResult(item.content, events, False)
+        primary = claimed[primary_index]
+        started = await self._start_turn(
+            primary.content,
+            images=primary.images,
+            artifacts=primary.artifacts,
+        )
+        started.events = [
+            {
+                "type": "_inbox_claimed",
+                "data": {"message_ids": [item.message_id for item in claimed]},
+            },
+            *events,
+            *started.events,
+        ]
+        return started
 
     @staticmethod
     def _user_message_rejected_event() -> dict[str, Any]:
@@ -980,38 +846,42 @@ class Engine:
 
     async def _build_turn_context(self) -> _ContextBuildResult:
         before_ctx = self._make_event_context()
-        compact_result = await self._dispatch(Events.BEFORE_CONTEXT, before_ctx,
+        before_context_result = await self._dispatch(Events.BEFORE_CONTEXT, before_ctx,
             short_circuit=True,
         )
-        if compact_result is not None:
-            event = await self._handle_compaction(compact_result)
-            if event is not None:
-                return _ContextBuildResult(event=event, turn_complete=True)
-
-        await self._drain_inbox_into_messages()
+        if isinstance(before_context_result, dict):
+            if "messages" in before_context_result:
+                self.messages = list(before_context_result["messages"])
+            if "event" in before_context_result:
+                return _ContextBuildResult(
+                    event=before_context_result["event"],
+                    turn_complete=bool(before_context_result.get("turn_complete", True)),
+                )
+        elif before_context_result is not None:
+            return _ContextBuildResult(
+                event=self._default_hook_rejection_event(Events.BEFORE_CONTEXT),
+                turn_complete=True,
+            )
 
         context_kwargs = {
             "messages": list(self.messages),
-            "agent_name": self.config.agent_name,
-            "agent_role": self.config.agent_role,
-            "user_name": self.user_context.user_name,
-            "user_id": self.user_context.user_id,
-            "developer_instructions": self.config.instructions,
-            "instructions": self.config.agent_instructions,
-            "memory": self.config.memory,
-            "sandbox_summary": (
-                self.sandbox_policy.describe() if self.sandbox_policy else ""
-            ),
+            "agent_name": self.settings.agent_name,
+            "agent_role": self.settings.agent_role,
+            "user_name": self.settings.user_name,
+            "user_id": self.settings.user_id,
+            "developer_instructions": self.settings.developer_instructions,
+            "instructions": self.settings.agent_instructions,
+            "memory": self.settings.memory,
             "runtime_paths": {
-                "workspace": self.runtime_variables.get("workspace", "."),
+                "workspace": self.settings.workspace,
                 "session": "session/ (read-only)",
                 "artifacts": "session/artifacts/ (read-only)",
                 "tool_results": "session/artifacts/tool_results/ (read-only)",
             },
-            "system_notice": self._agent_catalog_notice(),
+            "system_notice": "",
             "turn_count": self.turn_count,
         }
-        build_ctx = self._make_event_context()
+        build_ctx = self._make_event_context(context_kwargs=context_kwargs)
         build_result = await self._dispatch(Events.BEFORE_CONTEXT_BUILD, build_ctx,
             short_circuit=True,
         )
@@ -1032,20 +902,20 @@ class Engine:
                 turn_complete=True,
             )
 
-        components = self.context_builder.build_components(**context_kwargs)
-        component_ctx = self._make_event_context(context_components=components,
+        build_request_ctx = self._make_event_context(
+            context_kwargs=context_kwargs,
         )
-        await self._dispatch(Events.AFTER_CONTEXT_COMPONENTS_BUILD, component_ctx,
+        await self._dispatch(
+            Events.CONTEXT_BUILD,
+            build_request_ctx,
             short_circuit=False,
         )
-        if component_ctx.context_components is not None:
-            components = component_ctx.context_components
-        context_messages = self.context_builder.messages_from_components(components)
+        context_messages = build_request_ctx.context_messages
+        if context_messages is None:
+            raise RuntimeError(
+                "No context builder handled before/context-build"
+            )
 
-        context_messages = self._bind_context_messages(
-            context_messages,
-            self.state_store,
-        )
         after_ctx = self._make_event_context(context_messages=context_messages,
         )
         after_result = await self._dispatch(Events.AFTER_CONTEXT, after_ctx,
@@ -1067,34 +937,12 @@ class Engine:
                 turn_complete=True,
             )
 
-        context_messages = self._bind_context_messages(
-            context_messages,
-            self.state_store,
-        )
         complete_ctx = self._make_event_context(context_messages=context_messages,
         )
         await self._dispatch(Events.AFTER_CONTEXT_BUILD, complete_ctx,
             short_circuit=False,
         )
         return _ContextBuildResult(messages=context_messages)
-
-    def _agent_catalog_notice(self) -> str:
-        registry = self.agent_registry
-        if registry is None or self.tool_registry.get("spawn_subagent") is None:
-            return ""
-        definitions = [
-            definition
-            for definition in registry.definitions()
-            if definition.mode in {"subagent", "all"} and not definition.hidden
-        ]
-        if not definitions:
-            return ""
-        lines = ["Available subagents for the spawn_subagent tool:"]
-        lines.extend(
-            f"- {definition.name}: {definition.description}"
-            for definition in definitions
-        )
-        return "\n".join(lines)
 
     async def _prepare_model_request(
         self,
@@ -1109,11 +957,11 @@ class Engine:
                 self.messages.extend(before_agent["messages"])
             return _ModelRequestResult(turn_complete=True)
 
-        tools = self.tool_registry.get_all()
+        tools = self.tools.get_all()
         pre_schema_request = {
             "messages": context_messages,
             "tools": tools,
-            "llm": self.llm,
+            "llm": self.model_client,
         }
         pre_schema_ctx = self._make_event_context(context_messages=context_messages,
             model_request=pre_schema_request,
@@ -1153,14 +1001,9 @@ class Engine:
             short_circuit=False,
         )
 
-        request_ctx = self._make_event_context(context_messages=context_messages,
-            model_request={
-                **model_request,
-                "messages": self._bind_context_messages(
-                    model_request["messages"],
-                    self.state_store,
-                ),
-            },
+        request_ctx = self._make_event_context(
+            context_messages=context_messages,
+            model_request=dict(model_request),
         )
         model_request = request_ctx.model_request
         assert model_request is not None
@@ -1168,13 +1011,7 @@ class Engine:
             short_circuit=True,
         )
         if isinstance(request_result, dict):
-            if "compact_reason" in request_result:
-                event = await self._handle_compaction(request_result)
-                if event is not None:
-                    return _ModelRequestResult(
-                        event=event,
-                        turn_complete=True,
-                    )
+            if request_result.get("rebuild"):
                 return _ModelRequestResult(rebuild=True)
             if "messages" in request_result:
                 model_request["messages"] = request_result["messages"]
@@ -1195,9 +1032,16 @@ class Engine:
                 event=self._default_hook_rejection_event(Events.BEFORE_MODEL_REQUEST),
                 turn_complete=True,
             )
-        model_request["messages"] = self._bind_context_messages(
-            model_request["messages"], self.state_store
+        ready_ctx = self._make_event_context(
+            context_messages=context_messages,
+            model_request=model_request,
         )
+        await self._dispatch(
+            Events.MODEL_REQUEST_READY,
+            ready_ctx,
+            short_circuit=False,
+        )
+        model_request = ready_ctx.model_request or model_request
         return _ModelRequestResult(request=model_request)
 
     async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
@@ -1220,29 +1064,28 @@ class Engine:
                 short_circuit=False,
             )
             raise
-        await self.save_messages()
         return {"type": "turn_finished", "data": {"turn": self.turn_count}}
 
     def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
         if not tools:
-            return self.llm
+            return self.model_client
         schemas = [provider_tool_schema(tool) for tool in tools]
         try:
-            return self.llm.bind_tools(schemas)
+            return self.model_client.bind_tools(schemas)
         except NotImplementedError:
-            return self.llm
+            return self.model_client
 
     def _llm_without_tools(self) -> BaseProvider:
         try:
-            return self.llm.bind_tools([])
+            return self.model_client.bind_tools([])
         except NotImplementedError:
-            return self.llm
+            return self.model_client
 
     def _iteration_limit_notice(self) -> str:
         return (
             f"Iteration limit: the tool iteration budget of "
             f"{self.max_iterations} has been exhausted. Do not call more "
-            "XBotv2.tools. Give the human a concise status, clearly identify "
+            "tools. Give the human a concise status, clearly identify "
             "unfinished work, and state the next required action."
         )
 
@@ -1256,7 +1099,7 @@ class Engine:
         tool_stream_ids: dict[int, str] = {}
         async for chunk in llm.astream(context_messages):
             if isinstance(chunk, ModelChunk):
-                aggregate = merge_xbot_chunk(aggregate, chunk)
+                aggregate = merge_model_chunk(aggregate, chunk)
                 if chunk.content:
                     yield {
                         "type": "assistant_message_delta",
@@ -1286,115 +1129,16 @@ class Engine:
             raise RuntimeError("LLM stream produced no chunks")
         yield {"type": "_model_response", "data": {"response": aggregate}}
 
-    async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
-        """Run one unbound auxiliary model call for a Hook."""
-        messages = self._bind_context_messages(messages, self.state_store)
-        aggregate: ModelResponse | None = None
-        async for chunk in self.llm.astream(messages):
-            if isinstance(chunk, ModelChunk):
-                aggregate = merge_xbot_chunk(aggregate, chunk)
-            elif isinstance(chunk, ModelResponse):
-                aggregate = chunk
-            else:
-                logger.warning(
-                    "_invoke_model: unexpected chunk type %s",
-                    type(chunk).__name__,
-                )
-        if aggregate is None:
-            raise RuntimeError("LLM stream produced no chunks")
-        self._record_usage(aggregate.usage_metadata, update_context=False)
-        return aggregate
-
-    async def _handle_compaction(self, short_circuit: dict[str, Any]) -> dict[str, Any] | None:
-        if not isinstance(short_circuit, dict) or "messages" not in short_circuit:
-            return self._default_hook_rejection_event(Events.BEFORE_CONTEXT)
-
-        compact_reason = str(short_circuit.get("compact_reason", "before_context"))
-        pre_compact_ctx = self._make_event_context(compact_reason=compact_reason,
-        )
-        pre_compact_result = await self._dispatch(Events.PRE_COMPACT, pre_compact_ctx,
-            short_circuit=True,
-        )
-        if isinstance(pre_compact_result, dict):
-            if "messages" in pre_compact_result:
-                short_circuit["messages"] = pre_compact_result["messages"]
-            if "compact_reason" in pre_compact_result:
-                compact_reason = str(pre_compact_result["compact_reason"])
-        elif pre_compact_result is not None:
-            return self._default_hook_rejection_event(Events.PRE_COMPACT)
-
-        previous_message_count = len(self.messages)
-        self.messages = short_circuit["messages"]
-        post_compact_ctx = self._make_event_context(compact_reason=compact_reason,
-            previous_message_count=previous_message_count,
-            current_message_count=len(self.messages),
-        )
-        await self._dispatch(Events.POST_COMPACT, post_compact_ctx, short_circuit=False)
-        await self.save_messages(
-            history_operation=(f"compact:{compact_reason}", 0)
-        )
-        self.emit_runtime_event({
-            "type": "compaction_completed",
-            "data": {
-                "reason": compact_reason,
-                "metrics": dict(short_circuit.get("compact_metrics") or {}),
-                "usage": dict(self.session_usage),
-            },
-        })
-        return None
-
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
 
 
-    async def save_messages(
-        self,
-        *,
-        history_operation: tuple[str, int] | None = None,
-    ) -> bool:
-        """Persist changed message history and bracket the write with events."""
-        if history_operation is None and self._messages_unchanged():
-            return False
-        before_ctx = self._make_event_context()
-        await self._dispatch(Events.BEFORE_STATE_PERSIST, before_ctx, short_circuit=False)
-        if history_operation is None:
-            self.state_store.sync_messages(self.messages)
-        else:
-            operation, turns = history_operation
-            if operation == "clear":
-                self.state_store.append_clear()
-            elif operation == "undo":
-                self.state_store.append_undo(turns)
-            else:
-                self.state_store.append_checkpoint(
-                    self.messages,
-                    reason=operation,
-                )
-        self._persisted_refs = list(self.messages)
-        self._persisted_fingerprints = self._message_fingerprints()
-        after_ctx = self._make_event_context()
-        await self._dispatch(Events.AFTER_STATE_PERSIST, after_ctx, short_circuit=False)
-        return True
-
-    def _messages_unchanged(self) -> bool:
-        """Return whether messages match the last persisted state."""
-        refs = self._persisted_refs
-        fingerprints = self._persisted_fingerprints
-        if refs is None or fingerprints is None:
-            return False
-        if len(self.messages) != len(refs) or len(fingerprints) != len(refs):
-            return False
-        if not all(a is b for a, b in zip(self.messages, refs)):
-            return False
-        return all(
-            fingerprint == message.fingerprint()
-            for fingerprint, message in zip(fingerprints, self.messages)
-        )
-
-    def _message_fingerprints(self) -> list[int]:
-        return [message.fingerprint() for message in self.messages]
+    async def _publish_state_change(self) -> None:
+        """Announce a mutation of the loop-owned state projection."""
+        event = self._make_event_context()
+        await self._dispatch(Events.STATE_CHANGED, event, short_circuit=False)
 
     def _close_interrupted_tool_calls(self, reason: str) -> None:
         """Append error results for an interrupted trailing tool batch."""
@@ -1430,139 +1174,6 @@ class Engine:
             structure_tool_message(message, call.name)
             self.messages.append(message)
 
-    async def _handle_client_interaction(
-        self,
-        client_event: dict[str, Any],
-        waiter: Any,
-        result_fields: tuple[str, ...],
-        *,
-        timeout_seconds: float | None = None,
-        on_sink_result: Callable[[dict[str, Any]], None] | None = None,
-    ) -> dict[str, Any]:
-        ctx = self._make_event_context(client_event=client_event)
-        await self._dispatch(Events.CLIENT_EVENT, ctx, short_circuit=False)
-
-        if self.client_event_sink is not None:
-            sink_result = await self.client_event_sink(
-                client_event, timeout_seconds=timeout_seconds, tool_call_id="",
-            )
-            if sink_result.get("status") == "disconnected":
-                raise InteractionDisconnected(
-                    "Client disconnected while waiting for "
-                    f"{sink_result.get('request_id')}"
-                )
-            if on_sink_result:
-                on_sink_result(sink_result)
-            return sink_result
-        request_id = str((client_event.get("data") or {}).get("request_id") or "")
-        wait_timeout = 0 if timeout_seconds is None else timeout_seconds
-        result = await waiter.wait(request_id, wait_timeout)
-        return {
-            field: getattr(result, field, "")
-            for field in result_fields
-        } | {
-            "request_id": result.request_id,
-            "status": result.status,
-            "reason": result.reason,
-        }
-
-    async def _handle_user_input_request(
-        self,
-        client_event: dict[str, Any],
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, Any]:
-        return await self._handle_client_interaction(
-            client_event,
-            self.user_input_waiter,
-            ("answer",),
-            timeout_seconds=timeout_seconds,
-        )
-
-    async def _request_user_input(
-        self,
-        question: str,
-        *,
-        options: list[str] | None = None,
-        timeout_seconds: float | None = None,
-        source: str = "plugin",
-    ) -> dict[str, Any]:
-        request_id = f"user_input:{source}:{uuid.uuid4().hex}"
-        return await self._handle_user_input_request(
-            {
-                "type": "user_input_required",
-                "data": {
-                    "request_id": request_id,
-                    "source": source,
-                    "question": question,
-                    "options": options or [],
-                    "timeout_seconds": timeout_seconds,
-                    "resume_supported": False,
-                },
-            },
-            timeout_seconds=timeout_seconds,
-        )
-
-    async def _handle_permission_request(
-        self,
-        client_event: dict[str, Any],
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-        sandbox_rules: list[dict[str, str]] | None = None,
-    ) -> dict[str, Any]:
-        return await self._handle_client_interaction(
-            client_event, self.permission_waiter, ("decision", "scope"),
-            timeout_seconds=timeout_seconds,
-            on_sink_result=lambda result: self.record_permission_decision(
-                client_event,
-                result,
-                sandbox_rules=sandbox_rules,
-            ),
-        )
-
-    def record_permission_decision(
-        self,
-        client_event: dict[str, Any],
-        result: dict[str, Any],
-        *,
-        sandbox_rules: list[dict[str, str]] | None = None,
-    ) -> None:
-        decision = str(result.get("decision") or "")
-        if decision not in {"allow", "deny"}:
-            return
-        data = client_event.get("data") or {}
-        scope = str(result.get("scope") or "once")
-        if (
-            decision == "allow"
-            and scope == "once"
-            and data.get("source") == "request_permission"
-        ):
-            permission = dict(data.get("permission") or {})
-            self.permission_system.grant_once(
-                str(permission.get("tool") or ""),
-                dict(permission.get("params") or {}),
-            )
-            return
-        if scope != "session":
-            return
-        try:
-            from pathlib import Path
-            from XBotv2.config.policy import persist_permission_decision
-            persist_permission_decision(
-                paths=self.paths,
-                session_id=self.state_store.session_id,
-                client_event=client_event,
-                decision=str(result.get("decision") or ""),
-                scope="session",
-                engine=self,
-                sandbox_rules=sandbox_rules,
-            )
-        except Exception:
-            logger.exception("permission persistence failed")
-
-    @staticmethod
     def _default_hook_rejection_event(event: str) -> dict[str, Any]:
         return {
             "type": "error",
@@ -1579,6 +1190,7 @@ class Engine:
         user_input: str | None = None,
         context_components: list[ContextComponent] | None = None,
         context_messages: list[Any] | None = None,
+        context_kwargs: dict[str, Any] | None = None,
         agent_response: Any = None,
         model_request: dict[str, Any] | None = None,
         model_response: Any = None,
@@ -1587,34 +1199,21 @@ class Engine:
         tool_results: list[Any] | None = None,
         tool_result: Any = None,
         stop_reason: str | None = None,
-        compact_reason: str | None = None,
-        previous_message_count: int | None = None,
-        current_message_count: int | None = None,
-        permission_decision: str | None = None,
         client_event: dict[str, Any] | None = None,
         error: Exception | None = None,
     ) -> EventContext:
         return EventContext(
             request_id=self._request_id.get(),
             messages=self.messages,
-            config=self.config,
-            tools=self.tool_registry,
-            sandbox=self.sandbox_policy,
-            invoke_model=self._invoke_model,
-            request_user_input=self._request_user_input,
-            request_continuation=self.request_continuation,
+            config=self.settings,
+            tools=self.tools.registry,
+            send_input=self.followup,
             continuation=self.continuation,
-            emit=self.emit_runtime_event,
-            session=self.session or SessionInfo(
-                session_id=self.state_store.session_id,
-                thread_id=self.state_store.thread_id,
-                workspace_root=self.workspace_root,
-                provider=self.config.provider,
-                turn_count=self.turn_count,
-            ),
+            session=self.session,
             user_input=user_input,
             context_components=context_components,
             context_messages=context_messages,
+            context_kwargs=context_kwargs,
             agent_response=agent_response,
             model_request=model_request,
             model_response=model_response,
@@ -1623,82 +1222,28 @@ class Engine:
             tool_results=tool_results,
             tool_result=tool_result,
             stop_reason=stop_reason,
-            compact_reason=compact_reason,
-            previous_message_count=previous_message_count,
-            current_message_count=current_message_count,
-            permission_decision=permission_decision,
             client_event=client_event,
             error=error,
         )
 
-    async def _accept_pending_fold(self) -> list[dict[str, Any]]:
-        """Fuse every accepted input into the turn at a ToolResult boundary.
-
-        The agent cannot take input while thinking/replying, but inputs
-        accepted during the tool-execution window are fused into the turn
-        context here — each as a separate user message. The session router
-        handed each stream its ``turn_started`` boundary in
-        ``take_pending_fold``; the ``_fold_handoff`` marker below tells it
-        where the merged reply belongs.
-        """
-        if self.take_pending_fold is None:
-            return []
-        items = self.take_pending_fold()
+    async def _claim_step_inputs(self) -> dict[str, Any] | None:
+        """Claim and accept every input addressed to the next loop step."""
+        items = await self.inbox.claim_step()
         if not items:
-            return []
+            return None
+        accepted_ids: list[str] = []
         for item in items:
-            await self._accept_user_message(
+            accepted = await self._accept_user_message(
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
             )
-        await self.save_messages()
-        # ``_fold_handoff`` marks the turn boundary where the active turn
-        # hands its remaining event stream over to the final fused request's
-        # owner. It is an internal control event: the session router switches
-        # routing at exactly this point (and never forwards it), so events
-        # queued before it (the active turn's own tool results) stay with the
-        # active request instead of leaking into the fused stream.
-        return [{"type": "_fold_handoff", "data": {}}]
-
-    async def _drain_inbox_into_messages(self) -> None:
-        """Move every pending runtime notification into the turn history.
-
-        The agent inbox accumulates background-job / subagent completions
-        without waking a turn; the first turn that assembles its context
-        consumes them all at once as one XML-marked runtime message. The
-        result persists in ``self.messages`` so later steps see it too.
-        """
-        if self.drain_inbox is None:
-            return
-        items = self.drain_inbox()
-        if not items:
-            return
-        payloads = []
-        for message in items:
-            payload = message.payload if isinstance(message.payload, dict) else {}
-            payloads.append(prompt_element(
-                "payload",
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                attributes={"encoding": "json"},
-            ))
-        fused = prompt_container(
-            "runtime_event",
-            payloads,
-            attributes={"source": "tasks", "event": "completed"},
-        )
-        self.messages.append(Message(
-            role="user",
-            content=fused,
-            additional_kwargs={
-                "runtime_input": {
-                    "kind": "general",
-                    "source": "tasks",
-                    "event": "completed",
-                },
-            },
-        ))
-        await self.save_messages()
+            if accepted.proceed:
+                accepted_ids.append(item.message_id)
+        return {
+            "type": "_inbox_claimed",
+            "data": {"message_ids": accepted_ids},
+        }
 
     async def _accept_user_message(
         self,
@@ -1747,70 +1292,3 @@ class Engine:
                 self._make_event_context(user_input=user_input),
             )
         return _TurnStartResult(user_input, events, True)
-
-    @staticmethod
-    def _empty_usage() -> dict[str, int]:
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "requests": 0,
-            "context_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "prompt_cache_write_tokens": 0,
-        }
-
-    def _restore_usage(self) -> None:
-        usage = self.state_store.read_usage()
-        if usage is None:
-            usage = self._empty_usage()
-            for message in self.messages:
-                self._add_usage(usage, message.usage_metadata)
-            self.state_store.write_usage(usage)
-        self.session_usage = usage
-
-    def _record_usage(
-        self,
-        usage: dict[str, Any] | None,
-        *,
-        update_context: bool = True,
-    ) -> None:
-        if self._add_usage(
-            self.session_usage,
-            usage,
-            update_context=update_context,
-        ):
-            self.state_store.write_usage(self.session_usage)
-
-    @staticmethod
-    def _add_usage(
-        total: dict[str, int],
-        usage: dict[str, Any] | None,
-        *,
-        update_context: bool = True,
-    ) -> bool:
-        if not isinstance(usage, dict):
-            return False
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        if not input_tokens and not output_tokens:
-            return False
-        total["input_tokens"] += input_tokens
-        total["output_tokens"] += output_tokens
-        total["total_tokens"] += int(
-            usage.get("total_tokens") or input_tokens + output_tokens
-        )
-        total["requests"] += int(usage.get("requests") or 1)
-        if update_context:
-            total["context_tokens"] = int(
-                usage.get("context_tokens") or input_tokens
-            )
-        for key in (
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-            "prompt_cache_write_tokens",
-        ):
-            if usage.get(key) is not None:
-                total[key] = int(total.get(key, 0)) + int(usage[key])
-        return True

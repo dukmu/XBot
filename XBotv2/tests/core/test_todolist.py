@@ -13,7 +13,7 @@ from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
@@ -29,16 +29,14 @@ class SetupContext:
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
-                sandbox_mode=entry.sandbox_mode,
             )
         for command in self.ctx.commands.all():
             self.commands[command.name] = command
 
 
 class _EntryOptions:
-    def __init__(self, *, namespace, sandbox_mode) -> None:
+    def __init__(self, *, namespace) -> None:
         self.namespace = namespace
-        self.sandbox_mode = sandbox_mode
 
 
 def _mount(plugin, state_store):
@@ -60,13 +58,11 @@ def todo(content: str, status: str) -> dict[str, str]:
     return {"content": content, "status": status}
 
 
-def test_todolist_registers_one_atomic_host_tool(state_store):
+def test_todolist_registers_one_atomic_tool(state_store):
     _plugin, setup = setup_plugin(state_store)
 
     assert list(setup.tools) == ["update_todos"]
     tool = setup.tools["update_todos"]
-    options = setup.options["update_todos"]
-    assert options.sandbox_mode == "host"
     assert tool.parameters["required"] == ["todos"]
     item = tool.parameters["properties"]["todos"]["items"]
     assert item["required"] == ["content", "status"]
@@ -230,7 +226,6 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     options = setup.options["update_todos"]
     registry.register(
         tool,
-        sandbox_mode=options.sandbox_mode,
         namespace=options.namespace,
     )
     active = [

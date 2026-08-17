@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from XBotv2.core.messages import ImageContent
+from XBotv2.core.events import EventContext, Events
+from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop.engine import Engine
-from XBotv2.inbox.inbox import AgentInbox, InboxMessage
 logger = logging.getLogger("xbotv2.session")
 
 
@@ -22,24 +22,17 @@ class SessionBusy(RuntimeError):
 
 
 @dataclass
-class PendingFold:
-    """One user input accepted during a tool window, awaiting fold delivery.
+class PendingResponse:
+    """Transport-only reply waiter keyed by an agent-inbox message id."""
 
-    The client (TUI) already holds the text locally; ``events`` carries the
-    delivery signal and (for the final folded input) the merged reply.
-    """
-
-    item_id: str
+    message_id: str
     request_id: str
-    content: str
-    images: list[ImageContent]
-    artifacts: list[dict[str, Any]]
     events: asyncio.Queue[dict[str, Any] | None]
 
 
 @dataclass
 class SessionRuntime:
-    """Engine, fold buffer, interactions, and tasks owned by one live session."""
+    """Protocol streams and one concrete agent-loop driver."""
 
     session_id: str
     thread_id: str
@@ -47,62 +40,64 @@ class SessionRuntime:
     paths: RuntimePaths
     workspace_root: str
     no_plugins: bool
-    engine: Engine
+    services: Any
+    engine: Any
     interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
-    continuation_task: asyncio.Task | None = None
-    # User inputs accepted during a tool-execution window, waiting to be
-    # fused into the running turn at the next tool boundary.
-    pending_fold: list[PendingFold] = field(default_factory=list)
-    # The stream that owns the merged reply once a fold hands off.
-    fold_output: asyncio.Queue[dict[str, Any] | None] | None = None
+    wakeup_task: asyncio.Task | None = None
+    # Protocol routing only. Input content lives exclusively in engine.inbox.
+    pending_responses: dict[str, PendingResponse] = field(default_factory=dict)
+    response_output: asyncio.Queue[dict[str, Any] | None] | None = None
     session_events: asyncio.Queue[dict[str, Any] | None] | None = None
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
     # ``message`` events published before the event stream attaches; flushed
     # on connect so early inputs are never lost.
     _pending_message_events: list[dict[str, Any]] = field(default_factory=list)
-    # Model-visible runtime notifications (job/subagent completions). These
-    # are drained into the next turn's context, never used to start a turn.
-    inbox: AgentInbox = field(default_factory=AgentInbox)
+    _wakeup_requested: bool = False
 
     def __post_init__(self) -> None:
-        plugin_ctx = getattr(self.engine, "plugin_ctx", None)
-        inbox_service = (
-            plugin_ctx.get("inbox") if hasattr(plugin_ctx, "get") else None
-        )
-        if inbox_service is not None:
-            self.inbox = inbox_service.new_inbox()
-        self.engine.take_pending_fold = self._take_pending_fold
-        self.engine.runtime_event_sink = self._publish_runtime_event
-        self.engine.drain_inbox = self.inbox.drain
-        self.engine.request_continuation = self.request_continuation
+        self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
-        job_registry = self.engine.job_registry
-        if job_registry is not None:
-            job_registry.on_update = self._publish_task_update
-            job_registry.on_complete = self._enqueue_job_completion
+        self.services.on(Events.INBOX_SPLICE, self._on_runtime_event)
+        self.services.on(Events.RUNTIME_EVENT, self._on_runtime_event)
+        self.services.on(Events.JOB_UPDATED, self._on_job_updated)
+        self.services.on(Events.JOB_COMPLETED, self._on_job_completed)
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
         self.last_activity = time.monotonic()
 
+    async def send_input(self, content: str, **kwargs: Any) -> Any:
+        """Queue a plugin-command follow-up through the Agent's sole inbox."""
+        self.touch()
+        return await self.engine.followup(content, **kwargs)
+
     async def _publish_task_update(self, task: dict[str, Any]) -> None:
         if self.session_events is not None:
             await self.session_events.put({"type": "task_updated", "data": task})
+
+    async def _on_job_updated(self, event: EventContext) -> None:
+        await self._publish_task_update(dict(event.event or {}))
+
+    async def _on_job_completed(self, event: EventContext) -> None:
+        await self._enqueue_job_completion(dict(event.event or {}))
 
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
         if self.session_events is not None:
             self.session_events.put_nowait(event)
 
+    def _on_runtime_event(self, event: EventContext) -> None:
+        payload = event.client_event
+        if isinstance(payload, dict):
+            self._publish_runtime_event(payload)
+
     def _publish_message_event(self, message_id: str, content: str) -> None:
         """Broadcast one accepted user message on the shared event stream.
 
-        Queued inputs are held FIFO in the pending fold and, when consumed all
-        at once, are notified to the client one by one in the same order via
-        this single ``message`` event stream. The client renders from it, so
-        ordering is deterministic across per-message turn streams.
+        Input ordering is owned by the agent inbox. This event is only the
+        protocol projection used by clients to render accepted input.
         """
         event = {
             "type": "message",
@@ -140,17 +135,27 @@ class SessionRuntime:
         turn's context) but never starts a turn by itself: the TUI task panel
         already tracks status through ``task_updated``.
         """
-        self.inbox.enqueue(InboxMessage(
-            type=str(notice.get("type") or "job_completed"),
-            source=str(notice.get("task_id") or ""),
-            payload={
+        payload = {
                 "kind": str(notice.get("kind") or ""),
                 "status": str(notice.get("status") or ""),
                 "task_id": str(notice.get("task_id") or ""),
                 "command": str(notice.get("command") or ""),
                 "agent": str(notice.get("agent") or ""),
-            },
-        ))
+        }
+        fused = prompt_container(
+            "runtime_event",
+            [prompt_element(
+                "payload",
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                attributes={"encoding": "json"},
+            )],
+            attributes={"source": "tasks", "event": "completed"},
+        )
+        await self.engine.inject(
+            fused,
+            source=str(notice.get("task_id") or "tasks"),
+            metadata={"kind": "notification", "payload": payload},
+        )
         self.touch()
         if self.session_events is not None:
             await self.session_events.put({
@@ -168,14 +173,11 @@ class SessionRuntime:
     ) -> AsyncIterator[dict[str, Any]]:
         """Deliver one user input.
 
-        While the agent is idle a fresh turn runs directly. While it is busy,
-        the input is held in the pending fold and fused into the running turn
-        at the next tool boundary, so it is injected mid-turn rather than
-        waiting for the turn to end. A leftover that no boundary ever fuses
-        is rejected with ``input_rejected`` at turn end and the client retries.
+        Idle input enters ``next-turn``. Busy input enters ``next-step`` and is
+        claimed by the same loop inbox between model/tool steps.
         """
-        if not self.turn_lock.locked() and not self.pending_fold:
-            self._publish_message_event(request_id or f"msg-{uuid.uuid4().hex}", content)
+        if not self.turn_lock.locked():
+            self._publish_message_event(request_id, content)
             try:
                 async for event in run_turn_stream(
                     self,
@@ -187,20 +189,25 @@ class SessionRuntime:
                     yield event
                 return
             except SessionBusy:
-                # Another request acquired the turn between the idle check
-                # and entering run_turn_stream; fall through to the fold.
+                # Another request acquired the driver; route this input to
+                # next-step through the same inbox.
                 pass
 
         events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        item = PendingFold(
-            item_id=f"fold-{uuid.uuid4().hex}",
+        item = await self.engine.steer(
+            content,
+            source="user",
+            message_id=request_id,
+            images=images,
+            artifacts=artifacts,
+        )
+        pending = PendingResponse(
+            message_id=item.message_id,
             request_id=request_id,
-            content=content,
-            images=list(images or []),
-            artifacts=list(artifacts or []),
             events=events,
         )
-        self.pending_fold.append(item)
+        self.pending_responses[item.message_id] = pending
+        self._publish_message_event(item.message_id, content)
         completed = False
         try:
             while True:
@@ -210,41 +217,23 @@ class SessionRuntime:
                     return
                 yield event
         finally:
-            if not completed and item in self.pending_fold:
-                self.pending_fold.remove(item)
+            if not completed:
+                self.pending_responses.pop(item.message_id, None)
             self.touch()
 
-    def _take_pending_fold(self) -> list[PendingFold]:
-        """Drain every accepted input for one fused mid-turn delivery.
-
-        Each accepted stream gets a ``message`` event carrying the server-side
-        id and content, so the client renders it from the event (not from a
-        locally stored copy); every non-final stream is then terminated. The
-        final stream owns the merged reply via ``fold_output``.
-        """
-        if self.fold_output is not None:
-            # This turn already handed its stream over to a fused request.
-            return []
-        items, self.pending_fold = self.pending_fold, []
-        if not items:
-            return []
-        for index, item in enumerate(items):
-            self._publish_message_event(item.item_id, item.content)
-            if index == len(items) - 1:
-                self.fold_output = item.events
-            else:
-                item.events.put_nowait(None)
-        return items
-
-    def _reject_leftover_fold(self) -> None:
-        """Reject accepted-but-unfolded inputs (a fold race straggler)."""
-        items, self.pending_fold = self.pending_fold, []
-        for item in items:
-            item.events.put_nowait({
-                "type": "input_rejected",
-                "data": {"reason": "fold_missed", "request_id": item.request_id},
-            })
-            item.events.put_nowait(None)
+    def claim_response_output(self, message_ids: list[str]) -> bool:
+        """Hand the reply to the final claimed input without storing content."""
+        claimed = [
+            self.pending_responses.pop(message_id)
+            for message_id in message_ids
+            if message_id in self.pending_responses
+        ]
+        if not claimed:
+            return False
+        for pending in claimed[:-1]:
+            pending.events.put_nowait(None)
+        self.response_output = claimed[-1].events
+        return True
 
     def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
         if self.session_events is not None:
@@ -269,33 +258,30 @@ class SessionRuntime:
         task.cancel()
         return True
 
-    async def request_continuation(self) -> None:
-        """Schedule an automatic continuation turn (used by the goal plugin).
-
-        This is a deliberate wake: a new turn runs that lets the model keep
-        working on an active goal. It is scheduled in the background so the
-        caller (a slash command handler) returns immediately, and it does not
-        go through the agent inbox, which by design never starts a turn.
-        """
-        if self.turn_lock.locked() or self.continuation_task is not None:
+    def _request_wakeup(self) -> None:
+        """Wake the loop driver for followup/steer; inject never calls this."""
+        self._wakeup_requested = True
+        if self.turn_lock.locked() or self.wakeup_task is not None:
             return
-        self.engine.continuation = True
-        self.continuation_task = asyncio.create_task(self._run_continuation())
+        self.wakeup_task = asyncio.create_task(self._run_wakeup())
 
-    async def _run_continuation(self) -> None:
+    async def _run_wakeup(self) -> None:
         try:
+            if self.turn_lock.locked():
+                return
+            self._wakeup_requested = False
             async for event in run_turn_stream(
                 self,
-                content="[goal continuation]",
-                request_id="goal-continuation",
+                content=None,
             ):
                 if self.session_events is not None:
                     await self.session_events.put(event)
         except SessionBusy:
             pass
         finally:
-            self.engine.continuation = False
-            self.continuation_task = None
+            self.wakeup_task = None
+            if self._wakeup_requested and not self.turn_lock.locked():
+                self._request_wakeup()
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
@@ -304,7 +290,7 @@ class SessionRuntime:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.turn_task = None
-        continuation = self.continuation_task
+        continuation = self.wakeup_task
         if (
             continuation is not None
             and not continuation.done()
@@ -312,13 +298,14 @@ class SessionRuntime:
         ):
             continuation.cancel()
             await asyncio.gather(continuation, return_exceptions=True)
-        self.continuation_task = None
-        for item in self.pending_fold:
+        self.wakeup_task = None
+        for item in self.pending_responses.values():
             item.events.put_nowait(None)
-        self.pending_fold.clear()
-        if self.fold_output is not None:
-            await self.fold_output.put(None)
-            self.fold_output = None
+        self.pending_responses.clear()
+        if self.response_output is not None:
+            await self.response_output.put(None)
+            self.response_output = None
+        await self.engine.discard_inputs()
         if self.session_events is not None:
             await self.session_events.put(None)
             self.session_events = None
@@ -326,6 +313,11 @@ class SessionRuntime:
             await self.engine.close_session()
         except Exception:
             logger.exception("Engine close_session failed for %s", self.session_id)
+        finally:
+            # The session owns the XCore application lifetime. Engine only
+            # closes its loop lifecycle; unloading plugin fibers belongs to
+            # the surrounding application context.
+            await self.services.stop()
 
 
 def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
@@ -335,7 +327,7 @@ def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
 async def _live_sink(
     client_event: dict[str, Any],
     *,
-    engine: Any,
+    services: Any,
     events: asyncio.Queue[dict[str, Any] | None],
     disconnect_task: asyncio.Task[Any],
     timeout_seconds: float | None = None,
@@ -343,11 +335,10 @@ async def _live_sink(
     event_type = str(client_event.get("type") or "")
     event_data = client_event.get("data") or {}
     request_id = str(event_data.get("request_id") or "")
-    waiter = (
-        engine.permission_waiter
-        if event_type == "permission_request"
-        else engine.user_input_waiter
-    )
+    router = services.get("client_events")
+    waiter = router.waiter(event_type) if router is not None else None
+    if waiter is None:
+        raise RuntimeError(f"No waiter registered for client event {event_type!r}")
     pending = waiter.register(request_id)
     wait_task = asyncio.create_task(
         waiter.wait_registered(request_id, pending, timeout_seconds)
@@ -404,42 +395,69 @@ async def _live_interaction_sink(
         del tool_call_id
         return await _live_sink(
             client_event,
-            engine=runtime.engine,
+            services=runtime.services,
             events=events,
             disconnect_task=disconnect_task,
             timeout_seconds=timeout_seconds,
         )
 
-    previous = runtime.engine.set_client_event_sink(sink)
+    previous = install_client_event_sink(runtime.services, sink)
     try:
         yield
     finally:
-        runtime.engine.set_client_event_sink(previous)
+        restore_client_event_sinks(runtime.services, previous)
         if not disconnect_task.done():
             disconnect_task.cancel()
             await asyncio.gather(disconnect_task, return_exceptions=True)
 
 
+def install_client_event_sink(services: Any, sink: Any | None) -> Any | None:
+    """Install one live protocol sink on the application event router.
+
+    Feature services publish through the shared router, so the transport does
+    not discover or modify individual plugins. Returns the previous sink.
+    """
+    if not hasattr(services, "get"):
+        return None
+    router = services.get("client_events")
+    return router.set_sink(sink) if router is not None else None
+
+
+def restore_client_event_sinks(
+    services: Any,
+    previous: Any | None,
+) -> None:
+    if not hasattr(services, "get"):
+        return
+    router = services.get("client_events")
+    if router is not None:
+        router.set_sink(previous)
+
+
 async def _pump_turn(
     runtime: SessionRuntime,
     events: asyncio.Queue[dict[str, Any] | None],
-    content: str,
+    content: str | None,
     request_id: str,
     images: list[ImageContent] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
 ) -> None:
     turn_stream = None
     try:
-        turn_stream = runtime.engine.run_turn(
-            content,
-            request_id=request_id,
-            images=images,
-            artifacts=artifacts,
+        turn_stream = (
+            runtime.engine.run_turn(
+                content,
+                request_id=request_id,
+                images=images,
+                artifacts=artifacts,
+            )
+            if content is not None
+            else runtime.engine.run_pending(request_id=request_id)
         )
         async for event in turn_stream:
             payload = _event_payload(event)
             if payload["type"] in {"turn_finished", "turn_cancelled"}:
-                loader = runtime.engine.plugin_loader
+                loader = runtime.services.get("loader")
                 if loader is not None:
                     slots = await loader.status_slots()
                     if slots:
@@ -468,7 +486,7 @@ async def _pump_turn(
 async def run_turn_stream(
     runtime: SessionRuntime,
     *,
-    content: str,
+    content: str | None,
     request_id: str = "",
     images: list[ImageContent] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
@@ -509,24 +527,18 @@ async def run_turn_stream(
                     if event is None:
                         stream_completed = True
                         break
-                    if (
-                        runtime.fold_output is not None
-                        and handed_off
-                    ):
-                        # After the fold boundary the merged response belongs
-                        # to the final folded request's owner.
-                        await runtime.fold_output.put(event)
+                    if runtime.response_output is not None and handed_off:
+                        await runtime.response_output.put(event)
                         continue
                     if (
-                        runtime.fold_output is not None
-                        and event.get("type") == "_fold_handoff"
+                        event.get("type") == "_inbox_claimed"
+                        and runtime.claim_response_output(
+                            list(event.get("data", {}).get("message_ids") or [])
+                        )
                     ):
-                        # The active turn handed its stream over to the folded
-                        # input. Consume the control boundary (never forwarded)
-                        # and route everything after it — the merged reply — to
-                        # the folded request; events queued before it stay on
-                        # this (active) stream.
                         handed_off = True
+                        continue
+                    if event.get("type") == "_inbox_claimed":
                         continue
                     yield event
         finally:
@@ -536,10 +548,11 @@ async def run_turn_stream(
             await asyncio.gather(pump_task, return_exceptions=True)
             runtime.turn_task = None
             runtime.touch()
-            if runtime.fold_output is not None:
-                await runtime.fold_output.put(None)
-                runtime.fold_output = None
-    runtime._reject_leftover_fold()
+            if runtime.response_output is not None:
+                await runtime.response_output.put(None)
+                runtime.response_output = None
+    if runtime._wakeup_requested and runtime.wakeup_task is None:
+        runtime._request_wakeup()
 
 
 __all__ = ["SessionBusy", "SessionRuntime", "run_turn_stream"]

@@ -4,15 +4,16 @@ Aligns with DeepSeek Harness's ``dsh-llm``: ``ctx.llm`` is a provider
 directory (``LlmService``); this plugin registers the built-in provider
 adapters (openai-compatible / anthropic / mock) and loads the configured
 provider definitions (``default`` + ``providers``) from its tree config —
-there is no separate ``providers.yaml`` document.  The agent loop creates
-its model client through ``ctx.llm.create(provider_config, media_root=...)``.
+there is no separate ``providers.yaml`` document. Application composition
+creates the model client through ``ctx.llm.create(...)`` and passes the
+provider-neutral port to the loop.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.llm.service import LlmService
+from XBotv2.llm.service import LlmService, ModelService
 
 
 def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
@@ -46,6 +47,7 @@ class LlmComponent:
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         ctx.set("llm", build_llm_service(dict(config or {})))
+        ctx.set("model", ModelService())
 
 
 plugin = LlmComponent()

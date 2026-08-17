@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
-from XBotv2.core.providers import InputModality
+from XBotv2.core.providers import BaseProvider, InputModality
 from XBotv2.core.tools import ToolCall, ToolCallDelta
-from XBotv2.llm.base import BaseProvider
 
 
 class MockLLM(BaseProvider):

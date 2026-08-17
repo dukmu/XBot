@@ -31,18 +31,18 @@ def make_plugin_ctx(tmp_path):
     from xcore import Context
     from XBotv2.jobs import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.tools.agents import AgentRegistry
+    from XBotv2.agents.service import AgentRegistry, AgentsService
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.tools.plugin import AgentsService, ToolsService
+    from XBotv2.agentloop.tool_service import ToolsService
     from XBotv2.commands.plugin import CommandsService
     from XBotv2.prompts.plugin import PromptsService
-    from XBotv2.tools.registry import ToolRegistry
+    from XBotv2.agentloop.tool_registry import ToolRegistry
 
     ctx = Context(data_dir=tmp_path)
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agents", AgentsService(AgentRegistry()))
+    ctx.set("agents", AgentsService(ctx, AgentRegistry()))
     ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", tmp_path)
@@ -91,14 +91,25 @@ class TestPluginTree:
             ])
 
     def test_merged_with_overrides_by_id(self):
-        base = PluginTree.from_dict([{"id": "a", "name": "m1"}])
+        base = PluginTree.from_dict([{
+            "id": "a",
+            "name": "m1",
+            "config": {"policy": {"allow": ["base"], "ask": []}},
+        }])
         override = PluginTree.from_dict([
-            {"id": "a", "name": "m2"},
+            {
+                "id": "a",
+                "name": "m2",
+                "config": {"policy": {"ask": ["overlay"]}},
+            },
             {"id": "b", "name": "m3"},
         ])
         merged = base.merged_with(override)
         ids = {e.id: e.name for e in merged.entries}
         assert ids == {"a": "m2", "b": "m3"}
+        assert merged.entries[0].config == {
+            "policy": {"allow": ["base"], "ask": ["overlay"]},
+        }
 
 
 # ------------------------------------------------------------------
@@ -309,14 +320,14 @@ class TestOrderIndependence:
         """A shuffled xcore.yaml still activates every plugin (inject-driven)."""
         import random
 
-        from XBotv2 import bootstrap as bootstrap_module
-        from XBotv2.bootstrap import bootstrap
+        from XBotv2.config import tree as config_tree
+        from XBotv2.application import start_application
         from XBotv2.core.paths import RuntimePaths
         from XBotv2.llm.mock import MockLLM
         from XBotv2.loader import PluginTree
 
         # Shuffle the bundled tree (config preserved) into a temp yaml.
-        tree = PluginTree.from_yaml(bootstrap_module.DEFAULT_TREE)
+        tree = PluginTree.from_yaml(config_tree.DEFAULT_TREE)
         entries = list(tree.entries)
         random.Random(7).shuffle(entries)
         lines = []
@@ -331,7 +342,7 @@ class TestOrderIndependence:
                 lines.append("  disabled: true")
         shuffled = tmp_path / "shuffled.yaml"
         shuffled.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setattr(bootstrap_module, "DEFAULT_TREE", shuffled)
+        monkeypatch.setattr(config_tree, "DEFAULT_TREE", shuffled)
 
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
         paths.config_dir.mkdir(parents=True, exist_ok=True)
@@ -348,12 +359,13 @@ class TestOrderIndependence:
             }]),
             encoding="utf-8",
         )
-        engine = await bootstrap(
+        application = await start_application(
             paths=paths,
             workspace_root=tmp_path / "ws",
             provider_name="mock",
             llm_override=MockLLM(responses=[{"content": "ok"}]),
         )
-        # The engine is the main agent instance regardless of tree order.
-        assert engine.plugin_ctx.session.main_agent is engine
-        assert "agentloop" in engine.plugin_ctx.loader.loaded_ids
+        assert application.engine is not None
+        assert "tools" in application.loader.loaded_ids
+        assert "agents-service" in application.loader.loaded_ids
+        assert "agentloop" in application.loader.loaded_ids

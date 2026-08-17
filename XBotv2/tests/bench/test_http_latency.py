@@ -32,7 +32,8 @@ from XBotv2.core.paths import RuntimePaths
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
-from XBotv2.protocol.http_server import create_app, set_llm_override
+from XBotv2.protocol.http_server import set_llm_override
+from XBotv2.application.server import start_server_application
 
 
 # ----------------------------------------------------------------------
@@ -82,15 +83,20 @@ async def http_app(tmp_path: Path):
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
-    app = create_app(
+    server = await start_server_application(
         provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
+        workspace_root=str(tmp_path),
         no_plugins=True,
     )
+    app = server.server
     set_llm_override(
         app, MockLLM(responses=[{"content": "bench reply"}] * 200)
     )
-    yield app
+    try:
+        yield app
+    finally:
+        await server.stop()
 
 
 @pytest_asyncio.fixture

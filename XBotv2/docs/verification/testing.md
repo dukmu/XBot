@@ -29,7 +29,7 @@ tests/
 ├── core/
 │   ├── test_engine.py       # ReAct loop, hooks, streaming, reasoning, compaction
 │   ├── test_context.py      # ContextBuilder, sanitize, cache
-│   ├── test_bootstrap.py    # Bootstrap flow, tool filter
+│   ├── test_application_startup.py # Application startup, tool filter
 │   ├── test_state.py        # CoreStateStore
 │   ├── test_persistence.py  # Message persistence, artifacts
 │   ├── test_command.py      # CommandSpec, kind field, search/completion

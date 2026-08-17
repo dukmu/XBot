@@ -4,7 +4,7 @@ import pytest
 
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.core import AgentDefinition, RuntimeVariables
-from XBotv2.tools.agents import AgentRegistry
+from XBotv2.agents.service import AgentRegistry
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agents.plugin import _load_definition
 

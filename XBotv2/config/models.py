@@ -19,46 +19,6 @@ class UserContext(StrictModel):
     session_type: str = "interactive"
 
 
-class ProviderConfig(StrictModel):
-    provider: str = "openai"
-    model: str = "gpt-4"
-    base_url: str | None = None
-    api_key: str | None = None
-    temperature: float = 0.7
-    max_context_tokens: int = Field(default=32_000, ge=1)
-    max_output_tokens: int | None = Field(default=None, ge=1)
-    reasoning_effort: str | None = None
-    thinking_enabled: bool = False
-    input_modalities: list[Literal["text", "image"]] = Field(
-        default_factory=lambda: ["text"]
-    )
-    mock_responses: list[dict[str, Any]] = Field(default_factory=list)
-
-    @field_validator("input_modalities")
-    @classmethod
-    def _validate_input_modalities(
-        cls, value: list[Literal["text", "image"]]
-    ) -> list[Literal["text", "image"]]:
-        if "text" not in value:
-            raise ValueError("input_modalities must include text")
-        return list(dict.fromkeys(value))
-
-    @model_validator(mode="after")
-    def _validate_anthropic_output_limit(self) -> "ProviderConfig":
-        if (
-            self.provider in {"anthropic", "lmstudio"}
-            and self.max_output_tokens is None
-        ):
-            raise ValueError("Anthropic providers require max_output_tokens")
-        return self
-
-    @property
-    def model_mode(self) -> str:
-        return self.reasoning_effort or (
-            "thinking" if self.thinking_enabled else ""
-        )
-
-
 class HookConfig(StrictModel):
     stage: str
     target: str
@@ -107,16 +67,16 @@ class PermissionConfig(StrictModel):
 
 class SandboxResourceConfig(StrictModel):
     path: str
-    access: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "readonly"
+    access: Literal["allow", "readwrite", "readonly", "deny"] = "readonly"
 
 
 class SandboxConfig(StrictModel):
     enabled: bool = True
     network: bool = True
-    external_read: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "ask"
-    external_write: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "deny"
-    workspace_read: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "allow"
-    workspace_write: Literal["allow", "readwrite", "readonly", "deny", "ask"] = "allow"
+    external_read: Literal["allow", "readwrite", "readonly", "deny"] = "readonly"
+    external_write: Literal["allow", "readwrite", "readonly", "deny"] = "deny"
+    workspace_read: Literal["allow", "readwrite", "readonly", "deny"] = "allow"
+    workspace_write: Literal["allow", "readwrite", "readonly", "deny"] = "allow"
     resources: list[SandboxResourceConfig] = Field(default_factory=list)
 
 
@@ -196,7 +156,6 @@ __all__ = [
     "PermissionConfig",
     "PermissionRuleConfig",
     "PluginConfig",
-    "ProviderConfig",
     "SandboxConfig",
     "RuntimeConfig",
     "ToolResultConfig",

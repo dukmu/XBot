@@ -1,0 +1,70 @@
+"""Application-owned routing for live client events.
+
+Feature services publish their own event payloads and register their own
+waiters. Transports install one sink here instead of discovering every
+feature plugin that may need a client response.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+
+ClientEventSink = Callable[..., Awaitable[dict[str, Any]]]
+
+
+class ClientEventRouter:
+    """Route client events without coupling transports to feature services."""
+
+    def __init__(self, parent: "ClientEventRouter | None" = None) -> None:
+        self._parent = parent
+        self._sink: ClientEventSink | None = None
+        self._waiters: dict[str, Any] = {}
+
+    def set_sink(self, sink: ClientEventSink | None) -> ClientEventSink | None:
+        previous = self._sink
+        self._sink = sink
+        return previous
+
+    async def request(
+        self,
+        event: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, Any] | None:
+        if self._sink is not None:
+            return await self._sink(
+                event,
+                timeout_seconds=timeout_seconds,
+                tool_call_id=tool_call_id,
+            )
+        if self._parent is not None:
+            return await self._parent.request(
+                event,
+                timeout_seconds=timeout_seconds,
+                tool_call_id=tool_call_id,
+            )
+        return None
+
+    def register_waiter(self, event_type: str, waiter: Any) -> Callable[[], bool]:
+        if event_type in self._waiters:
+            raise ValueError(f"client event waiter already registered: {event_type}")
+        self._waiters[event_type] = waiter
+
+        def dispose() -> bool:
+            return self._waiters.pop(event_type, None) is waiter
+
+        return dispose
+
+    def waiter(self, event_type: str) -> Any | None:
+        return self._waiters.get(event_type)
+
+    def pending_request_ids(self) -> list[str]:
+        pending: list[str] = []
+        for waiter in self._waiters.values():
+            request_ids = getattr(waiter, "pending_request_ids", None)
+            if callable(request_ids):
+                pending.extend(request_ids())
+        return pending

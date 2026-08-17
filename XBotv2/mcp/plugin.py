@@ -69,7 +69,7 @@ class MCPPlugin:
                 tools = await self._client.connect_and_list(
                     server_name,
                     server_cfg,
-                    callbacks=client_callbacks(ctx),
+                    callbacks=client_callbacks(self.ctx, ctx.session),
                 )
                 registered_names = self._register_server_tools(
                     server_name,
@@ -127,7 +127,6 @@ class MCPPlugin:
         """Register one MCP tool on the raw registry (tracked for cleanup)."""
         return self.ctx.tools.registry.register(
             tool,
-            sandbox_mode="host",
             namespace=f"mcp:{server_name}",
         )
 

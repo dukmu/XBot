@@ -12,7 +12,6 @@ import yaml
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.models import (
     ConfigOverlay,
-    ProviderConfig,
     RuntimeConfig,
 )
 from XBotv2.config.policy import merge_permission_config, merge_sandbox_config
@@ -55,52 +54,6 @@ def load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a mapping")
     return data
-
-
-def parse_provider_config(
-    name: str,
-    raw: dict[str, Any],
-    *,
-    require_key: bool = True,
-) -> ProviderConfig:
-    """Validate one provider definition (env expansion + api_key_env).
-
-    With ``require_key=True`` (a provider selection) an ``api_key_env``
-    variable must be set; with ``require_key=False`` (e.g. the ``/providers``
-    listing) the key is left unresolved so listing never fails on unrelated
-    providers.
-    """
-    values = _expand_env(dict(raw))
-    api_key_env = values.pop("api_key_env", None)
-    if api_key_env and not values.get("api_key"):
-        env_name = str(api_key_env)
-        if require_key and env_name not in os.environ:
-            raise ValueError(f"Environment variable {env_name} is not set")
-        if env_name in os.environ:
-            values["api_key"] = os.environ[env_name]
-    return ProviderConfig.model_validate(values)
-
-
-def resolve_llm_config(paths: RuntimePaths | Path) -> dict[str, Any]:
-    """Resolve the merged ``llm`` plugin entry config from the plugin tree.
-
-    Reads the bundled ``xcore.yaml`` merged with the global user tree
-    (``<data_dir>/config/plugins.yaml``) and returns the ``llm`` entry's
-    ``config`` block (``default`` + ``providers``).  Used by CLI startup
-    validation and server-root provider listing, which run before a session
-    mounts the llm plugin; the mounted plugin uses its own tree config.
-    """
-    from XBotv2.bootstrap import DEFAULT_TREE
-    from XBotv2.loader import PluginTree
-
-    if not isinstance(paths, RuntimePaths):
-        paths = RuntimePaths.from_data_dir(paths)
-    tree = PluginTree.from_yaml(DEFAULT_TREE)
-    plugins_file = paths.config_dir / "plugins.yaml"
-    if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
-    entry = next((item for item in tree.entries if item.id == "llm"), None)
-    return dict(entry.config or {}) if entry else {}
 
 
 def load_runtime_config(
@@ -191,6 +144,4 @@ __all__ = [
     "expand_env",
     "load_runtime_config",
     "load_yaml",
-    "parse_provider_config",
-    "resolve_llm_config",
 ]

@@ -51,7 +51,6 @@ class TodolistPlugin:
                 function=self.update_todos,
                 parameters=_UPDATE_TODOS_SCHEMA,
             ),
-            sandbox_mode="host",
 
         )
 

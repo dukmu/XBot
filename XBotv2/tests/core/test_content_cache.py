@@ -18,7 +18,7 @@ from XBotv2.agentloop.engine import Engine
 import xcore
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 

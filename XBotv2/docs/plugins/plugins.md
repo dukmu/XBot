@@ -4,11 +4,11 @@
 
 ```
 Core -> never imports -> Plugins (goal/, todolist/, skills/, ...)
-Plugins -> import -> Stable API (api)
+Plugins -> import -> Stable contracts (core/)
 ```
 
 Plugins extend the engine via hooks, tools, and prompt fragments.
-They live in top-level plugin packages and are loaded by the plugin-tree loader during bootstrap.
+They live in top-level plugin packages and are loaded by application startup.
 Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 
 ## PluginBase
@@ -45,12 +45,14 @@ are removed before the cancel propagates; the partially initialized plugin
 still receives
 `on_unload()` for its own resources.
 
-Bootstrap remains transactional after loading: failures while creating the LLM
-or running `ON_SESSION_INIT` trigger `unload_all()`. This removes runtime tools
+Application boot remains transactional after loading: failures while Agent
+construction creates the model client or runs `SESSION_INIT` destroy the
+partial root Context. This removes runtime tools
 registered by initialization hooks and closes plugin-owned external resources.
-Normal `Engine.close_session()` runs close hooks, persists messages, and then
-calls `unload_all()`. Failure in one phase does not skip later cleanup phases;
-the close operation propagates collected failures after cleanup finishes.
+Normal `Engine.close_session()` emits loop lifecycle events only. The owning
+application context stops plugin fibers; persistence independently observes
+state changes and explicit application-level flushes. Failure in one cleanup
+phase does not authorize Engine to take ownership of plugin teardown.
 
 `on_unload` must be idempotent enough to handle partial initialization. The
 loader invokes it after any entered `on_load`, even when `on_load` itself raises,
@@ -166,7 +168,6 @@ the registered names are recorded:
 ```python
 name = ctx.tools.registry.register(
     tool,
-    sandbox_mode="host",
     namespace="plugin:my-plugin",
 )
 self._tool_names.append(name)
@@ -175,14 +176,14 @@ self._tool_names.append(name)
 The disposer (`ctx.dispose(...)`) unregisters those names, so a plugin that
 owns a shorter-lived dynamic resource removes it on unload or session close.
 
-Tool registration is direct (sandbox mode included); registration is a fiber
+Tool registration is direct; registration is a fiber
 effect — XCore's `current_fiber()` binds the cleanup, so the tool is removed
 automatically when the plugin unloads:
 
 ```python
 from XBotv2.core import Tool
 
-ctx.tools.register(tool, sandbox_mode="sandboxed")
+ctx.tools.register(tool, injected={"capability": ctx.capability})
 ```
 
 ## plugin.yaml Manifest
@@ -196,7 +197,6 @@ hooks:
     handler: my_plugin.hooks:on_init
 tools:
   - handler: my_plugin.tools:my_tool
-    sandbox_mode: host
 prompt_fragments:
   - stage: system_instructions
     file: prompts/system.md
@@ -225,7 +225,7 @@ contract. The `compact` tool requests a manual compaction; current provider inpu
 usage triggers it automatically, with a character fallback when usage is absent.
 Recent complete user turns remain verbatim, the
 auxiliary model call has no tools, and only a successful summary is returned as
-a message replacement. Engine persistence appends a history checkpoint, so
+a message replacement. The persistence listener appends a history checkpoint, so
 resume observes the same summary and recent tail without deleting raw records. See
 [Compact plugin](compact.md).
 
@@ -278,11 +278,10 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
   dynamic registration failure rolls back that discovery attempt.
 - Shell injection: `` !`command` `` placeholders run only through the enabled
   session sandbox. There is no host subprocess fallback.
-- Standard `allowed-tools` entries preapprove matching calls that would
-  otherwise ask. Unmatched calls continue through normal core permission
-  policy, and a core `deny` remains authoritative. XBot-specific negative rules
-  use the namespaced `xbotv2-disallowed-tools` field rather than assigning new
-  semantics to a foreign `disallowed-tools` key. Parameter patterns use the real
+- Standard `allowed-tools` entries remain discovery metadata and never bypass
+  the session permission policy. XBot-specific negative rules use the
+  namespaced `xbotv2-disallowed-tools` field and register a monotonic Tool guard
+  rather than a second permission system. Parameter patterns use the real
   `shell(command)` form, for example
   `shell(git *)`; compatibility aliases such as `Bash` are not provided.
   Patterns must be non-empty strings with balanced parameter parentheses;
@@ -313,11 +312,11 @@ Connects to MCP (Model Context Protocol) servers and registers their tools.
 
 Initialization is idempotent within an open session. A registration failure
 rolls back every tool and the connection for that server. Optional server
-failures leave diagnostics degraded and allow bootstrap to continue; a server
+failures leave diagnostics degraded and allow startup to continue; a server
 with `required: true` rolls back every server initialized by that hook call and
-fails bootstrap. Session close resets the plugin so a later initialization can
+fails Agent startup. Session close resets the plugin so a later initialization can
 reconnect and register a fresh tool set. `on_unload` remains a final cleanup
-path for bootstrap failures and abnormal shutdown.
+path for startup failures and abnormal shutdown.
 
 **Transport types:**
 - `local` (stdio): official MCP SDK stdio transport.
@@ -383,7 +382,7 @@ commands:
 Plugins should register tools through `apply` (or another recorded plugin
 capability); registration is a fiber effect, undone automatically on unload:
 ```python
-ctx.tools.register(tool, sandbox_mode="host")
+ctx.tools.register(tool)
 ```
 
 The plugin context deliberately does not expose `ToolRegistry` or

@@ -11,8 +11,7 @@ from __future__ import annotations
 import logging
 import os
 
-from XBotv2.config.loader import expand_env
-from XBotv2.config.models import ProviderConfig
+from XBotv2.llm.config import ProviderConfig, expand_env
 from XBotv2.core.providers import BaseProvider
 
 logger = logging.getLogger("llm")

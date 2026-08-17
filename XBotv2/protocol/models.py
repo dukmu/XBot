@@ -127,7 +127,6 @@ class ToolInfo(WireModel):
     namespace: str = Field(min_length=1)
     description: str
     parameters: dict[str, Any]
-    sandbox_mode: Literal["sandboxed", "host"]
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
@@ -170,7 +169,7 @@ class SessionListResponse(WireModel):
 
 
 PermissionDecision = Literal["allow", "deny", "ask"]
-SandboxAccess = Literal["allow", "deny", "ask", "readonly", "readwrite"]
+SandboxAccess = Literal["allow", "deny", "readonly", "readwrite"]
 SandboxKey = Literal[
     "enabled",
     "network",

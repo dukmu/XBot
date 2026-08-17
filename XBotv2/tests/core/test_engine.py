@@ -8,15 +8,16 @@ import pytest
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.coretools.shell import SHELL_TOOLS
-from XBotv2.coretools.interaction import request_permission
+from XBotv2.permissions.tools import request_permission
 from XBotv2.config.models import RuntimeConfig
 import xcore
+from XBotv2.tests.helpers import make_tool_ctx
 from XBotv2.core.events import Events
 from XBotv2.llm.mock import MockLLM
 from XBotv2.core import ContextComponent
 from XBotv2.core.messages import Message, ModelResponse
-from XBotv2.llm.base import BaseProvider
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.core.providers import BaseProvider
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import (
@@ -99,34 +100,41 @@ structured_failure_tool = Tool.from_function(
 
 def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
     """Create a minimal engine for testing."""
-    return Engine(
-        llm=mock_llm,
-        tool_registry=tool_registry,
-        plugin_ctx=xcore.Context(),
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
+    plugin_ctx = make_tool_ctx(
+        tool_registry,
+        sandbox=SandboxPolicy(
             enabled=False,
             workspace_root=str(temp_workspace),
         ),
-        permission_system=PermissionSystem(default_decision="allow"),
+        permissions=PermissionSystem(default_decision="allow"),
+    )
+    return Engine(
+        llm=mock_llm,
+        tools=plugin_ctx.tools,
+        plugin_ctx=plugin_ctx,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
         config=RuntimeConfig(),
     )
 
 
 def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace, plugin_ctx):
     """Create a minimal engine with a supplied hook manager."""
-    return Engine(
-        llm=mock_llm,
-        tool_registry=tool_registry,
-        plugin_ctx=plugin_ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
+    make_tool_ctx(
+        tool_registry,
+        sandbox=SandboxPolicy(
             enabled=False,
             workspace_root=str(temp_workspace),
         ),
-        permission_system=PermissionSystem(default_decision="allow"),
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+    return Engine(
+        llm=mock_llm,
+        tools=plugin_ctx.tools,
+        plugin_ctx=plugin_ctx,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
         config=RuntimeConfig(),
     )
 
@@ -139,7 +147,7 @@ class TestEngineBasics:
         """Engine returns a text response when no tool calls are made."""
         llm = MockLLM(responses=[{"content": "Hello! How can I help?"}])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("hi")]
@@ -244,7 +252,7 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo hello")]
@@ -286,7 +294,7 @@ class TestEngineBasics:
         ])
         registry = ToolRegistry()
         shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
-        registry.register(shell, sandbox_mode="host")
+        registry.register(shell)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("run shell")]
@@ -319,7 +327,7 @@ class TestEngineBasics:
             {"content": "Done!"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo hello")]
@@ -350,7 +358,7 @@ class TestEngineBasics:
             },
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("echo hello")]
@@ -383,7 +391,7 @@ class TestEngineBasics:
             {"content": "handled"},
         ])
         registry = ToolRegistry()
-        registry.register(structured_failure_tool, sandbox_mode="host")
+        registry.register(structured_failure_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test result")]
@@ -422,7 +430,7 @@ class TestEngineBasics:
             {"content": "Both done."},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo two things")]
@@ -458,7 +466,7 @@ class TestEngineBasics:
         responses.append({"content": "Budget exhausted; work remains."})
         llm = MockLLM(responses=responses)
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         engine.max_iterations = 3  # Small limit
@@ -549,7 +557,7 @@ class TestEngineHooks:
         """Fine-grained model plugin_ctx see built context, tools, request, and response."""
         llm = MockLLM(responses=[{"content": "Hello!"}])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         calls = []
 
         async def after_context_build(ctx):
@@ -914,7 +922,7 @@ class TestEngineHooks:
 
         llm = RecordingLLM()
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         async def filter_tools(ctx):
             assert [tool.name for tool in ctx.model_request["tools"]] == ["echo"]
@@ -954,8 +962,8 @@ class TestEngineHooks:
 
         llm = RecordingLLM()
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        registry.register(shout_tool, sandbox_mode="host")
+        registry.register(echo_tool)
+        registry.register(shout_tool)
 
         async def keep_echo(ctx):
             return {"tools": [tool for tool in ctx.model_request["tools"] if tool.name == "echo"]}
@@ -1074,7 +1082,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         calls = []
 
         async def parsed(ctx):
@@ -1130,8 +1138,8 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        registry.register(shout_tool, sandbox_mode="host")
+        registry.register(echo_tool)
+        registry.register(shout_tool)
         permission_system = PermissionSystem(default_decision="allow")
         permission_system.add_rule(
             "deny",
@@ -1188,7 +1196,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         async def deny_call(ctx):
             return {"deny_reason": "blocked by plugin policy"}
@@ -1230,7 +1238,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         observed = {}
 
         async def on_user_message(ctx):
@@ -1340,7 +1348,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         persisted_sizes = []
 
         async def after_persist(ctx):
@@ -1375,7 +1383,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         order = []
 
         async def on_tool_message(_ctx):
@@ -1670,7 +1678,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(send_notice, sandbox_mode="host")
+        registry.register(send_notice)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [e async for e in engine.run_turn("notify")]
@@ -1692,7 +1700,7 @@ class TestEngineHooks:
             {"content": "continued without an answer"},
         ])
         registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
+        registry.register(request_input)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [e async for e in engine.run_turn("ask")]
@@ -1733,20 +1741,34 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(request_permission, sandbox_mode="host")
+        registry.register(request_permission)
 
         async def approved_echo(message: str) -> str:
             return f"Echo: {message}"
 
         registry.register(
             Tool.from_function(approved_echo, name="echo"),
-            sandbox_mode="host",
         )
-        engine = make_engine(llm, registry, state_store, temp_workspace)
-        engine.permission_system = PermissionSystem({
+        sandbox = SandboxPolicy(enabled=False, workspace_root=str(temp_workspace))
+        permission_system = PermissionSystem({
             "allow": [{"tool": "request_permission"}],
             "ask": [{"tool": "echo"}],
         })
+        ctx = make_tool_ctx(
+            registry,
+            sandbox=sandbox,
+            permissions=permission_system,
+        )
+        engine = Engine(
+            llm=llm,
+            tool_registry=registry,
+            plugin_ctx=ctx,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=sandbox,
+            permission_system=permission_system,
+            config=RuntimeConfig(),
+        )
         requests = []
 
         async def approve(event, **_kwargs):
@@ -1787,7 +1809,7 @@ class TestEngineHooks:
             ],
         }])
         registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
+        registry.register(request_input)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         async def disconnected(*_args, **_kwargs):
@@ -1854,8 +1876,8 @@ class TestEngineHooks:
             {"content": "continued"},
         ])
         registry = ToolRegistry()
-        registry.register(send_notice, sandbox_mode="host")
-        registry.register(request_input, sandbox_mode="host")
+        registry.register(send_notice)
+        registry.register(request_input)
         plugin_ctx = xcore.Context()
         observed = []
 
@@ -1891,7 +1913,7 @@ class TestEngineHooks:
             {"content": "next turn"},
         ])
         registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
+        registry.register(request_input)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         _ = [e async for e in engine.run_turn("ask")]
@@ -1909,7 +1931,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         engine = Engine(
             llm=llm,
             tool_registry=registry,
@@ -1941,7 +1963,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         plugin_ctx = xcore.Context()
         observed = []
 
@@ -2053,7 +2075,7 @@ class TestEngineState:
         assert calls == ["start", "close"]
         plugin_loader.unload_all.assert_awaited_once()
         job_registry.shutdown.assert_awaited_once()
-        assert engine.plugin_loader is None
+        assert engine.plugin_ctx.loader is None
 
     @pytest.mark.asyncio
     async def test_session_close_unloads_plugins_after_hook_failure(
@@ -2085,7 +2107,7 @@ class TestEngineState:
             await engine.close_session()
 
         plugin_loader.unload_all.assert_awaited_once()
-        assert engine.plugin_loader is None
+        assert engine.plugin_ctx.loader is None
 
     @pytest.mark.asyncio
     async def test_start_session_resumes_event_only_state(self, state_store, temp_workspace):
@@ -2196,7 +2218,7 @@ async def test_before_tool_schema_bind_hook_can_override_messages(state_store, t
     """BEFORE_TOOL_SCHEMA_BIND hook return dict with 'messages' replaces context."""
     llm = MockLLM(responses=[{"content": "ok"}])
     registry = ToolRegistry()
-    registry.register(echo_tool, sandbox_mode="host")
+    registry.register(echo_tool)
     plugin_ctx = xcore.Context()
     recorded: list[str] = []
 

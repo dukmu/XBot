@@ -263,7 +263,7 @@ surface until configuration has a concrete user requirement:
 
 ## Transport Boundary
 
-TUI modules must not import runtime-bound modules such as engine, bootstrap,
+TUI modules must not import runtime-bound modules such as Engine or Agent startup,
 provider SDKs, or tool execution. The protocol boundary is:
 
 ```text
@@ -297,7 +297,7 @@ overlap it.
 
 ## Trace And Diagnostics
 
-`XBOTV2_TUI_TRACE` writes JSONL trace events for TUI state and HTTP transport
+`XBOT_TUI_TRACE` writes JSONL trace events for TUI state and HTTP transport
 payloads. Trace output must preserve Unicode payloads.
 
 HTTP transport errors parse stable JSON server errors before rendering them to

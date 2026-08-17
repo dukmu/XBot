@@ -9,7 +9,7 @@ from XBotv2.llm.anthropic import (
     anthropic_request_messages,
     normalize_anthropic_usage,
 )
-from XBotv2.llm.base import BaseProvider, ProviderRetryExhaustedError
+from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
 from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
 from XBotv2.core.messages import (
     ImageContent,

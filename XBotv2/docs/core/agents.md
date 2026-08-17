@@ -1,12 +1,13 @@
 # Agents And Subagents
 
-Agent definitions are extensions. Plugins register them during `setup()` with
-`ctx.agents.register()` (via the plugin bridge). Core owns definition uniqueness,
-registration rollback, and later execution; plugins must not create a second
-agent loop.
+Agent definitions are core data contracts. Plugins register them during
+`apply()` with `ctx.agents.register()`. The mandatory agents service owns the
+registry and the `set_factory/create` seam; the agentloop factory owns concrete
+Engine construction. Registrations are unique and fiber-scoped. Plugins must
+not create a second agent loop or re-export `AgentDefinition` as their own API.
 
 ```python
-ctx.register_agent(AgentDefinition(
+ctx.agents.register(AgentDefinition(
     name="reviewer",
     description="Review a change for correctness and missing tests.",
     mode="subagent",
@@ -119,7 +120,7 @@ and stop a job. A completed subagent also places a bounded completion notice in
 the parent agent inbox so the Agent can react without polling.
 
 Both shell and subagent jobs run through the shared `JobRegistry` with the
-normal `bootstrap()`/Engine path. Child permissions are intersected with parent
+normal application-startup/Engine path. Child permissions are intersected with parent
 permissions, so an Agent definition can restrict but cannot expand its caller's
 authority. Child results pass through the standard ToolResult cache; full child
 history remains in its thread. Active jobs are cancelled when the live session

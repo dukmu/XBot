@@ -8,7 +8,7 @@ Status: bench captured 2026-06-05 against Phase E milestone 3
 | DoD item (doc §16) | Status | Evidence |
 | --- | --- | --- |
 | `pyproject.toml` 含 `fastapi` / `uvicorn[standard]` / `httpx` | ✅ | `pyproject.toml` lines 18-20 |
-| `xbotv2 --mode server` 启动后 `GET /health` 返回 200 | ✅ | Smoke test below (curl /health) |
+| `xbot serve` 启动后 `GET /health` 返回 200 | ✅ | Smoke test below (curl /health) |
 | `tui/transport.py` 定义 `Transport` Protocol | ✅ | `tui/transport.py` |
 | `tui/transport_http.py` 实现 `HttpTransport` | ✅ | `tui/transport_http.py` |
 | `protocol/http_server.py` 暴露 §10.5.3 endpoints | ✅ | All 8 routes registered (curl -X GET/POST) |
@@ -23,7 +23,7 @@ Status: bench captured 2026-06-05 against Phase E milestone 3
 ## Smoke test: real uvicorn + mock LLM
 
 ```text
-$ xbotv2 --mode server --bind 127.0.0.1 --port 4100 \
+$ xbot serve --bind 127.0.0.1 --port 4100 \
     --data-dir /tmp/xbotv2-smoke/data \
     --workspace /tmp/xbotv2-smoke/workspace --provider mock --no-plugins &
 [server starts on 127.0.0.1:4100]

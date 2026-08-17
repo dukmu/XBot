@@ -123,7 +123,6 @@ class CoreStateStore:
         self.provider = provider
 
         self.messages_path = paths.messages_file
-        self.usage_path = paths.usage_file
         self.plugin_states_dir = paths.plugin_states_dir
         self.artifacts_dir = paths.artifacts_dir
         self._max_msg_id = 0
@@ -296,21 +295,25 @@ class CoreStateStore:
         self._persisted_refs = []
         self._persisted_fingerprints = []
 
-    def append_mailbox_delivery(
-        self,
-        *,
-        mailbox_id: str,
-        kind: str,
-        message: str | dict[str, Any],
-        request_id: str,
-    ) -> None:
+    def append_event(self, event: str, data: dict[str, Any]) -> None:
+        """Append one generic durable runtime event."""
         self._append_record({
-            "record_type": "mailbox_delivery",
-            "mailbox_id": mailbox_id,
-            "kind": kind,
-            "message": _json_safe(message),
-            "request_id": request_id,
+            "record_type": "runtime_event",
+            "event": str(event),
+            "data": _json_safe(data),
         })
+
+    def read_events(self, event: str | None = None) -> list[dict[str, Any]]:
+        """Read generic runtime events in journal order."""
+        return [
+            {
+                "type": str(entry.get("event") or ""),
+                "data": dict(entry.get("data") or {}),
+            }
+            for entry in _iter_jsonl(self.messages_path)
+            if entry.get("record_type") == "runtime_event"
+            and (event is None or entry.get("event") == event)
+        ]
 
     def read_messages(self) -> list[Message]:
         entries = list(_iter_jsonl(self.messages_path))
@@ -339,7 +342,7 @@ class CoreStateStore:
                 messages = _undo_turns(messages, int(entry.get("turns") or 0))
             elif record_type == "history_clear":
                 messages = []
-            elif record_type in {"history_checkpoint", "mailbox_delivery"}:
+            elif record_type in {"history_checkpoint", "runtime_event"}:
                 continue
             else:
                 raise ValueError(f"Unknown message journal record: {record_type}")
@@ -350,30 +353,6 @@ class CoreStateStore:
 
     def has_existing_session(self) -> bool:
         return next(_iter_jsonl(self.messages_path), None) is not None
-
-    def read_usage(self) -> dict[str, int] | None:
-        if not self.usage_path.exists():
-            return None
-        data = yaml.safe_load(self.usage_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Session usage state must contain a mapping")
-        return {
-            key: int(data.get(key) or 0)
-            for key in (
-                "input_tokens",
-                "output_tokens",
-                "total_tokens",
-                "requests",
-                "context_tokens",
-                "cache_read_input_tokens",
-                "cache_creation_input_tokens",
-                "prompt_cache_write_tokens",
-            )
-        }
-
-    def write_usage(self, usage: dict[str, int]) -> None:
-        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write_yaml(self.usage_path, usage)
 
     def read_thread_metadata(self) -> dict[str, Any]:
         if not self.paths.metadata_file.exists():

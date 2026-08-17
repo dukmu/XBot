@@ -20,14 +20,12 @@ import subprocess
 import tempfile
 from typing import Any, Literal
 
-from XBotv2.jobs import (
+from XBotv2.core.jobs import (
     Job,
-    JobContext,
     JobKind,
     JobNotFound,
     JobRegistryClosed,
     JobResult,
-    JobRunner,
     JobStatus,
     WaitResult,
 )
@@ -55,7 +53,7 @@ class ShellRunner:
     def __init__(self, *, sandbox: Any = None) -> None:
         self.sandbox = sandbox
 
-    async def run(self, job: Job, ctx: JobContext) -> JobResult:
+    async def run(self, job: Job, ctx: Any) -> JobResult:
         command = str(job.metadata.get("command") or "")
         cwd = job.metadata.get("cwd") or None
         escalated = bool(job.metadata.get("escalated"))
@@ -100,6 +98,7 @@ async def shell(
     *,
     sandbox: Any = None,
     job_registry: Any = None,
+    default_cwd: str | None = None,
 ) -> ToolResult:
     """Run a shell command in the foreground, or start one in the background.
 
@@ -128,6 +127,7 @@ async def shell(
             sandbox; ``require_escalated`` requests execution outside it.
         justification: Required explanation when requesting escalation.
     """
+    cwd = cwd or default_cwd
     if sandbox_permissions == "require_escalated":
         if not justification or not justification.strip():
             return ToolResult.failure(

@@ -80,8 +80,5 @@ def _artifact_value(value: Any) -> Any:
 
 
 __all__ = [
-    "CACHED_CONTENT_KEY",
-    "DISPLAY_CONTENT_KEY",
-    "MESSAGE_FORMAT_KEY",
     "structure_tool_message",
 ]

@@ -9,7 +9,6 @@ from typing import Any
 
 import yaml
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ToolCall
 from XBotv2.config.models import config_dict
 
 
@@ -95,65 +94,24 @@ def merge_sandbox_config(
     return merged
 
 
-def persist_permission_decision(
+def persist_permission_rule(
     *,
     paths: RuntimePaths,
     session_id: str,
-    client_event: dict[str, Any],
+    rule: dict[str, Any],
     decision: str,
     scope: PermissionScope,
-    engine: Any | None = None,
-    sandbox_rules: list[dict[str, str]] | None = None,
 ) -> None:
-    """Persist a live approval/denial when scope requests it.
-
-    ``scope`` is one of:
-    - ``once``: do not persist
-    - ``session``: write the session configuration overlay
-    """
+    """Persist one already-resolved permission rule for this session."""
     decision = decision.lower().strip()
     scope = (scope or "once").lower().strip()
-    if decision not in {"allow", "deny"} or scope != "session":
-        return
-
-    data = client_event.get("data") or {}
-    source = str(data.get("source") or "permission_system")
-    if source == "request_permission":
-        rule = _requested_permission_rule(data.get("permission"))
-        if rule:
-            _persist_permission_rule(
-                paths=paths,
-                session_id=session_id,
-                rule=rule,
-                decision=decision,
-                engine=engine,
-            )
-        return
-    if source == "sandbox":
-        _persist_sandbox_rules(
-            paths=paths,
-            session_id=session_id,
-            decision=decision,
-            scope=scope,
-            engine=engine,
-            sandbox_rules=sandbox_rules,
-        )
-        return
-
-    raw_tool_call = data.get("tool_call")
-    if not isinstance(raw_tool_call, dict):
-        return
-    tool_call = ToolCall.from_dict(raw_tool_call)
-
-    rule = _permission_rule_for_tool_call(tool_call)
-    if not rule:
+    if decision not in {"allow", "deny"} or scope != "session" or not rule:
         return
     _persist_permission_rule(
         paths=paths,
         session_id=session_id,
         rule=rule,
         decision=decision,
-        engine=engine,
     )
 
 
@@ -163,7 +121,6 @@ def _persist_permission_rule(
     session_id: str,
     rule: dict[str, Any],
     decision: str,
-    engine: Any | None,
 ) -> None:
     path = paths.session(session_id).config_file
     doc = _read_yaml(path)
@@ -173,101 +130,6 @@ def _persist_permission_rule(
     if rule not in permissions[decision]:
         permissions[decision].insert(0, rule)
     _write_yaml(path, doc)
-    if engine is not None:
-        permission_system = getattr(engine, "permission_system", None)
-        permission_system = getattr(
-            permission_system,
-            "child",
-            permission_system,
-        )
-        if permission_system is not None:
-            permission_system.add_rule(decision, rule)
-
-
-def _requested_permission_rule(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    tool = str(value.get("tool") or "").strip()
-    params = value.get("params") or {}
-    if not tool or not isinstance(params, dict):
-        return {}
-    for pattern in params.values():
-        re.compile(str(pattern))
-    rule: dict[str, Any] = {"tool": re.escape(tool)}
-    if params:
-        rule["params"] = {
-            str(name): str(pattern)
-            for name, pattern in params.items()
-        }
-    return rule
-
-
-def _persist_sandbox_rules(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    decision: str,
-    scope: PermissionScope,
-    engine: Any | None,
-    sandbox_rules: list[dict[str, str]] | None,
-) -> None:
-    if not sandbox_rules:
-        return
-    path = paths.session(session_id).config_file
-    doc = _read_yaml(path)
-    sandbox = doc.setdefault("sandbox", {})
-    sandbox["enabled"] = True
-    for item in sandbox_rules:
-        if item.get("setting") == "external_write":
-            external_write = "allow" if decision == "allow" else "deny"
-            sandbox["external_write"] = external_write
-            if (
-                engine is not None
-                and getattr(engine, "sandbox_policy", None) is not None
-            ):
-                engine.sandbox_policy.external_write = external_write
-            continue
-        path_value = item.get("path")
-        if not path_value:
-            continue
-        resources = sandbox.setdefault("resources", [])
-        resolved_path = str(Path(path_value).resolve())
-        access = (
-            str(item.get("access"))
-            if decision == "allow"
-            and item.get("access") in {"readonly", "readwrite"}
-            else "readwrite" if decision == "allow" else "deny"
-        )
-        rule = {"path": resolved_path, "access": access}
-        if rule not in resources:
-            resources.insert(0, rule)
-        if (
-            engine is not None
-            and getattr(engine, "sandbox_policy", None) is not None
-        ):
-            engine.sandbox_policy.add_rule(resolved_path, access)
-    _write_yaml(path, doc)
-
-
-def _permission_rule_for_tool_call(tool_call: ToolCall) -> dict[str, Any]:
-    tool_name = tool_call.name
-    if not tool_name:
-        return {}
-    rule: dict[str, Any] = {"tool": re.escape(tool_name)}
-    args = tool_call.args
-    if tool_name in {"edit", "path"}:
-        retained = {"path", "source", "destination", "overwrite", "recursive", "parents"}
-        args = {key: value for key, value in args.items() if key in retained}
-    params = {
-        key: re.escape(str(value))
-        for key, value in sorted(args.items())
-        if isinstance(value, (str, int, float, bool))
-    }
-    if params:
-        rule["params"] = params
-    return rule
-
-
 def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:
     for key in _PERMISSION_DECISIONS:
         permissions[key] = [item for item in permissions.get(key, []) if item != rule]

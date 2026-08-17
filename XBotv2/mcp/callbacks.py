@@ -9,14 +9,26 @@ from typing import Any
 
 from mcp import types
 
-from XBotv2.core import EventContext, Message, prompt_element
+from XBotv2.core import Message, prompt_element
 
 logger = logging.getLogger("xbotv2.mcp")
 
 
-def client_callbacks(ctx: EventContext) -> dict[str, Any]:
+def client_callbacks(services: Any, session: Any) -> dict[str, Any]:
+    def _llm() -> Any | None:
+        return services.get("llm")
+
+    def _request_user_input() -> Any | None:
+        interactions = services.get("interactions")
+        if interactions is not None and hasattr(
+            interactions, "request_user_input"
+        ):
+            return interactions.request_user_input
+        return None
+
     async def sample(_request_context: Any, params: Any) -> Any:
-        if ctx.invoke_model is None:
+        llm = _llm()
+        if llm is None:
             return types.ErrorData(code=-32603, message="Model invocation unavailable")
         messages: list[Message] = []
         if params.systemPrompt:
@@ -36,26 +48,34 @@ def client_callbacks(ctx: EventContext) -> dict[str, Any]:
                     message="XBot sampling currently accepts text content only",
                 )
             messages.append(Message(role=message.role, content=text))
-        response = await ctx.invoke_model(messages)
-        if response.tool_calls:
+        aggregate: Any = None
+        async for chunk in llm.astream(messages):
+            aggregate = _merge_response(aggregate, chunk)
+        if aggregate is None:
+            return types.ErrorData(
+                code=-32603,
+                message="Model invocation produced no response",
+            )
+        if aggregate.tool_calls:
             return types.ErrorData(
                 code=-32603,
                 message="Unbound XBot sampling cannot execute tool calls",
             )
         return types.CreateMessageResult(
             role="assistant",
-            content=types.TextContent(type="text", text=response.content),
-            model=ctx.session.provider,
+            content=types.TextContent(type="text", text=aggregate.content),
+            model=session.provider,
             stopReason="endTurn",
         )
 
     async def elicit(_request_context: Any, params: Any) -> Any:
-        if ctx.request_user_input is None:
+        request_user_input = _request_user_input()
+        if request_user_input is None:
             return types.ElicitResult(action="cancel")
         question = params.message
         if isinstance(params, types.ElicitRequestURLParams):
             question = f"{question}\n{params.url}"
-        result = await ctx.request_user_input(question, source="mcp_elicitation")
+        result = await request_user_input(question, source="mcp_elicitation")
         if result.get("status") != "answered":
             return types.ElicitResult(action="cancel")
         answer = result.get("answer")
@@ -68,7 +88,7 @@ def client_callbacks(ctx: EventContext) -> dict[str, Any]:
         return types.ElicitResult(action="accept", content=content)
 
     async def roots(_request_context: Any) -> types.ListRootsResult:
-        workspace = Path(ctx.session.workspace_root).resolve()
+        workspace = Path(session.workspace_root).resolve()
         return types.ListRootsResult(roots=[
             types.Root(uri=workspace.as_uri(), name="workspace"),
         ])
@@ -82,6 +102,13 @@ def client_callbacks(ctx: EventContext) -> dict[str, Any]:
         "list_roots_callback": roots,
         "logging_callback": log_message,
     }
+
+
+def _merge_response(aggregate: Any, chunk: Any) -> Any:
+    """Merge one provider chunk into an aggregate response."""
+    from XBotv2.core.messages import merge_model_chunk
+
+    return merge_model_chunk(aggregate, chunk)
 
 
 def _sampling_text(content: Any) -> str | None:

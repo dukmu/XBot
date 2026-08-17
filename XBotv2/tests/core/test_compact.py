@@ -31,7 +31,7 @@ import xcore
 from plugin_harness import mount_plugin_standalone
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
@@ -54,7 +54,7 @@ class SetupContext:
             entry = entries[0]
             self.tool = entry.tool
             self.options = type(
-                "Options", (), {"namespace": entry.namespace, "sandbox_mode": entry.sandbox_mode}
+                "Options", (), {"namespace": entry.namespace}
             )()
         for command in self.ctx.commands.all():
             self.commands[command.name] = command
@@ -443,7 +443,6 @@ async def test_compact_tool_rewrites_and_persists_history(
     registry = ToolRegistry()
     registry.register(
         setup.tool,
-        sandbox_mode=setup.options.sandbox_mode,
         namespace=setup.options.namespace,
     )
     state_store.sync_messages(history(2))

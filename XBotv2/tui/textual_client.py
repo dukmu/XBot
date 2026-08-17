@@ -1,7 +1,7 @@
 """Textual HTTP/SSE TUI client.
 
 This frontend talks to ``xbotv2 serve`` through ``TerminalSession``
-and does not import runtime engine or bootstrap modules.
+and does not import runtime engine or application-startup modules.
 """
 
 from __future__ import annotations

@@ -39,7 +39,8 @@ replaces it. Resume changes a terminal or paused Goal back to active.
 The command handler belongs to the plugin and calls the same private state
 transitions as its Tools. It does not construct a Tool call, enter Tool
 permissions, or append a Tool message to model history. Setting or resuming an
-active Goal schedules its next continuation turn via `request_continuation`.
+active Goal submits its continuation through the loop's unified `followup`
+entry with continuation metadata; it has no private wakeup callback.
 
 ## Agent Tools
 

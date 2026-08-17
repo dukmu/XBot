@@ -210,7 +210,6 @@ Body
         assert plugin.ctx.commands.get("test-skill").kind == "prompt"
         entry = registry.get("skills:project:test-skill")
         assert entry is not None
-        assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80
 
@@ -263,7 +262,7 @@ Body
         from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
         from XBotv2.permissions.system import PermissionSystem
-        from XBotv2.tools.registry import ToolRegistry
+        from XBotv2.agentloop.tool_registry import ToolRegistry
         from XBotv2.sandbox.policy import SandboxPolicy
         from plugin_harness import mount_plugin
         from xcore import Context
@@ -335,29 +334,24 @@ Body
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import (
-    EventContext,
-    ToolAction,
-    ToolCall,
-)
+        from XBotv2.core import ToolCall
 
         plugin = SkillsPlugin()
         plugin._active_skills.add("git-workflow")
-        plugin._permission_scope.add(allowed=["shell(git *)"])
+        plugin._permission_scope.add(disallowed=["shell(rm *)"])
 
-        allowed = await plugin._on_before_tool(
-            EventContext(
-                tool_call=ToolCall("call_1", "shell", {"command": "git status"}),
-            )
+        allowed = await plugin._guard_tool_scope(
+            ToolCall("call_1", "shell", {"command": "git status"}),
+            None,
         )
-        denied = await plugin._on_before_tool(
-            EventContext(
-                tool_call=ToolCall("call_2", "shell", {"command": "rm -rf build"}),
-            )
+        denied = await plugin._guard_tool_scope(
+            ToolCall("call_2", "shell", {"command": "rm -rf build"}),
+            None,
         )
 
-        assert allowed.action is ToolAction.ALLOW
-        assert denied is None
+        assert allowed is None
+        assert denied.action == "deny"
+        assert denied.source == "skills"
 
     @pytest.mark.asyncio
     async def test_skill_restrictions_run_before_core_permissions(
@@ -371,7 +365,7 @@ Body
         from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
         from XBotv2.permissions.system import PermissionSystem
-        from XBotv2.tools.registry import ToolRegistry
+        from XBotv2.agentloop.tool_registry import ToolRegistry
         from XBotv2.sandbox.policy import SandboxPolicy
         from xcore import Context
 
@@ -386,8 +380,8 @@ Body
             return command
 
         registry = ToolRegistry()
-        registry.register(Tool.from_function(echo), sandbox_mode="host")
-        registry.register(Tool.from_function(runner), sandbox_mode="host")
+        registry.register(Tool.from_function(echo))
+        registry.register(Tool.from_function(runner))
         plugin = SkillsPlugin()
         plugin._active_skills.add("restricted")
         plugin._permission_scope.add(allowed=["echo", "runner(git *)"])

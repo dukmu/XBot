@@ -72,7 +72,7 @@ _NOISY_LOGGERS = (
 def _resolve_log_file(data_dir: str | os.PathLike[str] | None) -> Path:
     """Return the absolute path of the log file; create its directory."""
 
-    env = os.environ.get("XBOT_LOG_FILE") or os.environ.get("XBOTV2_LOG_FILE")
+    env = os.environ.get("XBOT_LOG_FILE")
     if env:
         path = Path(env).expanduser()
     else:

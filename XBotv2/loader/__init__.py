@@ -182,7 +182,7 @@ class PluginTree:
                 entry = PluginEntry(
                     id=entry.id,
                     name=entry.name,
-                    config={**existing.config, **entry.config},
+                    config=_merge_config(existing.config, entry.config),
                     disabled=entry.disabled,
                     inject=entry.inject if entry.inject is not None else existing.inject,
                     isolate=entry.isolate if entry.isolate is not None else existing.isolate,
@@ -195,6 +195,18 @@ class PluginTree:
         return PluginTree(
             [entry for entry in self.entries if entry.id not in entry_ids]
         )
+
+
+def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        merged[key] = (
+            _merge_config(current, value)
+            if isinstance(current, dict) and isinstance(value, dict)
+            else value
+        )
+    return merged
 
 
 def resolve_plugin_from_module(module: Any, name: str) -> Any:
@@ -465,7 +477,12 @@ class LoaderComponent:
         self._tree = tree
 
     def apply(self, ctx: Context, config: Any = None) -> None:
-        ctx.set("loader", Loader(ctx, tree=self._tree))
+        loader = Loader(ctx, tree=self._tree)
+        ctx.set("loader", loader)
+        # XCore owns application teardown. Keep the loader's bookkeeping in
+        # sync when its provider fiber is stopped; each child handle remains
+        # idempotently disposable even if XCore already stopped it first.
+        ctx.dispose(loader.unload_all)
 
 
 class _MountAdapter:

@@ -14,11 +14,10 @@ from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
 from XBotv2.config.models import RuntimeConfig
 from XBotv2.llm.mock import MockLLM
-from XBotv2.inbox.inbox import InboxMessage
 from XBotv2.persistence.store import CoreStateStore
 from plugin_harness import mount_ctx, mount_plugin
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
@@ -38,16 +37,14 @@ class SetupContext:
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
-                sandbox_mode=entry.sandbox_mode,
             )
         for command in self.ctx.commands.all():
             self.commands[command.name] = command
 
 
 class _EntryOptions:
-    def __init__(self, *, namespace, sandbox_mode) -> None:
+    def __init__(self, *, namespace) -> None:
         self.namespace = namespace
-        self.sandbox_mode = sandbox_mode
 
 
 def make_plugin(state_store) -> GoalPlugin:
@@ -70,9 +67,6 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
     assert setup.tools["update_goal"].parameters["properties"]["status"]["enum"] == [
         "complete", "blocked",
     ]
-    assert all(
-        setup.options[name].sandbox_mode == "host" for name in setup.tools
-    )
     assert list(setup.commands) == ["goal"]
     assert setup.commands["goal"].kind == "server"
 
@@ -82,10 +76,10 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
     queued = []
 
-    async def enqueue():
+    async def enqueue(*_args, **_kwargs):
         queued.append(True)
 
-    ctx = SimpleNamespace(request_continuation=enqueue)
+    ctx = SimpleNamespace(send_input=enqueue)
 
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
@@ -131,7 +125,7 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
     long_summary = await plugin.update_goal("complete", "x" * 2_001)
     bad_budget = await plugin.create_goal("another", token_budget=0)
     bad_command_budget = await plugin._goal_command(
-        SimpleNamespace(request_continuation=None),
+        SimpleNamespace(send_input=None),
         "--token-budget nope another objective",
     )
 
@@ -151,13 +145,13 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     await plugin.create_goal("iterate until complete")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
     turn_end = EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        request_continuation=request_continuation,
+        send_input=send_input,
     )
     await plugin._on_turn_end(turn_end)
     await plugin._on_turn_end(turn_end)
@@ -181,13 +175,13 @@ async def test_runtime_notification_does_not_drive_active_goal(state_store):
     await plugin.create_goal("iterate until complete")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
     await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        request_continuation=request_continuation,
+        send_input=send_input,
     ))
 
     assert len(requests) == 1
@@ -210,13 +204,13 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
     await plugin.create_goal("pause on escape")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
     await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="client_interrupt",
-        request_continuation=request_continuation,
+        send_input=send_input,
     ))
 
     assert requests == []
@@ -369,7 +363,6 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
     registry = ToolRegistry()
     registry.register(
         setup.tools["update_goal"],
-        sandbox_mode="host",
         namespace="plugin:goal",
     )
     llm = MockLLM(responses=[

@@ -71,6 +71,26 @@ class ToolCallPart:
 ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart
 
 
+def merge_model_chunk(
+    aggregate: "ModelResponse | None",
+    chunk: "ModelChunk",
+) -> "ModelResponse":
+    """Merge one provider-neutral stream chunk into a response value."""
+    if not isinstance(aggregate, ModelResponse):
+        aggregate = ModelResponse()
+    aggregate.reasoning += chunk.reasoning
+    aggregate.content += chunk.content
+    if chunk.tool_calls:
+        aggregate.tool_calls = chunk.tool_calls
+    if chunk.response_metadata:
+        aggregate.response_metadata.update(chunk.response_metadata)
+    if chunk.usage_metadata:
+        aggregate.usage_metadata.update(chunk.usage_metadata)
+    if chunk.additional_kwargs:
+        aggregate.additional_kwargs.update(chunk.additional_kwargs)
+    return aggregate
+
+
 def part_from_dict(value: dict[str, Any]) -> ContentPart:
     part_type = value.get("type")
     if part_type == "text":

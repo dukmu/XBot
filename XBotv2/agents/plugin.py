@@ -1,8 +1,8 @@
-"""Agent definition loading and model-facing subagent job XBotv2.tools.
+"""Agent definition loading and model-facing subagent job tools.
 
 Subagents run as SUBAGENT jobs in the shared JobRegistry. This plugin only
-implements the adapter: a JobRunner that spawns a child session through the
-core AgentRuntime, and the typed model-facing XBotv2.tools. It never owns lifecycle
+implements the adapter that requests a child session from the session service,
+and the typed model-facing tools. It never owns lifecycle
 state; waiting, cancellation, output storage, and listing live in the registry.
 """
 
@@ -21,15 +21,12 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
-from XBotv2.jobs import (
+from XBotv2.core.jobs import (
     Job,
-    JobContext,
     JobKind,
     JobNotFound,
-    JobRegistry,
     JobRegistryClosed,
     JobResult,
-    JobRunner,
     JobStatus,
 )
 from xcore import S
@@ -68,7 +65,7 @@ class SubagentRunner:
         self.agent = agent
         self.prompt = prompt
 
-    async def run(self, job: Job, ctx: JobContext) -> JobResult:
+    async def run(self, job: Job, ctx: Any) -> JobResult:
         session = await self.session.spawn_subagent(
             self.agent,
             self.prompt,
@@ -96,8 +93,8 @@ class SubagentRunner:
 
 
 class AgentsPlugin:
-    inject = ['session', 'agents', 'jobs']
-    """Register workspace Agent definitions and subagent job XBotv2.tools."""
+    inject = ["session", "agents", "jobs", "tools", "prompts"]
+    """Register workspace Agent definitions and subagent job tools."""
 
     name = "agents"
     Config = S.object({
@@ -132,11 +129,27 @@ class AgentsPlugin:
         })
         for definition in definitions.values():
             ctx.agents.register(definition)
+        visible_subagents = [
+            definition
+            for definition in definitions.values()
+            if definition.mode in {"subagent", "all"} and not definition.hidden
+        ]
+        if visible_subagents:
+            lines = ["Available subagents for the spawn_subagent tool:"]
+            lines.extend(
+                f"- {definition.name}: {definition.description}"
+                for definition in visible_subagents
+            )
+            ctx.prompts.add(
+                "context_suffix",
+                "\n".join(lines),
+                source="available_subagents",
+            )
         if ctx.session is None or ctx.jobs is None:
             return
 
         session = ctx.session
-        registry: JobRegistry = ctx.jobs
+        registry = ctx.jobs
 
         async def spawn_subagent(
             agent: str,
@@ -309,7 +322,6 @@ class AgentsPlugin:
 
         ctx.tools.register(
             Tool.from_function(spawn_subagent, name="spawn_subagent"),
-            sandbox_mode="host",
             timeout_seconds=self._timeout_seconds,
         )
         for function in (
@@ -320,7 +332,6 @@ class AgentsPlugin:
         ):
             ctx.tools.register(
                 Tool.from_function(function),
-                sandbox_mode="host",
             )
 
 

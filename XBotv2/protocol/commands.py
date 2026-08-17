@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.core.commands import Command
-from XBotv2.agentloop.session import SessionRuntime
 
 
 def list_commands(*, extra: tuple[Command, ...] = ()) -> list[dict[str, Any]]:
@@ -14,7 +13,7 @@ def list_commands(*, extra: tuple[Command, ...] = ()) -> list[dict[str, Any]]:
 
 
 async def execute_command(
-    ctx: SessionRuntime,
+    ctx: Any,
     command: str,
     args: list[str],
     *,
@@ -34,7 +33,7 @@ async def execute_command(
             "Prompt expansions must be submitted through the message endpoint.",
             status="error",
         )
-    loader = getattr(ctx.engine, "plugin_loader", None)
+    loader = ctx.services.get("loader")
     extension = loader.get_command(command) if loader is not None else None
     if extension is None or extension.kind != "server":
         return _result(command, f"Unknown server command: /{command}", status="error")

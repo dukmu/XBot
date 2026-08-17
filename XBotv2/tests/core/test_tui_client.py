@@ -731,7 +731,7 @@ def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
     from XBotv2.tui.trace import trace_event
 
     trace_path = tmp_path / "tui-trace.jsonl"
-    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
+    monkeypatch.setenv("XBOT_TUI_TRACE", str(trace_path))
 
     trace_event("tui.submit", {"text": "当前磁盘用了多少", "repr": repr("当前磁盘用了多少")})
 
@@ -751,7 +751,7 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
     from XBotv2.tui.transport_http import HttpTransport
 
     trace_path = tmp_path / "http-trace.jsonl"
-    monkeypatch.setenv("XBOTV2_TUI_TRACE", str(trace_path))
+    monkeypatch.setenv("XBOT_TUI_TRACE", str(trace_path))
 
     class FakeStream:
         def __init__(self, lines):
@@ -3213,4 +3213,3 @@ async def test_replay_window_scrolls_all_the_way_to_the_beginning():
             guard += 1
             assert guard < 50, "scroll-down never re-mounted the tail"
         assert app._window_end == 300
-

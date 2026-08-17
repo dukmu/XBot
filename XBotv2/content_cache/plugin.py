@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.core.events import Events
 from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
@@ -51,10 +52,23 @@ class ContentCacheService:
 class ContentCacheComponent:
     """Register the content cache service as ``ctx.content_cache``."""
 
+    inject = ["state_store"]
     name = "xbot.content_cache"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        ctx.set("content_cache", ContentCacheService())
+        service = ContentCacheService()
+        ctx.set("content_cache", service)
+
+        async def bind_model_request(event: Any) -> None:
+            request = event.model_request
+            if request is None or "messages" not in request:
+                return
+            request["messages"] = service.bound_context_messages(
+                request["messages"],
+                ctx.state_store,
+            )
+
+        ctx.on(Events.MODEL_REQUEST_READY, bind_model_request)
 
 
 plugin = ContentCacheComponent()

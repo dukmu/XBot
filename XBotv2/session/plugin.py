@@ -18,7 +18,7 @@ from XBotv2.session.session import Session
 
 
 class SessionComponent:
-    inject = ['state_store']
+    inject = ['state_store', 'agents', 'child_applications']
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
@@ -30,8 +30,6 @@ class SessionComponent:
         thread_id = config["thread_id"]
         workspace_root = config["workspace_root"]
         session_paths = config["session_paths"]
-        parent_thread_id = config.get("parent_thread_id", "")
-        engine_factory = config["engine_factory"]
 
         state_store = ctx.state_store
         data_root = state_store.paths.runtime.data_dir
@@ -39,7 +37,7 @@ class SessionComponent:
             paths, workspace_root, state_store.paths
         )
         session = Session(
-            ctx,
+            agents=ctx.agents,
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=str(workspace_root),
@@ -47,8 +45,7 @@ class SessionComponent:
             variables=variables,
             state_store=state_store,
             session_paths=session_paths,
-            parent_thread_id=parent_thread_id,
-            engine_factory=engine_factory,
+            child_applications=ctx.child_applications,
         )
 
         ctx.set("session", session)

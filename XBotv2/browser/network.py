@@ -50,7 +50,7 @@ class UrlPolicy:
 
 
 class WebAccess:
-    """Own the HTTP client used by read-only Web XBotv2.tools."""
+    """Own the HTTP client used by read-only Web tools."""
 
     def __init__(self, options: NetworkOptions) -> None:
         self.options = options

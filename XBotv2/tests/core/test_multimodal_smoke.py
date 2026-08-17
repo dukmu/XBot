@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.bootstrap import bootstrap
+from XBotv2.application import start_application
 from XBotv2.coretools.content import content_read
 from XBotv2.coretools.filesystem import read_file
 from XBotv2.llm.anthropic import anthropic_request_messages
@@ -138,15 +138,15 @@ async def test_engine_smoke_persists_user_image_attachment(
         input_modalities=["text", "image"],
         media_root=temp_data_dir,
     )
-    engine = await bootstrap(
+    engine = await start_application(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="multimodal-smoke",
         thread_id="agent",
         plugin_dirs=[],
         llm_override=llm,
     )
-    engine.sandbox_policy.workspace_root = temp_workspace
-    image = engine.state_store.store_image(PNG_BASE64, "image/png")
+    engine.plugin_ctx.sandbox.workspace_root = temp_workspace
+    image = engine.plugin_ctx.state_store.store_image(PNG_BASE64, "image/png")
 
     events = [
         event
@@ -163,7 +163,7 @@ async def test_engine_smoke_persists_user_image_attachment(
         if message.role == "user"
     )
     assert provider_user.images == [image]
-    assert (engine.state_store.root / image.path).is_file()
+    assert (engine.plugin_ctx.state_store.root / image.path).is_file()
 
-    persisted = engine.state_store.messages_path.read_text(encoding="utf-8")
+    persisted = engine.plugin_ctx.state_store.messages_path.read_text(encoding="utf-8")
     assert '"type": "image"' in persisted

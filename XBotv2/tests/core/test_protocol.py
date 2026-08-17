@@ -4,7 +4,7 @@ import yaml
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.models import ProviderConfig
+from XBotv2.llm.config import ProviderConfig
 
 
 class TestProviderConfig:
@@ -86,11 +86,11 @@ class TestProviderConfigLoader:
 
     def test_selects_named_provider_section(self, tmp_path, monkeypatch):
         """parse_provider_config selects the correct section."""
-        from XBotv2.config.loader import parse_provider_config
+        from XBotv2.llm.config import parse_provider_config
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
-        deepseek = parse_provider_config("deepseek", {
+        deepseek = parse_provider_config({
             "provider": "deepseek",
             "model": "deepseek-chat",
             "base_url": "https://XBotv2.core.deepseek.com/v1",
@@ -101,7 +101,7 @@ class TestProviderConfigLoader:
         assert deepseek.base_url == "https://XBotv2.core.deepseek.com/v1"
         assert deepseek.api_key == "sk-test-123"  # env var expanded
 
-        openai = parse_provider_config("openai", {
+        openai = parse_provider_config({
             "provider": "openai",
             "model": "gpt-4o",
             "api_key": "sk-openai-xxx",
@@ -111,9 +111,9 @@ class TestProviderConfigLoader:
         assert openai.api_key == "sk-openai-xxx"
 
     def test_preserves_reasoning_configuration(self):
-        from XBotv2.config.loader import parse_provider_config
+        from XBotv2.llm.config import parse_provider_config
 
-        config = parse_provider_config("minimax", {
+        config = parse_provider_config({
             "provider": "anthropic",
             "model": "MiniMax-M3",
             "api_key": "test-key",
@@ -127,7 +127,7 @@ class TestProviderConfigLoader:
         assert config.model_mode == "high"
 
     def test_model_mode_is_empty_without_explicit_provider_setting(self):
-        from XBotv2.config.models import ProviderConfig
+        from XBotv2.llm.config import ProviderConfig
 
         assert ProviderConfig().model_mode == ""
         assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
@@ -161,20 +161,20 @@ class TestProviderConfigLoader:
         ):
             service.provider_config("nonexistent_provider")
     def test_missing_env_var_is_rejected(self):
-        from XBotv2.config.loader import parse_provider_config
+        from XBotv2.llm.config import parse_provider_config
 
         with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
-            parse_provider_config("test", {
+            parse_provider_config({
                 "provider": "openai",
                 "model": "gpt-4",
                 "api_key": "${NONEXISTENT_VAR}",
             })
 
     def test_api_key_env_resolves_from_environment(self, monkeypatch):
-        from XBotv2.config.loader import parse_provider_config
+        from XBotv2.llm.config import parse_provider_config
 
         monkeypatch.setenv("PROVIDER_TEST_KEY", "sk-resolved")
-        config = parse_provider_config("minimax", {
+        config = parse_provider_config({
             "provider": "anthropic",
             "model": "m3",
             "api_key_env": "PROVIDER_TEST_KEY",
@@ -182,9 +182,9 @@ class TestProviderConfigLoader:
         })
         assert config.api_key == "sk-resolved"
 
-    def test_resolve_llm_config_reads_merged_tree(self, tmp_path):
-        """resolve_llm_config merges xcore.yaml with the global plugins.yaml overlay."""
-        from XBotv2.config.loader import resolve_llm_config
+    def test_server_profile_reads_merged_llm_entry(self, tmp_path):
+        """The server application consumes the overlaid LLM profile entry."""
+        from XBotv2.config.tree import load_server_tree
 
         config_dir = tmp_path / "config"
         config_dir.mkdir(parents=True)
@@ -200,6 +200,12 @@ class TestProviderConfigLoader:
             encoding="utf-8",
         )
 
-        resolved = resolve_llm_config(RuntimePaths.from_data_dir(tmp_path))
-        assert resolved["default"] == "custom"
-        assert resolved["providers"]["custom"]["model"] == "custom-model"
+        tree = load_server_tree(
+            paths=RuntimePaths.from_data_dir(tmp_path),
+            provider_name="default",
+            workspace_root=str(tmp_path),
+            no_plugins=False,
+        )
+        llm = next(entry for entry in tree.entries if entry.id == "llm")
+        assert llm.config["default"] == "custom"
+        assert llm.config["providers"]["custom"]["model"] == "custom-model"

@@ -13,7 +13,7 @@ import httpx
 
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
-from XBotv2.sandbox.filesystem_ops import execute
+from XBotv2.filesystem.operations import execute
 
 
 MAX_CONTENT_BYTES = 25 * 1024 * 1024

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.jobs.model import JobKind
+from XBotv2.core.jobs import JobKind
 from XBotv2.jobs.registry import JobRegistry
+from XBotv2.core.events import EventContext, Events
 
 
 class JobsComponent:
@@ -22,12 +23,21 @@ class JobsComponent:
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
-        ctx.set(
-            "jobs",
-            JobRegistry(
-                limits={JobKind.SUBAGENT: max_concurrent},
-            ),
+        registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
+        ctx.set("jobs", registry)
+
+        async def publish(event_name: str, snapshot: dict[str, Any]) -> None:
+            await ctx.emit(event_name, EventContext(event=snapshot))
+
+        registry.on_update = lambda snapshot: publish(Events.JOB_UPDATED, snapshot)
+        registry.on_complete = lambda snapshot: publish(
+            Events.JOB_COMPLETED, snapshot
         )
+
+        async def close(_event: Any) -> None:
+            await registry.shutdown()
+
+        ctx.on(Events.SESSION_CLOSE, close)
 
 
 plugin = JobsComponent()

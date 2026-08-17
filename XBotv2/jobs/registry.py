@@ -14,7 +14,7 @@ import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal
 
-from XBotv2.jobs.model import (
+from XBotv2.core.jobs import (
     TERMINAL_STATES,
     CancelResult,
     Job,

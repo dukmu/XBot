@@ -16,7 +16,7 @@ from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
 import xcore
 from XBotv2.llm.mock import MockLLM
-from XBotv2.tools.registry import ToolRegistry
+from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import Tool, ToolCall
@@ -480,7 +480,7 @@ class TestEnginePersistence:
             {"content": "Done after tool."},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, store, temp_workspace)
         await engine.start_session()

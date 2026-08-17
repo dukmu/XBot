@@ -12,10 +12,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from XBotv2.jobs.output import OutputStore
+from typing import Any
 
 JobId = str
 
@@ -66,7 +63,7 @@ class JobResult:
     """
 
     summary: str | None = None
-    output_store: "OutputStore | None" = None
+    output_store: Any = None
     data: dict[str, Any] = field(default_factory=dict)
 
 

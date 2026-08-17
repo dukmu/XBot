@@ -4,10 +4,10 @@
 # service-availability driven）：每个插件声明 inject 依赖，XCore 在所需服务
 # 可用时自动激活。
 #
-# 动态会话值以 ${name} 引用（${env:VAR} 读环境变量），由组合根（bootstrap）
+# 动态会话值以 ${name} 引用（${env:VAR} 读环境变量），由 application 启动器
 # 在装载时提供：paths/session_paths/session_id/thread_id/workspace_root/
-# provider_name/engine_factory/parent_thread_id/parent_permission_system/
-# interactive/selected_agent/llm_override/agent_definition/is_subagent/disabled。
+# provider_name/parent_permission_system/interactive/disabled。Agent 选择、
+# model override、父子关系等 launch facts 由 application 直接持有，不进入插件配置。
 # 用户全局覆盖：~/.xbot/config/plugins.yaml；工作区覆盖：.xbot/plugins.yaml
 # （按 id 覆盖条目 config / disabled，或追加新插件）。
 
@@ -15,6 +15,7 @@
   name: config
   config:
     paths: ${paths}
+    session_id: ${session_id}
     user:
       user_id: default-user
       user_name: User
@@ -29,6 +30,12 @@
     workspace_root: ${workspace_root}
     provider: ${provider_name}
 
+- id: usage
+  name: usage
+
+- id: agents-service
+  name: agents.service_component
+
 - id: session
   name: session
   config:
@@ -37,8 +44,6 @@
     thread_id: ${thread_id}
     workspace_root: ${workspace_root}
     session_paths: ${session_paths}
-    parent_thread_id: ${parent_thread_id}
-    engine_factory: ${engine_factory}
 
 - id: jobs
   name: jobs
@@ -97,7 +102,10 @@
         thinking_enabled: true
 
 - id: tools
-  name: tools
+  name: agentloop.tool_service
+
+- id: agentloop
+  name: agentloop.factory
 
 - id: commands
   name: commands
@@ -114,18 +122,24 @@
     sandbox:
       enabled: true
       network: true
-      external_read: ask
-      external_write: ask
+      external_read: readonly
+      external_write: deny
       workspace_read: allow
       workspace_write: allow
-      resources: []
+    resources: []
+
+- id: permission_request
+  name: permission_request
 
 - id: permissions
   name: permissions
   config:
+    interactive: ${interactive}
     parent_permission_system: ${parent_permission_system}
     permissions:
       allow:
+        - tool: (?:create_goal|get_goal|update_goal)
+        - tool: compact
         - tool: (?:list_shells|wait_shell|read_shell|cancel_shell)
         - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
         - tool: (?:send_message|ask_user|request_permission)
@@ -143,6 +157,9 @@
         - tool: (?:browser_click|browser_fill|browser_press|browser_select)
         - tool: edit
         - tool: path
+        - tool: shell
+          params:
+            sandbox_permissions: require_escalated
       deny:
         - tool: .*
           params:
@@ -197,26 +214,8 @@
 
 - id: interactions
   name: interactions
-
-- id: inbox
-  name: inbox
+  config:
+    interactive: ${interactive}
 
 - id: content_cache
   name: content_cache
-
-- id: agentloop
-  name: agentloop
-  config:
-    session_id: ${session_id}
-    thread_id: ${thread_id}
-    workspace_root: ${workspace_root}
-    provider_name: ${provider_name}
-    agent_definition: ${agent_definition}
-    llm_override: ${llm_override}
-    selected_agent: ${selected_agent}
-    parent_permission_system: ${parent_permission_system}
-    parent_thread_id: ${parent_thread_id}
-    interactive: ${interactive}
-    is_subagent: ${is_subagent}
-    instructions: ""
-    memory: ""

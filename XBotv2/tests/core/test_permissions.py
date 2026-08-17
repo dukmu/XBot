@@ -14,15 +14,13 @@ from XBotv2.permissions.system import (
     PermissionSystem,
 )
 from XBotv2.core import ToolCall
-from XBotv2.config.policy import (
-    _permission_rule_for_tool_call,
-    persist_permission_decision,
-)
+from XBotv2.config.policy import persist_permission_rule
+from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-from XBotv2.session.operations import update_session_policy
-from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, resolve_operation
+from XBotv2.application.operations import update_session_policy
+from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
@@ -92,7 +90,7 @@ class TestPermissionSystemBasics:
         assert denied.check("edit", arguments) == "ask"
 
     def test_filesystem_write_session_rule_records_only_path(self):
-        rule = _permission_rule_for_tool_call(ToolCall(
+        rule = permission_rule_for_tool_call(ToolCall(
             "call-1",
             "edit",
             {"path": "notes.md", "mode": "write", "content": "large private document"},
@@ -113,7 +111,7 @@ class TestPermissionSystemBasics:
         ) == "ask"
 
     def test_filesystem_move_rule_records_both_paths_and_overwrite(self):
-        rule = _permission_rule_for_tool_call(ToolCall(
+        rule = permission_rule_for_tool_call(ToolCall(
             "call-1",
             "path",
             {"operation": "move", "source": "a.txt", "destination": "b.txt", "overwrite": True},
@@ -130,17 +128,12 @@ class TestPermissionSystemBasics:
 
     def test_requested_session_rule_is_persisted(self, tmp_path):
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
-        persist_permission_decision(
+        persist_permission_rule(
             paths=paths,
             session_id="permission-rule",
-            client_event={
-                "data": {
-                    "source": "request_permission",
-                    "permission": {
-                        "tool": "mcp__github__search",
-                        "params": {"query": r"issues/.*"},
-                    },
-                },
+            rule={
+                "tool": "mcp__github__search",
+                "params": {"query": r"issues/.*"},
             },
             decision="allow",
             scope="session",
@@ -156,78 +149,17 @@ class TestPermissionSystemBasics:
             "params": {"query": r"issues/.*"},
         }]
 
-    def test_sandbox_session_approval_persists_and_applies_path(self, tmp_path):
+    def test_shell_escalation_session_approval_persists_param_rule(self, tmp_path):
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
-        workspace = tmp_path / "workspace"
-        outside = tmp_path / "outside"
-        workspace.mkdir()
-        outside.mkdir()
-        sandbox = SandboxPolicy(
-            {},
-            data_root=paths.data_dir,
-            workspace_root=workspace,
-        )
-        engine = SimpleNamespace(
-            workspace_root=workspace,
-            sandbox_policy=sandbox,
-        )
-
-        persist_permission_decision(
-            paths=paths,
-            session_id="sandbox-rule",
-            client_event={"data": {
-                "source": "sandbox",
-                "tool_call": {
-                    "id": "call-1",
-                    "name": "edit",
-                    "args": {"path": str(outside / "report.txt")},
-                },
-            }},
-            decision="allow",
-            scope="session",
-            engine=engine,
-            sandbox_rules=[{
-                "path": str(outside),
-                "access": "readwrite",
-            }],
-        )
-
-        policy = yaml.safe_load(
-            paths.session("sandbox-rule").config_file.read_text(encoding="utf-8")
-        )
-        assert policy["sandbox"] == {
-            "enabled": True,
-            "resources": [{"path": str(outside), "access": "readwrite"}],
-        }
-        assert sandbox.check_tool_access(
-            "edit", {"path": str(outside / "report.txt")}
-        ) == []
-
-    def test_shell_escalation_approval_updates_external_write_policy(
-        self,
-        tmp_path,
-    ):
-        paths = RuntimePaths.from_data_dir(tmp_path / "data")
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        sandbox = SandboxPolicy(
-            {"external_write": "ask"},
-            data_root=paths.data_dir,
-            workspace_root=workspace,
-        )
-        engine = SimpleNamespace(sandbox_policy=sandbox)
-
-        persist_permission_decision(
+        persist_permission_rule(
             paths=paths,
             session_id="shell-escalation",
-            client_event={"data": {"source": "sandbox"}},
+            rule={
+                "tool": "shell",
+                "params": {"sandbox_permissions": "require_escalated"},
+            },
             decision="allow",
             scope="session",
-            engine=engine,
-            sandbox_rules=[{
-                "setting": "external_write",
-                "access": "readwrite",
-            }],
         )
 
         policy = yaml.safe_load(
@@ -235,33 +167,62 @@ class TestPermissionSystemBasics:
                 encoding="utf-8"
             )
         )
-        assert policy["sandbox"] == {
-            "enabled": True,
-            "external_write": "allow",
-        }
-        assert sandbox.external_write == "allow"
+        assert policy["permissions"]["allow"] == [{
+            "tool": "shell",
+            "params": {"sandbox_permissions": "require_escalated"},
+        }]
+        permissions = PermissionSystem({"allow": [{
+            "tool": "shell",
+            "params": {"sandbox_permissions": "require_escalated"},
+        }]})
+        assert permissions.explicit_allow(
+            "shell",
+            {
+                "command": "another command",
+                "sandbox_permissions": "require_escalated",
+                "justification": "A different reason.",
+            },
+            constrain_param="sandbox_permissions",
+        ) is True
 
 
 @pytest.mark.asyncio
 async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
+    from XBotv2.permissions.plugin import PermissionsService
+
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     paths.session("s").root.mkdir(parents=True)
-    parent_permissions = PermissionSystem({"deny": [{"tool": "shell"}]})
-    child_permissions = PermissionSystem({"allow": [{"tool": "shell"}]})
-    intersection = PermissionIntersection(parent_permissions, child_permissions)
+    variables = RuntimeVariables()
+    parent_permissions = PermissionsService(
+        {"deny": [{"tool": "shell"}]}, variables
+    )
+    child_permissions = PermissionsService(
+        {"allow": [{"tool": "shell"}]},
+        variables,
+        parent=parent_permissions,
+    )
+
+    class Settings:
+        def patch_session_policy(self, **_kwargs):
+            return {"permissions": {"allow": [{"tool": "shell"}]}}
+
+        def load_runtime_config(self, *_args):
+            return SimpleNamespace(
+                permissions={"allow": [{"tool": "shell"}]},
+                sandbox={},
+            )
+
+    settings = Settings()
 
     def runtime(thread_id, permissions, base_permissions):
-        sandbox = SandboxPolicy(
-            {},
-            data_root=paths.data_dir,
-            workspace_root=tmp_path,
-            session_root=paths.session("s").thread(thread_id).root,
-        )
-        engine = SimpleNamespace(
-            job_registry=None,
-            permission_system=permissions,
-            sandbox_policy=sandbox,
-            config=SimpleNamespace(permissions={}, sandbox={}),
+        services = SimpleNamespace(
+            get=lambda _name: None,
+            settings=settings,
+            permissions=permissions,
+            sandbox=SimpleNamespace(replace_config=lambda _config: None),
+            agents=SimpleNamespace(
+                apply_definition=lambda _config, _definition: None
+            ),
             state_store=SimpleNamespace(
                 read_thread_metadata=lambda: {
                     "agent_definition": {
@@ -277,7 +238,7 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
             thread_id=thread_id,
             paths=paths,
             workspace_root=str(tmp_path),
-            engine=engine,
+            services=services,
             turn_lock=asyncio.Lock(),
         )
 
@@ -285,7 +246,7 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
         "agent", parent_permissions, {"deny": [{"tool": "shell"}]}
     )
     child = runtime(
-        "child", intersection, {"allow": [{"tool": "shell"}]}
+        "child", child_permissions, {"allow": [{"tool": "shell"}]}
     )
 
     await update_session_policy(
@@ -295,7 +256,7 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
         permissions={"shell": "allow"},
     )
 
-    assert intersection.check("shell") == "deny"
+    assert child_permissions.check("shell") == "deny"
 
 
 class TestConfigLoading:
@@ -423,7 +384,7 @@ class TestConfigLoading:
         for tool_name in ("shell", "update_todos"):
             assert permissions.check(tool_name, {}) == "allow"
 
-        from XBotv2.sandbox.filesystem_ops import resolve_operation
+        from XBotv2.filesystem.operations import resolve_operation
         for tool in FILESYSTEM_TOOLS:
             operation = resolve_operation(tool.name, _shipped_args(tool.name))
             fields = PATH_ACCESS[operation]
