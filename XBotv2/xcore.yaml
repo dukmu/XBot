@@ -25,9 +25,6 @@
 - id: persistence
   name: persistence
   config:
-    session_paths: ${session_paths}
-    thread_id: ${thread_id}
-    workspace_root: ${workspace_root}
     provider: ${provider_name}
 
 - id: usage

@@ -590,14 +590,20 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
 def _make_session(tmp_path, *, registry, factory):
     import types
 
+    agents = types.SimpleNamespace(
+        definition=registry.get,
+        definitions=registry.definitions,
+    )
     return Session(
-        agents=types.SimpleNamespace(registry=registry),
+        agents=agents,
         session_id="s",
         thread_id="agent",
         workspace_root=str(tmp_path),
         paths=None,
         variables=None,
-        state_store=None,
+        state=types.SimpleNamespace(
+            session=types.SimpleNamespace(provider="default")
+        ),
         session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
         child_applications=factory,
     )

@@ -34,7 +34,7 @@ class Session:
         workspace_root: str,
         paths: Any,
         variables: Any,
-        state_store: Any,
+        state: Any,
         session_paths: SessionPaths,
         child_applications: Any,
     ) -> None:
@@ -44,7 +44,7 @@ class Session:
         self.workspace_root = workspace_root
         self.paths = paths
         self.variables = variables
-        self.state_store = state_store
+        self.state = state
         self.session_paths = session_paths
         self.child_applications = child_applications
         self.subagents: list[AgentSession] = []
@@ -53,7 +53,7 @@ class Session:
 
     @property
     def provider(self) -> str:
-        return str(getattr(self.state_store, "provider", "") or "")
+        return self.state.session.provider
 
     # -- subagent instances -------------------------------------------------
 
@@ -66,8 +66,7 @@ class Session:
     ) -> AgentSession:
         """Spawn one subagent instance on its own thread (recursive)."""
         del parent_job_id
-        registry = self.agents.registry
-        definition = registry.get(agent)
+        definition = self.agents.definition(agent)
         if definition is None or definition.mode == "primary":
             raise SubagentAgentError(f"Unknown subagent: {agent}")
         if not prompt.strip():
@@ -78,7 +77,7 @@ class Session:
         return session
 
     def definitions(self) -> tuple[Any, ...]:
-        return self.agents.registry.definitions()
+        return self.agents.definitions()
 
     def _new_thread_id(self, agent: str) -> str:
         while True:

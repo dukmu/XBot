@@ -24,6 +24,8 @@ APPLICATION_PLUGIN = PACKAGE / "application" / "plugin.py"
 APPLICATION_CONFIG = PACKAGE / "application_config"
 SESSION_PLUGIN = PACKAGE / "session" / "plugin.py"
 SESSION_ENTITY = PACKAGE / "session" / "session.py"
+PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
+USAGE_PLUGIN = PACKAGE / "usage" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
 APPLICATION_OPERATIONS = PACKAGE / "application" / "operations.py"
@@ -543,6 +545,40 @@ def check_application_startup() -> list[Violation]:
                     "application-instance-factory",
                     "session must request child applications, not construct Engines",
                 ))
+    session_source = SESSION_PLUGIN.read_text(encoding="utf-8")
+    if "LoopState(" not in session_source:
+        violations.append(Violation(
+            SESSION_PLUGIN,
+            1,
+            "session-state-ownership",
+            "session must create the core LoopState",
+        ))
+    for node in ast.walk(_tree(PERSISTENCE_PLUGIN)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "LoopState"
+        ):
+            violations.append(Violation(
+                PERSISTENCE_PLUGIN,
+                node.lineno,
+                "persistence-state-ownership",
+                "persistence may hydrate LoopState but must not construct it",
+            ))
+    for node in ast.walk(_tree(USAGE_PLUGIN)):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "state_store"
+        ) or (
+            isinstance(node, ast.Constant)
+            and node.value == "state_store"
+        ):
+            violations.append(Violation(
+                USAGE_PLUGIN,
+                node.lineno,
+                "usage-persistence-coupling",
+                "usage owns its snapshot and must not depend on state_store",
+            ))
     for node in ast.walk(_tree(SESSION_ENTITY)):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if (

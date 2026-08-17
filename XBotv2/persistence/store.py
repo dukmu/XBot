@@ -134,13 +134,17 @@ class CoreStateStore:
     @classmethod
     def create(
         cls,
-        paths: SessionPaths,
+        paths: SessionPaths | ThreadPaths,
         *,
         thread_id: str,
         workspace_root: str,
         provider: str,
     ) -> "CoreStateStore":
-        thread_paths = _thread_paths(paths, thread_id)
+        thread_paths = (
+            _thread_paths(paths, thread_id)
+            if isinstance(paths, SessionPaths)
+            else paths
+        )
         thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
         thread_paths.plugin_states_dir.mkdir(exist_ok=True)
         thread_paths.artifacts_dir.mkdir(exist_ok=True)

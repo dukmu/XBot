@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from XBotv2.core.events import EventContext, Events
+from XBotv2.filesystem.atomic import write_text_atomic
 
 
 _FIELDS = (
@@ -26,9 +30,10 @@ def _empty() -> dict[str, int]:
 class UsageService:
     """Own cumulative usage and its plugin-local persisted state."""
 
-    def __init__(self, state_store: Any, messages: list[Any]) -> None:
-        self._state_store = state_store
-        stored = state_store.get_plugin_state("usage")
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._has_snapshot = path.exists()
+        stored = self._read()
         if stored:
             self._usage = {
                 key: int(stored.get(key) or 0)
@@ -36,9 +41,15 @@ class UsageService:
             }
         else:
             self._usage = _empty()
-            for message in messages:
-                self.add(getattr(message, "usage_metadata", None), persist=False)
-            self._persist()
+
+    def initialize(self, messages: list[Any]) -> None:
+        """Rebuild a missing snapshot after optional state hydration settles."""
+        if self._has_snapshot:
+            return
+        for message in messages:
+            self.add(getattr(message, "usage_metadata", None), persist=False)
+        self._persist()
+        self._has_snapshot = True
 
     def snapshot(self) -> dict[str, int]:
         return dict(self._usage)
@@ -72,22 +83,41 @@ class UsageService:
         return True
 
     def _persist(self) -> None:
-        self._state_store.set_plugin_state("usage", self._usage)
+        write_text_atomic(
+            self._path,
+            yaml.safe_dump(self._usage, allow_unicode=True, sort_keys=False),
+        )
+
+    def _read(self) -> dict[str, Any]:
+        if not self._path.exists():
+            return {}
+        loaded = yaml.safe_load(self._path.read_text(encoding="utf-8"))
+        if loaded is None:
+            return {}
+        if not isinstance(loaded, dict):
+            raise ValueError("Persisted usage must be a mapping")
+        return loaded
 
 
 class UsageComponent:
-    inject = ["state_store", "loop_state"]
+    inject = ["thread_paths", "loop_state"]
     name = "xbot.usage"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        service = UsageService(ctx.state_store, ctx.loop_state.messages)
+        service = UsageService(
+            ctx.thread_paths.usage_file,
+        )
         ctx.set("usage", service)
+
+        async def initialize(event: EventContext) -> None:
+            service.initialize(ctx.loop_state.messages)
 
         async def record(event: EventContext) -> None:
             usage = getattr(event.model_response, "usage_metadata", None)
             service.add(usage)
 
         ctx.on(Events.AFTER_MODEL_RESPONSE, record)
+        ctx.on(Events.SESSION_INIT, initialize, prepend=True)
 
 
 plugin = UsageComponent()
