@@ -40,12 +40,16 @@ XBotv2/                      # 包根（__init__.py）
   main.py  client.py  web_server.py  bootstrap.py   # 应用入口 + 组合根（非插件）
   api/                       # ✗ 已删除 —— 契约并入 core/
   core/                      # 纯契约：Events/Tool/Command/AgentDefinition/BaseProvider/…（含 llm 契约）
-  agentloop/                 # agent loop 引擎插件（DSH dsh-agent-loop 对应）：engine/operations/session/
-                             #   inbox/interactions/internal_messages/content_cache/logging_config/plugin.py
-                             #   （plugin.py → ctx.engine）+ apply_agent_* 装配助手
+  agentloop/                 # agent loop 引擎插件（DSH dsh-agent-loop 对应）：engine/session/
+                             #   internal_messages/logging_config/plugin.py（plugin.py → ctx.engine）
+                             #   + apply_agent_* 装配助手
+  interactions/              # 插件：ctx.interactions（InteractionWaiter 工厂，回合内客户端交互协调）
+  inbox/                     # 插件：ctx.inbox（AgentInbox，模型可见运行时通知）
+  content_cache/             # 插件：ctx.content_cache（超大上下文外置，provider 消息绑定）
   config/                    # 插件：ctx.settings（配置解析服务）；解析函数组装期供 bootstrap
   persistence/               # 插件：ctx.state_store（会话持久化，jsonl 后端，可换）
   session/                   # 插件：ctx.session（活动会话：主 agent + subagents + 会话级 runtime）
+                             #   + operations.py（会话运行时操作：清历史/fork/切换 agent/provider/策略，模块函数）
   jobs/                      # 插件：ctx.jobs（后台任务）+ jobs 服务契约
   llm/                       # provider 实现包 + 插件：ctx.llm（LlmService provider 路由目录，
                              #   DSH dsh-llm 对齐；内置 openai/anthropic/mock 适配器注册路由）

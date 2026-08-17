@@ -195,6 +195,15 @@
   name: workspace_instructions
   disabled: ${disabled.workspace_instructions}
 
+- id: interactions
+  name: interactions
+
+- id: inbox
+  name: inbox
+
+- id: content_cache
+  name: content_cache
+
 - id: agentloop
   name: agentloop
   config:

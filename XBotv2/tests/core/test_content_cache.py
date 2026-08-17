@@ -7,7 +7,7 @@ import pytest
 
 from XBotv2.core.messages import Message, ReasoningPart
 from XBotv2.core.tools import ToolCall
-from XBotv2.agentloop.content_cache import (
+from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
     bound_context_messages,

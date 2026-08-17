@@ -37,8 +37,9 @@ flowchart TB
         SRT["SessionRuntime (core/session.py)<br/>engine · inbox · interactions · event stream"]
         ENG["Engine (`agentloop/engine.py`) ReAct loop"]
         CTX["ContextBuilder (core/context.py)"]
-        IBX["AgentInbox (core/inbox.py)"]
-        ITX["InteractionWaiter (core/interactions.py)"]
+        IBX["AgentInbox (inbox/ plugin)"]
+        ITX["InteractionWaiter (interactions/ plugin)"]
+        CCH["ContentCache (content_cache/ plugin)"]
         EVT["Events (api/events.py) dispatch on XCore ctx"]
     end
 
@@ -185,14 +186,15 @@ interpreted by the caller, `ctx.emit` for observer events). Plugins observe
 and intercept them with `ctx.on(Events.X, handler)`; the payload is an
 `EventContext`.
 
-### Input acceptance and runtime inbox (`core/inbox.py`)
+### Input acceptance and runtime inbox (`inbox/` plugin)
 
 While the agent is busy, new user input is held in the session's pending fold
 and fused into the running turn after the next ToolResult batch; a held input
 that no boundary fuses is rejected with `input_rejected` and the client
-retries. Runtime notifications are staged in the agent inbox and drained —
-all at once — into the next turn's context without starting a turn. Both
-buffers are runtime-only and destroyed on disconnect.
+retries. Runtime notifications are staged in the agent inbox (provided by the
+`inbox` plugin as `ctx.inbox`) and drained — all at once — into the next
+turn's context without starting a turn. Both buffers are runtime-only and
+destroyed on disconnect.
 
 ```mermaid
 sequenceDiagram

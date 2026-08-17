@@ -13,8 +13,7 @@ from typing import Any, AsyncIterator
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop.engine import Engine
-from XBotv2.agentloop.inbox import AgentInbox, InboxMessage
-
+from XBotv2.inbox.inbox import AgentInbox, InboxMessage
 logger = logging.getLogger("xbotv2.session")
 
 
@@ -69,6 +68,12 @@ class SessionRuntime:
     inbox: AgentInbox = field(default_factory=AgentInbox)
 
     def __post_init__(self) -> None:
+        plugin_ctx = getattr(self.engine, "plugin_ctx", None)
+        inbox_service = (
+            plugin_ctx.get("inbox") if hasattr(plugin_ctx, "get") else None
+        )
+        if inbox_service is not None:
+            self.inbox = inbox_service.new_inbox()
         self.engine.take_pending_fold = self._take_pending_fold
         self.engine.runtime_event_sink = self._publish_runtime_event
         self.engine.drain_inbox = self.inbox.drain

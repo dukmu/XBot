@@ -1257,7 +1257,7 @@ async def test_http_permission_response_preserves_scope() -> None:
     class _WaiterSpy:
         def answer(self, request_id: str, *, decision: str = "", scope: str = "once"):
             captured.update({"request_id": request_id, "decision": decision, "scope": scope})
-            from XBotv2.agentloop.interactions import InteractionResult
+            from XBotv2.interactions.interactions import InteractionResult
 
             return InteractionResult(
                 request_id=request_id,
@@ -1327,7 +1327,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 ) -> None:
     from types import SimpleNamespace
 
-    from XBotv2.agentloop.interactions import InteractionWaiter
+    from XBotv2.interactions.interactions import InteractionWaiter
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
     waiter = (

@@ -27,10 +27,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from XBotv2.config.models import RuntimeConfig, UserContext
+from XBotv2.content_cache.content_cache import bound_context_messages
 from XBotv2.tools.agents import AgentRegistry
-from XBotv2.agentloop.content_cache import bound_context_messages
 from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.agentloop.interactions import (
+from XBotv2.interactions.interactions import (
     InteractionDisconnected,
     InteractionResult,
     InteractionWaiter,
@@ -240,8 +240,22 @@ class Engine:
         self.session: SessionInfo | None = None
         self.turn_count = 0
         self.session_usage = self._empty_usage()
-        self.user_input_waiter = InteractionWaiter()
-        self.permission_waiter = InteractionWaiter()
+        interactions = (
+            plugin_ctx.get("interactions") if hasattr(plugin_ctx, "get") else None
+        )
+        self.user_input_waiter = (
+            interactions.new_waiter()
+            if interactions is not None
+            else InteractionWaiter()
+        )
+        self.permission_waiter = (
+            interactions.new_waiter()
+            if interactions is not None
+            else InteractionWaiter()
+        )
+        self.content_cache = (
+            plugin_ctx.get("content_cache") if hasattr(plugin_ctx, "get") else None
+        )
         self.client_event_sink: Any | None = None
         self.runtime_event_sink: Callable[[dict[str, Any]], None] | None = None
         self.take_pending_fold: Callable[[], list[Any]] | None = None
@@ -258,6 +272,22 @@ class Engine:
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
+        )
+
+    def _bind_context_messages(
+        self,
+        messages: list[Any],
+        state_store: Any,
+        *,
+        max_inline_chars: int = 12_000,
+    ) -> list[Any]:
+        """Bind model messages through the content cache service."""
+        if self.content_cache is not None:
+            return self.content_cache.bound_context_messages(
+                messages, state_store, max_inline_chars=max_inline_chars
+            )
+        return bound_context_messages(
+            messages, state_store, max_inline_chars=max_inline_chars
         )
 
     async def _dispatch(
@@ -1012,7 +1042,7 @@ class Engine:
             components = component_ctx.context_components
         context_messages = self.context_builder.messages_from_components(components)
 
-        context_messages = bound_context_messages(
+        context_messages = self._bind_context_messages(
             context_messages,
             self.state_store,
         )
@@ -1037,7 +1067,7 @@ class Engine:
                 turn_complete=True,
             )
 
-        context_messages = bound_context_messages(
+        context_messages = self._bind_context_messages(
             context_messages,
             self.state_store,
         )
@@ -1126,7 +1156,7 @@ class Engine:
         request_ctx = self._make_event_context(context_messages=context_messages,
             model_request={
                 **model_request,
-                "messages": bound_context_messages(
+                "messages": self._bind_context_messages(
                     model_request["messages"],
                     self.state_store,
                 ),
@@ -1165,7 +1195,7 @@ class Engine:
                 event=self._default_hook_rejection_event(Events.BEFORE_MODEL_REQUEST),
                 turn_complete=True,
             )
-        model_request["messages"] = bound_context_messages(
+        model_request["messages"] = self._bind_context_messages(
             model_request["messages"], self.state_store
         )
         return _ModelRequestResult(request=model_request)
@@ -1258,7 +1288,7 @@ class Engine:
 
     async def _invoke_model(self, messages: list[Message]) -> ModelResponse:
         """Run one unbound auxiliary model call for a Hook."""
-        messages = bound_context_messages(messages, self.state_store)
+        messages = self._bind_context_messages(messages, self.state_store)
         aggregate: ModelResponse | None = None
         async for chunk in self.llm.astream(messages):
             if isinstance(chunk, ModelChunk):

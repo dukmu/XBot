@@ -344,3 +344,33 @@
     `_provider_config`）。
 - **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
   `uv run xbot tui` pty 实测 Ready 无错误（默认 minimax，无需 providers.yaml）。
+
+### 2026-08-17 · 工具合并精简 + agentloop 职责拆分（operations 归 session，三个辅助模块插件化）
+
+- **用户指示**：① 内置工具太多，参考自身工具列表激进合并，返回尽量简洁；
+  ② agentloop 里 operations 应是 session 的职责；Interaction/inbox/content
+  cache 应做成插件（模块级移动）。
+- **工具合并（22 → 16 核心工具）**：
+  - filesystem 12 → 4 模型面工具，各自用 `mode`/`operation` 参数选择沙箱后端
+    操作：`read`（utf8/binary/stat/image/list，合并 filesystem_read/stat/list、
+    read_bytes、image 打开）、`edit`（write/replace/patch，合并 write/edit/patch）、
+    `path`（move/copy/delete/mkdir）、`search`（content/name，合并 search_text/
+    find_files）。
+  - shell 6 → 5：`shell` 增加 `background: bool`（合并 start_shell）；作业管理
+    工具不变。
+  - 权限按调用解析：`sandbox/filesystem_ops.resolve_operation(tool, args)` 把
+    合并工具的 mode/operation 映射到具体后端操作（`read`+list→list 读访问、
+    `path`+copy→source/destination 双路径）；TOOL_OPERATIONS 仅保留单操作工具；
+    policy.py 保留 edit/path 的路径参数。xcore.yaml 权限、内置 Explorer agent、
+    eval EVALUATION_TOOLS、docs 同步更新。
+- **agentloop 拆分（模块级移动）**：
+  - `operations.py` → `session/operations.py`（模块函数，不改方法；http/acp 导入更新）。
+  - `interactions.py`/`inbox.py`/`content_cache.py` → 独立插件包
+    `XBotv2/{interactions,inbox,content_cache}/`，各注册 `ctx.interactions`
+    （InteractionWaiter 工厂）、`ctx.inbox`（AgentInbox 工厂）、
+    `ctx.content_cache`（绑定/外置服务）；xcore.yaml 在 agentloop 前挂载三个条目。
+  - engine 经 `plugin_ctx.get(...)` 消费 interactions/content_cache（无服务时回退
+    模块级实现，直接构造 Engine 的测试不受影响）；SessionRuntime 经 ctx.inbox
+    创建 inbox。
+- **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
+  `uv run xbot tui` pty 实测 Ready 无错误。

@@ -70,7 +70,7 @@ from XBotv2.config.loader import (
     load_runtime_config,
     resolve_llm_config,
 )
-from XBotv2.agentloop.operations import (
+from XBotv2.session.operations import (
     OperationError,
     clear_history,
     fork_session,

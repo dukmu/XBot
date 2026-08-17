@@ -21,7 +21,7 @@ from XBotv2.config.policy import (
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-from XBotv2.agentloop.operations import update_session_policy
+from XBotv2.session.operations import update_session_policy
 from XBotv2.sandbox.filesystem_ops import PATH_ACCESS, resolve_operation
 from XBotv2.sandbox.policy import SandboxPolicy
 
