@@ -144,7 +144,6 @@
         - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
         - tool: update_todos
         - tool: read
-        - tool: content_read
         - tool: edit
           paths: ${workspace}
         - tool: path

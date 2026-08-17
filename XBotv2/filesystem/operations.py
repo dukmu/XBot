@@ -35,9 +35,7 @@ PATH_ACCESS: dict[str, tuple[tuple[str, PathAccess], ...]] = {
     "delete": (("path", "write"),),
     "mkdir": (("path", "write"),),
 }
-TOOL_OPERATIONS = {
-    "content_read": "read_bytes",
-}
+TOOL_OPERATIONS: dict[str, str] = {}
 
 _MERGED_TOOL_OPERATIONS = {
     "read": {

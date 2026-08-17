@@ -131,7 +131,7 @@ and permission requests use the normal ordered C/S interaction flow. Permission
 decisions that still require a human fail closed when no live sink is attached.
 
 The built-in `Explorer` definition has `mode: all` and exposes only read,
-`content_read`, list, search, and `ask_user` tools. It can be selected as a
+list, search, and `ask_user` tools. It can be selected as a
 primary Agent or delegated to as a subagent; it cannot see filesystem writes,
 Shell, or subagent dispatch.
 The built-in `default` definition is selected for a new primary thread when the

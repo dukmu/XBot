@@ -279,7 +279,6 @@ def _parse_json(value: str) -> dict[str, Any]:
     }
 
 
-content_read_tool = Tool.from_function(content_read)
-
-
-__all__ = ["content_read", "content_read_tool"]
+# ``content_read`` stays as the shared implementation behind
+# ``read(mode=image)``; it is not registered as a separate model-facing tool.
+__all__ = ["content_read"]
