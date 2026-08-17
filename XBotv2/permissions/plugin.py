@@ -87,7 +87,7 @@ class PermissionsService:
 
 
 class PermissionsComponent:
-    inject = ["session", "tools", "approval"]
+    inject = ["session", "tools", "approval", "variables"]
     """Register the permission system as ``ctx.permissions`` and its guard."""
 
     name = "xbot.permissions"

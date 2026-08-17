@@ -123,6 +123,14 @@ EVENT_CONTEXT_FORBIDDEN_PLUGIN_FIELDS = {
     "request_user_input",
     "services",
 }
+REQUIRED_PLUGIN_INJECTIONS = {
+    "agents": {"data_root", "variables", "workspace_root"},
+    "browser": {"sandbox", "variables"},
+    "coretools": {"storage", "workspace_root"},
+    "permissions": {"variables"},
+    "sandbox": {"data_root", "storage", "variables", "workspace_root"},
+    "workspace_instructions": {"variables", "workspace_root"},
+}
 
 
 @dataclass(frozen=True, order=True)
@@ -727,7 +735,31 @@ def check_plugin_imports() -> list[Violation]:
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
-            for node in ast.walk(_tree(path)):
+            parsed = _tree(path)
+            if path.name == "plugin.py" and owner in REQUIRED_PLUGIN_INJECTIONS:
+                declared: set[str] = set()
+                for node in ast.walk(parsed):
+                    if not isinstance(node, ast.Assign):
+                        continue
+                    if not any(
+                        isinstance(target, ast.Name) and target.id == "inject"
+                        for target in node.targets
+                    ) or not isinstance(node.value, (ast.List, ast.Tuple)):
+                        continue
+                    declared.update(
+                        item.value
+                        for item in node.value.elts
+                        if isinstance(item, ast.Constant)
+                        and isinstance(item.value, str)
+                    )
+                for missing in sorted(REQUIRED_PLUGIN_INJECTIONS[owner] - declared):
+                    violations.append(Violation(
+                        path,
+                        1,
+                        "plugin-undeclared-service",
+                        f"plugin reads service {missing!r} without injecting it",
+                    ))
+            for node in ast.walk(parsed):
                 if (
                     owner != "persistence"
                     and isinstance(node, ast.Attribute)

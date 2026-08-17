@@ -17,7 +17,10 @@ from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class SandboxComponent:
-    inject = ["storage", "session", "tools"]
+    inject = [
+        "storage", "session", "tools", "data_root", "variables",
+        "workspace_root",
+    ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
     name = "xbot.sandbox"

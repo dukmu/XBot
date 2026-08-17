@@ -93,7 +93,10 @@ class SubagentRunner:
 
 
 class AgentsPlugin:
-    inject = ["session", "agents", "jobs", "tools", "prompts"]
+    inject = [
+        "session", "agents", "jobs", "tools", "prompts",
+        "data_root", "variables", "workspace_root",
+    ]
     """Register workspace Agent definitions and subagent job tools."""
 
     name = "agents"

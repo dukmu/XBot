@@ -16,7 +16,9 @@ from XBotv2.core.events import Events
 from XBotv2.core.tools import Tool
 
 class CoreToolsComponent:
-    inject = ["tools", "session", "storage", "sandbox", "jobs"]
+    inject = [
+        "tools", "session", "storage", "sandbox", "jobs", "workspace_root",
+    ]
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"
