@@ -544,6 +544,7 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
                 "max_context_tokens": 4096,
                 "max_output_tokens": None,
                 "reasoning_effort": "",
+                "effort": [],
                 "thinking": "",
                 "input_modalities": ["text"],
             }
@@ -1303,6 +1304,201 @@ async def test_http_selects_model_within_provider(
     assert unknown.status_code == 404
     assert unknown.json()["code"] == "model_not_found"
     assert "Unknown model" in unknown.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_http_reload_config_applies_provider_changes(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """Soft reload hot-swaps the provider catalog and rebuilds the client."""
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    llm_entry = next(item for item in tree if item["id"] == "llm")
+    await client.post(
+        "/sessions", json={"session_id": "reload", "thread_id": "t"}
+    )
+
+    llm_entry["config"]["providers"]["default"]["models"].append({
+        "model": "test2",
+        "max_context_tokens": 8192,
+    })
+    llm_entry["config"]["providers"]["newprovider"] = {
+        "protocol": "openai",
+        "base_url": "http://new",
+        "api_key": "test",
+        "default_model": "newmodel",
+        "models": [{"model": "newmodel"}],
+    }
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    response = await client.post("/sessions/reload/threads/t/config/reload")
+    assert response.status_code == 200
+    body = response.json()
+    assert "llm" in body["reloaded"]
+    assert body["provider"] == "default"
+    assert body["model"] == "test"
+    assert body["errors"] == []
+
+    providers = (await client.get("/providers")).json()
+    names = {item["name"] for item in providers["providers"]}
+    assert "newprovider" in names
+    default = next(
+        item for item in providers["providers"] if item["name"] == "default"
+    )
+    assert {model["model"] for model in default["models"]} == {"test", "test2"}
+
+    selected = await client.put(
+        "/sessions/reload/threads/t/provider",
+        json={"name": "default", "model": "test2"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["model"] == "test2"
+
+
+@pytest.mark.asyncio
+async def test_http_reload_applies_non_llm_plugin_config(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """A soft reload re-applies every overlay entry, not just the LLM catalog."""
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    await client.post(
+        "/sessions", json={"session_id": "soft-restart", "thread_id": "t"}
+    )
+
+    sandbox_entry = next(item for item in tree if item["id"] == "sandbox")
+    assert sandbox_entry["config"]["sandbox"]["enabled"] is False
+    sandbox_entry["config"]["sandbox"]["enabled"] = True
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    response = await client.post("/sessions/soft-restart/threads/t/config/reload")
+    assert response.status_code == 200
+    body = response.json()
+    assert "sandbox" in body["reloaded"]
+    assert body["errors"] == []
+
+    ctx = await http_app.state.manager.get("soft-restart", "t")
+    assert ctx.services.sandbox.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_http_reload_applies_workspace_overlay_hot_plug(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """A workspace ``.xbot/plugins.yaml`` created after boot applies on reload."""
+    await client.post(
+        "/sessions", json={"session_id": "workspace-overlay", "thread_id": "t"}
+    )
+    ctx = await http_app.state.manager.get("workspace-overlay", "t")
+    assert ctx.services.sandbox.enabled is False
+
+    overlay_dir = Path(http_app.state.workspace_root) / ".xbot"
+    overlay_dir.mkdir()
+    (overlay_dir / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "sandbox",
+            "name": "sandbox",
+            "config": {"sandbox": {"enabled": True}},
+        }], sort_keys=False),
+        encoding="utf-8",
+    )
+
+    response = await client.post(
+        "/sessions/workspace-overlay/threads/t/config/reload"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "workspace_instructions" in body["reloaded"]
+    assert body["errors"] == []
+    assert ctx.services.sandbox.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_http_reload_config_keeps_last_good_on_invalid_catalog(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """An invalid catalog fails the reload without touching the live config."""
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    llm_entry = next(item for item in tree if item["id"] == "llm")
+    await client.post(
+        "/sessions", json={"session_id": "reload-bad", "thread_id": "t"}
+    )
+
+    llm_entry["config"]["providers"]["broken"] = {
+        "protocol": "openai",
+        "default_model": "missing",
+        "models": [{"model": "x"}],
+    }
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    response = await client.post("/sessions/reload-bad/threads/t/config/reload")
+    assert response.status_code == 400
+    assert response.json()["code"] == "config_invalid"
+
+    providers = (await client.get("/providers")).json()
+    assert "broken" not in {item["name"] for item in providers["providers"]}
+
+
+@pytest.mark.asyncio
+async def test_http_effort_switches_only_advertised_tiers(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """/effort switches among the active model's advertised tiers."""
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    llm_entry = next(item for item in tree if item["id"] == "llm")
+    await client.post(
+        "/sessions", json={"session_id": "effort", "thread_id": "t"}
+    )
+
+    no_tiers = await client.put(
+        "/sessions/effort/threads/t/effort", json={"effort": "high"}
+    )
+    assert no_tiers.status_code == 400
+    assert no_tiers.json()["code"] == "unsupported_effort"
+
+    model = llm_entry["config"]["providers"]["default"]["models"][0]
+    model["reasoning_effort"] = "high"
+    model["effort"] = ["low", "medium", "high"]
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
+        encoding="utf-8",
+    )
+    reloaded = await client.post("/sessions/effort/threads/t/config/reload")
+    assert reloaded.status_code == 200
+
+    switched = await client.put(
+        "/sessions/effort/threads/t/effort", json={"effort": "low"}
+    )
+    assert switched.status_code == 200
+    body = switched.json()
+    assert body["provider"] == "default"
+    assert body["model"] == "test"
+    assert body["reasoning_effort"] == "low"
+    assert body["model_mode"] == "low"
+    assert body["available"] == ["low", "medium", "high"]
+
+    unsupported = await client.put(
+        "/sessions/effort/threads/t/effort", json={"effort": "max"}
+    )
+    assert unsupported.status_code == 400
+    assert unsupported.json()["code"] == "unsupported_effort"
+    assert "available: low, medium, high" in unsupported.json()["message"]
 
 
 @pytest.mark.asyncio

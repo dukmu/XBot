@@ -104,11 +104,19 @@ adapter-owned values: the adapter serializes them to the vendor wire format
 `thinking: adaptive`; Claude-style endpoints use `thinking: enabled` plus
 `budget_tokens` where required.
 
+`effort` is an optional ordered list of adapter-owned reasoning effort tiers
+the model advertises for `/effort` switching (e.g. `[low, medium, high]`);
+when present, the active `reasoning_effort` must be one of them. Models
+without `effort` do not advertise switchable tiers. Vendors with different
+standards declare their own values (e.g. DeepSeek v4 `[low, high, max]`) and
+the adapter serializes them unchanged.
+
 `extra_body` carries vendor-specific request extras (Anthropic `extra_body` /
 OpenAI-compatible top-level options) per model. Adapter-derived parameters
 such as `reasoning_effort` and `thinking` are deep-merged underneath these
-configured values, so each vendor declares its own standard without runtime
-code changes.
+configured values, so each vendor declares its own standard (e.g.
+`n_predict`, `repeat_penalty`, DeepSeek `thinking`) without runtime code
+changes.
 
 `input_modalities` declares the inputs accepted by that configured model. It
 always includes `text`; add `image` only for a model endpoint that supports
@@ -133,6 +141,35 @@ These process-level controls deliberately do not belong to YAML configuration:
 
 Once a response chunk has been emitted, a stream failure is returned to Core
 instead of replaying partial output.
+
+## Soft Restart (`/reload`)
+
+`/reload` applies configuration changes to the live session without a process
+restart.  It re-reads the external plugin-tree layers — the global
+`<data_dir>/config/plugins.yaml` and the workspace
+`<workspace>/.xbot/plugins.yaml` — and hot-applies every entry through the
+loader: changed entries are re-applied with their new config, newly declared
+entries are mounted, and entries the overlay disables are unloaded.  The
+workspace overlay is re-applied by the `workspace_instructions` plugin (which
+also re-discovers `<workspace>/.agents/*.md`), and the active model client is
+re-bound from the merged provider catalog.
+
+The merged LLM provider catalog is validated before anything is touched: an
+invalid provider section fails the whole reload with `config_invalid` and the
+running configuration stays untouched.  A per-entry reload failure or a
+missing active provider/model keeps the previous binding and is reported in
+`errors` (last-good semantics, matching dsh settings snapshots); the session
+never goes down because of a bad overlay.
+
+Session-lifecycle entries (`session`, `persistence`, `jobs`, `agentloop`,
+`agents-service`) cannot be re-applied live — the loop, message stores, and
+running jobs hold their state.  Overriding those entries in an overlay is
+reported as restart-required and only takes effect after a process restart.
+
+`AGENTS.md` is read before every context build and needs no reload.
+`/agent reload` remains the focused command for Agent definitions; `/reload`
+also re-discovers workspace Agents because it reloads
+`workspace_instructions`.
 
 ## Agent Definitions
 

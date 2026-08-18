@@ -4,12 +4,33 @@ from __future__ import annotations
 
 import secrets
 import shutil
+from pathlib import Path
+
+import yaml
 from contextlib import AsyncExitStack
 from datetime import datetime
 from typing import Any
 
+from XBotv2.config.tree import DEFAULT_TREE
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.llm.config import parse_provider_config
+from XBotv2.loader import PluginTree
+
+
+# Entries whose live re-apply would destroy session-lifecycle state the
+# engine or the session runtime holds (loop state, message stores, running
+# jobs, the tool registry, the Agent service itself).  Config changes for
+# these entries require a process restart; ``workspace_instructions`` is
+# handled separately because its apply re-applies the workspace overlay.
+_RELOAD_PROTECTED = frozenset({
+    "session",
+    "persistence",
+    "jobs",
+    "agentloop",
+    "agents-service",
+    "workspace_instructions",
+})
 
 
 class OperationError(RuntimeError):
@@ -186,6 +207,170 @@ async def select_provider(
     return selected
 
 
+async def reload_config(ctx: Any) -> dict[str, Any]:
+    """Soft-restart the session: re-read config overlays and re-apply plugins.
+
+    Re-reads the external plugin tree layers (global ``config/plugins.yaml``
+    + workspace ``.xbot/plugins.yaml``), validates the merged LLM provider
+    catalog, then hot-applies every changed entry through the loader
+    (reload changed entries, mount new ones, unload disabled ones) and
+    re-binds the active model client.  Invalid provider sections fail the
+    whole reload before anything is touched; a failing entry or a missing
+    active binding keeps the previous client and is reported, matching dsh
+    settings last-good semantics.  Entries the live session cannot safely
+    re-apply (session/persistence/jobs/agentloop) are reported as
+    restart-required instead of being reloaded.
+    """
+    _require_idle(ctx, "reload config")
+    loader = ctx.services.get("loader")
+    if loader is None:
+        raise OperationError("plugin_unavailable", "Loader plugin is not loaded.")
+    merged = _merged_llm_config(ctx.paths, Path(ctx.workspace_root))
+    providers = merged.get("providers") or {}
+    llm = ctx.services.get("llm")
+    default = str(merged.get("default") or llm.default_name())
+
+    errors: list[str] = []
+    for name, raw in providers.items():
+        try:
+            parse_provider_config(dict(raw), require_key=False)
+        except Exception as error:  # noqa: BLE001 - report catalog errors
+            errors.append(f"{name}: {error}")
+    if errors:
+        raise OperationError(
+            "config_invalid",
+            "Provider catalog is invalid: " + "; ".join(errors),
+        )
+
+    values = _reload_values(ctx)
+    # The workspace overlay is re-applied by the workspace_instructions
+    # plugin below (its apply re-reads ``.xbot/plugins.yaml`` and patches the
+    # tree with ``_patch_owner`` set so it never reloads itself); only the
+    # global layer is patched here, so every entry is re-applied once.
+    patch = _config_layer(ctx.paths.config_dir / "plugins.yaml", values)
+
+    reloaded: list[str] = []
+    notices: list[str] = []
+    async with ctx.turn_lock:
+        for entry in patch.entries:
+            if entry.id in _RELOAD_PROTECTED:
+                notices.append(
+                    f"{entry.id}: cannot be hot-reloaded; restart required"
+                )
+                continue
+            try:
+                affected = await loader.apply_patch(PluginTree([entry]))
+                if not entry.disabled and entry.id not in loader.loaded_ids:
+                    notices.append(f"{entry.id}: reload failed; keeping last good")
+                reloaded.extend(affected)
+            except Exception as error:  # noqa: BLE001 - keep last good per entry
+                notices.append(f"{entry.id}: {error}")
+
+        if "workspace_instructions" in loader.loaded_ids:
+            if await loader.reload("workspace_instructions"):
+                reloaded.append("workspace_instructions")
+            else:
+                notices.append("workspace_instructions: reload failed")
+
+        active = ctx.engine.settings.agent_name
+        definition = ctx.services.agents.definition(active)
+        if definition is not None and definition.mode != "subagent":
+            try:
+                selected = await ctx.services.agents.activate(active)
+            except Exception as error:  # noqa: BLE001 - keep last good binding
+                notices.append(f"active agent {active}: {error}")
+                selected = await ctx.services.agents.apply_provider_catalog(
+                    default, providers
+                )
+        else:
+            selected = await ctx.services.agents.apply_provider_catalog(
+                default, providers
+            )
+        ctx.provider_name = selected["provider"]
+    return {
+        **selected,
+        "reloaded": reloaded,
+        "errors": notices,
+        "default": default,
+        "providers": providers,
+    }
+
+
+def _reload_values(ctx: Any) -> dict[str, Any]:
+    """Reconstruct the tree interpolation values used at session boot."""
+    session = ctx.services.get("session", strict=False)
+    disabled = frozenset(
+        entry.id
+        for entry in ctx.services.get("loader").tree.entries
+        if entry.disabled
+    )
+    return {
+        "paths": ctx.paths,
+        "session_paths": session.session_paths if session is not None else None,
+        "session_id": ctx.session_id,
+        "thread_id": ctx.thread_id,
+        "workspace_root": Path(ctx.workspace_root),
+        "provider_name": ctx.provider_name,
+        "parent_permission_system": ctx.services.get("permissions", strict=False),
+        "interactive": ctx.interactive,
+        "disabled": disabled,
+    }
+
+
+def _config_layer(path: Path, values: dict[str, Any]) -> PluginTree:
+    """Read one external plugin-tree layer; a missing file is an empty layer."""
+    if not path.is_file():
+        return PluginTree([])
+    return PluginTree.from_yaml(path, values=values)
+
+
+def _merged_llm_config(paths: Any, workspace_root: Path) -> dict[str, Any]:
+    """Re-read the merged ``llm`` entry config from all configuration layers."""
+
+    def llm_config(document: list[dict[str, Any]]) -> dict[str, Any]:
+        for entry in document:
+            if entry.get("id") == "llm":
+                return dict(entry.get("config") or {})
+        return {}
+
+    merged: dict[str, Any] = {}
+    for source in (
+        DEFAULT_TREE,
+        paths.config_dir / "plugins.yaml",
+        workspace_root / ".xbot" / "plugins.yaml",
+    ):
+        path = Path(source)
+        if not path.is_file():
+            continue
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        merged = _merge_config(merged, llm_config(document))
+    return merged
+
+
+def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        merged[key] = (
+            _merge_config(current, value)
+            if isinstance(current, dict) and isinstance(value, dict)
+            else value
+        )
+    return merged
+
+
+async def select_effort(ctx: Any, effort: str) -> dict[str, Any]:
+    """Switch the active model's reasoning effort tier."""
+    _require_idle(ctx, "switch effort")
+    async with ctx.turn_lock:
+        try:
+            selected = await ctx.services.agents.select_effort(effort)
+        except ValueError as error:
+            raise OperationError("unsupported_effort", str(error)) from error
+        ctx.provider_name = selected["provider"]
+    return selected
+
+
 def task_snapshots(ctx: Any) -> list[dict[str, Any]]:
     registry = ctx.services.get("jobs")
     if registry is None:
@@ -291,9 +476,11 @@ __all__ = [
     "fork_persisted_session",
     "fork_session",
     "reload_agents",
+    "reload_config",
     "reload_live_policies",
     "require_forkable",
     "select_agent",
+    "select_effort",
     "select_provider",
     "stop_all_tasks",
     "stop_task",

@@ -32,6 +32,9 @@ from XBotv2.protocol.models import (
     ProviderListResponse,
     ProviderSelectionRequest,
     ProviderSelectionResponse,
+    ConfigReloadResponse,
+    EffortSelectionRequest,
+    EffortSelectionResponse,
     ServerEvent,
     SessionListResponse,
     SessionMode,
@@ -261,6 +264,25 @@ class XBotClient:
             "POST",
             f"{_thread_path(session_id, thread_id)}/agents/reload",
             AgentListResponse,
+        )
+
+    async def select_effort(
+        self, session_id: str, thread_id: str, effort: str
+    ) -> EffortSelectionResponse:
+        return await self._request(
+            "PUT",
+            f"{_thread_path(session_id, thread_id)}/effort",
+            EffortSelectionResponse,
+            EffortSelectionRequest(effort=effort),
+        )
+
+    async def reload_config(
+        self, session_id: str, thread_id: str
+    ) -> ConfigReloadResponse:
+        return await self._request(
+            "POST",
+            f"{_thread_path(session_id, thread_id)}/config/reload",
+            ConfigReloadResponse,
         )
 
     async def select_provider(

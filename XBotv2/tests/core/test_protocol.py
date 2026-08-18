@@ -184,6 +184,20 @@ class TestProviderConfigLoader:
         assert ModelConfig(model="plain").model_mode == ""
         assert ModelConfig(model="r", thinking="enabled").model_mode == "enabled"
 
+    def test_effort_tiers_validate_active_reasoning_effort(self):
+        config = ModelConfig(
+            model="m",
+            reasoning_effort="high",
+            effort=["low", "medium", "high"],
+        )
+        assert config.effort == ["low", "medium", "high"]
+        with pytest.raises(ValueError, match="must be one of"):
+            ModelConfig(
+                model="m",
+                reasoning_effort="max",
+                effort=["low", "medium", "high"],
+            )
+
     def test_llm_service_lists_configured_providers(self):
         """LlmService.configure stores definitions; names()/default_name() reflect them."""
         from XBotv2.llm.service import LlmService

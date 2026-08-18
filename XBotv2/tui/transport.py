@@ -67,6 +67,14 @@ class Transport(Protocol):
         model: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def select_effort(
+        self, *, session_id: str, thread_id: str, effort: str
+    ) -> dict[str, Any]: ...
+
+    async def reload_config(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]: ...
+
     async def list_agents(
         self, *, session_id: str, thread_id: str
     ) -> dict[str, Any]: ...

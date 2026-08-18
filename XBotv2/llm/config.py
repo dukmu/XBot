@@ -35,6 +35,10 @@ class ModelConfig(BaseModel):
     max_context_tokens: int = Field(default=32_000, ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str | None = None
+    # Adapter-owned reasoning effort tiers the model advertises for
+    # ``/effort`` switching; ordering is the advertised order.  When present,
+    # the active ``reasoning_effort`` must be one of them.
+    effort: list[str] | None = None
     # Adapter-owned thinking mode ("enabled" / "adaptive" / "disabled" / ...).
     # The adapter serializes it to the vendor wire format (Claude / MiniMax
     # ``extra_body.thinking``, OpenAI-compatible ``extra_body``); None omits
@@ -55,6 +59,19 @@ class ModelConfig(BaseModel):
         if "text" not in value:
             raise ValueError("input_modalities must include text")
         return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def _validate_effort_tiers(self) -> "ModelConfig":
+        if (
+            self.effort
+            and self.reasoning_effort is not None
+            and self.reasoning_effort not in self.effort
+        ):
+            raise ValueError(
+                f"reasoning_effort {self.reasoning_effort!r} must be one of "
+                f"the advertised effort tiers: {', '.join(self.effort)}"
+            )
+        return self
 
     @property
     def model_mode(self) -> str:

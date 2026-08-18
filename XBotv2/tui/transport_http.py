@@ -130,6 +130,20 @@ class HttpTransport:
             )
         ).model_dump()
 
+    async def select_effort(
+        self, *, session_id: str, thread_id: str, effort: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.select_effort(session_id, thread_id, effort)
+        ).model_dump()
+
+    async def reload_config(
+        self, *, session_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        return (
+            await self._client.reload_config(session_id, thread_id)
+        ).model_dump()
+
     async def list_agents(
         self, *, session_id: str, thread_id: str
     ) -> dict[str, Any]:

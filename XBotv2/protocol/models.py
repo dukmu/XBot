@@ -94,6 +94,7 @@ class ModelInfo(WireModel):
     max_context_tokens: int = Field(ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str = ""
+    effort: list[str] = Field(default_factory=list)
     thinking: str = ""
     input_modalities: list[Literal["text", "image"]] = Field(
         default_factory=lambda: ["text"]
@@ -307,6 +308,31 @@ class ProviderSelectionResponse(WireModel):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     model_mode: str = ""
+
+
+class EffortSelectionRequest(WireModel):
+    effort: str = Field(min_length=1)
+
+
+class EffortSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    reasoning_effort: str = ""
+    model_mode: str = ""
+    available: list[str] = Field(default_factory=list)
+
+
+class ConfigReloadResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    reloaded: list[str] = Field(default_factory=list)
+    provider: str = ""
+    model: str = ""
+    model_mode: str = ""
+    context_window: int = Field(default=0, ge=0)
+    errors: list[str] = Field(default_factory=list)
 
 
 class CommandRequest(WireModel):
@@ -745,6 +771,9 @@ __all__ = [
     "ProviderListResponse",
     "ProviderSelectionRequest",
     "ProviderSelectionResponse",
+    "ConfigReloadResponse",
+    "EffortSelectionRequest",
+    "EffortSelectionResponse",
     "ServerEvent",
     "ServerEventType",
     "SessionHistoryItem",

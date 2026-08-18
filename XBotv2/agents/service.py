@@ -21,7 +21,6 @@ from XBotv2.core.loop import (
     LoopSettings,
 )
 from XBotv2.core.runtime import SessionInfo
-from XBotv2.llm.config import ModelConfig
 
 
 class AgentRegistry:
@@ -331,6 +330,124 @@ class AgentsService:
             "model_mode": model_config.model_mode,
         }
 
+    async def apply_provider_catalog(
+        self,
+        default: str,
+        providers: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Hot-swap the LLM provider catalog and rebuild the active client.
+
+        The active model client is rebuilt only when the active
+        provider/model still resolves in the new catalog; otherwise the
+        previous client is kept and the error is reported (last-good-valid
+        semantics, matching dsh settings snapshots).
+        """
+        ctx = self.ctx
+        llm = ctx.llm
+        llm.configure(default, providers)
+        engine = ctx.engine
+        provider_name = engine.settings.provider
+        model_name = engine.settings.model
+        try:
+            entry = llm.provider_config(
+                provider_name,
+                require_key=not engine.settings.llm_is_override,
+            )
+            model_config = entry.resolve(model_name)
+            if not engine.settings.llm_is_override:
+                ctx.model.replace(
+                    llm.create(
+                        entry, model_config, media_root=ctx.loop_state.media_root
+                    )
+                )
+            engine.configure(
+                model_client=ctx.model,
+                provider=provider_name,
+                model=model_config.model,
+                model_mode=model_config.model_mode,
+                context_window=model_config.max_context_tokens,
+                max_output_tokens=model_config.max_output_tokens or 0,
+            )
+            ctx.loop_state.session.provider = provider_name
+            ctx.loop_state.metadata.update({
+                "provider": provider_name,
+                "model": model_config.model,
+                "model_mode": model_config.model_mode,
+                "context_window": model_config.max_context_tokens,
+            })
+            return {
+                "reloaded": ["llm"],
+                "provider": provider_name,
+                "model": model_config.model,
+                "model_mode": model_config.model_mode,
+                "context_window": model_config.max_context_tokens,
+                "errors": [],
+            }
+        except Exception as error:  # noqa: BLE001 - keep last good binding
+            return {
+                "reloaded": ["llm"],
+                "provider": provider_name,
+                "model": engine.settings.model,
+                "model_mode": engine.settings.model_mode,
+                "context_window": engine.context_window,
+                "errors": [f"active {provider_name}/{model_name}: {error}"],
+            }
+
+    async def select_effort(self, value: str) -> dict[str, Any]:
+        """Switch the active model's reasoning effort to an advertised tier.
+
+        Only tiers the model advertises in its ``effort`` list are accepted;
+        the provider client is rebuilt with the new tier.
+        """
+        ctx = self.ctx
+        engine = ctx.engine
+        provider_name = engine.settings.provider
+        model_name = engine.settings.model
+        entry = ctx.llm.provider_config(
+            provider_name,
+            require_key=not engine.settings.llm_is_override,
+        )
+        model_config = entry.resolve(model_name)
+        tiers = list(model_config.effort or [])
+        if not tiers:
+            raise ValueError(
+                f"Model {provider_name}/{model_name} does not advertise "
+                "effort tiers"
+            )
+        if value not in tiers:
+            raise ValueError(
+                f"Unsupported reasoning effort {value!r} for "
+                f"{provider_name}/{model_name}; available: {', '.join(tiers)}"
+            )
+        model_config = model_config.model_copy(
+            update={"reasoning_effort": value}
+        )
+        if not engine.settings.llm_is_override:
+            ctx.model.replace(
+                ctx.llm.create(entry, model_config, media_root=ctx.loop_state.media_root)
+            )
+        engine.configure(
+            model_client=ctx.model,
+            provider=provider_name,
+            model=model_name,
+            model_mode=model_config.model_mode,
+            context_window=model_config.max_context_tokens,
+            max_output_tokens=model_config.max_output_tokens or 0,
+        )
+        ctx.loop_state.metadata.update({
+            "provider": provider_name,
+            "model": model_name,
+            "model_mode": model_config.model_mode,
+            "context_window": model_config.max_context_tokens,
+        })
+        return {
+            "provider": provider_name,
+            "model": model_name,
+            "reasoning_effort": value,
+            "model_mode": model_config.model_mode,
+            "available": tiers,
+        }
+
     def _resolve_definition(
         self,
         options: AgentCreateOptions,
@@ -413,18 +530,29 @@ class AgentsService:
     def _resolve_model_config(
         provider: Any,
         definition: AgentDefinition | None,
-    ) -> ModelConfig:
+    ) -> Any:
         """Resolve the catalog model for an Agent definition.
 
         ``definition.model`` selects one catalog entry (default when unset);
-        Agent-level sampling overrides apply on top of that entry.
+        Agent-level sampling overrides apply on top of that entry.  A model
+        declared by the Agent frontmatter but absent from the catalog
+        inherits the provider default entry's settings (with the frontmatter
+        overrides applied); explicit provider/model selection stays
+        fail-closed (see ``select_provider``).
         """
         model_name = (
             definition.model
             if definition is not None and definition.model is not None
             else None
         )
-        model_config = provider.resolve(model_name)
+        try:
+            model_config = provider.resolve(model_name)
+        except ValueError:
+            if definition is None or definition.model is None:
+                raise
+            model_config = provider.resolve(None).model_copy(
+                update={"model": definition.model}
+            )
         if definition is not None:
             updates: dict[str, Any] = {}
             if definition.temperature is not None:
