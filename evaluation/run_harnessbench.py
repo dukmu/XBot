@@ -439,10 +439,19 @@ def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
     ``xcore.yaml`` merged with the data dir's ``plugins.yaml`` overlay) —
     there is no separate ``providers.yaml`` document.
     """
-    from XBotv2.config.loader import resolve_llm_config
+    from XBotv2.loader import PluginTree
 
-    config = resolve_llm_config(data_dir)
-    providers = config.get("providers") or {}
+    tree = PluginTree.from_yaml(REPO_ROOT / "XBotv2" / "xcore.yaml")
+    overlay_path = data_dir / "config" / "plugins.yaml"
+    if overlay_path.is_file():
+        tree = tree.merged_with(PluginTree.from_yaml(overlay_path))
+    llm_entry = next(
+        (entry for entry in tree.entries if entry.id == "llm"),
+        None,
+    )
+    if llm_entry is None:
+        raise ValueError("no llm plugin entry in merged plugin tree")
+    providers = (llm_entry.config or {}).get("providers") or {}
     provider = providers.get(name)
     if not isinstance(provider, dict):
         raise ValueError(f"Unknown provider {name!r} in {data_dir}")
