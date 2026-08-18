@@ -30,7 +30,7 @@ import asyncio
 
 import pytest
 
-from XBotv2.tui.command import parse_slash_command, search_commands
+from XBotv2.tui.command import CommandRegistry
 from XBotv2.tui.completion_popup import CompletionPopup
 from XBotv2.tui.terminal import CommandOutcome
 from XBotv2.tui.textual_client import XBotTextualApp
@@ -70,13 +70,22 @@ class _ScriptedSession:
         return None
 
     async def list_commands(self):
-        return {"commands": []}
-
-    async def run_builtin_command(self, command, args):
-        del args
-        if command == "status":
-            return CommandOutcome("turn=0 mode=composing")
-        return CommandOutcome(f"ran {command}")
+        return {"commands": [
+            {
+                "name": name,
+                "slash": f"/{name}",
+                "kind": "server",
+                "description": f"server command: {name}",
+                "usage": f"/{name}",
+                "examples": [],
+                "parameters": {},
+            }
+            for name in (
+                "status", "provider", "model", "effort", "reload", "agent",
+                "clear", "undo", "fork", "tasks", "task", "permission",
+                "sandbox",
+            )
+        ]}
 
     async def run_command(self, command, args, raw, *, kind="server"):
         del args, raw
@@ -356,8 +365,9 @@ async def test_completion_popup_filters_by_prefix(scripted_session) -> None:
 
         names = [m.name for m in popup.matches]
         assert "clear-screen" in names
+        assert "clear" in names
         assert popup.current_match() is not None
-        assert popup.current_match().name == "clear"
+        assert popup.current_match().name == "clear-screen"
 
 
 @pytest.mark.asyncio
@@ -404,7 +414,7 @@ async def test_completion_popup_tab_accepts_highlighted(
         app._accept_completion(popup.current_match())
         await pilot.pause()
 
-        assert composer.text == "/clear"
+        assert composer.text == "/clear-screen"
         # The popup should still be visible (the prefix is still a slash).
         assert popup.visible is True
 
@@ -783,12 +793,12 @@ async def test_tool_widget_title_includes_elapsed_seconds(
 
 
 def test_search_commands_returns_help_first() -> None:
-    results = search_commands("")
+    results = CommandRegistry.default().search("")
     assert results[0].name == "help"
 
 
 def test_parse_slash_command_round_trip() -> None:
-    spec = parse_slash_command("/clear-screen")
+    spec = CommandRegistry.default().parse("/clear-screen")
     assert spec is not None
     assert spec.name == "clear-screen"
     assert spec.raw == "/clear-screen"
@@ -998,8 +1008,12 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         # The palette's input should be auto-focused.
         assert app.focused is not None
         # All client and discovered server commands are visible.
-        from XBotv2.tui.command import search_commands
-        assert len(search_commands("")) == 16
+        names = {spec.name for spec in app.commands.search("")}
+        assert {"help", "clear-screen", "exit"} <= names
+        assert {
+            "status", "provider", "model", "effort", "reload", "agent",
+            "clear", "undo", "fork", "tasks", "task", "permission", "sandbox",
+        } <= names
 
         await pilot.press("escape")
         await pilot.pause()
@@ -1462,7 +1476,7 @@ async def test_help_body_renders_each_command_on_its_own_row(
         for command in (
             "help [client cmd]",
             "clear-screen [client cmd]",
-            "status [client cmd]",
+            "status [server cmd]",
             "exit [client cmd]",
         ):
             assert command in body, f"command {command} not found in: {body!r}"
@@ -1643,13 +1657,12 @@ async def test_help_with_unknown_command_shows_error(
 async def test_prompt_command_is_parsed_with_correct_kind(
     scripted_session,
 ) -> None:
-    from XBotv2.tui.command import register_server_commands, parse_slash_command
-
-    register_server_commands([
+    registry = CommandRegistry.default()
+    registry.merge_server([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},
     ])
 
-    spec = parse_slash_command("/git-release v2.0")
+    spec = registry.parse("/git-release v2.0")
     assert spec is not None
     assert spec.kind == "prompt"
     assert spec.name == "git-release"
@@ -1660,12 +1673,11 @@ async def test_prompt_command_is_parsed_with_correct_kind(
 async def test_command_search_includes_prompt_type(
     scripted_session,
 ) -> None:
-    from XBotv2.tui.command import register_server_commands, search_commands
-
-    register_server_commands([
+    registry = CommandRegistry.default()
+    registry.merge_server([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},
     ])
 
-    results = search_commands("/git")
+    results = registry.search("/git")
     assert any(s.kind == "prompt" for s in results)
     assert any("prompt" in s.short_label for s in results)

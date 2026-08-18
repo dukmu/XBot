@@ -16,6 +16,7 @@ configured provider lacks a key.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from XBotv2.llm.config import ProviderConfig, parse_provider_config
@@ -62,6 +63,30 @@ class LlmService:
     def default_name(self) -> str:
         """Name of the provider used when no provider is selected."""
         return self._default
+
+    def validate_catalog(self, paths: Any, workspace_root: Any) -> dict[str, Any]:
+        """Fail-closed validation of the merged provider catalog.
+
+        Owned by the LLM service so a system soft restart can reject an
+        invalid catalog before any tree entry is re-applied.  Returns the
+        validated merged catalog.
+        """
+        from XBotv2.core.errors import OperationError
+        from XBotv2.llm.config import merged_provider_config, parse_provider_config
+
+        merged = merged_provider_config(paths, Path(workspace_root))
+        errors: list[str] = []
+        for name, raw in (merged.get("providers") or {}).items():
+            try:
+                parse_provider_config(dict(raw), require_key=False)
+            except Exception as error:  # noqa: BLE001 - report catalog errors
+                errors.append(f"{name}: {error}")
+        if errors:
+            raise OperationError(
+                "config_invalid",
+                "Provider catalog is invalid: " + "; ".join(errors),
+            )
+        return merged
 
     def names(self) -> tuple[str, ...]:
         """Configured provider names (minimax / deepseek / ...)."""

@@ -79,185 +79,135 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/attach <path> | /attach clear",
         raw="/attach",
     ),
-    "status": CommandSpec(
-        name="status", kind="client",
-        description="Show the current session and thread status",
-        raw="/status",
-    ),
-    "provider": CommandSpec(
-        name="provider", kind="client",
-        description="List or switch provider configuration",
-        usage="/provider [status|list|use <name>]",
-        raw="/provider",
-    ),
-    "model": CommandSpec(
-        name="model", kind="client",
-        description="List or switch the model within a provider",
-        usage="/model [status|list|use [<provider>] <model>]",
-        raw="/model",
-    ),
-    "effort": CommandSpec(
-        name="effort", kind="client",
-        description="Show or switch the reasoning effort tier",
-        usage="/effort [<level>]",
-        raw="/effort",
-    ),
-    "reload": CommandSpec(
-        name="reload", kind="client",
-        description="Soft-restart: re-read config overlays and re-apply plugins",
-        usage="/reload",
-        raw="/reload",
-    ),
-    "agent": CommandSpec(
-        name="agent", kind="client",
-        description="List or switch the active primary Agent",
-        usage="/agent [status|list|reload|use <name>|<name>]",
-        raw="/agent",
-    ),
-    "clear": CommandSpec(
-        name="clear", kind="client",
-        description="Clear conversation history",
-        raw="/clear",
-    ),
-    "undo": CommandSpec(
-        name="undo", kind="client",
-        description="Remove recent conversation turns",
-        usage="/undo [count]",
-        raw="/undo",
-    ),
-    "fork": CommandSpec(
-        name="fork", kind="client",
-        description="Fork the persisted session",
-        raw="/fork",
-    ),
-    "tasks": CommandSpec(
-        name="tasks", kind="client",
-        description="List background tasks",
-        usage="/tasks [ps]",
-        raw="/tasks",
-    ),
-    "task": CommandSpec(
-        name="task", kind="client",
-        description="Stop background tasks",
-        usage="/task stop <id> | /task stopall",
-        raw="/task",
-    ),
-    "permission": CommandSpec(
-        name="permission", kind="client",
-        description="Inspect or update session tool permissions",
-        usage="/permission [status|set <tool> <decision>|reset [tool]]",
-        raw="/permission",
-    ),
-    "sandbox": CommandSpec(
-        name="sandbox", kind="client",
-        description="Inspect or update the session sandbox",
-        usage="/sandbox [status|set <key> <value>|reset [key]]",
-        raw="/sandbox",
-    ),
 }
 _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
 _CLIENT_SEARCH_ORDER = (
-    "help", "status", "provider", "agent", "clear", "undo", "fork",
-    "tasks", "task", "permission", "sandbox", "clear-screen", "thinking",
-    "details", "attach", "exit",
+    "help", "clear-screen", "thinking", "details", "attach", "exit",
 )
-_ALIASES = dict(_CLIENT_ALIASES)
-_COMMANDS = dict(_CLIENT_COMMANDS)
-_SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)
 
 
-def register_server_commands(commands: list[dict]) -> None:
-    global _ALIASES, _COMMANDS, _SEARCH_ORDER
-    _ALIASES = dict(_CLIENT_ALIASES)
-    _COMMANDS = dict(_CLIENT_COMMANDS)
-    _SEARCH_ORDER = list(_CLIENT_SEARCH_ORDER)
-    for item in commands:
-        name = str(item.get("name") or "").strip().removeprefix("/")
-        if not name or name in _CLIENT_COMMANDS:
-            continue
-        kind = item.get("kind", "server")
-        slash = item.get("slash", f"/{name}")
-        alias = str(slash).split(maxsplit=1)[0]
-        if alias.lower() in _CLIENT_ALIASES:
-            continue
-        _ALIASES[alias.lower()] = name
-        _COMMANDS[name] = CommandSpec(
-            name=name,
-            kind=kind,  # type: ignore[arg-type]
-            description=str(item.get("description") or f"server command: {name}"),
-            usage=str(item.get("usage") or slash),
-            raw=slash,
-            parameters=item.get("parameters") or {},
-        )
-        if name not in _SEARCH_ORDER:
-            _SEARCH_ORDER.insert(max(0, len(_SEARCH_ORDER) - 1), name)
+class CommandRegistry:
+    """Instance-held command directory: UI-local commands + server catalog.
 
+    One registry per client session: the server catalog is merged into the
+    instance at connect time, so discovery, completion, and parsing never
+    mutate module-level state.
+    """
 
-def parse_slash_command(text: str) -> CommandSpec | None:
-    stripped = text.strip()
-    if not stripped.startswith("/"):
-        return None
-    head, _, tail = stripped.partition(" ")
-    canonical = _ALIASES.get(head.lower())
-    if canonical is None:
-        return CommandSpec(
-            name="unknown", kind="client", description="",
-            args=tail.strip(), raw=stripped,
-            display_label=f"{stripped} — not implemented",
-            short_label=f"unknown: {stripped}",
-        )
-    base = _COMMANDS[canonical]
-    return CommandSpec(
-        name=base.name, kind=base.kind, description=base.description,
-        usage=base.usage,
-        args=tail.strip(), raw=stripped,
-        display_label=base.display_label, short_label=base.short_label,
-        parameters=base.parameters,
-    )
+    def __init__(
+        self,
+        *,
+        client_commands: dict[str, CommandSpec] | None = None,
+        client_aliases: dict[str, str] | None = None,
+        client_search_order: tuple[str, ...] | None = None,
+    ) -> None:
+        self._client_commands = dict(client_commands or _CLIENT_COMMANDS)
+        self._client_aliases = dict(client_aliases or _CLIENT_ALIASES)
+        self._client_search_order = list(client_search_order or _CLIENT_SEARCH_ORDER)
+        self.reset()
 
+    @classmethod
+    def default(cls) -> "CommandRegistry":
+        return cls()
 
-def known_command_labels() -> tuple[str, ...]:
-    return tuple(
-        f"{_COMMANDS[name].display_label or _COMMANDS[name].short_label}"
-        for name in _SEARCH_ORDER
-    )
+    def reset(self) -> None:
+        """Restore the directory to the local client commands only."""
+        self._aliases = dict(self._client_aliases)
+        self._commands = dict(self._client_commands)
+        self._search_order = list(self._client_search_order)
 
-
-def is_slash_command(text: str) -> bool:
-    return text.strip().startswith("/")
-
-
-def get_command(name: str) -> CommandSpec | None:
-    return _COMMANDS.get(name)
-
-
-def search_commands(query: str) -> list[CommandSpec]:
-    normalised = query.strip().lower()
-    if not normalised:
-        return [_COMMANDS[name] for name in _SEARCH_ORDER]
-    if normalised.startswith("/"):
-        prefix = normalised[1:]
-        scored: list[tuple[int, CommandSpec]] = []
-        for name in _SEARCH_ORDER:
-            spec = _COMMANDS[name]
-            short = spec.name
-            if short.startswith(prefix) or name.startswith(prefix):
-                score = 0 if short.startswith(prefix) else 1
-                scored.append((score, spec))
+    def merge_server(self, commands: list[dict]) -> None:
+        """Replace the server command catalog (client commands win)."""
+        self.reset()
+        for item in commands:
+            name = str(item.get("name") or "").strip().removeprefix("/")
+            if not name or name in self._client_commands:
                 continue
-            if prefix and prefix in spec.short_label.lower():
-                scored.append((2, spec))
-        scored.sort(key=lambda item: (item[0], _SEARCH_ORDER.index(item[1].name)))
+            kind = item.get("kind", "server")
+            slash = item.get("slash", f"/{name}")
+            alias = str(slash).split(maxsplit=1)[0]
+            if alias.lower() in self._client_aliases:
+                continue
+            self._aliases[alias.lower()] = name
+            self._commands[name] = CommandSpec(
+                name=name,
+                kind=kind,  # type: ignore[arg-type]
+                description=str(item.get("description") or f"server command: {name}"),
+                usage=str(item.get("usage") or slash),
+                raw=slash,
+                parameters=item.get("parameters") or {},
+            )
+            if name not in self._search_order:
+                self._search_order.insert(max(0, len(self._search_order) - 1), name)
+
+    def parse(self, text: str) -> CommandSpec | None:
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            return None
+        head, _, tail = stripped.partition(" ")
+        canonical = self._aliases.get(head.lower())
+        if canonical is None:
+            return CommandSpec(
+                name="unknown", kind="client", description="",
+                args=tail.strip(), raw=stripped,
+                display_label=f"{stripped} — not implemented",
+                short_label=f"unknown: {stripped}",
+            )
+        base = self._commands[canonical]
+        return CommandSpec(
+            name=base.name, kind=base.kind, description=base.description,
+            usage=base.usage,
+            args=tail.strip(), raw=stripped,
+            display_label=base.display_label, short_label=base.short_label,
+            parameters=base.parameters,
+        )
+
+    def labels(self) -> tuple[str, ...]:
+        return tuple(
+            f"{self._commands[name].display_label or self._commands[name].short_label}"
+            for name in self._search_order
+        )
+
+    def is_slash(self, text: str) -> bool:
+        return text.strip().startswith("/")
+
+    def get(self, name: str) -> CommandSpec | None:
+        return self._commands.get(name)
+
+    def search(self, query: str) -> list[CommandSpec]:
+        normalised = query.strip().lower()
+        if not normalised:
+            return [self._commands[name] for name in self._search_order]
+        if normalised.startswith("/"):
+            prefix = normalised[1:]
+            scored: list[tuple[int, CommandSpec]] = []
+            for name in self._search_order:
+                spec = self._commands[name]
+                short = spec.name
+                if short.startswith(prefix) or name.startswith(prefix):
+                    score = 0 if short.startswith(prefix) else 1
+                    scored.append((score, spec))
+                    continue
+                if prefix and prefix in spec.short_label.lower():
+                    scored.append((2, spec))
+            scored.sort(
+                key=lambda item: (item[0], self._search_order.index(item[1].name))
+            )
+            return [spec for _, spec in scored]
+
+        words = [w for w in normalised.split() if w]
+        scored: list[tuple[int, CommandSpec]] = []
+        for name in self._search_order:
+            spec = self._commands[name]
+            haystack = spec.short_label.lower()
+            if all(w in haystack for w in words):
+                longest = max(len(w) for w in words)
+                scored.append((len(haystack) - longest, spec))
+        scored.sort(
+            key=lambda item: (item[0], self._search_order.index(item[1].name))
+        )
         return [spec for _, spec in scored]
 
-    words = [w for w in normalised.split() if w]
-    scored: list[tuple[int, CommandSpec]] = []
-    for name in _SEARCH_ORDER:
-        spec = _COMMANDS[name]
-        haystack = spec.short_label.lower()
-        if all(w in haystack for w in words):
-            longest = max(len(w) for w in words)
-            scored.append((len(haystack) - longest, spec))
-    scored.sort(key=lambda item: (item[0], _SEARCH_ORDER.index(item[1].name)))
-    return [spec for _, spec in scored]
+
+__all__ = ["CommandKind", "CommandRegistry", "CommandSpec"]

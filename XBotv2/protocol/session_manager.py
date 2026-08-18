@@ -13,7 +13,7 @@ import yaml
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.application import start_application
-from XBotv2.application.operations import OperationError
+from XBotv2.core.errors import OperationError
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.models import SessionSummary, ThreadSummary

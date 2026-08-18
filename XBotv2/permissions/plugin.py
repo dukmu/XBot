@@ -12,8 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.errors import OperationError
 from XBotv2.core.tools import ToolCall
 from XBotv2.permissions.guard import make_permission_guard
+from XBotv2.permissions.commands import PERMISSIONS_COMMANDS
 from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
     requested_permission_rule,
@@ -25,6 +27,22 @@ from XBotv2.permissions.system import (
 )
 
 _KEEP_PARENT = object()
+
+
+def reload_live_policies(ctx: Any) -> None:
+    """Rebuild active permission and sandbox objects after config changes."""
+    services = ctx.services
+    definition = services.agents.active_definition()
+    base_config = services.agents.runtime_config(definition)
+    _apply_live_policies(ctx, base_config)
+    if definition is not None:
+        ctx.services.permissions.configure_agent(definition.permissions)
+
+
+def _apply_live_policies(ctx: Any, config: Any) -> None:
+    """Apply one already-resolved policy to live runtime objects."""
+    ctx.services.permissions.replace_rules(config.permissions)
+    ctx.services.sandbox.replace_config(config.sandbox)
 
 
 class PermissionsService:
@@ -74,6 +92,54 @@ class PermissionsService:
         self._base_config = self._as_dict(config)
         self.configure(self._base_config, parent=self._parent)
 
+    async def update_session_policy(
+        self,
+        *,
+        paths: Any,
+        session_id: str,
+        contexts: list[Any],
+        permissions: dict[str, str] | None = None,
+        remove_permissions: list[str] | None = None,
+        sandbox: dict[str, Any] | None = None,
+        remove_sandbox: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a session policy patch and apply it to every live thread."""
+        from contextlib import AsyncExitStack
+
+        for ctx in contexts:
+            if ctx.turn_lock.locked():
+                raise OperationError(
+                    "thread_busy",
+                    "Cannot update session policy while a turn is active.",
+                    retryable=True,
+                )
+            registry = ctx.services.get("jobs")
+            if registry is not None and registry.is_busy():
+                raise OperationError(
+                    "thread_busy",
+                    "Cannot update session policy while a background task "
+                    "is active.",
+                    retryable=True,
+                )
+        async with AsyncExitStack() as stack:
+            for ctx in sorted(contexts, key=lambda item: item.thread_id):
+                await stack.enter_async_context(ctx.turn_lock)
+            if not contexts:
+                raise OperationError(
+                    "thread_not_active",
+                    "Session policy updates require one active thread.",
+                )
+            policy = contexts[0].services.settings.patch_session_policy(
+                session_id=session_id,
+                permissions=permissions,
+                remove_permissions=remove_permissions or (),
+                sandbox=sandbox,
+                remove_sandbox=remove_sandbox or (),
+            )
+            for ctx in contexts:
+                reload_live_policies(ctx)
+        return policy
+
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
         if value is None:
@@ -91,7 +157,7 @@ class PermissionsService:
 
 
 class PermissionsComponent:
-    inject = ["session", "tools", "approval", "variables"]
+    inject = ["session", "tools", "approval", "variables", "commands"]
     """Register the permission system as ``ctx.permissions`` and its guard."""
 
     name = "xbot.permissions"
@@ -104,6 +170,8 @@ class PermissionsComponent:
             parent=config.get("parent_permission_system"),
         )
         ctx.set("permissions", permissions)
+        for command in PERMISSIONS_COMMANDS:
+            ctx.commands.register(command)
 
         async def record_permission_decision(
             event: dict[str, Any],

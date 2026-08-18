@@ -58,12 +58,7 @@ from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.loader import load_runtime_config
-from XBotv2.application.operations import (
-    OperationError,
-    fork_session as fork_runtime_session,
-    select_agent,
-    select_provider,
-)
+from XBotv2.core.errors import OperationError
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.commands import execute_command, list_commands
 from XBotv2.protocol.session_manager import (
@@ -71,6 +66,8 @@ from XBotv2.protocol.session_manager import (
     SessionNotFound,
     ThreadNotActive,
 )
+from XBotv2.session.runtime import require_idle
+from XBotv2.session.session import fork_session as fork_runtime_session
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -264,7 +261,7 @@ class XBotACPAgent:
             forked_id = await fork_runtime_session(
                 self.paths,
                 session_id,
-                *contexts,
+                contexts,
             )
         except OperationError as exc:
             raise RequestError.invalid_params({
@@ -338,9 +335,9 @@ class XBotACPAgent:
         runtime = await self._runtime(session_id)
         try:
             if config_id == "agent":
-                await select_agent(runtime, value)
+                await _select_agent(runtime, value)
             elif config_id == "provider":
-                await select_provider(runtime, value)
+                await _select_provider(runtime, value)
             else:
                 raise RequestError.invalid_params({"configId": config_id})
         except OperationError as exc:
@@ -732,6 +729,22 @@ def _workspace(cwd: str) -> str:
     if not path.is_absolute() or not path.is_dir():
         raise RequestError.invalid_params({"cwd": cwd})
     return str(path.resolve())
+
+
+async def _select_agent(runtime: Any, name: str) -> None:
+    """Activate one primary Agent under the runtime's turn lock."""
+    require_idle(runtime, "switch Agent")
+    async with runtime.turn_lock:
+        await runtime.services.agents.select(name)
+    runtime.provider_name = runtime.engine.settings.provider
+
+
+async def _select_provider(runtime: Any, name: str) -> None:
+    """Select one provider under the runtime's turn lock."""
+    require_idle(runtime, "switch provider")
+    async with runtime.turn_lock:
+        await runtime.services.agents.select_provider(name)
+    runtime.provider_name = name
 
 
 def _session_metadata(paths: RuntimePaths, session_id: str) -> dict[str, Any]:

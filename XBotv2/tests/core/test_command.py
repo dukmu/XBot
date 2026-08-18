@@ -3,28 +3,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from XBotv2.core.commands import Command, CommandResult
 
-from XBotv2.tui.command import (
-    CommandSpec,
-    known_command_labels,
-    parse_slash_command,
-    register_server_commands,
-    search_commands,
-)
+from XBotv2.tui.command import CommandRegistry
 
 
-@pytest.fixture(autouse=True)
-def restore_command_registry(monkeypatch):
-    from XBotv2.tui import command
-
-    monkeypatch.setattr(command, "_ALIASES", dict(command._ALIASES))
-    monkeypatch.setattr(command, "_COMMANDS", dict(command._COMMANDS))
-    monkeypatch.setattr(command, "_SEARCH_ORDER", list(command._SEARCH_ORDER))
+def _registry() -> CommandRegistry:
+    return CommandRegistry.default()
 
 
 # ----------------------------------------------------------------------
@@ -33,19 +21,9 @@ def restore_command_registry(monkeypatch):
 
 
 def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
-    results = search_commands("")
+    results = _registry().search("")
     assert [spec.name for spec in results] == [
         "help",
-        "status",
-        "provider",
-        "agent",
-        "clear",
-        "undo",
-        "fork",
-        "tasks",
-        "task",
-        "permission",
-        "sandbox",
         "clear-screen",
         "thinking",
         "details",
@@ -55,26 +33,27 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(search_commands("   ")) == 16
+    assert len(_registry().search("   ")) == 6
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
-    results = search_commands("/c")
+    results = _registry().search("/c")
     names = [spec.name for spec in results]
-    assert names[0] == "clear"
-    assert "help" in names
+    assert names[0] == "clear-screen"
 
 
 def test_search_commands_slash_prefix_st_returns_status() -> None:
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {"name": "status", "slash": "/status", "description": "show current status"}
     ])
-    results = search_commands("/st")
+    results = registry.search("/st")
     assert results[0].name == "status"
 
 
 def test_server_command_alias_ignores_usage_parameters() -> None:
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {
             "name": "agent",
             "slash": "/agent [list|status|use <name>]",
@@ -82,67 +61,70 @@ def test_server_command_alias_ignores_usage_parameters() -> None:
         }
     ])
 
-    spec = parse_slash_command("/agent list")
+    spec = registry.parse("/agent list")
 
     assert spec is not None
     assert spec.name == "agent"
-    assert spec.kind == "client"
+    assert spec.kind == "server"
     assert spec.args == "list"
 
 
 def test_search_commands_slash_prefix_no_match_returns_empty() -> None:
-    assert search_commands("/xyz") == []
+    assert _registry().search("/xyz") == []
 
 
 def test_search_commands_is_case_insensitive() -> None:
-    lower = [s.name for s in search_commands("/c")]
-    upper = [s.name for s in search_commands("/C")]
+    registry = _registry()
+    lower = [s.name for s in registry.search("/c")]
+    upper = [s.name for s in registry.search("/C")]
     assert lower == upper
 
 
 def test_search_commands_falls_back_to_substring() -> None:
-    # "h" matches "help" (prefix) and "clear" (substring via "the").
-    results = search_commands("/h")
+    results = _registry().search("/h")
     names = [spec.name for spec in results]
     assert "help" in names
     assert "clear-screen" in names
 
 
 def test_search_commands_deduplicates_results() -> None:
-    results = search_commands("/")
+    results = _registry().search("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 16
+    assert len(names) == len(set(names)) == 6
 
 
-def test_register_server_commands_adds_dynamic_completion() -> None:
-    register_server_commands([
+def test_merge_server_adds_dynamic_completion() -> None:
+    registry = _registry()
+    registry.merge_server([
         {"name": "status", "slash": "/status", "description": "show current status"}
     ])
 
-    assert [spec.name for spec in search_commands("/st")][0] == "status"
-    assert parse_slash_command("/status").name == "status"
+    assert [spec.name for spec in registry.search("/st")][0] == "status"
+    assert registry.parse("/status").name == "status"
 
 
-def test_register_server_commands_replaces_previous_server_catalog() -> None:
-    register_server_commands([
+def test_merge_server_replaces_previous_server_catalog() -> None:
+    registry = _registry()
+    registry.merge_server([
         {"name": "old", "slash": "/old", "description": "old command"}
     ])
-    register_server_commands([
+    registry.merge_server([
         {"name": "new", "slash": "/new", "description": "new command"}
     ])
 
-    assert parse_slash_command("/old").name == "unknown"
-    assert parse_slash_command("/new").name == "new"
+    assert registry.parse("/old").name == "unknown"
+    assert registry.parse("/new").name == "new"
 
 
 def test_server_catalog_cannot_override_client_commands() -> None:
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {"name": "help", "slash": "/help", "description": "remote help"},
         {"name": "remote", "slash": "/q", "description": "remote alias"},
     ])
 
-    assert parse_slash_command("/help").kind == "client"
-    assert parse_slash_command("/q").name == "exit"
+    assert registry.parse("/help").kind == "client"
+    assert registry.parse("/q").name == "exit"
 
 
 # ----------------------------------------------------------------------
@@ -151,28 +133,28 @@ def test_server_catalog_cannot_override_client_commands() -> None:
 
 
 def test_search_commands_palette_query_finds_help() -> None:
-    results = search_commands("help")
+    results = _registry().search("help")
     assert any(spec.name == "help" for spec in results)
 
 
 def test_search_commands_palette_query_word_match() -> None:
-    results = search_commands("clear transcript")
+    results = _registry().search("clear transcript")
     assert [spec.name for spec in results] == ["clear-screen"]
 
 
 def test_search_commands_palette_query_no_match() -> None:
-    assert search_commands("totally unknown") == []
+    assert _registry().search("totally unknown") == []
 
 
 def test_search_commands_palette_query_returns_only_matching() -> None:
-    results = search_commands("quit")
+    results = _registry().search("quit")
     assert [spec.name for spec in results] == ["exit"]
 
 
-def test_known_command_labels_preserves_stable_order() -> None:
-    labels = known_command_labels()
+def test_labels_preserves_stable_order() -> None:
+    labels = _registry().labels()
     assert labels[0].startswith("help")
-    assert any("exit" in l for l in labels)
+    assert any("exit" in label for label in labels)
 
 
 # ----------------------------------------------------------------------
@@ -181,7 +163,7 @@ def test_known_command_labels_preserves_stable_order() -> None:
 
 
 def test_command_spec_has_kind() -> None:
-    spec = parse_slash_command("/help")
+    spec = _registry().parse("/help")
     assert spec is not None
     assert spec.kind == "client"
     assert spec.description == "Show commands or detailed help for one command"
@@ -189,28 +171,30 @@ def test_command_spec_has_kind() -> None:
 
 
 def test_server_command_has_kind_server() -> None:
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {"name": "deploy", "slash": "/deploy", "description": "deploy app",
          "parameters": {"--env": "target environment"}}
     ])
-    spec = parse_slash_command("/deploy")
+    spec = registry.parse("/deploy")
     assert spec is not None
     assert spec.kind == "server"
     assert spec.parameters["--env"] == "target environment"
 
 
 def test_register_prompt_commands() -> None:
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},
         {"name": "code-review", "description": "Review code", "kind": "prompt"},
     ])
 
-    spec = parse_slash_command("/git-release")
+    spec = registry.parse("/git-release")
     assert spec is not None
     assert spec.kind == "prompt"
     assert spec.description == "Create releases"
 
-    spec2 = parse_slash_command("/code-review")
+    spec2 = registry.parse("/code-review")
     assert spec2 is not None
     assert spec2.kind == "prompt"
 
@@ -221,40 +205,38 @@ def test_register_prompt_commands() -> None:
 
 
 def test_get_command_returns_client_command() -> None:
-    from XBotv2.tui.command import get_command
-    spec = get_command("help")
+    spec = _registry().get("help")
     assert spec is not None
     assert spec.kind == "client"
     assert spec.name == "help"
 
 
 def test_get_command_returns_server_command() -> None:
-    from XBotv2.tui.command import get_command
-
-    register_server_commands([
+    registry = _registry()
+    registry.merge_server([
         {"name": "deploy", "slash": "/deploy", "description": "deploy app"}
     ])
-    spec = get_command("deploy")
+    spec = registry.get("deploy")
     assert spec is not None
     assert spec.kind == "server"
 
 
 def test_get_command_returns_none_for_unknown() -> None:
-    from XBotv2.tui.command import get_command
-    assert get_command("nonexistent") is None
+    assert _registry().get("nonexistent") is None
 
 
 # ----------------------------------------------------------------------
-# parse_slash_command detaches kind from CommandSpec
+# parse detaches kind from CommandSpec
 # ----------------------------------------------------------------------
 
 
-def test_parse_slash_command_preserves_args_for_skill() -> None:
-    register_server_commands([
+def test_parse_preserves_args_for_skill() -> None:
+    registry = _registry()
+    registry.merge_server([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},
     ])
 
-    spec = parse_slash_command("/git-release Create v2.1.0")
+    spec = registry.parse("/git-release Create v2.1.0")
     assert spec is not None
     assert spec.name == "git-release"
     assert spec.kind == "prompt"
@@ -287,110 +269,3 @@ async def test_plugin_command_registry_owns_server_dispatch() -> None:
     result = await execute_command(ctx, "sample", ["a", "b"], raw_args="a b")
 
     assert result["data"]["message"] == "sample:a b"
-
-
-@pytest.mark.asyncio
-async def test_task_commands_use_typed_transport_operations(tmp_path) -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    task = {
-                "task_id": "task-1",
-                "kind": "shell",
-                "status": "running",
-                "command": "sleep 30",
-    }
-    transport = SimpleNamespace(
-        list_tasks=AsyncMock(return_value={"tasks": [task]}),
-        stop_task=AsyncMock(return_value={"matched_count": 1, "tasks": [task]}),
-        stop_all_tasks=AsyncMock(
-            return_value={"matched_count": 1, "tasks": [task]}
-        ),
-    )
-    session = TerminalSession(
-        session_id="s",
-        thread_id="t",
-        workspace_root=tmp_path,
-        transport=transport,
-    )
-
-    listed = await session.run_builtin_command("tasks", ["ps"])
-    stopped = await session.run_builtin_command("task", ["stop", "task-1"])
-    stopped_all = await session.run_builtin_command("task", ["stopall"])
-
-    assert listed.data["tasks"][0]["task_id"] == "task-1"
-    assert stopped.message == "Stopped background task task-1."
-    assert stopped_all.message == "Stopped 1 background task(s)."
-
-
-@pytest.mark.asyncio
-async def test_history_builtins_use_typed_transport_operations(tmp_path) -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    transport = SimpleNamespace(
-        clear_history=AsyncMock(
-            return_value={"removed_turns": 2, "messages": []}
-        ),
-        undo_history=AsyncMock(
-            return_value={
-                "removed_turns": 1,
-                "messages": [{"role": "user", "content": "kept"}],
-            }
-        ),
-        fork_session=AsyncMock(
-            return_value={"session_id": "forked", "source_session_id": "s"}
-        ),
-    )
-    session = TerminalSession(
-        session_id="s",
-        thread_id="t",
-        workspace_root=tmp_path,
-        transport=transport,
-    )
-
-    cleared = await session.run_builtin_command("clear", [])
-    undone = await session.run_builtin_command("undo", ["1"])
-    forked = await session.run_builtin_command("fork", [])
-
-    assert cleared.history == []
-    assert undone.history == [{"role": "user", "content": "kept"}]
-    assert forked.data["session_id"] == "forked"
-    transport.undo_history.assert_awaited_once_with(
-        session_id="s", thread_id="t", count=1
-    )
-
-
-@pytest.mark.asyncio
-async def test_policy_builtins_use_session_policy_resource(tmp_path) -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    transport = SimpleNamespace(
-        get_session_policy=AsyncMock(
-            return_value={"permissions": {}, "sandbox": {}}
-        ),
-        update_session_policy=AsyncMock(
-            return_value={
-                "permissions": {"allow": [{"tool": "shell"}]},
-                "sandbox": {},
-            }
-        ),
-    )
-    session = TerminalSession(
-        session_id="s",
-        thread_id="t",
-        workspace_root=tmp_path,
-        transport=transport,
-    )
-
-    status = await session.run_builtin_command("permission", [])
-    await session.run_builtin_command("permission", ["set", "shell", "allow"])
-    await session.run_builtin_command("permission", ["reset", "shell"])
-
-    assert status.message == "Session permission policy: {}"
-    assert transport.update_session_policy.await_args_list[0].kwargs == {
-        "session_id": "s",
-        "permissions": {"shell": "allow"},
-    }
-    assert transport.update_session_policy.await_args_list[1].kwargs == {
-        "session_id": "s",
-        "remove_permissions": ["shell"],
-    }

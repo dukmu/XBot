@@ -24,6 +24,7 @@
 
 - id: persistence
   name: persistence
+  reloadable: false
   config:
     provider: ${provider_name}
 
@@ -32,9 +33,11 @@
 
 - id: agents-service
   name: agents.service_component
+  reloadable: false
 
 - id: session
   name: session
+  reloadable: false
   config:
     paths: ${paths}
     session_id: ${session_id}
@@ -44,8 +47,12 @@
 
 - id: jobs
   name: jobs
+  reloadable: false
   config:
     max_concurrent_subagents: 4
+
+- id: commands
+  name: commands
 
 - id: llm
   name: llm
@@ -148,9 +155,7 @@
 
 - id: agentloop
   name: agentloop.factory
-
-- id: commands
-  name: commands
+  reloadable: false
 
 - id: context_builder
   name: context_builder

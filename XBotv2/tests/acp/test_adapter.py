@@ -413,7 +413,12 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
     assert response.stop_reason == "end_turn"
     assert response.usage is not None
     assert response.usage.total_tokens == 6
-    assert connection.updates[0][1].content.text == "real runtime"
+    content_updates = [
+        update
+        for _, update in connection.updates
+        if getattr(update, "content", None) is not None
+    ]
+    assert content_updates[0].content.text == "real runtime"
     assert [message.content for message in forked_runtime.engine.messages] == [
         "hello",
         "real runtime",

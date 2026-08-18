@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -179,6 +180,48 @@ def parse_provider_config(
         if env_name in os.environ:
             values["api_key"] = os.environ[env_name]
     return ProviderConfig.model_validate(values)
+
+
+def merged_provider_config(paths: Any, workspace_root: Path) -> dict[str, Any]:
+    """Merge the ``llm`` entry config across all configuration layers.
+
+    The LLM plugin owns its own tree entry id; this is the single place that
+    extracts ``llm`` from a plugin-tree document so application code never
+    hardcodes module ids.
+    """
+    from XBotv2.config.tree import DEFAULT_TREE
+    import yaml
+
+    def llm_config(document: list[dict[str, Any]]) -> dict[str, Any]:
+        for entry in document:
+            if entry.get("id") == "llm":
+                return dict(entry.get("config") or {})
+        return {}
+
+    merged: dict[str, Any] = {}
+    for source in (
+        DEFAULT_TREE,
+        paths.config_dir / "plugins.yaml",
+        Path(workspace_root) / ".xbot" / "plugins.yaml",
+    ):
+        path = Path(source)
+        if not path.is_file():
+            continue
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        merged = _deep_merge(merged, llm_config(document))
+    return merged
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        merged[key] = (
+            _deep_merge(current, value)
+            if isinstance(current, dict) and isinstance(value, dict)
+            else value
+        )
+    return merged
 
 
 __all__ = [

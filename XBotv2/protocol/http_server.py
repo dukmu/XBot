@@ -71,28 +71,21 @@ from XBotv2.protocol.models import (
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.loader import load_runtime_config
-from XBotv2.application.operations import (
-    OperationError,
-    clear_history,
-    fork_session,
-    reload_agents,
-    reload_config,
-    select_effort,
-    select_agent,
-    select_provider,
-    stop_all_tasks,
-    stop_task,
-    task_snapshots,
-    undo_history,
-    update_session_policy,
-)
+from XBotv2.core.errors import OperationError
 from XBotv2.config.policy import (
     load_session_policy,
 )
-from XBotv2.session.runtime import SessionBusy, SessionRuntime, run_turn_stream
+from XBotv2.session.runtime import (
+    SessionBusy,
+    SessionRuntime,
+    require_idle,
+    run_turn_stream,
+)
+from XBotv2.session.commands import reload_session
+from XBotv2.session.session import fork_session
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.commands import execute_command, list_commands
-from XBotv2.protocol.history import display_history
+from XBotv2.core.history import display_history
 from XBotv2.protocol.session_manager import (
     SessionExists,
     SessionManager,
@@ -355,7 +348,12 @@ def _register_routes(app: FastAPI) -> None:
             for (active_session_id, _), ctx in active.items()
             if active_session_id == session_id
         ]
-        policy = await update_session_policy(
+        if not contexts:
+            raise OperationError(
+                "thread_not_active",
+                "Session policy updates require one active thread.",
+            )
+        policy = await contexts[0].services.permissions.update_session_policy(
             paths=manager.paths,
             session_id=session_id,
             contexts=contexts,
@@ -385,7 +383,7 @@ def _register_routes(app: FastAPI) -> None:
         forked_id = await fork_session(
             manager.paths,
             session_id,
-            *session_contexts,
+            session_contexts,
         )
         return ForkResponse(
             session_id=forked_id,
@@ -518,7 +516,10 @@ def _register_routes(app: FastAPI) -> None:
         payload: AgentSelectionRequest,
     ) -> AgentSelectionResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await select_agent(ctx, payload.name)
+        require_idle(ctx, "switch Agent")
+        async with ctx.turn_lock:
+            data = await ctx.services.agents.select(payload.name)
+        ctx.provider_name = data["provider"]
         return AgentSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -538,7 +539,9 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> AgentListResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await reload_agents(ctx)
+        require_idle(ctx, "reload Agents")
+        async with ctx.turn_lock:
+            data = await ctx.services.agents.reload_active()
         return AgentListResponse(
             active=data["active"],
             agents=[
@@ -565,7 +568,20 @@ def _register_routes(app: FastAPI) -> None:
         payload: ProviderSelectionRequest,
     ) -> ProviderSelectionResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await select_provider(ctx, payload.name, payload.model)
+        require_idle(ctx, "switch provider")
+        try:
+            async with ctx.turn_lock:
+                data = await ctx.services.agents.select_provider(
+                    payload.name, model=payload.model
+                )
+        except ValueError as exc:
+            code = (
+                "model_not_found"
+                if "Unknown model" in str(exc)
+                else "provider_not_found"
+            )
+            raise HttpServerError(code, str(exc), status=404) from exc
+        ctx.provider_name = data["provider"]
         return ProviderSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -582,7 +598,13 @@ def _register_routes(app: FastAPI) -> None:
         payload: EffortSelectionRequest,
     ) -> EffortSelectionResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await select_effort(ctx, payload.effort)
+        require_idle(ctx, "switch effort")
+        try:
+            async with ctx.turn_lock:
+                data = await ctx.services.agents.select_effort(payload.effort)
+        except ValueError as exc:
+            raise HttpServerError("unsupported_effort", str(exc), status=400) from exc
+        ctx.provider_name = data["provider"]
         return EffortSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -602,7 +624,7 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> ConfigReloadResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await reload_config(ctx)
+        data = await reload_session(ctx)
         # The server host owns the catalog listed by ``/providers``; keep it
         # in sync with the catalog the session just applied so the endpoint
         # reports the live configuration after a soft reload.
@@ -679,7 +701,9 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> HistoryMutationResponse:
         ctx = await manager.get(session_id, thread_id)
-        removed_turns = await clear_history(ctx)
+        require_idle(ctx, "rewrite history")
+        async with ctx.turn_lock:
+            removed_turns = await ctx.services.session.clear_history()
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -697,7 +721,9 @@ def _register_routes(app: FastAPI) -> None:
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
         ctx = await manager.get(session_id, thread_id)
-        messages = await undo_history(ctx, payload.count)
+        require_idle(ctx, "rewrite history")
+        async with ctx.turn_lock:
+            messages = await ctx.services.session.undo_history(payload.count)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -714,10 +740,12 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> TaskListResponse:
         ctx = await manager.get(session_id, thread_id)
+        registry = ctx.services.get("jobs")
+        tasks = registry.snapshots() if registry is not None else []
         return TaskListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            tasks=task_snapshots(ctx),
+            tasks=tasks,
         )
 
     @app.post(
@@ -730,7 +758,14 @@ def _register_routes(app: FastAPI) -> None:
         task_id: str,
     ) -> TaskStopResponse:
         ctx = await manager.get(session_id, thread_id)
-        task = await stop_task(ctx, task_id)
+        registry = ctx.services.get("jobs")
+        if registry is None:
+            raise OperationError("task_not_found", f"Unknown task: {task_id}")
+        job = registry.get_or_none(task_id)
+        if job is None:
+            raise OperationError("task_not_found", f"Unknown task: {task_id}")
+        await registry.cancel(task_id)
+        task = registry.snapshot(job)
         return TaskStopResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -747,7 +782,8 @@ def _register_routes(app: FastAPI) -> None:
         thread_id: str,
     ) -> TaskStopResponse:
         ctx = await manager.get(session_id, thread_id)
-        tasks = await stop_all_tasks(ctx)
+        registry = ctx.services.get("jobs")
+        tasks = await registry.stop_all() if registry is not None else []
         return TaskStopResponse(
             session_id=session_id,
             thread_id=thread_id,

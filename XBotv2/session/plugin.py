@@ -14,10 +14,11 @@ from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.filesystem.storage import ThreadStorage
 from XBotv2.session.session import Session
+from XBotv2.session.commands import SESSION_COMMANDS
 
 
 class SessionComponent:
-    inject = ['agents', 'child_applications']
+    inject = ['agents', 'child_applications', 'commands']
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
@@ -56,6 +57,7 @@ class SessionComponent:
             workspace_root=str(workspace_root),
         )
         session = Session(
+            ctx=ctx,
             agents=ctx.agents,
             session_id=session_id,
             thread_id=thread_id,
@@ -75,6 +77,8 @@ class SessionComponent:
         ctx.set("thread_paths", thread_paths)
         ctx.set("loop_state", state)
         ctx.set("storage", storage)
+        for command in SESSION_COMMANDS:
+            ctx.commands.register(command)
 
 
 plugin = SessionComponent()

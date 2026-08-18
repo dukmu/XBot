@@ -19,7 +19,6 @@ from XBotv2.tui.client import (
     _parse_permission_decision,
 )
 from XBotv2.tui.terminal import TerminalSession
-from XBotv2.tui.terminal import CommandOutcome
 from XBotv2.tui.command import CommandSpec
 
 
@@ -47,19 +46,23 @@ async def test_clear_dispatch_distinguishes_screen_and_history_commands():
 
 
 @pytest.mark.asyncio
-async def test_builtin_command_replaces_tui_history_from_typed_result():
+async def test_remote_command_replaces_tui_history_from_command_result():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     history = [{"role": "user", "content": "kept"}]
 
     class Handler:
         _connected = True
-        session = type("Session", (), {"run_builtin_command": AsyncMock(
-            return_value=CommandOutcome(
-                "Removed 1 conversation turn.",
-                {"removed_turns": 1},
-                history,
-            )
+        session = type("Session", (), {"run_command": AsyncMock(
+            return_value={
+                "data": {
+                    "command": "undo",
+                    "status": "ok",
+                    "message": "Removed 1 conversation turn.",
+                    "data": {"removed_turns": 1},
+                    "history": history,
+                }
+            }
         )})()
         state = TuiState()
         _cmd_clear = AsyncMock()
@@ -71,7 +74,7 @@ async def test_builtin_command_replaces_tui_history_from_typed_result():
 
     handler = Handler()
     await XBotTextualApp._dispatch_remote_command(handler, CommandSpec(
-        name="undo", kind="client", description="undo", raw="/undo",
+        name="undo", kind="server", description="undo", raw="/undo",
     ))
 
     handler._cmd_clear.assert_awaited_once()
@@ -84,16 +87,23 @@ async def test_builtin_command_replaces_tui_history_from_typed_result():
 
 
 @pytest.mark.asyncio
-async def test_builtin_command_refreshes_status_metadata() -> None:
+async def test_remote_command_refreshes_status_metadata() -> None:
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
         _connected = True
-        session = type("Session", (), {"run_builtin_command": AsyncMock(
-            return_value=CommandOutcome(
-                "Provider switched.",
-                {"provider": "minimax", "workspace_root": "/repo"},
-            )
+        session = type("Session", (), {"run_command": AsyncMock(
+            return_value={
+                "data": {
+                    "command": "provider",
+                    "status": "ok",
+                    "message": "Provider switched.",
+                    "data": {
+                        "provider": "minimax",
+                        "workspace_root": "/repo",
+                    },
+                }
+            }
         )})()
         state = TuiState(provider="old", workspace_root="/old")
         _append_local_notice = AsyncMock()
@@ -107,7 +117,7 @@ async def test_builtin_command_refreshes_status_metadata() -> None:
         handler,
         CommandSpec(
             name="provider",
-            kind="client",
+            kind="server",
             description="switch provider",
             args="use minimax",
             raw="/provider use minimax",
@@ -120,144 +130,12 @@ async def test_builtin_command_refreshes_status_metadata() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_command_lists_and_switches_catalog_model() -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    class FakeTransport:
-        def __init__(self):
-            self.switched = None
-
-        async def get_thread(self, **kwargs):
-            return {"provider": "minimax", "model": "Minimax-M3"}
-
-        async def list_providers(self):
-            return {
-                "default": "minimax",
-                "providers": [
-                    {
-                        "name": "minimax",
-                        "provider": "anthropic",
-                        "default_model": "Minimax-M3",
-                        "models": [
-                            {"model": "Minimax-M3"},
-                            {"model": "Minimax-M2.7"},
-                        ],
-                    }
-                ],
-            }
-
-        async def select_provider(
-            self, *, session_id, thread_id, name, model=None
-        ):
-            self.switched = (name, model)
-            return {
-                "provider": name,
-                "model": model,
-                "model_mode": "adaptive",
-            }
-
-    transport = FakeTransport()
-    session = TerminalSession(
-        session_id="s", thread_id="t", workspace_root="/ws", transport=transport
-    )
-
-    listed = await session.run_builtin_command("model", ["list"])
-    assert "Minimax-M3*" in listed.message
-    assert "Minimax-M2.7" in listed.message
-
-    used = await session.run_builtin_command("model", ["use", "Minimax-M2.7"])
-    assert transport.switched == ("minimax", "Minimax-M2.7")
-    assert "Minimax-M2.7" in used.message
-
-
-@pytest.mark.asyncio
-async def test_effort_command_shows_and_switches_tier() -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    class FakeTransport:
-        def __init__(self):
-            self.switched = None
-
-        async def get_thread(self, **kwargs):
-            return {
-                "provider": "openai",
-                "model": "gpt-5.6-luna",
-                "model_mode": "high",
-            }
-
-        async def list_providers(self):
-            return {
-                "providers": [
-                    {
-                        "name": "openai",
-                        "models": [
-                            {
-                                "model": "gpt-5.6-luna",
-                                "effort": ["low", "medium", "high"],
-                            }
-                        ],
-                    }
-                ],
-            }
-
-        async def select_effort(self, *, session_id, thread_id, effort):
-            self.switched = effort
-            return {
-                "provider": "openai",
-                "model": "gpt-5.6-luna",
-                "reasoning_effort": effort,
-                "model_mode": effort,
-                "available": ["low", "medium", "high"],
-            }
-
-    transport = FakeTransport()
-    session = TerminalSession(
-        session_id="s",
-        thread_id="t",
-        workspace_root="/ws",
-        transport=transport,
-    )
-    status = await session.run_builtin_command("effort", [])
-    assert "high (low, medium, high)" in status.message
-
-    switched = await session.run_builtin_command("effort", ["low"])
-    assert transport.switched == "low"
-    assert "Effort switched to low" in switched.message
-
-
-@pytest.mark.asyncio
-async def test_reload_command_applies_provider_config() -> None:
-    from XBotv2.tui.terminal import TerminalSession
-
-    class FakeTransport:
-        async def reload_config(self, *, session_id, thread_id):
-            return {
-                "reloaded": ["llm"],
-                "provider": "minimax",
-                "model": "Minimax-M3",
-                "model_mode": "adaptive",
-                "context_window": 1000000,
-                "errors": [],
-            }
-
-    session = TerminalSession(
-        session_id="s",
-        thread_id="t",
-        workspace_root="/ws",
-        transport=FakeTransport(),
-    )
-    outcome = await session.run_builtin_command("reload", [])
-    assert "Reloaded llm" in outcome.message
-    assert "minimax (Minimax-M3)" in outcome.message
-
-
-@pytest.mark.asyncio
-async def test_invalid_builtin_syntax_is_a_notice_not_tui_error() -> None:
+async def test_invalid_remote_syntax_is_a_notice_not_tui_error() -> None:
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
         _connected = True
-        session = type("Session", (), {"run_builtin_command": AsyncMock(
+        session = type("Session", (), {"run_command": AsyncMock(
             side_effect=ValueError("Usage: /undo [count]")
         )})()
         _append_local_notice = AsyncMock()
@@ -270,7 +148,7 @@ async def test_invalid_builtin_syntax_is_a_notice_not_tui_error() -> None:
         handler,
         CommandSpec(
             name="undo",
-            kind="client",
+            kind="server",
             description="undo",
             args="many",
             raw="/undo many",

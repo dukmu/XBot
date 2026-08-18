@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
+from XBotv2.agents.commands import AGENTS_COMMANDS
 from XBotv2.agents.loader import load_definitions
 from XBotv2.core import (
     Events,
@@ -77,7 +78,7 @@ class SubagentRunner:
 class AgentsPlugin:
     inject = [
         "session", "agents", "jobs", "tools", "prompts",
-        "data_root", "variables", "workspace_root",
+        "data_root", "variables", "workspace_root", "commands",
     ]
     """Register built-in/data-root Agent definitions and subagent job tools."""
 
@@ -108,7 +109,10 @@ class AgentsPlugin:
         })
         for definition in definitions.values():
             ctx.agents.register(definition)
+        for command in AGENTS_COMMANDS:
+            ctx.commands.register(command)
         ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(Events.SOFT_RELOAD, ctx.agents.rebind_on_soft_reload)
         if ctx.session is None or ctx.jobs is None:
             return
 

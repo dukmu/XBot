@@ -144,15 +144,17 @@ instead of replaying partial output.
 
 ## Soft Restart (`/reload`)
 
-`/reload` applies configuration changes to the live session without a process
-restart.  It re-reads the external plugin-tree layers — the global
-`<data_dir>/config/plugins.yaml` and the workspace
-`<workspace>/.xbot/plugins.yaml` — and hot-applies every entry through the
-loader: changed entries are re-applied with their new config, newly declared
-entries are mounted, and entries the overlay disables are unloaded.  The
-workspace overlay is re-applied by the `workspace_instructions` plugin (which
-also re-discovers `<workspace>/.agents/*.md`), and the active model client is
-re-bound from the merged provider catalog.
+`/reload` is a session command whose semantics is a *system soft restart*:
+it applies configuration changes to the live session without a process
+restart.  The LLM service validates the merged provider catalog first
+(fail-closed), then the `SOFT_RELOAD` event fans out — the loader
+re-applies the global `<data_dir>/config/plugins.yaml` layer (changed
+entries re-applied, new entries mounted, disabled entries unloaded), the
+`workspace_instructions` plugin re-applies the workspace
+`<workspace>/.xbot/plugins.yaml` overlay (also re-discovering
+`<workspace>/.agents/*.md`), and the agents service re-binds the active
+model client from the merged provider catalog.  `/agent reload` emits the
+same event for its narrower scope.
 
 The merged LLM provider catalog is validated before anything is touched: an
 invalid provider section fails the whole reload with `config_invalid` and the
@@ -161,10 +163,11 @@ missing active provider/model keeps the previous binding and is reported in
 `errors` (last-good semantics, matching dsh settings snapshots); the session
 never goes down because of a bad overlay.
 
-Session-lifecycle entries (`session`, `persistence`, `jobs`, `agentloop`,
-`agents-service`) cannot be re-applied live — the loop, message stores, and
-running jobs hold their state.  Overriding those entries in an overlay is
-reported as restart-required and only takes effect after a process restart.
+Session-lifecycle entries declare `reloadable: false` in the plugin tree
+(`session`, `persistence`, `jobs`, `agentloop`, `agents-service`) — the
+loop, message stores, and running jobs hold their state and cannot be
+re-applied live.  Overriding those entries in an overlay is reported as
+restart-required and only takes effect after a process restart.
 
 `AGENTS.md` is read before every context build and needs no reload.
 `/agent reload` remains the focused command for Agent definitions; `/reload`

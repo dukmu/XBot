@@ -24,6 +24,7 @@ from typing import Any
 
 import yaml
 
+from XBotv2.core.events import Events
 from xcore import Context, FiberState
 
 logger = logging.getLogger("loader")
@@ -41,6 +42,9 @@ class PluginEntry:
     name: str
     config: dict[str, Any] = field(default_factory=dict)
     disabled: bool = False
+    # False marks session-lifecycle entries whose live re-apply would destroy
+    # engine/session state; the soft-restart path skips them.
+    reloadable: bool = True
     inject: dict[str, Any] | list[str] | None = None
     isolate: dict[str, Any] | None = None
 
@@ -120,6 +124,7 @@ def _entry_from_dict(
         name=str(data["name"]),
         config=dict(resolved_config or {}),
         disabled=bool(_resolve_ref(data.get("disabled", False), values)),
+        reloadable=bool(_resolve_ref(data.get("reloadable", True), values)),
         inject=_resolve_ref(data.get("inject"), values),
         isolate=_resolve_ref(data.get("isolate"), values),
     )
@@ -184,6 +189,7 @@ class PluginTree:
                     name=entry.name,
                     config=_merge_config(existing.config, entry.config),
                     disabled=entry.disabled,
+                    reloadable=entry.reloadable,
                     inject=entry.inject if entry.inject is not None else existing.inject,
                     isolate=entry.isolate if entry.isolate is not None else existing.isolate,
                 )
@@ -467,8 +473,60 @@ class Loader:
                 unloaded.append(entry_id)
         return unloaded
 
+    async def apply_external_layer(
+        self,
+        path: Path,
+        values: dict[str, Any],
+    ) -> tuple[list[str], list[str]]:
+        """Re-apply one external plugin-tree layer to the live tree.
+
+        Generic soft-restart delta: reload changed entries, mount new ones,
+        unload disabled ones, and skip entries declared ``reloadable: false``.
+        Returns ``(reloaded_ids, notices)``; a failing entry keeps the last
+        good binding and is reported instead of aborting the restart.
+        """
+        patch = _config_layer(path, values)
+        reloaded: list[str] = []
+        notices: list[str] = []
+        for entry in patch.entries:
+            if not entry.reloadable:
+                notices.append(
+                    f"{entry.id}: cannot be hot-reloaded; restart required"
+                )
+                continue
+            try:
+                affected = await self.apply_patch(PluginTree([entry]))
+                if not entry.disabled and entry.id not in self.loaded_ids:
+                    notices.append(f"{entry.id}: reload failed; keeping last good")
+                reloaded.extend(affected)
+            except Exception as error:  # noqa: BLE001 - keep last good per entry
+                notices.append(f"{entry.id}: {error}")
+        return reloaded, notices
+
+    async def handle_soft_reload(self, event: Any) -> None:
+        """SOFT_RELOAD listener: re-apply the external tree for system scope."""
+        payload = event.event if isinstance(event.event, dict) else {}
+        if payload.get("scope") != "system":
+            return
+        path = payload.get("config_path")
+        values = payload.get("values")
+        if not path or not values:
+            return
+        reloaded, notices = await self.apply_external_layer(Path(path), values)
+        result = payload.setdefault("result", {})
+        result["reloaded"] = reloaded
+        result["errors"] = notices
+
+
 
 __all__ = ["LoadError", "Loader", "LoaderComponent", "PluginEntry", "PluginTree", "resolve_plugin_from_module"]
+
+
+def _config_layer(path: Path, values: dict[str, Any]) -> PluginTree:
+    """Read one external plugin-tree layer; a missing file is an empty layer."""
+    if not path.is_file():
+        return PluginTree([])
+    return PluginTree.from_yaml(path, values=values)
 
 
 class LoaderComponent:
@@ -482,6 +540,7 @@ class LoaderComponent:
     def apply(self, ctx: Context, config: Any = None) -> None:
         loader = Loader(ctx, tree=self._tree)
         ctx.set("loader", loader)
+        ctx.on(Events.SOFT_RELOAD, loader.handle_soft_reload)
         # XCore owns application teardown. Keep the loader's bookkeeping in
         # sync when its provider fiber is stopped; each child handle remains
         # idempotently disposable even if XCore already stopped it first.

@@ -10,7 +10,7 @@ from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from XBotv2.tui.command import CommandSpec, search_commands
+from XBotv2.tui.command import CommandRegistry, CommandSpec
 
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -67,8 +67,9 @@ class CommandPalette(ModalScreen[None]):
         Binding("escape", "dismiss", "Cancel", show=False),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, registry: CommandRegistry | None = None) -> None:
         super().__init__()
+        self._registry = registry or CommandRegistry.default()
         self._matches: list[CommandSpec] = []
         self._selected: int = 0
 
@@ -109,7 +110,7 @@ class CommandPalette(ModalScreen[None]):
         self._reapply_active()
 
     def _refresh_results(self, *, query: str = "") -> None:
-        self._matches = search_commands(query)
+        self._matches = self._registry.search(query)
         if self._selected >= len(self._matches):
             self._selected = 0
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from XBotv2.core.messages import ImageContent
+from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
@@ -19,6 +20,16 @@ logger = logging.getLogger("xbotv2.session")
 
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
+
+
+def require_idle(ctx: Any, action: str) -> None:
+    """Reject engine-mutating operations while a turn is active."""
+    if ctx.turn_lock.locked():
+        raise OperationError(
+            "thread_busy",
+            f"Cannot {action} while a turn is active.",
+            retryable=True,
+        )
 
 
 @dataclass

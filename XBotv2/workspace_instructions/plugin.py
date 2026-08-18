@@ -51,6 +51,7 @@ class WorkspaceInstructionsPlugin:
             return
 
         self._register_workspace_agents(ctx)
+        ctx.dispose(lambda: self._clear_workspace_agents(ctx))
 
         def inject_workspace_instructions(hook_ctx: EventContext) -> None:
             components = hook_ctx.context_components
@@ -89,7 +90,18 @@ class WorkspaceInstructionsPlugin:
             Events.AFTER_CONTEXT_COMPONENTS_BUILD,
             inject_workspace_instructions,
         )
+        ctx.on(Events.SOFT_RELOAD, self._reload_workspace_agents)
         await self._apply_workspace_patch(ctx, overlay)
+
+    async def _reload_workspace_agents(self, event: EventContext) -> None:
+        """Re-read workspace Agent definitions and the workspace overlay.
+
+        Registration is overlay-scoped by this plugin under an explicit
+        owner (event listeners run outside any plugin ``apply`` fiber), so
+        re-registering replaces the previous set instead of raising.
+        """
+        self._register_workspace_agents(self.ctx)
+        await self._apply_workspace_patch(self.ctx, self.workspace_root / ".xbot" / "plugins.yaml")
 
     def _register_workspace_agents(self, ctx: Any) -> None:
         """Discover and register workspace Agent definitions as overlays."""
@@ -99,11 +111,19 @@ class WorkspaceInstructionsPlugin:
         directory = self.workspace_root / ".agents"
         if not directory.is_dir():
             return
+        agents.unregister_owned(self.name, overlay=True)
         agents.register_markdown(
             directory,
             variables=ctx.variables,
             overlay=True,
+            owner=self.name,
         )
+
+    def _clear_workspace_agents(self, ctx: Any) -> None:
+        agents = getattr(ctx, "agents", None)
+        if agents is None:
+            return
+        agents.unregister_owned(self.name, overlay=True)
 
     async def _apply_workspace_patch(self, ctx: Any, overlay: Path) -> None:
         """Apply ``<workspace>/.xbot/plugins.yaml`` as a tree patch."""

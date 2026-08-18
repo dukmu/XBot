@@ -12,11 +12,12 @@ from typing import Any
 
 from XBotv2.core.jobs import JobKind
 from XBotv2.jobs.registry import JobRegistry
+from XBotv2.jobs.commands import JOBS_COMMANDS
 from XBotv2.core.events import EventContext, Events
 
 
 class JobsComponent:
-    inject = ['session']
+    inject = ['session', 'commands']
     """Register the job registry as ``ctx.jobs``."""
 
     name = "xbot.jobs"
@@ -25,6 +26,8 @@ class JobsComponent:
         max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
         registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
         ctx.set("jobs", registry)
+        for command in JOBS_COMMANDS:
+            ctx.commands.register(command)
 
         async def publish(event_name: str, snapshot: dict[str, Any]) -> None:
             await ctx.emit(event_name, EventContext(event=snapshot))

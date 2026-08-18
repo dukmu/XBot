@@ -6,7 +6,7 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
-from XBotv2.tui.command import CommandSpec, search_commands
+from XBotv2.tui.command import CommandRegistry, CommandSpec
 
 
 _MAX_ROWS = 6
@@ -39,8 +39,9 @@ class CompletionPopup(Vertical):
     }
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, registry: CommandRegistry | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._registry = registry or CommandRegistry.default()
         self._matches: list[CommandSpec] = []
         self._selected: int = 0
         self._visible: bool = False
@@ -70,7 +71,7 @@ class CompletionPopup(Vertical):
             self._rebuild_rows()
             return
 
-        matches = search_commands(stripped)[:_MAX_ROWS]
+        matches = self._registry.search(stripped)[:_MAX_ROWS]
         if not matches:
             self._matches = []
             self._selected = 0

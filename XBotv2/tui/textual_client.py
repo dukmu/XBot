@@ -29,12 +29,8 @@ from XBotv2.tui.client import (
     _parse_permission_decision,
 )
 from XBotv2.tui.command import (
+    CommandRegistry,
     CommandSpec,
-    get_command,
-    is_slash_command,
-    known_command_labels,
-    parse_slash_command,
-    register_server_commands,
 )
 from XBotv2.tui.command_palette import CommandPalette
 from XBotv2.tui.completion_popup import CompletionPopup
@@ -167,6 +163,7 @@ class XBotTextualApp(App[None]):
                 uds_path=uds_path,
             )
         self.session = config.create_terminal_session()
+        self.commands = CommandRegistry.default()
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
@@ -210,7 +207,7 @@ class XBotTextualApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
-        yield CompletionPopup(id="completion_popup")
+        yield CompletionPopup(id="completion_popup", registry=self.commands)
         with Horizontal(id="runtime_panels"):
             yield Collapsible(
                 TaskListWidget(id="task_list"),
@@ -339,7 +336,7 @@ class XBotTextualApp(App[None]):
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
                 if isinstance(commands, list):
-                    register_server_commands(commands)
+                    self.commands.merge_server(commands)
             except Exception:
                 logger.exception("failed to load server commands")
             self._connected = True
@@ -367,8 +364,8 @@ class XBotTextualApp(App[None]):
         self._refresh_all()
         if not text and not self._pending_images:
             return
-        if text and is_slash_command(text):
-            spec = parse_slash_command(text)
+        if text and self.commands.is_slash(text):
+            spec = self.commands.parse(text)
             if spec is not None and spec.kind == "server":
                 self.state.append_message("user", text)
                 await self._render_new_transcript_entries()
@@ -507,7 +504,7 @@ class XBotTextualApp(App[None]):
     def action_open_palette(self) -> None:
         """Open the command palette modal (Ctrl+P)."""
 
-        self.push_screen(CommandPalette())
+        self.push_screen(CommandPalette(registry=self.commands))
 
     def _current_tui_mode(self) -> Mode:
         """Derive the high-level Mode from existing TUI state predicates.
@@ -575,20 +572,14 @@ class XBotTextualApp(App[None]):
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
         try:
-            if spec.kind == "client":
-                outcome = await self.session.run_builtin_command(spec.name, parts)
-                message = outcome.message
-                metadata = outcome.data
-                history = outcome.history
-            else:
-                result = await self.session.run_command(
-                    spec.name, parts, spec.raw, kind=spec.kind
-                )
-                data = result.get("data") if isinstance(result, dict) else {}
-                message = str(data.get("message") or result)
-                command_data = data.get("data")
-                metadata = command_data if isinstance(command_data, dict) else data
-                history = data.get("history")
+            result = await self.session.run_command(
+                spec.name, parts, spec.raw, kind=spec.kind
+            )
+            data = result.get("data") if isinstance(result, dict) else {}
+            message = str(data.get("message") or result)
+            command_data = data.get("data")
+            metadata = command_data if isinstance(command_data, dict) else data
+            history = data.get("history")
         except ValueError as exc:
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
@@ -696,7 +687,7 @@ class XBotTextualApp(App[None]):
 
     async def _cmd_help(self, command_name: str | None = None) -> None:
         if command_name:
-            spec = get_command(command_name.strip().lstrip("/"))
+            spec = self.commands.get(command_name.strip().lstrip("/"))
             if spec is None:
                 await self._append_local_notice("Help", f"Unknown command: {command_name}")
                 return
@@ -721,7 +712,7 @@ class XBotTextualApp(App[None]):
                 lines.append(f"Usage: {spec.usage or spec.raw}")
             await self._append_local_notice("Help", "\n".join(lines))
             return
-        body = "Slash commands:\n" + "\n".join(known_command_labels())
+        body = "Slash commands:\n" + "\n".join(self.commands.labels())
         await self._append_local_notice("Help", body)
 
     async def _cmd_toggle_blocks(self, kind: str, argument: str) -> None:

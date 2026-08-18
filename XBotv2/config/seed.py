@@ -13,7 +13,6 @@ _INITIAL_PLUGINS_YAML = """\
 # - id: llm
 #   config:
 #     default: minimax
-plugins: []
 """
 
 

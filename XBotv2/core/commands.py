@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
+
+from XBotv2.core.errors import OperationError
 
 CommandHandler = Callable[[Any, str], Awaitable["CommandResult"]]
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -16,6 +19,69 @@ class CommandResult:
     status: Literal["ok", "error"] = "ok"
     data: Any = None
     history: list[dict[str, Any]] | None = None
+
+
+def split_command_args(raw_args: str) -> list[str]:
+    """Split one command's raw argument string with shell quoting rules."""
+    try:
+        return shlex.split(raw_args)
+    except ValueError as error:
+        raise ValueError(f"Invalid command syntax: {error}") from error
+
+
+def command_error(
+    message: str,
+    *,
+    code: str = "command_failed",
+) -> CommandResult:
+    """Build a failing command result without raising through the wire."""
+    return CommandResult(message, status="error", data={"code": code})
+
+
+def command_usage(usage: str) -> CommandResult:
+    return command_error(f"Usage: {usage}")
+
+
+def guard_command(handler: Callable[[Any, str], Awaitable[CommandResult]]):
+    """Convert handler failures into command error results.
+
+    Wraps one command handler so argument-parsing errors and rejected
+    application use cases surface as a normal ``CommandResult`` with
+    ``status="error"`` instead of raising through the wire endpoint.
+    """
+
+    async def wrapped(ctx: Any, raw_args: str) -> CommandResult:
+        try:
+            return await handler(ctx, raw_args)
+        except ValueError as error:
+            return command_error(str(error))
+
+    return wrapped
+
+
+async def run_command_operation(
+    coroutine: Any,
+    render: Any,
+) -> CommandResult:
+    """Run one use case and render it as a command result.
+
+    Command handlers use this instead of awaiting a use case directly:
+    ``OperationError`` / ``ValueError`` become a ``CommandResult`` with
+    ``status="error"`` (never a raised wire error), and ``render(data)`` may
+    return a ``CommandResult`` or a message string (data is then attached).
+    """
+    try:
+        data = await coroutine
+    except OperationError as error:
+        return CommandResult(str(error), status="error", data={"code": error.code})
+    except ValueError as error:
+        return CommandResult(
+            str(error), status="error", data={"code": "invalid_command"}
+        )
+    result = render(data)
+    if isinstance(result, CommandResult):
+        return result
+    return CommandResult(result, data=data)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,4 +107,13 @@ class Command:
             raise ValueError("prompt command must not define a handler")
 
 
-__all__ = ["Command", "CommandHandler", "CommandResult"]
+__all__ = [
+    "Command",
+    "CommandHandler",
+    "CommandResult",
+    "command_error",
+    "command_usage",
+    "guard_command",
+    "run_command_operation",
+    "split_command_args",
+]

@@ -130,6 +130,13 @@ class JobRegistry:
     def all(self) -> list[Job]:
         return list(self._jobs.values())
 
+    def is_busy(self) -> bool:
+        """Whether any job is still pending or running."""
+        return any(
+            job.status in {JobStatus.PENDING, JobStatus.RUNNING}
+            for job in self._jobs.values()
+        )
+
     def list(
         self,
         *,
@@ -390,6 +397,10 @@ class JobRegistry:
                 (job.result.data.get("usage") if job.result is not None else {}) or {}
             ),
         }
+
+    def snapshots(self) -> list[JobSnapshot]:
+        """Snapshot every live job in registration order."""
+        return [self.snapshot(job) for job in self.all()]
 
     @staticmethod
     def _snapshot_output(job: Job, *, full_output: bool) -> str:

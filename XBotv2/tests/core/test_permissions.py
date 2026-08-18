@@ -19,7 +19,6 @@ from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-from XBotv2.application.operations import update_session_policy
 from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.sandbox.policy import SandboxPolicy
 
@@ -255,7 +254,7 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
         "child", child_permissions, {"allow": [{"tool": "shell"}]}
     )
 
-    await update_session_policy(
+    await parent.services.permissions.update_session_policy(
         paths=paths,
         session_id="s",
         contexts=[parent, child],

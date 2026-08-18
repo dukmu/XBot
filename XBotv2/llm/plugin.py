@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.llm.service import LlmService, ModelService
+from XBotv2.llm.commands import LLM_COMMANDS
 
 
 def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
@@ -46,6 +47,11 @@ class LlmComponent:
     def apply(self, ctx: Any, config: Any = None) -> None:
         ctx.set("llm", build_llm_service(dict(config or {})))
         ctx.set("model", ModelService())
+        # The server host mounts this component without a command registry;
+        # register the LLM commands only where the session tree provides one.
+        if ctx.has("commands"):
+            for command in LLM_COMMANDS:
+                ctx.commands.register(command)
 
 
 plugin = LlmComponent()

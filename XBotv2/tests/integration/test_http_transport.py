@@ -477,6 +477,22 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await server.stop()
 
 
+@pytest.fixture(autouse=True)
+def _reset_tui_command_registry():
+    """Restore the TUI command module after tests that connect a real TUI.
+
+    A connected TUI merges the server command catalog into the module-level
+    ``tui.command`` registry; reset it so later suites (e.g. test_command)
+    see only the local client commands.
+    """
+    yield
+    from XBotv2.tui import command
+
+    command._ALIASES = dict(command._CLIENT_ALIASES)
+    command._COMMANDS = dict(command._CLIENT_COMMANDS)
+    command._SEARCH_ORDER = list(command._CLIENT_SEARCH_ORDER)
+
+
 @pytest_asyncio.fixture
 async def client(http_app) -> AsyncIterator[httpx.AsyncClient]:
     transport = ASGITransport(app=http_app)
@@ -1009,10 +1025,11 @@ async def test_http_server_hosts_sessions_from_multiple_workspaces(
 
 
 @pytest.mark.asyncio
-async def test_http_command_compatibility_route_only_exposes_plugins(
+async def test_http_command_plane_exposes_platform_builtins(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
+    """The command wire lists platform built-ins and executes them."""
     assert (await client.get("/commands")).status_code == 404
 
     open_response = await client.post(
@@ -1025,7 +1042,12 @@ async def test_http_command_compatibility_route_only_exposes_plugins(
     )
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
-    assert names == set()
+    assert {"status", "provider", "model", "effort", "reload",
+            "clear", "undo", "fork", "tasks", "task",
+            "permission", "sandbox"} <= names
+    # no_plugins excludes capability plugins: goal/skills/compact/agents
+    # commands must not leak into the directory.
+    assert not (names & {"goal", "compact"})
 
     result_response = await client.post(
         "/sessions/cmds/threads/t/commands",
@@ -1034,12 +1056,72 @@ async def test_http_command_compatibility_route_only_exposes_plugins(
     assert result_response.status_code == 200
     body = result_response.json()
     assert body["type"] == "command_result"
-    assert body["data"]["status"] == "error"
-    assert body["data"]["message"] == "Unknown server command: /status"
+    assert body["data"]["status"] == "ok"
+    assert "provider=" in body["data"]["message"]
     state_root = http_app.state.paths.session("cmds").thread("t").state_dir
     messages_path = state_root / "messages.jsonl"
     messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
     assert "command_result" not in messages
+
+
+@pytest.mark.asyncio
+async def test_http_builtin_commands_execute_through_command_plane(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """/provider /model /effort /reload /tasks run via POST /commands."""
+    await client.post(
+        "/sessions", json={"session_id": "builtin", "thread_id": "t"}
+    )
+
+    async def run(raw: str) -> dict:
+        response = await client.post(
+            "/sessions/builtin/threads/t/commands", json={"raw": raw}
+        )
+        assert response.status_code == 200
+        return response.json()["data"]
+
+    status = await run("/provider status")
+    assert status["status"] == "ok"
+    assert status["message"] == "Provider: default (test)"
+
+    listed = await run("/model list")
+    assert listed["status"] == "ok"
+    assert "default: test*" in listed["message"]
+    assert listed["data"]["current_model"] == "test"
+
+    switched = await run("/model use test")
+    assert switched["status"] == "ok"
+    assert switched["data"]["model"] == "test"
+
+    effort = await run("/effort")
+    assert effort["status"] == "ok"
+    assert "no effort tiers" in effort["message"]
+
+    reloaded = await run("/reload")
+    assert reloaded["status"] == "ok"
+    assert "Reloaded" in reloaded["message"]
+    assert reloaded["data"]["provider"] == "default"
+
+    tasks = await run("/tasks")
+    assert tasks["status"] == "ok"
+    assert tasks["message"] == "No background tasks."
+
+    unknown = await run("/provider use nope")
+    assert unknown["status"] == "error"
+    assert "Unknown provider" in unknown["message"]
+
+    usage = await run("/undo many")
+    assert usage["status"] == "error"
+    assert "Undo count must be a positive integer." in usage["message"]
+
+    policy = await run("/permission status")
+    assert policy["status"] == "ok"
+    assert "effective_permissions" in policy["data"]
+
+    sandbox = await run("/sandbox status")
+    assert sandbox["status"] == "ok"
+    assert "effective_sandbox" in sandbox["data"]
 
 
 @pytest.mark.asyncio

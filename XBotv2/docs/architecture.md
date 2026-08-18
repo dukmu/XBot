@@ -385,12 +385,30 @@ turn coroutines are connection-owned and are never restored.
 
 ## Unified Command System
 
-Command metadata uses `client`, `server`, and `prompt` kinds. The TUI owns
-client commands, fetches the session command catalog from the server, executes
-server commands through the command endpoint, and submits prompt expansions
-through the message endpoint. Plugins register human commands and Agent Tools
-as separate capabilities that may reuse private business methods. Ordinary
-model and MCP Tools do not become slash commands.
+Every executable slash command is registered by the plugin that owns it:
+the LLM component registers `/provider` `/model` `/effort`, the agents
+plugin `/agent`, session `/status` `/clear` `/undo` `/fork` `/reload`
+(system soft restart), jobs `/tasks` `/task`, permissions `/permission`,
+and sandbox `/sandbox` — all into the shared `ctx.commands` registry.
+`GET/POST
+/sessions/{sid}/threads/{tid}/commands` is the only command wire: clients
+discover the merged catalog and execute any command; results are detached
+notices that never enter model history.  UI-local commands
+(`exit` `help` `thinking` `details` `attach` `clear-screen`) stay
+client-side.  Plugins register human commands and Agent Tools as separate
+capabilities that may reuse private business methods.  Ordinary model and
+MCP Tools do not become slash commands.
+
+`application/` owns only startup/assembly; per-domain logic lives in plugin
+services and command handlers resolve those services at runtime.
+`core.commands` translates use-case failures into command results.  A
+system soft restart is the `SOFT_RELOAD` event: `/reload` (session) and
+`/agent reload` emit it, the LLM service validates its merged catalog
+fail-closed first, the loader re-applies the external tree layer, the
+agents service rebinds the active model, and workspace_instructions
+re-reads its workspace sources.  Machine clients (SDK/ACP) keep using the
+typed resource endpoints; human UIs use the command plane only, so the
+TUI, Web, and future clients share one command model.
 
 ## Persistence
 

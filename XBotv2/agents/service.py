@@ -15,6 +15,7 @@ from xcore import bound_effect, current_plugin_name
 from XBotv2.agents.loader import load_definitions
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.errors import OperationError
 from XBotv2.core.loop import (
     DEFAULT_MAX_ITERATIONS,
     LoopFactoryOptions,
@@ -63,6 +64,16 @@ class AgentRegistry:
                 layer.pop(name, None)
                 return True
         return False
+
+    def unregister_owner(self, owner: str, *, overlay: bool = True) -> list[str]:
+        """Remove every registration owned by ``owner`` in one layer."""
+        layer = self._overlay if overlay else self._base
+        owners = self._overlay_owners if overlay else self._base_owners
+        removed = [name for name, own in owners.items() if own == owner]
+        for name in removed:
+            owners.pop(name, None)
+            layer.pop(name, None)
+        return removed
 
     def get(self, name: str) -> AgentDefinition | None:
         return self._overlay.get(name) or self._base.get(name)
@@ -330,33 +341,27 @@ class AgentsService:
             "model_mode": model_config.model_mode,
         }
 
-    async def apply_provider_catalog(
-        self,
-        default: str,
-        providers: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Hot-swap the LLM provider catalog and rebuild the active client.
+    async def rebind_active(self) -> dict[str, Any]:
+        """Rebuild the active model client from the current catalog.
 
-        The active model client is rebuilt only when the active
-        provider/model still resolves in the new catalog; otherwise the
-        previous client is kept and the error is reported (last-good-valid
-        semantics, matching dsh settings snapshots).
+        The catalog is configured by the LLM plugin; this method only
+        re-resolves the active provider/model and rebinds the engine.  When
+        the active binding no longer resolves, the previous client is kept
+        and the error is reported (last-good semantics).
         """
         ctx = self.ctx
-        llm = ctx.llm
-        llm.configure(default, providers)
         engine = ctx.engine
         provider_name = engine.settings.provider
         model_name = engine.settings.model
         try:
-            entry = llm.provider_config(
+            entry = ctx.llm.provider_config(
                 provider_name,
                 require_key=not engine.settings.llm_is_override,
             )
             model_config = entry.resolve(model_name)
             if not engine.settings.llm_is_override:
                 ctx.model.replace(
-                    llm.create(
+                    ctx.llm.create(
                         entry, model_config, media_root=ctx.loop_state.media_root
                     )
                 )
@@ -376,7 +381,6 @@ class AgentsService:
                 "context_window": model_config.max_context_tokens,
             })
             return {
-                "reloaded": ["llm"],
                 "provider": provider_name,
                 "model": model_config.model,
                 "model_mode": model_config.model_mode,
@@ -385,9 +389,8 @@ class AgentsService:
             }
         except Exception as error:  # noqa: BLE001 - keep last good binding
             return {
-                "reloaded": ["llm"],
                 "provider": provider_name,
-                "model": engine.settings.model,
+                "model": model_name,
                 "model_mode": engine.settings.model_mode,
                 "context_window": engine.context_window,
                 "errors": [f"active {provider_name}/{model_name}: {error}"],
@@ -447,6 +450,78 @@ class AgentsService:
             "model_mode": model_config.model_mode,
             "available": tiers,
         }
+
+    async def select(self, name: str) -> dict[str, Any]:
+        """Activate one primary Agent (caller owns idle-check and turn lock).
+
+        Unknown or subagent-only names fail closed with
+        ``OperationError("agent_not_found")``.
+        """
+        definition = self.definition(name)
+        if definition is None or definition.mode == "subagent":
+            raise OperationError("agent_not_found", f"Unknown primary Agent: {name}")
+        if definition.name != self.ctx.engine.settings.agent_name:
+            await self.activate(definition.name)
+        return {
+            "active": definition.name,
+            "agent_name": definition.name,
+            "provider": self.ctx.engine.settings.provider,
+            "model": self.ctx.engine.settings.model,
+            "model_mode": self.ctx.engine.settings.model_mode,
+            "context_window": self.ctx.engine.context_window,
+        }
+
+    async def reload_active(self) -> dict[str, Any]:
+        """Reload Agent definitions and notify a soft restart.
+
+        Caller owns idle-check and turn lock; the agents plugin rebinds the
+        active model and workspace_instructions re-reads its workspace
+        sources through the ``SOFT_RELOAD`` event.
+        """
+        loader = self.ctx.loader
+        active = self.ctx.engine.settings.agent_name
+        if not await loader.reload("agents"):
+            raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
+        await self.ctx.emit(Events.SOFT_RELOAD, EventContext(event={
+            "scope": "agents",
+            "result": {},
+        }))
+        definition = self.definition(active)
+        if definition is None or definition.mode == "subagent":
+            raise OperationError(
+                "agent_not_found",
+                f"Active Agent definition no longer exists: {active}",
+            )
+        return {
+            "active": active,
+            "agents": self.definitions(),
+        }
+
+    async def rebind_on_soft_reload(self, event: Any) -> None:
+        """Rebind the active model client after a soft restart."""
+        payload = event.event if isinstance(event.event, dict) else {}
+        result = payload.setdefault("result", {})
+        active = self.ctx.engine.settings.agent_name
+        definition = self.definition(active)
+        if definition is not None and definition.mode != "subagent":
+            try:
+                selected = await self.activate(active)
+            except Exception as error:  # noqa: BLE001 - keep last good binding
+                result.setdefault("errors", []).append(
+                    f"active agent {active}: {error}"
+                )
+                selected = await self.rebind_active()
+        else:
+            selected = await self.rebind_active()
+        errors = selected.pop("errors", [])
+        result.update({
+            "provider": selected["provider"],
+            "model": selected["model"],
+            "model_mode": selected["model_mode"],
+            "context_window": selected["context_window"],
+        })
+        if errors:
+            result.setdefault("errors", []).extend(errors)
 
     def _resolve_definition(
         self,
@@ -595,6 +670,7 @@ class AgentsService:
         *,
         variables: Any = None,
         overlay: bool = True,
+        owner: str | None = None,
     ) -> tuple[str, ...]:
         """Parse and register every Markdown definition in *directory*.
 
@@ -603,7 +679,7 @@ class AgentsService:
         registrations replace a same-named base definition without mutating
         it, so unloading the discoverer restores the underlying definition.
         """
-        owner = current_plugin_name()
+        owner = owner or current_plugin_name()
         names = [
             self.registry.register(
                 definition,
@@ -621,8 +697,20 @@ class AgentsService:
             )
         return tuple(names)
 
-    def unregister(self, name: str) -> bool:
-        return self.registry.unregister(name, owner=current_plugin_name())
+    def unregister(self, name: str, owner: str | None = None) -> bool:
+        """Unregister one definition; default owner is the current plugin."""
+        return self.registry.unregister(name, owner=owner or current_plugin_name())
+
+    def unregister_owned(
+        self,
+        owner: str | None = None,
+        *,
+        overlay: bool = True,
+    ) -> list[str]:
+        """Remove every registration owned by ``owner`` (default current)."""
+        return self.registry.unregister_owner(
+            owner or current_plugin_name(), overlay=overlay
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.registry, name)
