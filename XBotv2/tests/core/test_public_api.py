@@ -7,32 +7,28 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import xbotv2.api as public_api
+import XBotv2.core as public_api
 
-from xbotv2.api import (
+from XBotv2.core import (
     Command,
     CommandResult,
     ContextComponent,
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookStage,
-    PluginConfigError,
-    PluginManifest,
+    ToolAction,
+    EventContext,
+    ToolDecision,
+    Events,
     prompt_container,
     prompt_element,
     RuntimePaths,
-    RuntimePluginContext,
     RuntimeVariables,
     SessionPaths,
     ToolCall,
-    ToolRegistrationOptions,
     ToolResult,
     Tool,
 )
-from xbotv2.protocol.version import PROTOCOL_VERSION
-from xbotv2.protocol.http_server import create_app
-from xbotv2.protocol.models import (
+from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.http_server import create_app
+from XBotv2.protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     HelloRequest,
     MessageRequest,
@@ -42,12 +38,15 @@ from xbotv2.protocol.models import (
 
 
 def test_public_api_inventory_is_explicit():
-    inventory = Path(__file__).parents[2] / "docsv2" / "api" / "api_inventory.md"
-    documented = [
-        match.group(1)
-        for line in inventory.read_text(encoding="utf-8").splitlines()
-        if (match := re.match(r"^\| `([^`]+)` \|", line))
-    ]
+    inventory = Path(__file__).parents[2] / "docs" / "api" / "api_inventory.md"
+    documented = []
+    for line in inventory.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## Exported Symbols"):
+            if line.startswith("## Exported Symbols (XBotv2.jobs)"):
+                break
+            continue
+        if match := re.match(r"^\| `([^`]+)` \|", line):
+            documented.append(match.group(1))
 
     assert documented == public_api.__all__
     assert len(documented) == len(set(documented))
@@ -64,21 +63,14 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
-    assert HookDecision(HookAction.DENY, "policy").reason == "policy"
+    assert ToolDecision(ToolAction.DENY, "policy").reason == "policy"
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
-    assert hasattr(RuntimePluginContext, "register_tool")
-    assert hasattr(RuntimePluginContext, "unregister_tool")
-    assert hasattr(RuntimePluginContext, "register_command")
-    assert hasattr(RuntimePluginContext, "unregister_command")
     assert prompt_container(
         "root", [prompt_element("item", "a < b")]
     ) == "<root>\n<item>\na &lt; b\n</item>\n</root>"
     assert SessionPaths is not None
-    error = PluginConfigError("sample", ("limits", 0), "invalid")
-    assert error.path == ("limits", 0)
-    assert HookContext(
-        stage=HookStage.ON_TURN_START,
+    assert EventContext(
         request_id="request-1",
     ).request_id == "request-1"
 
@@ -138,30 +130,6 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     }
     assert schema["parameters"]["required"] == ["path"]
     assert schema["parameters"]["additionalProperties"] is False
-    assert HookContext(stage=HookStage.BEFORE_CONTEXT).invoke_model is None
-    assert HookContext(stage=HookStage.ON_SESSION_INIT).request_user_input is None
-
-
-def test_tool_registration_options_validate_values():
-    options = ToolRegistrationOptions(
-        sandbox_mode="sandboxed",
-        namespace="plugin:test",
-        timeout_seconds=120,
-    )
-
-    assert options.sandbox_mode == "sandboxed"
-    assert options.namespace == "plugin:test"
-    assert options.timeout_seconds == 120
-
-    with pytest.raises(ValueError, match="sandbox_mode"):
-        ToolRegistrationOptions(sandbox_mode="invalid")
-
-    with pytest.raises(TypeError, match="execution_mode"):
-        ToolRegistrationOptions(execution_mode="parallel")
-
-    with pytest.raises(ValueError, match="timeout_seconds"):
-        ToolRegistrationOptions(timeout_seconds=0)
-
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():
     async def handler(_ctx, _raw_args):
@@ -184,71 +152,6 @@ def test_command_contract_separates_server_handlers_from_prompt_metadata():
         Command(name="prompt", description="Prompt", kind="prompt", handler=handler)
     with pytest.raises(ValueError, match="lowercase"):
         Command(name="/Invalid", description="Invalid", handler=handler)
-
-
-def test_plugin_manifest_rejects_unimplemented_tool_scheduling_metadata():
-    with pytest.raises(ValidationError, match="execution_mode"):
-        PluginManifest(
-            name="sample",
-            version="1",
-            tools=[{"handler": "sample:tool", "execution_mode": "parallel"}],
-        )
-
-
-@pytest.mark.parametrize(
-    "stage",
-    [
-        "system_prefix",
-        "system_instructions",
-        "system_rules",
-        "context_suffix",
-    ],
-)
-def test_plugin_manifest_accepts_supported_prompt_fragment_stages(stage):
-    manifest = PluginManifest(
-        name="sample",
-        version="1",
-        prompt_fragments=[{"stage": stage, "handler": "sample:render"}],
-    )
-
-    assert manifest.prompt_fragments[0].stage == stage
-
-
-def test_plugin_manifest_rejects_legacy_dag_suffix_stage():
-    with pytest.raises(ValidationError, match="dag_suffix"):
-        PluginManifest(
-            name="sample",
-            version="1",
-            prompt_fragments=[
-                {"stage": "dag_suffix", "handler": "sample:render"}
-            ],
-        )
-
-
-@pytest.mark.parametrize(
-    "fragment",
-    [
-        {"stage": "system_instructions"},
-        {
-            "stage": "system_instructions",
-            "file": "prompt.md",
-            "handler": "sample:render",
-        },
-        {"stage": "system_instructions", "file": ""},
-        {
-            "stage": "system_instructions",
-            "handler": "sample:render",
-            "unknown": True,
-        },
-    ],
-)
-def test_plugin_manifest_requires_one_prompt_fragment_source(fragment):
-    with pytest.raises(ValidationError):
-        PluginManifest(
-            name="sample",
-            version="1",
-            prompt_fragments=[fragment],
-        )
 
 
 def test_wire_models_reject_unknown_fields():
@@ -341,7 +244,13 @@ def test_server_event_type_inventory_covers_current_stream_events():
 
 
 def test_openapi_uses_typed_request_contracts():
-    schema = create_app(paths=RuntimePaths.from_data_dir("data"), no_plugins=True).openapi()
+    from XBotv2.llm.service import LlmService
+
+    schema = create_app(
+        paths=RuntimePaths.from_data_dir("data"),
+        no_plugins=True,
+        llm=LlmService(),
+    ).openapi()
     assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
     assert set(paths) == {

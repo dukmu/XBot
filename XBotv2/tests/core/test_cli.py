@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import xbotv2.__main__ as cli
+import XBotv2.main as cli
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -53,21 +53,8 @@ def test_once_requires_and_preserves_prompt():
     assert args.prompt == "review this repository"
 
 
-def test_legacy_mode_form_remains_compatible():
-    args = parse([
-        "--data-dir", "runtime", "--provider", "minimax",
-        "--mode", "server", "--port", "4100",
-    ])
-
-    assert args.command == "serve"
-    assert args.data_dir == "runtime"
-    assert args.provider == "minimax"
-    assert args.port == 4100
-
-
-def test_xbot_environment_defaults_override_legacy_prefix(monkeypatch):
+def test_xbot_environment_defaults(monkeypatch):
     monkeypatch.setenv("XBOT_PROVIDER", "current")
-    monkeypatch.setenv("XBOTV2_PROVIDER", "legacy")
     monkeypatch.setenv("XBOT_PORT", "4200")
 
     args = parse(["serve"])
@@ -183,7 +170,7 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from xbotv2.protocol import http_server
+    from XBotv2.protocol import http_server
 
     monkeypatch.setattr(http_server, "create_app", lambda **_kwargs: object())
     served = {}
@@ -193,7 +180,10 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
         lambda app, **kwargs: served.update(app=app, **kwargs),
     )
 
-    cli._run_server(parse(["serve", "--uds", str(socket_path)]))
+    cli._run_server(parse([
+        "serve", "--uds", str(socket_path),
+        "--data-dir", str(tmp_path / "data"),
+    ]))
 
     assert socket_path.parent.is_dir()
     assert served["uds"] == str(socket_path)

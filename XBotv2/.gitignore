@@ -1,6 +1,2 @@
-# Ignore runtime session data but keep config files
-data/*
-!data/config/
-!data/config/*.yaml
-!data/.agents/
-!data/.agents/*.md
+# Ignore any local runtime data dir (default is ~/.xbot)
+data/

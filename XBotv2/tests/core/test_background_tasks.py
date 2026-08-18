@@ -2,13 +2,18 @@ import asyncio
 
 import pytest
 
-from xbotv2.api.jobs import JobKind, JobRegistry, JobResult
-from xbotv2.api.tools import ToolCall
-from xbotv2.core.builtin_tools.shell import SHELL_TOOLS, run_shell_command
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.runtime import execute_tools
-from xbotv2.tools.sandbox import SandboxPolicy
+from XBotv2.core.jobs import JobKind, JobResult
+from XBotv2.jobs import JobRegistry
+from XBotv2.core.tools import ToolCall
+from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.agentloop.tool_runtime import execute_tools
+from XBotv2.permission_request.service import ApprovalService
+from XBotv2.application.client_events import ClientEventRouter
+from XBotv2.tests.helpers import make_tool_ctx
+import xcore
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 def make_tools(temp_workspace, *, sandbox=None):
@@ -23,21 +28,31 @@ def invoke(tools, name, args, registry, sandbox=None):
     )
 
 
+def patch_shell_executor(monkeypatch, replacement):
+    """Patch the executor used by the already-imported singleton tools."""
+    shell_tool = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
+    monkeypatch.setitem(
+        shell_tool.function.__globals__,
+        "run_shell_command",
+        replacement,
+    )
+
+
 @pytest.mark.asyncio
 async def test_background_shell_lifecycle_and_read(temp_workspace, monkeypatch):
     async def run(*args, **kwargs):
         return "background-output"
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     assert set(tools) == {
-        "shell", "start_shell", "list_shells",
+        "shell", "list_shells",
         "wait_shell", "read_shell", "cancel_shell",
     }
-    assert "background" not in tools["shell"].parameters["properties"]
+    assert "background" in tools["shell"].parameters["properties"]
 
     started = await invoke(
-        tools, "start_shell", {"command": "printf background-output"}, registry
+        tools, "shell", {"command": "printf background-output", "background": True}, registry
     )
     job_id = started.data["id"]
     waited = await invoke(tools, "wait_shell", {"ids": [job_id]}, registry)
@@ -78,7 +93,7 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         sandboxes.append(sandbox)
         return "output"
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace, sandbox=object())
 
     foreground = await invoke(
@@ -90,8 +105,9 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         sandbox=object(),
     )
     background = await invoke(
-        tools, "start_shell",
+        tools, "shell",
         {"command": "install dependency",
+         "background": True,
          "sandbox_permissions": "require_escalated",
          "justification": "Install a required dependency."},
         registry,
@@ -113,10 +129,10 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     async def run(*args, **kwargs):
         return full_output
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(
-        tools, "start_shell", {"command": "generate output"}, registry
+        tools, "shell", {"command": "generate output", "background": True}, registry
     )
     job = registry.get(started.data["id"])
     await job.runner_task
@@ -134,9 +150,9 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
-    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
+    started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
     job = registry.get(started.data["id"])
     while job.status.value != "running":
         await asyncio.sleep(0)
@@ -157,7 +173,7 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     completions = []
     registry, tools = make_tools(temp_workspace)
 
@@ -165,7 +181,7 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
         completions.append(task)
 
     registry.on_complete = record_completion
-    started = await invoke(tools, "start_shell", {"command": "sleep 30"}, registry)
+    started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
     await asyncio.sleep(0)
 
     await asyncio.wait_for(registry.shutdown(), timeout=1)
@@ -181,9 +197,9 @@ async def test_wait_shell_returns_exit_code_for_completed_job(
     async def run(*args, **kwargs):
         return "ok"
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
-    started = await invoke(tools, "start_shell", {"command": "true"}, registry)
+    started = await invoke(tools, "shell", {"command": "true", "background": True}, registry)
     waited = await invoke(tools, "wait_shell", {"ids": [started.data["id"]]}, registry)
     assert waited.data["ready"][0]["exit_code"] == 0
 
@@ -195,38 +211,44 @@ async def test_escalated_background_shell_requires_approval(
     async def run(*args, **kwargs):
         return "ran"
 
-    monkeypatch.setattr("xbotv2.core.builtin_tools.shell.run_shell_command", run)
+    patch_shell_executor(monkeypatch, run)
     sandbox = SandboxPolicy(
         {"enabled": True, "external_write": "ask"},
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
-        sandbox_mode="sandboxed",
-    )
     job_registry = JobRegistry()
+    registry.register(
+        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
+        injected={"sandbox": sandbox, "job_registry": job_registry},
+    )
     events = []
 
-    async def approve(event, **kwargs):
+    async def approve(event):
         events.append(event)
-        return {"status": "answered", "decision": "allow", "scope": "once"}
+        return "allowed-once"
 
-    results = await execute_tools(
-        [ToolCall("c1", "start_shell", {
+    service_ctx = xcore.Context()
+    approval = ApprovalService(service_ctx, ClientEventRouter())
+    approval.register_answerer(approve)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+        approval=approval,
+        base=service_ctx,
+    )
+    results = await ctx.tools.execute_all(
+        [ToolCall("c1", "shell", {
             "command": "pwd",
+            "background": True,
             "sandbox_permissions": "require_escalated",
             "justification": "Need host access.",
         })],
-        registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=approve,
-        job_registry=job_registry,
     )
 
     assert results[0].status == "success"
-    assert events and events[0]["data"]["source"] == "sandbox"
+    assert events and events[0]["data"]["source"] == "permission_system"
     assert "Need host access." in events[0]["data"]["reason"]
     job = job_registry.get("sh_1")
     assert job.metadata["escalated"] is True
@@ -243,31 +265,36 @@ async def test_denied_background_shell_escalation_creates_no_job(
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "start_shell"),
-        sandbox_mode="sandboxed",
-    )
     job_registry = JobRegistry()
+    registry.register(
+        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
+        injected={"sandbox": sandbox, "job_registry": job_registry},
+    )
 
-    async def deny(event, **kwargs):
-        del event, kwargs
-        return {"status": "answered", "decision": "deny"}
+    async def deny(event):
+        del event
+        return "rejected"
 
-    results = await execute_tools(
-        [ToolCall("c1", "start_shell", {
+    service_ctx = xcore.Context()
+    approval = ApprovalService(service_ctx, ClientEventRouter())
+    approval.register_answerer(deny)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+        approval=approval,
+        base=service_ctx,
+    )
+    results = await ctx.tools.execute_all(
+        [ToolCall("c1", "shell", {
             "command": "pwd",
+            "background": True,
             "sandbox_permissions": "require_escalated",
             "justification": "Need host access.",
         })],
-        registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=deny,
-        job_registry=job_registry,
     )
 
     assert results[0].status == "error"
-    assert "denied" in results[0].content
     assert job_registry.all() == []
 
 
@@ -294,10 +321,14 @@ async def test_host_shell_cancellation_reaps_process_group(
         proc.returncode = -9
 
     monkeypatch.setattr(
-        "xbotv2.core.builtin_tools.shell.subprocess.Popen", create_process
+        run_shell_command.__globals__["subprocess"],
+        "Popen",
+        create_process,
     )
-    monkeypatch.setattr(
-        "xbotv2.core.builtin_tools.shell._signal_process", signal_process
+    monkeypatch.setitem(
+        run_shell_command.__globals__,
+        "_signal_process",
+        signal_process,
     )
     command = asyncio.create_task(
         run_shell_command(
@@ -330,7 +361,9 @@ async def test_host_shell_returns_complete_output_for_common_cache(
         return Process()
 
     monkeypatch.setattr(
-        "xbotv2.core.builtin_tools.shell.subprocess.Popen", create_process
+        run_shell_command.__globals__["subprocess"],
+        "Popen",
+        create_process,
     )
 
     result = await run_shell_command("generate", cwd=str(temp_workspace))

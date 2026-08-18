@@ -2,32 +2,41 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.core.session import SessionRuntime
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.session.runtime import SessionRuntime
 
 
 class FakeEngine:
-    plugin_loader = None
-    job_registry = None
-    input_window = False
     turn_count = 1
     continuation = False
-    request_continuation = None
-    take_pending_fold = None
-    drain_inbox = None
 
     def __init__(self) -> None:
-        self.client_event_sink = None
         self.closed = False
         self.close_count = 0
+        self.inbox: list[str] = []
+        self.steered: list[tuple[str, str]] = []
+        self._wake_driver = None
 
-    def set_client_event_sink(self, sink):
-        previous = self.client_event_sink
-        self.client_event_sink = sink
-        return previous
+    def set_wake_driver(self, callback):
+        self._wake_driver = callback
+
+    async def inject(self, content, **kwargs):
+        self.inbox.append(str(content))
+
+    async def steer(self, content, **kwargs):
+        message_id = kwargs.get("message_id", f"msg-{len(self.steered)}")
+        self.steered.append((content, message_id))
+        return SimpleNamespace(message_id=message_id)
+
+    async def followup(self, content, **kwargs):
+        return content
+
+    async def discard_inputs(self):
+        self.inbox.clear()
 
     async def run_turn(
         self,
@@ -48,6 +57,13 @@ class FakeEngine:
 
 
 def runtime(tmp_path) -> SessionRuntime:
+    from types import SimpleNamespace
+
+    services = SimpleNamespace(
+        on=lambda *_args, **_kwargs: None,
+        get=lambda _name: None,
+        stop=lambda: asyncio.sleep(0),
+    )
     return SessionRuntime(
         session_id="session",
         thread_id="agent",
@@ -55,6 +71,7 @@ def runtime(tmp_path) -> SessionRuntime:
         paths=RuntimePaths.from_data_dir(tmp_path),
         workspace_root=str(tmp_path),
         no_plugins=True,
+        services=services,
         engine=FakeEngine(),
     )
 
@@ -70,7 +87,7 @@ async def test_idle_user_turn_runs_directly(tmp_path):
         for event in events
         if event["type"] == "assistant_message"
     ] == ["reply"]
-    assert not session.pending_fold
+    assert session.turn_task is None
     await session.close()
     assert session.engine.closed is True
     assert session.engine.close_count == 1
@@ -90,7 +107,7 @@ async def test_completion_stages_into_inbox_without_a_turn(tmp_path):
         "data": {},
     })
 
-    assert len(session.inbox) == 1
+    assert len(session.engine.inbox) == 1
     notice = await asyncio.wait_for(events.get(), timeout=1)
     assert notice["type"] == "completion_notice"
     assert session.turn_task is None, "completion must not start a turn"
@@ -102,25 +119,32 @@ async def test_busy_turn_holds_input_for_fold_delivery(tmp_path):
     session = runtime(tmp_path)
     await session.turn_lock.acquire()
     try:
-        # A message submitted while the turn is busy is held in the pending
-        # fold and fused at the next tool boundary.
+        # A message submitted while the turn is busy is steered into the
+        # agent-owned inbox and tracked as a pending response; the input
+        # content is never copied into a separate session-side queue.
+        events = session.attach_event_stream()
         stream = session.stream_message("queued", "request")
 
         async def _first():
-            return await anext(stream)
+            try:
+                return await anext(stream)
+            except StopAsyncIteration:
+                return None
 
         first_task = asyncio.create_task(_first())
         await asyncio.sleep(0)
-        assert len(session.pending_fold) == 1
-        events = session.attach_event_stream()
-        items = session._take_pending_fold()
-        assert len(items) == 1
-        assert session.fold_output is items[0].events
+        assert session.engine.steered == [("queued", "request")]
+        assert len(session.pending_responses) == 1
         msg = await asyncio.wait_for(events.get(), timeout=1)
         assert msg["type"] == "message"
         assert msg["data"]["role"] == "user"
         assert msg["data"]["content"] == "queued"
         assert msg["data"]["id"]
+
+        # Release the pending response so the busy stream can finish.
+        pending = next(iter(session.pending_responses.values()))
+        pending.events.put_nowait(None)
+        assert await asyncio.wait_for(first_task, timeout=1) is None
     finally:
         session.turn_lock.release()
     await session.close()

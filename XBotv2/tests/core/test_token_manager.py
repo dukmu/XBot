@@ -4,25 +4,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from builtin_plugins.token_manager.plugin import TokenManagerPlugin
-from xbotv2.api import (
-    HookContext,
-    HookStage,
+from XBotv2.token_manager.plugin import TokenManagerPlugin
+
+from XBotv2.core import (
+    EventContext,
+    Events,
     Message,
-    PluginManifest,
     Tool,
     calibrated_context_tokens,
     context_token_limit,
     estimate_request_tokens,
 )
-from xbotv2.api.tokens import REQUEST_ESTIMATE_KEY
+from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
 
 
 def make_plugin() -> TokenManagerPlugin:
-    return TokenManagerPlugin(
-        PluginManifest(name="token_manager", version="1"),
-        store=None,
-    )
+    from XBotv2.token_manager.plugin import TokenManagerPlugin
+
+    return TokenManagerPlugin()
 
 
 def test_context_limit_uses_ratio_and_provider_output_reservation():
@@ -83,8 +82,7 @@ def test_context_estimate_reuses_latest_provider_measurement():
 async def test_plugin_observes_runtime_window_and_provider_usage():
     plugin = make_plugin()
     messages = [Message(role="user", content="hello")]
-    ctx = HookContext(
-        stage=HookStage.BEFORE_MODEL_REQUEST,
+    ctx = EventContext(
         messages=messages,
         config=SimpleNamespace(max_context_tokens=204_800),
         session=SimpleNamespace(turn_count=3),

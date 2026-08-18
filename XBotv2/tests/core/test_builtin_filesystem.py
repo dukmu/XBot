@@ -1,4 +1,4 @@
-"""Behavioral tests for the core filesystem tools."""
+"""Behavioral tests for the core filesystem XBotv2.tools."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from xbotv2.core.builtin_tools import content as content_module
-from xbotv2.core.builtin_tools.content import content_read
-from xbotv2.core.builtin_tools.filesystem import (
+from XBotv2.coretools import filesystem as filesystem_module
+from XBotv2.coretools.filesystem import (
+    read,
     copy_path,
     delete_path,
     edit_file,
@@ -21,15 +21,14 @@ from xbotv2.core.builtin_tools.filesystem import (
     read_file,
     search_text,
     stat_path,
-    filesystem_write,
     write_file,
 )
-from xbotv2.tools.sandbox import SandboxPolicy
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
-class TestContentRead:
+class TestReadImage:
     @pytest.mark.asyncio
-    async def test_content_read_path_returns_image_part(self, tmp_path):
+    async def test_read_image_path_returns_image_part(self, tmp_path):
         payload = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
             "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
@@ -45,7 +44,7 @@ class TestContentRead:
             def resolve_filesystem_args(self, _operation, args):
                 return args
 
-        result = await content_read(path=str(path), sandbox=Sandbox())
+        result = await read(path=str(path), mode="media", sandbox=Sandbox())
 
         assert result.status == "success"
         assert len(result.images) == 1
@@ -55,7 +54,7 @@ class TestContentRead:
         assert result.data["sha256"]
 
     @pytest.mark.asyncio
-    async def test_content_read_accepts_base64_and_data_url(self, tmp_path):
+    async def test_read_image_accepts_base64_and_data_url(self, tmp_path):
         payload = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
             "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
@@ -67,8 +66,10 @@ class TestContentRead:
             enabled = False
             network = True
 
-        raw = await content_read(data=encoded, sandbox=Sandbox())
-        data_url = await content_read(
+        raw = await read(path="", mode="media", data=encoded, sandbox=Sandbox())
+        data_url = await read(
+            path="",
+            mode="media",
             data=f"data:image/png;base64,{encoded}",
             sandbox=Sandbox(),
         )
@@ -79,7 +80,7 @@ class TestContentRead:
         assert data_url.images[0].size == len(payload)
 
     @pytest.mark.asyncio
-    async def test_content_read_url_uses_http_response(self, tmp_path, monkeypatch):
+    async def test_read_image_url_uses_http_response(self, tmp_path, monkeypatch):
         payload = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
             "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
@@ -111,14 +112,16 @@ class TestContentRead:
             def stream(self, _method, _url, **_kwargs):
                 return Response()
 
-        monkeypatch.setattr(content_module.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(filesystem_module.httpx, "AsyncClient", Client)
 
         class Sandbox:
             session_root = tmp_path / "session"
             enabled = False
             network = True
 
-        result = await content_read(
+        result = await read(
+            path="",
+            mode="media",
             url="https://example.com/cat.png",
             sandbox=Sandbox(),
         )
@@ -127,13 +130,15 @@ class TestContentRead:
         assert result.images[0].media_type == "image/png"
 
     @pytest.mark.asyncio
-    async def test_content_read_rejects_unsupported_content(self, tmp_path):
+    async def test_read_image_rejects_unsupported_content(self, tmp_path):
         class Sandbox:
             session_root = tmp_path / "session"
             enabled = False
             network = True
 
-        result = await content_read(
+        result = await read(
+            path="",
+            mode="media",
             data="bm90IGFuIGltYWdl",
             sandbox=Sandbox(),
         )
@@ -327,7 +332,9 @@ class TestFilesystemMutation:
         path.write_text("value = 1\n", encoding="utf-8")
         policy = SandboxPolicy(workspace_root=tmp_path, enabled=False)
 
-        assert "expected_sha256" not in filesystem_write.parameters["properties"]
+        import inspect
+
+        assert "expected_sha256" not in inspect.signature(write_file).parameters
         await read_file("code.py", sandbox=policy)
         path.write_text("value = external\n", encoding="utf-8")
 

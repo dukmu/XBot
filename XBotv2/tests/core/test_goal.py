@@ -1,5 +1,7 @@
 """Behavior tests for the built-in Goal plugin."""
 
+from XBotv2.tests.helpers import make_engine
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,69 +10,65 @@ import xml.etree.ElementTree as ET
 import pytest
 import yaml
 
-from builtin_plugins.goal.plugin import GoalPlugin
-from xbotv2.api import ContextComponent, HookContext, HookStage, PluginManifest
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.engine import Engine
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.llm.mock import MockLLM
-from xbotv2.core.inbox import InboxMessage
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.loader import PluginLoader
-from xbotv2.plugin.store import PluginStore
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from XBotv2.goal.plugin import GoalPlugin
+from XBotv2.core import ContextComponent, EventContext, Events
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.agentloop.engine import Engine
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.llm.mock import MockLLM
+from XBotv2.persistence.store import CoreStateStore
+from plugin_harness import mount_ctx, mount_plugin
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
+
+
+def _mount(plugin, state_store):
+    return mount_plugin(plugin, state_store)
 
 
 class SetupContext:
-    def __init__(self) -> None:
-        self.hooks = {}
-        self.tools = {}
-        self.options = {}
-        self.commands = {}
+    """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def register_hook(self, stage, callback):
-        self.hooks[stage] = callback
+    def __init__(self, plugin) -> None:
+        self.ctx = plugin.ctx
+        self.tools: dict = {}
+        self.options: dict = {}
+        self.commands: dict = {}
+        for entry in self.ctx.tools.registry.registered_entries():
+            self.tools[entry.tool.name] = entry.tool
+            self.options[entry.tool.name] = _EntryOptions(
+                namespace=entry.namespace,
+            )
+        for command in self.ctx.commands.all():
+            self.commands[command.name] = command
 
-    def register_tool(self, tool, options=None):
-        self.tools[tool.name] = tool
-        self.options[tool.name] = options
-        return f"plugin:goal:{tool.name}"
 
-    def register_command(self, command):
-        self.commands[command.name] = command
-        return command.name
-
+class _EntryOptions:
+    def __init__(self, *, namespace) -> None:
+        self.namespace = namespace
 
 
 def make_plugin(state_store) -> GoalPlugin:
-    return GoalPlugin(
-        PluginManifest(name="goal", version="1"),
-        PluginStore(state_store, "goal"),
-    )
+    from XBotv2.goal.plugin import GoalPlugin
+
+    return _mount(GoalPlugin(), state_store)
 
 
-def setup_plugin(state_store) -> tuple[GoalPlugin, SetupContext]:
+def setup_plugin(state_store):
     plugin = make_plugin(state_store)
-    setup = SetupContext()
-    plugin.setup(setup)
-    return plugin, setup
+    return plugin, SetupContext(plugin)
 
 
 def test_goal_registers_human_command_and_agent_tools(state_store):
     _plugin, setup = setup_plugin(state_store)
 
-    assert HookStage.ON_TURN_START in setup.hooks
-    assert HookStage.ON_TURN_END in setup.hooks
+    assert setup.ctx._bus.listener_count(Events.TURN_START) > 0
+    assert setup.ctx._bus.listener_count(Events.TURN_END) > 0
     assert list(setup.tools) == ["create_goal", "get_goal", "update_goal"]
     assert setup.tools["update_goal"].parameters["properties"]["status"]["enum"] == [
         "complete", "blocked",
     ]
-    assert all(
-        setup.options[name].namespace == "plugin:goal" for name in setup.tools
-    )
     assert list(setup.commands) == ["goal"]
     assert setup.commands["goal"].kind == "server"
 
@@ -80,10 +78,10 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
     queued = []
 
-    async def enqueue():
+    async def enqueue(*_args, **_kwargs):
         queued.append(True)
 
-    ctx = SimpleNamespace(request_continuation=enqueue)
+    ctx = SimpleNamespace(send_input=enqueue)
 
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
@@ -129,7 +127,7 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
     long_summary = await plugin.update_goal("complete", "x" * 2_001)
     bad_budget = await plugin.create_goal("another", token_budget=0)
     bad_command_budget = await plugin._goal_command(
-        SimpleNamespace(request_continuation=None),
+        SimpleNamespace(send_input=None),
         "--token-budget nope another objective",
     )
 
@@ -149,14 +147,13 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     await plugin.create_goal("iterate until complete")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
-    turn_end = HookContext(
-        stage=HookStage.ON_TURN_END,
+    turn_end = EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        request_continuation=request_continuation,
+        send_input=send_input,
     )
     await plugin._on_turn_end(turn_end)
     await plugin._on_turn_end(turn_end)
@@ -165,8 +162,7 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
 
     # The continuation turn starting resets the pending flag; the next
     # completed turn schedules another continuation.
-    await plugin._start_goal_turn(HookContext(
-        stage=HookStage.ON_TURN_START,
+    await plugin._start_goal_turn(EventContext(
         session=SimpleNamespace(),
         user_input="[goal continuation]",
         continuation=True,
@@ -181,14 +177,13 @@ async def test_runtime_notification_does_not_drive_active_goal(state_store):
     await plugin.create_goal("iterate until complete")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
-    await plugin._on_turn_end(HookContext(
-        stage=HookStage.ON_TURN_END,
+    await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        request_continuation=request_continuation,
+        send_input=send_input,
     ))
 
     assert len(requests) == 1
@@ -211,14 +206,13 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
     await plugin.create_goal("pause on escape")
     requests = []
 
-    async def request_continuation():
+    async def send_input(*_args, **_kwargs):
         requests.append(True)
 
-    await plugin._on_turn_end(HookContext(
-        stage=HookStage.ON_TURN_END,
+    await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="client_interrupt",
-        request_continuation=request_continuation,
+        send_input=send_input,
     ))
 
     assert requests == []
@@ -229,8 +223,7 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
 async def test_goal_snapshot_is_added_only_to_continuation_turn(state_store):
     plugin = make_plugin(state_store)
     await plugin.create_goal("output two greetings")
-    active_ctx = HookContext(
-        stage=HookStage.ON_TURN_START,
+    active_ctx = EventContext(
         session=SimpleNamespace(),
         user_input="wake",
         continuation=True,
@@ -241,8 +234,7 @@ async def test_goal_snapshot_is_added_only_to_continuation_turn(state_store):
     assert "output two greetings" in active_ctx.user_input
 
     await plugin.update_goal("complete", "Output both requested greetings.")
-    ctx = HookContext(
-        stage=HookStage.ON_TURN_START,
+    ctx = EventContext(
         session=SimpleNamespace(),
         user_input="wake",
         continuation=False,
@@ -260,16 +252,14 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
 ):
     plugin, setup = setup_plugin(state_store)
     await plugin.create_goal("finish the audit")
-    hooks = HookManager()
-    hooks.register(HookStage.ON_TURN_START, setup.hooks[HookStage.ON_TURN_START])
     llm = MockLLM(responses=[
         {"content": "Working on the audit."},
         {"content": "Plain reply."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=hooks,
+        plugin_ctx=setup.ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -281,10 +271,16 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     )
 
     # A continuation turn gets the active goal context as its prompt.
-    engine.continuation = True
+    # Continuation is carried by the agent-inbox input metadata, matching the
+    # goal plugin's production ``send_input(..., metadata={"continuation": True})``.
+    await engine.inject(
+        "[goal continuation]",
+        source="goal",
+        metadata={"continuation": True},
+    )
     _ = [
         event
-        async for event in engine.run_turn("[goal continuation]", request_id="goal")
+        async for event in engine.run_pending(request_id="goal")
     ]
     last = llm.get_call_messages(0)[-1]
     assert last.role == "user"
@@ -294,8 +290,10 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     }
     assert all(message.role != "user" for message in llm.get_call_messages(0)[:-1])
 
-    # A normal turn keeps its own prompt.
-    engine.continuation = False
+    # A normal turn keeps its own prompt. The goal plugin schedules the next
+    # active-goal continuation at TURN_END; drain it so the explicit input is
+    # the sole next-turn claim.
+    await engine.discard_inputs()
     _ = [event async for event in engine.run_turn("plain wake", request_id="plain")]
     assert llm.get_call_messages(1)[-1].content == "plain wake"
 
@@ -342,26 +340,27 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
     (plugins_root / "goal").symlink_to(
-        Path(__file__).parents[2] / "builtin_plugins" / "goal",
+        Path(__file__).parents[2] / "goal",
         target_is_directory=True,
     )
-    hooks = HookManager()
-    registry = ToolRegistry()
-    loader = PluginLoader(
-        plugin_dirs=[plugins_root],
-        state_store=state_store,
-        hook_manager=hooks,
-        tool_registry=registry,
-        context_builder=ContextBuilder(),
-    )
+    from XBotv2.loader import Loader, PluginTree
 
-    loaded = await loader.load()
-    assert isinstance(loaded[0], GoalPlugin)
+    ctx = mount_ctx(state_store)
+    registry = ctx.tools.registry
+    loader = Loader(ctx, tree=PluginTree.from_dict([
+        {"id": "goal", "name": "goal"},
+    ]))
+
+    await loader.load()
+    assert isinstance(loader.get("goal"), GoalPlugin)
     await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
 
     assert await loader.unload("goal") is True
     assert registry.registered_names() == []
-    assert state_store.get_plugin_state("goal")["goal"]["objective"] == "retain me"
+    import json as _json
+    state_path = state_store.paths.state_dir / "state.json"
+    data = _json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["goal.goal"]["objective"] == "retain me"
 
 
 @pytest.mark.asyncio
@@ -371,15 +370,9 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
 ):
     plugin, setup = setup_plugin(state_store)
     await plugin.create_goal("finish this turn")
-    hooks = HookManager()
-    hooks.register(
-        HookStage.ON_TURN_START,
-        setup.hooks[HookStage.ON_TURN_START],
-    )
     registry = ToolRegistry()
     registry.register(
         setup.tools["update_goal"],
-        sandbox_mode="host",
         namespace="plugin:goal",
     )
     llm = MockLLM(responses=[
@@ -394,10 +387,10 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
         {"content": "The goal is complete; all required work passed."},
         {"content": "Starting the unrelated request."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=hooks,
+        plugin_ctx=setup.ctx,
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),

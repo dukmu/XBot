@@ -1,0 +1,403 @@
+"""Persistent message store.
+
+Manages messages.jsonl and runtime event records. Artifact and plugin-state
+files belong to the inherited thread storage capability.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from XBotv2.core.messages import Message, part_from_dict
+from XBotv2.core.paths import SessionPaths, ThreadPaths
+from XBotv2.filesystem.storage import ThreadStorage
+_PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def message_to_dict(msg: Message) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "role": msg.role,
+        "status": msg.status,
+    }
+    d["parts"] = [part.to_dict() for part in msg.parts]
+    if msg.name:
+        d["name"] = msg.name
+    if msg.tool_call_id:
+        d["tool_call_id"] = msg.tool_call_id
+    if msg.additional_kwargs:
+        kwargs = {
+            k: v for k, v in msg.additional_kwargs.items()
+            if not str(k).startswith("xbotv2_") or k in _PERSISTED_XBOT_KWARGS
+        }
+        if kwargs:
+            d["additional_kwargs"] = _json_safe(kwargs)
+    if msg.response_metadata:
+        d["response_metadata"] = _json_safe(msg.response_metadata)
+    if msg.usage_metadata:
+        d["usage_metadata"] = _json_safe(msg.usage_metadata)
+    if msg.artifact is not None:
+        d["artifact"] = _json_safe(msg.artifact)
+    if msg.data is not None:
+        d["data"] = _json_safe(msg.data)
+    if msg.error is not None:
+        d["error"] = _json_safe(msg.error)
+    return d
+
+
+def dict_to_message(d: dict[str, Any]) -> Message:
+    raw_parts = d.get("parts")
+    if not isinstance(raw_parts, list):
+        raise ValueError("Persisted message requires a parts list")
+    return Message(
+        role=d.get("role", "assistant"),
+        parts=[part_from_dict(part) for part in raw_parts],
+        status=d.get("status", ""),
+        tool_call_id=d.get("tool_call_id", ""),
+        name=d.get("name", ""),
+        additional_kwargs=dict(d.get("additional_kwargs") or {}),
+        response_metadata=dict(d.get("response_metadata") or {}),
+        usage_metadata=dict(d.get("usage_metadata") or {}),
+        artifact=d.get("artifact"),
+        data=d.get("data"),
+        error=d.get("error"),
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        return str(value)
+
+
+def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
+    current = paths.thread(thread_id)
+    legacy = (
+        thread_id == "agent"
+        and (paths.root / "state").exists()
+        and not current.state_dir.exists()
+    )
+    return paths.thread(thread_id, legacy=legacy)
+
+
+class CoreStateStore(ThreadStorage):
+    def __init__(
+        self,
+        paths: SessionPaths | ThreadPaths,
+        *,
+        thread_id: str,
+        workspace_root: str,
+        provider: str,
+    ) -> None:
+        if isinstance(paths, SessionPaths):
+            paths = _thread_paths(paths, thread_id)
+        super().__init__(paths, workspace_root=workspace_root)
+        self.provider = provider
+
+        self.messages_path = paths.messages_file
+        self._max_msg_id = 0
+        # References to the messages already persisted in the journal.
+        # None means unknown (rebuilt from disk on the next sync).
+        self._persisted_refs: list[Message] | None = None
+        self._persisted_fingerprints: list[int] | None = None
+
+    @classmethod
+    def create(
+        cls,
+        paths: SessionPaths | ThreadPaths,
+        *,
+        thread_id: str,
+        workspace_root: str,
+        provider: str,
+    ) -> "CoreStateStore":
+        thread_paths = (
+            _thread_paths(paths, thread_id)
+            if isinstance(paths, SessionPaths)
+            else paths
+        )
+        thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
+        thread_paths.plugin_states_dir.mkdir(exist_ok=True)
+        thread_paths.artifacts_dir.mkdir(exist_ok=True)
+
+        store = cls(
+            paths=thread_paths,
+            thread_id=thread_id,
+            workspace_root=workspace_root,
+            provider=provider,
+        )
+        if not store.messages_path.exists():
+            store.messages_path.touch()
+        return store
+
+    def append_messages(self, messages: list[Message]) -> int:
+        if not messages:
+            return 0
+        _discard_incomplete_tail(self.messages_path)
+        with open(self.messages_path, "a", encoding="utf-8") as stream:
+            for msg in messages:
+                d = message_to_dict(msg)
+                d["msg_id"] = self._next_message_id()
+                d["ts"] = now_iso()
+                stream.write(json.dumps(d, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if self._persisted_refs is not None:
+            self._persisted_refs.extend(messages)
+            assert self._persisted_fingerprints is not None
+            self._persisted_fingerprints.extend(
+                message.fingerprint() for message in messages
+            )
+        return len(messages)
+
+    def sync_messages(self, messages: list[Message]) -> int:
+        """Persist a normal history extension without rewriting the journal.
+
+        Fast path: when the already-persisted prefix is unchanged (message
+        identity), append only the new tail. If the caller rebuilt the message
+        objects (e.g. after resume), fall back to a content comparison and
+        still append only the delta; a diverged history degrades to a
+        checkpoint so nothing is silently lost.
+        """
+        if not messages:
+            return 0
+        refs = self._persisted_refs
+        if refs is None:
+            refs = self._persisted_refs = self.read_messages()
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in refs
+            ]
+        k = len(refs)
+        if len(messages) >= k and all(
+            a is b for a, b in zip(messages, refs)
+        ):
+            assert self._persisted_fingerprints is not None
+            current = [message.fingerprint() for message in messages[:k]]
+            if current != self._persisted_fingerprints:
+                self.append_checkpoint(messages, reason="sync")
+                return len(messages)
+            new = messages[k:]
+            if new:
+                self.append_messages(new)
+            return len(messages)
+        serialized = [message_to_dict(message) for message in messages]
+        previous_payloads = [message_to_dict(message) for message in refs]
+        if serialized[:len(previous_payloads)] == previous_payloads:
+            self.append_messages(messages[len(previous_payloads):])
+            self._persisted_refs = list(messages)
+            self._persisted_fingerprints = [
+                message.fingerprint() for message in messages
+            ]
+            return len(messages)
+        self.append_checkpoint(messages, reason="sync")
+        return len(messages)
+
+    def append_checkpoint(
+        self,
+        messages: list[Message],
+        *,
+        reason: str,
+    ) -> None:
+        self._append_record({
+            "record_type": "history_checkpoint",
+            "reason": reason,
+            "messages": [message_to_dict(message) for message in messages],
+        })
+        self._persisted_refs = list(messages)
+        self._persisted_fingerprints = [
+            message.fingerprint() for message in messages
+        ]
+
+    def append_undo(self, turns: int) -> None:
+        if turns < 1:
+            raise ValueError("Undo turns must be positive")
+        self._append_record({
+            "record_type": "history_undo",
+            "turns": turns,
+        })
+        # Undo rewrites history on replay; the persisted baseline is unknown
+        # until the next sync rebuilds it from the journal.
+        self._persisted_refs = None
+        self._persisted_fingerprints = None
+
+    def append_clear(self) -> None:
+        self._append_record({"record_type": "history_clear"})
+        self._persisted_refs = []
+        self._persisted_fingerprints = []
+
+    def append_event(self, event: str, data: dict[str, Any]) -> None:
+        """Append one generic durable runtime event."""
+        self._append_record({
+            "record_type": "runtime_event",
+            "event": str(event),
+            "data": _json_safe(data),
+        })
+
+    def read_events(self, event: str | None = None) -> list[dict[str, Any]]:
+        """Read generic runtime events in journal order."""
+        return [
+            {
+                "type": str(entry.get("event") or ""),
+                "data": dict(entry.get("data") or {}),
+            }
+            for entry in _iter_jsonl(self.messages_path)
+            if entry.get("record_type") == "runtime_event"
+            and (event is None or entry.get("event") == event)
+        ]
+
+    def read_messages(self) -> list[Message]:
+        entries = list(_iter_jsonl(self.messages_path))
+        checkpoint = next(
+            (
+                index
+                for index in range(len(entries) - 1, -1, -1)
+                if entries[index].get("record_type") == "history_checkpoint"
+            ),
+            None,
+        )
+        if checkpoint is None:
+            messages: list[Message] = []
+            replay = entries
+        else:
+            messages = [
+                dict_to_message(item)
+                for item in entries[checkpoint].get("messages") or []
+            ]
+            replay = entries[checkpoint + 1:]
+        for entry in replay:
+            record_type = entry.get("record_type")
+            if record_type is None:
+                messages.append(dict_to_message(entry))
+            elif record_type == "history_undo":
+                messages = _undo_turns(messages, int(entry.get("turns") or 0))
+            elif record_type == "history_clear":
+                messages = []
+            elif record_type in {"history_checkpoint", "runtime_event"}:
+                continue
+            else:
+                raise ValueError(f"Unknown message journal record: {record_type}")
+        return messages
+
+    def message_count(self) -> int:
+        return len(self.read_messages())
+
+    def has_existing_session(self) -> bool:
+        return next(_iter_jsonl(self.messages_path), None) is not None
+
+    def read_thread_metadata(self) -> dict[str, Any]:
+        if not self.paths.metadata_file.exists():
+            return {}
+        data = yaml.safe_load(self.paths.metadata_file.read_text(encoding="utf-8"))
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("Thread metadata must contain a mapping")
+        return data
+
+    def write_thread_metadata(self, data: dict[str, Any]) -> None:
+        self.paths.root.mkdir(parents=True, exist_ok=True)
+        _atomic_write_yaml(self.paths.metadata_file, data)
+
+    def _next_message_id(self) -> int:
+        if self._max_msg_id == 0 and self.messages_path.exists():
+            for d in _iter_jsonl(self.messages_path):
+                mid = max(d.get("msg_id", 0), d.get("record_id", 0))
+                if mid > self._max_msg_id:
+                    self._max_msg_id = mid
+        self._max_msg_id += 1
+        return self._max_msg_id
+
+    def _append_record(self, record: dict[str, Any]) -> None:
+        _discard_incomplete_tail(self.messages_path)
+        record = dict(record)
+        record["record_id"] = self._next_message_id()
+        record["ts"] = now_iso()
+        with self.messages_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+def _undo_turns(messages: list[Message], turns: int) -> list[Message]:
+    if turns <= 0:
+        return messages
+    user_indexes = [
+        index for index, message in enumerate(messages) if message.role == "user"
+    ]
+    if turns >= len(user_indexes):
+        return []
+    return messages[:user_indexes[-turns]]
+
+
+def _iter_jsonl(path: Path):
+    if not path.exists():
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                yield json.loads(text)
+            except json.JSONDecodeError:
+                if not line.endswith("\n"):
+                    return
+                raise
+
+
+def _discard_incomplete_tail(path: Path) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb+") as stream:
+        stream.seek(-1, os.SEEK_END)
+        if stream.read(1) == b"\n":
+            return
+        position = stream.tell() - 1
+        while position > 0:
+            size = min(4096, position)
+            position -= size
+            stream.seek(position)
+            chunk = stream.read(size)
+            newline = chunk.rfind(b"\n")
+            if newline >= 0:
+                position += newline + 1
+                break
+        else:
+            position = 0
+        stream.truncate(position)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f"{path.stem}-",
+        suffix=".yaml.tmp",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False, encoding="utf-8", allow_unicode=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise

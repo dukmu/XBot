@@ -10,7 +10,6 @@ Start the existing XBot server:
 
 ```bash
 uv run xbot serve \
-  --data-dir XBotv2/data \
   --workspace ./output \
   --provider minimax
 ```
@@ -46,7 +45,7 @@ generated socket is removed when Web mode exits.
 npm run build
 ```
 
-The ignored build output is written to `XBotv2/xbotv2/web_dist`. Run the build
+The ignored build output is written to `XBotv2/web_dist`. Run the build
 explicitly before `xbot web`; runtime Web mode never invokes npm. The Python
 server serves those files and reverse-proxies `/api/*` while removing the
 `/api` prefix. XBot currently has no remote authentication contract, so Web

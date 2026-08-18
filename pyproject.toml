@@ -23,10 +23,18 @@ dependencies = [
     "trafilatura>=2.0",
     "playwright>=1.50",
     "agent-client-protocol>=0.11.1,<0.12",
+    # Plugin-centric runtime core (same repository, uv workspace member).
+    "xcore",
 ]
 
 [project.scripts]
-xbot = "xbotv2.__main__:main"
+xbot = "XBotv2.main:main"
+
+[tool.uv.workspace]
+members = ["XCore"]
+
+[tool.uv.sources]
+xcore = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -38,7 +46,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["XBotv2/tests"]
-pythonpath = ["XBotv2", "."]
+pythonpath = [".", "XCore"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -49,17 +57,11 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["xbotv2", "builtin_plugins"]
+source = [
+    "XBotv2",
+]
 
 [tool.setuptools.packages.find]
-where = ["XBotv2"]
-include = ["xbotv2*", "builtin_plugins*"]
+where = ["."]
+include = ["XBotv2*"]
 namespaces = true
-
-[tool.setuptools.package-data]
-"builtin_plugins" = ["**/plugin.yaml"]
-"xbotv2" = ["web_dist/*", "web_dist/**/*"]
-
-[tool.setuptools.data-files]
-"data/config" = ["XBotv2/data/config/*.yaml"]
-"data/.agents" = ["XBotv2/data/.agents/*.md"]

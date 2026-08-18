@@ -2,8 +2,8 @@
 
 import pytest
 
-from xbotv2.api.tools import Tool
-from xbotv2.tools.registry import ToolRegistry
+from XBotv2.core.tools import Tool
+from XBotv2.agentloop.tool_registry import ToolRegistry
 
 
 def _tool_a(x: int = 0) -> str:
@@ -43,7 +43,7 @@ class TestRegistration:
 
     def test_register_single_tool(self, tool_registry):
         """A tool can be registered."""
-        tool_registry.register(tool_a, sandbox_mode="host")
+        tool_registry.register(tool_a)
         assert tool_registry.registered("tool_a")
         assert tool_registry.get("tool_a") is not None
 
@@ -70,10 +70,8 @@ class TestRegistration:
         """Registration stores metadata."""
         tool_registry.register(
             tool_a,
-            sandbox_mode="sandboxed",
         )
         entry = tool_registry.get("tool_a")
-        assert entry.sandbox_mode == "sandboxed"
         assert entry.registered_name == "tool_a"
 
     def test_register_namespaced_tool_identity(self, tool_registry):
@@ -166,7 +164,7 @@ class TestQuery:
         assert set(tool_registry.names()) == {"tool_a", "tool_b"}
 
     def test_registered_names_ignores_restrictions(self, tool_registry):
-        """Introspection can see hidden registered tools."""
+        """Introspection can see hidden registered XBotv2.tools."""
         tool_registry.register(tool_a)
         tool_registry.register(tool_b)
         tool_registry.restrict(["tool_a"])

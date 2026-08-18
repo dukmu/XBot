@@ -30,10 +30,10 @@ import asyncio
 
 import pytest
 
-from xbotv2.tui.command import parse_slash_command, search_commands
-from xbotv2.tui.completion_popup import CompletionPopup
-from xbotv2.tui.terminal import CommandOutcome
-from xbotv2.tui.textual_client import XBotTextualApp
+from XBotv2.tui.command import parse_slash_command, search_commands
+from XBotv2.tui.completion_popup import CompletionPopup
+from XBotv2.tui.terminal import CommandOutcome
+from XBotv2.tui.textual_client import XBotTextualApp
 
 
 # ----------------------------------------------------------------------
@@ -171,7 +171,7 @@ def test_status_bar_preserves_queue_and_tokens_for_any_status(
     width: int,
     status: str,
 ) -> None:
-    from xbotv2.tui.textual_widgets import status_renderable
+    from XBotv2.tui.textual_widgets import status_renderable
 
     rendered = status_renderable(
         status=status,
@@ -199,7 +199,7 @@ def test_status_bar_preserves_queue_and_tokens_for_any_status(
 
 
 def test_status_bar_compacts_million_token_counts() -> None:
-    from xbotv2.tui.textual_widgets import status_renderable
+    from XBotv2.tui.textual_widgets import status_renderable
 
     rendered = status_renderable(
         status="Ready",
@@ -981,7 +981,7 @@ async def test_slash_status_appends_state_notice(scripted_session) -> None:
 async def test_ctrl_p_opens_palette_with_full_command_list(
     scripted_session,
 ) -> None:
-    from xbotv2.tui.command_palette import CommandPalette
+    from XBotv2.tui.command_palette import CommandPalette
 
     app = XBotTextualApp(
         session_id="s",
@@ -998,7 +998,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         # The palette's input should be auto-focused.
         assert app.focused is not None
         # All client and discovered server commands are visible.
-        from xbotv2.tui.command import search_commands
+        from XBotv2.tui.command import search_commands
         assert len(search_commands("")) == 16
 
         await pilot.press("escape")
@@ -1009,7 +1009,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
 @pytest.mark.asyncio
 async def test_command_palette_stays_inside_narrow_screen(scripted_session) -> None:
     from textual.containers import Container
-    from xbotv2.tui.command_palette import CommandPalette
+    from XBotv2.tui.command_palette import CommandPalette
 
     app = XBotTextualApp(session_id="s", thread_id="t")
     app.session = scripted_session
@@ -1029,7 +1029,7 @@ async def test_command_palette_stays_inside_narrow_screen(scripted_session) -> N
 
 @pytest.mark.asyncio
 async def test_command_palette_scrolls_to_long_server_command_list() -> None:
-    from xbotv2.tui.command_palette import CommandPalette
+    from XBotv2.tui.command_palette import CommandPalette
 
     class ManyCommandsSession(_ScriptedSession):
         async def list_commands(self):
@@ -1070,7 +1070,7 @@ async def test_command_palette_scrolls_to_long_server_command_list() -> None:
 
 @pytest.mark.asyncio
 async def test_palette_fuzzy_filters_to_exit(scripted_session) -> None:
-    from xbotv2.tui.command_palette import CommandPalette
+    from XBotv2.tui.command_palette import CommandPalette
 
     app = XBotTextualApp(
         session_id="s",
@@ -1109,7 +1109,7 @@ async def test_palette_fuzzy_filters_to_exit(scripted_session) -> None:
 
 
 def _make_notice(kind: str, text: str):
-    from xbotv2.tui.client import TuiNotice
+    from XBotv2.tui.client import TuiNotice
 
     return TuiNotice(kind=kind, text=text)
 
@@ -1643,7 +1643,7 @@ async def test_help_with_unknown_command_shows_error(
 async def test_prompt_command_is_parsed_with_correct_kind(
     scripted_session,
 ) -> None:
-    from xbotv2.tui.command import register_server_commands, parse_slash_command
+    from XBotv2.tui.command import register_server_commands, parse_slash_command
 
     register_server_commands([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},
@@ -1660,7 +1660,7 @@ async def test_prompt_command_is_parsed_with_correct_kind(
 async def test_command_search_includes_prompt_type(
     scripted_session,
 ) -> None:
-    from xbotv2.tui.command import register_server_commands, search_commands
+    from XBotv2.tui.command import register_server_commands, search_commands
 
     register_server_commands([
         {"name": "git-release", "description": "Create releases", "kind": "prompt"},

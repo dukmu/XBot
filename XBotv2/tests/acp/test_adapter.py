@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import socket
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import yaml
 from acp import PROTOCOL_VERSION, connect_to_agent, run_agent, text_block
 from acp.schema import (
     AcceptElicitationResponse,
@@ -19,12 +18,12 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from xbotv2.acp.agent import XBotACPAgent
-from xbotv2.acp.events import ACPEventMapper, replay_history
-from xbotv2.api.messages import Message
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.tools import ToolCall
-from xbotv2.llm.mock import MockLLM
+from XBotv2.acp.xbot_agent import XBotACPAgent
+from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.core.messages import Message
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import ToolCall
+from XBotv2.llm.mock import MockLLM
 
 
 class FakeConnection:
@@ -55,10 +54,18 @@ class FakeRuntime:
     provider_name = "default"
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
+        from types import SimpleNamespace
+
         self.events = events
         self.engine = FakeEngine()
         self.interrupted = False
         self.session_events: asyncio.Queue | None = None
+        self.services = SimpleNamespace(
+            get=lambda _name: None,
+            storage=None,
+            agents=SimpleNamespace(definitions=lambda: ()),
+            loop_state=SimpleNamespace(metadata={}),
+        )
 
     async def stream_message(self, content: str, request_id: str, *, images=None):
         assert content == "hello"
@@ -257,8 +264,6 @@ class ProtocolClient:
 
 
 async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
-    source_data = Path(__file__).parents[2] / "data"
-    shutil.copytree(source_data / "config", tmp_path / "config")
     agent = XBotACPAgent(
         paths=RuntimePaths.from_data_dir(tmp_path),
         provider_name="default",
@@ -348,9 +353,26 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    source_data = Path(__file__).parents[2] / "data"
-    shutil.copytree(source_data / "config", data_dir / "config")
-    shutil.copytree(source_data / ".agents", data_dir / ".agents")
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "llm",
+            "name": "llm",
+            "config": {
+                "default": "default",
+                "providers": {
+                    "default": {
+                        "provider": "openai",
+                        "model": "test",
+                        "base_url": "http://test",
+                        "api_key": "test",
+                        "max_context_tokens": 4096,
+                    },
+                },
+            },
+        }]),
+        encoding="utf-8",
+    )
     agent = XBotACPAgent(
         paths=RuntimePaths.from_data_dir(data_dir),
         provider_name="default",

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from xbotv2.api.commands import Command, CommandResult
+from XBotv2.core.commands import Command, CommandResult
 
-from xbotv2.tui.command import (
+from XBotv2.tui.command import (
     CommandSpec,
     known_command_labels,
     parse_slash_command,
@@ -20,7 +20,7 @@ from xbotv2.tui.command import (
 
 @pytest.fixture(autouse=True)
 def restore_command_registry(monkeypatch):
-    from xbotv2.tui import command
+    from XBotv2.tui import command
 
     monkeypatch.setattr(command, "_ALIASES", dict(command._ALIASES))
     monkeypatch.setattr(command, "_COMMANDS", dict(command._COMMANDS))
@@ -221,7 +221,7 @@ def test_register_prompt_commands() -> None:
 
 
 def test_get_command_returns_client_command() -> None:
-    from xbotv2.tui.command import get_command
+    from XBotv2.tui.command import get_command
     spec = get_command("help")
     assert spec is not None
     assert spec.kind == "client"
@@ -229,7 +229,7 @@ def test_get_command_returns_client_command() -> None:
 
 
 def test_get_command_returns_server_command() -> None:
-    from xbotv2.tui.command import get_command
+    from XBotv2.tui.command import get_command
 
     register_server_commands([
         {"name": "deploy", "slash": "/deploy", "description": "deploy app"}
@@ -240,7 +240,7 @@ def test_get_command_returns_server_command() -> None:
 
 
 def test_get_command_returns_none_for_unknown() -> None:
-    from xbotv2.tui.command import get_command
+    from XBotv2.tui.command import get_command
     assert get_command("nonexistent") is None
 
 
@@ -263,7 +263,7 @@ def test_parse_slash_command_preserves_args_for_skill() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_command_registry_owns_server_dispatch() -> None:
-    from xbotv2.protocol.commands import execute_command
+    from XBotv2.protocol.commands import execute_command
 
     async def handler(_ctx, raw_args):
         return CommandResult(f"sample:{raw_args}")
@@ -273,8 +273,16 @@ async def test_plugin_command_registry_owns_server_dispatch() -> None:
         description="Sample extension command.",
         handler=handler,
     )
-    loader = SimpleNamespace(get_command=lambda name: extension if name == "sample" else None)
-    ctx = SimpleNamespace(engine=SimpleNamespace(plugin_loader=loader))
+    loader = SimpleNamespace(
+        get_command=lambda name: extension if name == "sample" else None,
+        status_slots=lambda: {},
+    )
+    ctx = SimpleNamespace(
+        engine=SimpleNamespace(plugin_loader=loader),
+        services=SimpleNamespace(
+            get=lambda name: loader if name == "loader" else None
+        ),
+    )
 
     result = await execute_command(ctx, "sample", ["a", "b"], raw_args="a b")
 
@@ -283,7 +291,7 @@ async def test_plugin_command_registry_owns_server_dispatch() -> None:
 
 @pytest.mark.asyncio
 async def test_task_commands_use_typed_transport_operations(tmp_path) -> None:
-    from xbotv2.tui.terminal import TerminalSession
+    from XBotv2.tui.terminal import TerminalSession
 
     task = {
                 "task_id": "task-1",
@@ -316,7 +324,7 @@ async def test_task_commands_use_typed_transport_operations(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_history_builtins_use_typed_transport_operations(tmp_path) -> None:
-    from xbotv2.tui.terminal import TerminalSession
+    from XBotv2.tui.terminal import TerminalSession
 
     transport = SimpleNamespace(
         clear_history=AsyncMock(
@@ -353,7 +361,7 @@ async def test_history_builtins_use_typed_transport_operations(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_policy_builtins_use_session_policy_resource(tmp_path) -> None:
-    from xbotv2.tui.terminal import TerminalSession
+    from XBotv2.tui.terminal import TerminalSession
 
     transport = SimpleNamespace(
         get_session_policy=AsyncMock(

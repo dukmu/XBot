@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=REPO_ROOT / "XBotv2" / "data",
+        default=EVALUATION_ROOT / "templates",
     )
     parser.add_argument("--agent-command", help="override the adapter executable")
     parser.add_argument(
@@ -433,12 +433,28 @@ def _write_run_manifest(
 
 
 def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
-    path = data_dir / "config" / "providers.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    providers = data.get("providers") or {}
+    """Read one provider definition from the llm plugin tree entry.
+
+    Providers live in the ``llm`` plugin's tree config (the bundled
+    ``xcore.yaml`` merged with the data dir's ``plugins.yaml`` overlay) —
+    there is no separate ``providers.yaml`` document.
+    """
+    from XBotv2.loader import PluginTree
+
+    tree = PluginTree.from_yaml(REPO_ROOT / "XBotv2" / "xcore.yaml")
+    overlay_path = data_dir / "config" / "plugins.yaml"
+    if overlay_path.is_file():
+        tree = tree.merged_with(PluginTree.from_yaml(overlay_path))
+    llm_entry = next(
+        (entry for entry in tree.entries if entry.id == "llm"),
+        None,
+    )
+    if llm_entry is None:
+        raise ValueError("no llm plugin entry in merged plugin tree")
+    providers = (llm_entry.config or {}).get("providers") or {}
     provider = providers.get(name)
     if not isinstance(provider, dict):
-        raise ValueError(f"Unknown provider {name!r} in {path}")
+        raise ValueError(f"Unknown provider {name!r} in {data_dir}")
     return provider
 
 

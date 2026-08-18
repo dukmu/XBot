@@ -1,8 +1,0 @@
-name: token_manager
-version: "1.0.0"
-description: Provider-calibrated context observation
-api_version: "1"
-config_schema:
-  type: object
-  additionalProperties: false
-  properties: {}

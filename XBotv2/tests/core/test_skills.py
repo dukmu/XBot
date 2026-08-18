@@ -1,5 +1,7 @@
 """Integration tests for SkillsPlugin — discovery, loading, and shell injection."""
 
+from XBotv2.tests.helpers import make_engine, make_tool_ctx
+
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -7,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from xbotv2.config.models import RuntimeConfig
+from XBotv2.config.models import RuntimeConfig
 
 
 @pytest.fixture
@@ -91,9 +93,10 @@ Invalid permission content.
     return ws
 
 
+
 class TestSkillRegistry:
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -106,7 +109,7 @@ class TestSkillRegistry:
         assert "invalid-permissions" not in names
 
     def test_skill_parses_frontmatter(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -123,7 +126,7 @@ class TestSkillRegistry:
         assert manual.disable_model_invocation is True
 
     def test_skill_found_via_agents_path(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -132,7 +135,7 @@ class TestSkillRegistry:
         assert "agents path" in skill.content.lower()
 
     def test_load_skill_returns_none_for_unknown(self, skill_workspace):
-        from builtin_plugins.skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         reg = SkillRegistry()
         reg.discover(skill_workspace)
@@ -140,7 +143,7 @@ class TestSkillRegistry:
 
     def test_skill_registry_respects_name_directory_match(self, tmp_path):
         """Skill name must match the containing directory name."""
-        from builtin_plugins.skills.registry import SkillRegistry
+        from XBotv2.skills.registry import SkillRegistry
 
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -161,16 +164,17 @@ Body
         assert reg.load_skill("my-skill") is None
 
     @pytest.mark.asyncio
-    async def test_plugin_unload_resets_runtime_state(self, skill_workspace):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest
+    async def test_plugin_unload_resets_runtime_state(self, skill_workspace, state_store):
+        from XBotv2.skills.plugin import SkillsPlugin
+        from plugin_harness import mount_plugin
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
+        mount_plugin(plugin, state_store)
         plugin._registry.discover(skill_workspace)
         plugin._active_skills.add("test-skill")
         plugin._permission_scope.add(allowed=["shell"], disallowed=[])
 
-        await plugin.on_unload()
+        plugin._cleanup_runtime()
 
         assert plugin.diagnostics() == {
             "status": "ready",
@@ -179,19 +183,16 @@ Body
         }
 
     @pytest.mark.asyncio
-    async def test_plugin_session_init_is_idempotent(self, skill_workspace):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest
-        from xbotv2.plugin.loader import _RuntimePluginContext
-        from xbotv2.tools.registry import ToolRegistry
+    async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext
+        from plugin_harness import mount_plugin
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
-        registry = ToolRegistry()
-        owned_names: list[str] = []
-        runtime = _RuntimePluginContext("skills", registry, owned_names)
-        ctx = SimpleNamespace(
-            plugin_runtime=runtime,
+        mount_plugin(plugin, state_store)
+        registry = plugin.ctx.tools.registry
+        ctx = EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=SimpleNamespace(max_context_tokens=1_000),
         )
@@ -201,17 +202,16 @@ Body
         await plugin._on_session_init(ctx)
 
         assert registry.registered_names() == first_names
-        assert owned_names == first_names
+        assert plugin._skill_tools == first_names
         assert "skills:project:manual-only" not in first_names
-        assert runtime.commands["manual-only"].kind == "prompt"
+        assert plugin.ctx.commands.get("manual-only").kind == "prompt"
         model_only = registry.get_registered("skills:project:model-only")
         assert model_only is not None
         assert model_only.model_visible is True
-        assert "model-only" not in runtime.commands
-        assert runtime.commands["test-skill"].kind == "prompt"
+        assert plugin.ctx.commands.get("model-only") is None
+        assert plugin.ctx.commands.get("test-skill").kind == "prompt"
         entry = registry.get("skills:project:test-skill")
         assert entry is not None
-        assert entry.sandbox_mode == "sandboxed"
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80
 
@@ -227,15 +227,17 @@ Body
     async def test_manual_only_skill_requires_explicit_user_invocation(
         self,
         skill_workspace,
+        state_store,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest
+        from XBotv2.skills.plugin import SkillsPlugin
+        from plugin_harness import mount_plugin
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         plugin._registry.discover(skill_workspace)
+        mount_plugin(plugin, state_store)
         manual_result = await plugin._on_before_user_message(
-            SimpleNamespace(user_input="/manual-only focus", sandbox=None)
+            SimpleNamespace(user_input="/manual-only focus")
         )
 
         invocation = manual_result["user_input"]
@@ -246,7 +248,7 @@ Body
         assert root.findtext("user_arguments").strip() == "focus"
 
         model_only_result = await plugin._on_before_user_message(
-            SimpleNamespace(user_input="/model-only", sandbox=None)
+            SimpleNamespace(user_input="/model-only")
         )
         assert model_only_result["event"]["data"]["code"] == (
             "skill_not_user_invocable"
@@ -259,26 +261,25 @@ Body
         state_store,
         temp_workspace,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest
-        from xbotv2.core.context import ContextBuilder
-        from xbotv2.core.engine import Engine
-        from xbotv2.hooks.manager import HookManager
-        from xbotv2.llm.mock import MockLLM
-        from xbotv2.tools.permissions import PermissionSystem
-        from xbotv2.tools.registry import ToolRegistry
-        from xbotv2.tools.sandbox import SandboxPolicy
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext
+        from XBotv2.context_builder.builder import ContextBuilder
+        from XBotv2.agentloop.engine import Engine
+        from XBotv2.llm.mock import MockLLM
+        from XBotv2.permissions.system import PermissionSystem
+        from XBotv2.agentloop.tool_registry import ToolRegistry
+        from XBotv2.sandbox.policy import SandboxPolicy
+        from plugin_harness import mount_plugin
+        from xcore import Context
 
-        registry = ToolRegistry()
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
-        from xbotv2.plugin.loader import _RuntimePluginContext
-        await plugin._on_session_init(SimpleNamespace(
-            plugin_runtime=_RuntimePluginContext("skills", registry, []),
+        mount_plugin(plugin, state_store)
+        await plugin._on_session_init(EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=None,
         ))
-        engine = Engine(
+        engine = make_engine(
             llm=MockLLM(responses=[
                 {
                     "content": "",
@@ -290,8 +291,8 @@ Body
                 },
                 {"content": "done"},
             ]),
-            tool_registry=registry,
-            hook_manager=HookManager(),
+            tool_registry=plugin.ctx.tools.registry,
+            plugin_ctx=Context(),
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(
@@ -310,10 +311,10 @@ Body
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest, Tool
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import Tool
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._model_skill_names = {"long-skill"}
         plugin._metadata_budget_chars = 14
 
@@ -337,34 +338,25 @@ Body
 
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import (
-            HookAction,
-            HookContext,
-            HookStage,
-            PluginManifest,
-            ToolCall,
-        )
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import ToolCall
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._active_skills.add("git-workflow")
-        plugin._permission_scope.add(allowed=["shell(git *)"])
+        plugin._permission_scope.add(disallowed=["shell(rm *)"])
 
-        allowed = await plugin._on_before_tool(
-            HookContext(
-                stage=HookStage.BEFORE_TOOL_CALL,
-                tool_call=ToolCall("call_1", "shell", {"command": "git status"}),
-            )
+        allowed = await plugin._guard_tool_scope(
+            ToolCall("call_1", "shell", {"command": "git status"}),
+            None,
         )
-        denied = await plugin._on_before_tool(
-            HookContext(
-                stage=HookStage.BEFORE_TOOL_CALL,
-                tool_call=ToolCall("call_2", "shell", {"command": "rm -rf build"}),
-            )
+        denied = await plugin._guard_tool_scope(
+            ToolCall("call_2", "shell", {"command": "rm -rf build"}),
+            None,
         )
 
-        assert allowed.action is HookAction.ALLOW
-        assert denied is None
+        assert allowed is None
+        assert denied.action == "deny"
+        assert denied.source == "skills"
 
     @pytest.mark.asyncio
     async def test_skill_restrictions_run_before_core_permissions(
@@ -372,15 +364,15 @@ Body
         state_store,
         temp_workspace,
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import HookStage, PluginManifest, Tool
-        from xbotv2.core.context import ContextBuilder
-        from xbotv2.core.engine import Engine
-        from xbotv2.hooks.manager import HookManager
-        from xbotv2.llm.mock import MockLLM
-        from xbotv2.tools.permissions import PermissionSystem
-        from xbotv2.tools.registry import ToolRegistry
-        from xbotv2.tools.sandbox import SandboxPolicy
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import Events, Tool
+        from XBotv2.context_builder.builder import ContextBuilder
+        from XBotv2.agentloop.engine import Engine
+        from XBotv2.llm.mock import MockLLM
+        from XBotv2.permissions.system import PermissionSystem
+        from XBotv2.agentloop.tool_registry import ToolRegistry
+        from XBotv2.sandbox.policy import SandboxPolicy
+        from xcore import Context
 
         invoked = []
 
@@ -393,14 +385,14 @@ Body
             return command
 
         registry = ToolRegistry()
-        registry.register(Tool.from_function(echo), sandbox_mode="host")
-        registry.register(Tool.from_function(runner), sandbox_mode="host")
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        registry.register(Tool.from_function(echo))
+        registry.register(Tool.from_function(runner))
+        plugin = SkillsPlugin()
         plugin._active_skills.add("restricted")
-        plugin._permission_scope.add(allowed=["echo", "runner(git *)"])
-        hooks = HookManager()
-        hooks.register(HookStage.BEFORE_TOOL_CALL, plugin._on_before_tool)
-        permissions = PermissionSystem(default_decision="ask")
+        plugin._permission_scope.add(disallowed=["runner(rm *)"])
+        plugin_ctx = make_tool_ctx(registry)
+        plugin_ctx.tools.guard(plugin._guard_tool_scope)
+        permissions = PermissionSystem(default_decision="allow")
         permissions.add_rule("deny", {"tool": "echo"})
         llm = MockLLM(responses=[
             {
@@ -412,23 +404,23 @@ Body
                         "args": {"message": "hi"},
                     },
                     {
+                        "id": "skill_denied",
+                        "name": "runner",
+                        "args": {"command": "rm build"},
+                    },
+                    {
                         "id": "allowed_by_skill",
                         "name": "runner",
                         "args": {"command": "git status"},
-                    },
-                    {
-                        "id": "normal_permission",
-                        "name": "runner",
-                        "args": {"command": "rm build"},
                     },
                 ],
             },
             {"content": "done"},
         ])
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hooks,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(
@@ -448,32 +440,29 @@ Body
         }
         assert invoked == [("runner", "git status")]
         assert "Permission denied" in results["core_denied"].content
+        assert "denied by the active skill" in results["skill_denied"].content
         assert results["allowed_by_skill"].status == "success"
-        assert "approval required" in results["normal_permission"].content
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_rolls_back_partial_registration(
-        self, skill_workspace
+        self, skill_workspace, state_store
     ):
-        from builtin_plugins.skills.plugin import SkillsPlugin
-        from xbotv2.api import PluginManifest, Tool
-        from xbotv2.plugin.loader import _RuntimePluginContext
-        from xbotv2.tools.registry import ToolRegistry
+        from XBotv2.skills.plugin import SkillsPlugin
+        from XBotv2.core import EventContext, Tool
+        from plugin_harness import mount_plugin
 
         def existing_tool() -> str:
             return "existing"
 
-        plugin = SkillsPlugin(PluginManifest(name="skills", version="1"), store=None)
+        plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
-        registry = ToolRegistry()
+        mount_plugin(plugin, state_store)
+        registry = plugin.ctx.tools.registry
         collision_name = registry.register(
             Tool.from_function(existing_tool, name="test-skill"),
             namespace="skills:project",
         )
-        owned_names: list[str] = []
-        runtime = _RuntimePluginContext("skills", registry, owned_names)
-        ctx = SimpleNamespace(
-            plugin_runtime=runtime,
+        ctx = EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
         )
 
@@ -481,7 +470,7 @@ Body
             await plugin._on_session_init(ctx)
 
         assert registry.registered_names() == [collision_name]
-        assert owned_names == []
+        assert plugin._skill_tools == []
         assert plugin._initialized is False
         assert plugin.diagnostics()["skills"] == 0
 
@@ -495,7 +484,7 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_expands_command(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "hello !`echo world`", sandbox=self.FakeSandbox()
@@ -504,14 +493,14 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_no_backticks_unchanged(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess("hello echo world")
         assert result == "hello echo world"
 
     @pytest.mark.asyncio
     async def test_shell_injection_multiple_commands(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess(
             "a !`echo X` and !`echo Y` end", sandbox=self.FakeSandbox()
@@ -522,15 +511,15 @@ class TestSkillToolAndShellInjection:
 
     @pytest.mark.asyncio
     async def test_shell_injection_without_sandbox_does_not_execute(self):
-        from builtin_plugins.skills.skill_tool import _preprocess
+        from XBotv2.skills.skill_tool import _preprocess
 
         result = await _preprocess("hello !`echo unsafe`")
         assert result == "hello [shell injection unavailable: enabled sandbox required]"
 
     @pytest.mark.asyncio
     async def test_load_skill_returns_content(self):
-        from builtin_plugins.skills.registry import SkillRegistry
-        from builtin_plugins.skills.skill_tool import load_skill
+        from XBotv2.skills.registry import SkillRegistry
+        from XBotv2.skills.skill_tool import load_skill
 
         import tempfile
         ws = Path(tempfile.mkdtemp())
@@ -553,7 +542,7 @@ Demo content
 
 class TestSkillPermissionScope:
     def test_allowed_tools_match(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell(git *)"])
@@ -562,7 +551,7 @@ class TestSkillPermissionScope:
         assert scope.check("read_file", {"path": "README.md"}) is None
 
     def test_disallowed_overrides_allowed(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"], disallowed=["shell(git push *)"])
@@ -570,7 +559,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_disallowed_tools_do_not_create_an_allowlist(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(disallowed=["shell(git push *)"])
@@ -578,7 +567,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell", {"command": "git push origin main"}) == "deny"
 
     def test_clear_resets(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
         scope.add(allowed=["shell"])
@@ -587,7 +576,7 @@ class TestSkillPermissionScope:
         assert scope.check("shell") is None
 
     def test_invalid_update_does_not_leave_partial_rules(self):
-        from builtin_plugins.skills.permission_scope import SkillPermissionScope
+        from XBotv2.skills.permission_scope import SkillPermissionScope
 
         scope = SkillPermissionScope()
 

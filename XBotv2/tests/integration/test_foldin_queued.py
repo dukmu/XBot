@@ -17,27 +17,49 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import yaml
 
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.api.tools import Tool
-from xbotv2.llm.mock import MockLLM
-from xbotv2.protocol.http_server import create_app
-from xbotv2.tools.permissions import PermissionSystem
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import Tool
+from XBotv2.llm.mock import MockLLM
+from XBotv2.application.server import start_server_application
 
 
 @pytest_asyncio.fixture
 async def foldin_app(tmp_path: Path):
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
-    (data_dir / "config" / "providers.yaml").write_text(
-        "default: default\nproviders:\n  default:\n    provider: openai\n"
-        "    model: test\n    base_url: http://test\n    api_key: test\n"
-        "    max_context_tokens: 4096\n",
-        encoding="utf-8",
-    )
-    (data_dir / "config" / "user.yaml").write_text(
-        "user_id: test\nuser_name: Tester\nplatform: tui\n"
-        "session_type: interactive\n",
+    (data_dir / "config" / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "default",
+                    "providers": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "test",
+                            "base_url": "http://test",
+                            "api_key": "test",
+                            "max_context_tokens": 4096,
+                        },
+                    },
+                },
+            },
+            {
+                "id": "config",
+                "name": "config",
+                "config": {
+                    "user": {
+                        "user_id": "test",
+                        "user_name": "Tester",
+                        "platform": "tui",
+                        "session_type": "interactive",
+                    },
+                },
+            },
+        ], sort_keys=False),
         encoding="utf-8",
     )
     (data_dir / "config" / "config.yaml").write_text(
@@ -47,13 +69,16 @@ async def foldin_app(tmp_path: Path):
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_app(
+    server = await start_server_application(
         provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
         workspace_root=str(workspace),
         no_plugins=True,
     )
-    yield app
+    try:
+        yield server.server
+    finally:
+        await server.stop()
 
 
 async def _collect(stream):
@@ -69,7 +94,7 @@ async def _run_foldin(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -78,8 +103,8 @@ async def _run_foldin(app, llm):
         await release_tool.wait()
         return value
 
-    ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tool_registry.restrict(None)
+    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
+    ctx.engine.tools.registry.restrict(None)
 
     ev_stream = ctx.attach_event_stream()
 
@@ -95,7 +120,7 @@ async def _run_foldin(app, llm):
         _collect_events(ctx.stream_message("second queued", "req-2"))
     )
     await asyncio.sleep(0)
-    assert len(ctx.pending_fold) == 1, "second request must be accepted for fold"
+    assert ctx.engine.pending_input_count == 1
     release_tool.set()
     first_events, second_events = await asyncio.gather(first_task, second_task)
     message_events = []
@@ -192,7 +217,7 @@ async def _run_multi_queue(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -201,8 +226,8 @@ async def _run_multi_queue(app, llm):
         await release_tool.wait()
         return value
 
-    ctx.engine.tool_registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tool_registry.restrict(None)
+    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
+    ctx.engine.tools.registry.restrict(None)
 
     async def collect(stream):
         events = []
@@ -216,7 +241,7 @@ async def _run_multi_queue(app, llm):
     second_task = asyncio.create_task(collect(ctx.stream_message("second", "req-2")))
     third_task = asyncio.create_task(collect(ctx.stream_message("third", "req-3")))
     await asyncio.sleep(0)
-    assert len(ctx.pending_fold) == 2, "both queued requests must be accepted"
+    assert ctx.engine.pending_input_count == 2
     release_tool.set()
     first_events = await asyncio.wait_for(first_task, timeout=5)
     second_events = await asyncio.wait_for(second_task, timeout=5)
@@ -293,9 +318,8 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     completion notice the TUI never applies); no terminal ``task_updated``
     reached live clients, so tasks stayed "running" forever."""
 
-    from xbotv2.api.jobs import JobKind
-    from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
-    from xbotv2.tools.permissions import PermissionSystem
+    from XBotv2.core.jobs import JobKind
+    from XBotv2.coretools.shell import SHELL_TOOLS
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="task-panel",
@@ -305,14 +329,14 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
         no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
-    ctx.engine.permission_system = PermissionSystem(default_decision="allow")
+    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     events = ctx.attach_event_stream()
 
-    registry = ctx.engine.job_registry
+    registry = ctx.services.jobs
     assert registry is not None
     tools = {tool.name: tool for tool in SHELL_TOOLS}
-    started = await tools["start_shell"].ainvoke(
-        {"command": "echo done"},
+    started = await tools["shell"].ainvoke(
+        {"command": "echo done", "background": True},
         job_registry=registry,
         sandbox=None,
         sandbox_policy=None,

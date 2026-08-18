@@ -1,4 +1,0 @@
-name: workspace_instructions
-version: "1.0.0"
-description: Reload workspace AGENTS.md for each model request
-api_version: "1"

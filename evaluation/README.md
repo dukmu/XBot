@@ -47,8 +47,10 @@ docker build \
 Omit the proxy arguments for a direct build. These predefined proxy arguments
 are not retained in the image or included in Docker cache keys.
 
-The runner reads the selected provider from `XBotv2/data/config/providers.yaml`.
-Provide the API key through the environment variable named by that provider.
+The runner reads the selected provider from the merged plugin tree
+(`evaluation/templates/config/plugins.yaml` + the bundled `xcore.yaml`,
+the `--data-dir` default). Provide the API key through the environment
+variable named by that provider.
 
 The image installs the XBot package through its Python package entry point and
 installs the pinned OpenCode release. Host XBot and OpenCode installations are

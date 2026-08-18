@@ -6,9 +6,9 @@ from threading import Thread
 
 import pytest
 
-from builtin_plugins.browser.browser import BrowserSession
-from builtin_plugins.browser.network import NetworkOptions, UrlPolicy, WebAccess
-from xbotv2.api import ToolResult
+from XBotv2.browser.browser import BrowserSession
+from XBotv2.browser.network import NetworkOptions, UrlPolicy, WebAccess
+from XBotv2.core import ToolResult
 
 
 class FakeBrowserSandbox:

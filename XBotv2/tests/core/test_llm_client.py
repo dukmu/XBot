@@ -4,28 +4,28 @@ from types import SimpleNamespace
 
 import pytest
 
-from xbotv2.llm.anthropic import (
+from XBotv2.llm.anthropic import (
     AnthropicProvider,
     anthropic_request_messages,
     normalize_anthropic_usage,
 )
-from xbotv2.llm.base import BaseProvider, ProviderRetryExhaustedError
-from xbotv2.llm.openai import OpenAICompatibleProvider, openai_messages
-from xbotv2.api.messages import (
+from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
+from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
+from XBotv2.core.messages import (
     ImageContent,
     Message,
     ReasoningPart,
     TextPart,
     ToolCallPart,
 )
-from xbotv2.api.tools import ToolCall
-from xbotv2.core.internal_messages import structure_tool_message
+from XBotv2.core.tools import ToolCall
+from XBotv2.agentloop.internal_messages import structure_tool_message
 
 
 def test_provider_retry_default_is_bounded(monkeypatch):
     monkeypatch.delenv("XBOT_PROVIDER_MAX_RETRIES", raising=False)
 
-    from xbotv2.llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
+    from XBotv2.llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
 
     assert _retry_settings()[0] == DEFAULT_PROVIDER_MAX_RETRIES
 
@@ -52,7 +52,7 @@ async def test_provider_retry_exhaustion_reports_clear_error(monkeypatch):
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("xbotv2.llm.base.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", no_sleep)
     llm = AlwaysFail()
 
     with pytest.raises(ProviderRetryExhaustedError) as raised:

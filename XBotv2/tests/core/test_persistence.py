@@ -1,26 +1,28 @@
 """Tests for message history persistence and session restore."""
 
+from XBotv2.tests.helpers import make_engine as helpers_make_engine
+
 import json
 import base64
 
 import pytest
 
-from xbotv2.api.messages import Message
-from xbotv2.persistence.store import (
+from XBotv2.core.messages import Message
+from XBotv2.persistence.store import (
     CoreStateStore,
     message_to_dict,
     dict_to_message,
 )
-from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import Tool, ToolCall
-from xbotv2.api.paths import RuntimePaths
+from XBotv2.agentloop.engine import Engine
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.config.models import RuntimeConfig
+import xcore
+from XBotv2.llm.mock import MockLLM
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.paths import RuntimePaths
 
 
 # ------------------------------------------------------------------
@@ -332,17 +334,40 @@ def echo(message: str) -> str:
 echo_tool = Tool.from_function(echo, name="echo")
 
 
-def make_engine(llm, registry, store, workspace, hook_manager=None):
-    return Engine(
+def make_engine(llm, registry, store, workspace, plugin_ctx=None):
+    """Build an Engine with production-equivalent persistence wiring.
+
+    Persistence is an observer of ``STATE_CHANGED`` and hydrates ``LoopState``
+    when the store already holds a session; the loop driver never calls the
+    store directly.
+    """
+    from XBotv2.core.events import Events
+    from XBotv2.persistence.plugin import PersistenceService
+
+    ctx = plugin_ctx or xcore.Context()
+    engine = helpers_make_engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=hook_manager or HookManager(),
+        plugin_ctx=ctx,
         state_store=store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(workspace)),
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+    persistence = PersistenceService(store, engine.state)
+    ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    if store.has_existing_session():
+        messages = store.read_messages()
+        engine.state.messages = messages
+        engine.state.turn_count = sum(
+            1 for message in messages if message.role == "user"
+        )
+        engine.state.resumed = True
+        engine.state.metadata = store.read_thread_metadata()
+        engine.state.inbox_events = store.read_events(Events.INBOX_SPLICE)
+        engine.state.session.turn_count = engine.state.turn_count
+    return engine
 
 
 class TestEnginePersistence:
@@ -480,7 +505,7 @@ class TestEnginePersistence:
             {"content": "Done after tool."},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, store, temp_workspace)
         await engine.start_session()

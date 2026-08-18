@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+from XBotv2.core import EventContext
+
 
 def _tool_definition(name, **values):
     return {
@@ -81,7 +83,7 @@ def echo_server_script(tmp_path):
 class TestMCPStdioTransport:
     @pytest.mark.asyncio
     async def test_connect_and_list_tools(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
+        from XBotv2.mcp.mcp_client import MCPClient
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -98,7 +100,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_call_echo_tool(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
+        from XBotv2.mcp.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -115,7 +117,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_call_add_tool(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
+        from XBotv2.mcp.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -130,7 +132,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_command_not_found_raises_error(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
+        from XBotv2.mcp.mcp_client import MCPClient, MCPConnectionError
 
         client = MCPClient()
         with pytest.raises(MCPConnectionError, match="initialization failed"):
@@ -141,7 +143,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_disconnect_all_cleans_up(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
+        from XBotv2.mcp.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -155,7 +157,7 @@ class TestMCPStdioTransport:
     async def test_duplicate_server_name_preserves_existing_connection(
         self, echo_server_script
     ):
-        from builtin_plugins.mcp.client import MCPClient, MCPConnectionError
+        from XBotv2.mcp.mcp_client import MCPClient, MCPConnectionError
 
         client = MCPClient()
         config = {
@@ -173,7 +175,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_server_features_use_negotiated_protocol(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
+        from XBotv2.mcp.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -208,7 +210,7 @@ class TestMCPStdioTransport:
 
 
 def test_invalid_mcp_tool_schema_is_rejected():
-    from builtin_plugins.mcp.client import MCPConnectionError, _validate_tool_list
+    from XBotv2.mcp.mcp_client import MCPConnectionError, _validate_tool_list
 
     with pytest.raises(MCPConnectionError, match="invalid inputSchema"):
         _validate_tool_list({"tools": [_tool_definition(
@@ -219,35 +221,33 @@ def test_invalid_mcp_tool_schema_is_rejected():
 
 @pytest.mark.asyncio
 async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(tmp_path):
-    from builtin_plugins.mcp.callbacks import client_callbacks
+    from XBotv2.mcp.callbacks import client_callbacks
     from mcp import types
-    from xbotv2.api import HookContext, HookStage, ModelResponse, SessionInfo
+    from XBotv2.core import SessionInfo
+    from XBotv2.llm.mock import MockLLM
+    from xcore import Context
 
     requested = []
+    llm = MockLLM(responses=[{"content": "Done"}])
 
-    async def invoke_model(messages):
-        system = ET.fromstring(messages[0].content)
-        assert system.tag == "mcp_sampling_system_prompt"
-        assert system.attrib["source"] == "mcp_server"
-        assert system.text.strip() == "Be concise"
-        assert (messages[1].role, messages[1].content) == ("user", "Summarize")
-        return ModelResponse(content="Done")
+    class FakeInteractions:
+        async def request_user_input(self, question, **kwargs):
+            requested.append((question, kwargs))
+            return {"status": "answered", "answer": "focused"}
 
-    async def request_user_input(question, **kwargs):
-        requested.append((question, kwargs))
-        return {"status": "answered", "answer": "focused"}
+    services = Context()
+    services.set("llm", llm)
+    services.set("interactions", FakeInteractions())
 
-    callbacks = client_callbacks(HookContext(
-        stage=HookStage.ON_SESSION_INIT,
-        invoke_model=invoke_model,
-        request_user_input=request_user_input,
-        session=SessionInfo(
+    callbacks = client_callbacks(
+        services,
+        SessionInfo(
             session_id="s",
             thread_id="t",
             workspace_root=str(tmp_path),
             provider="minimax",
         ),
-    ))
+    )
 
     sample = await callbacks["sampling_callback"](
         None,
@@ -273,6 +273,12 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
         ),
     )
 
+    sent = llm.get_call_messages(0)
+    system = ET.fromstring(sent[0].content)
+    assert system.tag == "mcp_sampling_system_prompt"
+    assert system.attrib["source"] == "mcp_server"
+    assert system.text.strip() == "Be concise"
+    assert (sent[1].role, sent[1].content) == ("user", "Summarize")
     assert sample.content.text == "Done"
     assert sample.model == "minimax"
     assert str(roots.roots[0].uri) == tmp_path.resolve().as_uri()
@@ -283,35 +289,24 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
 
 @pytest.mark.asyncio
 async def test_mcp_plugin_unload_disconnects_external_resources():
-    from builtin_plugins.mcp.plugin import MCPPlugin
-    from xbotv2.api import PluginManifest
-
-    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"), store=None)
+    from XBotv2.mcp.plugin import MCPPlugin
+    
+    plugin = MCPPlugin()
     plugin._client.disconnect_all = AsyncMock()
     plugin._server_status["server"] = {"status": "ready"}
 
-    await plugin.on_unload()
+    await plugin._on_unload()
 
     plugin._client.disconnect_all.assert_awaited_once()
     assert plugin._server_status == {}
 
 
-def _mcp_runtime():
-    from xbotv2.plugin.loader import _RuntimePluginContext
-    from xbotv2.tools.registry import ToolRegistry
-
-    registry = ToolRegistry()
-    owned_names: list[str] = []
-    runtime = _RuntimePluginContext("mcp", registry, owned_names)
-    return runtime, registry, owned_names
-
-
 def _mcp_plugin(servers):
-    from builtin_plugins.mcp.plugin import MCPPlugin
-    from xbotv2.api import PluginManifest
+    from XBotv2.mcp.plugin import MCPPlugin
+    from plugin_harness import mount_plugin_standalone
 
-    plugin = MCPPlugin(PluginManifest(name="mcp", version="1"), store=None)
-    plugin._config = {"servers": servers}
+    plugin = MCPPlugin()
+    mount_plugin_standalone(plugin, {"servers": servers})
     plugin._client.connect_and_list = AsyncMock()
     plugin._client.server_capabilities = lambda _server: {"tools": {}}
     plugin._client.disconnect = AsyncMock(return_value=True)
@@ -326,18 +321,17 @@ async def test_optional_server_registration_failure_rolls_back_that_server():
         _tool_definition("duplicate"),
         _tool_definition("duplicate"),
     ]
-    runtime, registry, owned_names = _mcp_runtime()
-    ctx = SimpleNamespace(plugin_runtime=runtime)
+    registry = plugin.ctx.tools.registry
 
-    await plugin._on_session_init(ctx)
+    await plugin._on_session_init(EventContext())
 
     assert registry.registered_names() == []
-    assert owned_names == []
+    assert plugin._server_tools == {}
     assert plugin._server_status["optional"]["status"] == "error"
     assert plugin._initialized is True
     plugin._client.disconnect.assert_awaited_once_with("optional")
 
-    await plugin._on_session_init(ctx)
+    await plugin._on_session_init(EventContext())
     plugin._client.connect_and_list.assert_awaited_once()
 
 
@@ -348,14 +342,13 @@ async def test_required_server_registration_failure_rolls_back_all_servers():
         [_tool_definition("first")],
         [_tool_definition("duplicate"), _tool_definition("duplicate")],
     ]
-    runtime, registry, owned_names = _mcp_runtime()
-    ctx = SimpleNamespace(plugin_runtime=runtime)
+    registry = plugin.ctx.tools.registry
 
     with pytest.raises(ValueError, match="already registered"):
-        await plugin._on_session_init(ctx)
+        await plugin._on_session_init(EventContext())
 
     assert registry.registered_names() == []
-    assert owned_names == []
+    assert plugin._server_tools == {}
     assert plugin._initialized is False
     assert plugin._client.disconnect.await_args_list == [
         call("required"),
@@ -368,20 +361,19 @@ async def test_required_server_registration_failure_rolls_back_all_servers():
 async def test_session_close_removes_tools_and_allows_reinitialization():
     plugin = _mcp_plugin({"server": {}})
     plugin._client.connect_and_list.return_value = [_tool_definition("echo")]
-    runtime, registry, owned_names = _mcp_runtime()
-    ctx = SimpleNamespace(plugin_runtime=runtime)
+    registry = plugin.ctx.tools.registry
 
-    await plugin._on_session_init(ctx)
+    await plugin._on_session_init(EventContext())
     registered_name = "mcp:server:mcp__server__echo"
     assert registry.registered(registered_name)
 
-    await plugin._on_session_close(ctx)
+    await plugin._on_session_close(EventContext())
     assert registry.registered_names() == []
-    assert owned_names == []
+    assert plugin._server_tools == {}
     assert plugin._server_status == {}
     assert plugin._initialized is False
 
-    await plugin._on_session_init(ctx)
+    await plugin._on_session_init(EventContext())
     assert registry.registered(registered_name)
     assert plugin._client.connect_and_list.await_count == 2
 
@@ -402,14 +394,14 @@ async def test_negotiated_server_features_register_agent_bridges():
     plugin._client.complete = AsyncMock(return_value={
         "completion": {"values": ["one"]},
     })
-    runtime, registry, owned_names = _mcp_runtime()
+    registry = plugin.ctx.tools.registry
 
-    await plugin._on_session_init(SimpleNamespace(plugin_runtime=runtime))
+    await plugin._on_session_init(EventContext())
 
     assert plugin._server_status["server"] == {
         "status": "ready", "tools": 0, "bridges": 3,
     }
-    assert len(owned_names) == 3
+    assert len(plugin._server_tools["server"]) == 3
     resource = registry.get("mcp:server:mcp__server__protocol_resources")
     prompt = registry.get("mcp:server:mcp__server__protocol_prompts")
     completion = registry.get("mcp:server:mcp__server__protocol_complete")
@@ -442,8 +434,8 @@ async def test_negotiated_server_features_register_agent_bridges():
 class TestMCPToolWrapper:
     @pytest.mark.asyncio
     async def test_mcp_tool_as_callable(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
-        from builtin_plugins.mcp.tool import MCPTool
+        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp.tool import MCPTool
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -462,9 +454,9 @@ class TestMCPToolWrapper:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_as_xbot_tool(self, echo_server_script):
-        from builtin_plugins.mcp.client import MCPClient
-        from builtin_plugins.mcp.tool import MCPTool
-        from xbotv2.api.tools import Tool
+        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp.tool import MCPTool
+        from XBotv2.core.tools import Tool
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -485,8 +477,8 @@ class TestMCPToolWrapper:
 
     @pytest.mark.asyncio
     async def test_mcp_error_result_becomes_structured_tool_failure(self):
-        from builtin_plugins.mcp.client import MCPCallResult
-        from builtin_plugins.mcp.tool import MCPTool
+        from XBotv2.mcp.mcp_client import MCPCallResult
+        from XBotv2.mcp.tool import MCPTool
 
         client = AsyncMock()
         client.call_tool.return_value = MCPCallResult(
@@ -507,13 +499,13 @@ class TestMCPToolWrapper:
 
 class TestMCPNormalizeResult:
     def test_normalize_text_content(self):
-        from builtin_plugins.mcp.client import _normalize_mcp_result
+        from XBotv2.mcp.mcp_client import _normalize_mcp_result
 
         result = {"content": [{"type": "text", "text": "hello"}]}
         assert _normalize_mcp_result(result) == "hello"
 
     def test_normalize_mixed_content(self):
-        from builtin_plugins.mcp.client import _normalize_mcp_result
+        from XBotv2.mcp.mcp_client import _normalize_mcp_result
 
         result = {"content": [
             {"type": "text", "text": "first"},
@@ -526,7 +518,7 @@ class TestMCPNormalizeResult:
         assert "third" in normalized
 
     def test_normalize_no_content(self):
-        from builtin_plugins.mcp.client import _normalize_mcp_result
+        from XBotv2.mcp.mcp_client import _normalize_mcp_result
 
         result = {"result": "ok"}
         normalized = _normalize_mcp_result(result)

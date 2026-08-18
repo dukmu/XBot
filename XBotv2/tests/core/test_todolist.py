@@ -1,60 +1,70 @@
 """Behavior tests for the built-in TodoList plugin."""
 
+from XBotv2.tests.helpers import make_engine
+
+import json
 from pathlib import Path
 
 import pytest
-from builtin_plugins.todolist.plugin import TodolistPlugin
-from xbotv2.api import PluginManifest
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.engine import Engine
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.llm.mock import MockLLM
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.loader import PluginLoader
-from xbotv2.plugin.store import PluginStore
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from XBotv2.todolist.plugin import TodolistPlugin
+import xcore
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.agentloop.engine import Engine
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.llm.mock import MockLLM
+from XBotv2.persistence.store import CoreStateStore
+from plugin_harness import mount_ctx, mount_plugin
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 class SetupContext:
-    def __init__(self) -> None:
-        self.tools = {}
-        self.options = {}
+    """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def register_tool(self, tool, options=None):
-        self.tools[tool.name] = tool
-        self.options[tool.name] = options
-        return f"plugin:todolist:{tool.name}"
+    def __init__(self, plugin) -> None:
+        self.ctx = plugin.ctx
+        self.tools: dict = {}
+        self.options: dict = {}
+        self.commands: dict = {}
+        for entry in self.ctx.tools.registry.registered_entries():
+            self.tools[entry.tool.name] = entry.tool
+            self.options[entry.tool.name] = _EntryOptions(
+                namespace=entry.namespace,
+            )
+        for command in self.ctx.commands.all():
+            self.commands[command.name] = command
+
+
+class _EntryOptions:
+    def __init__(self, *, namespace) -> None:
+        self.namespace = namespace
+
+
+def _mount(plugin, state_store):
+    return mount_plugin(plugin, state_store)
 
 
 def make_plugin(state_store) -> TodolistPlugin:
-    return TodolistPlugin(
-        PluginManifest(name="todolist", version="1"),
-        PluginStore(state_store, "todolist"),
-    )
+    from XBotv2.todolist.plugin import TodolistPlugin
+
+    return _mount(TodolistPlugin(), state_store)
 
 
 def setup_plugin(state_store) -> tuple[TodolistPlugin, SetupContext]:
     plugin = make_plugin(state_store)
-    setup = SetupContext()
-    plugin.setup(setup)
-    return plugin, setup
+    return plugin, SetupContext(plugin)
 
 
 def todo(content: str, status: str) -> dict[str, str]:
     return {"content": content, "status": status}
 
 
-def test_todolist_registers_one_atomic_host_tool(state_store):
+def test_todolist_registers_one_atomic_tool(state_store):
     _plugin, setup = setup_plugin(state_store)
 
     assert list(setup.tools) == ["update_todos"]
     tool = setup.tools["update_todos"]
-    options = setup.options["update_todos"]
-    assert options.namespace == "plugin:todolist"
-    assert options.sandbox_mode == "host"
     assert tool.parameters["required"] == ["todos"]
     item = tool.parameters["properties"]["todos"]["items"]
     assert item["required"] == ["content", "status"]
@@ -178,32 +188,32 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
     (plugins_root / "todolist").symlink_to(
-        Path(__file__).parents[2] / "builtin_plugins" / "todolist",
+        Path(__file__).parents[2] / "todolist",
         target_is_directory=True,
     )
-    registry = ToolRegistry()
-    loader = PluginLoader(
-        plugin_dirs=[plugins_root],
-        state_store=state_store,
-        hook_manager=HookManager(),
-        tool_registry=registry,
-        context_builder=ContextBuilder(),
-    )
+    from XBotv2.loader import Loader, PluginTree
 
-    loaded = await loader.load()
-    assert isinstance(loaded[0], TodolistPlugin)
-    assert registry.registered_names() == ["plugin:todolist:update_todos"]
+    ctx = mount_ctx(state_store)
+    registry = ctx.tools.registry
+    loader = Loader(ctx, tree=PluginTree.from_dict([
+        {"id": "todolist", "name": "todolist"},
+    ]))
+
+    await loader.load()
+    assert isinstance(loader.get("todolist"), TodolistPlugin)
+    assert registry.registered_names() == ["update_todos"]
     active = [todo("survive unload", "in_progress")]
     await registry.get("update_todos").tool.ainvoke({"todos": active})
 
     assert await loader.unload("todolist") is True
     assert registry.registered_names() == []
-    assert state_store.get_plugin_state("todolist") == {
-        "state": {"items": active},
+    state_file = state_store.paths.state_dir / "state.json"
+    assert json.loads(state_file.read_text(encoding="utf-8"))["todolist.state"] == {
+        "items": active,
     }
 
     await loader.load()
-    assert registry.registered_names() == ["plugin:todolist:update_todos"]
+    assert registry.registered_names() == ["update_todos"]
     await loader.unload_all()
 
 
@@ -218,7 +228,6 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     options = setup.options["update_todos"]
     registry.register(
         tool,
-        sandbox_mode=options.sandbox_mode,
         namespace=options.namespace,
     )
     active = [
@@ -236,10 +245,10 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
         },
         {"content": "Tracked."},
     ])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=registry,
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(

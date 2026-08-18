@@ -1,0 +1,39 @@
+# Evaluation bridge plugin-tree overlay.
+# Provider definitions live in the llm plugin's tree config (the bundled
+# xcore.yaml provides the base providers); this overlay pins the default and
+# the bridge "inspect" provider is added at runtime by the adapter.
+- id: llm
+  name: llm
+  config:
+    default: minimax
+    providers:
+      minimax:
+        provider: anthropic
+        model: Minimax-M3
+        base_url: https://api.minimaxi.com/anthropic
+        api_key_env: MINIMAX_API_TOKEN
+        temperature: 0.2
+        max_context_tokens: 204800
+        max_output_tokens: 32768
+        reasoning_effort: high
+        thinking_enabled: true
+        input_modalities:
+          - text
+          - image
+      deepseek:
+        provider: openai
+        model: deepseek-v4-flash
+        base_url: https://api.deepseek.com/v1
+        api_key_env: DEEPSEEK_API_KEY
+        temperature: 0.7
+        max_context_tokens: 1048576
+        reasoning_effort: high
+        thinking_enabled: true
+- id: config
+  name: config
+  config:
+    user:
+      user_id: default-user
+      user_name: User
+      platform: terminal
+      session_type: interactive

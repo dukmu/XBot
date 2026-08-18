@@ -23,29 +23,36 @@ def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
     source = tmp_path / "source"
     config = source / "config"
     config.mkdir(parents=True)
-    (config / "providers.yaml").write_text(
-        yaml.safe_dump({
-            "default": "minimax",
-            "providers": {
-                "minimax": {
-                    "provider": "anthropic",
-                    "model": "Minimax-M3",
-                    "max_context_tokens": 204800,
-                    "max_output_tokens": 32768,
-                    "temperature": 0.2,
-                    "thinking_enabled": True,
-                    "input_modalities": ["text", "image"],
-                }
+    (config / "plugins.yaml").write_text(
+        yaml.safe_dump([
+            {
+                "id": "llm",
+                "name": "llm",
+                "config": {
+                    "default": "minimax",
+                    "providers": {
+                        "minimax": {
+                            "provider": "anthropic",
+                            "model": "Minimax-M3",
+                            "max_context_tokens": 204800,
+                            "max_output_tokens": 32768,
+                            "temperature": 0.2,
+                            "thinking_enabled": True,
+                            "input_modalities": ["text", "image"],
+                        }
+                    },
+                },
             },
-        }),
+        ]),
         encoding="utf-8",
     )
     _configure_bridge_provider(source, provider_name="minimax")
 
     generated = yaml.safe_load(
-        (source / "config" / "providers.yaml").read_text(encoding="utf-8")
+        (source / "config" / "plugins.yaml").read_text(encoding="utf-8")
     )
-    bridge = generated["providers"]["inspect"]
+    llm_entry = next(item for item in generated if item["id"] == "llm")
+    bridge = llm_entry["config"]["providers"]["inspect"]
     assert bridge["provider"] == "anthropic"
     assert bridge["model"] == "inspect"
     assert bridge["max_context_tokens"] == 204800

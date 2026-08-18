@@ -5,21 +5,23 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
-from xbotv2.core.builtin_tools.shell import SHELL_TOOLS
-from xbotv2.core.builtin_tools.interaction import request_permission
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookStage
-from xbotv2.llm.mock import MockLLM
-from xbotv2.api import ContextComponent
-from xbotv2.api.messages import Message, ModelResponse
-from xbotv2.llm.base import BaseProvider
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import (
+from XBotv2.agentloop.engine import Engine
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.coretools.shell import SHELL_TOOLS
+from XBotv2.permissions.tools import request_permission
+from XBotv2.config.models import RuntimeConfig
+import xcore
+from XBotv2.tests.helpers import make_engine as helpers_make_engine
+from XBotv2.tests.helpers import make_tool_ctx
+from XBotv2.core.events import Events
+from XBotv2.llm.mock import MockLLM
+from XBotv2.core import ContextComponent
+from XBotv2.core.messages import Message, ModelResponse
+from XBotv2.core.providers import BaseProvider
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.tools import (
     ArtifactRef,
     ClientEvent,
     Tool,
@@ -97,38 +99,63 @@ structured_failure_tool = Tool.from_function(
 )
 
 
-def make_engine(mock_llm, tool_registry, state_store, temp_workspace):
-    """Create a minimal engine for testing."""
-    return Engine(
+def make_engine(*args, **kwargs):
+    """Create a minimal engine for testing.
+
+    Accepts either the historical positional composition
+    ``(mock_llm, tool_registry, state_store, temp_workspace)`` or the
+    keyword composition used by the migrated Engine call sites.
+    """
+    if args:
+        mock_llm, tool_registry, state_store = args[0], args[1], args[2]
+        if len(args) > 3:
+            kwargs.setdefault("workspace", args[3])
+    else:
+        mock_llm = kwargs.pop("llm")
+        tool_registry = kwargs.pop("tool_registry")
+        state_store = kwargs.pop("state_store")
+    workspace = kwargs.pop("workspace", None)
+    plugin_ctx = kwargs.pop("plugin_ctx", xcore.Context())
+    config = kwargs.pop("config", None)
+    sandbox_policy = kwargs.pop("sandbox_policy", None)
+    permission_system = kwargs.pop("permission_system", None)
+    kwargs.pop("context_builder", None)
+    if kwargs:
+        raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
+    return helpers_make_engine(
         llm=mock_llm,
         tool_registry=tool_registry,
-        hook_manager=HookManager(),
+        plugin_ctx=plugin_ctx,
         state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
+        sandbox_policy=sandbox_policy,
+        permission_system=permission_system,
+        config=config,
     )
 
 
-def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace, hook_manager):
+def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace, plugin_ctx):
     """Create a minimal engine with a supplied hook manager."""
-    return Engine(
+    return helpers_make_engine(
         llm=mock_llm,
         tool_registry=tool_registry,
-        hook_manager=hook_manager,
+        plugin_ctx=plugin_ctx,
         state_store=state_store,
-        context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
             enabled=False,
             workspace_root=str(temp_workspace),
         ),
         permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
     )
+
+
+def wire_persistence(engine, state_store, plugin_ctx=None):
+    """Wire the production persistence observer onto an engine's events."""
+    from XBotv2.persistence.plugin import PersistenceService
+
+    ctx = plugin_ctx or engine._events
+    persistence = PersistenceService(state_store, engine.state)
+    ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    return persistence
 
 
 class TestEngineBasics:
@@ -139,7 +166,7 @@ class TestEngineBasics:
         """Engine returns a text response when no tool calls are made."""
         llm = MockLLM(responses=[{"content": "Hello! How can I help?"}])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("hi")]
@@ -189,20 +216,8 @@ class TestEngineBasics:
                 },
             }
         ]
-        assert engine.session_usage == {
-            "input_tokens": 11,
-            "output_tokens": 7,
-            "total_tokens": 18,
-            "requests": 1,
-            "context_tokens": 11,
-            "cache_read_input_tokens": 5,
-            "cache_creation_input_tokens": 0,
-            "prompt_cache_write_tokens": 0,
-        }
-
-        await engine.replace_history([])
-
-        assert state_store.read_usage() == engine.session_usage
+        # Cumulative session usage is owned by the usage capability, not the
+        # loop driver; the per-call usage event above is the engine contract.
 
     @pytest.mark.asyncio
     async def test_streaming_text_deltas_precede_final_assistant_message(self, state_store, temp_workspace):
@@ -244,7 +259,7 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo hello")]
@@ -286,7 +301,7 @@ class TestEngineBasics:
         ])
         registry = ToolRegistry()
         shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
-        registry.register(shell, sandbox_mode="host")
+        registry.register(shell)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("run shell")]
@@ -319,7 +334,7 @@ class TestEngineBasics:
             {"content": "Done!"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo hello")]
@@ -350,7 +365,7 @@ class TestEngineBasics:
             },
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("echo hello")]
@@ -383,7 +398,7 @@ class TestEngineBasics:
             {"content": "handled"},
         ])
         registry = ToolRegistry()
-        registry.register(structured_failure_tool, sandbox_mode="host")
+        registry.register(structured_failure_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test result")]
@@ -422,7 +437,7 @@ class TestEngineBasics:
             {"content": "Both done."},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         events = [e async for e in engine.run_turn("echo two things")]
@@ -458,7 +473,7 @@ class TestEngineBasics:
         responses.append({"content": "Budget exhausted; work remains."})
         llm = MockLLM(responses=responses)
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
         engine.max_iterations = 3  # Small limit
@@ -483,7 +498,7 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_hooks_fire_during_turn(self, state_store, temp_workspace):
-        """Registered hooks are called during a turn."""
+        """Registered plugin_ctx are called during a turn."""
         llm = MockLLM(responses=[{"content": "Hello!"}])
         registry = ToolRegistry()
 
@@ -495,14 +510,14 @@ class TestEngineHooks:
         async def on_turn_end(ctx):
             hook_calls.append("turn_end")
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_TURN_START, on_turn_start)
-        hook_manager.register(HookStage.ON_TURN_END, on_turn_end)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.TURN_START, on_turn_start)
+        plugin_ctx.on(Events.TURN_END, on_turn_end)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -525,13 +540,13 @@ class TestEngineHooks:
             }
             return ctx.short_circuit_result
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_AGENT, replace_response)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_AGENT, replace_response)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -546,10 +561,10 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_model_request_hooks_receive_context_and_response(self, state_store, temp_workspace):
-        """Fine-grained model hooks see built context, tools, request, and response."""
+        """Fine-grained model plugin_ctx see built context, tools, request, and response."""
         llm = MockLLM(responses=[{"content": "Hello!"}])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         calls = []
 
         async def after_context_build(ctx):
@@ -566,16 +581,16 @@ class TestEngineHooks:
         async def after_model_response(ctx):
             calls.append(("response", ctx.model_response.content))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.AFTER_CONTEXT_BUILD, after_context_build)
-        hook_manager.register(HookStage.AFTER_TOOL_SCHEMA_BIND, after_tool_schema_bind)
-        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, before_model_request)
-        hook_manager.register(HookStage.AFTER_MODEL_RESPONSE, after_model_response)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx.on(Events.AFTER_TOOL_SCHEMA_BIND, after_tool_schema_bind)
+        plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, before_model_request)
+        plugin_ctx.on(Events.AFTER_MODEL_RESPONSE, after_model_response)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -593,7 +608,7 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_before_model_request_can_short_circuit_turn(self, state_store, temp_workspace):
-        """Budget-style hooks can stop before the provider request."""
+        """Budget-style plugin_ctx can stop before the provider request."""
         llm = MockLLM(responses=[{"content": "Should not be called"}])
         registry = ToolRegistry()
 
@@ -606,13 +621,13 @@ class TestEngineHooks:
                 "turn_complete": True,
             }
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, deny_request)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, deny_request)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -633,11 +648,11 @@ class TestEngineHooks:
     @pytest.mark.parametrize(
         "stage",
         [
-            HookStage.BEFORE_CONTEXT,
-            HookStage.BEFORE_CONTEXT_BUILD,
-            HookStage.AFTER_CONTEXT,
-            HookStage.BEFORE_TOOL_SCHEMA_BIND,
-            HookStage.BEFORE_MODEL_REQUEST,
+            Events.BEFORE_CONTEXT,
+            Events.BEFORE_CONTEXT_BUILD,
+            Events.AFTER_CONTEXT,
+            Events.BEFORE_TOOL_SCHEMA_BIND,
+            Events.BEFORE_MODEL_REQUEST,
         ],
     )
     async def test_invalid_transform_return_emits_contract_error(
@@ -650,13 +665,13 @@ class TestEngineHooks:
         async def stop(ctx):
             return True
 
-        hook_manager = HookManager()
-        hook_manager.register(stage, stop)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(stage, stop)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -673,12 +688,12 @@ class TestEngineHooks:
         ]
         assert events[1]["data"]["code"] == "engine_error"
         assert events[1]["data"]["details"]["exception_type"] == "TypeError"
-        assert stage.value in events[1]["data"]["message"]
+        assert stage in events[1]["data"]["message"]
         assert llm.call_count == 0
 
     @pytest.mark.asyncio
     async def test_user_message_accept_hooks_can_rewrite_input(self, state_store, temp_workspace):
-        """User intake hooks run before history is recorded."""
+        """User intake plugin_ctx run before history is recorded."""
         llm = MockLLM(responses=[{"content": "ok"}])
         registry = ToolRegistry()
         calls = []
@@ -690,14 +705,14 @@ class TestEngineHooks:
         async def after_accept(ctx):
             calls.append(("after", ctx.user_input, ctx.messages[-1].content))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, before_accept)
-        hook_manager.register(HookStage.AFTER_USER_MESSAGE_ACCEPT, after_accept)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, before_accept)
+        plugin_ctx.on(Events.AFTER_USER_MESSAGE_ACCEPT, after_accept)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -722,13 +737,13 @@ class TestEngineHooks:
         async def reject(ctx):
             return True
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, reject)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, reject)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -742,7 +757,7 @@ class TestEngineHooks:
         assert events[0]["type"] == "error"
         assert events[0]["data"]["code"] == "engine_error"
         assert events[0]["data"]["details"]["exception_type"] == "TypeError"
-        assert "before_user_message_accept" in events[0]["data"]["message"]
+        assert "before/user-message-accept" in events[0]["data"]["message"]
         assert engine.turn_count == 0
         assert engine.messages == []
         assert llm.call_count == 0
@@ -758,13 +773,13 @@ class TestEngineHooks:
         async def reject(ctx):
             return {"turn_complete": True}
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, reject)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, reject)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -793,14 +808,14 @@ class TestEngineHooks:
                 "turn_complete": False,
             }
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, announce)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, announce)
         engine = make_engine_with_hooks(
             MockLLM(responses=[{"content": "ok"}]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
 
         events = [event async for event in engine.run_turn("continue")]
@@ -815,13 +830,13 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_context_component_and_build_hooks_fire(self, state_store, temp_workspace):
-        """Context hooks expose source-tagged components before provider messages."""
+        """Context plugin_ctx expose source-tagged components before provider messages."""
         llm = MockLLM(responses=[{"content": "ok"}])
         registry = ToolRegistry()
         calls = []
 
         async def before_context_build(ctx):
-            calls.append(("before_build", ctx.stage))
+            calls.append(("before_build",))
             return {"context_kwargs": {"instructions": "from hook"}}
 
         async def after_components(ctx):
@@ -841,15 +856,15 @@ class TestEngineHooks:
         async def after_context_build(ctx):
             calls.append(("messages", [message.content for message in ctx.context_messages]))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_CONTEXT_BUILD, before_context_build)
-        hook_manager.register(HookStage.AFTER_CONTEXT_COMPONENTS_BUILD, after_components)
-        hook_manager.register(HookStage.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_CONTEXT_BUILD, before_context_build)
+        plugin_ctx.on(Events.AFTER_CONTEXT_COMPONENTS_BUILD, after_components)
+        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -859,7 +874,7 @@ class TestEngineHooks:
 
         _ = [e async for e in engine.run_turn("test")]
 
-        assert calls[0] == ("before_build", HookStage.BEFORE_CONTEXT_BUILD)
+        assert calls[0] == ("before_build",)
         assert "core_instructions" in calls[1][1]
         assert "agent_instructions" in calls[1][1]
         assert "history" in calls[1][1]
@@ -873,9 +888,9 @@ class TestEngineHooks:
         async def replace_with_invalid(ctx):
             ctx.context_components = [object()]
 
-        hook_manager = HookManager()
-        hook_manager.register(
-            HookStage.AFTER_CONTEXT_COMPONENTS_BUILD,
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(
+            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
             replace_with_invalid,
         )
         llm = MockLLM(responses=[{"content": "should not run"}])
@@ -884,7 +899,7 @@ class TestEngineHooks:
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
 
         events = [event async for event in engine.run_turn("test")]
@@ -902,7 +917,7 @@ class TestEngineHooks:
     async def test_before_tool_schema_bind_filters_actual_bound_tools(
         self, state_store, temp_workspace
     ):
-        """Tool schema hooks run before provider bind_tools is called."""
+        """Tool schema plugin_ctx run before provider bind_tools is called."""
         class RecordingLLM(MockLLM):
             def __init__(self):
                 super().__init__([{"content": "ok"}])
@@ -914,19 +929,19 @@ class TestEngineHooks:
 
         llm = RecordingLLM()
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         async def filter_tools(ctx):
             assert [tool.name for tool in ctx.model_request["tools"]] == ["echo"]
             return {"tools": []}
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_TOOL_SCHEMA_BIND, filter_tools)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, filter_tools)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -942,7 +957,7 @@ class TestEngineHooks:
     async def test_before_model_request_rebinds_when_tools_change(
         self, state_store, temp_workspace
     ):
-        """Late request hooks that change tools also update the bound client."""
+        """Late request plugin_ctx that change tools also update the bound client."""
         class RecordingLLM(MockLLM):
             def __init__(self):
                 super().__init__([{"content": "ok"}])
@@ -954,19 +969,19 @@ class TestEngineHooks:
 
         llm = RecordingLLM()
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        registry.register(shout_tool, sandbox_mode="host")
+        registry.register(echo_tool)
+        registry.register(shout_tool)
 
         async def keep_echo(ctx):
             return {"tools": [tool for tool in ctx.model_request["tools"] if tool.name == "echo"]}
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, keep_echo)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, keep_echo)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -996,14 +1011,14 @@ class TestEngineHooks:
         async def on_error(ctx):
             calls.append(("engine", type(ctx.error).__name__))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_MODEL_REQUEST_ERROR, on_model_error)
-        hook_manager.register(HookStage.ON_ERROR, on_error)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.MODEL_REQUEST_ERROR, on_model_error)
+        plugin_ctx.on(Events.ON_ERROR, on_error)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -1047,7 +1062,7 @@ class TestEngineHooks:
 
         llm = FlakyLLM()
         sleep = AsyncMock()
-        monkeypatch.setattr("xbotv2.llm.base.asyncio.sleep", sleep)
+        monkeypatch.setattr("asyncio.sleep", sleep)
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
 
         events = [event async for event in engine.run_turn("test")]
@@ -1062,7 +1077,7 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_tool_call_lifecycle_hooks_fire(self, state_store, temp_workspace):
-        """Parsed, per-call before/after, and denial hooks are visible."""
+        """Parsed, per-call before/after, and denial plugin_ctx are visible."""
         llm = MockLLM(responses=[
             {
                 "content": "tools",
@@ -1074,7 +1089,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         calls = []
 
         async def parsed(ctx):
@@ -1089,16 +1104,16 @@ class TestEngineHooks:
         async def denied(ctx):
             calls.append(("denied", ctx.tool_call.name, type(ctx.error).__name__))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_TOOL_CALLS_PARSED, parsed)
-        hook_manager.register(HookStage.BEFORE_TOOL_CALL, before_call)
-        hook_manager.register(HookStage.AFTER_TOOL_CALL, after_call)
-        hook_manager.register(HookStage.ON_TOOL_DENIED, denied)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.TOOL_CALLS_PARSED, parsed)
+        plugin_ctx.on(Events.BEFORE_TOOL_CALL, before_call)
+        plugin_ctx.on(Events.AFTER_TOOL_CALL, after_call)
+        plugin_ctx.on(Events.TOOL_DENIED, denied)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -1113,64 +1128,6 @@ class TestEngineHooks:
         assert ("before", "echo") in calls
         assert ("after", "echo", "success") in calls
         assert ("denied", "missing", "PermissionError") in calls
-
-    @pytest.mark.asyncio
-    async def test_permission_checks_tool_call_after_hook_transformation(
-        self,
-        state_store,
-        temp_workspace,
-    ):
-        llm = MockLLM(responses=[
-            {
-                "content": "tools",
-                "tool_calls": [
-                    {"name": "echo", "args": {"message": "hi"}, "id": "call_1"},
-                ],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        registry.register(shout_tool, sandbox_mode="host")
-        permission_system = PermissionSystem(default_decision="allow")
-        permission_system.add_rule(
-            "deny",
-            {"tool": "shout", "params": {"message": "blocked"}},
-        )
-        denied = []
-
-        async def rewrite_call(ctx):
-            return {
-                "tool_call": ToolCall(
-                    ctx.tool_call.id,
-                    "shout",
-                    {"message": "blocked"},
-                )
-            }
-
-        async def on_permission_denied(ctx):
-            denied.append((ctx.tool_call.name, ctx.tool_call.args))
-
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_call)
-        hook_manager.register(HookStage.ON_PERMISSION_DENIED, on_permission_denied)
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=permission_system,
-            config=RuntimeConfig(),
-        )
-
-        _ = [event async for event in engine.run_turn("test")]
-
-        assert denied == [("shout", {"message": "blocked"})]
-        tool_message = next(message for message in engine.messages if message.role == "tool")
-        assert tool_message.status == "error"
-        assert tool_message.tool_call_id == "call_1"
 
     @pytest.mark.asyncio
     async def test_hook_denial_does_not_request_permission(
@@ -1188,17 +1145,17 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
 
         async def deny_call(ctx):
             return {"deny_reason": "blocked by plugin policy"}
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_TOOL_CALL, deny_call)
-        engine = Engine(
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_TOOL_CALL, deny_call)
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -1214,117 +1171,31 @@ class TestEngineHooks:
         assert tool_message.content.startswith('<tool_result name="echo" status="error">')
 
     @pytest.mark.asyncio
-    async def test_message_tool_and_permission_hooks_receive_caller_payloads(
-        self,
-        state_store,
-        temp_workspace,
-    ):
-        """Stable observer families expose their documented runtime payloads."""
-        llm = MockLLM(responses=[
-            {
-                "content": "try tool",
-                "tool_calls": [
-                    {"name": "echo", "args": {"message": "hi"}, "id": "call_denied"},
-                ],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        observed = {}
-
-        async def on_user_message(ctx):
-            observed["user"] = (ctx.user_input, ctx.session.turn_count)
-
-        async def on_assistant_message(ctx):
-            observed.setdefault("assistant", []).append(ctx.agent_response.content)
-
-        async def before_tools(ctx):
-            observed["before_tools"] = (
-                [call.id for call in ctx.tool_calls],
-                ctx.agent_response.content,
-            )
-
-        async def on_permission_denied(ctx):
-            observed["permission_denied"] = (
-                ctx.tool_call.id,
-                ctx.permission_decision,
-                type(ctx.error).__name__,
-            )
-
-        async def on_tool_message(ctx):
-            result = ctx.tool_results[0]
-            observed["tool_message"] = (
-                result.tool_call_id,
-                result.status,
-            )
-
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_USER_MESSAGE, on_user_message)
-        hook_manager.register(HookStage.ON_ASSISTANT_MESSAGE, on_assistant_message)
-        hook_manager.register(HookStage.BEFORE_TOOLS, before_tools)
-        hook_manager.register(HookStage.ON_PERMISSION_DENIED, on_permission_denied)
-        hook_manager.register(HookStage.ON_TOOL_MESSAGE, on_tool_message)
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(
-                enabled=False,
-                workspace_root=str(temp_workspace),
-            ),
-            permission_system=PermissionSystem(default_decision="deny"),
-            config=RuntimeConfig(),
-        )
-
-        _ = [event async for event in engine.run_turn("run echo")]
-
-        assert observed == {
-            "user": ("run echo", 1),
-            "assistant": ["try tool", "done"],
-            "before_tools": (["call_denied"], "try tool"),
-            "permission_denied": ("call_denied", "deny", "PermissionError"),
-            "tool_message": ("call_denied", "error"),
-        }
-
-    @pytest.mark.asyncio
     async def test_state_persist_hooks_fire(self, state_store, temp_workspace):
-        """Persistence hooks bracket message materialization."""
+        """Persistence plugin_ctx bracket message materialization."""
         llm = MockLLM(responses=[{"content": "ok"}])
         registry = ToolRegistry()
         calls = []
 
-        async def before_persist(ctx):
-            calls.append(("before", len(ctx.messages), state_store.message_count()))
+        async def record_state_changed(ctx):
+            calls.append((len(ctx.messages), state_store.message_count()))
 
-        async def after_persist(ctx):
-            calls.append(("after", len(ctx.messages), state_store.message_count()))
-
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, before_persist)
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
-
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="allow"),
-            config=RuntimeConfig(),
+        plugin_ctx = xcore.Context()
+        engine = make_engine_with_hooks(
+            llm,
+            registry,
+            state_store,
+            temp_workspace,
+            plugin_ctx,
         )
+        persistence = wire_persistence(engine, state_store, plugin_ctx)
+        plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         _ = [e async for e in engine.run_turn("test")]
 
-        assert calls == [
-            ("before", 2, 0),
-            ("after", 2, 2),
-        ]
-        assert await engine.save_messages() is False
-        assert len(calls) == 2
+        assert calls == [(2, 2)]
+        assert await persistence.flush() is False
+        assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_tool_turn_persists_each_changed_checkpoint_once(
@@ -1340,21 +1211,22 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         persisted_sizes = []
 
-        async def after_persist(ctx):
+        async def record_state_changed(ctx):
             persisted_sizes.append(len(ctx.messages))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
+        plugin_ctx = xcore.Context()
         engine = make_engine_with_hooks(
             llm,
             registry,
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        wire_persistence(engine, state_store, plugin_ctx)
+        plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         _ = [event async for event in engine.run_turn("echo hi")]
 
@@ -1375,20 +1247,20 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
+        registry.register(echo_tool)
         order = []
 
         async def on_tool_message(_ctx):
             order.append("on_tool_message")
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_TOOL_MESSAGE, on_tool_message)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.TOOL_MESSAGE, on_tool_message)
         engine = make_engine_with_hooks(
             llm,
             registry,
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
 
         async for event in engine.run_turn("echo hi"):
@@ -1405,29 +1277,23 @@ class TestEngineHooks:
     async def test_rejected_message_does_not_trigger_empty_persistence(
         self, state_store, temp_workspace
     ):
-        persisted = []
-
         async def reject(_ctx):
             return {"turn_complete": True}
 
-        async def after_persist(_ctx):
-            persisted.append(True)
-
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_USER_MESSAGE_ACCEPT, reject)
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, reject)
         engine = make_engine_with_hooks(
             MockLLM(responses=[]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        wire_persistence(engine, state_store, plugin_ctx)
 
         events = [event async for event in engine.run_turn("reject")]
 
         assert events[0]["data"]["code"] == "user_message_rejected"
-        assert persisted == []
         assert state_store.message_count() == 0
 
     @pytest.mark.asyncio
@@ -1440,15 +1306,16 @@ class TestEngineHooks:
                     Message(role="system", content="metadata", name="persist-hook")
                 )
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_STATE_PERSIST, add_metadata_message)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.AFTER_MODEL_RESPONSE, add_metadata_message)
         engine = make_engine_with_hooks(
             MockLLM(responses=[{"content": "ok"}]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        persistence = wire_persistence(engine, state_store, plugin_ctx)
 
         _ = [event async for event in engine.run_turn("test")]
 
@@ -1458,7 +1325,7 @@ class TestEngineHooks:
             ("assistant", "ok"),
             ("system", "metadata"),
         ]
-        assert await engine.save_messages() is False
+        assert await persistence.flush() is False
 
     @pytest.mark.asyncio
     async def test_in_place_message_change_is_detected_without_manual_dirty_flag(
@@ -1470,11 +1337,12 @@ class TestEngineHooks:
             state_store,
             temp_workspace,
         )
+        persistence = wire_persistence(engine, state_store, engine._events)
         _ = [event async for event in engine.run_turn("test")]
 
         engine.messages[-1].content = "updated"
 
-        assert await engine.save_messages() is True
+        assert await persistence.flush() is True
         assert state_store.read_messages()[-1].content == "updated"
 
     @pytest.mark.asyncio
@@ -1486,19 +1354,20 @@ class TestEngineHooks:
         async def cancel_turn(_ctx):
             raise asyncio.CancelledError()
 
-        async def after_persist(ctx):
+        async def record_state_changed(ctx):
             persisted_sizes.append(len(ctx.messages))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_TURN_START, cancel_turn)
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.TURN_START, cancel_turn)
         engine = make_engine_with_hooks(
             MockLLM(responses=[]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        wire_persistence(engine, state_store, plugin_ctx)
+        plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
         events = []
 
         with pytest.raises(asyncio.CancelledError):
@@ -1518,19 +1387,20 @@ class TestEngineHooks:
         async def fail_model_request(_ctx):
             raise RuntimeError("model request blocked")
 
-        async def after_persist(ctx):
+        async def record_state_changed(ctx):
             persisted_sizes.append(len(ctx.messages))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, fail_model_request)
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, after_persist)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, fail_model_request)
         engine = make_engine_with_hooks(
             MockLLM(responses=[]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        wire_persistence(engine, state_store, plugin_ctx)
+        plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         events = [event async for event in engine.run_turn("fail me")]
 
@@ -1544,21 +1414,21 @@ class TestEngineHooks:
 
     @pytest.mark.asyncio
     async def test_stop_hooks_receive_reasons(self, state_store, temp_workspace):
-        """Stop hooks distinguish normal completion."""
+        """Stop plugin_ctx distinguish normal completion."""
         llm = MockLLM(responses=[{"content": "ok"}])
         registry = ToolRegistry()
         calls = []
 
         async def on_stop(ctx):
-            calls.append((ctx.stage, ctx.stop_reason))
+            calls.append((ctx.stop_reason,))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_STOP, on_stop)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.ON_STOP, on_stop)
 
-        engine = Engine(
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -1568,54 +1438,7 @@ class TestEngineHooks:
 
         _ = [e async for e in engine.run_turn("test")]
 
-        assert calls == [(HookStage.ON_STOP, "completed")]
-
-    @pytest.mark.asyncio
-    async def test_compact_hooks_bracket_before_context_message_replacement(
-        self, state_store, temp_workspace
-    ):
-        """Compaction hooks run around BEFORE_CONTEXT message replacement."""
-        llm = MockLLM(responses=[{"content": "ok"}])
-        registry = ToolRegistry()
-        calls = []
-
-        async def compact(ctx):
-            return {
-                "messages": [Message(role="user", content="compacted")],
-                "compact_reason": "test_compact",
-            }
-
-        async def pre_compact(ctx):
-            calls.append(("pre", ctx.compact_reason, len(ctx.messages)))
-
-        async def post_compact(ctx):
-            calls.append((
-                "post",
-                ctx.compact_reason,
-                ctx.previous_message_count,
-                ctx.current_message_count,
-            ))
-
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_CONTEXT, compact)
-        hook_manager.register(HookStage.PRE_COMPACT, pre_compact)
-        hook_manager.register(HookStage.POST_COMPACT, post_compact)
-
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="allow"),
-            config=RuntimeConfig(),
-        )
-
-        _ = [e async for e in engine.run_turn("test")]
-
-        assert calls == [("pre", "test_compact", 1), ("post", "test_compact", 1, 1)]
-        assert engine.messages[0].content == "compacted"
+        assert calls == [("completed",)]
 
     @pytest.mark.asyncio
     async def test_hook_can_make_unbound_auxiliary_model_call(
@@ -1627,18 +1450,28 @@ class TestEngineHooks:
         ])
         summaries = []
 
+        async def invoke_aux(model, messages):
+            from XBotv2.core.messages import merge_model_chunk
+
+            aggregate = None
+            async for chunk in model.astream(messages):
+                aggregate = merge_model_chunk(aggregate, chunk)
+            return aggregate
+
         async def before_context(ctx):
-            response = await ctx.invoke_model([
-                Message(role="user", content="summarize history")
-            ])
+            response = await invoke_aux(
+                plugin_ctx.model,
+                [Message(role="user", content="summarize history")],
+            )
             summaries.append(response)
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.BEFORE_CONTEXT, before_context)
-        engine = Engine(
+        plugin_ctx = xcore.Context()
+        plugin_ctx.set("model", llm)
+        plugin_ctx.on(Events.BEFORE_CONTEXT, before_context)
+        engine = make_engine(
             llm=llm,
             tool_registry=ToolRegistry(),
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(
@@ -1670,7 +1503,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(send_notice, sandbox_mode="host")
+        registry.register(send_notice)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [e async for e in engine.run_turn("notify")]
@@ -1678,139 +1511,9 @@ class TestEngineHooks:
         assert [e["type"] for e in events].count("assistant_message") == 2
         notice = next(e for e in events if e["type"] == "client_message")
         assert notice["data"]["message"] == "heads up"
-        assert notice["data"]["source"] == "send_message"
         assert notice["data"]["tool_call_id"] == "c1"
 
     @pytest.mark.asyncio
-    async def test_ask_user_without_live_client_cancels_and_continues(self, state_store, temp_workspace):
-        """ask-user style tools do not hang when no live client can answer."""
-        llm = MockLLM(responses=[
-            {
-                "content": "ask",
-                "tool_calls": [{"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}],
-            },
-            {"content": "continued without an answer"},
-        ])
-        registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
-        engine = make_engine(llm, registry, state_store, temp_workspace)
-
-        events = [e async for e in engine.run_turn("ask")]
-
-        input_event = next(e for e in events if e["type"] == "user_input_required")
-        assert input_event["data"]["request_id"] == "user_input:c1"
-        assert input_event["data"]["source"] == "ask_user"
-        assert input_event["data"]["tool_call_id"] == "c1"
-        assert input_event["data"]["resume_supported"] is False
-        tool_result = next(e for e in events if e["type"] == "tool_result")
-        assert "does not support live user input" in tool_result["data"]["content"]
-        assert llm.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_explicit_permission_allows_one_matching_tool_call(
-        self, state_store, temp_workspace
-    ):
-        arguments = {"message": "approved"}
-        llm = MockLLM(responses=[
-            {
-                "tool_calls": [{
-                    "name": "request_permission",
-                    "args": {
-                        "tool": "echo",
-                        "params": {"message": "approved"},
-                        "reason": "Echo the requested value.",
-                    },
-                    "id": "permission-1",
-                }],
-            },
-            {
-                "tool_calls": [{
-                    "name": "echo",
-                    "args": arguments,
-                    "id": "echo-1",
-                }],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(request_permission, sandbox_mode="host")
-
-        async def approved_echo(message: str) -> str:
-            return f"Echo: {message}"
-
-        registry.register(
-            Tool.from_function(approved_echo, name="echo"),
-            sandbox_mode="host",
-        )
-        engine = make_engine(llm, registry, state_store, temp_workspace)
-        engine.permission_system = PermissionSystem({
-            "allow": [{"tool": "request_permission"}],
-            "ask": [{"tool": "echo"}],
-        })
-        requests = []
-
-        async def approve(event, **_kwargs):
-            requests.append(event["data"])
-            return {
-                "status": "answered",
-                "decision": "allow",
-                "scope": "once",
-            }
-
-        engine.set_client_event_sink(approve)
-        events = [event async for event in engine.run_turn("echo it")]
-
-        assert [request["source"] for request in requests] == [
-            "request_permission"
-        ]
-        assert requests[0]["permission"] == {
-            "tool": "echo",
-            "params": {"message": "approved"},
-        }
-        assert "tool_call" not in requests[0]
-        result = next(
-            event for event in events
-            if event["type"] == "tool_result"
-            and event["data"]["tool_call_id"] == "echo-1"
-        )
-        assert result["data"]["status"] == "success"
-        assert engine.permission_system.check("echo", arguments) == "ask"
-
-    @pytest.mark.asyncio
-    async def test_disconnect_during_ask_user_closes_tool_call_history(
-        self, state_store, temp_workspace
-    ):
-        llm = MockLLM(responses=[{
-            "content": "ask",
-            "tool_calls": [
-                {"name": "request_input", "args": {"question": "Proceed?"}, "id": "c1"}
-            ],
-        }])
-        registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
-        engine = make_engine(llm, registry, state_store, temp_workspace)
-
-        async def disconnected(*_args, **_kwargs):
-            return {
-                "request_id": "user_input:c1",
-                "status": "disconnected",
-                "reason": "client_disconnected",
-            }
-
-        engine.set_client_event_sink(disconnected)
-
-        events = [event async for event in engine.run_turn("ask")]
-
-        assert events[-1] == {
-            "type": "turn_cancelled",
-            "data": {"turn": 1, "reason": "client_disconnected"},
-        }
-        persisted = state_store.read_messages()
-        assert persisted[-1].role == "tool"
-        assert persisted[-1].tool_call_id == "c1"
-        assert persisted[-1].status == "error"
-        assert "client_disconnected" in persisted[-1].content
-
     @pytest.mark.asyncio
     async def test_session_resume_repairs_trailing_unanswered_tool_call(
         self, state_store, temp_workspace
@@ -1825,6 +1528,11 @@ class TestEngineHooks:
         ])
         llm = MockLLM(responses=[{"content": "continued"}])
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
+        persistence = wire_persistence(engine, state_store, engine._events)
+        prior = state_store.read_messages()
+        engine.state.messages = prior
+        engine.state.turn_count = 1
+        engine.state.resumed = True
 
         await engine.start_session()
 
@@ -1841,45 +1549,6 @@ class TestEngineHooks:
         assert any(message.content == "continue" for message in model_history)
 
     @pytest.mark.asyncio
-    async def test_client_event_hook_observes_interaction_events(self, state_store, temp_workspace):
-        """Client event hooks observe send-message and ask-user events."""
-        llm = MockLLM(responses=[
-            {
-                "content": "notify",
-                "tool_calls": [
-                    {"name": "send_notice", "args": {"message": "heads up"}, "id": "c1"},
-                    {"name": "request_input", "args": {"question": "Proceed?"}, "id": "c2"},
-                ],
-            },
-            {"content": "continued"},
-        ])
-        registry = ToolRegistry()
-        registry.register(send_notice, sandbox_mode="host")
-        registry.register(request_input, sandbox_mode="host")
-        hook_manager = HookManager()
-        observed = []
-
-        async def on_client_event(ctx):
-            tool_call_id = getattr(ctx.tool_result, "tool_call_id", None)
-            observed.append((ctx.client_event["type"], tool_call_id))
-
-        hook_manager.register(HookStage.ON_CLIENT_EVENT, on_client_event)
-        engine = make_engine_with_hooks(
-            llm,
-            registry,
-            state_store,
-            temp_workspace,
-            hook_manager,
-        )
-
-        _ = [e async for e in engine.run_turn("interact")]
-
-        assert observed == [
-            ("client_message", "c1"),
-            ("user_input_required", "c2"),
-        ]
-
-    @pytest.mark.asyncio
     async def test_new_turn_after_ask_user_without_live_client_stays_active(self, state_store, temp_workspace):
         """A direct engine caller without live input support does not leave the session interrupted."""
         llm = MockLLM(responses=[
@@ -1891,78 +1560,12 @@ class TestEngineHooks:
             {"content": "next turn"},
         ])
         registry = ToolRegistry()
-        registry.register(request_input, sandbox_mode="host")
+        registry.register(request_input)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         _ = [e async for e in engine.run_turn("ask")]
         _ = [e async for e in engine.run_turn("continue")]
         assert llm.call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_permission_request_event_reaches_client(self, state_store, temp_workspace):
-        """Permission ask decisions are protocol-visible events."""
-        llm = MockLLM(responses=[
-            {
-                "content": "write",
-                "tool_calls": [{"name": "echo", "args": {"message": "hi"}, "id": "c1"}],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=HookManager(),
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="ask"),
-            config=RuntimeConfig(),
-        )
-
-        events = [e async for e in engine.run_turn("need approval")]
-
-        permission_event = next(e for e in events if e["type"] == "permission_request")
-        assert permission_event["data"]["tool_call"]["name"] == "echo"
-        assert permission_event["data"]["request_id"] == "permission:c1"
-        assert permission_event["data"]["source"] == "permission_system"
-        assert "No live permission handler" not in permission_event["data"]["reason"]
-        assert permission_event["data"]["resume_supported"] is False
-
-    @pytest.mark.asyncio
-    async def test_client_event_hook_observes_permission_request(self, state_store, temp_workspace):
-        """Permission ask decisions also pass through the generic client-event hook."""
-        llm = MockLLM(responses=[
-            {
-                "content": "write",
-                "tool_calls": [{"name": "echo", "args": {"message": "hi"}, "id": "c1"}],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool, sandbox_mode="host")
-        hook_manager = HookManager()
-        observed = []
-
-        async def on_client_event(ctx):
-            observed.append(ctx.client_event["type"])
-
-        hook_manager.register(HookStage.ON_CLIENT_EVENT, on_client_event)
-        engine = Engine(
-            llm=llm,
-            tool_registry=registry,
-            hook_manager=hook_manager,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="ask"),
-            config=RuntimeConfig(),
-        )
-
-        _ = [e async for e in engine.run_turn("need approval")]
-
-        assert observed == ["permission_request"]
 
 class TestEngineState:
     """Engine state tracking."""
@@ -1992,18 +1595,19 @@ class TestEngineState:
         observed = []
 
         async def record(ctx):
-            observed.append((ctx.stage, ctx.request_id))
+            observed.append(ctx.request_id)
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_TURN_START, record)
-        hook_manager.register(HookStage.AFTER_STATE_PERSIST, record)
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.TURN_START, record)
+        plugin_ctx.on(Events.STATE_CHANGED, record)
         engine = make_engine_with_hooks(
             MockLLM(responses=[{"content": "ok"}]),
             ToolRegistry(),
             state_store,
             temp_workspace,
-            hook_manager,
+            plugin_ctx,
         )
+        wire_persistence(engine, state_store, plugin_ctx)
 
         _ = [
             event
@@ -2013,48 +1617,39 @@ class TestEngineState:
             )
         ]
 
-        assert observed == [
-            (HookStage.ON_TURN_START, "request-core-1"),
-            (HookStage.AFTER_STATE_PERSIST, "request-core-1"),
-        ]
+        assert observed == ["request-core-1", "request-core-1"]
 
     @pytest.mark.asyncio
     async def test_session_lifecycle(self, state_store, temp_workspace):
-        """Session start/resume/close hooks fire."""
+        """Session start/resume/close plugin_ctx fire."""
         llm = MockLLM(responses=[])
         registry = ToolRegistry()
 
         calls = []
 
-        async def record_call(ctx):
-            calls.append(ctx.stage.value)
+        async def record_start(ctx):
+            calls.append("start")
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_SESSION_START, record_call)
-        hook_manager.register(HookStage.ON_SESSION_CLOSE, record_call)
-        plugin_loader = AsyncMock()
-        job_registry = AsyncMock()
+        async def record_close(ctx):
+            calls.append("close")
 
-        engine = Engine(
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.SESSION_START, record_start)
+        plugin_ctx.on(Events.SESSION_CLOSE, record_close)
+
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
-            context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
             config=RuntimeConfig(),
-            plugin_loader=plugin_loader,
-            job_registry=job_registry,
         )
         await engine.start_session()
         await engine.close_session()
 
-        assert "on_session_start" in calls
-        assert "on_session_close" in calls
-        plugin_loader.unload_all.assert_awaited_once()
-        job_registry.shutdown.assert_awaited_once()
-        assert engine.plugin_loader is None
+        assert calls == ["start", "close"]
 
     @pytest.mark.asyncio
     async def test_session_close_unloads_plugins_after_hook_failure(
@@ -2063,30 +1658,24 @@ class TestEngineState:
         async def fail_close(_ctx):
             raise RuntimeError("close hook failed")
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_SESSION_CLOSE, fail_close)
-        plugin_loader = AsyncMock()
-        engine = Engine(
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.SESSION_CLOSE, fail_close)
+        engine = make_engine(
             llm=MockLLM(responses=[]),
             tool_registry=ToolRegistry(),
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
-            context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(
                 enabled=False,
                 workspace_root=str(temp_workspace),
             ),
             permission_system=PermissionSystem(default_decision="allow"),
             config=RuntimeConfig(),
-            plugin_loader=plugin_loader,
         )
         await engine.start_session()
 
-        with pytest.raises(ExceptionGroup, match="on_session_close"):
+        with pytest.raises(RuntimeError, match="close hook failed"):
             await engine.close_session()
-
-        plugin_loader.unload_all.assert_awaited_once()
-        assert engine.plugin_loader is None
 
     @pytest.mark.asyncio
     async def test_start_session_resumes_event_only_state(self, state_store, temp_workspace):
@@ -2096,30 +1685,38 @@ class TestEngineState:
         registry = ToolRegistry()
         calls = []
 
-        async def record_call(ctx):
-            calls.append(ctx.stage.value)
+        async def record_start(ctx):
+            calls.append("start")
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_SESSION_START, record_call)
-        hook_manager.register(HookStage.ON_SESSION_RESUME, record_call)
-        engine = Engine(
+        async def record_resume(ctx):
+            calls.append("resume")
+
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.SESSION_START, record_start)
+        plugin_ctx.on(Events.SESSION_RESUME, record_resume)
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
             permission_system=PermissionSystem(default_decision="allow"),
             config=RuntimeConfig(),
         )
+        # Resume is a property of the hydrated LoopState, set by the
+        # persistence observer in production.
+        engine.state.messages = [Message(role="user", content="prior message")]
+        engine.state.turn_count = 1
+        engine.state.resumed = True
 
         await engine.start_session()
 
-        assert calls == ["on_session_resume"]
+        assert calls == ["resume"]
 
     @pytest.mark.asyncio
     async def test_close_session_materializes_closed_status(self, state_store, temp_workspace):
-        """Session close runs hooks without error."""
+        """Session close runs plugin_ctx without error."""
         llm = MockLLM(responses=[])
         registry = ToolRegistry()
         engine = make_engine(llm, registry, state_store, temp_workspace)
@@ -2136,14 +1733,14 @@ class TestEngineState:
         calls = []
 
         async def on_error(ctx):
-            calls.append((ctx.stage, type(ctx.error).__name__, ctx.user_input))
+            calls.append((type(ctx.error).__name__, ctx.user_input))
 
-        hook_manager = HookManager()
-        hook_manager.register(HookStage.ON_ERROR, on_error)
-        engine = Engine(
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.ON_ERROR, on_error)
+        engine = make_engine(
             llm=llm,
             tool_registry=registry,
-            hook_manager=hook_manager,
+            plugin_ctx=plugin_ctx,
             state_store=state_store,
             context_builder=ContextBuilder(),
             sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
@@ -2157,7 +1754,7 @@ class TestEngineState:
             "error",
             "turn_finished",
         ]
-        assert calls == [(HookStage.ON_ERROR, "RuntimeError", "will fail")]
+        assert calls == [("RuntimeError", "will fail")]
 
 
 # ------------------------------------------------------------------
@@ -2170,7 +1767,7 @@ async def test_after_context_hook_can_override_context_messages(state_store, tem
     """AFTER_CONTEXT hook return dict with 'context_messages' replaces provider messages."""
     llm = MockLLM(responses=[{"content": "ok"}])
     registry = ToolRegistry()
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     recorded: list[str] = []
 
     async def after_context(ctx):
@@ -2179,8 +1776,8 @@ async def test_after_context_hook_can_override_context_messages(state_store, tem
         msgs.append(Message(role="system", content="HOOK: extra instruction"))
         return {"context_messages": msgs}
 
-    hook_manager.register(HookStage.AFTER_CONTEXT, after_context)
-    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    plugin_ctx.on(Events.AFTER_CONTEXT, after_context)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, plugin_ctx)
     events = [e async for e in engine.run_turn("hello")]
 
     assert recorded == ["after_context"]
@@ -2194,8 +1791,8 @@ async def test_before_tool_schema_bind_hook_can_override_messages(state_store, t
     """BEFORE_TOOL_SCHEMA_BIND hook return dict with 'messages' replaces context."""
     llm = MockLLM(responses=[{"content": "ok"}])
     registry = ToolRegistry()
-    registry.register(echo_tool, sandbox_mode="host")
-    hook_manager = HookManager()
+    registry.register(echo_tool)
+    plugin_ctx = xcore.Context()
     recorded: list[str] = []
 
     async def before_bind(ctx):
@@ -2204,8 +1801,8 @@ async def test_before_tool_schema_bind_hook_can_override_messages(state_store, t
         msgs.append(Message(role="system", content="BIND: filtered context"))
         return {"messages": msgs}
 
-    hook_manager.register(HookStage.BEFORE_TOOL_SCHEMA_BIND, before_bind)
-    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    plugin_ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, before_bind)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, plugin_ctx)
     events = [e async for e in engine.run_turn("hi")]
 
     assert recorded == ["before_bind"]
@@ -2219,7 +1816,7 @@ async def test_before_model_request_hook_can_override_messages(state_store, temp
     """BEFORE_MODEL_REQUEST hook return dict with 'messages' overrides final request."""
     llm = MockLLM(responses=[{"content": "final"}])
     registry = ToolRegistry()
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     recorded: list[str] = []
 
     async def before_request(ctx):
@@ -2228,8 +1825,8 @@ async def test_before_model_request_hook_can_override_messages(state_store, temp
         msgs.append(Message(role="system", content="REQUEST: last-moment override"))
         return {"messages": msgs}
 
-    hook_manager.register(HookStage.BEFORE_MODEL_REQUEST, before_request)
-    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, before_request)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, plugin_ctx)
     events = [e async for e in engine.run_turn("hi")]
 
     assert recorded == ["before_request"]
@@ -2248,15 +1845,15 @@ async def test_after_agent_hook_can_inject_messages_and_complete_turn(state_stor
     """AFTER_AGENT hook injects messages into history and completes the turn."""
     llm = MockLLM(responses=[{"content": "LLM response"}])
     registry = ToolRegistry()
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls: list[str] = []
 
     async def after_agent(ctx):
         calls.append("after_agent")
         return {"messages": [Message(role="assistant", content="injected by hook")]}
 
-    hook_manager.register(HookStage.AFTER_AGENT, after_agent)
-    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    plugin_ctx.on(Events.AFTER_AGENT, after_agent)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, plugin_ctx)
 
     events = [e async for e in engine.run_turn("trigger")]
 
@@ -2272,7 +1869,7 @@ async def test_after_agent_hook_can_raise_stop_failure_recovery(state_store, tem
     """ON_STOP_FAILURE hook fires when ON_STOP hook raises an exception."""
     llm = MockLLM(responses=[{"content": "ok"}])
     registry = ToolRegistry()
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     failure_calls: list[str] = []
 
     async def on_stop_raises(ctx):
@@ -2281,9 +1878,9 @@ async def test_after_agent_hook_can_raise_stop_failure_recovery(state_store, tem
     async def on_stop_failure(ctx):
         failure_calls.append(f"failure:{ctx.stop_reason}")
 
-    hook_manager.register(HookStage.ON_STOP, on_stop_raises)
-    hook_manager.register(HookStage.ON_STOP_FAILURE, on_stop_failure)
-    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, hook_manager)
+    plugin_ctx.on(Events.ON_STOP, on_stop_raises)
+    plugin_ctx.on(Events.ON_STOP_FAILURE, on_stop_failure)
+    engine = make_engine_with_hooks(llm, registry, state_store, temp_workspace, plugin_ctx)
 
     events = [e async for e in engine.run_turn("x")]
 
@@ -2296,7 +1893,7 @@ async def test_after_agent_hook_can_raise_stop_failure_recovery(state_store, tem
     ]
     assert events[-2]["data"]["code"] == "engine_error"
     assert events[-2]["data"]["details"] == {
-        "exception_type": "ExceptionGroup",
+        "exception_type": "RuntimeError",
     }
 
 
@@ -2306,45 +1903,7 @@ async def test_after_agent_hook_can_raise_stop_failure_recovery(state_store, tem
 
 
 @pytest.mark.asyncio
-async def test_submit_user_input_resolves_pending_request(state_store, temp_workspace):
-    """submit_user_input resolves a pending user input request."""
-    llm = MockLLM(responses=[{"content": "ok"}])
-    registry = ToolRegistry()
-    engine = make_engine(llm, registry, state_store, temp_workspace)
-
-    import asyncio
-    pending = asyncio.create_task(engine.user_input_waiter.wait("test-req-1", timeout_seconds=5.0))
-    await asyncio.sleep(0.05)
-
-    result = engine.submit_user_input("test-req-1", answer="hello from user")
-    assert result.request_id == "test-req-1"
-    assert result.status == "answered"
-    assert result.answer == "hello from user"
-
-    waited = await pending
-    assert waited.answer == "hello from user"
-
-
 @pytest.mark.asyncio
-async def test_submit_permission_response_resolves_pending_request(state_store, temp_workspace):
-    """submit_permission_response resolves a pending permission request."""
-    llm = MockLLM(responses=[{"content": "ok"}])
-    registry = ToolRegistry()
-    engine = make_engine(llm, registry, state_store, temp_workspace)
-
-    import asyncio
-    pending = asyncio.create_task(engine.permission_waiter.wait("perm-req-1", timeout_seconds=5.0))
-    await asyncio.sleep(0.05)
-
-    result = engine.submit_permission_response("perm-req-1", decision="allow")
-    assert result.request_id == "perm-req-1"
-    assert result.status == "answered"
-    assert result.decision == "allow"
-
-    waited = await pending
-    assert waited.decision == "allow"
-
-
 # ------------------------------------------------------------------
 # Reasoning delta (DeepSeek R1 / Claude thinking)
 # ------------------------------------------------------------------

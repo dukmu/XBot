@@ -7,29 +7,54 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.core.builtin_tools.filesystem import (
-    filesystem_copy,
-    filesystem_find,
-    filesystem_list,
-    filesystem_read,
-    filesystem_search,
-    filesystem_write,
+from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS as FILESYSTEM_TOOLS
+from XBotv2.coretools.filesystem import (
+    edit,
+    path,
+    read,
+    search,
 )
-from xbotv2.core.builtin_tools.interaction import ask_user
-from xbotv2.core.engine import Engine
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookContext, HookStage, SessionInfo
-from xbotv2.api.messages import Message
-from xbotv2.protocol.models import PermissionRequestData
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.result_cache import make_tool_result_cache_hook
-from xbotv2.tools.runtime import execute_tools
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.api.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
+
+filesystem_edit = next(t for t in FILESYSTEM_TOOLS if t.name == "edit")
+filesystem_path = next(t for t in FILESYSTEM_TOOLS if t.name == "path")
+filesystem_read = next(t for t in FILESYSTEM_TOOLS if t.name == "read")
+filesystem_search = next(t for t in FILESYSTEM_TOOLS if t.name == "search")
+from XBotv2.interactions.tools import ask_user
+from XBotv2.agentloop.engine import Engine
+from XBotv2.context_builder.plugin import ContextBuilderComponent
+import xcore
+from XBotv2.core.events import EventContext, Events
+from XBotv2.core.runtime import SessionInfo
+from XBotv2.core.loop import LoopSettings, LoopState
+from XBotv2.core.messages import Message
+from XBotv2.protocol.models import PermissionRequestData
+from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.coretools.result_cache import make_tool_result_cache_hook
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
+from XBotv2.permission_request.service import ApprovalService
+from XBotv2.persistence.plugin import PersistenceService
+from XBotv2.application.client_events import ClientEventRouter
+from XBotv2.interactions.plugin import InteractionsService
+from XBotv2.tests.helpers import make_tool_ctx
+
+
+async def execute_tools(
+    tool_calls,
+    registry,
+    *,
+    ctx,
+    context_factory=None,
+    **_obsolete,
+):
+    """Exercise the agent-loop service, not its private execution node."""
+    assert ctx.tools.registry is registry
+    return await ctx.tools.execute_all(
+        tool_calls,
+        context_factory=context_factory,
+    )
 
 
 async def large_output() -> str:
@@ -51,20 +76,24 @@ failing_tool_tool = Tool.from_function(failing_tool, name="failing_tool")
 @pytest.mark.asyncio
 async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_edit)
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [
             ToolCall(
                 "c1",
-                "filesystem_write",
-                {"path": str(temp_workspace / "out.txt"), "content": "ok"},
+                "edit",
+                {"path": str(temp_workspace / "out.txt"), "mode": "write", "content": "ok"},
             )
         ],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -81,22 +110,26 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
     workspace.mkdir()
     cached.parent.mkdir(parents=True)
     cached.write_text("cached content", encoding="utf-8")
-    registry = ToolRegistry()
-    registry.register(filesystem_read, sandbox_mode="sandboxed")
     sandbox = SandboxPolicy(
         enabled=False,
         data_root=tmp_path / "data",
         workspace_root=workspace,
         session_root=session_root,
     )
+    registry = ToolRegistry()
+    registry.register(filesystem_read, injected={"sandbox": sandbox})
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
-        [ToolCall("c1", "filesystem_read", {
+        [ToolCall("c1", "read", {
             "path": "session/artifacts/tool_results/cached.txt",
         })],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -117,22 +150,26 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
         session_root=session_root,
     )
     registry = ToolRegistry()
-    for tool in (filesystem_list, filesystem_search, filesystem_find):
-        registry.register(tool, sandbox_mode="sandboxed")
+    for tool in (filesystem_read, filesystem_search):
+        registry.register(tool, injected={"sandbox": sandbox})
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
 
     results = await execute_tools(
         [
-            ToolCall("list", "filesystem_list", {"path": "session/artifacts"}),
-            ToolCall("search", "search_text", {
+            ToolCall("list", "read", {"path": "session/artifacts", "mode": "list"}),
+            ToolCall("search", "search", {
                 "path": "session/artifacts", "pattern": "cached",
             }),
-            ToolCall("find", "find_files", {
-                "path": "session/artifacts", "pattern": "*.txt",
+            ToolCall("find", "search", {
+                "path": "session/artifacts", "pattern": "*.txt", "mode": "name",
             }),
         ],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert all(result.status == "success" for result in results)
@@ -142,22 +179,26 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
 
 @pytest.mark.asyncio
-async def test_host_tool_does_not_receive_enabled_sandbox(temp_workspace):
+async def test_tool_without_sandbox_dependency_receives_none(temp_workspace):
     seen = []
 
     async def inspect_backend(*, sandbox=None):
         seen.append(sandbox)
         return "ok"
 
-    registry = ToolRegistry()
-    registry.register(Tool.from_function(inspect_backend), sandbox_mode="host")
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(inspect_backend))
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [ToolCall("c1", "inspect_backend", {})],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -173,14 +214,21 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
         return "ok"
 
     registry = ToolRegistry()
-    registry.register(Tool.from_function(inspect_backend), sandbox_mode="sandboxed")
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
+    registry.register(
+        Tool.from_function(inspect_backend),
+        injected={"sandbox": sandbox},
+    )
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [ToolCall("c1", "inspect_backend", {})],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -188,54 +236,61 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
 
 
 @pytest.mark.asyncio
-async def test_permission_ask_fails_closed_until_tool_replay_exists(temp_workspace):
+async def test_permission_ask_without_approval_fails_closed(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="host")
+    registry.register(filesystem_edit)
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
 
-    results = await execute_tools(
-        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
+    ctx = make_tool_ctx(
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="ask"),
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="ask"),
+    )
+    results = await execute_tools(
+        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        registry,
+        ctx=ctx,
     )
 
     assert results[0].status == "error"
-    assert "No live permission handler is available" in results[0].content
-    assert "fails closed" in results[0].content
+    assert results[0].content == "Error: Permission approval required for tool: edit."
     assert not (temp_workspace / "blocked.txt").exists()
 
 
 @pytest.mark.asyncio
 async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="host")
+    registry.register(filesystem_edit)
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
     seen = []
 
-    async def approve(event, **kwargs):
-        seen.append((event["type"], event["data"]["request_id"], kwargs["tool_call_id"]))
-        return {
-            "request_id": event["data"]["request_id"],
-            "status": "answered",
-            "decision": "allow",
-        }
+    async def approve(event):
+        seen.append((event["type"], event["data"]["request_id"]))
+        return "allowed-once"
 
+    service_ctx = xcore.Context()
+    approval = ApprovalService(service_ctx, ClientEventRouter())
+    approval.register_answerer(approve)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="ask"),
+        approval=approval,
+        base=service_ctx,
+    )
     results = await execute_tools(
         [
             ToolCall(
                 "c1",
-                "filesystem_write",
-                {"path": str(temp_workspace / "allowed.txt"), "content": "ok"},
+                "edit",
+                {"path": str(temp_workspace / "allowed.txt"), "mode": "write", "content": "ok"},
             )
         ],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="ask"),
-        permission_interaction_handler=approve,
+        ctx=ctx,
     )
 
-    assert seen == [("permission_request", "permission:c1", "c1")]
+    assert seen == [("permission_request", "permission:c1")]
     assert results[0].status == "success"
     assert (temp_workspace / "allowed.txt").read_text(encoding="utf-8") == "ok"
 
@@ -243,7 +298,7 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
 @pytest.mark.asyncio
 async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
     registry = ToolRegistry()
-    registry.register(ask_user, sandbox_mode="host")
+    registry.register(ask_user)
     called = False
 
     async def answer(*_args, **_kwargs):
@@ -251,6 +306,16 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
         called = True
         return {"status": "answered", "answer": "unused"}
 
+    service_ctx = xcore.Context()
+    client_events = ClientEventRouter()
+    client_events.set_sink(answer)
+    interactions = InteractionsService(service_ctx, client_events)
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+        interactions=interactions,
+        base=service_ctx,
+    )
     results = await execute_tools(
         [
             ToolCall("c1", "ask_user", {
@@ -269,8 +334,7 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
             }),
         ],
         registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-        client_interaction_handler=answer,
+        ctx=ctx,
     )
 
     assert called is False
@@ -293,13 +357,16 @@ async def test_tool_result_preserves_structured_fields() -> None:
     registry = ToolRegistry()
     registry.register(
         Tool.from_function(structured_result),
-        sandbox_mode="host",
     )
 
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [ToolCall("c1", "structured_result", {})],
         registry,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "error"
@@ -314,12 +381,16 @@ async def test_plain_dictionary_result_is_model_content() -> None:
         return {"data": {"value": 1}}
 
     registry = ToolRegistry()
-    registry.register(Tool.from_function(plain_result), sandbox_mode="host")
+    registry.register(Tool.from_function(plain_result))
 
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [ToolCall("c1", "plain_result", {})],
         registry,
-        permission_system=PermissionSystem(default_decision="allow"),
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -330,13 +401,17 @@ async def test_plain_dictionary_result_is_model_content() -> None:
 @pytest.mark.asyncio
 async def test_permission_and_batch_hooks_fire(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_edit)
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def permission_request(ctx):
-        calls.append(("permission_request", ctx.tool_call.name, ctx.permission_decision))
+        calls.append((
+            "permission_request",
+            ctx.tool_call.name,
+            ctx.client_event["data"]["decision"],
+        ))
 
     async def tool_denied(ctx):
         calls.append(("denied", ctx.tool_call.name, type(ctx.error).__name__))
@@ -344,70 +419,90 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     async def post_batch(ctx):
         calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
 
-    hook_manager.register(HookStage.ON_PERMISSION_REQUEST, permission_request)
-    hook_manager.register(HookStage.ON_TOOL_DENIED, tool_denied)
-    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
+    plugin_ctx.on(Events.PERMISSION_REQUEST, permission_request)
+    plugin_ctx.on(Events.TOOL_DENIED, tool_denied)
+    plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 
-    results = await execute_tools(
-        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
+    ctx = make_tool_ctx(
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="ask"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="ask"),
+        base=plugin_ctx,
+    )
+    results = await execute_tools(
+        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        registry,
+        ctx=ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "error"
     assert calls == [
-        ("permission_request", "filesystem_write", "ask"),
-        ("denied", "filesystem_write", "PermissionError"),
+        ("permission_request", "edit", "ask"),
+        ("denied", "edit", "PermissionError"),
         ("batch", 1, 1),
     ]
 
 
 @pytest.mark.asyncio
-async def test_sandbox_path_approval_records_exact_external_read(tmp_path):
+async def test_sandbox_external_read_readonly_allows_without_approval(tmp_path):
+    """Sandbox is enforcement-only: readonly external reads need no approval."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     external = tmp_path / "external.txt"
     external.write_text("approved\n", encoding="utf-8")
     sandbox = SandboxPolicy(
-        config={"external_read": "ask", "external_write": "deny"},
+        config={"external_read": "readonly", "external_write": "deny"},
         workspace_root=workspace,
     )
     if not sandbox.backend_available:
         pytest.skip("bubblewrap is not installed")
     registry = ToolRegistry()
-    registry.register(filesystem_read, sandbox_mode="sandboxed")
-    events = []
-
-    async def approve(event, **_kwargs):
-        events.append(event)
-        return {"status": "answered", "decision": "allow", "scope": "once"}
-
-    results = await execute_tools(
-        [ToolCall("c1", "filesystem_read", {"path": str(external)})],
+    registry.register(filesystem_read)
+    ctx = make_tool_ctx(
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=approve,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
+    results = await execute_tools(
+        [ToolCall("c1", "read", {"path": str(external)})],
+        registry,
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
     assert results[0].content == "approved\n"
-    assert events[0]["data"]["source"] == "sandbox"
-    assert "sandbox_path" not in events[0]["data"]
-    assert "sandbox_access" not in events[0]["data"]
-    PermissionRequestData.model_validate(events[0]["data"])
 
-    await execute_tools(
-        [ToolCall("c2", "filesystem_read", {"path": str(external)})],
-        registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=approve,
+
+@pytest.mark.asyncio
+async def test_sandbox_external_read_deny_fails_closed(tmp_path):
+    """A denied sandbox policy hard-fails the call with no approval flow."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("blocked\n", encoding="utf-8")
+    sandbox = SandboxPolicy(
+        config={"external_read": "deny", "external_write": "deny"},
+        workspace_root=workspace,
     )
-    assert len(events) == 2
+    if not sandbox.backend_available:
+        pytest.skip("bubblewrap is not installed")
+    registry = ToolRegistry()
+    registry.register(filesystem_read)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
+    results = await execute_tools(
+        [ToolCall("c1", "read", {"path": str(external)})],
+        registry,
+        ctx=ctx,
+    )
+
+    assert results[0].status == "error"
+    assert "Sandbox denied" in results[0].content
+    assert results[0].client_events == []
 
 
 @pytest.mark.asyncio
@@ -415,7 +510,7 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     sandbox = SandboxPolicy(
-        config={"external_write": "ask"},
+        config={"external_write": "deny"},
         workspace_root=workspace,
     )
     calls = []
@@ -432,23 +527,30 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     registry = ToolRegistry()
     registry.register(
         Tool.from_function(shell, name="shell"),
-        sandbox_mode="sandboxed",
     )
     events = []
 
-    async def approve(event, **kwargs):
-        events.append((event, kwargs))
-        return {"status": "answered", "decision": "allow", "scope": "once"}
+    async def approve(event):
+        events.append(event)
+        return "allowed-once"
 
+    service_ctx = xcore.Context()
+    approval = ApprovalService(service_ctx, ClientEventRouter())
+    approval.register_answerer(approve)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+        approval=approval,
+        base=service_ctx,
+    )
     results = await execute_tools(
         [ToolCall("c1", "shell", {
             "sandbox_permissions": "require_escalated",
             "justification": "Install a required dependency.",
         })],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=approve,
+        ctx=ctx,
     )
 
     assert results[0].status == "success"
@@ -456,52 +558,57 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
         "require_escalated",
         "Install a required dependency.",
     )]
-    event, _ = events[0]
-    assert event["data"]["source"] == "sandbox"
+    event = events[0]
+    assert event["data"]["source"] == "permission_system"
     assert "Install a required dependency." in event["data"]["reason"]
 
 
 @pytest.mark.asyncio
-async def test_sandbox_copy_checks_both_paths_with_one_approval(tmp_path):
+async def test_sandbox_copy_denied_when_external_destination_forbidden(tmp_path):
+    """Sandbox enforcement checks both paths; a forbidden write fails closed."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = tmp_path / "source.txt"
     destination = tmp_path / "destination.txt"
     source.write_text("copy me\n", encoding="utf-8")
     sandbox = SandboxPolicy(
-        config={"external_read": "ask", "external_write": "ask"},
+        config={"external_read": "readonly", "external_write": "deny"},
         workspace_root=workspace,
     )
     if not sandbox.backend_available:
         pytest.skip("bubblewrap is not installed")
     registry = ToolRegistry()
-    registry.register(filesystem_copy, sandbox_mode="sandboxed")
+    registry.register(filesystem_path)
     events = []
 
     async def approve(event, **_kwargs):
         events.append(event)
         return {"status": "answered", "decision": "allow", "scope": "once"}
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
     results = await execute_tools(
         [ToolCall(
             "c1",
-            "filesystem_copy",
+            "path",
             {
+                "operation": "copy",
                 "source": str(source),
                 "destination": str(destination),
             },
         )],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        permission_interaction_handler=approve,
+        ctx=ctx,
     )
 
-    assert results[0].status == "success"
-    assert destination.read_text(encoding="utf-8") == "copy me\n"
-    assert len(events) == 1
-    assert str(source) in events[0]["data"]["reason"]
-    assert str(destination) in events[0]["data"]["reason"]
+    assert results[0].status == "error"
+    assert "Sandbox denied" in results[0].content
+    assert events == []
+    assert not destination.exists()
+    assert str(destination) in results[0].content
 
 
 @pytest.mark.asyncio
@@ -513,13 +620,17 @@ async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
         workspace_root=workspace,
     )
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="sandboxed")
+    registry.register(filesystem_edit)
 
-    results = await execute_tools(
-        [ToolCall("c1", "filesystem_write", {"path": "blocked.txt", "content": "no"})],
+    ctx = make_tool_ctx(
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+    )
+    results = await execute_tools(
+        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        registry,
+        ctx=ctx,
     )
 
     assert results[0].status == "error"
@@ -530,21 +641,25 @@ async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
 @pytest.mark.asyncio
 async def test_tool_failure_hook_fires(temp_workspace):
     registry = ToolRegistry()
-    registry.register(failing_tool_tool, sandbox_mode="host")
-    hook_manager = HookManager()
+    registry.register(failing_tool_tool)
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def failure(ctx):
         calls.append((ctx.tool_call.name, type(ctx.error).__name__, ctx.tool_result.status))
 
-    hook_manager.register(HookStage.ON_TOOL_CALL_FAILURE, failure)
+    plugin_ctx.on(Events.TOOL_CALL_FAILURE, failure)
 
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
     results = await execute_tools(
         [ToolCall("c1", "failing_tool", {})],
         registry,
-        permission_system=PermissionSystem(default_decision="allow"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        ctx=ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "error"
@@ -554,9 +669,9 @@ async def test_tool_failure_hook_fires(temp_workspace):
 @pytest.mark.asyncio
 async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_workspace):
     registry = ToolRegistry()
-    registry.register(filesystem_write, sandbox_mode="host")
+    registry.register(filesystem_edit)
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
-    hook_manager = HookManager()
+    plugin_ctx = xcore.Context()
     calls = []
 
     async def rewrite_tool_call(ctx):
@@ -567,6 +682,7 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
                 ctx.tool_call.name,
                 {
                     "path": str(temp_workspace / "rewritten.txt"),
+                    "mode": "write",
                     "content": "ok",
                 },
             )
@@ -588,23 +704,27 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
             ctx.tool_results[0].tool_call_id,
         ))
 
-    hook_manager.register(HookStage.BEFORE_TOOL_CALL, rewrite_tool_call)
-    hook_manager.register(HookStage.AFTER_TOOL_CALL, after_tool_call)
-    hook_manager.register(HookStage.POST_TOOL_BATCH, post_batch)
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, rewrite_tool_call)
+    plugin_ctx.on(Events.AFTER_TOOL_CALL, after_tool_call)
+    plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=sandbox,
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
     results = await execute_tools(
         [
             ToolCall(
                 "old_id",
-                "filesystem_write",
-                {"path": "old.txt", "content": "no"},
+                "edit",
+                {"path": "old.txt", "mode": "write", "content": "no"},
             )
         ],
         registry,
-        sandbox_policy=sandbox,
-        permission_system=PermissionSystem(default_decision="allow"),
-        hook_manager=hook_manager,
-        hook_context_factory=_hook_context,
+        ctx=ctx,
+        context_factory=_event_context,
     )
 
     assert results[0].status == "success"
@@ -629,10 +749,10 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
 @pytest.mark.asyncio
 async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
     registry = ToolRegistry()
-    registry.register(large_output_tool, sandbox_mode="host")
-    hook_manager = HookManager()
-    hook_manager.register(
-        HookStage.AFTER_TOOLS,
+    registry.register(large_output_tool)
+    plugin_ctx = xcore.Context()
+    plugin_ctx.on(
+        Events.AFTER_TOOLS,
         make_tool_result_cache_hook(
             state_store,
             max_inline_chars=100,
@@ -646,15 +766,34 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
         },
         {"content": "done"},
     ])
+    make_tool_ctx(
+        registry,
+        sandbox=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+    ContextBuilderComponent().apply(plugin_ctx)
+    state = LoopState(
+        session=SessionInfo(
+            session_id=state_store.session_id,
+            thread_id=state_store.thread_id,
+            workspace_root=str(temp_workspace),
+            provider="default",
+        ),
+        messages=state_store.read_messages(),
+        media_root=str(state_store.root),
+    )
+    persistence = PersistenceService(state_store, state)
+    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
     engine = Engine(
-        llm=llm,
-        tool_registry=registry,
-        hook_manager=hook_manager,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
+        model_client=llm,
+        tools=plugin_ctx.tools,
+        events=plugin_ctx,
+        state=state,
+        settings=LoopSettings(provider="default", workspace=str(temp_workspace)),
     )
 
     events = [e async for e in engine.run_turn("run large")]
@@ -763,9 +902,8 @@ async def test_cache_hook_ignores_string_sidecar_data(state_store):
     assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 
-def _hook_context(stage, **kwargs):
-    return HookContext(
-        stage=stage,
+def _event_context(**kwargs):
+    return EventContext(
         session=SessionInfo(session_id="s", thread_id="t", workspace_root="/workspace", provider="p"),
         **kwargs,
     )

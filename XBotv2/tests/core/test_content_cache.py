@@ -1,25 +1,28 @@
 """Provider-boundary tests for oversized context externalization."""
 
+from XBotv2.tests.helpers import make_engine
+
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from xbotv2.api.messages import Message, ReasoningPart
-from xbotv2.api.tools import ToolCall
-from xbotv2.core.content_cache import (
+from XBotv2.core.events import Events
+from XBotv2.core.messages import Message, ReasoningPart
+from XBotv2.core.tools import ToolCall
+from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
     bound_context_messages,
 )
-from xbotv2.core.context import ContextBuilder
-from xbotv2.config.models import RuntimeConfig
-from xbotv2.core.engine import Engine
-from xbotv2.hooks.manager import HookManager
-from xbotv2.llm.mock import MockLLM
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.sandbox import SandboxPolicy
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.config.models import RuntimeConfig
+from XBotv2.agentloop.engine import Engine
+import xcore
+from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.sandbox.policy import SandboxPolicy
 
 
 def test_externalizes_provider_copy_without_mutating_history(state_store):
@@ -112,10 +115,10 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
 ):
     user_input = "request:" + "z" * MAX_INLINE_CHARS
     llm = MockLLM(responses=[{"content": "done"}])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -125,6 +128,15 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+
+    from XBotv2.content_cache.plugin import ContentCacheComponent
+    from XBotv2.persistence.plugin import PersistenceService
+
+    plugin_ctx = engine._events
+    plugin_ctx.set("storage", state_store)
+    ContentCacheComponent().apply(plugin_ctx, None)
+    persistence = PersistenceService(state_store, engine.state)
+    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     events = [event async for event in engine.run_turn(user_input)]
 
@@ -146,10 +158,10 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
 ):
     user_input = "request:" + "z" * MAX_USER_INLINE_CHARS
     llm = MockLLM(responses=[{"content": "done"}])
-    engine = Engine(
+    engine = make_engine(
         llm=llm,
         tool_registry=ToolRegistry(),
-        hook_manager=HookManager(),
+        plugin_ctx=xcore.Context(),
         state_store=state_store,
         context_builder=ContextBuilder(),
         sandbox_policy=SandboxPolicy(
@@ -159,6 +171,15 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
+
+    from XBotv2.content_cache.plugin import ContentCacheComponent
+    from XBotv2.persistence.plugin import PersistenceService
+
+    plugin_ctx = engine._events
+    plugin_ctx.set("storage", state_store)
+    ContentCacheComponent().apply(plugin_ctx, None)
+    persistence = PersistenceService(state_store, engine.state)
+    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     _events = [event async for event in engine.run_turn(user_input)]
 

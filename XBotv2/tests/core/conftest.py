@@ -2,21 +2,22 @@
 
 import pytest
 
-from xbotv2.hooks.manager import HookManager
-from xbotv2.api.hooks import HookStage, HookContext, SessionInfo
-from xbotv2.tools.registry import ToolRegistry
-from xbotv2.tools.permissions import PermissionSystem
-from xbotv2.tools.sandbox import SandboxPolicy
-from xbotv2.core.context import ContextBuilder
-from xbotv2.llm.mock import MockLLM
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.api.paths import RuntimePaths
+import xcore
+from XBotv2.core.events import EventContext, Events
+from XBotv2.core.runtime import SessionInfo
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.permissions.system import PermissionSystem
+from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.llm.mock import MockLLM
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.core.paths import RuntimePaths
 
 
 @pytest.fixture
-def hook_manager():
-    """Empty HookManager."""
-    return HookManager()
+def plugin_ctx():
+    """Empty XCore plugin context."""
+    return xcore.Context()
 
 
 @pytest.fixture
@@ -77,10 +78,9 @@ def session_info():
 
 
 @pytest.fixture
-def hook_context(session_info, tool_registry):
-    """Basic HookContext for loop hooks."""
-    return HookContext(
-        stage=HookStage.BEFORE_AGENT,
+def event_context(session_info, tool_registry):
+    """Basic EventContext for loop events."""
+    return EventContext(
         messages=[],
         config=None,
         tools=tool_registry,

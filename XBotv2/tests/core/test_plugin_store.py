@@ -1,13 +1,27 @@
-"""Contract tests for per-plugin persistent state."""
+"""Contract tests for per-plugin persistent state (ctx.state.namespace).
+
+The pre-migration ``PluginStore`` class was removed; plugins now persist
+through ``ctx.state.namespace(manifest.name)`` (an async
+``get/set/delete/all/clear`` store).  These tests pin the store contract on
+the real StateService implementation.
+"""
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
-import yaml
 
-from xbotv2.api.paths import RuntimePaths
-from xbotv2.persistence.store import CoreStateStore
-from xbotv2.plugin.store import PluginStore
+from XBotv2.persistence.store import CoreStateStore
+from XBotv2.core.paths import RuntimePaths
+from plugin_harness import mount_ctx
+
+
+def _state_file(tmp_path) -> Path:
+    return (
+        RuntimePaths.from_data_dir(tmp_path).session("s").thread("t").state_dir
+        / "state.json"
+    )
 
 
 def _core_store(tmp_path) -> CoreStateStore:
@@ -21,25 +35,28 @@ def _core_store(tmp_path) -> CoreStateStore:
 
 @pytest.mark.asyncio
 async def test_mutations_are_persisted_immediately(tmp_path) -> None:
-    core = _core_store(tmp_path)
-    store = PluginStore(core, "sample")
+    ctx = mount_ctx(_core_store(tmp_path))
+    store = ctx.state.namespace("sample")
 
     await store.set("enabled", True)
-    assert core.get_plugin_state("sample") == {"enabled": True}
+    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    assert state["sample.enabled"] is True
 
     await store.delete("enabled")
-    assert core.get_plugin_state("sample") == {}
+    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    assert "sample.enabled" not in state
 
     await store.set("value", 1)
     await store.clear()
-    assert core.get_plugin_state("sample") == {}
+    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    assert not any(key.startswith("sample.") for key in state)
 
 
 @pytest.mark.asyncio
 async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
-    core = _core_store(tmp_path)
-    first = PluginStore(core, "shared")
-    second = PluginStore(core, "shared")
+    ctx = mount_ctx(_core_store(tmp_path))
+    first: PluginStore = ctx.state.namespace("shared")
+    second: PluginStore = ctx.state.namespace("shared")
 
     assert await first.all() == {}
     assert await second.all() == {}
@@ -51,60 +68,34 @@ async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_event_loop_tasks_preserve_all_updates(tmp_path) -> None:
-    core = _core_store(tmp_path)
+    ctx = mount_ctx(_core_store(tmp_path))
+    store = ctx.state.namespace("shared")
 
     await asyncio.gather(*(
-        PluginStore(core, "shared").set(f"key_{index}", index)
-        for index in range(10)
+        store.set(f"key_{index}", index) for index in range(10)
     ))
 
-    assert core.get_plugin_state("shared") == {
-        f"key_{index}": index for index in range(10)
-    }
+    assert await store.all() == {f"key_{index}": index for index in range(10)}
+
+
+@pytest.mark.asyncio
+async def test_plugin_namespaces_are_isolated(tmp_path) -> None:
+    ctx = mount_ctx(_core_store(tmp_path))
+    goal: PluginStore = ctx.state.namespace("goal")
+    todo: PluginStore = ctx.state.namespace("todolist")
+
+    await goal.set("state", {"active": True})
+    assert await todo.all() == {}
+    assert await goal.get("state") == {"active": True}
 
 
 @pytest.mark.asyncio
 async def test_read_values_cannot_mutate_store_without_set(tmp_path) -> None:
-    store = PluginStore(_core_store(tmp_path), "sample")
+    ctx = mount_ctx(_core_store(tmp_path))
+    store = ctx.state.namespace("sample")
     await store.set("nested", {"count": 1})
 
     value = await store.get("nested")
     value["count"] = 99
 
     assert await store.get("nested") == {"count": 1}
-
-
-@pytest.mark.asyncio
-async def test_failed_serialization_preserves_previous_state(tmp_path) -> None:
-    core = _core_store(tmp_path)
-    store = PluginStore(core, "sample")
-    await store.set("valid", True)
-
-    with pytest.raises(yaml.representer.RepresenterError):
-        await store.set("invalid", object())
-
-    assert core.get_plugin_state("sample") == {"valid": True}
-    assert list(core.plugin_states_dir.glob("*.tmp")) == []
-
-
-@pytest.mark.asyncio
-async def test_plugin_namespaces_remain_isolated(tmp_path) -> None:
-    core = _core_store(tmp_path)
-    first = PluginStore(core, "first")
-    second = PluginStore(core, "second")
-
-    await first.set("value", 1)
-    await second.set("value", 2)
-
-    assert await first.get("value") == 1
-    assert await second.get("value") == 2
-
-
-@pytest.mark.asyncio
-async def test_non_mapping_state_file_fails_at_read_boundary(tmp_path) -> None:
-    core = _core_store(tmp_path)
-    path = core.plugin_states_dir / "sample.yaml"
-    path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="must contain a mapping"):
-        await PluginStore(core, "sample").all()

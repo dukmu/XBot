@@ -61,7 +61,7 @@ RUN --mount=type=bind,target=/opt/xbot,rw \
     --mount=type=cache,target=/home/xbot/.cache/pip \
     /opt/venv/bin/pip install \
         --index-url "${PIP_MIRROR}" \
-        -e /opt/xbot -e /opt/xbot/evaluation \
+        -e /opt/xbot/XCore -e /opt/xbot -e /opt/xbot/evaluation \
         numpy Pillow opencv-python-headless
 USER xbot
 
