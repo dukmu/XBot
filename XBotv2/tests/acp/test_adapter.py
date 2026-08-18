@@ -362,11 +362,16 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
                 "default": "default",
                 "providers": {
                     "default": {
-                        "provider": "openai",
-                        "model": "test",
+                        "protocol": "openai",
                         "base_url": "http://test",
                         "api_key": "test",
-                        "max_context_tokens": 4096,
+                        "default_model": "test",
+                        "models": [
+                            {
+                                "model": "test",
+                                "max_context_tokens": 4096,
+                            },
+                        ],
                     },
                 },
             },

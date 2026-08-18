@@ -17,6 +17,7 @@ from xbot_eval.adapters import (
     AdapterSetup,
     adapter_names,
     get_adapter,
+    resolve_provider,
 )
 
 
@@ -425,9 +426,14 @@ def _write_run_manifest(
         },
         "inspect_args": list(inspect_args),
     }
-    path = run_root / "run-manifest.json"
-    path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+    manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    # Latest state stays at the canonical name for consumers; each invocation
+    # also gets its own file so multi-segment runs never overwrite earlier
+    # evidence (report_20260810 run-manifest lesson).
+    (run_root / "run-manifest.json").write_text(manifest_text, encoding="utf-8")
+    stamp = started_at.replace(":", "-").replace("+00:00", "Z").replace("+", "-")
+    (run_root / f"run-manifest-{stamp}.json").write_text(
+        manifest_text,
         encoding="utf-8",
     )
 
@@ -455,7 +461,7 @@ def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
     provider = providers.get(name)
     if not isinstance(provider, dict):
         raise ValueError(f"Unknown provider {name!r} in {data_dir}")
-    return provider
+    return resolve_provider(provider)
 
 
 def _provider_credentials(

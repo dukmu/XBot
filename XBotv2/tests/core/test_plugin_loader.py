@@ -353,7 +353,11 @@ class TestOrderIndependence:
                 "config": {
                     "default": "mock",
                     "providers": {
-                        "mock": {"provider": "mock", "model": "mock"},
+                        "mock": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{"model": "mock"}],
+                        },
                     },
                 },
             }]),

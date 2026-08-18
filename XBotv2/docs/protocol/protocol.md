@@ -97,7 +97,10 @@ Thread status and history remain queryable after its runtime closes.
 | GET | `/sessions/{sid}/threads/{tid}` | Read thread status and usage |
 | GET | `/sessions/{sid}/threads/{tid}/agents` | List workspace-visible Agents |
 | PUT | `/sessions/{sid}/threads/{tid}/agent` | Select the active Primary Agent |
+| POST | `/sessions/{sid}/threads/{tid}/agents/reload` | Reload Agent and workspace definitions |
 | PUT | `/sessions/{sid}/threads/{tid}/provider` | Select and persist the provider |
+| PUT | `/sessions/{sid}/threads/{tid}/effort` | Switch the reasoning effort tier |
+| POST | `/sessions/{sid}/threads/{tid}/config/reload` | Soft-restart: re-read overlays and re-apply plugins |
 | GET | `/sessions/{sid}/threads/{tid}/tools` | List model-visible Tool schemas |
 | GET | `/sessions/{sid}/threads/{tid}/messages` | Read display-safe history |
 | POST | `/sessions/{sid}/threads/{tid}/messages` | Send message, receive turn SSE |

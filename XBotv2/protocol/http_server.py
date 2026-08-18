@@ -26,6 +26,9 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from XBotv2.protocol.models import (
     AgentInfo,
     AgentListResponse,
+    ConfigReloadResponse,
+    EffortSelectionRequest,
+    EffortSelectionResponse,
     AgentSelectionRequest,
     AgentSelectionResponse,
     CloseResponse,
@@ -45,6 +48,7 @@ from XBotv2.protocol.models import (
     OpenSessionResponse,
     OpenThreadRequest,
     PermissionResponseRequest,
+    ModelInfo,
     ProviderInfo,
     ProviderListResponse,
     ProviderSelectionRequest,
@@ -72,6 +76,8 @@ from XBotv2.application.operations import (
     clear_history,
     fork_session,
     reload_agents,
+    reload_config,
+    select_effort,
     select_agent,
     select_provider,
     stop_all_tasks,
@@ -227,13 +233,20 @@ def _register_routes(app: FastAPI) -> None:
             config = llm.provider_config(name, require_key=False)
             providers.append(ProviderInfo(
                 name=name,
-                provider=config.provider,
-                model=config.model,
-                max_context_tokens=config.max_context_tokens,
-                max_output_tokens=config.max_output_tokens,
-                reasoning_effort=config.reasoning_effort or "",
-                thinking_enabled=config.thinking_enabled,
-                input_modalities=config.input_modalities,
+                provider=config.protocol,
+                default_model=config.default_model,
+                models=[
+                    ModelInfo(
+                        model=model.model,
+                        max_context_tokens=model.max_context_tokens,
+                        max_output_tokens=model.max_output_tokens,
+                        reasoning_effort=model.reasoning_effort or "",
+                        effort=list(model.effort or []),
+                        thinking=model.thinking or "",
+                        input_modalities=model.input_modalities,
+                    )
+                    for model in config.models
+                ],
             ))
         return ProviderListResponse(default=default, providers=providers)
 
@@ -552,11 +565,57 @@ def _register_routes(app: FastAPI) -> None:
         payload: ProviderSelectionRequest,
     ) -> ProviderSelectionResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await select_provider(ctx, payload.name)
+        data = await select_provider(ctx, payload.name, payload.model)
         return ProviderSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,
             **data,
+        )
+
+    @app.put(
+        "/sessions/{session_id}/threads/{thread_id}/effort",
+        operation_id="select_effort",
+    )
+    async def select_effort_endpoint(
+        session_id: str,
+        thread_id: str,
+        payload: EffortSelectionRequest,
+    ) -> EffortSelectionResponse:
+        ctx = await manager.get(session_id, thread_id)
+        data = await select_effort(ctx, payload.effort)
+        return EffortSelectionResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            provider=data["provider"],
+            model=data["model"],
+            reasoning_effort=data["reasoning_effort"],
+            model_mode=data["model_mode"],
+            available=data["available"],
+        )
+
+    @app.post(
+        "/sessions/{session_id}/threads/{thread_id}/config/reload",
+        operation_id="reload_config",
+    )
+    async def reload_config_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> ConfigReloadResponse:
+        ctx = await manager.get(session_id, thread_id)
+        data = await reload_config(ctx)
+        # The server host owns the catalog listed by ``/providers``; keep it
+        # in sync with the catalog the session just applied so the endpoint
+        # reports the live configuration after a soft reload.
+        app.state.llm.configure(data["default"], data["providers"])
+        return ConfigReloadResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            reloaded=data["reloaded"],
+            provider=data["provider"],
+            model=data["model"],
+            model_mode=data["model_mode"],
+            context_window=data["context_window"],
+            errors=data["errors"],
         )
 
     @app.get(

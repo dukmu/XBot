@@ -141,6 +141,12 @@ class TerminalSession:
             )
         if command == "provider":
             return await self._provider_command(args)
+        if command == "model":
+            return await self._model_command(args)
+        if command == "effort":
+            return await self._effort_command(args)
+        if command == "reload" and not args:
+            return await self._reload_command()
         if command == "agent":
             return await self._agent_command(args)
         if command == "clear" and not args:
@@ -224,6 +230,92 @@ class TerminalSession:
                 f"Provider switched to {data['provider']} ({data['model']}).", data
             )
         raise ValueError("Usage: /provider [status|list|use <name>]")
+
+    async def _model_command(self, args: list[str]) -> CommandOutcome:
+        action = args[0].lower() if args else "status"
+        if action == "status" and len(args) <= 1:
+            data = await self._thread_status()
+            return CommandOutcome(
+                f"Model: {data['provider']} ({data['model']})", data
+            )
+        if action == "list" and len(args) == 1:
+            data = await self._transport.list_providers()
+            current = (await self._thread_status())["model"]
+            data["current_model"] = current
+            lines = []
+            for item in data["providers"]:
+                models = ", ".join(
+                    f"{model['model']}{'*' if model['model'] == current else ''}"
+                    for model in item["models"]
+                )
+                lines.append(f"{item['name']}: {models}")
+            return CommandOutcome("Models: " + " | ".join(lines), data)
+        if action == "use":
+            rest = [arg for arg in args[1:] if arg]
+            if len(rest) == 1:
+                provider = (await self._thread_status())["provider"]
+                model = rest[0]
+            elif len(rest) == 2:
+                provider, model = rest
+            else:
+                raise ValueError("Usage: /model use [<provider>] <model>")
+            data = await self._transport.select_provider(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                name=provider,
+                model=model,
+            )
+            return CommandOutcome(
+                f"Model switched to {data['provider']} ({data['model']}).", data
+            )
+        raise ValueError("Usage: /model [status|list|use [<provider>] <model>]")
+
+    async def _effort_command(self, args: list[str]) -> CommandOutcome:
+        if not args:
+            data = await self._transport.list_providers()
+            status = await self._thread_status()
+            current_provider = status["provider"]
+            current_model = status["model"]
+            tiers: list[str] = []
+            for item in data["providers"]:
+                if item["name"] != current_provider:
+                    continue
+                for model in item["models"]:
+                    if model["model"] == current_model:
+                        tiers = list(model.get("effort") or [])
+                        break
+            message = f"Effort: {status.get('model_mode') or 'default'}"
+            message += (
+                " (" + ", ".join(tiers) + ")"
+                if tiers
+                else "; model advertises no effort tiers"
+            )
+            return CommandOutcome(message, data)
+        if len(args) == 1:
+            data = await self._transport.select_effort(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                effort=args[0],
+            )
+            return CommandOutcome(
+                f"Effort switched to {data['reasoning_effort']} "
+                f"({data['model_mode']}).",
+                data,
+            )
+        raise ValueError("Usage: /effort [<level>]")
+
+    async def _reload_command(self) -> CommandOutcome:
+        data = await self._transport.reload_config(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
+        message = (
+            f"Reloaded {', '.join(data['reloaded'])}: "
+            f"{data['provider']} ({data['model']})"
+        )
+        if data.get("errors"):
+            message += "; errors: " + "; ".join(data["errors"])
+        return CommandOutcome(message, data)
 
     async def _agent_command(self, args: list[str]) -> CommandOutcome:
         action = args[0].lower() if args else "status"

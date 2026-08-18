@@ -16,7 +16,7 @@ from XBotv2.tests.helpers import make_tool_ctx
 from XBotv2.core.events import Events
 from XBotv2.llm.mock import MockLLM
 from XBotv2.core import ContextComponent
-from XBotv2.core.messages import Message, ModelResponse
+from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.permissions.system import PermissionSystem
@@ -1074,6 +1074,60 @@ class TestEngineHooks:
             and event["data"]["content"] == "recovered"
             for event in events
         )
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_llm_timeout_surfaces_clean_timeout_error(
+        self, state_store, temp_workspace
+    ):
+        """A timeout after output began yields TimeoutError, not a NameError."""
+
+        class MidStreamTimeoutLLM(BaseProvider):
+            def __init__(self):
+                super().__init__(
+                    model="timeout",
+                    temperature=0,
+                    max_output_tokens=None,
+                    max_retries=1,
+                    retry_backoff_factor=0,
+                )
+
+            async def _astream_once(self, messages, **kwargs):
+                yield ModelChunk(content="partial")
+                raise asyncio.TimeoutError()
+
+        dispatched = []
+
+        async def on_model_error(ctx):
+            dispatched.append(type(ctx.error).__name__)
+
+        plugin_ctx = xcore.Context()
+        plugin_ctx.on(Events.MODEL_REQUEST_ERROR, on_model_error)
+
+        engine = make_engine(
+            llm=MidStreamTimeoutLLM(),
+            tool_registry=ToolRegistry(),
+            plugin_ctx=plugin_ctx,
+            state_store=state_store,
+            context_builder=ContextBuilder(),
+            sandbox_policy=SandboxPolicy(
+                enabled=False,
+                workspace_root=str(temp_workspace),
+            ),
+            permission_system=PermissionSystem(default_decision="allow"),
+            config=RuntimeConfig(),
+        )
+
+        events = [event async for event in engine.run_turn("test")]
+
+        assert dispatched == ["TimeoutError"]
+        error = next(
+            event
+            for event in events
+            if event["type"] == "error"
+            and "exception_type" in ((event.get("data") or {}).get("details") or {})
+        )
+        assert error["data"]["details"]["exception_type"] == "TimeoutError"
+        assert "LLM call timed out" in error["data"]["message"]
 
     @pytest.mark.asyncio
     async def test_tool_call_lifecycle_hooks_fire(self, state_store, temp_workspace):

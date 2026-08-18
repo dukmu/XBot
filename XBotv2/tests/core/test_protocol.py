@@ -4,47 +4,66 @@ import yaml
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.llm.config import ProviderConfig
+from XBotv2.llm.config import ModelConfig, ProviderConfig
 
 
 class TestProviderConfig:
     """LLM client factory tests."""
 
-    def test_create_llm_deepseek(self):
-        """DeepSeek provider config creates OpenAI client."""
+    def _config(self, **overrides) -> ProviderConfig:
+        base = {
+            "protocol": "openai",
+            "default_model": "test",
+            "models": [ModelConfig(model="test")],
+        }
+        base.update(overrides)
+        return ProviderConfig(**base)
+
+    def test_create_llm_openai_protocol(self):
+        """An openai-protocol config creates an OpenAI client."""
         from XBotv2.llm.client import create_llm
 
         config = ProviderConfig(
-            provider="deepseek",
-            model="deepseek-chat",
-            base_url="https://XBotv2.core.deepseek.com/v1",
+            protocol="openai",
+            base_url="https://api.example.com/v1",
             api_key="test-key",
-            temperature=0.7,
-            max_output_tokens=8192,
+            default_model="deepseek-chat",
+            models=[
+                ModelConfig(
+                    model="deepseek-chat",
+                    temperature=0.7,
+                    max_output_tokens=8192,
+                )
+            ],
         )
-        llm = create_llm(config)
+        llm = create_llm(config, config.resolve())
         from XBotv2.llm.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
         assert llm.model_name == "deepseek-chat"
 
-    def test_create_llm_lmstudio(self):
-        """LM Studio Anthropic protocol creates Anthropic client."""
+    def test_create_llm_anthropic_protocol(self):
+        """An anthropic-protocol config creates an Anthropic client."""
         from XBotv2.llm.client import create_llm
 
         config = ProviderConfig(
-            provider="lmstudio",
-            model="qwen2.5-coder-7b-instruct",
-            base_url="http://localhost:1234/v1",
-            api_key="lm-studio",
-            temperature=0.7,
-            max_output_tokens=4096,
+            protocol="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="test-key",
+            default_model="claude-x",
+            models=[
+                ModelConfig(
+                    model="claude-x",
+                    temperature=0.7,
+                    max_output_tokens=4096,
+                )
+            ],
         )
-        llm = create_llm(config)
+        llm = create_llm(config, config.resolve())
         from XBotv2.llm.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
-        assert llm.model == "qwen2.5-coder-7b-instruct"
+        assert llm.model == "claude-x"
 
     def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
@@ -53,11 +72,12 @@ class TestProviderConfig:
         monkeypatch.setenv("TEST_KEY", "expanded-key")
 
         config = ProviderConfig(
-            provider="openai",
-            model="gpt-4",
+            protocol="openai",
+            default_model="gpt-4",
+            models=[ModelConfig(model="gpt-4")],
             api_key="${TEST_KEY}",
         )
-        llm = create_llm(config)
+        llm = create_llm(config, config.resolve())
         assert llm.client.api_key == "expanded-key"
 
     def test_create_llm_from_mock_provider_config(self):
@@ -65,72 +85,118 @@ class TestProviderConfig:
         from XBotv2.llm.client import create_llm
         from XBotv2.llm.mock import MockLLM
 
-        llm = create_llm(ProviderConfig(
-            provider="mock",
-            mock_responses=[{"content": "mocked"}],
-        ))
+        config = ProviderConfig(
+            protocol="mock",
+            default_model="mock",
+            models=[ModelConfig(model="mock", mock_responses=[{"content": "mocked"}])],
+        )
+        llm = create_llm(config, config.resolve())
 
         assert isinstance(llm, MockLLM)
         assert llm.responses == [{"content": "mocked"}]
 
-    def test_unknown_provider_raises(self):
-        """Unknown provider names fail closed instead of silently using OpenAI."""
+    def test_unknown_protocol_raises(self):
+        """Unknown protocol implementations fail closed instead of silently
+        falling back to OpenAI."""
         from XBotv2.llm.client import create_llm
 
-        with pytest.raises(ValueError, match="Unknown provider"):
-            create_llm(ProviderConfig(provider="not-a-provider", model="x"))
+        config = self._config(protocol="not-a-protocol")
+        with pytest.raises(ValueError, match="Unknown protocol implementation"):
+            create_llm(config, config.resolve())
+
+    def test_unknown_model_in_catalog_fails_closed(self):
+        config = ProviderConfig(
+            protocol="openai",
+            default_model="known",
+            models=[ModelConfig(model="known")],
+        )
+        with pytest.raises(ValueError, match="Unknown model 'missing'"):
+            config.resolve("missing")
+
+    def test_default_model_must_be_in_catalog(self):
+        with pytest.raises(ValueError, match="default_model"):
+            ProviderConfig(
+                protocol="openai",
+                default_model="missing",
+                models=[ModelConfig(model="known")],
+            )
 
 
 class TestProviderConfigLoader:
-    """Provider config loading from the llm plugin's tree config — the original bug."""
+    """Provider config loading from the llm plugin's tree config."""
 
     def test_selects_named_provider_section(self, tmp_path, monkeypatch):
-        """parse_provider_config selects the correct section."""
+        """parse_provider_config validates one catalog provider entry."""
         from XBotv2.llm.config import parse_provider_config
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
         deepseek = parse_provider_config({
-            "provider": "deepseek",
-            "model": "deepseek-chat",
-            "base_url": "https://XBotv2.core.deepseek.com/v1",
+            "protocol": "openai",
+            "base_url": "https://api.example.com/v1",
             "api_key": "${TEST_API_KEY}",
+            "default_model": "deepseek-chat",
+            "models": [
+                {"model": "deepseek-chat", "temperature": 0.7},
+                {"model": "deepseek-reasoner"},
+            ],
         })
-        assert deepseek.provider == "deepseek"
-        assert deepseek.model == "deepseek-chat"
-        assert deepseek.base_url == "https://XBotv2.core.deepseek.com/v1"
+        assert deepseek.protocol == "openai"
+        assert deepseek.default_model == "deepseek-chat"
+        assert deepseek.resolve().model == "deepseek-chat"
+        assert deepseek.resolve("deepseek-reasoner").model == "deepseek-reasoner"
+        assert deepseek.base_url == "https://api.example.com/v1"
         assert deepseek.api_key == "sk-test-123"  # env var expanded
 
         openai = parse_provider_config({
-            "provider": "openai",
-            "model": "gpt-4o",
+            "protocol": "openai",
+            "default_model": "gpt-4o",
+            "models": [{"model": "gpt-4o"}],
             "api_key": "sk-openai-xxx",
         })
-        assert openai.provider == "openai"
-        assert openai.model == "gpt-4o"
+        assert openai.protocol == "openai"
+        assert openai.resolve().model == "gpt-4o"
         assert openai.api_key == "sk-openai-xxx"
 
     def test_preserves_reasoning_configuration(self):
         from XBotv2.llm.config import parse_provider_config
 
         config = parse_provider_config({
-            "provider": "anthropic",
-            "model": "MiniMax-M3",
+            "protocol": "anthropic",
             "api_key": "test-key",
-            "max_output_tokens": 8192,
-            "reasoning_effort": "high",
-            "thinking_enabled": True,
+            "default_model": "MiniMax-M3",
+            "models": [
+                {
+                    "model": "MiniMax-M3",
+                    "max_output_tokens": 8192,
+                    "reasoning_effort": "high",
+                    "thinking": "enabled",
+                }
+            ],
         })
 
-        assert config.reasoning_effort == "high"
-        assert config.thinking_enabled is True
-        assert config.model_mode == "high"
+        model = config.resolve()
+        assert model.reasoning_effort == "high"
+        assert model.thinking == "enabled"
+        assert model.model_mode == "high"
 
-    def test_model_mode_is_empty_without_explicit_provider_setting(self):
-        from XBotv2.llm.config import ProviderConfig
+    def test_model_mode_is_empty_without_explicit_setting(self):
+        assert ModelConfig(model="plain").model_mode == ""
+        assert ModelConfig(model="r", thinking="enabled").model_mode == "enabled"
 
-        assert ProviderConfig().model_mode == ""
-        assert ProviderConfig(thinking_enabled=True).model_mode == "thinking"
+    def test_effort_tiers_validate_active_reasoning_effort(self):
+        config = ModelConfig(
+            model="m",
+            reasoning_effort="high",
+            effort=["low", "medium", "high"],
+        )
+        assert config.effort == ["low", "medium", "high"]
+        with pytest.raises(ValueError, match="must be one of"):
+            ModelConfig(
+                model="m",
+                reasoning_effort="max",
+                effort=["low", "medium", "high"],
+            )
 
     def test_llm_service_lists_configured_providers(self):
         """LlmService.configure stores definitions; names()/default_name() reflect them."""
@@ -138,21 +204,32 @@ class TestProviderConfigLoader:
 
         service = LlmService()
         service.configure("default", {
-            "default": {"provider": "openai", "model": "test"},
-            "other": {"provider": "anthropic", "model": "other",
-                      "max_output_tokens": 8192},
+            "default": {
+                "protocol": "openai",
+                "default_model": "test",
+                "models": [{"model": "test"}],
+            },
+            "other": {
+                "protocol": "anthropic",
+                "default_model": "other",
+                "models": [{"model": "other", "max_output_tokens": 8192}],
+            },
         })
 
         assert service.default_name() == "default"
         assert set(service.names()) == {"default", "other"}
-        assert service.provider_config("default").model == "test"
+        assert service.provider_config("default").resolve().model == "test"
 
     def test_unknown_provider_is_rejected(self):
         from XBotv2.llm.service import LlmService
 
         service = LlmService()
         service.configure("default", {
-            "default": {"provider": "openai", "model": "fallback-model"},
+            "default": {
+                "protocol": "openai",
+                "default_model": "fallback-model",
+                "models": [{"model": "fallback-model"}],
+            },
         })
 
         with pytest.raises(
@@ -160,13 +237,15 @@ class TestProviderConfigLoader:
             match="Unknown provider config: nonexistent_provider.*Configured providers: default",
         ):
             service.provider_config("nonexistent_provider")
+
     def test_missing_env_var_is_rejected(self):
         from XBotv2.llm.config import parse_provider_config
 
         with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
             parse_provider_config({
-                "provider": "openai",
-                "model": "gpt-4",
+                "protocol": "openai",
+                "default_model": "gpt-4",
+                "models": [{"model": "gpt-4"}],
                 "api_key": "${NONEXISTENT_VAR}",
             })
 
@@ -175,10 +254,10 @@ class TestProviderConfigLoader:
 
         monkeypatch.setenv("PROVIDER_TEST_KEY", "sk-resolved")
         config = parse_provider_config({
-            "provider": "anthropic",
-            "model": "m3",
+            "protocol": "anthropic",
+            "default_model": "m3",
+            "models": [{"model": "m3", "max_output_tokens": 8192}],
             "api_key_env": "PROVIDER_TEST_KEY",
-            "max_output_tokens": 8192,
         })
         assert config.api_key == "sk-resolved"
 
@@ -193,7 +272,11 @@ class TestProviderConfigLoader:
                 {"id": "llm", "name": "llm", "config": {
                     "default": "custom",
                     "providers": {
-                        "custom": {"provider": "openai", "model": "custom-model"},
+                        "custom": {
+                            "protocol": "openai",
+                            "default_model": "custom-model",
+                            "models": [{"model": "custom-model"}],
+                        },
                     },
                 }},
             ]),
@@ -208,4 +291,5 @@ class TestProviderConfigLoader:
         )
         llm = next(entry for entry in tree.entries if entry.id == "llm")
         assert llm.config["default"] == "custom"
-        assert llm.config["providers"]["custom"]["model"] == "custom-model"
+        assert llm.config["providers"]["custom"]["default_model"] == "custom-model"
+        assert llm.config["providers"]["custom"]["models"][0]["model"] == "custom-model"

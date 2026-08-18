@@ -535,15 +535,22 @@ class Engine:
                         yield model_event
                 if response is None:
                     raise RuntimeError("LLM stream completed without a response")
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as exc:
                 logger.error(
-                    "engine.turn LLM timed out after %ss (turn=%d)",
-                    _LLM_DISPATCH_TIMEOUT,
+                    "engine.turn LLM timed out (turn=%d)",
                     self.turn_count,
                 )
-                raise asyncio.TimeoutError(
-                    f"LLM call timed out after {_LLM_DISPATCH_TIMEOUT}s"
-                ) from None
+                err_ctx = self._make_event_context(
+                    context_messages=context_messages,
+                    model_request=model_request,
+                    error=exc,
+                )
+                await self._dispatch(
+                    Events.MODEL_REQUEST_ERROR,
+                    err_ctx,
+                    short_circuit=False,
+                )
+                raise asyncio.TimeoutError("LLM call timed out") from None
             except BaseException as exc:
                 err_ctx = self._make_event_context(context_messages=context_messages,
                     model_request=model_request,

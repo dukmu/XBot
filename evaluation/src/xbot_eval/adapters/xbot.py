@@ -13,6 +13,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 
 from .acp import InspectACPClient, run_acp_session
 from .base import AdapterContext, AdapterSetup
+from .common import resolve_provider
 from .common import (
     PreparedSample,
     allocate_bridge_port,
@@ -224,13 +225,22 @@ def _configure_bridge_provider(
     llm_entry = _find_entry(document, "llm")
     providers = llm_entry.setdefault("config", {}).setdefault("providers", {})
     providers["inspect"] = {
-        "provider": provider_type,
-        "model": "inspect",
+        "protocol": provider_type,
         "base_url": _bridge_base_url(provider_type),
         "api_key": "inspect",
-        "max_context_tokens": provider.get("max_context_tokens", 200_000),
-        "max_output_tokens": max_output_tokens,
-        "input_modalities": provider.get("input_modalities", ["text"]),
+        "default_model": "inspect",
+        "models": [
+            {
+                "model": "inspect",
+                "max_context_tokens": provider.get(
+                    "max_context_tokens", 200_000
+                ),
+                "max_output_tokens": max_output_tokens,
+                "input_modalities": provider.get(
+                    "input_modalities", ["text"]
+                ),
+            }
+        ],
     }
     _write_plugins(data_dir / "config" / "plugins.yaml", document)
 
@@ -262,7 +272,7 @@ def _load_provider(source: Path, provider_name: str | None) -> dict[str, Any]:
             f"Unknown evaluation bridge provider {selected!r}; "
             f"available providers: {available or '(none)'}"
         )
-    return provider
+    return resolve_provider(provider)
 
 
 def _load_plugins(path: Path) -> list[dict[str, Any]]:

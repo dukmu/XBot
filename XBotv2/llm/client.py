@@ -21,24 +21,35 @@ DEFAULT_PROVIDER_MAX_RETRIES = 16
 
 def create_llm(
     provider_config: ProviderConfig,
+    model_config,
     *,
     media_root: str | None = None,
 ) -> BaseProvider:
-    """Create a provider adapter for one provider config (module-level route)."""
-    provider = provider_config.provider
-    if provider == "mock":
+    """Create a provider adapter for one adapter instance + specific model.
+
+    Module-level route mirroring ``LlmService.create`` for code without an
+    XCore context.
+    """
+    protocol = provider_config.protocol
+    if protocol == "mock":
         from XBotv2.llm.mock import create_mock_provider
 
-        return create_mock_provider(provider_config, media_root=media_root)
-    if provider in ("openai", "deepseek", "lmstudio-openai"):
+        return create_mock_provider(
+            provider_config, model_config, media_root=media_root
+        )
+    if protocol == "openai":
         from XBotv2.llm.openai import create_openai_provider
 
-        return create_openai_provider(provider_config, media_root=media_root)
-    if provider in ("anthropic", "lmstudio"):
+        return create_openai_provider(
+            provider_config, model_config, media_root=media_root
+        )
+    if protocol == "anthropic":
         from XBotv2.llm.anthropic import create_anthropic_provider
 
-        return create_anthropic_provider(provider_config, media_root=media_root)
-    raise ValueError(f"Unknown provider: {provider!r}")
+        return create_anthropic_provider(
+            provider_config, model_config, media_root=media_root
+        )
+    raise ValueError(f"Unknown protocol implementation: {protocol!r}")
 
 
 def _require_api_key(provider: str, model: str, api_key: str) -> None:

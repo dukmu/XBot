@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import AdapterContext, AdapterSetup, EvaluationAdapter
+from .common import resolve_provider
 from .opencode import OpenCodeAdapter
 from .xbot import XBotAdapter
 
@@ -30,4 +31,5 @@ __all__ = [
     "AdapterSetup",
     "adapter_names",
     "get_adapter",
+    "resolve_provider",
 ]

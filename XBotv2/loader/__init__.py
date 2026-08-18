@@ -434,15 +434,18 @@ class Loader:
         Used by the workspace_instructions plugin to apply a workspace
         ``.xbot/plugins.yaml`` overlay after the tree is loaded: entries the
         patch overrides are reloaded with their new config; new ids are
-        mounted.  The caller (the patch-applying plugin itself) is skipped so
-        it does not reload itself.
+        mounted; entries the patch disables are unloaded.  The caller (the
+        patch-applying plugin itself) is skipped so it does not reload itself.
         """
         self.tree = self.tree.merged_with(patch)
         affected: list[str] = []
         for entry in patch.entries:
             if entry.id == getattr(self, "_patch_owner", None):
                 continue
-            if entry.id in self._handles:
+            if entry.disabled:
+                if entry.id in self._handles:
+                    await self.unload(entry.id)
+            elif entry.id in self._handles:
                 await self.reload(entry.id)
             else:
                 await self._mount(entry)

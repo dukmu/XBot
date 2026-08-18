@@ -117,16 +117,15 @@ class AgentsService:
             provider_name,
             require_key=options.model_override is None,
         )
-        if definition is not None:
-            self._apply_model(provider, definition)
+        model_config = self._resolve_model_config(provider, definition)
 
         config.provider = provider_name
         config.max_context_tokens = (
             definition.context_window
             if definition is not None and definition.context_window is not None
-            else provider.max_context_tokens
+            else model_config.max_context_tokens
         )
-        config.max_output_tokens = provider.max_output_tokens
+        config.max_output_tokens = model_config.max_output_tokens
         state.session.provider = provider_name
         state.metadata = {
             "agent": definition.name if definition is not None else "",
@@ -134,15 +133,15 @@ class AgentsService:
             "provider": provider_name,
             "parent_thread_id": options.parent_thread_id,
             "workspace_root": options.workspace_root,
-            "model": provider.model,
-            "model_mode": provider.model_mode,
+            "model": model_config.model,
+            "model_mode": model_config.model_mode,
             "context_window": config.max_context_tokens,
         }
 
         model = (
             options.model_override
             if options.model_override is not None
-            else ctx.llm.create(provider, media_root=state.media_root)
+            else ctx.llm.create(provider, model_config, media_root=state.media_root)
         )
         ctx.model.replace(model)
         await ctx.emit(
@@ -169,8 +168,8 @@ class AgentsService:
             state=state,
             settings=LoopSettings(
                 provider=provider_name,
-                model=provider.model,
-                model_mode=provider.model_mode,
+                model=model_config.model,
+                model_mode=model_config.model_mode,
                 context_window=config.max_context_tokens,
                 max_output_tokens=config.max_output_tokens or 0,
                 agent_name=config.agent_name,
@@ -233,22 +232,24 @@ class AgentsService:
             provider_name,
             require_key=not engine.settings.llm_is_override,
         )
-        self._apply_model(provider, definition)
+        model_config = self._resolve_model_config(provider, definition)
         config.provider = provider_name
         config.max_context_tokens = (
-            definition.context_window or provider.max_context_tokens
+            definition.context_window or model_config.max_context_tokens
         )
-        config.max_output_tokens = provider.max_output_tokens
+        config.max_output_tokens = model_config.max_output_tokens
         if not engine.settings.llm_is_override:
-            ctx.model.replace(ctx.llm.create(provider, media_root=state.media_root))
+            ctx.model.replace(
+                ctx.llm.create(provider, model_config, media_root=state.media_root)
+            )
 
         self._restrict_tools(ctx.tools.registry, config, definition)
         engine.configure(
             model_client=ctx.model,
             max_iterations=definition.max_iterations or DEFAULT_MAX_ITERATIONS,
             provider=provider_name,
-            model=provider.model,
-            model_mode=provider.model_mode,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
             context_window=config.max_context_tokens,
             max_output_tokens=config.max_output_tokens or 0,
             agent_name=config.agent_name,
@@ -262,8 +263,8 @@ class AgentsService:
             "agent": definition.name,
             "agent_definition": asdict(definition),
             "provider": provider_name,
-            "model": provider.model,
-            "model_mode": provider.model_mode,
+            "model": model_config.model,
+            "model_mode": model_config.model_mode,
             "context_window": config.max_context_tokens,
         })
         await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
@@ -275,13 +276,21 @@ class AgentsService:
         return {
             "agent": definition,
             "provider": provider_name,
-            "model": provider.model,
-            "model_mode": provider.model_mode,
+            "model": model_config.model,
+            "model_mode": model_config.model_mode,
             "context_window": config.max_context_tokens,
         }
 
-    async def select_provider(self, name: str) -> dict[str, Any]:
-        """Apply a configured provider to the live Agent driver."""
+    async def select_provider(
+        self,
+        name: str,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a configured provider (and optional model) to the driver.
+
+        ``model`` selects one catalog entry of the provider; unknown model
+        names fail closed before the client is recreated.
+        """
         ctx = self.ctx
         if name not in ctx.llm.names():
             raise ValueError(f"Unknown provider: {name}")
@@ -291,22 +300,25 @@ class AgentsService:
             name,
             require_key=not engine.settings.llm_is_override,
         )
+        model_config = provider.resolve(model)
         if not engine.settings.llm_is_override:
-            ctx.model.replace(ctx.llm.create(provider, media_root=state.media_root))
+            ctx.model.replace(
+                ctx.llm.create(provider, model_config, media_root=state.media_root)
+            )
         engine.configure(
             model_client=ctx.model,
             provider=name,
-            model=provider.model,
-            model_mode=provider.model_mode,
-            context_window=provider.max_context_tokens,
-            max_output_tokens=provider.max_output_tokens or 0,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=model_config.max_context_tokens,
+            max_output_tokens=model_config.max_output_tokens or 0,
         )
         state.session.provider = name
         state.metadata.update({
             "provider": name,
-            "model": provider.model,
-            "model_mode": provider.model_mode,
-            "context_window": provider.max_context_tokens,
+            "model": model_config.model,
+            "model_mode": model_config.model_mode,
+            "context_window": model_config.max_context_tokens,
         })
         await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
             config=engine.settings,
@@ -314,8 +326,126 @@ class AgentsService:
         ))
         return {
             "provider": name,
-            "model": provider.model,
-            "model_mode": provider.model_mode,
+            "model": model_config.model,
+            "model_mode": model_config.model_mode,
+        }
+
+    async def apply_provider_catalog(
+        self,
+        default: str,
+        providers: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Hot-swap the LLM provider catalog and rebuild the active client.
+
+        The active model client is rebuilt only when the active
+        provider/model still resolves in the new catalog; otherwise the
+        previous client is kept and the error is reported (last-good-valid
+        semantics, matching dsh settings snapshots).
+        """
+        ctx = self.ctx
+        llm = ctx.llm
+        llm.configure(default, providers)
+        engine = ctx.engine
+        provider_name = engine.settings.provider
+        model_name = engine.settings.model
+        try:
+            entry = llm.provider_config(
+                provider_name,
+                require_key=not engine.settings.llm_is_override,
+            )
+            model_config = entry.resolve(model_name)
+            if not engine.settings.llm_is_override:
+                ctx.model.replace(
+                    llm.create(
+                        entry, model_config, media_root=ctx.loop_state.media_root
+                    )
+                )
+            engine.configure(
+                model_client=ctx.model,
+                provider=provider_name,
+                model=model_config.model,
+                model_mode=model_config.model_mode,
+                context_window=model_config.max_context_tokens,
+                max_output_tokens=model_config.max_output_tokens or 0,
+            )
+            ctx.loop_state.session.provider = provider_name
+            ctx.loop_state.metadata.update({
+                "provider": provider_name,
+                "model": model_config.model,
+                "model_mode": model_config.model_mode,
+                "context_window": model_config.max_context_tokens,
+            })
+            return {
+                "reloaded": ["llm"],
+                "provider": provider_name,
+                "model": model_config.model,
+                "model_mode": model_config.model_mode,
+                "context_window": model_config.max_context_tokens,
+                "errors": [],
+            }
+        except Exception as error:  # noqa: BLE001 - keep last good binding
+            return {
+                "reloaded": ["llm"],
+                "provider": provider_name,
+                "model": engine.settings.model,
+                "model_mode": engine.settings.model_mode,
+                "context_window": engine.context_window,
+                "errors": [f"active {provider_name}/{model_name}: {error}"],
+            }
+
+    async def select_effort(self, value: str) -> dict[str, Any]:
+        """Switch the active model's reasoning effort to an advertised tier.
+
+        Only tiers the model advertises in its ``effort`` list are accepted;
+        the provider client is rebuilt with the new tier.
+        """
+        ctx = self.ctx
+        engine = ctx.engine
+        provider_name = engine.settings.provider
+        model_name = engine.settings.model
+        entry = ctx.llm.provider_config(
+            provider_name,
+            require_key=not engine.settings.llm_is_override,
+        )
+        model_config = entry.resolve(model_name)
+        tiers = list(model_config.effort or [])
+        if not tiers:
+            raise ValueError(
+                f"Model {provider_name}/{model_name} does not advertise "
+                "effort tiers"
+            )
+        if value not in tiers:
+            raise ValueError(
+                f"Unsupported reasoning effort {value!r} for "
+                f"{provider_name}/{model_name}; available: {', '.join(tiers)}"
+            )
+        model_config = model_config.model_copy(
+            update={"reasoning_effort": value}
+        )
+        if not engine.settings.llm_is_override:
+            ctx.model.replace(
+                ctx.llm.create(entry, model_config, media_root=ctx.loop_state.media_root)
+            )
+        engine.configure(
+            model_client=ctx.model,
+            provider=provider_name,
+            model=model_name,
+            model_mode=model_config.model_mode,
+            context_window=model_config.max_context_tokens,
+            max_output_tokens=model_config.max_output_tokens or 0,
+        )
+        ctx.loop_state.metadata.update({
+            "provider": provider_name,
+            "model": model_name,
+            "model_mode": model_config.model_mode,
+            "context_window": model_config.max_context_tokens,
+        })
+        return {
+            "provider": provider_name,
+            "model": model_name,
+            "reasoning_effort": value,
+            "model_mode": model_config.model_mode,
+            "available": tiers,
         }
 
     def _resolve_definition(
@@ -397,13 +527,41 @@ class AgentsService:
             config.max_context_tokens = definition.context_window
 
     @staticmethod
-    def _apply_model(provider: Any, definition: AgentDefinition) -> None:
-        if definition.model is not None:
-            provider.model = definition.model
-        if definition.temperature is not None:
-            provider.temperature = definition.temperature
-        if definition.max_output_tokens is not None:
-            provider.max_output_tokens = definition.max_output_tokens
+    def _resolve_model_config(
+        provider: Any,
+        definition: AgentDefinition | None,
+    ) -> Any:
+        """Resolve the catalog model for an Agent definition.
+
+        ``definition.model`` selects one catalog entry (default when unset);
+        Agent-level sampling overrides apply on top of that entry.  A model
+        declared by the Agent frontmatter but absent from the catalog
+        inherits the provider default entry's settings (with the frontmatter
+        overrides applied); explicit provider/model selection stays
+        fail-closed (see ``select_provider``).
+        """
+        model_name = (
+            definition.model
+            if definition is not None and definition.model is not None
+            else None
+        )
+        try:
+            model_config = provider.resolve(model_name)
+        except ValueError:
+            if definition is None or definition.model is None:
+                raise
+            model_config = provider.resolve(None).model_copy(
+                update={"model": definition.model}
+            )
+        if definition is not None:
+            updates: dict[str, Any] = {}
+            if definition.temperature is not None:
+                updates["temperature"] = definition.temperature
+            if definition.max_output_tokens is not None:
+                updates["max_output_tokens"] = definition.max_output_tokens
+            if updates:
+                model_config = model_config.model_copy(update=updates)
+        return model_config
 
     @staticmethod
     def _restrict_tools(

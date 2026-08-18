@@ -90,6 +90,24 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/provider [status|list|use <name>]",
         raw="/provider",
     ),
+    "model": CommandSpec(
+        name="model", kind="client",
+        description="List or switch the model within a provider",
+        usage="/model [status|list|use [<provider>] <model>]",
+        raw="/model",
+    ),
+    "effort": CommandSpec(
+        name="effort", kind="client",
+        description="Show or switch the reasoning effort tier",
+        usage="/effort [<level>]",
+        raw="/effort",
+    ),
+    "reload": CommandSpec(
+        name="reload", kind="client",
+        description="Soft-restart: re-read config overlays and re-apply plugins",
+        usage="/reload",
+        raw="/reload",
+    ),
     "agent": CommandSpec(
         name="agent", kind="client",
         description="List or switch the active primary Agent",

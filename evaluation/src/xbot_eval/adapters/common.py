@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +85,42 @@ async def local_agent_bridge(
                 sandbox_agent_bridge(state, sandbox="local", port=port)
             )
         yield bridge
+
+
+def resolve_provider(provider: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve an llm catalog provider entry to its default model settings.
+
+    The llm plugin tree stores providers as adapter instances: ``protocol`` +
+    endpoint + ``default_model`` + a ``models`` catalog.  Evaluation adapters
+    consume the flat view of the default model (``provider`` = protocol,
+    ``model`` = default model, plus that model's sampling/capacity fields).
+    """
+    entry = dict(provider)
+    protocol = str(entry.get("protocol") or "openai")
+    default_model = str(entry.get("default_model") or "")
+    selected = None
+    for candidate in entry.get("models") or []:
+        if isinstance(candidate, Mapping) and candidate.get("model") == default_model:
+            selected = dict(candidate)
+            break
+    if selected is None:
+        raise ValueError(
+            f"Provider has no default model {default_model!r} in its models catalog"
+        )
+    resolved = {
+        "provider": protocol,
+        "model": selected["model"],
+        "base_url": entry.get("base_url"),
+        "api_key_env": entry.get("api_key_env"),
+        "api_key": entry.get("api_key"),
+        "max_context_tokens": selected.get("max_context_tokens", 32_000),
+        "max_output_tokens": selected.get("max_output_tokens"),
+        "temperature": selected.get("temperature"),
+        "reasoning_effort": selected.get("reasoning_effort"),
+        "thinking": selected.get("thinking"),
+        "input_modalities": selected.get("input_modalities") or ["text"],
+    }
+    return {key: value for key, value in resolved.items() if value is not None}
 
 
 def resolve_command(command: str | None, default: str | Path | None) -> str:

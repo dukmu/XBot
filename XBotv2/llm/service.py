@@ -73,12 +73,14 @@ class LlmService:
         *,
         require_key: bool = True,
     ) -> ProviderConfig:
-        """Resolve one configured provider to a validated config.
+        """Resolve one configured provider to its validated adapter instance.
 
         The name ``"default"`` aliases the configured default provider.
         ``require_key=True`` (selection path) resolves ``api_key_env`` and
         raises when the environment variable is unset; ``require_key=False``
-        (listing path) leaves the key unresolved.
+        (listing path) leaves the key unresolved.  The returned catalog entry
+        carries ``protocol`` / ``default_model`` / ``models``; the concrete
+        request settings for one model come from ``resolve(model)``.
         """
         if name == "default":
             name = self._default
@@ -93,16 +95,24 @@ class LlmService:
 
     def create(
         self,
-        provider_config: Any,
+        provider_config: ProviderConfig,
+        model_config: Any = None,
         *,
+        model: str | None = None,
         media_root: str | None = None,
     ) -> BaseProvider:
-        """Create a provider client for one provider config."""
-        provider = provider_config.provider
-        factory = self._factories.get(provider)
+        """Create a provider client: protocol -> adapter instance -> model.
+
+        ``model_config`` (from ``provider_config.resolve(model)``) supplies
+        the selected model's sampling, capacity, and capability settings.
+        """
+        if model_config is None:
+            model_config = provider_config.resolve(model)
+        protocol = provider_config.protocol
+        factory = self._factories.get(protocol)
         if factory is None:
-            raise ValueError(f"Unknown provider: {provider!r}")
-        return factory(provider_config, media_root=media_root)
+            raise ValueError(f"Unknown protocol implementation: {protocol!r}")
+        return factory(provider_config, model_config, media_root=media_root)
 
 
 class ModelService:
