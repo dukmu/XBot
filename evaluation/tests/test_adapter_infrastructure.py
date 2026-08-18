@@ -32,13 +32,18 @@ def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
                     "default": "minimax",
                     "providers": {
                         "minimax": {
-                            "provider": "anthropic",
-                            "model": "Minimax-M3",
-                            "max_context_tokens": 204800,
-                            "max_output_tokens": 32768,
-                            "temperature": 0.2,
-                            "thinking_enabled": True,
-                            "input_modalities": ["text", "image"],
+                            "protocol": "anthropic",
+                            "default_model": "Minimax-M3",
+                            "models": [
+                                {
+                                    "model": "Minimax-M3",
+                                    "max_context_tokens": 204800,
+                                    "max_output_tokens": 32768,
+                                    "temperature": 0.2,
+                                    "thinking": "adaptive",
+                                    "input_modalities": ["text", "image"],
+                                }
+                            ],
                         }
                     },
                 },
@@ -53,11 +58,13 @@ def test_bridge_provider_uses_selected_provider_config(tmp_path: Path) -> None:
     )
     llm_entry = next(item for item in generated if item["id"] == "llm")
     bridge = llm_entry["config"]["providers"]["inspect"]
-    assert bridge["provider"] == "anthropic"
-    assert bridge["model"] == "inspect"
-    assert bridge["max_context_tokens"] == 204800
-    assert bridge["max_output_tokens"] == 32768
-    assert bridge["input_modalities"] == ["text", "image"]
+    assert bridge["protocol"] == "anthropic"
+    assert bridge["default_model"] == "inspect"
+    model = bridge["models"][0]
+    assert model["model"] == "inspect"
+    assert model["max_context_tokens"] == 204800
+    assert model["max_output_tokens"] == 32768
+    assert model["input_modalities"] == ["text", "image"]
     assert bridge["base_url"] == "${XBOT_EVAL_BRIDGE_URL}"
 
 
@@ -134,7 +141,7 @@ def test_opencode_environment_only_sets_bridge_configuration(
             "model": "Minimax-M3",
             "max_context_tokens": 204800,
             "max_output_tokens": 32768,
-            "thinking_enabled": True,
+            "thinking": "adaptive",
             "input_modalities": ["text", "image"],
         },
     )

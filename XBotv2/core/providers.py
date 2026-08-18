@@ -63,10 +63,10 @@ class BaseProvider(ABC):
         self,
         *,
         model: str,
-        temperature: float,
+        temperature: float | None,
         max_output_tokens: int | None,
         reasoning_effort: str | None = None,
-        thinking_enabled: bool = False,
+        thinking: str | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[InputModality] | None = None,
@@ -81,7 +81,7 @@ class BaseProvider(ABC):
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
-        self.thinking_enabled = thinking_enabled
+        self.thinking = thinking
         self.max_retries = max_retries
         self.retry_backoff_factor = retry_backoff_factor
         requested = frozenset(input_modalities or ["text"])

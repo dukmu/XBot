@@ -126,10 +126,15 @@ class TestApplicationStartupBasics:
                 "config": {
                     "default": "global",
                     "providers": {
-                        "global": {"provider": "mock", "model": "global"},
+                        "global": {
+                            "protocol": "mock",
+                            "default_model": "global",
+                            "models": [{"model": "global"}],
+                        },
                         "workspace": {
-                            "provider": "mock",
-                            "model": "workspace",
+                            "protocol": "mock",
+                            "default_model": "workspace",
+                            "models": [{"model": "workspace"}],
                         },
                     },
                 },

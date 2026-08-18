@@ -89,17 +89,24 @@ class HealthResponse(WireModel):
     workspace_root: str
 
 
-class ProviderInfo(WireModel):
-    name: str = Field(min_length=1)
-    provider: str = Field(min_length=1)
+class ModelInfo(WireModel):
     model: str = Field(min_length=1)
     max_context_tokens: int = Field(ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: str = ""
-    thinking_enabled: bool = False
+    thinking: str = ""
     input_modalities: list[Literal["text", "image"]] = Field(
         default_factory=lambda: ["text"]
     )
+
+
+class ProviderInfo(WireModel):
+    """One configured adapter instance: protocol + endpoint + model catalog."""
+
+    name: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    default_model: str = Field(min_length=1)
+    models: list[ModelInfo] = Field(default_factory=list)
 
 
 class ProviderListResponse(WireModel):
@@ -291,6 +298,7 @@ class AgentSelectionResponse(WireModel):
 
 class ProviderSelectionRequest(WireModel):
     name: str = Field(min_length=1)
+    model: str | None = Field(default=None, min_length=1)
 
 
 class ProviderSelectionResponse(WireModel):
@@ -732,6 +740,7 @@ __all__ = [
     "PermissionRequestData",
     "PermissionResponseRequest",
     "RequestedPermissionData",
+    "ModelInfo",
     "ProviderInfo",
     "ProviderListResponse",
     "ProviderSelectionRequest",

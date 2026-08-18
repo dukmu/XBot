@@ -17,6 +17,7 @@ from xbot_eval.adapters import (
     AdapterSetup,
     adapter_names,
     get_adapter,
+    resolve_provider,
 )
 
 
@@ -460,7 +461,7 @@ def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
     provider = providers.get(name)
     if not isinstance(provider, dict):
         raise ValueError(f"Unknown provider {name!r} in {data_dir}")
-    return provider
+    return resolve_provider(provider)
 
 
 def _provider_credentials(

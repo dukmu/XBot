@@ -253,10 +253,17 @@ sequenceDiagram
 
 ### LLM Provider (`llm/`)
 
+Configured providers are adapter instances: `protocol` selects the protocol
+implementation, the endpoint/credentials identify the vendor, and the `models`
+catalog carries per-model sampling, capacity, and capability settings. The
+LLM interface is constructed as protocol implementation → adapter instance →
+the selected model config.
+
 - `BaseProvider`: common Provider configuration, immutable Tool binding, and
   normalized streaming contract.
-- `OpenAICompatibleProvider`: streaming (`stream=True`) with `reasoning_effort` and
-  `thinking_enabled` config. Owns OpenAI message, Tool call, and usage conversion.
+- `OpenAICompatibleProvider`: streaming (`stream=True`); optional per-model
+  `temperature` / `reasoning_effort` / `thinking` config, serialized to the
+  vendor wire format. Owns OpenAI message, Tool call, and usage conversion.
 - `AnthropicProvider`: owns Anthropic message blocks, Tool schemas, streaming
   events, and usage conversion behind the same interface.
 - `client.py`: Provider configuration factory only.

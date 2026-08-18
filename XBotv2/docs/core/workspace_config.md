@@ -60,34 +60,65 @@ Provider definitions live in the `llm` plugin's tree config (`default` +
 seeded as part of the global user tree on first run). Runtime config selects
 one by name; it does not duplicate model limits.
 
+Each provider is a vendor **adapter instance**: `protocol` selects the
+protocol implementation (`openai` / `anthropic` / `mock`), `base_url` and
+`api_key` identify the endpoint, `default_model` names the catalog entry used
+when no explicit model is selected, and `models` is the catalog of specific
+model configurations. The LLM interface is constructed as protocol
+implementation → adapter instance → the selected model's specific config;
+the selected model may come from an Agent definition (`model:`), and
+unknown model names fail closed.
+
 ```yaml
 default: minimax
 providers:
   minimax:
-    provider: anthropic
-    model: MiniMax-M3
-    base_url: https://example.invalid/anthropic
-    api_key_env: MINIMAX_API_KEY
-    max_context_tokens: 200000
-    max_output_tokens: 32768 # required by the Anthropic Messages protocol
-    input_modalities: [text, image]
+    protocol: anthropic
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_TOKEN
+    default_model: Minimax-M3
+    models:
+      - model: Minimax-M3
+        temperature: 0.2         # optional; omitted -> provider default
+        max_context_tokens: 1000000
+        max_output_tokens: 32768 # required by the Anthropic Messages protocol
+        thinking: adaptive       # adapter-owned; MiniMax: adaptive/disabled
+        input_modalities: [text, image]
+      - model: Minimax-M2.7
+        max_context_tokens: 204800
+        max_output_tokens: 32768
 ```
 
-`max_context_tokens` is required model capacity used for context accounting and
-compaction. `max_output_tokens` is optional and is omitted from OpenAI-compatible
-requests when absent. Anthropic Messages requires it, so Anthropic-compatible
-providers must set it explicitly. Missing environment variables and unknown
-provider names fail closed.
+`max_context_tokens` is per-model capacity used for context accounting and
+compaction. `max_output_tokens` is optional and is omitted from
+OpenAI-compatible requests when absent; Anthropic Messages requires it, so
+Anthropic-protocol models must set it explicitly. Missing environment
+variables, unknown provider names, and unknown model names fail closed.
+
+`temperature`, `reasoning_effort`, and `thinking` are optional per-model
+sampling and reasoning settings; leaving one unset omits it from the request
+so the provider default applies. `reasoning_effort` and `thinking` are
+adapter-owned values: the adapter serializes them to the vendor wire format
+(`reasoning_effort` top-level for OpenAI-compatible endpoints,
+`extra_body.thinking` for Anthropic-style endpoints). MiniMax declares
+`thinking: adaptive`; Claude-style endpoints use `thinking: enabled` plus
+`budget_tokens` where required.
+
+`extra_body` carries vendor-specific request extras (Anthropic `extra_body` /
+OpenAI-compatible top-level options) per model. Adapter-derived parameters
+such as `reasoning_effort` and `thinking` are deep-merged underneath these
+configured values, so each vendor declares its own standard without runtime
+code changes.
 
 `input_modalities` declares the inputs accepted by that configured model. It
 always includes `text`; add `image` only for a model endpoint that supports
 image input. XBot rejects image messages before dispatch when the selected
-provider does not declare that capability.
+model does not declare that capability.
 
-`thinking_enabled` is an explicit capability of a provider/model combination.
+`thinking`/`reasoning_effort` declare an explicit capability of a model.
 Verify it across a Tool call and the following response before enabling it;
-XBot neither promotes reasoning blocks to assistant content nor silently falls
-back to another thinking mode.
+XBot neither promotes reasoning blocks to assistant content nor silently
+falls back to another thinking mode.
 
 Transient provider connection failures, timeouts, HTTP 408/409/429 responses,
 and HTTP 5xx responses are retried with exponential backoff before any response

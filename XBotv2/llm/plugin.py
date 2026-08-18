@@ -29,10 +29,8 @@ def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
     config = config or {}
     service = LlmService()
     service.register("mock", create_mock_provider)
-    for provider in ("openai", "deepseek", "lmstudio-openai"):
-        service.register(provider, create_openai_provider)
+    service.register("openai", create_openai_provider)
     service.register("anthropic", create_anthropic_provider)
-    service.register("lmstudio", create_anthropic_provider)
     service.configure(
         config.get("default"),
         config.get("providers"),

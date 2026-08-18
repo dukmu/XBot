@@ -45,6 +45,7 @@ from XBotv2.protocol.models import (
     OpenSessionResponse,
     OpenThreadRequest,
     PermissionResponseRequest,
+    ModelInfo,
     ProviderInfo,
     ProviderListResponse,
     ProviderSelectionRequest,
@@ -227,13 +228,19 @@ def _register_routes(app: FastAPI) -> None:
             config = llm.provider_config(name, require_key=False)
             providers.append(ProviderInfo(
                 name=name,
-                provider=config.provider,
-                model=config.model,
-                max_context_tokens=config.max_context_tokens,
-                max_output_tokens=config.max_output_tokens,
-                reasoning_effort=config.reasoning_effort or "",
-                thinking_enabled=config.thinking_enabled,
-                input_modalities=config.input_modalities,
+                provider=config.protocol,
+                default_model=config.default_model,
+                models=[
+                    ModelInfo(
+                        model=model.model,
+                        max_context_tokens=model.max_context_tokens,
+                        max_output_tokens=model.max_output_tokens,
+                        reasoning_effort=model.reasoning_effort or "",
+                        thinking=model.thinking or "",
+                        input_modalities=model.input_modalities,
+                    )
+                    for model in config.models
+                ],
             ))
         return ProviderListResponse(default=default, providers=providers)
 
@@ -552,7 +559,7 @@ def _register_routes(app: FastAPI) -> None:
         payload: ProviderSelectionRequest,
     ) -> ProviderSelectionResponse:
         ctx = await manager.get(session_id, thread_id)
-        data = await select_provider(ctx, payload.name)
+        data = await select_provider(ctx, payload.name, payload.model)
         return ProviderSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,

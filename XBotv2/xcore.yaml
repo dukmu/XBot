@@ -53,50 +53,84 @@
     default: minimax
     providers:
       minimax:
-        provider: anthropic
-        model: Minimax-M3
+        protocol: anthropic
         base_url: https://api.minimaxi.com/anthropic
         api_key_env: MINIMAX_API_TOKEN
-        temperature: 0.2
-        max_context_tokens: 204800
-        max_output_tokens: 32768
-        reasoning_effort: high
-        thinking_enabled: true
-        input_modalities:
-          - text
-          - image
+        default_model: Minimax-M3
+        models:
+          - model: Minimax-M3
+            temperature: 0.2
+            max_context_tokens: 1000000
+            max_output_tokens: 32768
+            # MiniMax-M3: temperature range [0, 2]; thinking modes are
+            # "adaptive" / "disabled" (adapter-owned, serialized to
+            # extra_body.thinking). MiniMax has no reasoning_effort.
+            thinking: adaptive
+            input_modalities:
+              - text
+              - image
+          - model: Minimax-M2.7
+            temperature: 0.2
+            max_context_tokens: 204800
+            max_output_tokens: 32768
+            thinking: adaptive
+            input_modalities:
+              - text
       deepseek:
-        provider: openai
-        model: deepseek-v4-flash
+        protocol: openai
         base_url: https://api.deepseek.com/v1
         api_key_env: DEEPSEEK_API_KEY
-        temperature: 0.7
-        max_context_tokens: 1048576
-        reasoning_effort: high
-        thinking_enabled: true
+        default_model: deepseek-v4-flash
+        models:
+          - model: deepseek-v4-flash
+            temperature: 0.7
+            max_context_tokens: 1048576
+            reasoning_effort: high
+            thinking: enabled
+            input_modalities:
+              - text
+          - model: deepseek-v4-pro
+            temperature: 0.7
+            max_context_tokens: 1048576
+            reasoning_effort: high
+            thinking: enabled
+            input_modalities:
+              - text
       openai:
-        provider: openai
-        model: gpt-4o
+        protocol: openai
         base_url: https://api.openai.com/v1
         api_key_env: OPENAI_API_KEY
-        temperature: 0.7
-        max_context_tokens: 128000
+        default_model: gpt-5.6-luna
+        models:
+          - model: gpt-5.6-luna
+            temperature: 0.7
+            max_context_tokens: 200000
+            max_output_tokens: 64000
+          - model: gpt-5.6-sol
+            temperature: 0.7
+            max_context_tokens: 200000
+            max_output_tokens: 64000
       anthropic:
-        provider: anthropic
-        model: claude-sonnet-4-20250514
+        protocol: anthropic
+        base_url: https://api.anthropic.com
         api_key_env: ANTHROPIC_API_KEY
-        temperature: 0.7
-        max_context_tokens: 200000
-        max_output_tokens: 64000
+        default_model: claude-sonnet-4-20250514
+        models:
+          - model: claude-sonnet-4-20250514
+            temperature: 0.7
+            max_context_tokens: 200000
+            max_output_tokens: 64000
       lmstudio:
-        provider: openai
-        model: qwen/qwen3-1.7b
+        protocol: openai
         base_url: http://localhost:1234/v1
         api_key: lm-studio
-        temperature: 0.2
-        max_context_tokens: 32768
-        reasoning_effort: high
-        thinking_enabled: true
+        default_model: qwen/qwen3-1.7b
+        models:
+          - model: qwen/qwen3-1.7b
+            temperature: 0.2
+            max_context_tokens: 32768
+            reasoning_effort: high
+            thinking: enabled
 
 - id: tools
   name: agentloop.tool_service

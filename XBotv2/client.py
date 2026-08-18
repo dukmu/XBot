@@ -264,13 +264,17 @@ class XBotClient:
         )
 
     async def select_provider(
-        self, session_id: str, thread_id: str, name: str
+        self,
+        session_id: str,
+        thread_id: str,
+        name: str,
+        model: str | None = None,
     ) -> ProviderSelectionResponse:
         return await self._request(
             "PUT",
             f"{_thread_path(session_id, thread_id)}/provider",
             ProviderSelectionResponse,
-            ProviderSelectionRequest(name=name),
+            ProviderSelectionRequest(name=name, model=model),
         )
 
     async def list_tools(

@@ -117,10 +117,17 @@ class HttpTransport:
         return (await self._client.list_providers()).model_dump()
 
     async def select_provider(
-        self, *, session_id: str, thread_id: str, name: str
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        name: str,
+        model: str | None = None,
     ) -> dict[str, Any]:
         return (
-            await self._client.select_provider(session_id, thread_id, name)
+            await self._client.select_provider(
+                session_id, thread_id, name, model=model
+            )
         ).model_dump()
 
     async def list_agents(

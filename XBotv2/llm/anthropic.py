@@ -19,6 +19,7 @@ from XBotv2.core.messages import (
 from XBotv2.core.tools import ToolCall
 from XBotv2.core.providers import BaseProvider
 from XBotv2.llm.base import attachment_prompt, usage_metadata
+from XBotv2.llm.config import merge_request_extras
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
@@ -29,10 +30,11 @@ class AnthropicProvider(BaseProvider):
         model: str,
         api_key: str,
         base_url: str | None,
-        temperature: float,
+        temperature: float | None,
         max_output_tokens: int,
         reasoning_effort: str | None = None,
-        thinking_enabled: bool = False,
+        thinking: str | None = None,
+        extra_body: dict[str, Any] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
@@ -45,7 +47,7 @@ class AnthropicProvider(BaseProvider):
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
-            thinking_enabled=thinking_enabled,
+            thinking=thinking,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
             input_modalities=input_modalities,
@@ -54,6 +56,7 @@ class AnthropicProvider(BaseProvider):
         kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
+        self._extra_body = dict(extra_body or {})
         self.client = AsyncAnthropic(**kwargs)
 
     def _provider_tools(
@@ -74,18 +77,23 @@ class AnthropicProvider(BaseProvider):
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": request_messages,
-            "temperature": self.temperature,
             "max_tokens": self.max_output_tokens,
         }
+        if self.temperature is not None:
+            api_kwargs["temperature"] = self.temperature
         if system:
             api_kwargs["system"] = system
         if self.bound_tools:
             api_kwargs["tools"] = self.bound_tools
-        extra_body: dict[str, Any] = {}
+        derived_extra_body: dict[str, Any] = {}
         if self.reasoning_effort:
-            extra_body["reasoning_effort"] = self.reasoning_effort
-        if self.thinking_enabled:
-            extra_body["thinking"] = {"type": "enabled"}
+            derived_extra_body["reasoning_effort"] = self.reasoning_effort
+        if self.thinking:
+            derived_extra_body["thinking"] = {"type": self.thinking}
+        extra_body = merge_request_extras(
+            derived_extra_body,
+            getattr(self, "_extra_body", {}),
+        )
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
@@ -425,34 +433,44 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
 __all__ = ["AnthropicProvider"]
 
 
-def create_anthropic_provider(provider_config, *, media_root=None):
-    """Factory for the anthropic route (anthropic / lmstudio)."""
+def create_anthropic_provider(provider_config, model_config, *, media_root=None):
+    """Factory for the anthropic protocol route.
+
+    ``provider_config`` is the adapter instance (endpoint + credentials);
+    ``model_config`` is the selected specific model from its catalog.
+    """
     from XBotv2.llm.config import expand_env
     from XBotv2.llm.client import _require_api_key, _retry_settings
 
-    provider = provider_config.provider
+    protocol = provider_config.protocol
     api_key = expand_env(provider_config.api_key or "")
     base_url = (
         expand_env(provider_config.base_url)
         if provider_config.base_url
         else None
     )
-    _require_api_key(provider, provider_config.model, api_key)
+    if model_config.max_output_tokens is None:
+        raise ValueError(
+            "Anthropic protocol providers require max_output_tokens "
+            f"for model {model_config.model!r}"
+        )
+    _require_api_key(protocol, model_config.model, api_key)
     max_retries, retry_backoff_factor = _retry_settings()
     logging.getLogger("llm").info(
-        "creating anthropic provider=%s model=%s", provider, provider_config.model
+        "creating anthropic provider=%s model=%s", protocol, model_config.model
     )
     return AnthropicProvider(
-        model=provider_config.model,
+        model=model_config.model,
         api_key=api_key,
         base_url=base_url,
-        temperature=provider_config.temperature,
-        max_output_tokens=provider_config.max_output_tokens,
-        reasoning_effort=provider_config.reasoning_effort,
-        thinking_enabled=provider_config.thinking_enabled,
+        temperature=model_config.temperature,
+        max_output_tokens=model_config.max_output_tokens,
+        reasoning_effort=model_config.reasoning_effort,
+        thinking=model_config.thinking,
+        extra_body=model_config.extra_body,
         max_retries=max_retries,
         retry_backoff_factor=retry_backoff_factor,
-        input_modalities=provider_config.input_modalities,
+        input_modalities=model_config.input_modalities,
         media_root=media_root,
     )
 

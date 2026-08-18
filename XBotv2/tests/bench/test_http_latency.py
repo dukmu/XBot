@@ -54,11 +54,16 @@ async def http_app(tmp_path: Path):
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
                             "api_key": "test",
-                            "max_context_tokens": 4096,
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                    "max_context_tokens": 4096,
+                                },
+                            ],
                         },
                     },
                 },

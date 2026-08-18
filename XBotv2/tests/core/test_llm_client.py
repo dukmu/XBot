@@ -11,6 +11,7 @@ from XBotv2.llm.anthropic import (
 )
 from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
 from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
+from XBotv2.llm.config import merge_request_extras, parse_provider_config
 from XBotv2.core.messages import (
     ImageContent,
     Message,
@@ -345,7 +346,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     provider.temperature = 0.2
     provider.max_output_tokens = 100
     provider.reasoning_effort = "high"
-    provider.thinking_enabled = True
+    provider.thinking = "enabled"
     provider.bound_tools = []
     provider.client = SimpleNamespace(messages=FakeMessages())
 
@@ -466,7 +467,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     provider.temperature = 0.2
     provider.max_output_tokens = None
     provider.reasoning_effort = "high"
-    provider.thinking_enabled = True
+    provider.thinking = "enabled"
     provider.bound_tools = [{"type": "function"}]
     provider.client = SimpleNamespace(
         chat=SimpleNamespace(completions=FakeCompletions())
@@ -523,3 +524,177 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
             },
         }],
     }]
+
+
+def test_provider_config_accepts_vendor_extra_body(monkeypatch):
+    monkeypatch.setenv("VENDOR_FLAG", "on")
+
+    config = parse_provider_config({
+        "protocol": "anthropic",
+        "api_key": "k",
+        "default_model": "m",
+        "models": [
+            {
+                "model": "m",
+                "max_output_tokens": 1024,
+                "extra_body": {
+                    "thinking": {"type": "enabled", "budget_tokens": 4096},
+                    "vendor_flag": "${VENDOR_FLAG}",
+                },
+            }
+        ],
+    })
+
+    assert config.resolve().extra_body == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "vendor_flag": "on",
+    }
+
+
+def test_merge_request_extras_deep_merges_configured_over_derived():
+    merged = merge_request_extras(
+        {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
+        },
+        {
+            "thinking": {"budget_tokens": 4096},
+            "top_p": 0.9,
+        },
+    )
+
+    assert merged == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "reasoning_effort": "high",
+        "top_p": 0.9,
+    }
+
+
+async def test_anthropic_extra_body_merges_vendor_config():
+    events = [
+        SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                model="m",
+                usage=SimpleNamespace(
+                    input_tokens=1,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+            ),
+        ),
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(type="text", text="hi"),
+        ),
+        SimpleNamespace(type="content_block_stop", index=0),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=SimpleNamespace(output_tokens=1),
+        ),
+    ]
+
+    class FakeStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not events:
+                raise StopAsyncIteration
+            return events.pop(0)
+
+        async def close(self):
+            return None
+
+    captured = {}
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeStream()
+
+    provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.model = "m"
+    provider.temperature = 0.0
+    provider.max_output_tokens = 10
+    provider.reasoning_effort = "high"
+    provider.thinking = "enabled"
+    provider.bound_tools = []
+    provider._extra_body = {
+        "thinking": {"budget_tokens": 4096},
+        "top_p": 0.9,
+    }
+    provider.client = SimpleNamespace(messages=FakeMessages())
+
+    _ = [chunk async for chunk in provider.astream([
+        Message(role="user", content="hi"),
+    ])]
+
+    assert captured["extra_body"] == {
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "top_p": 0.9,
+    }
+
+
+async def test_openai_extra_body_merges_vendor_config():
+    events = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="done", reasoning_content=None),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+                prompt_cache_hit_tokens=0,
+            ),
+        ),
+    ]
+
+    class FakeResponse:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not events:
+                raise StopAsyncIteration
+            return events.pop(0)
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse()
+
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.model = "m"
+    provider.temperature = 0.0
+    provider.max_output_tokens = None
+    provider.reasoning_effort = None
+    provider.thinking = "enabled"
+    provider.bound_tools = []
+    provider._extra_body = {
+        "thinking": {"budget_tokens": 4096},
+        "top_p": 0.9,
+    }
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+
+    _ = [chunk async for chunk in provider.astream([
+        Message(role="user", content="hi"),
+    ])]
+
+    assert captured["extra_body"] == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "top_p": 0.9,
+    }

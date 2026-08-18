@@ -8,27 +8,49 @@
     default: minimax
     providers:
       minimax:
-        provider: anthropic
-        model: Minimax-M3
+        protocol: anthropic
         base_url: https://api.minimaxi.com/anthropic
         api_key_env: MINIMAX_API_TOKEN
-        temperature: 0.2
-        max_context_tokens: 204800
-        max_output_tokens: 32768
-        reasoning_effort: high
-        thinking_enabled: true
-        input_modalities:
-          - text
-          - image
+        default_model: Minimax-M3
+        models:
+          - model: Minimax-M3
+            temperature: 0.2
+            max_context_tokens: 1000000
+            max_output_tokens: 32768
+            # MiniMax-M3: temperature [0, 2]; thinking modes are
+            # "adaptive" / "disabled"; no reasoning_effort.
+            thinking: adaptive
+            input_modalities:
+              - text
+              - image
+          - model: Minimax-M2.7
+            temperature: 0.2
+            max_context_tokens: 204800
+            max_output_tokens: 32768
+            thinking: adaptive
+            input_modalities:
+              - text
       deepseek:
-        provider: openai
-        model: deepseek-v4-flash
+        protocol: openai
         base_url: https://api.deepseek.com/v1
         api_key_env: DEEPSEEK_API_KEY
-        temperature: 0.7
-        max_context_tokens: 1048576
-        reasoning_effort: high
-        thinking_enabled: true
+        default_model: deepseek-v4-flash
+        models:
+          - model: deepseek-v4-flash
+            temperature: 0.7
+            max_context_tokens: 1048576
+            reasoning_effort: high
+            thinking: enabled
+            input_modalities:
+              - text
+          - model: deepseek-v4-pro
+            temperature: 0.7
+            max_context_tokens: 1048576
+            reasoning_effort: high
+            thinking: enabled
+            input_modalities:
+              - text
+
 - id: config
   name: config
   config:

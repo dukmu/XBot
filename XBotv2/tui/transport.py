@@ -59,7 +59,12 @@ class Transport(Protocol):
     async def list_providers(self) -> dict[str, Any]: ...
 
     async def select_provider(
-        self, *, session_id: str, thread_id: str, name: str
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        name: str,
+        model: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def list_agents(

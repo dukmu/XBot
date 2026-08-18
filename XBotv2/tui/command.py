@@ -90,6 +90,12 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/provider [status|list|use <name>]",
         raw="/provider",
     ),
+    "model": CommandSpec(
+        name="model", kind="client",
+        description="List or switch the model within a provider",
+        usage="/model [status|list|use [<provider>] <model>]",
+        raw="/model",
+    ),
     "agent": CommandSpec(
         name="agent", kind="client",
         description="List or switch the active primary Agent",

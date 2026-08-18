@@ -166,16 +166,22 @@ async def reload_agents(ctx: Any) -> dict[str, Any]:
     }
 
 
-async def select_provider(ctx: Any, name: str) -> dict[str, str]:
+async def select_provider(
+    ctx: Any,
+    name: str,
+    model: str | None = None,
+) -> dict[str, str]:
     _require_idle(ctx, "switch provider")
     async with ctx.turn_lock:
         try:
-            selected = await ctx.services.agents.select_provider(name)
+            selected = await ctx.services.agents.select_provider(name, model=model)
         except ValueError as error:
-            raise OperationError(
-                "provider_not_found",
-                str(error),
-            ) from error
+            code = (
+                "model_not_found"
+                if "Unknown model" in str(error)
+                else "provider_not_found"
+            )
+            raise OperationError(code, str(error)) from error
         ctx.provider_name = selected["provider"]
     return selected
 

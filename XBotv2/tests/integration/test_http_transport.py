@@ -409,11 +409,16 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
                             "api_key": "test",
-                            "max_context_tokens": 4096,
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                    "max_context_tokens": 4096,
+                                },
+                            ],
                         },
                     },
                 },
@@ -532,12 +537,17 @@ async def test_http_open_session_returns_agent_name(client: httpx.AsyncClient) -
     assert configured == {
         "name": "default",
         "provider": "openai",
-        "model": "test",
-        "max_context_tokens": 4096,
-        "max_output_tokens": None,
-        "reasoning_effort": "",
-        "thinking_enabled": False,
-        "input_modalities": ["text"],
+        "default_model": "test",
+        "models": [
+            {
+                "model": "test",
+                "max_context_tokens": 4096,
+                "max_output_tokens": None,
+                "reasoning_effort": "",
+                "thinking": "",
+                "input_modalities": ["text"],
+            }
+        ],
     }
     assert "api_key" not in str(providers)
 
@@ -1207,10 +1217,15 @@ async def test_typed_provider_selection_persists_across_resume(
     tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
     llm_entry = next(item for item in tree if item["id"] == "llm")
     llm_entry["config"]["providers"]["alternate"] = {
-        "provider": "openai",
-        "model": "alternate-model",
+        "protocol": "openai",
         "base_url": "http://alternate",
         "api_key": "test",
+        "default_model": "alternate-model",
+        "models": [
+            {
+                "model": "alternate-model",
+            },
+        ],
     }
     plugins_file.write_text(
         yaml.safe_dump(tree, sort_keys=False),
@@ -1239,6 +1254,55 @@ async def test_typed_provider_selection_persists_across_resume(
     assert resumed.status_code == 200
     assert resumed.json()["provider"] == "alternate"
     assert resumed.json()["model"] == "alternate-model"
+
+
+@pytest.mark.asyncio
+async def test_http_selects_model_within_provider(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    """Catalog model selection: /provider accepts a model within the provider."""
+    plugins_file = http_app.state.paths.config_dir / "plugins.yaml"
+    tree = yaml.safe_load(plugins_file.read_text(encoding="utf-8"))
+    llm_entry = next(item for item in tree if item["id"] == "llm")
+    llm_entry["config"]["providers"]["alternate"] = {
+        "protocol": "openai",
+        "base_url": "http://alternate",
+        "api_key": "test",
+        "default_model": "alternate-model",
+        "models": [
+            {"model": "alternate-model"},
+            {
+                "model": "alternate-model-2",
+                "max_context_tokens": 8192,
+                "thinking": "enabled",
+            },
+        ],
+    }
+    plugins_file.write_text(
+        yaml.safe_dump(tree, sort_keys=False),
+        encoding="utf-8",
+    )
+    await client.post(
+        "/sessions", json={"session_id": "model-switch", "thread_id": "t"}
+    )
+
+    selected = await client.put(
+        "/sessions/model-switch/threads/t/provider",
+        json={"name": "alternate", "model": "alternate-model-2"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["provider"] == "alternate"
+    assert selected.json()["model"] == "alternate-model-2"
+    assert selected.json()["model_mode"] == "enabled"
+
+    unknown = await client.put(
+        "/sessions/model-switch/threads/t/provider",
+        json={"name": "alternate", "model": "missing-model"},
+    )
+    assert unknown.status_code == 404
+    assert unknown.json()["code"] == "model_not_found"
+    assert "Unknown model" in unknown.json()["message"]
 
 
 @pytest.mark.asyncio
@@ -1524,9 +1588,14 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                },
+                            ],
                         },
                     },
                 },
@@ -1599,11 +1668,16 @@ async def test_resume_and_fork_without_persistence_fail_clearly(
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
                             "api_key": "test",
-                            "max_context_tokens": 4096,
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                    "max_context_tokens": 4096,
+                                },
+                            ],
                         },
                     },
                 },
@@ -2509,11 +2583,16 @@ async def _real_terminal_session(
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
                             "api_key": "test",
-                            "max_context_tokens": 4096,
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                    "max_context_tokens": 4096,
+                                },
+                            ],
                         },
                     },
                 },
@@ -2858,11 +2937,16 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     "default": "default",
                     "providers": {
                         "default": {
-                            "provider": "openai",
-                            "model": "test",
+                            "protocol": "openai",
                             "base_url": "http://test",
                             "api_key": "test",
-                            "max_context_tokens": 4096,
+                            "default_model": "test",
+                            "models": [
+                                {
+                                    "model": "test",
+                                    "max_context_tokens": 4096,
+                                },
+                            ],
                         },
                     },
                 },
