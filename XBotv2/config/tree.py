@@ -11,7 +11,7 @@ from XBotv2.loader import PluginEntry, PluginTree
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
 SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
 OPTIONAL_CAPABILITIES = frozenset({
-    "goal", "todolist", "skills", "mcp", "compact", "agents", "browser",
+    "goal", "todolist", "skills", "mcp_plugin", "compact", "agents", "browser",
     "token_manager",
 })
 

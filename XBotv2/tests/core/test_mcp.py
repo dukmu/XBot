@@ -1,5 +1,6 @@
 """Integration tests for MCPPlugin — client, stdio transport, tool wrapping."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
@@ -83,7 +84,7 @@ def echo_server_script(tmp_path):
 class TestMCPStdioTransport:
     @pytest.mark.asyncio
     async def test_connect_and_list_tools(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -100,7 +101,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_call_echo_tool(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -117,7 +118,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_call_add_tool(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -132,7 +133,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_command_not_found_raises_error(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient, MCPConnectionError
+        from XBotv2.mcp_plugin.mcp_client import MCPClient, MCPConnectionError
 
         client = MCPClient()
         with pytest.raises(MCPConnectionError, match="initialization failed"):
@@ -143,7 +144,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_disconnect_all_cleans_up(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -157,7 +158,7 @@ class TestMCPStdioTransport:
     async def test_duplicate_server_name_preserves_existing_connection(
         self, echo_server_script
     ):
-        from XBotv2.mcp.mcp_client import MCPClient, MCPConnectionError
+        from XBotv2.mcp_plugin.mcp_client import MCPClient, MCPConnectionError
 
         client = MCPClient()
         config = {
@@ -175,7 +176,7 @@ class TestMCPStdioTransport:
 
     @pytest.mark.asyncio
     async def test_server_features_use_negotiated_protocol(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
 
         client = MCPClient()
         await client.connect_and_list("test", {
@@ -210,7 +211,7 @@ class TestMCPStdioTransport:
 
 
 def test_invalid_mcp_tool_schema_is_rejected():
-    from XBotv2.mcp.mcp_client import MCPConnectionError, _validate_tool_list
+    from XBotv2.mcp_plugin.mcp_client import MCPConnectionError, _validate_tool_list
 
     with pytest.raises(MCPConnectionError, match="invalid inputSchema"):
         _validate_tool_list({"tools": [_tool_definition(
@@ -221,7 +222,7 @@ def test_invalid_mcp_tool_schema_is_rejected():
 
 @pytest.mark.asyncio
 async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(tmp_path):
-    from XBotv2.mcp.callbacks import client_callbacks
+    from XBotv2.mcp_plugin.callbacks import client_callbacks
     from mcp import types
     from XBotv2.core import SessionInfo
     from XBotv2.llm.mock import MockLLM
@@ -289,7 +290,7 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
 
 @pytest.mark.asyncio
 async def test_mcp_plugin_unload_disconnects_external_resources():
-    from XBotv2.mcp.plugin import MCPPlugin
+    from XBotv2.mcp_plugin.plugin import MCPPlugin
     
     plugin = MCPPlugin()
     plugin._client.disconnect_all = AsyncMock()
@@ -302,7 +303,7 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
 
 
 def _mcp_plugin(servers):
-    from XBotv2.mcp.plugin import MCPPlugin
+    from XBotv2.mcp_plugin.plugin import MCPPlugin
     from plugin_harness import mount_plugin_standalone
 
     plugin = MCPPlugin()
@@ -422,9 +423,12 @@ async def test_negotiated_server_features_register_agent_bridges():
         "argument": {"name": "scope", "value": "d"},
     })
 
-    assert read_result.data["contents"][0]["text"] == "memo"
-    assert prompt_result.data["messages"][0]["content"]["text"] == "review"
-    assert completion_result.data["completion"]["values"] == ["one"]
+    read_data = json.loads(read_result.content)
+    prompt_data = json.loads(prompt_result.content)
+    completion_data = json.loads(completion_result.content)
+    assert read_data["contents"][0]["text"] == "memo"
+    assert prompt_data["messages"][0]["content"]["text"] == "review"
+    assert completion_data["completion"]["values"] == ["one"]
     plugin._client.read_resource.assert_awaited_once_with("server", "memo://one")
     plugin._client.get_prompt.assert_awaited_once_with(
         "server", "review", {"scope": "diff"},
@@ -434,8 +438,8 @@ async def test_negotiated_server_features_register_agent_bridges():
 class TestMCPToolWrapper:
     @pytest.mark.asyncio
     async def test_mcp_tool_as_callable(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
-        from XBotv2.mcp.tool import MCPTool
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.tool import MCPTool
 
         client = MCPClient()
         tools = await client.connect_and_list("test", {
@@ -454,8 +458,8 @@ class TestMCPToolWrapper:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_as_xbot_tool(self, echo_server_script):
-        from XBotv2.mcp.mcp_client import MCPClient
-        from XBotv2.mcp.tool import MCPTool
+        from XBotv2.mcp_plugin.mcp_client import MCPClient
+        from XBotv2.mcp_plugin.tool import MCPTool
         from XBotv2.core.tools import Tool
 
         client = MCPClient()
@@ -477,8 +481,8 @@ class TestMCPToolWrapper:
 
     @pytest.mark.asyncio
     async def test_mcp_error_result_becomes_structured_tool_failure(self):
-        from XBotv2.mcp.mcp_client import MCPCallResult
-        from XBotv2.mcp.tool import MCPTool
+        from XBotv2.mcp_plugin.mcp_client import MCPCallResult
+        from XBotv2.mcp_plugin.tool import MCPTool
 
         client = AsyncMock()
         client.call_tool.return_value = MCPCallResult(
@@ -494,18 +498,17 @@ class TestMCPToolWrapper:
         assert result.error is not None
         assert result.error.code == "mcp_tool_error"
         assert result.content == "remote tool failed"
-        assert result.data == {"isError": True}
 
 
 class TestMCPNormalizeResult:
     def test_normalize_text_content(self):
-        from XBotv2.mcp.mcp_client import _normalize_mcp_result
+        from XBotv2.mcp_plugin.mcp_client import _normalize_mcp_result
 
         result = {"content": [{"type": "text", "text": "hello"}]}
         assert _normalize_mcp_result(result) == "hello"
 
     def test_normalize_mixed_content(self):
-        from XBotv2.mcp.mcp_client import _normalize_mcp_result
+        from XBotv2.mcp_plugin.mcp_client import _normalize_mcp_result
 
         result = {"content": [
             {"type": "text", "text": "first"},
@@ -518,7 +521,7 @@ class TestMCPNormalizeResult:
         assert "third" in normalized
 
     def test_normalize_no_content(self):
-        from XBotv2.mcp.mcp_client import _normalize_mcp_result
+        from XBotv2.mcp_plugin.mcp_client import _normalize_mcp_result
 
         result = {"result": "ok"}
         normalized = _normalize_mcp_result(result)

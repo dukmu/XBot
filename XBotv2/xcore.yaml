@@ -238,9 +238,9 @@
   name: skills
   disabled: ${disabled.skills}
 
-- id: mcp
-  name: mcp
-  disabled: ${disabled.mcp}
+- id: mcp_plugin
+  name: mcp_plugin
+  disabled: ${disabled.mcp_plugin}
 
 - id: compact
   name: compact
