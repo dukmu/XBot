@@ -92,7 +92,6 @@ class TodolistPlugin:
         if changed:
             await self.store.set("state", {"items": active})
 
-        data = {"todos": normalized, "cleared": cleared}
         if cleared:
             content = "All todos completed; the active checklist was cleared."
         elif not active:
@@ -102,7 +101,7 @@ class TodolistPlugin:
             content = f"Todo list {action}."
             if not changed:
                 content += "\nDo not call update_todos again until the work changes."
-        return ToolResult.success(content, data=data)
+        return ToolResult.success(content)
 
     async def _read_items(self) -> list[dict[str, str]]:
         state = await self.store.get("state")

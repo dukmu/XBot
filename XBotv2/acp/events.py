@@ -5,13 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from acp import (
-    plan_entry,
     start_tool_call,
     text_block,
     tool_content,
     update_agent_message_text,
     update_agent_thought_text,
-    update_plan,
     update_tool_call,
     update_user_message_text,
 )
@@ -86,18 +84,6 @@ class ACPEventMapper:
                     ),
                 )
             ]
-            todos = (data.get("data") or {}).get("todos") if isinstance(
-                data.get("data"), dict
-            ) else None
-            if data.get("name") == "update_todos" and isinstance(todos, list):
-                updates.append(update_plan([
-                    plan_entry(
-                        str(item.get("content") or ""),
-                        status=_plan_status(str(item.get("status") or "")),
-                    )
-                    for item in todos
-                    if isinstance(item, dict) and item.get("content")
-                ]))
             return updates
         if event_type == "task_updated":
             task_id = str(data.get("task_id") or "")
@@ -172,7 +158,6 @@ class ACPEventMapper:
 def replay_history(messages: list[Any]) -> list[Any]:
     """Translate persisted conversation messages into ACP load updates."""
     updates: list[Any] = []
-    tool_names: dict[str, str] = {}
     for message in messages:
         if message.role == "user" and message.content:
             updates.append(update_user_message_text(str(message.content)))
@@ -184,7 +169,6 @@ def replay_history(messages: list[Any]) -> list[Any]:
             if message.content:
                 updates.append(update_agent_message_text(str(message.content)))
             for call in message.tool_calls:
-                tool_names[call.id] = call.name
                 updates.append(start_tool_call(
                     call.id,
                     call.name,
@@ -195,26 +179,13 @@ def replay_history(messages: list[Any]) -> list[Any]:
             continue
         if message.role != "tool" or not message.tool_call_id:
             continue
-        data = message.data
+        content = str(message.content or "")
         updates.append(update_tool_call(
             message.tool_call_id,
             status="completed" if message.status == "success" else "failed",
-            content=[tool_content(text_block(str(message.content)))],
-            raw_output=data if data is not None else message.content,
+            content=[tool_content(text_block(content))],
+            raw_output=content,
         ))
-        todos = data.get("todos") if isinstance(data, dict) else None
-        if (
-            tool_names.get(message.tool_call_id) == "update_todos"
-            and isinstance(todos, list)
-        ):
-            updates.append(update_plan([
-                plan_entry(
-                    str(item.get("content") or ""),
-                    status=_plan_status(str(item.get("status") or "")),
-                )
-                for item in todos
-                if isinstance(item, dict) and item.get("content")
-            ]))
     return updates
 
 
@@ -224,10 +195,6 @@ def _display_content(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
-
-
-def _plan_status(status: str) -> str:
-    return status if status in {"pending", "in_progress", "completed"} else "pending"
 
 
 def _task_status(status: str) -> str:

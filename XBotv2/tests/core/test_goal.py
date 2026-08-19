@@ -95,24 +95,20 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     viewed_blocked = await plugin.get_goal()
     cleared = await plugin._goal_command(ctx, "clear")
 
-    assert empty.data == {"goal": None}
-    assert created.data["goal"]["token_budget"] == 8000
+    assert empty.status == "success"
+    assert created.status == "success"
     assert duplicate.error.code == "goal_exists"
-    assert updated.data["goal"]["objective"] == "document the API"
-    assert updated.data["goal"]["summary"] == ""
+    assert updated.status == "ok"
+    assert updated.message
+    assert "document the API" in updated.message
     assert missing_summary.error.code == "invalid_summary"
-    assert completed.data["goal"] == {
-        "objective": "document the API",
-        "status": "complete",
-        "summary": "Documented and tested the API.",
-        "token_budget": None,
-    }
-    assert inspected.data == completed.data
-    assert resumed.data["goal"]["status"] == "active"
-    assert blocked.data["goal"]["status"] == "blocked"
-    assert viewed_blocked.data == blocked.data
-    assert cleared.data == {"goal": None}
-    assert (await plugin.get_goal()).data == {"goal": None}
+    assert completed.status == "success"
+    assert inspected.status == "success"
+    assert resumed.status == "ok"
+    assert blocked.status == "success"
+    assert viewed_blocked.status == "success"
+    assert cleared.status == "ok"
+    assert (await plugin.get_goal()).status == "success"
 
 
 @pytest.mark.asyncio
@@ -216,7 +212,9 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
     ))
 
     assert requests == []
-    assert (await plugin.get_goal()).data["goal"]["status"] == "paused"
+    goal = await plugin._read_goal()
+    assert goal is not None
+    assert goal["status"] == "paused"
 
 
 @pytest.mark.asyncio
@@ -312,7 +310,8 @@ async def test_goal_survives_state_store_recreation(state_store):
     )
     restored = make_plugin(restored_store)
 
-    assert (await restored.get_goal()).data["goal"] == {
+    goal = await restored._read_goal()
+    assert goal == {
         "objective": "survive restart",
         "status": "complete",
         "summary": "Restart behavior verified.",
@@ -404,7 +403,8 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
     tool_event = next(event for event in events if event["type"] == "tool_result")
 
     assert not any(_is_goal_runtime_event(message) for message in second_context)
-    assert tool_event["data"]["data"]["goal"]["summary"] == "All work passed."
+    # The tool result no longer carries a ``data`` field; the summary is in content.
+    assert "All work passed." in tool_event["data"]["content"]
     assert llm.call_count == 2
 
     _ = [event async for event in engine.run_turn("start an unrelated request")]

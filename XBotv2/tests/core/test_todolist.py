@@ -90,12 +90,9 @@ async def test_update_todos_atomically_replaces_the_complete_list(state_store):
     ]
     updated = await plugin.update_todos(replacement)
 
-    assert created.data == {
-        "todos": initial,
-        "cleared": False,
-    }
-    assert unchanged.data["todos"] == initial
-    assert updated.data["todos"] == replacement
+    assert created.status == "success"
+    assert unchanged.status == "success"
+    assert updated.status == "success"
     assert await plugin.store.get("state") == {"items": replacement}
 
 
@@ -138,10 +135,7 @@ async def test_all_completed_returns_final_list_then_clears_active_state(state_s
 
     result = await plugin.update_todos(completed)
 
-    assert result.data == {
-        "todos": completed,
-        "cleared": True,
-    }
+    assert result.status == "success"
     assert "All todos completed" in result.content
     assert await plugin.store.get("state") == {"items": []}
 
@@ -153,8 +147,7 @@ async def test_empty_list_clears_without_requiring_progress_item(state_store):
 
     result = await plugin.update_todos([])
 
-    assert result.data["cleared"] is False
-    assert result.data["todos"] == []
+    assert result.status == "success"
     assert await plugin.store.get("state") == {"items": []}
 
 
@@ -264,10 +257,8 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     tool_event = next(event for event in events if event["type"] == "tool_result")
     second_context = llm.get_call_messages(1)
 
-    assert tool_event["data"]["data"] == {
-        "todos": active,
-        "cleared": False,
-    }
+    assert tool_event["data"]["status"] == "success"
+    assert "Todo list" in tool_event["data"]["content"]
     assert [message.role for message in second_context][-3:] == [
         "user", "assistant", "tool",
     ]

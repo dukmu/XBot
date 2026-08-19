@@ -358,7 +358,6 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             status=value.status,
             artifact=list(value.artifacts),
             images=list(value.images),
-            data=value.data,
             error=value.error.to_dict() if value.error is not None else None,
             client_events=[
                 _normalize_client_event(event.to_dict(), tool_call_id)

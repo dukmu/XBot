@@ -189,7 +189,6 @@ async def _read_media(
     result_data.update(metadata)
     return ToolResult.success(
         f"Image content loaded: {selected} ({len(payload)} bytes)",
-        data=result_data,
         images=(image,),
     )
 
@@ -429,12 +428,11 @@ async def read_file(
         )
         return ToolResult.success(
             f"Non-text file: {path} ({data.get('media_type')}, "
-            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})",
-            data=data,
+            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})"
         )
     elif line_numbers:
         content = _with_line_numbers(content, offset + 1)
-    return ToolResult.success(content, data=data)
+    return ToolResult.success(content)
 
 
 async def read_bytes_file(path: str, *, sandbox=None) -> ToolResult:
@@ -450,8 +448,7 @@ async def read_bytes_file(path: str, *, sandbox=None) -> ToolResult:
     data["requested_path"] = path
     return ToolResult.success(
         f"Binary file: {path} ({data.get('size_bytes')} bytes, "
-        f"sha256={data.get('sha256')}, base64 in data)",
-        data={**data, "base64": payload},
+        f"sha256={data.get('sha256')}, base64 in data)"
     )
 
 
@@ -498,7 +495,7 @@ async def list_files(
         },
         sandbox,
     )
-    return _data_result(data, _entry_lines(data, "entries"))
+    return _data_result(data)
 
 
 # ----------------------------------------------------------------------
@@ -908,11 +905,7 @@ async def search_text(
         },
         sandbox,
     )
-    lines = [
-        f"{item['path']}:{item['line']}:{item['column']}:{item['text']}"
-        for item in data.get("matches", [])
-    ]
-    return _data_result(data, "\n".join(lines))
+    return _data_result(data)
 
 
 async def find_files(
@@ -950,7 +943,7 @@ async def find_files(
         },
         sandbox,
     )
-    return _data_result(data, "\n".join(data.get("files", [])))
+    return _data_result(data)
 
 
 # ----------------------------------------------------------------------
@@ -1068,8 +1061,9 @@ def _parse_result(value: str) -> dict[str, Any]:
 def _data_result(data: dict[str, Any], content: str | None = None) -> ToolResult:
     if not data.get("ok"):
         return _failure(data)
-    visible = content if content is not None else _summary(data)
-    return ToolResult.success(visible, data=data)
+    if content is not None:
+        return ToolResult.success(content)
+    return ToolResult.success(json.dumps(data, ensure_ascii=False, sort_keys=True))
 
 
 def _failure(data: dict[str, Any]) -> ToolResult:
@@ -1081,24 +1075,9 @@ def _failure(data: dict[str, Any]) -> ToolResult:
     return ToolResult(
         status=failed.status,
         content=failed.content,
-        data=data,
         error=failed.error,
     )
 
-
-def _summary(data: dict[str, Any]) -> str:
-    for action in ("deleted", "moved", "copied", "created", "changed"):
-        if data.get(action):
-            path = data.get("path") or data.get("destination") or ""
-            return f"{action.capitalize()}: {path}"
-    return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-
-def _entry_lines(data: dict[str, Any], key: str) -> str:
-    return "\n".join(
-        f"{entry.get('kind', 'file')}\t{entry.get('relative_path', entry.get('path', ''))}"
-        for entry in data.get(key, [])
-    )
 
 
 def _with_line_numbers(content: str, first_line: int) -> str:

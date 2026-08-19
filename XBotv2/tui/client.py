@@ -37,7 +37,6 @@ class TuiTool:
     status: str = "pending"
     summary: str = ""
     result: str = ""
-    data: Any = None
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
@@ -237,7 +236,6 @@ class TuiState:
             content = data.get("content") or data.get("summary") or ""
             tool.result = format_value(content)
             tool.summary = _preview(content)
-            tool.data = data.get("data")
             tool.error = data.get("error") if isinstance(data.get("error"), dict) else None
             artifacts = data.get("artifacts")
             tool.artifacts = [
@@ -443,7 +441,6 @@ class TuiState:
                         "tool_call_id": str(item.get("tool_call_id") or "tool"),
                         "content": str(item.get("content") or ""),
                         "status": str(item.get("status") or "completed"),
-                        "data": item.get("data"),
                         "error": item.get("error"),
                         "artifacts": item.get("artifacts") or [],
                         "images": item.get("images") or [],

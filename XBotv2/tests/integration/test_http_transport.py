@@ -903,7 +903,6 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         content="cached result",
         tool_call_id="call-1",
         status="error",
-        data={"cache": "tool-results/call-1.txt"},
         error={"code": "failed", "message": "bad input"},
         artifact=[
             {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
@@ -929,7 +928,6 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         ("tool", "cached result"),
     ]
     tool = history[-1]
-    assert tool["data"] == {"cache": "tool-results/call-1.txt"}
     assert tool["error"]["code"] == "failed"
     assert tool["artifacts"][0]["name"] == "report.txt"
 
@@ -3373,10 +3371,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
             "raw": "/goal --token-budget 2000 ship the API",
         },
     )
-    assert response.json()["data"]["message"] == "Set the active goal."
-    assert response.json()["data"]["data"]["status_slots"] == {
-        "goal": "active"
-    }
+    assert response.json()["data"]["message"] == "[active] ship the API\nToken budget: 2000"
     events = []
     while True:
         event = await asyncio.wait_for(session_events.get(), timeout=2)
@@ -3400,7 +3395,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
             break
         await asyncio.sleep(0)
     goal_plugin = ctx.services.loader.get("goal")
-    assert (await goal_plugin.get_goal()).data["goal"] == {
+    assert await goal_plugin._read_goal() == {
         "objective": "ship the API",
         "status": "complete",
         "summary": "API tests passed",
@@ -3411,9 +3406,6 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         json={"command": "goal", "raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
-    assert get_response.json()["data"]["data"]["status_slots"] == {
-        "goal": "complete"
-    }
 
 
 @pytest.mark.asyncio

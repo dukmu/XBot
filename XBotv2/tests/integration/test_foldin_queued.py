@@ -346,7 +346,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
         sandbox=None,
         sandbox_policy=None,
     )
-    job_id = started.data["id"]
+    job_id = started.content.split("Started ")[1]
     await registry.wait([job_id])
 
     task_updates = []

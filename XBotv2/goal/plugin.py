@@ -138,8 +138,8 @@ class GoalPlugin:
     async def _get(self) -> ToolResult:
         goal = await self._read_goal()
         if goal is None:
-            return ToolResult.success("No goal has been created.", data={"goal": None})
-        return ToolResult.success(_format_goal(goal), data={"goal": goal})
+            return ToolResult.success("No goal has been created.")
+        return ToolResult.success(_format_goal(goal))
 
     async def _create(
         self,
@@ -172,7 +172,7 @@ class GoalPlugin:
             "token_budget": token_budget,
         }
         await self.store.set("goal", goal)
-        return ToolResult.success("Created the active goal.", data={"goal": goal})
+        return ToolResult.success(_format_goal(goal))
 
     async def _set(
         self,
@@ -194,7 +194,7 @@ class GoalPlugin:
             "token_budget": token_budget,
         }
         await self.store.set("goal", goal)
-        return ToolResult.success("Set the active goal.", data={"goal": goal})
+        return ToolResult.success(_format_goal(goal))
 
     async def _finish(self, action: str, summary: str | None) -> ToolResult:
         error = _text_error("summary", summary)
@@ -209,7 +209,6 @@ class GoalPlugin:
         message = "Goal completed." if action == "complete" else "Goal blocked."
         return ToolResult.success(
             f"{message}\nExecution summary: {goal['summary']}",
-            data={"goal": goal},
         )
 
     async def _resume(self) -> ToolResult:
@@ -220,7 +219,7 @@ class GoalPlugin:
             return ToolResult.failure("goal_active", "The goal is already active")
         goal["status"] = "active"
         await self.store.set("goal", goal)
-        return ToolResult.success("Resumed the goal.", data={"goal": goal})
+        return ToolResult.success(_format_goal(goal))
 
     async def _pause(self) -> ToolResult:
         goal = await self._active_goal()
@@ -228,14 +227,14 @@ class GoalPlugin:
             return _no_active_goal()
         goal["status"] = "paused"
         await self.store.set("goal", goal)
-        return ToolResult.success("Paused the goal.", data={"goal": goal})
+        return ToolResult.success(_format_goal(goal))
 
     async def _clear(self) -> ToolResult:
         goal = await self._read_goal()
         if goal is None:
-            return ToolResult.success("No goal has been created.", data={"goal": None})
+            return ToolResult.success("No goal has been created.")
         await self.store.delete("goal")
-        return ToolResult.success("Cleared the goal.", data={"goal": None})
+        return ToolResult.success("No goal has been created.")
 
     async def _active_goal(self) -> dict[str, Any] | None:
         goal = await self._read_goal()
@@ -381,8 +380,7 @@ def _parse_goal_command(raw_args: str) -> tuple[str, str | None, int | None]:
 def _command_result(result: ToolResult) -> CommandResult:
     return CommandResult(
         message=result.content,
-        status="ok" if result.status == "success" else "error",
-        data=result.data,
+        status="ok" if result.status == "success" else "error"
     )
 
 

@@ -121,8 +121,6 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
         ),
         "status": message.status or "success",
     }
-    if message.data is not None:
-        data["data"] = message.data
     if message.error is not None:
         data["error"] = message.error
     if message.artifact:

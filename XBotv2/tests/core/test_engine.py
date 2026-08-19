@@ -76,7 +76,6 @@ def structured_failure() -> ToolResult:
     return ToolResult(
         status="error",
         content="structured failure",
-        data={"attempt": 2},
         error=ToolError(
             code="structured_error",
             message="failed with details",
@@ -409,7 +408,6 @@ class TestEngineBasics:
             "name": "structured_failure",
             "content": "structured failure",
             "status": "error",
-            "data": {"attempt": 2},
             "error": {
                 "code": "structured_error",
                 "message": "failed with details",

@@ -1,5 +1,7 @@
 """Focused behavior tests for the built-in Browser plugin."""
 
+import json
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -84,7 +86,9 @@ async def test_web_search_normalizes_ddgs_results(monkeypatch):
         await access.close()
 
     assert result.status == "success"
-    assert result.data["results"] == [{
+    # The data is now embedded in content as JSON
+    payload = json.loads(result.content.split("\n\n")[1])
+    assert payload["results"] == [{
         "title": "XBot project",
         "url": "https://example.com/xbot",
         "snippet": "Readable Agent runtime",
@@ -234,9 +238,11 @@ async def test_web_fetch_extracts_readable_html():
 
     assert result.status == "success"
     assert "Release notes" in result.content
-    assert result.data["content_type"] == "text/html"
-    assert result.data["url"].endswith("/article")
-    assert result.data["untrusted"] is True
+    # The metadata is embedded as JSON after the content
+    payload = json.loads(result.content.split("\n\n")[-1])
+    assert payload["content_type"] == "text/html"
+    assert payload["url"].endswith("/article")
+    assert payload["untrusted"] is True
 
 
 @pytest.mark.asyncio
@@ -273,7 +279,8 @@ async def test_web_fetch_follows_redirects_and_limits_response_size():
         server.server_close()
 
     assert redirected.status == "success"
-    assert redirected.data["url"].endswith("/final")
+    payload = json.loads(redirected.content.split("\n\n")[-1])
+    assert payload["url"].endswith("/final")
     assert "redirect complete" in redirected.content
     assert oversized.status == "error"
     assert oversized.error is not None

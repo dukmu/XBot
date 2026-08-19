@@ -4,7 +4,7 @@ Every capability is a plugin package under ``XBotv2`` (``<pkg>/plugin.py``
 exporting ``plugin``), wired by the declarative tree (``xcore.yaml``).
 Boundaries:
 
-* capability plugins (goal, skills, mcp, ...) only import the shared
+* capability plugins (goal, skills, mcp_plugin, ...) only import the shared
   contracts (``XBotv2.core`` / ``XBotv2.jobs``), ``xcore``, and third-party
   libraries — never other plugin implementations (they use services via
   ``ctx.*``);
@@ -21,7 +21,7 @@ _CAPABILITY_PLUGINS = {
     "goal",
     "todolist",
     "skills",
-    "mcp",
+    "mcp_plugin",
     "compact",
     "agents",
     "browser",

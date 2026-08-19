@@ -169,10 +169,7 @@ class AgentsPlugin:
                 job.id,
                 SubagentRunner(session=session, agent=agent, prompt=prompt),
             )
-            return ToolResult.success(
-                f"Started {job.id}",
-                data={"id": job.id, "status": job.status.value},
-            )
+            return ToolResult.success(f"Started {job.id} (status: {job.status.value})")
 
         async def list_subagents(status: str | None = None) -> ToolResult:
             """List subagent jobs with lightweight metadata only.
@@ -187,10 +184,7 @@ class AgentsPlugin:
             summaries = registry.list(
                 kind=JobKind.SUBAGENT, status=status_filter
             )
-            return ToolResult.success(
-                f"{len(summaries)} subagent job(s)",
-                data={"subagents": [item.to_dict() for item in summaries]},
-            )
+            return ToolResult.success(f"{len(summaries)} subagent job(s)")
 
         async def wait_subagent(
             ids: list[str] | None = None,
@@ -229,10 +223,7 @@ class AgentsPlugin:
                 return ToolResult.failure(
                     "subagent_not_found", "Unknown subagent job id"
                 )
-            return ToolResult.success(
-                "Wait complete",
-                data=result.to_dict(),
-            )
+            return ToolResult.success("Wait complete")
 
         async def read_subagent(
             id: str,
@@ -256,20 +247,9 @@ class AgentsPlugin:
                 )
             store = job.result.output_store if job.result is not None else None
             if store is None:
-                return ToolResult.success(
-                    "No response captured yet",
-                    data={"content": "", "next_cursor": None, "eof": False},
-                )
+                return ToolResult.success("No response captured yet")
             chunk = await store.read(cursor=cursor, max_bytes=max_chars)
-            return ToolResult.success(
-                chunk.data,
-                data={
-                    "content": chunk.data,
-                    "next_cursor": chunk.next_cursor,
-                    "eof": chunk.eof,
-                    "truncated": chunk.truncated,
-                },
-            )
+            return ToolResult.success(chunk.data)
 
         async def cancel_subagent(id: str) -> ToolResult:
             """Cancel one subagent job (idempotent).
@@ -283,10 +263,7 @@ class AgentsPlugin:
                     "subagent_not_found", f"Unknown subagent job: {id}"
                 )
             result = await registry.cancel(id)
-            return ToolResult.success(
-                f"Subagent {id} {result.status}",
-                data=result.to_dict(),
-            )
+            return ToolResult.success(f"Subagent {id} {result.status}")
 
         ctx.tools.register(
             Tool.from_function(spawn_subagent, name="spawn_subagent"),

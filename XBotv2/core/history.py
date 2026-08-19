@@ -35,10 +35,7 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
             ],
         }
         if message.role == "tool":
-            item.update({
-                "data": message.data,
-                "error": message.error,
-            })
+            item["error"] = message.error
         runtime = additional.get("runtime_input")
         if isinstance(runtime, dict):
             item["runtime"] = {

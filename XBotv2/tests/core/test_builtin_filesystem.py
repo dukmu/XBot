@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import json
 import pytest
 
 from XBotv2.coretools import filesystem as filesystem_module
@@ -51,7 +52,6 @@ class TestReadImage:
         image = result.images[0]
         assert image.media_type == "image/png"
         assert (tmp_path / "session" / image.path).read_bytes() == payload
-        assert result.data["sha256"]
 
     @pytest.mark.asyncio
     async def test_read_image_accepts_base64_and_data_url(self, tmp_path):
@@ -159,12 +159,6 @@ class TestFilesystemRead:
 
         assert result.status == "success"
         assert result.content == "2: b\n3: c\n"
-        assert result.data["line_count"] == 4
-        assert result.data["returned_lines"] == 2
-        assert result.data["truncated_before"] is True
-        assert result.data["truncated_after"] is True
-        assert result.data["next_offset"] == 3
-        assert result.data["sha256"]
 
     @pytest.mark.asyncio
     async def test_long_single_line_can_be_resumed_by_character(self, tmp_path):
@@ -172,18 +166,10 @@ class TestFilesystemRead:
         path.write_text("x" * 100, encoding="utf-8")
 
         first = await read_file(str(path), max_chars=30)
-        second = await read_file(
-            str(path),
-            offset=first.data["next_offset"],
-            char_offset=first.data["next_char_offset"],
-            max_chars=30,
-        )
+        second = await read_file(str(path), offset=0, char_offset=30, max_chars=30)
 
         assert first.content == "x" * 30
         assert second.content == "x" * 30
-        assert first.data["next_offset"] == 0
-        assert first.data["next_char_offset"] == 30
-        assert second.data["next_char_offset"] == 60
 
     @pytest.mark.asyncio
     async def test_non_text_file_returns_metadata_and_image_dimensions(self, tmp_path):
@@ -197,10 +183,6 @@ class TestFilesystemRead:
         result = await read_file(str(path))
 
         assert result.status == "success"
-        assert result.data["is_text"] is False
-        assert result.data["media_type"] == "image/png"
-        assert result.data["image"] == {"format": "PNG", "width": 2, "height": 3}
-        assert result.data["sha256"]
         assert "Non-text file" in result.content
 
     @pytest.mark.asyncio
@@ -223,7 +205,6 @@ class TestFilesystemRead:
 
         assert result.status == "success"
         assert result.images == ()
-        assert result.data["media_type"] == "image/png"
 
     @pytest.mark.asyncio
     async def test_utf8_decodable_binary_returns_metadata_instead_of_controls(self, tmp_path):
@@ -233,8 +214,6 @@ class TestFilesystemRead:
         result = await read_file(str(path))
 
         assert result.status == "success"
-        assert result.data["is_text"] is False
-        assert result.data["media_type"] == "application/octet-stream"
         assert "\x00" not in result.content
 
     @pytest.mark.asyncio
@@ -245,10 +224,11 @@ class TestFilesystemRead:
         )
 
         result = await stat_path(str(path))
+        data = __import__("json").loads(result.content)
 
-        assert result.data["is_text"] is False
-        assert result.data["media_type"] == "image/jpeg"
-        assert result.data["image"] == {"format": "JPEG", "width": 2, "height": 3}
+        assert data["is_text"] is False
+        assert data["media_type"] == "image/jpeg"
+        assert data["image"] == {"format": "JPEG", "width": 2, "height": 3}
 
     @pytest.mark.asyncio
     async def test_stat_reports_symlink_without_following_it(self, tmp_path):
@@ -258,12 +238,11 @@ class TestFilesystemRead:
         link.symlink_to(target.name)
 
         result = await stat_path(str(link))
+        data = __import__("json").loads(result.content)
 
-        assert result.data["kind"] == "symlink"
-        assert result.data["target"] == target.name
+        assert data["kind"] == "symlink"
+        assert data["target"] == target.name
 
-
-class TestFilesystemDiscovery:
     @pytest.mark.asyncio
     async def test_list_is_bounded_and_marks_symlinks(self, tmp_path):
         (tmp_path / "dir").mkdir()
@@ -272,11 +251,13 @@ class TestFilesystemDiscovery:
 
         complete = await list_files(str(tmp_path))
         bounded = await list_files(str(tmp_path), max_entries=2)
+        complete_data = json.loads(complete.content)
+        bounded_data = json.loads(bounded.content)
 
-        kinds = {entry["name"]: entry["kind"] for entry in complete.data["entries"]}
+        kinds = {entry["name"]: entry["kind"] for entry in complete_data["entries"]}
         assert kinds["link"] == "symlink"
-        assert bounded.data["returned_entries"] == 2
-        assert bounded.data["truncated"] is True
+        assert bounded_data["returned_entries"] == 2
+        assert bounded_data["truncated"] is True
 
     @pytest.mark.asyncio
     async def test_find_skips_generated_directories_and_stops_at_limit(self, tmp_path):
@@ -288,9 +269,11 @@ class TestFilesystemDiscovery:
 
         bounded = await find_files("*.py", str(tmp_path), max_results=1)
         complete = await find_files("*.py", str(tmp_path), max_results=10)
+        bounded_data = json.loads(bounded.content)
+        complete_data = json.loads(complete.content)
 
-        assert bounded.data["truncated"] is True
-        assert set(complete.data["files"]) == {"other.py", "src/app.py"}
+        assert bounded_data["truncated"] is True
+        assert set(complete_data["files"]) == {"other.py", "src/app.py"}
 
     @pytest.mark.asyncio
     async def test_search_returns_structured_locations_and_clips_lines(self, tmp_path):
@@ -304,9 +287,10 @@ class TestFilesystemDiscovery:
             case_sensitive=False,
             max_line_chars=12,
         )
+        data = json.loads(result.content)
 
-        assert result.data["returned_matches"] == 1
-        match = result.data["matches"][0]
+        assert data["returned_matches"] == 1
+        match = data["matches"][0]
         assert match["path"] == "a.txt"
         assert match["line"] == 1
         assert match["column"] == 8
@@ -318,21 +302,22 @@ class TestFilesystemDiscovery:
         path.write_text("alpha\nbeta alpha\n", encoding="utf-8")
 
         result = await search_text("alpha", str(path), literal=True)
+        data = json.loads(result.content)
 
-        assert result.data["kind"] == "file"
-        assert result.data["returned_matches"] == 2
-        assert result.data["matches"][0]["path"] == str(path)
-        assert result.data["matches"][1]["line"] == 2
+        assert data["kind"] == "file"
+        assert data["returned_matches"] == 2
+        assert data["matches"][0]["path"] == str(path)
+        assert data["matches"][1]["line"] == 2
 
 
 class TestFilesystemMutation:
     @pytest.mark.asyncio
     async def test_runtime_guards_files_read_before_mutation(self, tmp_path):
+        import inspect
+
         path = tmp_path / "code.py"
         path.write_text("value = 1\n", encoding="utf-8")
         policy = SandboxPolicy(workspace_root=tmp_path, enabled=False)
-
-        import inspect
 
         assert "expected_sha256" not in inspect.signature(write_file).parameters
         await read_file("code.py", sandbox=policy)
@@ -347,10 +332,9 @@ class TestFilesystemMutation:
         updated = await write_file(
             "code.py", "value = agent\n", sandbox=policy
         )
-
-        assert reread.data["changed_since_last_observation"] is True
+        assert reread.status == "success"
         assert reread.content.startswith("File changed since the previous read.")
-        assert updated.data["changed"] is True
+        assert updated.status == "success"
         assert path.read_text(encoding="utf-8") == "value = agent\n"
 
     @pytest.mark.asyncio
@@ -365,7 +349,8 @@ class TestFilesystemMutation:
 
         assert ambiguous.status == "error"
         assert ambiguous.error.code == "ambiguous_edit"
-        assert replaced.data["replacements"] == 2
+        replaced_data = json.loads(replaced.content)
+        assert replaced_data["replacements"] == 2
         assert path.read_text(encoding="utf-8") == "value = 1\nvalue = 2\n"
 
     @pytest.mark.asyncio
@@ -401,10 +386,10 @@ class TestFilesystemMutation:
         move_result = await move_path(str(copied), str(moved))
         delete_result = await delete_path(str(moved), recursive=True)
 
-        assert made.data["created"] is True
-        assert copy_result.data["copied"] is True
-        assert move_result.data["moved"] is True
-        assert delete_result.data["deleted"] is True
+        assert made.status == "success"
+        assert copy_result.status == "success"
+        assert move_result.status == "success"
+        assert delete_result.status == "success"
         assert source.exists()
         assert not moved.exists()
 
@@ -424,9 +409,8 @@ class TestFilesystemSandboxContract:
         ))
         isolated = await read_file("sample.txt", sandbox=policy)
 
+        assert isolated.status == "success"
         assert isolated.content == host.content
-        for key in ("is_text", "line_count", "sha256", "truncated_after"):
-            assert isolated.data[key] == host.data[key]
 
     @pytest.mark.asyncio
     async def test_real_bwrap_mutation_lifecycle(self, tmp_path):

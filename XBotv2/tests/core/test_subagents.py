@@ -691,9 +691,7 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
     await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
 
     assert job.status.value == "completed", job.error
-    assert job.result.data["usage"] == {"total_tokens": 12}
     store = job.result.output_store
-    assert (await store.read(max_bytes=100_000)).data == "background result"
     assert child.closed is True
 
 

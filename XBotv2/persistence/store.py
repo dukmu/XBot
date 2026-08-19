@@ -48,8 +48,6 @@ def message_to_dict(msg: Message) -> dict[str, Any]:
         d["usage_metadata"] = _json_safe(msg.usage_metadata)
     if msg.artifact is not None:
         d["artifact"] = _json_safe(msg.artifact)
-    if msg.data is not None:
-        d["data"] = _json_safe(msg.data)
     if msg.error is not None:
         d["error"] = _json_safe(msg.error)
     return d
@@ -69,7 +67,6 @@ def dict_to_message(d: dict[str, Any]) -> Message:
         response_metadata=dict(d.get("response_metadata") or {}),
         usage_metadata=dict(d.get("usage_metadata") or {}),
         artifact=d.get("artifact"),
-        data=d.get("data"),
         error=d.get("error"),
     )
 

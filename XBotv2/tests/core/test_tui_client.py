@@ -225,7 +225,6 @@ def test_tool_details_preserve_full_structured_result():
             "name": "example",
             "status": "error",
             "content": content,
-            "data": {"count": 2},
             "error": {"code": "failed", "message": "bad input"},
             "artifacts": [
                 {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
@@ -239,7 +238,6 @@ def test_tool_details_preserve_full_structured_result():
     assert len(tool.summary) < len(content)
     assert tool.result == content
     assert content in detail
-    assert '"count": 2' in detail
     assert '"code": "failed"' in detail
     assert "report.txt" in detail
 
@@ -279,7 +277,6 @@ def test_tui_state_restores_resumed_message_and_tool_history():
             "content": "contents",
             "tool_call_id": "call_1",
             "status": "success",
-            "data": {"bytes": 8},
             "error": {"code": "warning", "message": "partial"},
             "artifacts": [
                 {"id": "artifact-1", "name": "a.txt", "media_type": "text/plain"}
@@ -302,7 +299,6 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert state.tools["call_1"].name == "filesystem_read"
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "contents"
-    assert state.tools["call_1"].data == {"bytes": 8}
     assert state.tools["call_1"].error["code"] == "warning"
     assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
     assert [(notice.kind, notice.text) for notice in state.notices] == [

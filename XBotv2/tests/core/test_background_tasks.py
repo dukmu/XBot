@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -54,16 +55,18 @@ async def test_background_shell_lifecycle_and_read(temp_workspace, monkeypatch):
     started = await invoke(
         tools, "shell", {"command": "printf background-output", "background": True}, registry
     )
-    job_id = started.data["id"]
+    # Content is "Started <job_id>" — extract the job ID
+    job_id = started.content.split("Started ")[1]
     waited = await invoke(tools, "wait_shell", {"ids": [job_id]}, registry)
-    assert waited.data["ready"][0]["status"] == "completed"
-    assert waited.data["pending"] == []
-    assert waited.data["timed_out"] is False
+    waited_data = json.loads(waited.content)
+    assert waited_data["ready"][0]["status"] == "completed"
+    assert waited_data["pending"] == []
+    assert waited_data["timed_out"] is False
     read = await invoke(tools, "read_shell", {"id": job_id}, registry)
-    assert read.data["content"] == "background-output"
-    assert read.data["eof"] is True
+    assert read.content == "background-output"
     listed = await invoke(tools, "list_shells", {}, registry)
-    assert [item["id"] for item in listed.data["shells"]] == [job_id]
+    listed_data = json.loads(listed.content)
+    assert [item["id"] for item in listed_data["shells"]] == [job_id]
 
 
 @pytest.mark.asyncio
@@ -113,7 +116,7 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         registry,
         sandbox=object(),
     )
-    await invoke(tools, "wait_shell", {"ids": [background.data["id"]]}, registry)
+    await invoke(tools, "wait_shell", {"ids": [background.content.split("Started ")[1]]}, registry)
 
     assert foreground.status == "success"
     assert foreground.content == "output"
@@ -134,7 +137,7 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     started = await invoke(
         tools, "shell", {"command": "generate output", "background": True}, registry
     )
-    job = registry.get(started.data["id"])
+    job = registry.get(started.content.split("Started ")[1])
     await job.runner_task
     await registry.wait([job.id])
 
@@ -142,7 +145,7 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     read = await invoke(
         tools, "read_shell", {"id": job.id, "max_bytes": 20_000}, registry
     )
-    assert read.data["content"] == full_output
+    assert read.content == full_output
 
 
 @pytest.mark.asyncio
@@ -153,7 +156,7 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
     patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
-    job = registry.get(started.data["id"])
+    job = registry.get(started.content.split("Started ")[1])
     while job.status.value != "running":
         await asyncio.sleep(0)
 
@@ -186,7 +189,7 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
 
     await asyncio.wait_for(registry.shutdown(), timeout=1)
 
-    assert registry.get_or_none(started.data["id"]) is None
+    assert registry.get_or_none(started.content.split("Started ")[1]) is None
     assert completions == []
 
 
@@ -200,8 +203,8 @@ async def test_wait_shell_returns_exit_code_for_completed_job(
     patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(tools, "shell", {"command": "true", "background": True}, registry)
-    waited = await invoke(tools, "wait_shell", {"ids": [started.data["id"]]}, registry)
-    assert waited.data["ready"][0]["exit_code"] == 0
+    waited = await invoke(tools, "wait_shell", {"ids": [started.content.split("Started ")[1]]}, registry)
+    assert json.loads(waited.content)["ready"][0]["exit_code"] == 0
 
 
 @pytest.mark.asyncio

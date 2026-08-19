@@ -188,7 +188,6 @@ class Message(_PartBacked):
     response_metadata: dict[str, Any]
     usage_metadata: dict[str, Any]
     artifact: Any
-    data: Any
     error: dict[str, Any] | None
     client_events: list[dict[str, Any]]
     turn_complete: bool
@@ -208,7 +207,6 @@ class Message(_PartBacked):
         images: list[ImageContent] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
-        data: Any = None,
         error: dict[str, Any] | None = None,
         client_events: list[dict[str, Any]] | None = None,
         turn_complete: bool = False,
@@ -221,7 +219,6 @@ class Message(_PartBacked):
         self.response_metadata = dict(response_metadata or {})
         self.usage_metadata = dict(usage_metadata or {})
         self.artifact = artifact
-        self.data = data
         self.error = dict(error) if error is not None else None
         self.client_events = list(client_events or [])
         self.turn_complete = turn_complete
@@ -251,7 +248,6 @@ class Message(_PartBacked):
             len(self.additional_kwargs or {}),
             len(self.usage_metadata or {}),
             len(self.response_metadata or {}),
-            self.data is not None,
             self.error is not None,
         ))
 

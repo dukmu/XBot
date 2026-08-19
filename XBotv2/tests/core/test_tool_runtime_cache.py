@@ -174,7 +174,8 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     assert all(result.status == "success" for result in results)
     assert "tool_results" in results[0].content
-    assert "tool_results/cached.txt:1:1:cached content" in results[1].content
+    assert "tool_results/cached.txt" in results[1].content
+    assert "cached content" in results[1].content
     assert "tool_results/cached.txt" in results[2].content
 
 
@@ -349,7 +350,6 @@ async def test_tool_result_preserves_structured_fields() -> None:
         return ToolResult(
             status="error",
             content="failed",
-            data={"attempt": 1},
             error=ToolError("dict_error", "failed"),
             artifacts=(ArtifactRef("artifact-1", "text/plain", "result.txt"),),
         )
@@ -370,7 +370,6 @@ async def test_tool_result_preserves_structured_fields() -> None:
     )
 
     assert results[0].status == "error"
-    assert results[0].data == {"attempt": 1}
     assert results[0].error["code"] == "dict_error"
     assert results[0].artifact[0].name == "result.txt"
 
@@ -395,7 +394,6 @@ async def test_plain_dictionary_result_is_model_content() -> None:
 
     assert results[0].status == "success"
     assert json.loads(results[0].content) == {"data": {"value": 1}}
-    assert results[0].data is None
 
 
 @pytest.mark.asyncio
@@ -831,16 +829,10 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
         preview_chars=20,
     )
     original = "line 1\n" + "source text\n" * 20
-    data = {
-        "ok": True,
-        "path": "/workspace/source.py",
-        "content": original,
-    }
     message = Message(
         role="tool",
         content=original,
         tool_call_id="filesystem-read",
-        data=data,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
@@ -853,7 +845,6 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     cached = ET.fromstring(message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["original_chars"] == str(len(original))
-    assert message.data == data
     assert message.artifact["kind"] == "cached_tool_result"
     assert message.artifact["cache_path"].endswith(cache_files[0].name)
 
@@ -865,18 +856,15 @@ async def test_cache_hook_ignores_large_sidecar_data(state_store):
         max_inline_chars=100,
         preview_chars=20,
     )
-    structured = {"items": [{"path": f"file-{index}.txt"} for index in range(30)]}
     message = Message(
         role="tool",
         content="30 files found.",
         tool_call_id="filesystem-list",
-        data=structured,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "30 files found."
-    assert message.data == structured
     assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 
@@ -887,18 +875,15 @@ async def test_cache_hook_ignores_string_sidecar_data(state_store):
         max_inline_chars=20,
         preview_chars=10,
     )
-    original = '{"already":"json text","lines":"a\\nb"}'
     message = Message(
         role="tool",
         content="Structured result.",
         tool_call_id="string-data",
-        data=original,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "Structured result."
-    assert message.data == original
     assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
 
 

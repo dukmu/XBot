@@ -101,7 +101,6 @@ class TestMessageSerialization:
             name="filesystem_read",
             additional_kwargs={"visible": "kept"},
             response_metadata={"duration_ms": 5},
-            data={"count": 1},
             error={"code": "failed"},
             client_events=[{"type": "client_message", "data": {}}],
             turn_complete=True,
@@ -111,7 +110,6 @@ class TestMessageSerialization:
         assert restored.role == "tool"
         assert restored.name == "filesystem_read"
         assert restored.additional_kwargs == {"visible": "kept"}
-        assert restored.data == {"count": 1}
         assert restored.error == {"code": "failed"}
         assert restored.client_events == []
         assert restored.turn_complete is False

@@ -222,8 +222,7 @@ async def start_shell(
     )
     job_registry.start(job.id, ShellRunner(sandbox=runner_sandbox))
     return ToolResult.success(
-        f"Started {job.id}",
-        data={"id": job.id, "status": job.status.value},
+        f"Started {job.id}"
     )
 
 
@@ -244,8 +243,7 @@ async def list_shells(status: str | None = None, *, job_registry: Any = None) ->
     summaries = job_registry.list(kind=JobKind.SHELL, status=status_filter)
     payload = {"shells": [summary.to_dict() for summary in summaries]}
     return ToolResult.success(
-        json.dumps(payload, ensure_ascii=False),
-        data=payload,
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -286,8 +284,7 @@ async def wait_shell(
         return ToolResult.failure("shell_not_found", "Unknown shell job id")
     payload = _wait_payload(result, job_registry)
     return ToolResult.success(
-        json.dumps(payload, ensure_ascii=False),
-        data=payload,
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -322,18 +319,11 @@ async def read_shell(
     store = job.result.output_store if job.result is not None else None
     if store is None:
         return ToolResult.success(
-            "No output captured yet",
-            data={"content": "", "next_cursor": None, "eof": False},
+            "No output captured yet"
         )
     chunk = await store.read(cursor=cursor, max_bytes=max_bytes)
     return ToolResult.success(
-        chunk.data,
-        data={
-            "content": chunk.data,
-            "next_cursor": chunk.next_cursor,
-            "eof": chunk.eof,
-            "truncated": chunk.truncated,
-        },
+        chunk.data # TODO: more detailed output structure with next_cursor, etc.
     )
 
 
@@ -352,8 +342,7 @@ async def cancel_shell(id: str, *, job_registry: Any = None) -> ToolResult:
         return ToolResult.failure("shell_not_found", f"Unknown shell job: {id}")
     result = await job_registry.cancel(id)
     return ToolResult.success(
-        f"Shell {id} {result.status}",
-        data=result.to_dict(),
+        f"Shell {id} {result.status}"
     )
 
 

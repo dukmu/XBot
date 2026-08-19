@@ -105,7 +105,6 @@ class ArtifactRef:
 class ToolResult:
     status: Literal["success", "error", "denied", "cancelled"] = "success"
     content: str = ""
-    data: JsonValue = None
     error: ToolError | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
     images: tuple["ImageContent", ...] = ()
@@ -117,10 +116,9 @@ class ToolResult:
         cls,
         content: str = "",
         *,
-        data: JsonValue = None,
         images: tuple["ImageContent", ...] = (),
     ) -> "ToolResult":
-        return cls(content=content, data=data, images=images)
+        return cls(content=content, images=images)
 
     @classmethod
     def failure(

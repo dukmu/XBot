@@ -607,8 +607,6 @@ def tool_detail(tool: TuiTool) -> str:
         parts.append(tool.permission_reason)
     if tool.result:
         parts.append(f"result: {tool.result}")
-    if tool.data is not None:
-        parts.append(f"data: {format_value(tool.data, indent=2)}")
     if tool.error:
         parts.append(f"error: {format_value(tool.error, indent=2)}")
     if tool.artifacts:

@@ -219,7 +219,7 @@ Body
 
         assert result.status == "success"
         assert "test skill body" in result.content.lower()
-        assert result.data == {"name": "test-skill", "scope": "project"}
+        assert "test-skill" in result.content
         assert plugin.diagnostics()["active_skills"] == 1
         assert plugin._permission_scope.check("ask_user") == "deny"
 

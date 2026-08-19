@@ -117,9 +117,9 @@ class WebAccess:
             ])
         if not normalized:
             lines.append("No results.")
+        payload = json.dumps({"query": query, "results": normalized, "untrusted": True}, ensure_ascii=False)
         return ToolResult.success(
-            "\n".join(lines),
-            data={"query": query, "results": normalized, "untrusted": True},
+            "\n".join(lines) + "\n\n" + payload,
         )
 
     async def fetch(self, url: str) -> ToolResult:
@@ -157,8 +157,7 @@ class WebAccess:
             **metadata,
         }
         return ToolResult.success(
-            f"[Untrusted content fetched from {final_url}]\n\n{content.strip()}",
-            data=data,
+            f"[Untrusted content fetched from {final_url}]\n\n{content.strip()}\n\n{json.dumps(data, ensure_ascii=False)}",
         )
 
     async def _download(self, url: str) -> tuple[str, httpx.Response, bytes]:

@@ -134,8 +134,7 @@ class SkillsPlugin:
             )
             self._activate_skill(skill)
             return ToolResult.success(
-                content,
-                data={"name": skill.name, "scope": skill.scope},
+                f"{content}\n\nSkill activated: {skill.name} ({skill.scope})",
             )
 
         invoke.__doc__ = (
