@@ -1755,6 +1755,32 @@ async def test_live_interaction_is_pending_before_event_is_published(
 
 
 @pytest.mark.asyncio
+async def test_request_permission_tool_emits_request_id() -> None:
+    """The request_permission tool owns its event contract: it mints a
+    request_id so the wire model (ServerEvent.data.request_id) validates."""
+    from XBotv2.permissions.tools import request_tool_permission
+
+    captured: dict[str, Any] = {}
+
+    class _Approval:
+        async def request(self, event):
+            captured["event"] = event
+            return {"decision": "allow", "scope": "once"}
+
+    result = await request_tool_permission(
+        "shell",
+        {},
+        "needs approval",
+        approval=_Approval(),
+    )
+    assert result.status == "success"
+    event = captured["event"]
+    assert event["type"] == "permission_request"
+    assert event["data"]["request_id"]
+    assert event["data"]["source"] == "request_permission"
+
+
+@pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
     from XBotv2.protocol.http_server import _resolve_interaction
 

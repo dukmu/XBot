@@ -251,3 +251,17 @@ documentation before it becomes a shipped default.
 - Consider a parallel TypeScript/Ink prototype only after a reproducible
   Textual limitation or an independent Node client distribution requirement is
   documented. Do not replace the working client with an unverified rewrite.
+
+## Termux / Android Platform Bugs
+
+- **SSE `ServerEvent` validation crash (request_id missing)** — reproduced on
+  Termux (Python 3.14 + pydantic 2.13.4) and latent on all platforms: the
+  `request_permission` tool publishes a `permission_request` client event
+  without a `request_id` (the permission guard already minted
+  `permission:<tool_call.id>`), the live sink forwarded it unchanged, and the
+  wire model (`PermissionRequestData.request_id` required) failed the SSE
+  stream.  Fixed in the producer (`permissions/tools.py`: the tool now mints
+  its own `request_id`), keeping the event contract with the producer that
+  owns it (regression test:
+  `test_request_permission_tool_emits_request_id`).
+- **sand_messsage** tool missing 'source' key in sending events

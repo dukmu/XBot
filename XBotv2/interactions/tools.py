@@ -42,7 +42,7 @@ def send_message_to_user(
         content=f"Message sent to user: {message}",
         client_events=(ClientEvent(
             type="client_message",
-            data={"message": message, "level": level},
+            data={"message": message, "level": level, "source": "send_message"},
         ),),
     )
 

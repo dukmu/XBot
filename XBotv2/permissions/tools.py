@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from typing import Any
 
 from XBotv2.core.tools import Tool, ToolResult
@@ -37,6 +38,7 @@ async def request_tool_permission(
     event = {
         "type": "permission_request",
         "data": {
+            "request_id": f"permission:{secrets.token_hex(8)}",
             "source": "request_permission",
             "permission": {"tool": tool, "params": params},
             "decision": "ask",
