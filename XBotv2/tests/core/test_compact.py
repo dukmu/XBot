@@ -13,6 +13,7 @@ from XBotv2.compact.plugin import (
     _compact_prefix_end,
     _history_chars,
 )
+from XBotv2.application import RUNTIME_EVENT
 from XBotv2.compact import POST_COMPACT, PRE_COMPACT
 from XBotv2.core import (
     Message,
@@ -208,7 +209,7 @@ async def test_human_command_compacts_and_persists_immediately(
         if event.client_event is not None:
             runtime_events.append(event.client_event.to_dict())
 
-    setup.ctx.on(Events.RUNTIME_EVENT, record_runtime_event)
+    setup.ctx.on(RUNTIME_EVENT, record_runtime_event)
     result = await setup.commands["compact"].handler("")
 
     records = [

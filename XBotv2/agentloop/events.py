@@ -64,9 +64,6 @@ class Events:
     TOOL_MESSAGE = "tool/message"
     # Permissions / client
     CLIENT_EVENT = "client/event"
-    # Non-blocking application output projected by live transports. Feature
-    # plugins publish a payload; neither they nor Engine own a client sink.
-    RUNTIME_EVENT = "runtime/event"
     # Core state projection changed. Persistence is one possible observer;
     # the loop does not request or name storage operations.
     STATE_CHANGED = "state/changed"

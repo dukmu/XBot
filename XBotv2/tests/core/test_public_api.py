@@ -157,6 +157,8 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert set(application.__all__) >= {
         "AgentApplicationPort",
         "ClientEventsPort",
+        "RUNTIME_EVENT",
+        "RuntimeEvent",
         "StatusSlots",
     }
     assert set(compact.__all__) >= {

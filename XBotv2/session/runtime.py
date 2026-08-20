@@ -11,7 +11,12 @@ from typing import Any, AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.application import AgentApplicationPort, ClientEventsPort
+from XBotv2.application import (
+    RUNTIME_EVENT,
+    AgentApplicationPort,
+    ClientEventsPort,
+    RuntimeEvent,
+)
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.agentloop import EventContext, Events
@@ -78,8 +83,8 @@ class SessionRuntime:
         self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
         events = self.application.events
-        events.on(Events.INBOX_SPLICE, self._on_runtime_event)
-        events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
+        events.on(Events.INBOX_SPLICE, self._on_inbox_splice)
+        events.on(RUNTIME_EVENT, self._on_runtime_event)
         events.on(HISTORY_CHANGED, self._on_history_changed)
         events.on(AGENT_CONFIGURED, self._on_agent_configured)
 
@@ -122,11 +127,15 @@ class SessionRuntime:
         if self.session_events is not None:
             self.session_events.put_nowait(event)
 
-    def _on_runtime_event(self, event: EventContext) -> None:
+    def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
         payload = event.client_event
         if payload is not None:
             self._publish_runtime_event(payload.to_dict())
+
+    def _on_runtime_event(self, event: RuntimeEvent) -> None:
+        self.touch()
+        self._publish_runtime_event(event.client_event.to_dict())
 
     def _publish_message_event(self, message_id: str, content: str) -> None:
         """Broadcast one accepted user message on the shared event stream.

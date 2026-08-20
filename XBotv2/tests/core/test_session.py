@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from XBotv2.agents import AgentConfigured
+from XBotv2.application import RuntimeEvent
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import EventContext
 from XBotv2.core import Message
@@ -120,7 +121,7 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     session = runtime(tmp_path)
     events = session.attach_event_stream()
 
-    session._on_runtime_event(EventContext(client_event=ClientEvent(
+    session._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
         "completion_notice",
         {"task_id": "t1", "status": "completed"},
     )))

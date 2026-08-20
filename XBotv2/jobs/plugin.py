@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
+from XBotv2.agentloop import AgentLoopDriverPort, Events
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
@@ -47,8 +48,8 @@ class JobsComponent:
 
         async def publish_update(snapshot: dict[str, Any]) -> None:
             await ctx.emit(
-                Events.RUNTIME_EVENT,
-                EventContext(client_event=task_updated_event(
+                RUNTIME_EVENT,
+                RuntimeEvent(client_event=task_updated_event(
                     task_snapshot(snapshot)
                 )),
             )
@@ -76,8 +77,8 @@ class JobsComponent:
                     metadata={"kind": "notification", "payload": payload},
                 )
             await ctx.emit(
-                Events.RUNTIME_EVENT,
-                EventContext(client_event=event),
+                RUNTIME_EVENT,
+                RuntimeEvent(client_event=event),
             )
 
         registry.on_update = publish_update

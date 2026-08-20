@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Sequence
 
+from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core import (
     ClientEvent,
     Message,
@@ -276,8 +277,8 @@ class CompactService:
 
     async def _publish_runtime_event(self, event: ClientEvent) -> None:
         await self.ctx.emit(
-            Events.RUNTIME_EVENT,
-            EventContext(client_event=event),
+            RUNTIME_EVENT,
+            RuntimeEvent(client_event=event),
         )
 
     def _record_committed(

@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from XBotv2.application import RUNTIME_EVENT
 from XBotv2.jobs import JobKind, JobResult
 from XBotv2.jobs.plugin import JobsComponent
 from XBotv2.jobs.registry import JobRegistry
@@ -60,7 +61,7 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
     async def record(event):
         runtime_events.append(event.client_event)
 
-    ctx.on(Events.RUNTIME_EVENT, record)
+    ctx.on(RUNTIME_EVENT, record)
     JobsComponent().apply(ctx, {})
     snapshot = {
         "task_id": "sh_1",
