@@ -18,11 +18,14 @@ from XBotv2.agents.contracts import (
     SubagentTurnError,
 )
 from XBotv2.agents.services import AgentCatalogPort, AgentRuntimePort
+from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 
 __all__ = [
+    "AGENT_CONFIGURED",
     "AgentCatalog",
     "AgentCatalogPort",
     "AgentCreateOptions",
+    "AgentConfigured",
     "AgentDefinition",
     "AgentInfo",
     "AgentListResponse",

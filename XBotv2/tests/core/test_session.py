@@ -5,11 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from XBotv2.agents import AgentConfigured
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop import EventContext, LoopSettings
+from XBotv2.agentloop import EventContext
 from XBotv2.core import Message
 from XBotv2.core.tools import ClientEvent
-from XBotv2.session import HistoryChanged
+from XBotv2.session import HistoryChanged, SessionInfo
 from XBotv2.session.runtime import SessionRuntime
 
 
@@ -154,14 +155,19 @@ async def test_history_change_is_projected_from_typed_session_event(tmp_path):
 async def test_agent_configuration_updates_session_provider_projection(tmp_path):
     session = runtime(tmp_path)
 
-    await session._on_agent_configured(EventContext(
-        settings=LoopSettings(
+    await session._on_agent_configured(AgentConfigured(
+        agent=None,
+        session=SessionInfo(
+            session_id="session",
+            thread_id="agent",
+            workspace_root=str(tmp_path),
             provider="selected",
-            agent_name="default",
-            model="model-1",
-            model_mode="chat",
-            context_window=4096,
         ),
+        provider="selected",
+        agent_name="default",
+        model="model-1",
+        model_mode="chat",
+        context_window=4096,
     ))
 
     assert session.provider_name == "selected"

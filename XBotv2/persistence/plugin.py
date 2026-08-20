@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.agents import AGENT_CONFIGURED
 from XBotv2.agentloop import Events, LoopState
 from XBotv2.session import HISTORY_CHANGED, PREPARE_FORK, HistoryChanged
 
@@ -96,12 +97,12 @@ class PersistenceComponent:
         ctx.on(HISTORY_CHANGED, service.history_changed)
         ctx.on(PREPARE_FORK, lambda _request: service.flush())
 
-        async def persist_session_metadata(event: Any) -> None:
+        async def persist_session_metadata(_event: object) -> None:
             store.provider = state.session.provider
             store.write_thread_metadata(state.metadata)
 
         ctx.on(Events.SESSION_INIT, persist_session_metadata)
-        ctx.on(Events.AGENT_CONFIGURED, persist_session_metadata)
+        ctx.on(AGENT_CONFIGURED, persist_session_metadata)
 
         async def persist_runtime_event(event: Any) -> None:
             record = event.client_event

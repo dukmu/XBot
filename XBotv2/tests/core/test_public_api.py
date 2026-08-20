@@ -118,8 +118,10 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "ToolsPort",
     }
     assert set(agents.__all__) >= {
+        "AGENT_CONFIGURED",
         "AgentCatalogPort",
         "AgentCreateOptions",
+        "AgentConfigured",
         "AgentDefinition",
         "AgentMode",
         "AgentRuntimePort",

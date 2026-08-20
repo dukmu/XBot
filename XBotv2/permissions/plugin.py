@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ToolCall
@@ -180,12 +181,16 @@ class PermissionsComponent:
             record_decision=record_permission_decision,
         ))
 
-        async def configure_agent(event: EventContext) -> None:
+        async def configure_initial_agent(event: EventContext) -> None:
             if event.agent is not None:
                 permissions.configure_agent(event.agent.permissions)
 
-        ctx.on(Events.SESSION_INIT, configure_agent, prepend=True)
-        ctx.on(Events.AGENT_CONFIGURED, configure_agent, prepend=True)
+        async def configure_agent(event: AgentConfigured) -> None:
+            if event.agent is not None:
+                permissions.configure_agent(event.agent.permissions)
+
+        ctx.on(Events.SESSION_INIT, configure_initial_agent, prepend=True)
+        ctx.on(AGENT_CONFIGURED, configure_agent, prepend=True)
 
         async def update_policy(event: PolicyChanged) -> None:
             permissions.replace_rules(event.config.permissions)

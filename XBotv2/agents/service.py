@@ -15,6 +15,7 @@ from XBotv2.agents.contracts import (
     AgentDefinition,
     AgentSelection,
 )
+from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
     AgentLoopFactoryPort,
@@ -225,10 +226,14 @@ class AgentsService:
             "model_mode": model_config.model_mode,
             "context_window": config.max_context_tokens,
         })
-        await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
-            settings=engine.settings,
+        await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=definition,
             session=state.session,
+            agent_name=engine.settings.agent_name,
+            provider=engine.settings.provider,
+            model=engine.settings.model,
+            model_mode=engine.settings.model_mode,
+            context_window=engine.settings.context_window,
         ))
         return {
             "agent": definition,
@@ -277,9 +282,14 @@ class AgentsService:
             "model_mode": model_config.model_mode,
             "context_window": model_config.max_context_tokens,
         })
-        await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
-            settings=engine.settings,
+        await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
+            agent=None,
             session=state.session,
+            agent_name=engine.settings.agent_name,
+            provider=engine.settings.provider,
+            model=engine.settings.model,
+            model_mode=engine.settings.model_mode,
+            context_window=engine.settings.context_window,
         ))
         return {
             "provider": name,

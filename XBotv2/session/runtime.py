@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.application import AgentApplicationPort, ClientEventsPort
 from XBotv2.core.messages import ImageContent
@@ -80,7 +81,7 @@ class SessionRuntime:
         events.on(Events.INBOX_SPLICE, self._on_runtime_event)
         events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
         events.on(HISTORY_CHANGED, self._on_history_changed)
-        events.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
+        events.on(AGENT_CONFIGURED, self._on_agent_configured)
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
@@ -104,22 +105,15 @@ class SessionRuntime:
             },
         ))
 
-    async def _on_agent_configured(self, event: EventContext) -> None:
+    async def _on_agent_configured(self, event: AgentConfigured) -> None:
         """Project provider/model selection changes for status displays."""
-        settings = event.settings
-        provider = getattr(settings, "provider", None)
-        if provider:
-            self.provider_name = str(provider)
+        self.provider_name = event.provider
         data = {
-            key: value
-            for key in (
-                "agent_name",
-                "provider",
-                "model",
-                "model_mode",
-                "context_window",
-            )
-            if (value := getattr(settings, key, None)) is not None
+            "agent_name": event.agent_name,
+            "provider": event.provider,
+            "model": event.model,
+            "model_mode": event.model_mode,
+            "context_window": event.context_window,
         }
         if data and self.session_events is not None:
             await self.session_events.put(session_event("agent_configured", data))
