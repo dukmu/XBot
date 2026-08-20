@@ -384,6 +384,15 @@ Default TUI transport: auto-generates `/tmp/xbotv2-{pid}.sock`, spawns server
 subprocess bound to it. No TCP port needed for local use. `--server URL` for
 remote HTTP connection.
 
+### ACP (`acp/`)
+
+ACP mounts the transport-neutral `session-host` XCore profile. It receives a
+`SessionHostPort` handle and uses the public Agents, LLM, and Commands
+operations for discovery and mutation. It does not import SessionManager,
+SessionRuntime, Persistence stores, Config loaders, or an XCore Context.
+Permission and user-input requests are consumed from the Session stream and
+answered through the same host interaction API used by HTTP clients.
+
 ### Session Resume
 
 Session creation uses explicit `new` and `resume` modes. The server does not

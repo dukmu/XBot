@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-import shlex
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
@@ -56,19 +56,32 @@ from acp.schema import (
 
 from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
+from XBotv2.application.session_host import (
+    MountedSessionHost,
+    start_session_host_application,
+)
+from XBotv2.commands import (
+    EXECUTE_COMMAND,
+    LIST_COMMANDS,
+    CommandCatalog,
+    ExecuteCommand,
+)
+from XBotv2.core import EmptyRequest, JsonObject
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.application.app import create_agent_application
-from XBotv2.config.loader import load_runtime_config
 from XBotv2.core.errors import OperationError
-from XBotv2.persistence.store import CoreStateStore
-from XBotv2.protocol.commands import execute_command, list_commands
-from XBotv2.session.manager import (
-    SessionManager,
+from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
+from XBotv2.mcp_plugin import MCP_PLUGIN_ID
+from XBotv2.session import (
+    ImageUpload,
+    OpenSession,
+    SendMessage,
+    SessionHostPort,
     SessionNotFound,
+    SessionStreamEvent,
+    ThreadSnapshot,
     ThreadNotActive,
 )
-from XBotv2.session.runtime import require_idle
-from XBotv2.session.session import fork_session as fork_runtime_session
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -90,14 +103,11 @@ class XBotACPAgent:
         self.no_plugins = no_plugins
         self.selected_agent = selected_agent
         self.llm_override = llm_override
-        self.manager = SessionManager(
-            paths,
-            application_factory=create_agent_application,
-        )
+        self._host_application: MountedSessionHost | None = None
         self.connection: Any | None = None
         self.client_capabilities: ClientCapabilities | None = None
         self._commands_announced: set[str] = set()
-        self._event_tasks: dict[str, tuple[Any, asyncio.Task[None]]] = {}
+        self._event_tasks: dict[str, asyncio.Task[None]] = {}
 
     def on_connect(self, connection: Any) -> None:
         self.connection = connection
@@ -149,7 +159,8 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        runtime = await self.manager.open_session(
+        host = await self._host()
+        opened = await host.open(OpenSession(
             session_id=None,
             thread_id="agent",
             provider_name=self.provider_name,
@@ -160,12 +171,12 @@ class XBotACPAgent:
             plugin_configs=self._mcp_plugin_config(
                 workspace, None, mcp_servers
             ),
-            llm_override=self.llm_override,
-        )
-        await self._prepare_runtime(runtime)
+            model_override=self.llm_override,
+        ))
+        await self._prepare_session(opened.session_id)
         return NewSessionResponse(
-            session_id=runtime.session_id,
-            config_options=self._config_options(runtime),
+            session_id=opened.session_id,
+            config_options=await self._config_options(opened.session_id),
         )
 
     async def resume_session(
@@ -177,9 +188,9 @@ class XBotACPAgent:
         **_: Any,
     ) -> ResumeSessionResponse:
         self._reject_additional_directories(additional_directories)
-        runtime = await self._open_existing(session_id, cwd, mcp_servers)
+        await self._open_existing(session_id, cwd, mcp_servers)
         return ResumeSessionResponse(
-            config_options=self._config_options(runtime)
+            config_options=await self._config_options(session_id)
         )
 
     async def load_session(
@@ -191,10 +202,10 @@ class XBotACPAgent:
         **_: Any,
     ) -> LoadSessionResponse:
         self._reject_additional_directories(additional_directories)
-        runtime = await self._open_existing(session_id, cwd, mcp_servers)
-        await self._replay_history(runtime)
+        await self._open_existing(session_id, cwd, mcp_servers)
+        await self._replay_history(session_id)
         return LoadSessionResponse(
-            config_options=self._config_options(runtime)
+            config_options=await self._config_options(session_id)
         )
 
     async def list_sessions(
@@ -206,33 +217,27 @@ class XBotACPAgent:
         if cursor:
             return ListSessionsResponse(sessions=[])
         sessions: list[SessionInfo] = []
-        root = self.paths.sessions_dir
-        for path in sorted(root.iterdir(), reverse=True) if root.is_dir() else []:
-            if not path.is_dir():
-                continue
-            try:
-                metadata = _session_metadata(self.paths, path.name)
-            except RequestError:
-                continue
-            workspace = str(metadata.get("workspace_root") or "")
+        host = await self._host()
+        for snapshot in await host.list_sessions():
+            workspace = snapshot.workspace_root
             if not workspace or (
                 cwd and Path(workspace).resolve() != Path(cwd).resolve()
             ):
                 continue
             sessions.append(SessionInfo(
-                session_id=path.name,
+                session_id=snapshot.session_id,
                 cwd=workspace,
-                title=str(metadata.get("title") or path.name),
+                title=snapshot.title or snapshot.session_id,
             ))
         return ListSessionsResponse(sessions=sessions)
 
     async def close_session(
         self, session_id: str, **_: Any
     ) -> CloseSessionResponse:
-        await self.manager.close_session(session_id)
+        await (await self._host()).close_session(session_id)
         task_entry = self._event_tasks.pop(session_id, None)
         if task_entry is not None:
-            await asyncio.gather(task_entry[1], return_exceptions=True)
+            await asyncio.gather(task_entry, return_exceptions=True)
         self._commands_announced.discard(session_id)
         return CloseSessionResponse()
 
@@ -245,9 +250,10 @@ class XBotACPAgent:
         **_: Any,
     ) -> ForkSessionResponse:
         self._reject_additional_directories(additional_directories)
-        metadata = _session_metadata(self.paths, session_id)
         workspace = _workspace(cwd)
-        stored_workspace = str(metadata.get("workspace_root") or "")
+        host = await self._host()
+        snapshot = await host.session_summary(session_id)
+        stored_workspace = snapshot.workspace_root
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
             raise RequestError.invalid_params({
                 "sessionId": session_id,
@@ -255,28 +261,18 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
 
-        active = await self.manager.active_threads()
-        contexts = [
-            runtime
-            for (active_session_id, _), runtime in active.items()
-            if active_session_id == session_id
-        ]
         try:
-            forked_id = await fork_runtime_session(
-                self.paths,
-                session_id,
-                contexts,
-            )
+            forked_id = await host.fork_session(session_id)
         except OperationError as exc:
             raise RequestError.invalid_params({
                 "sessionId": session_id,
                 "reason": str(exc),
             }) from exc
 
-        runtime = await self._open_existing(forked_id, workspace, mcp_servers)
+        await self._open_existing(forked_id, workspace, mcp_servers)
         return ForkSessionResponse(
             session_id=forked_id,
-            config_options=self._config_options(runtime),
+            config_options=await self._config_options(forked_id),
         )
 
     async def prompt(
@@ -285,27 +281,29 @@ class XBotACPAgent:
         prompt: list[Any],
         **_: Any,
     ) -> PromptResponse:
-        runtime = await self._runtime(session_id)
-        content, images = _prompt_content(
-            prompt,
-            runtime.services.storage,
-        )
-        command = _slash_command(runtime, content)
+        host = await self._host()
+        summary = await self._thread(session_id)
+        content, images = _prompt_content(prompt)
+        command = await self._slash_command(session_id, content)
         if command is not None:
-            await self._run_command(runtime, *command)
+            await self._run_command(session_id, *command)
             return PromptResponse(stop_reason="end_turn")
 
         if session_id not in self._commands_announced:
-            await self._announce_commands(runtime)
+            await self._announce_commands(session_id)
             self._commands_announced.add(session_id)
 
-        mapper = ACPEventMapper(context_size=runtime.engine.context_window)
-        async for event in runtime.stream_message(
-            content,
-            f"acp:{session_id}",
-            images=images,
-        ):
-            for update in mapper.updates(event):
+        mapper = ACPEventMapper(context_size=summary.context_window)
+        stream = await host.stream_message(SendMessage(
+            session_id=session_id,
+            thread_id="agent",
+            content=content,
+            request_id=f"acp:{session_id}",
+            images=tuple(images),
+        ))
+        async for event in stream:
+            await self._resolve_interaction(session_id, event)
+            for update in mapper.updates(event.to_dict()):
                 await self._update(session_id, update)
         if mapper.error is not None:
             raise RequestError.internal_error(mapper.error)
@@ -315,8 +313,7 @@ class XBotACPAgent:
         )
 
     async def cancel(self, session_id: str, **_: Any) -> None:
-        runtime = await self._runtime(session_id)
-        runtime.request_interrupt()
+        await (await self._host()).interrupt(session_id, "agent")
 
     async def set_session_mode(
         self, session_id: str, mode_id: str, **_: Any
@@ -336,12 +333,22 @@ class XBotACPAgent:
                 "configId": config_id,
                 "value": value,
             })
-        runtime = await self._runtime(session_id)
+        host = await self._host()
         try:
             if config_id == "agent":
-                await _select_agent(runtime, value)
+                await host.dispatch(
+                    session_id,
+                    "agent",
+                    SELECT_AGENT,
+                    SelectAgent(value),
+                )
             elif config_id == "provider":
-                await _select_provider(runtime, value)
+                await host.dispatch(
+                    session_id,
+                    "agent",
+                    SELECT_PROVIDER,
+                    SelectProvider(value),
+                )
             else:
                 raise RequestError.invalid_params({"configId": config_id})
         except OperationError as exc:
@@ -350,7 +357,7 @@ class XBotACPAgent:
                 "value": value,
                 "reason": str(exc),
             }) from exc
-        options = self._config_options(runtime)
+        options = await self._config_options(session_id)
         await self._update(
             session_id,
             ConfigOptionUpdate(
@@ -374,21 +381,35 @@ class XBotACPAgent:
         del method, params
 
     async def close(self) -> None:
-        await self.manager.close_all()
+        if self._host_application is not None:
+            await self._host_application.close()
+            self._host_application = None
         await asyncio.gather(
-            *(entry[1] for entry in self._event_tasks.values()),
+            *self._event_tasks.values(),
             return_exceptions=True,
         )
         self._event_tasks.clear()
+
+    async def _host(self) -> SessionHostPort:
+        if self._host_application is None:
+            self._host_application = await start_session_host_application(
+                paths=self.paths,
+                workspace_root=self.paths.data_dir,
+            )
+        return self._host_application.sessions
 
     async def _open_existing(
         self,
         session_id: str,
         cwd: str,
         mcp_servers: list[Any] | None = None,
-    ) -> Any:
-        metadata = _session_metadata(self.paths, session_id)
-        stored_workspace = str(metadata.get("workspace_root") or "")
+    ) -> None:
+        host = await self._host()
+        try:
+            snapshot = await host.session_summary(session_id)
+        except SessionNotFound as exc:
+            raise RequestError.resource_not_found(session_id) from exc
+        stored_workspace = snapshot.workspace_root
         workspace = _workspace(cwd)
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
             raise RequestError.invalid_params({
@@ -397,7 +418,7 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
         try:
-            runtime = await self.manager.open_session(
+            await host.open(OpenSession(
                 session_id=session_id,
                 thread_id="agent",
                 provider_name=self.provider_name,
@@ -407,103 +428,116 @@ class XBotACPAgent:
                 plugin_configs=self._mcp_plugin_config(
                     workspace, session_id, mcp_servers
                 ),
-                llm_override=self.llm_override,
-            )
+                model_override=self.llm_override,
+            ))
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
-        await self._prepare_runtime(runtime)
-        return runtime
+        await self._prepare_session(session_id)
 
-    async def _prepare_runtime(self, runtime: Any) -> None:
-        # ACP owns interaction requests on its connection. Disabling the SSE
-        # interaction bridge leaves Engine's public client sink in control.
-        runtime.interactive = False
-        from XBotv2.session.runtime import install_client_event_sink
-
-        install_client_event_sink(
-            runtime.services,
-            lambda event, **kwargs: self._handle_interaction(
-                runtime.session_id, event, **kwargs
-            ),
-        )
-        existing = self._event_tasks.get(runtime.session_id)
+    async def _prepare_session(self, session_id: str) -> None:
+        existing = self._event_tasks.get(session_id)
         if existing is not None:
-            if existing[0] is runtime and not existing[1].done():
-                return
-            existing[1].cancel()
-            await asyncio.gather(existing[1], return_exceptions=True)
-        events = runtime.attach_event_stream()
+            if not existing.done():
+                existing.cancel()
+            await asyncio.gather(existing, return_exceptions=True)
+        events = await (await self._host()).stream_events(session_id, "agent")
         task = asyncio.create_task(
-            self._forward_session_events(runtime, events),
-            name=f"xbot-acp-events-{runtime.session_id}",
+            self._forward_session_events(session_id, events),
+            name=f"xbot-acp-events-{session_id}",
         )
-        self._event_tasks[runtime.session_id] = (runtime, task)
+        self._event_tasks[session_id] = task
 
-    async def _runtime(self, session_id: str) -> Any:
+    async def _thread(self, session_id: str) -> ThreadSnapshot:
         try:
-            return await self.manager.get(session_id, "agent")
+            return await (await self._host()).thread_summary(session_id, "agent")
         except (SessionNotFound, ThreadNotActive) as exc:
             raise RequestError.resource_not_found(session_id) from exc
 
     async def _forward_session_events(
         self,
-        runtime: Any,
-        events: asyncio.Queue[dict[str, Any] | None],
+        session_id: str,
+        events: AsyncIterator[SessionStreamEvent],
     ) -> None:
-        mapper = ACPEventMapper(context_size=runtime.engine.context_window)
-        try:
-            while True:
-                event = await events.get()
-                if event is None:
-                    return
-                for update in mapper.updates(event):
-                    await self._update(runtime.session_id, update)
-        finally:
-            runtime.detach_event_stream(events)
+        summary = await self._thread(session_id)
+        mapper = ACPEventMapper(context_size=summary.context_window)
+        async for event in events:
+            for update in mapper.updates(event.to_dict()):
+                await self._update(session_id, update)
 
     async def _update(self, session_id: str, update: Any) -> None:
         if self.connection is None:
             raise RequestError.internal_error({"reason": "ACP client disconnected"})
         await self.connection.session_update(session_id=session_id, update=update)
 
-    async def _announce_commands(self, runtime: Any) -> None:
-        loader = runtime.services.get("loader")
-        commands = list_commands(extra=loader.commands if loader is not None else ())
+    async def _command_catalog(self, session_id: str) -> CommandCatalog:
+        return await (await self._host()).dispatch(
+            session_id,
+            "agent",
+            LIST_COMMANDS,
+            EmptyRequest(),
+        )
+
+    async def _slash_command(
+        self,
+        session_id: str,
+        content: str,
+    ) -> tuple[str, str] | None:
+        if not content.startswith("/") or "\n" in content:
+            return None
+        raw = content[1:]
+        name, _, args = raw.partition(" ")
+        catalog = await self._command_catalog(session_id)
+        command = next(
+            (item for item in catalog.commands if item.name == name),
+            None,
+        )
+        if command is None or command.kind != "server":
+            return None
+        return name, args
+
+    async def _announce_commands(self, session_id: str) -> None:
+        commands = (await self._command_catalog(session_id)).commands
         if not commands:
             return
         await self._update(
-            runtime.session_id,
+            session_id,
             AvailableCommandsUpdate(
                 session_update="available_commands_update",
                 available_commands=[
                     AvailableCommand(
-                        name=item["name"],
-                        description=item["description"],
+                        name=item.name,
+                        description=item.description,
                     )
                     for item in commands
                 ],
             ),
         )
 
-    def _config_options(self, runtime: Any) -> list[SessionConfigOptionSelect]:
+    async def _config_options(
+        self,
+        session_id: str,
+    ) -> list[SessionConfigOptionSelect]:
+        host = await self._host()
         options: list[SessionConfigOptionSelect] = []
-        definitions = runtime.services.agent_catalog.definitions()
+        catalog = await host.dispatch(
+            session_id,
+            "agent",
+            LIST_AGENTS,
+            EmptyRequest(),
+        )
+        definitions = catalog.agents
         agents = [
             definition
             for definition in definitions
             if definition.mode != "subagent"
         ]
         if agents:
-            active = str(
-                runtime.services.loop_state.metadata.get("agent")
-                or agents[0].name
-            )
             options.append(SessionConfigOptionSelect(
                 id="agent",
                 name="Agent",
                 category="_agent",
                 type="select",
-                current_value=active,
+                current_value=catalog.active or agents[0].name,
                 options=[
                     SessionConfigSelectOption(
                         value=definition.name,
@@ -514,61 +548,67 @@ class XBotACPAgent:
                 ],
             ))
 
-        llm = runtime.services.get("llm")
-        if llm is not None:
+        providers = await host.dispatch(
+            session_id,
+            "agent",
+            LIST_PROVIDERS,
+            EmptyRequest(),
+        )
+        if providers.providers:
+            summary = await self._thread(session_id)
             options.append(SessionConfigOptionSelect(
                 id="provider",
                 name="Provider / model",
                 category="model",
                 type="select",
-                current_value=runtime.provider_name,
+                current_value=summary.provider,
                 options=[
-                    SessionConfigSelectOption(value=name, name=name)
-                    for name in llm.names()
+                    SessionConfigSelectOption(value=item.name, name=item.name)
+                    for item in providers.providers
                 ],
             ))
         return options
 
     async def _run_command(
-        self, runtime: Any, name: str, raw_args: str
+        self, session_id: str, name: str, raw_args: str
     ) -> None:
-        result = await execute_command(
-            runtime,
-            name,
-            shlex.split(raw_args),
-            kind="server",
-            raw_args=raw_args,
+        result = await (await self._host()).dispatch(
+            session_id,
+            "agent",
+            EXECUTE_COMMAND,
+            ExecuteCommand(name, "server", raw_args),
         )
-        data = result.get("data") or {}
         await self._update(
-            runtime.session_id,
-            update_agent_message_text(str(data.get("message") or "")),
+            session_id,
+            update_agent_message_text(result.message),
         )
 
-    async def _replay_history(self, runtime: Any) -> None:
-        for update in replay_history(runtime.engine.messages):
-            await self._update(runtime.session_id, update)
+    async def _replay_history(self, session_id: str) -> None:
+        messages = await (await self._host()).messages(session_id, "agent")
+        for update in replay_history(list(messages)):
+            await self._update(session_id, update)
 
     async def _handle_interaction(
         self,
         session_id: str,
-        event: dict[str, Any],
+        event: SessionStreamEvent,
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         del timeout_seconds
-        data = event.get("data") or {}
+        data = event.data
         request_id = str(data.get("request_id") or "")
+        correlation_id = str(data.get("tool_call_id") or tool_call_id or "")
         if self.connection is None:
             return {
                 "request_id": request_id,
                 "status": "disconnected",
                 "reason": "ACP client disconnected",
             }
-        if event.get("type") == "permission_request":
+        if event.type == "permission_request":
             call = data.get("tool_call") or {}
-            call_id = str(call.get("id") or tool_call_id or request_id)
+            call_id = str(call.get("id") or correlation_id or request_id)
             response: RequestPermissionResponse = (
                 await self.connection.request_permission(
                     session_id=session_id,
@@ -637,7 +677,7 @@ class XBotACPAgent:
         ]
         mode = ElicitationFormSessionMode(
             session_id=session_id,
-            tool_call_id=tool_call_id or None,
+            tool_call_id=correlation_id or None,
             requested_schema=ElicitationSchema(
                 properties={
                     "answer": ElicitationStringPropertySchema(
@@ -666,6 +706,41 @@ class XBotACPAgent:
             "answer": content["answer"],
         }
 
+    async def _resolve_interaction(
+        self,
+        session_id: str,
+        event: SessionStreamEvent,
+    ) -> None:
+        if event.type not in {"permission_request", "user_input_required"}:
+            return
+        result = await self._handle_interaction(session_id, event)
+        host = await self._host()
+        request_id = str(result.get("request_id") or "")
+        if result.get("status") != "answered":
+            await host.cancel_interaction(
+                session_id,
+                "agent",
+                event.type,
+                request_id,
+                str(result.get("reason") or "cancelled"),
+            )
+            return
+        if event.type == "permission_request":
+            await host.respond_permission(
+                session_id,
+                "agent",
+                request_id,
+                str(result.get("decision") or "deny"),
+                str(result.get("scope") or "once"),
+            )
+            return
+        await host.respond_user_input(
+            session_id,
+            "agent",
+            request_id,
+            result.get("answer"),
+        )
+
     @staticmethod
     def _reject_additional_directories(
         additional_directories: list[str] | None,
@@ -680,7 +755,7 @@ class XBotACPAgent:
         workspace: str,
         session_id: str | None,
         mcp_servers: list[Any] | None,
-    ) -> dict[str, dict[str, Any]] | None:
+    ) -> dict[str, JsonObject] | None:
         if not mcp_servers:
             return None
         if self.no_plugins:
@@ -689,7 +764,7 @@ class XBotACPAgent:
             })
         # Plugin enablement is decided by the plugin tree (xcore.yaml /
         # plugins.yaml); requested servers are injected directly.
-        servers: dict[str, Any] = {}
+        servers: JsonObject = {}
         for server in mcp_servers:
             name = str(getattr(server, "name", ""))
             if not _MCP_NAME.fullmatch(name):
@@ -725,7 +800,7 @@ class XBotACPAgent:
                 raise RequestError.invalid_params({
                     "mcpServers": f"unsupported server type: {type(server).__name__}"
                 })
-        return {"mcp": {"servers": servers}}
+        return {MCP_PLUGIN_ID: {"servers": servers}}
 
 
 def _workspace(cwd: str) -> str:
@@ -735,59 +810,18 @@ def _workspace(cwd: str) -> str:
     return str(path.resolve())
 
 
-async def _select_agent(runtime: Any, name: str) -> None:
-    """Activate one primary Agent under the runtime's turn lock."""
-    require_idle(runtime, "switch Agent")
-    async with runtime.turn_lock:
-        await runtime.services.agent_runtime.select(name)
-    runtime.provider_name = runtime.engine.settings.provider
-
-
-async def _select_provider(runtime: Any, name: str) -> None:
-    """Select one provider under the runtime's turn lock."""
-    require_idle(runtime, "switch provider")
-    async with runtime.turn_lock:
-        await runtime.services.agent_runtime.select_provider(name)
-    runtime.provider_name = name
-
-
-def _session_metadata(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
-    try:
-        session = paths.session(session_id)
-    except ValueError as exc:
-        raise RequestError.invalid_params({"sessionId": session_id}) from exc
-    if not session.has_thread("agent"):
-        raise RequestError.resource_not_found(session_id)
-    store = CoreStateStore(
-        session,
-        thread_id="agent",
-        workspace_root="",
-        provider="",
-    )
-    return store.read_thread_metadata()
-
-
-def _prompt_content(blocks: list[Any], storage: Any) -> tuple[str, list[Any]]:
+def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageUpload]]:
     parts: list[str] = []
-    images = []
+    images: list[ImageUpload] = []
     for block in blocks:
         block_type = getattr(block, "type", "")
         if block_type == "text":
             parts.append(str(block.text))
         elif block_type == "image":
-            if storage is None:
-                raise RequestError.invalid_params({
-                    "prompt": "image storage is unavailable",
-                })
-            try:
-                images.append(storage.store_image(
-                    str(block.data),
-                    str(block.mime_type),
-                ))
-            except ValueError as exc:
-                raise RequestError.invalid_params({
-                    "prompt": str(exc),
-                }) from exc
+            images.append(ImageUpload(
+                data=str(block.data),
+                media_type=str(block.mime_type),
+            ))
         elif block_type == "resource":
             resource = block.resource
             text = getattr(resource, "text", None)
@@ -813,18 +847,6 @@ def _prompt_content(blocks: list[Any], storage: Any) -> tuple[str, list[Any]]:
     if not content and not images:
         raise RequestError.invalid_params({"prompt": "prompt is empty"})
     return content, images
-
-
-def _slash_command(runtime: Any, content: str) -> tuple[str, str] | None:
-    if not content.startswith("/") or "\n" in content:
-        return None
-    raw = content[1:]
-    name, _, args = raw.partition(" ")
-    loader = runtime.services.get("loader")
-    command = loader.get_command(name) if loader is not None else None
-    if command is None or command.kind != "server":
-        return None
-    return name, args
 
 
 def _usage(data: dict[str, int] | None) -> Usage | None:

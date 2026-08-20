@@ -9,6 +9,7 @@ from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.tree import load_server_tree
 from XBotv2.server.contracts import ServerOptions
+from XBotv2.session import SessionHostOptions
 
 
 async def start_server_application(
@@ -29,6 +30,7 @@ async def start_server_application(
     def prepare(ctx: Any) -> None:
         ctx.set("runtime_paths", paths)
         ctx.set("server_options", options)
+        ctx.set("session_host_options", SessionHostOptions(options.workspace_root))
         ctx.set("agent_application_factory", create_agent_application)
 
     return await boot_application(

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, TypeVar
 
 from XBotv2.core.messages import Message
+from XBotv2.core.operations import Operation
 from XBotv2.session.contracts import SessionStatus
 from XBotv2.session.types import (
     HistoryMutation,
@@ -19,6 +20,9 @@ from XBotv2.session.types import (
     SessionSnapshot,
     ThreadSnapshot,
 )
+
+RequestT = TypeVar("RequestT")
+ResponseT = TypeVar("ResponseT")
 
 
 class SessionPort(Protocol):
@@ -106,10 +110,27 @@ class SessionHostPort(Protocol):
         answer: Any,
     ) -> InteractionReceipt: ...
 
+    async def cancel_interaction(
+        self,
+        session_id: str,
+        thread_id: str,
+        event_type: Literal["permission_request", "user_input_required"],
+        request_id: str,
+        reason: str,
+    ) -> InteractionReceipt: ...
+
     async def close_session(self, session_id: str) -> None: ...
 
     async def close_thread(self, session_id: str, thread_id: str) -> None: ...
 
     async def interrupt(self, session_id: str, thread_id: str) -> InterruptResult: ...
+
+    async def dispatch(
+        self,
+        session_id: str,
+        thread_id: str,
+        operation: Operation[RequestT, ResponseT],
+        request: RequestT,
+    ) -> ResponseT: ...
 
 __all__ = ["SessionHostPort", "SessionPort"]

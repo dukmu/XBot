@@ -40,6 +40,7 @@ APPLICATION_CONFIG_SEED = PACKAGE / "application" / "config_seed.py"
 APPLICATION_TREE = PACKAGE / "application" / "tree.py"
 SERVER_APP = PACKAGE / "application" / "server.py"
 HTTP_SERVER = PACKAGE / "server" / "http.py"
+ACP_AGENT = PACKAGE / "acp" / "xbot_agent.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
     PACKAGE / "agentloop" / "tool_service.py",
@@ -162,6 +163,15 @@ XCORE_CONTEXT_API = {
     "stop",
     "unset",
 }
+ACP_FORBIDDEN_MODULES = {
+    "XBotv2.application.app",
+    "XBotv2.config.loader",
+    "XBotv2.persistence.store",
+    "XBotv2.session.manager",
+    "XBotv2.session.runtime",
+    "XBotv2.session.session",
+}
+ACP_FORBIDDEN_RUNTIME_ATTRIBUTES = {"engine", "manager", "runtime", "services"}
 
 
 @dataclass(frozen=True, order=True)
@@ -1152,6 +1162,37 @@ def check_plugin_reexports() -> list[Violation]:
     return violations
 
 
+def check_transport_host_boundaries() -> list[Violation]:
+    """Transport adapters consume public host ports, never live runtimes."""
+    violations: list[Violation] = []
+    for node in ast.walk(_tree(ACP_AGENT)):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules = [node.module]
+        else:
+            modules = []
+        for module in modules:
+            if module in ACP_FORBIDDEN_MODULES:
+                violations.append(Violation(
+                    ACP_AGENT,
+                    node.lineno,
+                    "transport-runtime-import",
+                    f"ACP imports concrete host implementation {module}",
+                ))
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in ACP_FORBIDDEN_RUNTIME_ATTRIBUTES
+        ):
+            violations.append(Violation(
+                ACP_AGENT,
+                node.lineno,
+                "transport-runtime-access",
+                f"ACP accesses concrete runtime attribute {node.attr!r}",
+            ))
+    return violations
+
+
 class _ContextAccessVisitor(ast.NodeVisitor):
     def __init__(self, context_name: str, root: ast.AST) -> None:
         self.context_name = context_name
@@ -1342,7 +1383,7 @@ def check_plugin_dependencies() -> list[Violation]:
                 "plugin-service-locator",
                 "plugin accesses a whole service bag or dynamic context attribute",
             ))
-    for profile in ("agent", "server"):
+    for profile in ("agent", "server", "session-host"):
         for cycle in _required_cycles(specs, profile):
             ordered = sorted(cycle, key=lambda item: item.entry_id)
             violations.append(Violation(
@@ -1377,6 +1418,7 @@ def main() -> int:
             *check_plugin_imports(),
             *check_plugin_reexports(),
             *check_plugin_dependencies(),
+            *check_transport_host_boundaries(),
         ],
     }
     selected = checks.values() if args.scope == "all" else (checks[args.scope],)

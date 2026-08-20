@@ -70,6 +70,12 @@ class InteractionWaiterPort(Protocol):
 
     def answer(self, request_id: str, **values: object) -> InteractionResultPort: ...
 
+    def cancel(
+        self,
+        request_id: str,
+        reason: str = "cancelled",
+    ) -> InteractionResultPort: ...
+
 
 class ClientEventSink(Protocol):
     async def __call__(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal
 
 from XBotv2.core.messages import Message
@@ -17,6 +18,11 @@ class SessionNotFound(KeyError):
 
 class SessionExists(RuntimeError):
     """A new session or thread conflicts with persisted state."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHostOptions:
+    workspace_root: Path
 
 
 class ThreadNotActive(RuntimeError):
@@ -46,6 +52,7 @@ class OpenSession:
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
+    plugin_configs: dict[str, JsonObject] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +89,8 @@ class SessionSnapshot:
     status: Literal["active", "inactive"]
     active_threads: int = 0
     thread_count: int = 0
+    workspace_root: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +110,8 @@ class ThreadSnapshot:
     usage: dict[str, int] = field(default_factory=dict)
     pending_interactions: tuple[str, ...] = ()
     status_slots: dict[str, str] = field(default_factory=dict)
+    workspace_root: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +145,9 @@ class SessionStreamEvent:
             raise TypeError("session stream event data must be an object")
         return cls(type=event_type, data=json_object(data))
 
+    def to_dict(self) -> JsonObject:
+        return {"type": self.type, "data": json_object(self.data)}
+
 
 @dataclass(frozen=True, slots=True)
 class InteractionReceipt:
@@ -157,6 +171,7 @@ __all__ = [
     "OpenThread",
     "SendMessage",
     "SessionExists",
+    "SessionHostOptions",
     "SessionNotFound",
     "SessionStreamEvent",
     "SessionSnapshot",

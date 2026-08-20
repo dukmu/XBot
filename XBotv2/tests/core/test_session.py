@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.events import EventContext
 from XBotv2.session.runtime import SessionRuntime
 
 
@@ -129,6 +130,24 @@ async def test_completion_stages_into_inbox_without_a_turn(tmp_path):
     notice = await asyncio.wait_for(events.get(), timeout=1)
     assert notice["type"] == "completion_notice"
     assert session.turn_task is None, "completion must not start a turn"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_configuration_updates_session_provider_projection(tmp_path):
+    session = runtime(tmp_path)
+
+    await session._on_agent_configured(EventContext(
+        config=SimpleNamespace(
+            agent_name="default",
+            provider="selected",
+            model="model-1",
+            model_mode="chat",
+            context_window=4096,
+        ),
+    ))
+
+    assert session.provider_name == "selected"
     await session.close()
 
 

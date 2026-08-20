@@ -791,3 +791,25 @@
 - Verification: architecture checker reports zero violations; 52 focused
   Compact/protocol/public API tests passed. Python compilation and
   `git diff --check` passed.
+
+### 2026-08-20 · ACP on the typed Session host
+
+- Added a transport-neutral `session-host` XCore profile containing only the
+  persistence reader and Session host. The mounted application handle exposes
+  `SessionHostPort` and lifecycle close without exposing the root Context.
+- ACP now uses Session host resources and typed Agents/LLM/Commands operations
+  for open, list, fork, prompt, history replay, configuration, and commands. It
+  no longer imports SessionManager/SessionRuntime, Persistence stores, Config
+  loaders, or accesses Engine and service bags.
+- ACP interactions now follow the normal client protocol: consume the
+  permission/user-input event from the Session stream, ask the ACP client, and
+  answer or cancel through SessionHostPort. MCP's plugin id is exported by its
+  package root instead of being duplicated in ACP, and per-session plugin
+  config is restricted to JSON values.
+- Session summaries now carry workspace/title for non-HTTP clients, and active
+  provider changes update the Session projection. Architecture checks enforce
+  the ACP boundary and include the new profile's required-service graph.
+- Verification: architecture checker reports zero violations; 48 focused
+  Session/server/protocol tests passed; all 4 ACP tests passed outside the
+  socket-restricted sandbox; and the real HTTP typed SDK plus SSE integration
+  passed in 61.06s. Python compilation and `git diff --check` passed.

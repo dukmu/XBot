@@ -12,6 +12,7 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import Operation, OperationContext
+from XBotv2.core.tools import JsonObject
 from XBotv2.permissions import PermissionsPort
 
 
@@ -139,7 +140,7 @@ class AgentApplicationOptions:
     thread_id: str
     workspace_root: Path
     no_plugins: bool
-    plugin_configs: dict[str, dict[str, object]] | None = None
+    plugin_configs: dict[str, JsonObject] | None = None
     model_override: BaseProvider | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None

@@ -60,6 +60,15 @@ def load_server_tree(*, paths: Any) -> PluginTree:
     return selected
 
 
+def load_session_host_tree(*, paths: Any) -> PluginTree:
+    """Load the transport-neutral process Session host profile."""
+    tree = PluginTree.from_yaml(DEFAULT_TREE)
+    plugins_file = paths.config_dir / "plugins.yaml"
+    if plugins_file.exists():
+        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
+    return tree.for_profile("session-host")
+
+
 def _external_entries(
     plugin_dirs: list[Path | str] | None,
     disabled: frozenset[str],
@@ -84,4 +93,9 @@ def _external_entries(
     return entries
 
 
-__all__ = ["DEFAULT_TREE", "load_agent_tree", "load_server_tree"]
+__all__ = [
+    "DEFAULT_TREE",
+    "load_agent_tree",
+    "load_server_tree",
+    "load_session_host_tree",
+]

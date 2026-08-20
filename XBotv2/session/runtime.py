@@ -115,6 +115,9 @@ class SessionRuntime:
     async def _on_agent_configured(self, event: EventContext) -> None:
         """Project provider/model selection changes for status displays."""
         config = event.config
+        provider = getattr(config, "provider", None)
+        if provider:
+            self.provider_name = str(provider)
         data = {
             key: value
             for key in (

@@ -15,6 +15,7 @@ from xcore import S
 
 from .mcp_client import MCPClient
 from .callbacks import client_callbacks
+from .invariants import MCP_PLUGIN_ID
 from .tool import MCPTool
 
 import logging
@@ -24,7 +25,7 @@ logger = logging.getLogger("xbotv2.mcp")
 
 class MCPPlugin:
     inject = ["tools", "model", "interactions", "session"]
-    name = "mcp_plugin"
+    name = MCP_PLUGIN_ID
     Config = S.object({
         "servers": S.any().optional(),
     })

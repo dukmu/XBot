@@ -271,11 +271,11 @@
 # load_server_tree; Python code does not maintain a parallel capability list.
 - id: server.persistence
   name: persistence.host
-  profiles: [server]
+  profiles: [server, session-host]
 
 - id: server.session
   name: session.manager
-  profiles: [server]
+  profiles: [server, session-host]
   reloadable: false
 
 - id: server

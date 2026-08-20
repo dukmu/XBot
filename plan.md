@@ -143,17 +143,16 @@ stop 和伪造结果入口已删除。
 7. server 不再提供 `web_server` 兼容 service，也不把 manager/paths/services 写入
    FastAPI `app.state`。
 
-扫描零违规只是当前门禁的证据，不代表最终完成。Agent loop、Permission Request、
-Interactions、Jobs 和 Session 的主要 C/S events 已在 producer boundary 通过 owner
-protocol model 校验；Session host stream DTO 只接受 JSON-compatible payload。下一步
-继续收敛 Compact 等可选插件 events、通用 `EventContext.client_event` 类型和 ACP 对
-concrete SessionManager/runtime 的依赖，
-再执行全仓配置硬编码、Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
+扫描零违规只是当前门禁的证据，不代表最终完成。当前 outbound events 已在 producer
+boundary 通过 owner protocol model 校验，通用 `ClientEvent`/router/sink 已 typed；
+Compact 拥有自身 event protocol。ACP 已改用独立 `session-host` XCore profile、
+`SessionHostPort` 和 Agents/LLM/Commands operations，不再导入 SessionManager/runtime、
+Persistence store、Config loader 或访问 service bag。下一步继续执行全仓配置硬编码、
+Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 
 扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
-语义、ACP 的 concrete composition import、producer-owned outbound event 完整迁移，
-以及真实 provider/interactive smoke。不得为通过旧测试恢复 app.state、`.registry`
-或 SessionRuntime service bag。
+语义、真实 provider/interactive smoke，以及其他客户端是否完整消费 typed host API。
+不得为通过旧测试恢复 app.state、`.registry` 或 SessionRuntime service bag。
 
 ## 目标插件目录
 
@@ -217,7 +216,7 @@ concrete SessionManager/runtime 的依赖，
 | Plugin | 目标 inject | Public/runtime surface |
 |---|---|---|
 | `persistence.host` | `runtime_paths` | typed `StateReaderFactory` |
-| `session.host` | `state_reader_factory`, `runtime_paths`, `agent_application_factory`, `server_options` | `SessionHostPort`; root-to-child typed operation routing |
+| `session.host` | `state_reader_factory`, `runtime_paths`, `agent_application_factory`, `session_host_options` | `SessionHostPort`; root-to-child typed operation routing |
 | `server` | none | server route contribution event、ASGI app、generic error mapping |
 | `server.protocol` | `server`, `server_info` | hello/health wire models 与 routes |
 | `session.protocol` | `server`, `session_host`, `server_options` | session/thread/message/history/SSE wire models 与 routes |
@@ -341,7 +340,7 @@ manager/service implementation；route mount/unmount/collision 由 fiber 测试�
 3. coretools/browser/skills 删除任意 injected kwargs，改用 typed binding；
 4. compact/goal/todolist 将 state/invariant 声明从实现中分离；
 5. ACP 改为 typed application/session operations，不导入 manager/persistence/config
-   实现；
+   实现（已完成并纳入 architecture checker）；
 6. TUI/Web 保持 wire client 边界，删除残留 protocol business helpers。
 
 验收：可选插件能独立装卸；ACP/TUI/HTTP 对同一 operation 保持一致结果与错误语义。

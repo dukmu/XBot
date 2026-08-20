@@ -54,6 +54,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.compact as compact
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
+    import XBotv2.mcp_plugin as mcp_plugin
     import XBotv2.permissions as permissions
     import XBotv2.sandbox as sandbox
     import XBotv2.server as server
@@ -69,6 +70,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "LlmCatalogPort",
         "ProviderCatalog",
     }
+    assert mcp_plugin.__all__ == ["MCP_PLUGIN_ID"]
     assert set(permissions.__all__) == {
         "PermissionsPort",
         "build_permissions_commands",

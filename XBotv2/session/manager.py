@@ -10,13 +10,14 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.errors import OperationError
 from XBotv2.core.messages import Message
+from XBotv2.core.tools import JsonObject
 from XBotv2.session.runtime import SessionBusy, SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
@@ -171,7 +172,7 @@ class SessionManager:
         selected_agent: str | None = None,
         mode: str = "new",
         no_plugins: bool,
-        plugin_configs: dict[str, dict[str, Any]] | None = None,
+        plugin_configs: dict[str, JsonObject] | None = None,
         llm_override: Any | None = None,
         parent_thread_id: str = "",
         parent_permission_system: Any | None = None,
@@ -327,6 +328,7 @@ class SessionManager:
             mode=request.mode,
             no_plugins=request.no_plugins,
             llm_override=request.model_override,
+            plugin_configs=request.plugin_configs,
         )
         return await _opened_session(runtime)
 
@@ -538,6 +540,33 @@ class SessionManager:
             answer=answer,
         )
 
+    async def cancel_interaction(
+        self,
+        session_id: str,
+        thread_id: str,
+        event_type: Literal["permission_request", "user_input_required"],
+        request_id: str,
+        reason: str,
+    ) -> InteractionReceipt:
+        runtime = await self.get(session_id, thread_id)
+        waiter = runtime.application.client_events.waiter(event_type)
+        if waiter is None:
+            raise OperationError(
+                "capability_unavailable",
+                f"No waiter is registered for {event_type!r}",
+            )
+        try:
+            waiter.cancel(request_id, reason)
+        except Exception as exc:
+            raise OperationError(
+                "interaction_no_longer_pending",
+                str(exc),
+            ) from exc
+        return InteractionReceipt(
+            request_id=request_id,
+            pending_interactions=tuple(pending_interactions(runtime)),
+        )
+
     async def _respond_interaction(
         self,
         session_id: str,
@@ -669,6 +698,8 @@ async def thread_summary(
             usage=snapshot.usage,
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
+            workspace_root=active.workspace_root,
+            title=str(metadata.get("title") or session_id),
         )
 
     session = manager.paths.session(session_id)
@@ -693,6 +724,8 @@ async def thread_summary(
         context_window=int(metadata.get("context_window") or 0),
         message_count=store.message_count(),
         usage=_read_usage(store.paths.usage_file),
+        workspace_root=str(metadata.get("workspace_root") or ""),
+        title=str(metadata.get("title") or session_id),
     )
 
 
@@ -718,11 +751,18 @@ async def session_summary(
     active_threads = sum(
         1 for active_session_id, _ in active if active_session_id == session_id
     )
+    main = (
+        await thread_summary(manager, session_id, "agent")
+        if "agent" in thread_ids
+        else None
+    )
     return SessionSnapshot(
         session_id=session_id,
         status="active" if active_threads else "inactive",
         active_threads=active_threads,
         thread_count=len(thread_ids),
+        workspace_root=main.workspace_root if main is not None else "",
+        title=main.title if main is not None else session_id,
     )
 
 
@@ -769,7 +809,7 @@ class SessionHost:
         "state_store_factory",
         "runtime_paths",
         "agent_application_factory",
-        "server_options",
+        "session_host_options",
     ]
 
     def apply(self, ctx, config=None) -> None:
@@ -878,7 +918,7 @@ class SessionHost:
             lambda: ServerStatus(
                 sessions=manager.size,
                 threads=manager.thread_count,
-                workspace_root=str(ctx.server_options.workspace_root),
+                workspace_root=str(ctx.session_host_options.workspace_root),
             ),
         )
         manager.start_reaper()
