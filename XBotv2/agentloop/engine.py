@@ -221,8 +221,8 @@ class Engine:
             result = await self._events.serial(event, payload)
             if result is not None and not isinstance(result, dict):
                 raise TypeError(
-                    f"Short-circuit hook {event} must return a dict or "
-                    f"ToolDecision, got {type(result).__name__}"
+                    f"Short-circuit hook {event} must return a dict, "
+                    f"got {type(result).__name__}"
                 )
             return result
         await self._events.emit(event, payload)

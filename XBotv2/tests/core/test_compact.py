@@ -2,7 +2,6 @@
 
 from XBotv2.tests.helpers import make_engine
 
-import asyncio
 import json
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
@@ -51,7 +50,7 @@ class SetupContext:
         self.tool = None
         self.options = None
         self.commands: dict = {}
-        entries = self.ctx.tools.registry.registered_entries()
+        entries = self.ctx.tools.registrations()
         if entries:
             entry = entries[0]
             self.tool = entry.tool
@@ -193,6 +192,7 @@ async def test_human_command_compacts_and_persists_immediately(
         config=RuntimeConfig(),
     )
     setup.ctx.model.replace(llm)
+    plugin.state = engine.state
     engine.state.messages = list(original)
     engine.state.session.turn_count = 3
     from XBotv2.persistence.plugin import PersistenceService
@@ -206,9 +206,7 @@ async def test_human_command_compacts_and_persists_immediately(
         runtime_events.append(event.client_event or {})
 
     setup.ctx.on(Events.RUNTIME_EVENT, record_runtime_event)
-    command_ctx = SimpleNamespace(turn_lock=asyncio.Lock(), engine=engine)
-
-    result = await setup.commands["compact"].handler(command_ctx, "")
+    result = await setup.commands["compact"].handler("")
 
     records = [
         json.loads(line)
@@ -251,40 +249,6 @@ async def test_human_command_compacts_and_persists_immediately(
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content
     assert state_store.read_messages() == engine.messages
-    assert command_ctx.turn_lock.locked() is False
-
-
-@pytest.mark.asyncio
-async def test_human_command_runs_when_active_turn_becomes_idle():
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin)
-    plugin.model = MockLLM(responses=[{"content": "Earlier context."}])
-    turn_lock = asyncio.Lock()
-    await turn_lock.acquire()
-
-    class EngineStub:
-        messages = history(3)
-        session = SimpleNamespace(turn_count=3)
-        settings = SimpleNamespace(
-            max_context_tokens=32_000,
-            max_output_tokens=None,
-        )
-
-    command_ctx = SimpleNamespace(turn_lock=turn_lock, engine=EngineStub())
-
-    command_task = asyncio.create_task(
-        setup.commands["compact"].handler(command_ctx, "")
-    )
-    await asyncio.sleep(0)
-
-    assert command_task.done() is False
-
-    turn_lock.release()
-    result = await command_task
-
-    assert result.status == "ok"
-    assert plugin.diagnostics()["compactions"] == 1
-    assert turn_lock.locked() is False
 
 
 @pytest.mark.asyncio

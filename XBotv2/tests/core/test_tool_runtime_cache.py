@@ -43,14 +43,13 @@ from XBotv2.tests.helpers import make_tool_ctx
 
 async def execute_tools(
     tool_calls,
-    registry,
+    _registry,
     *,
     ctx,
     context_factory=None,
     **_obsolete,
 ):
-    """Exercise the agent-loop service, not its private execution node."""
-    assert ctx.tools.registry is registry
+    """Exercise the public agent-loop Tools service."""
     return await ctx.tools.execute_all(
         tool_calls,
         context_factory=context_factory,
@@ -712,6 +711,13 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         permissions=PermissionSystem(default_decision="allow"),
         base=plugin_ctx,
     )
+    guard_calls = []
+
+    def observe_guard(tool_call, _entry):
+        guard_calls.append((tool_call.id, tool_call.name, dict(tool_call.args)))
+        return None
+
+    ctx.tools.guard(observe_guard)
     results = await execute_tools(
         [
             ToolCall(
@@ -729,6 +735,15 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     assert results[0].tool_call_id == "rewritten_id"
     assert not (temp_workspace / "old.txt").exists()
     assert (temp_workspace / "rewritten.txt").read_text(encoding="utf-8") == "ok"
+    assert guard_calls == [(
+        "rewritten_id",
+        "edit",
+        {
+            "path": str(temp_workspace / "rewritten.txt"),
+            "mode": "write",
+            "content": "ok",
+        },
+    )]
     assert calls[0] == ("before", "old_id", "old.txt")
     assert calls[1] == (
         "after",
@@ -742,6 +757,46 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         str(temp_workspace / "rewritten.txt"),
         "rewritten_id",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shortcut",
+    [
+        {"deny_reason": "blocked"},
+        {"tool_result": "cached"},
+        "blocked",
+    ],
+)
+async def test_before_tool_call_rejects_policy_shortcuts(
+    shortcut,
+    temp_workspace,
+):
+    registry = ToolRegistry()
+    registry.register(large_output_tool)
+    plugin_ctx = xcore.Context()
+
+    async def short_circuit(_ctx):
+        return shortcut
+
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, short_circuit)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=SandboxPolicy(
+            enabled=False,
+            workspace_root=temp_workspace,
+        ),
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+
+    with pytest.raises(TypeError, match="BEFORE_TOOL_CALL"):
+        await execute_tools(
+            [ToolCall("c1", "large_output", {})],
+            registry,
+            ctx=ctx,
+            context_factory=_event_context,
+        )
 
 
 @pytest.mark.asyncio

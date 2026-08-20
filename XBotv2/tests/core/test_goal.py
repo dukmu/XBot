@@ -35,7 +35,7 @@ class SetupContext:
         self.tools: dict = {}
         self.options: dict = {}
         self.commands: dict = {}
-        for entry in self.ctx.tools.registry.registered_entries():
+        for entry in self.ctx.tools.registrations():
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
@@ -81,19 +81,19 @@ async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     async def enqueue(*_args, **_kwargs):
         queued.append(True)
 
-    ctx = SimpleNamespace(send_input=enqueue)
+    plugin._send_input = enqueue
 
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
     duplicate = await plugin.create_goal("replace implicitly")
-    updated = await plugin._goal_command(ctx, "document the API")
+    updated = await plugin._goal_command("document the API")
     missing_summary = await plugin.update_goal("complete", "")
     completed = await plugin.update_goal("complete", "Documented and tested the API.")
     inspected = await plugin.get_goal()
-    resumed = await plugin._goal_command(ctx, "resume")
+    resumed = await plugin._goal_command("resume")
     blocked = await plugin.update_goal("blocked", "Waiting for human review.")
     viewed_blocked = await plugin.get_goal()
-    cleared = await plugin._goal_command(ctx, "clear")
+    cleared = await plugin._goal_command("clear")
 
     assert empty.status == "success"
     assert created.status == "success"
@@ -123,8 +123,7 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
     long_summary = await plugin.update_goal("complete", "x" * 2_001)
     bad_budget = await plugin.create_goal("another", token_budget=0)
     bad_command_budget = await plugin._goal_command(
-        SimpleNamespace(send_input=None),
-        "--token-budget nope another objective",
+        "--token-budget nope another objective"
     )
 
     assert invalid_status.error.code == "invalid_status"
@@ -345,17 +344,19 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
     from XBotv2.loader import Loader, PluginTree
 
     ctx = mount_ctx(state_store)
-    registry = ctx.tools.registry
+    tools = ctx.tools
     loader = Loader(ctx, tree=PluginTree.from_dict([
         {"id": "goal", "name": "goal"},
     ]))
 
     await loader.load()
     assert isinstance(loader.get("goal"), GoalPlugin)
-    await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
+    tool = tools.resolve("create_goal")
+    assert tool is not None
+    await tool.ainvoke({"objective": "retain me"})
 
     assert await loader.unload("goal") is True
-    assert registry.registered_names() == []
+    assert tools.registered_names() == ()
     import json as _json
     state_path = state_store.paths.state_dir / "state.json"
     data = _json.loads(state_path.read_text(encoding="utf-8"))

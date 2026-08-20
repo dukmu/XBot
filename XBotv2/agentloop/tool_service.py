@@ -119,7 +119,7 @@ class ToolsService:
     ) -> list[Any]:
         """Run the full tool-execution guard pipeline.
 
-        Pipeline per call: ``BEFORE_TOOL_CALL`` event waterfall, schema
+        Pipeline per call: rewrite-only ``BEFORE_TOOL_CALL`` event, schema
         validation, monotonic guards, dispatch, and ``AFTER_TOOL_CALL``.
         Runtime dependencies belong to this service; the agent loop only
         submits calls and receives their ordered results.

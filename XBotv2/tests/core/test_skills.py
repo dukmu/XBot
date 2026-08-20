@@ -191,31 +191,35 @@ Body
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         mount_plugin(plugin, state_store)
-        registry = plugin.ctx.tools.registry
+        tools = plugin.ctx.tools
         ctx = EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=SimpleNamespace(max_context_tokens=1_000),
         )
 
         await plugin._on_session_init(ctx)
-        first_names = registry.registered_names()
+        first_names = tools.registered_names()
         await plugin._on_session_init(ctx)
 
-        assert registry.registered_names() == first_names
-        assert plugin._skill_tools == first_names
+        assert tools.registered_names() == first_names
+        assert tuple(plugin._skill_tools) == first_names
         assert "skills:project:manual-only" not in first_names
         assert plugin.ctx.commands.get("manual-only").kind == "prompt"
-        model_only = registry.get_registered("skills:project:model-only")
+        model_only = next(
+            entry
+            for entry in tools.registrations()
+            if entry.registered_name == "skills:project:model-only"
+        )
         assert model_only is not None
         assert model_only.model_visible is True
         assert plugin.ctx.commands.get("model-only") is None
         assert plugin.ctx.commands.get("test-skill").kind == "prompt"
-        entry = registry.get("skills:project:test-skill")
-        assert entry is not None
+        tool = tools.resolve("skills:project:test-skill")
+        assert tool is not None
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80
 
-        result = await entry.tool.ainvoke({})
+        result = await tool.ainvoke({})
 
         assert result.status == "success"
         assert "test skill body" in result.content.lower()
@@ -259,18 +263,10 @@ Body
         self,
         skill_workspace,
         state_store,
-        temp_workspace,
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext
-        from XBotv2.context_builder.builder import ContextBuilder
-        from XBotv2.agentloop.engine import Engine
-        from XBotv2.llm.mock import MockLLM
-        from XBotv2.permissions.system import PermissionSystem
-        from XBotv2.agentloop.tool_registry import ToolRegistry
-        from XBotv2.sandbox.policy import SandboxPolicy
+        from XBotv2.core import EventContext, ToolCall
         from plugin_harness import mount_plugin
-        from xcore import Context
 
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
@@ -279,35 +275,12 @@ Body
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
             config=None,
         ))
-        engine = make_engine(
-            llm=MockLLM(responses=[
-                {
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "manual",
-                        "name": "manual-only",
-                        "args": {},
-                    }],
-                },
-                {"content": "done"},
-            ]),
-            tool_registry=plugin.ctx.tools.registry,
-            plugin_ctx=Context(),
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(
-                enabled=False,
-                workspace_root=str(temp_workspace),
-            ),
-            permission_system=PermissionSystem(default_decision="allow"),
-            config=RuntimeConfig(),
+        results = await plugin.ctx.tools.execute_all(
+            [ToolCall("manual", "manual-only", {})],
         )
 
-        events = [event async for event in engine.run_turn("load manual skill")]
-        tool_event = next(event for event in events if event["type"] == "tool_result")
-
-        assert tool_event["data"]["status"] == "error"
-        assert "not registered" in tool_event["data"]["content"].lower()
+        assert results[0].status == "error"
+        assert "not registered" in results[0].content.lower()
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
@@ -457,8 +430,8 @@ Body
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         mount_plugin(plugin, state_store)
-        registry = plugin.ctx.tools.registry
-        collision_name = registry.register(
+        tools = plugin.ctx.tools
+        collision_name = tools.register(
             Tool.from_function(existing_tool, name="test-skill"),
             namespace="skills:project",
         )
@@ -469,7 +442,7 @@ Body
         with pytest.raises(ValueError, match="already registered"):
             await plugin._on_session_init(ctx)
 
-        assert registry.registered_names() == [collision_name]
+        assert tools.registered_names() == (collision_name,)
         assert plugin._skill_tools == []
         assert plugin._initialized is False
         assert plugin.diagnostics()["skills"] == 0

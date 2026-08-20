@@ -51,8 +51,9 @@ The model receives structured Tools suited to JSON-schema invocation:
 - `update_goal(status, summary)`, where status is `complete` or `blocked`
 
 Pause, resume, clear, and objective replacement remain human controls. The
-plugin returns `ToolDecision.ALLOW` for its three basic state Tools, avoiding an
-`ask` prompt. An explicit core permission denial still wins.
+three Goal Tools use the standard schema, sandbox, and permission guard
+pipeline. Goal does not preapprove its own Tools or create a parallel policy
+path.
 
 After `update_goal`, the normal Agent loop continues so the model can summarize
 the result to the human. The Tool result contains the terminal state and summary

@@ -313,9 +313,10 @@ ownership.
 Persists one session objective. Humans manage it through `/goal`; the Agent uses
 `create_goal`, `get_goal`, and `update_goal`. Both surfaces reuse plugin-owned
 state transitions but have separate dispatch paths. Active goals schedule their
-next continuation turn until completed, blocked, or paused. Goal
-preapproves its basic Agent Tools through `BEFORE_TOOL_CALL`; Core contains no
-Goal-specific permission or command logic. It does not own todo steps.
+next continuation turn until completed, blocked, or paused. Goal Tools use the
+same schema, sandbox, and permission guard pipeline as every other Tool; Core
+contains no Goal-specific permission or command logic. It does not own todo
+steps.
 
 ### SkillsPlugin (`skills/`)
 

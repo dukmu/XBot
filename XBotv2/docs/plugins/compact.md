@@ -75,9 +75,9 @@ Auxiliary calls do not recursively run model Hooks or stream assistant deltas.
 The agent Tool and human `/compact` command are separate registrations owned by
 the same plugin. Only the Agent path enters Tool Hooks and permissions; it sets
 the manual-request flag for the next safe `BEFORE_CONTEXT` boundary. The plugin
-preapproves that Tool request at `BEFORE_TOOL_CALL`. The human command acquires
-the session turn lock and immediately runs the same `BEFORE_CONTEXT`,
-`PRE_COMPACT`, `POST_COMPACT`, and `STATE_CHANGED` path without starting a model
-turn. If another turn owns the lock, the command runs as soon as that turn ends.
+does not bypass the standard Tool guard pipeline. The human command acquires the
+session turn lock and immediately runs the same `BEFORE_CONTEXT`, `PRE_COMPACT`,
+`POST_COMPACT`, and `STATE_CHANGED` path without starting a model turn. If
+another turn owns the lock, the command runs as soon as that turn ends.
 Automatic requests are evaluated at `BEFORE_MODEL_REQUEST`; a successful replacement
 causes Core to rebuild context before issuing any provider request.

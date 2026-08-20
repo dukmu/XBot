@@ -266,8 +266,8 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 - Skill content enters context through the normal prompt-expansion or Tool-result
   path; the plugin does not add a repeated active-skill system message.
 - `ON_TURN_END`: clear active skills and permission scopes
-- `BEFORE_TOOL_CALL`: enforce active-skill tool restrictions before core
-  permission checks
+- `ctx.tools.guard(...)`: enforce active-skill tool restrictions in the shared
+  monotonic guard pipeline
 
 **Tools and prompt commands:**
 - A model-invocable skill is registered as a namespaced Tool with its SKILL.md

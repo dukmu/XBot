@@ -11,7 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from XBotv2.core.events import EventPort, Events, ToolAction, ToolDecision
+from XBotv2.core.events import EventPort, Events
 from XBotv2.core.tools import GuardDecision, ToolCall, ToolError, ToolResult, tool_parameters_schema
 from XBotv2.core.messages import Message
 
@@ -40,7 +40,7 @@ async def execute_tools(
     """Execute tool calls through the guard pipeline.
 
     Pipeline per call:
-    1. ``BEFORE_TOOL_CALL`` event waterfall (rewrite / deny / stop).
+    1. ``BEFORE_TOOL_CALL`` event waterfall (rewrite only).
     2. Schema validation.
     3. Registered guards. Guards must resolve their own policy to allow/deny.
     4. Dispatch with dependencies captured when the tool was registered.
@@ -181,7 +181,17 @@ async def _execute_one_tool(
         if events is not None and before_ctx is not None
         else None
     )
-    if isinstance(before_result, dict):
+    if before_result is not None:
+        if not isinstance(before_result, dict):
+            raise TypeError(
+                "BEFORE_TOOL_CALL must return a tool_call/args rewrite or None"
+            )
+        unsupported = set(before_result) - {"tool_call", "args"}
+        if unsupported:
+            fields = ", ".join(sorted(unsupported))
+            raise TypeError(
+                f"BEFORE_TOOL_CALL cannot short-circuit tool policy: {fields}"
+            )
         if "tool_call" in before_result:
             call = before_result["tool_call"]
             if not isinstance(call, ToolCall):
@@ -198,50 +208,10 @@ async def _execute_one_tool(
             tool = entry.tool
             args = dict(call.args)
         if "args" in before_result:
-            args = dict(before_result["args"])
-        if "tool_result" in before_result:
-            message = _coerce_tool_message(before_result["tool_result"], tool_id)
-            observed_call = ToolCall(tool_id, tool_name, args)
-            observed_tool_calls.append(observed_call)
-            results.append(message)
-            await _run_tool_event(events, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
-            return
-        if "deny_reason" in before_result:
-            observed_call = ToolCall(tool_id, tool_name, args)
-            msg = _error_message(observed_call, str(before_result["deny_reason"]))
-            observed_tool_calls.append(observed_call)
-            results.append(msg)
-            await _emit_tool_denied(events, context_factory, observed_call, str(before_result["deny_reason"]))
-            return
-    elif isinstance(before_result, ToolDecision):
-        if before_result.action is ToolAction.ALLOW:
-            pass
-        elif before_result.action is ToolAction.DENY:
-            reason = before_result.reason or f"Tool call denied by hook: {tool_name}"
-            if before_ctx is not None:
-                before_ctx.deny_reason = reason
-            observed_call = ToolCall(tool_id, tool_name, args)
-            msg = _error_message(observed_call, reason)
-            observed_tool_calls.append(observed_call)
-            results.append(msg)
-            await _emit_tool_denied(events, context_factory, observed_call, reason)
-            return
-        elif before_result.action is ToolAction.STOP:
-            reason = before_result.reason or f"Tool call stopped by hook: {tool_name}"
-            if before_ctx is not None:
-                before_ctx.deny_reason = reason
-            observed_call = ToolCall(tool_id, tool_name, args)
-            msg = _error_message(observed_call, reason)
-            observed_tool_calls.append(observed_call)
-            results.append(msg)
-            return
-    elif before_result is not None:
-        observed_call = ToolCall(tool_id, tool_name, args)
-        msg = _error_message(observed_call, f"Tool call blocked by hook: {tool_name}")
-        observed_tool_calls.append(observed_call)
-        results.append(msg)
-        await _emit_tool_denied(events, context_factory, observed_call, str(msg.content))
-        return
+            rewritten_args = before_result["args"]
+            if not isinstance(rewritten_args, dict):
+                raise TypeError("BEFORE_TOOL_CALL args must be a dict")
+            args = dict(rewritten_args)
 
     call = ToolCall(tool_id, tool_name, args)
     try:

@@ -637,3 +637,29 @@
   reproducibly reports 17 remaining migration violations. The broader MCP
   selection was interrupted after 9 passes because an unchanged Tool wrapper
   error-result test did not terminate; it is not recorded as passing.
+
+### 2026-08-20 · One monotonic Tool policy pipeline
+
+- `BEFORE_TOOL_CALL` is now a rewrite-only extension point. A listener may
+  return a replacement `ToolCall` and/or argument dict; any policy decision,
+  synthetic result, unknown key, or arbitrary non-dict return is a contract
+  error.
+- Rewritten calls are resolved again, validated against the final Tool schema,
+  and passed through every registered sandbox/skill/permission guard before
+  invocation. Event listeners can no longer allow, deny, stop, or return a
+  cached result ahead of those guards.
+- Removed `ToolAction`, `ToolDecision`, and `EventContext.deny_reason` from the
+  core API. Goal and Compact documentation now states that their Agent Tools
+  use the same guard pipeline as every other Tool.
+- Migrated Tool, Goal, Compact, and Skills test harnesses away from the removed
+  `ctx.tools.registry` and legacy command-context signatures. The tests consume
+  public registration/resolve/execute methods; the obsolete Compact command
+  turn-lock test was removed because command handlers no longer receive an
+  Engine/lock container.
+- Verification: 102 Tool/Goal/Compact/public API/architecture/permission/
+  sandbox tests passed; the dedicated rewrite and policy-shortcut tests are
+  included. Python compilation and `git diff --check` passed. The architecture
+  scanner decreased from 17 to 16 violations, all in session HTTP/runtime
+  ownership. Broader Engine and Skills selections each reached the affected
+  test successfully but did not terminate during later async teardown, so they
+  are not recorded as passing.

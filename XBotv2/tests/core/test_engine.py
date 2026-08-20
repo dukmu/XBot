@@ -1182,47 +1182,6 @@ class TestEngineHooks:
         assert ("denied", "missing", "PermissionError") in calls
 
     @pytest.mark.asyncio
-    async def test_hook_denial_does_not_request_permission(
-        self,
-        state_store,
-        temp_workspace,
-    ):
-        llm = MockLLM(responses=[
-            {
-                "content": "tools",
-                "tool_calls": [
-                    {"name": "echo", "args": {"message": "hi"}, "id": "call_1"},
-                ],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool)
-
-        async def deny_call(ctx):
-            return {"deny_reason": "blocked by plugin policy"}
-
-        plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.BEFORE_TOOL_CALL, deny_call)
-        engine = make_engine(
-            llm=llm,
-            tool_registry=registry,
-            plugin_ctx=plugin_ctx,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="ask"),
-            config=RuntimeConfig(),
-        )
-
-        events = [event async for event in engine.run_turn("test")]
-
-        assert not any(event["type"] == "permission_request" for event in events)
-        tool_message = next(message for message in engine.messages if message.role == "tool")
-        assert "Error: blocked by plugin policy" in tool_message.content
-        assert tool_message.content.startswith('<tool_result name="echo" status="error">')
-
-    @pytest.mark.asyncio
     async def test_state_persist_hooks_fire(self, state_store, temp_workspace):
         """Persistence plugin_ctx bracket message materialization."""
         llm = MockLLM(responses=[{"content": "ok"}])

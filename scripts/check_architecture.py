@@ -20,6 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "XBotv2"
 ENGINE = PACKAGE / "agentloop" / "engine.py"
+TOOL_RUNTIME = PACKAGE / "agentloop" / "tool_runtime.py"
 CORE_EVENTS = PACKAGE / "core" / "events.py"
 SESSION = PACKAGE / "session" / "runtime.py"
 BOOTSTRAP = PACKAGE / "bootstrap.py"
@@ -42,7 +43,7 @@ HTTP_SERVER = PACKAGE / "server" / "http.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
     PACKAGE / "agentloop" / "tool_service.py",
-    PACKAGE / "agentloop" / "tool_runtime.py",
+    TOOL_RUNTIME,
     PACKAGE / "agentloop" / "tool_registry.py",
 )
 
@@ -1072,6 +1073,8 @@ def check_plugin_imports() -> list[Violation]:
                         "capabilities consume persistence Protocols, not state_store",
                     ))
                 if (
+                    path != TOOL_RUNTIME
+                    and
                     isinstance(node, ast.Attribute)
                     and isinstance(node.value, ast.Name)
                     and node.value.id == "Events"

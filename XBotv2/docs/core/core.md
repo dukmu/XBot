@@ -83,8 +83,9 @@ tools (`BEFORE_TOOLS`/`AFTER_TOOLS`/`BEFORE_TOOL_CALL`/`AFTER_TOOL_CALL`/
 `PERMISSION_REQUEST`/`TOOL_CALL_FAILURE`).
 
 Short-circuit events are dispatched with `ctx.serial` and their first
-non-`None` result is interpreted by the caller (a documented dictionary, or a
-`ToolDecision` at `BEFORE_TOOL_CALL`). Observer events are dispatched with
+non-`None` result is interpreted by the caller as a documented dictionary.
+`BEFORE_TOOL_CALL` may only rewrite the `ToolCall` or its arguments; it cannot
+allow, deny, stop, or synthesize a result. Observer events are dispatched with
 `ctx.emit`; listeners must not return values. Failures in a short-circuit
 listener propagate immediately; observer failures propagate out of `emit`.
 
@@ -134,10 +135,10 @@ the separate path permission policy before entering that sandbox.
 
 ### Permissions (`permissions/` plugin)
 
-Tri-state: deny → allow → ask → default. Regex pattern matching on
-tool names and parameters. `BEFORE_TOOL_CALL` may reject or transform a call;
-the permission system then checks the final tool name and arguments. Continuing
-from the hook does not bypass core permission policy.
+Tri-state: deny → allow → ask → default. Regex pattern matching on tool names
+and parameters. `BEFORE_TOOL_CALL` may transform a call; schema validation,
+sandbox guards, and permission guards then check the final Tool and arguments.
+No rewrite event can bypass the monotonic guard pipeline.
 
 ## Persistence
 

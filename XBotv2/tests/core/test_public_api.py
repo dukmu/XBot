@@ -14,9 +14,7 @@ from XBotv2.core import (
     Command,
     CommandResult,
     ContextComponent,
-    ToolAction,
     EventContext,
-    ToolDecision,
     Events,
     prompt_container,
     prompt_element,
@@ -98,7 +96,6 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
-    assert ToolDecision(ToolAction.DENY, "policy").reason == "policy"
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
     assert prompt_container(

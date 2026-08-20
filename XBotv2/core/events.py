@@ -10,7 +10,6 @@ observer events with ``ctx.emit``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Awaitable, Callable, Protocol
 
 from XBotv2.core.context import ContextComponent
@@ -118,24 +117,6 @@ SHORT_CIRCUIT_EVENTS = frozenset({
 })
 
 
-class ToolAction(str, Enum):
-    """Permission decision for a tool call (returned by before/tool-call)."""
-
-    CONTINUE = "continue"
-    ALLOW = "allow"
-    DENY = "deny"
-    STOP = "stop"
-
-
-@dataclass(frozen=True)
-class ToolDecision:
-    """Decision returned by ``before/tool-call`` listeners."""
-
-    action: ToolAction = ToolAction.CONTINUE
-    reason: str = ""
-    value: Any = None
-
-
 @dataclass
 class EventContext:
     """Payload object passed to runtime event listeners.
@@ -163,7 +144,6 @@ class EventContext:
     tool_call: ToolCall | None = None
     args: dict[str, Any] | None = None
     tool_result: Any | None = None
-    deny_reason: str | None = None
     tool_results: list[Any] | None = None
     reason: Any | None = None
     error: Any | None = None
@@ -181,6 +161,4 @@ __all__ = [
     "EventPort",
     "Events",
     "SHORT_CIRCUIT_EVENTS",
-    "ToolAction",
-    "ToolDecision",
 ]

@@ -20,8 +20,6 @@ from XBotv2.core.events import (
     EventContext,
     Events,
     SHORT_CIRCUIT_EVENTS,
-    ToolAction,
-    ToolDecision,
 )
 from XBotv2.core.messages import (
     ContentPart,
@@ -106,11 +104,9 @@ __all__ = [
     "TextPart",
     "ThreadPaths",
     "Tool",
-    "ToolAction",
     "ToolCall",
     "ToolCallDelta",
     "ToolCallPart",
-    "ToolDecision",
     "ToolError",
     "ToolResult",
     "calibrated_context_tokens",

@@ -95,30 +95,41 @@ from XBotv2.permissions.plugin import PermissionsComponent
 - 能力发布 producer-owned typed outbound event；通用 session stream bridge 只负责
   排序、重放、背压和 SSE 编码，不解释 jobs/agents/history 等能力语义。
 
-## 当前阻塞与违规
+## 当前状态与阻塞
 
-1. `agents.service_component` required `loop_state`，`session` required `agents`，形成
-   XCore required-service 环，Agent profile 无法可靠激活；
-2. `agentloop.factory` 依赖 `agents` 并调用 `set_factory()`，依赖方向反转；
-3. `AgentsService(ctx)` 同时拥有 catalog、active runtime、provider binding、loader
-   reload、Tool registry 和 Engine；
-4. `CommandContext`/`SessionExecutionContext` 暴露完整 runtime、engine、lock 和
-   `services: Context`；
-5. Tools、Agents、Permissions 通过 `.registry`/`__getattr__` 暴露实现；
-6. session/jobs/commands/permissions/tools routers 仍导入 concrete SessionManager 或
-   访问 child runtime/private persistence；
-7. LLM 通过读取 `config.tree.DEFAULT_TREE` 并查找字面量 `llm` 重建自身配置；
-8. `/reload` 在 session command 中重新拼装全套 launch facts 和 service bag；
-9. skills 与 MCP 读取未声明 service，MCP sampling 还把 LLM catalog 当 active model；
-10. permissions 同时编排 jobs、settings 和 sandbox，sandbox command 反向调用
-    permissions，policy ownership不清；
-11. `ServerEvents`、`server.event_registry` 与 `SessionRuntime.session_events` 平行于
-    XCore events；
-12. `SessionRuntime` 硬编码 jobs、history、agent 和 completion 的 wire projection；
-13. architecture checker 一刀切禁止所有跨插件 import，既误报 public contract，
-    又无法检查 public symbol、inject 一致性和 required-service 环；
-14. ACP 仍直接导入 application、SessionManager、persistence 和 config 实现；
-15. 已暂存删除的旧 `mcp/` 与 `mcp_plugin/` 原为重复实现，不得恢复兼容路径。
+已完成并保留为后续迁移基线：
+
+1. architecture checker 已检查 public declaration symbol、package-root re-export、
+   inject/service access 一致性和 required-service graph；
+2. Agent catalog、runtime/controller、loop factory 和 subagent integration 已拆分，
+   Agent profile required-service graph 无环；
+3. Tools public service 已移除 `.registry`/`__getattr__`，主要消费者改用窄 Protocol；
+4. command owner 已用 typed factory 捕获声明依赖，`CommandContext` 已删除；
+5. Loader 拥有 reload，application 提供 typed launch ports，LLM 不再反向扫描 tree；
+6. config 拥有 policy persistence，permissions/sandbox 只更新各自 policy；
+7. capability HTTP adapters（除 session）已迁入 `http_transport` 并派发 typed
+   operations；server 只拥有 route contribution 与 ASGI carrier；
+8. 平行 `ServerEvents` registry 已删除，MCP 已改为显式 service 注入；
+9. package root 只 re-export 已声明的 contracts/commands/service Protocol。
+
+tool policy 已完成收敛：`BEFORE_TOOL_CALL` 只允许重写 ToolCall/args，schema
+validation 和全部 guard 必须在执行前通过；`ToolDecision`/`ToolAction`、事件拒绝、
+stop 和伪造结果入口已删除。
+
+当前 architecture scanner 可复现 **16 项**，全部集中在 session：
+
+1. `session/http_util.py` 混有 wire mapping 和两处 service-bag lookup（4 项）；
+2. `session/manager.py` 导入 wire DTO，并从 child Context 查 persistence、状态投影和
+   client event router（4 项）；
+3. `session/router.py` 仍位于 capability package，导入 wire DTO 与 concrete
+   `server.http`（4 项）；
+4. `session/runtime.py` 仍通过 service bag 查 jobs/loader/client event 等能力并硬编码
+   outbound projection（4 项）。
+
+扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
+语义、ACP 的 concrete composition import、producer-owned outbound event 完整迁移，
+以及真实 provider/interactive smoke。不得为通过旧测试恢复 app.state、`.registry`
+或 SessionRuntime service bag。
 
 ## 目标插件目录
 
