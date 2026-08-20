@@ -74,7 +74,6 @@ class Events:
     TOOL_MESSAGE = "tool/message"
     # Permissions / client
     PERMISSION_REQUEST = "permission/request"
-    PERMISSION_DECIDED = "permission/decided"
     PERMISSION_DENIED = "permission/denied"
     CLIENT_EVENT = "client/event"
     # Non-blocking application output projected by live transports. Feature

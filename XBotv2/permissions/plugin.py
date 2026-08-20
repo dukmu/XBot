@@ -13,7 +13,8 @@ from typing import Any
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.core.tools import ClientEvent, ToolCall
+from XBotv2.core.tools import ToolCall
+from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
 from XBotv2.permissions.guard import make_permission_guard
 from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.rules import (
@@ -164,14 +165,11 @@ class PermissionsComponent:
             if scope == "session":
                 permissions.add_rule(decision, rule)
             await ctx.emit(
-                Events.PERMISSION_DECIDED,
-                EventContext(
-                    client_event=ClientEvent.from_mapping(event),
-                    event={
-                        "decision": decision,
-                        "scope": scope,
-                        "rule": rule,
-                    },
+                PERMISSION_DECIDED,
+                PermissionDecided(
+                    decision=decision,
+                    scope=scope,
+                    rule=rule,
                 ),
             )
 

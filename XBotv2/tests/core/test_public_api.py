@@ -86,6 +86,8 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     }
     assert mcp_plugin.__all__ == ["MCP_PLUGIN_ID"]
     assert set(permissions.__all__) == {
+        "PERMISSION_DECIDED",
+        "PermissionDecided",
         "PermissionsPort",
         "build_permissions_commands",
     }

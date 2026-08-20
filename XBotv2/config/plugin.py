@@ -6,9 +6,9 @@ from typing import Any
 
 from XBotv2.config.models import UserContext
 from XBotv2.config.service import ConfigService
-from XBotv2.agentloop import Events
 from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
 
 
 class ConfigComponent:
@@ -36,22 +36,18 @@ class ConfigComponent:
         ctx.on(GET_POLICY.name, lambda _request: settings.policy())
         ctx.on(UPDATE_POLICY.name, settings.update_policy)
 
-        async def persist_permission(event: Any) -> None:
-            details = event.event if isinstance(event.event, dict) else {}
-            rule = details.get("rule")
-            if not rule:
-                return
+        async def persist_permission(event: PermissionDecided) -> None:
             from XBotv2.config.policy import persist_permission_rule
 
             persist_permission_rule(
                 paths=ctx.runtime_paths,
                 session_id=ctx.session_launch.session_id,
-                rule=rule,
-                decision=str(details.get("decision") or ""),
-                scope=str(details.get("scope") or "once"),
+                rule=event.rule,
+                decision=event.decision,
+                scope=event.scope,
             )
 
-        ctx.on(Events.PERMISSION_DECIDED, persist_permission)
+        ctx.on(PERMISSION_DECIDED, persist_permission)
 
 
 plugin = ConfigComponent()
