@@ -35,4 +35,7 @@ scope.
 - The same class-level ordering issue appears in `TestEngineHooks`: 21 tests
   pass, then the following persistence-hook test does not complete before the
   60-second class timeout, while focused context-hook selections pass.
+- `TestEnginePersistence` also leaves its final
+  `test_fresh_session_has_no_messages` waiting after the preceding six engine
+  persistence tests; that final test passes when run in a fresh process.
 - The engine/tool test fixtures need an isolation and resource-cleanup audit.
