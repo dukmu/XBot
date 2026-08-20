@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.agentloop import Events
+from XBotv2.context_builder import BEFORE_CONTEXT_BUILD, ContextBuildRequest
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.sandbox.commands import build_sandbox_commands
 
@@ -45,11 +45,10 @@ class SandboxComponent:
 
         ctx.on(POLICY_CHANGED, update_policy)
 
-        async def contribute_context(event: Any) -> None:
-            if event.context_kwargs is not None:
-                event.context_kwargs["sandbox_summary"] = policy.describe()
+        async def contribute_context(event: ContextBuildRequest) -> None:
+            event.sandbox_summary = policy.describe()
 
-        ctx.on(Events.BEFORE_CONTEXT_BUILD, contribute_context, prepend=True)
+        ctx.on(BEFORE_CONTEXT_BUILD, contribute_context, prepend=True)
 
 
 plugin = SandboxComponent()

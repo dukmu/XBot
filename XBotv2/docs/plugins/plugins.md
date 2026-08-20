@@ -155,8 +155,9 @@ leading system context; no stage grants core authority or places a system
 message after history. Unknown stages are rejected during manifest validation.
 Python plugins receive the same validation from the context builder and may
 provide a source label through `ctx.prompts.add(stage, text, source=...)`.
-After assembly, `AFTER_CONTEXT_COMPONENTS_BUILD` receives immutable public
-`ContextComponent` values. A listener may replace the component list, but
+After assembly, the context-builder-owned `CONTEXT_COMPONENTS_BUILT` event
+receives immutable public `ContextComponent` values in a typed payload. A
+listener may replace the component list, but
 every replacement entry must remain a `ContextComponent`; provider conversion
 does not accept ad hoc dictionaries or private core objects.
 Runtime registrations performed from event listeners must be tracked by the

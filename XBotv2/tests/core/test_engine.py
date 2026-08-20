@@ -15,7 +15,12 @@ from XBotv2.tests.helpers import make_engine as helpers_make_engine
 from XBotv2.tests.helpers import make_tool_ctx
 from XBotv2.agentloop import Events
 from XBotv2.llm.mock import MockLLM
-from XBotv2.context_builder import ContextComponent
+from XBotv2.context_builder import (
+    BEFORE_CONTEXT_BUILD,
+    CONTEXT_BUILT,
+    CONTEXT_COMPONENTS_BUILT,
+    ContextComponent,
+)
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider
 from XBotv2.agentloop.tool_registry import ToolRegistry
@@ -566,7 +571,7 @@ class TestEngineHooks:
         calls = []
 
         async def after_context_build(ctx):
-            calls.append(("context", len(ctx.context_messages)))
+            calls.append(("context", len(ctx.messages)))
 
         async def after_tool_schema_bind(ctx):
             request = ctx.model_request or {}
@@ -580,7 +585,7 @@ class TestEngineHooks:
             calls.append(("response", ctx.model_response.content))
 
         plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx.on(CONTEXT_BUILT, after_context_build)
         plugin_ctx.on(Events.AFTER_TOOL_SCHEMA_BIND, after_tool_schema_bind)
         plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, before_model_request)
         plugin_ctx.on(Events.AFTER_MODEL_RESPONSE, after_model_response)
@@ -647,7 +652,7 @@ class TestEngineHooks:
         "stage",
         [
             Events.BEFORE_CONTEXT,
-            Events.BEFORE_CONTEXT_BUILD,
+            BEFORE_CONTEXT_BUILD,
             Events.AFTER_CONTEXT,
             Events.BEFORE_TOOL_SCHEMA_BIND,
             Events.BEFORE_MODEL_REQUEST,
@@ -835,15 +840,15 @@ class TestEngineHooks:
 
         async def before_context_build(ctx):
             calls.append(("before_build",))
-            return {"context_kwargs": {"instructions": "from hook"}}
+            ctx.instructions = "from hook"
 
         async def after_components(ctx):
             calls.append((
                 "components",
-                [component.source for component in ctx.context_components],
+                [component.source for component in ctx.components],
             ))
-            ctx.context_components = [
-                *ctx.context_components,
+            ctx.components = [
+                *ctx.components,
                 ContextComponent(
                     role="system",
                     source="hook_component",
@@ -852,12 +857,12 @@ class TestEngineHooks:
             ]
 
         async def after_context_build(ctx):
-            calls.append(("messages", [message.content for message in ctx.context_messages]))
+            calls.append(("messages", [message.content for message in ctx.messages]))
 
         plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.BEFORE_CONTEXT_BUILD, before_context_build)
-        plugin_ctx.on(Events.AFTER_CONTEXT_COMPONENTS_BUILD, after_components)
-        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx.on(BEFORE_CONTEXT_BUILD, before_context_build)
+        plugin_ctx.on(CONTEXT_COMPONENTS_BUILT, after_components)
+        plugin_ctx.on(CONTEXT_BUILT, after_context_build)
 
         engine = make_engine(
             llm=llm,
@@ -884,11 +889,11 @@ class TestEngineHooks:
         self, state_store, temp_workspace
     ):
         async def replace_with_invalid(ctx):
-            ctx.context_components = [object()]
+            ctx.components = [object()]
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(
-            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
+            CONTEXT_COMPONENTS_BUILT,
             replace_with_invalid,
         )
         llm = MockLLM(responses=[{"content": "should not run"}])

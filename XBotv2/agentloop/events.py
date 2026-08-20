@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from XBotv2.agentloop.contracts import LoopSettings
-from XBotv2.context_builder import ContextComponent
 from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
@@ -42,11 +41,7 @@ class Events:
     AFTER_USER_MESSAGE_ACCEPT = "after/user-message-accept"
     # Context building
     BEFORE_CONTEXT = "before/context"
-    BEFORE_CONTEXT_BUILD = "before/context-build"
-    CONTEXT_BUILD = "context/build"
     AFTER_CONTEXT = "after/context"
-    AFTER_CONTEXT_COMPONENTS_BUILD = "after/context-components-build"
-    AFTER_CONTEXT_BUILD = "after/context-build"
     # Agent / model
     BEFORE_AGENT = "before/agent"
     BEFORE_TOOL_SCHEMA_BIND = "before/tool-schema-bind"
@@ -94,7 +89,6 @@ class EventPort(Protocol):
 SHORT_CIRCUIT_EVENTS = frozenset({
     Events.BEFORE_USER_MESSAGE_ACCEPT,
     Events.BEFORE_CONTEXT,
-    Events.BEFORE_CONTEXT_BUILD,
     Events.AFTER_CONTEXT,
     Events.BEFORE_MODEL_REQUEST,
     Events.BEFORE_AGENT,
@@ -121,7 +115,6 @@ class EventContext:
     session: SessionInfo | None = None
     user_input: str | None = None
     turn_complete: bool = False
-    context_components: list[ContextComponent] | None = None
     context_messages: list[Message] | None = None
     agent_response: ModelResponse | None = None
     model_request: dict[str, Any] | None = None
@@ -132,7 +125,6 @@ class EventContext:
     tool_result: Message | None = None
     tool_results: list[Message] | None = None
     error: BaseException | None = None
-    context_kwargs: dict[str, Any] | None = None
     rebuild: bool = False
     client_event: ClientEvent | None = None
     stop_reason: str | None = None

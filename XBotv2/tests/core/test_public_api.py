@@ -133,7 +133,14 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "SettingsPort",
     }
     assert set(context_builder.__all__) == {
+        "BEFORE_CONTEXT_BUILD",
+        "BUILD_CONTEXT",
+        "CONTEXT_BUILT",
+        "CONTEXT_COMPONENTS_BUILT",
+        "ContextBuildRequest",
+        "ContextBuilt",
         "ContextComponent",
+        "ContextComponentsBuilt",
         "PromptFragmentStage",
     }
     assert set(loader.__all__) >= {

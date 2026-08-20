@@ -77,13 +77,17 @@ Named events (`agentloop.events.Events`) cover the existing lifecycle: session
 (`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
 (`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
 (`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building
-(`BEFORE_CONTEXT`/`BEFORE_CONTEXT_BUILD`/`AFTER_CONTEXT`/`PRE_COMPACT`/
-`POST_COMPACT`), model (`BEFORE_MODEL_REQUEST`/`AFTER_MODEL_RESPONSE`), and
+(`BEFORE_CONTEXT`/`AFTER_CONTEXT`), model
+(`BEFORE_MODEL_REQUEST`/`AFTER_MODEL_RESPONSE`), and
 tools (`BEFORE_TOOLS`/`AFTER_TOOLS`/`BEFORE_TOOL_CALL`/`AFTER_TOOL_CALL`/
 `PERMISSION_REQUEST`/`TOOL_CALL_FAILURE`).
 
-Short-circuit events are dispatched with `ctx.serial` and their first
-non-`None` result is interpreted by the caller as a documented dictionary.
+Context construction events and their typed payloads are exported by
+`XBotv2.context_builder`; compaction lifecycle events are exported by
+`XBotv2.compact`.
+
+Agent-loop short-circuit events are dispatched with `ctx.serial` and their
+first non-`None` result is interpreted by the caller as a documented dictionary.
 `BEFORE_TOOL_CALL` may only rewrite the `ToolCall` or its arguments; it cannot
 allow, deny, stop, or synthesize a result. Observer events are dispatched with
 `ctx.emit`; listeners must not return values. Failures in a short-circuit

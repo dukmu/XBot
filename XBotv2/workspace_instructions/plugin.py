@@ -18,8 +18,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from XBotv2.context_builder import ContextComponent
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.context_builder import (
+    CONTEXT_COMPONENTS_BUILT,
+    ContextComponent,
+    ContextComponentsBuilt,
+)
 from XBotv2.loader import SOFT_RELOAD, SoftReload
 
 
@@ -51,9 +54,9 @@ class WorkspaceInstructionsPlugin:
         self._register_workspace_agents(ctx)
         ctx.dispose(lambda: self._clear_workspace_agents(ctx))
 
-        def inject_workspace_instructions(hook_ctx: EventContext) -> None:
-            components = hook_ctx.context_components
-            if components is None or not path.is_file():
+        def inject_workspace_instructions(event: ContextComponentsBuilt) -> None:
+            components = event.components
+            if not path.is_file():
                 return
             text = ctx.variables.expand_markdown(
                 path.read_text(encoding="utf-8").strip(),
@@ -85,7 +88,7 @@ class WorkspaceInstructionsPlugin:
             components.insert(index, component)
 
         ctx.on(
-            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
+            CONTEXT_COMPONENTS_BUILT,
             inject_workspace_instructions,
         )
         ctx.on(SOFT_RELOAD, self._reload_workspace_agents)

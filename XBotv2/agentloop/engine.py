@@ -45,7 +45,13 @@ from XBotv2.core.messages import (
     ModelResponse,
     merge_model_chunk,
 )
-from XBotv2.context_builder import ContextComponent
+from XBotv2.context_builder import (
+    BEFORE_CONTEXT_BUILD,
+    BUILD_CONTEXT,
+    CONTEXT_BUILT,
+    ContextBuildRequest,
+    ContextBuilt,
+)
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
@@ -886,57 +892,39 @@ class Engine:
                 turn_complete=True,
             )
 
-        context_kwargs = {
-            "messages": list(self.messages),
-            "agent_name": self.settings.agent_name,
-            "agent_role": self.settings.agent_role,
-            "user_name": self.settings.user_name,
-            "user_id": self.settings.user_id,
-            "developer_instructions": self.settings.developer_instructions,
-            "instructions": self.settings.agent_instructions,
-            "memory": self.settings.memory,
-            "runtime_paths": {
+        build_request = ContextBuildRequest(
+            messages=list(self.messages),
+            session=self.session,
+            agent_name=self.settings.agent_name,
+            agent_role=self.settings.agent_role,
+            user_name=self.settings.user_name,
+            user_id=self.settings.user_id,
+            developer_instructions=self.settings.developer_instructions,
+            instructions=self.settings.agent_instructions,
+            memory=self.settings.memory,
+            runtime_paths={
                 "workspace": self.settings.workspace,
                 "session": "session/ (read-only)",
                 "artifacts": "session/artifacts/ (read-only)",
                 "tool_results": "session/artifacts/tool_results/ (read-only)",
             },
-            "system_notice": "",
-            "turn_count": self.turn_count,
-        }
-        build_ctx = self._make_event_context(context_kwargs=context_kwargs)
-        build_result = await self._dispatch(Events.BEFORE_CONTEXT_BUILD, build_ctx,
-            short_circuit=True,
+            turn_count=self.turn_count,
         )
-        if isinstance(build_result, dict):
-            if "messages" in build_result:
-                self.messages = build_result["messages"]
-                context_kwargs["messages"] = self.messages
-            if "context_kwargs" in build_result:
-                context_kwargs.update(build_result["context_kwargs"])
-            if "event" in build_result:
-                return _ContextBuildResult(
-                    event=build_result["event"],
-                    turn_complete=bool(build_result.get("turn_complete", True)),
-                )
-        elif build_result is not None:
-            return _ContextBuildResult(
-                event=self._default_hook_rejection_event(Events.BEFORE_CONTEXT_BUILD),
-                turn_complete=True,
+        build_result = await self._events.serial(
+            BEFORE_CONTEXT_BUILD,
+            build_request,
+        )
+        if build_result is not None:
+            raise TypeError(
+                f"{BEFORE_CONTEXT_BUILD} listeners must mutate "
+                "ContextBuildRequest and return None"
             )
 
-        build_request_ctx = self._make_event_context(
-            context_kwargs=context_kwargs,
-        )
-        await self._dispatch(
-            Events.CONTEXT_BUILD,
-            build_request_ctx,
-            short_circuit=False,
-        )
-        context_messages = build_request_ctx.context_messages
+        await self._events.emit(BUILD_CONTEXT, build_request)
+        context_messages = build_request.context_messages
         if context_messages is None:
             raise RuntimeError(
-                "No context builder handled before/context-build"
+                f"No context builder handled {BUILD_CONTEXT}"
             )
 
         after_ctx = self._make_event_context(context_messages=context_messages,
@@ -960,10 +948,9 @@ class Engine:
                 turn_complete=True,
             )
 
-        complete_ctx = self._make_event_context(context_messages=context_messages,
-        )
-        await self._dispatch(Events.AFTER_CONTEXT_BUILD, complete_ctx,
-            short_circuit=False,
+        await self._events.emit(
+            CONTEXT_BUILT,
+            ContextBuilt(tuple(context_messages), self.session),
         )
         return _ContextBuildResult(messages=context_messages)
 
@@ -1211,9 +1198,7 @@ class Engine:
         self,
         *,
         user_input: str | None = None,
-        context_components: list[ContextComponent] | None = None,
         context_messages: list[Message] | None = None,
-        context_kwargs: dict[str, Any] | None = None,
         agent_response: ModelResponse | None = None,
         model_request: dict[str, Any] | None = None,
         model_response: ModelResponse | None = None,
@@ -1232,9 +1217,7 @@ class Engine:
             continuation=self.continuation,
             session=self.session,
             user_input=user_input,
-            context_components=context_components,
             context_messages=context_messages,
-            context_kwargs=context_kwargs,
             agent_response=agent_response,
             model_request=model_request,
             model_response=model_response,

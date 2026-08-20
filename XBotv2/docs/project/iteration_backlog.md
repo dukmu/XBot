@@ -72,15 +72,11 @@ ambiguity before large implementation changes.
 
 ## 3. Runtime Event Contract
 
-- Runtime extension points are named events (`api.events.Events`)
-  dispatched on the XCore context: `ctx.serial` for short-circuit events
-  whose first non-`None` result is interpreted by the caller, `ctx.emit` for
-  observer events. The payload is an `EventContext`.
-- Prefer existing `EventContext` fields and public types. Introduce another
-  payload field only for a repeated contract gap, not for one plugin's local
-  convenience.
+- Runtime extension points are named, owner-exported events dispatched on the
+  XCore context: `ctx.serial` for short-circuit events and `ctx.emit` for
+  observer events. Payloads use the owning plugin's public types.
 - Public immutable `ContextComponent` values back
-  `AFTER_CONTEXT_COMPONENTS_BUILD`; listeners may replace the typed list, and
+  `CONTEXT_COMPONENTS_BUILT`; listeners may replace the typed list, and
   invalid entries fail before provider conversion.
 - Keep caller-level contract tests for message, tool, and permission event
   families. `BEFORE_TOOLS` exposes parsed `tool_calls` and the originating

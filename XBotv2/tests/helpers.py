@@ -123,27 +123,45 @@ def make_engine(
         memory=runtime_config.memory,
         workspace=str(state_store.workspace_root),
     )
+    from XBotv2.context_builder import (
+        BUILD_CONTEXT,
+        CONTEXT_COMPONENTS_BUILT,
+        ContextBuildRequest,
+        ContextComponentsBuilt,
+    )
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.agentloop import EventContext, Events
 
     builder = ContextBuilder()
 
-    async def _build_context(event: Any) -> None:
-        components = builder.build_components(**dict(event.context_kwargs or {}))
-        component_event = EventContext(
+    async def _build_context(event: ContextBuildRequest) -> None:
+        components = builder.build_components(
             messages=event.messages,
+            agent_name=event.agent_name,
+            agent_role=event.agent_role,
+            user_name=event.user_name,
+            user_id=event.user_id,
+            developer_instructions=event.developer_instructions,
+            instructions=event.instructions,
+            memory=event.memory,
+            sandbox_summary=event.sandbox_summary,
+            runtime_paths=event.runtime_paths,
+            system_notice=event.system_notice,
+            turn_count=event.turn_count,
+            active_subagents=event.active_subagents,
+        )
+        component_event = ContextComponentsBuilt(
+            components=components,
             session=event.session,
-            context_components=components,
         )
         await events.emit(
-            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
+            CONTEXT_COMPONENTS_BUILT,
             component_event,
         )
-        components = component_event.context_components or components
-        event.context_components = components
-        event.context_messages = builder.messages_from_components(components)
+        event.context_messages = builder.messages_from_components(
+            component_event.components
+        )
 
-    events.on(Events.CONTEXT_BUILD, _build_context)
+    events.on(BUILD_CONTEXT, _build_context)
     return Engine(
         model_client=llm,
         tools=events.tools,
