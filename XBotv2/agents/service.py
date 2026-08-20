@@ -24,6 +24,7 @@ from XBotv2.agentloop import (
     LoopSettings,
 )
 from XBotv2.core.errors import OperationError
+from XBotv2.loader import SOFT_RELOAD, SoftReload
 from XBotv2.session import SessionInfo
 from XBotv2.agents.services import AgentCatalogPort
 
@@ -430,10 +431,7 @@ class AgentsService:
                 "plugin_unavailable",
                 "Agent definition plugin is not loaded.",
             )
-        await self.ctx.emit(Events.SOFT_RELOAD, EventContext(event={
-            "scope": "agents",
-            "result": {},
-        }))
+        await self.ctx.emit(SOFT_RELOAD, SoftReload(scope="agents"))
         definition = self.definition(active)
         if definition is None or definition.mode == "subagent":
             raise OperationError(
@@ -445,31 +443,23 @@ class AgentsService:
             "agents": self.definitions(),
         }
 
-    async def rebind_on_soft_reload(self, event: Any) -> None:
+    async def rebind_on_soft_reload(self, event: SoftReload) -> None:
         """Rebind the active model client after a soft restart."""
-        payload = event.event if isinstance(event.event, dict) else {}
-        result = payload.setdefault("result", {})
         active = self.ctx.engine.settings.agent_name
         definition = self.definition(active)
         if definition is not None and definition.mode != "subagent":
             try:
                 selected = await self.activate(active)
             except Exception as error:  # noqa: BLE001 - keep last good binding
-                result.setdefault("errors", []).append(
+                event.errors.append(
                     f"active agent {active}: {error}"
                 )
                 selected = await self.rebind_active()
         else:
             selected = await self.rebind_active()
         errors = selected.pop("errors", [])
-        result.update({
-            "provider": selected["provider"],
-            "model": selected["model"],
-            "model_mode": selected["model_mode"],
-            "context_window": selected["context_window"],
-        })
         if errors:
-            result.setdefault("errors", []).extend(errors)
+            event.errors.extend(errors)
 
     def _resolve_definition(
         self,

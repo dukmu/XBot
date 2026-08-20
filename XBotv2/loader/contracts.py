@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from XBotv2.core.operations import EmptyRequest, Operation
 
@@ -24,6 +25,18 @@ class Reloaded:
     context_window: int
 
 
+SOFT_RELOAD = "loader/soft-reload"
+
+
+@dataclass(slots=True)
+class SoftReload:
+    scope: Literal["system", "agents"]
+    config_path: Path | None = None
+    variables: dict[str, object] = field(default_factory=dict)
+    reloaded: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
 RELOAD_PLUGINS = Operation(
     "loader/reload",
     EmptyRequest,
@@ -32,4 +45,10 @@ RELOAD_PLUGINS = Operation(
 )
 
 
-__all__ = ["RELOAD_PLUGINS", "ReloadPlan", "Reloaded"]
+__all__ = [
+    "RELOAD_PLUGINS",
+    "SOFT_RELOAD",
+    "ReloadPlan",
+    "Reloaded",
+    "SoftReload",
+]

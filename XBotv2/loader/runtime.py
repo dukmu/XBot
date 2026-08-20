@@ -12,7 +12,7 @@ from typing import Any
 
 from xcore import Context, FiberState
 
-from XBotv2.agentloop import Events
+from XBotv2.loader.contracts import SOFT_RELOAD, SoftReload
 from XBotv2.loader.types import LoadError, PluginEntry, PluginTree
 
 logger = logging.getLogger("loader")
@@ -283,20 +283,18 @@ class Loader:
                 notices.append(f"{entry.id}: {error}")
         return reloaded, notices
 
-    async def handle_soft_reload(self, event: Any) -> None:
+    async def handle_soft_reload(self, event: SoftReload) -> None:
         """SOFT_RELOAD listener: re-apply the external tree for system scope."""
-        payload = event.event if isinstance(event.event, dict) else {}
-        if payload.get("scope") != "system":
+        if event.scope != "system":
             return
-        path = payload.get("config_path")
-        values = payload.get("values")
-        if not path or not values:
+        if event.config_path is None or not event.variables:
             return
-        reloaded, notices = await self.apply_external_layer(Path(path), values)
-        result = payload.setdefault("result", {})
-        result["reloaded"] = reloaded
-        result["errors"] = notices
-
+        reloaded, notices = await self.apply_external_layer(
+            event.config_path,
+            event.variables,
+        )
+        event.reloaded.extend(reloaded)
+        event.errors.extend(notices)
 
 
 __all__ = [
@@ -324,7 +322,7 @@ class LoaderComponent:
     def apply(self, ctx: Context, config: Any = None) -> None:
         loader = Loader(ctx, tree=self._tree)
         ctx.set("loader", loader)
-        ctx.on(Events.SOFT_RELOAD, loader.handle_soft_reload)
+        ctx.on(SOFT_RELOAD, loader.handle_soft_reload)
         # XCore owns application teardown. Keep the loader's bookkeeping in
         # sync when its provider fiber is stopped; each child handle remains
         # idempotently disposable even if XCore already stopped it first.

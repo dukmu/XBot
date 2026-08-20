@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader import PluginEntry, PluginTree, SoftReload
 from XBotv2.loader.runtime import Loader, resolve_plugin_from_module
 
 
@@ -306,6 +306,30 @@ plugin = ScopedProviderPlugin()
         assert ctx.get("thing") == "root-thing"
         scoped_ctx = loader.handle("scoped")._fiber.ctx
         assert scoped_ctx.get("thing") == "scoped-thing"
+
+
+class TestLoaderSoftReload:
+    @pytest.mark.asyncio
+    async def test_typed_event_collects_reload_results(self, tmp_path, monkeypatch):
+        loader = Loader(make_plugin_ctx(tmp_path), tree=PluginTree([]))
+        config_path = tmp_path / "plugins.yaml"
+
+        async def apply_external_layer(path, values):
+            assert path == config_path
+            assert values == {"disabled": ("browser",)}
+            return ["browser"], ["browser: restart required"]
+
+        monkeypatch.setattr(loader, "apply_external_layer", apply_external_layer)
+        event = SoftReload(
+            scope="system",
+            config_path=config_path,
+            variables={"disabled": ("browser",)},
+        )
+
+        await loader.handle_soft_reload(event)
+
+        assert event.reloaded == ["browser"]
+        assert event.errors == ["browser: restart required"]
 
 
 class TestOrderIndependence:

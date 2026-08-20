@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.commands import Command, CommandResult, command_usage, guard_command
-from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.loader.contracts import RELOAD_PLUGINS, Reloaded
+from XBotv2.loader.contracts import (
+    RELOAD_PLUGINS,
+    SOFT_RELOAD,
+    Reloaded,
+    SoftReload,
+)
 
 
 class LoaderReloadComponent:
@@ -16,17 +20,16 @@ class LoaderReloadComponent:
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         async def reload_plugins(_request: EmptyRequest) -> Reloaded:
-            result: dict[str, Any] = {}
-            await ctx.emit(Events.SOFT_RELOAD, EventContext(event={
-                "scope": "system",
-                "config_path": str(ctx.reload_plan.config_path),
-                "values": dict(ctx.reload_plan.variables),
-                "result": result,
-            }))
+            event = SoftReload(
+                scope="system",
+                config_path=ctx.reload_plan.config_path,
+                variables=dict(ctx.reload_plan.variables),
+            )
+            await ctx.emit(SOFT_RELOAD, event)
             selected = ctx.agent_runtime.current_selection()
             return Reloaded(
-                reloaded=tuple(result.get("reloaded") or ()),
-                errors=tuple(result.get("errors") or ()),
+                reloaded=tuple(event.reloaded),
+                errors=tuple(event.errors),
                 provider=selected.provider,
                 model=selected.model,
                 model_mode=selected.model_mode,

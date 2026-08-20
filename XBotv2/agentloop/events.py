@@ -31,10 +31,6 @@ class Events:
     # The active Agent/model selection changed after startup. Capability
     # owners update their own projections from this neutral notification.
     AGENT_CONFIGURED = "agent/configured"
-    # A system soft restart was requested (/reload, /agent reload); owners
-    # re-read their own reloadable sources (the loader re-applies the tree,
-    # workspace_instructions re-applies its overlay, agents rebinds).
-    SOFT_RELOAD = "soft/reload"
     # Turn lifecycle
     TURN_START = "turn/start"
     TURN_END = "turn/end"

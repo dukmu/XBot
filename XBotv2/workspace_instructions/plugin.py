@@ -20,6 +20,7 @@ from typing import Any
 
 from XBotv2.context_builder import ContextComponent
 from XBotv2.agentloop import EventContext, Events
+from XBotv2.loader import SOFT_RELOAD, SoftReload
 
 
 class WorkspaceInstructionsPlugin:
@@ -87,16 +88,17 @@ class WorkspaceInstructionsPlugin:
             Events.AFTER_CONTEXT_COMPONENTS_BUILD,
             inject_workspace_instructions,
         )
-        ctx.on(Events.SOFT_RELOAD, self._reload_workspace_agents)
+        ctx.on(SOFT_RELOAD, self._reload_workspace_agents)
         await self._apply_workspace_patch(ctx, overlay)
 
-    async def _reload_workspace_agents(self, event: EventContext) -> None:
+    async def _reload_workspace_agents(self, event: SoftReload) -> None:
         """Re-read workspace Agent definitions and the workspace overlay.
 
         Registration is overlay-scoped by this plugin under an explicit
         owner (event listeners run outside any plugin ``apply`` fiber), so
         re-registering replaces the previous set instead of raising.
         """
+        del event
         self._register_workspace_agents(self.ctx)
         await self._apply_workspace_patch(self.ctx, self.workspace_root / ".xbot" / "plugins.yaml")
 

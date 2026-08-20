@@ -144,10 +144,10 @@ instead of replaying partial output.
 
 ## Soft Restart (`/reload`)
 
-`/reload` is a session command whose semantics is a *system soft restart*:
+`/reload` is a loader command whose semantics is a *system soft restart*:
 it applies configuration changes to the live session without a process
 restart.  The LLM service validates the merged provider catalog first
-(fail-closed), then the `SOFT_RELOAD` event fans out — the loader
+(fail-closed), then the loader-owned `SOFT_RELOAD` event fans out — the loader
 re-applies the global `<data_dir>/config/plugins.yaml` layer (changed
 entries re-applied, new entries mounted, disabled entries unloaded), the
 `workspace_instructions` plugin re-applies the workspace
