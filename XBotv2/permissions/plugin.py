@@ -13,7 +13,7 @@ from typing import Any
 
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.core.events import EventContext, Events
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.permissions.guard import make_permission_guard
 from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.rules import (
@@ -166,7 +166,7 @@ class PermissionsComponent:
             await ctx.emit(
                 Events.PERMISSION_DECIDED,
                 EventContext(
-                    client_event=event,
+                    client_event=ClientEvent.from_mapping(event),
                     event={
                         "decision": decision,
                         "scope": scope,

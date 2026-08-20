@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.tools import ClientEvent
 from XBotv2.permission_request.waiter import ApprovalWaiter
 
 Answerer = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | str]]
@@ -78,11 +79,12 @@ class ApprovalService:
 
     async def request(self, client_event: dict[str, Any]) -> dict[str, Any]:
         """Publish a request and return the client's raw decision record."""
+        envelope = ClientEvent.from_mapping(client_event)
         await self.ctx.emit(
             Events.CLIENT_EVENT,
-            EventContext(client_event=client_event),
+            EventContext(client_event=envelope),
         )
-        sink_result = await self.client_events.request(client_event)
+        sink_result = await self.client_events.request(envelope)
         if sink_result is not None:
             return sink_result
         for answerer in list(self._answerers):

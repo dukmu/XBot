@@ -50,7 +50,12 @@ from XBotv2.core.tokens import (
     REQUEST_PROVIDER_KEY,
     estimate_request_tokens,
 )
-from XBotv2.core.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from XBotv2.core.tools import (
+    ClientEvent,
+    ToolCall,
+    ToolCallDelta,
+    provider_tool_schema,
+)
 
 _UNCHANGED = object()
 
@@ -303,7 +308,7 @@ class Engine:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
             Events.INBOX_SPLICE,
-            self._make_event_context(client_event=event),
+            self._make_event_context(client_event=ClientEvent.from_mapping(event)),
             short_circuit=False,
         )
 
@@ -742,7 +747,7 @@ class Engine:
             client_events = message.client_events
             for client_event in client_events:
                 event_ctx = self._make_event_context(tool_result=message,
-                    client_event=client_event,
+                    client_event=ClientEvent.from_mapping(client_event),
                 )
                 await self._dispatch(Events.CLIENT_EVENT, event_ctx,
                     short_circuit=False,
@@ -1211,7 +1216,7 @@ class Engine:
         tool_results: list[Any] | None = None,
         tool_result: Any = None,
         stop_reason: str | None = None,
-        client_event: dict[str, Any] | None = None,
+        client_event: ClientEvent | None = None,
         error: Exception | None = None,
     ) -> EventContext:
         return EventContext(

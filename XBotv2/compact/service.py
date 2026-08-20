@@ -6,6 +6,7 @@ import logging
 from typing import Any, Sequence
 
 from XBotv2.core import (
+    ClientEvent,
     CommandResult,
     EventContext,
     Events,
@@ -272,7 +273,7 @@ class CompactService:
     async def _publish_runtime_event(self, event: dict[str, Any]) -> None:
         await self.ctx.emit(
             Events.RUNTIME_EVENT,
-            EventContext(client_event=event),
+            EventContext(client_event=ClientEvent.from_mapping(event)),
         )
 
     def _record_committed(

@@ -18,6 +18,7 @@ from XBotv2.core.events import EventContext, Events
 from XBotv2.core.history import display_history
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
 from XBotv2.session.protocol import session_error_event, session_event
 logger = logging.getLogger("xbotv2.session")
@@ -134,8 +135,8 @@ class SessionRuntime:
 
     def _on_runtime_event(self, event: EventContext) -> None:
         payload = event.client_event
-        if isinstance(payload, dict):
-            self._publish_runtime_event(payload)
+        if payload is not None:
+            self._publish_runtime_event(payload.to_dict())
 
     def _publish_message_event(self, message_id: str, content: str) -> None:
         """Broadcast one accepted user message on the shared event stream.
@@ -375,20 +376,16 @@ class SessionRuntime:
             await self.application.close()
 
 
-def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
-    return {"type": event.get("type", ""), "data": event.get("data", {})}
-
-
 async def _live_sink(
-    client_event: dict[str, Any],
+    client_event: ClientEvent,
     *,
     client_events: ClientEventsPort,
     events: asyncio.Queue[dict[str, Any] | None],
     disconnect_task: asyncio.Task[Any],
     timeout_seconds: float | None = None,
-) -> dict[str, Any]:
-    event_type = str(client_event.get("type") or "")
-    event_data = client_event.get("data") or {}
+) -> JsonObject:
+    event_type = client_event.type
+    event_data = client_event.data
     request_id = str(event_data.get("request_id") or "")
     waiter = client_events.waiter(event_type)
     if waiter is None:
@@ -398,7 +395,7 @@ async def _live_sink(
         waiter.wait_registered(request_id, pending, timeout_seconds)
     )
     try:
-        await events.put(_event_payload(client_event))
+        await events.put(client_event.to_dict())
         done, _ = await asyncio.wait(
             {wait_task, disconnect_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -434,7 +431,7 @@ async def _live_sink(
             "pending_interactions": [],
         },
     ))
-    return result.__dict__
+    return json_object(result.__dict__)
 
 
 @asynccontextmanager
@@ -445,7 +442,12 @@ async def _live_interaction_sink(
 ) -> AsyncIterator[None]:
     disconnect_task = asyncio.create_task(disconnected.wait())
 
-    async def sink(client_event, *, timeout_seconds=None, tool_call_id=""):
+    async def sink(
+        client_event: ClientEvent,
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> JsonObject:
         del tool_call_id
         return await _live_sink(
             client_event,
@@ -482,6 +484,11 @@ def restore_client_event_sinks(
     previous: Any | None,
 ) -> None:
     client_events.set_sink(previous)
+
+
+def _event_payload(event: dict[str, Any]) -> JsonObject:
+    """Validate a loop event before projecting it onto the session stream."""
+    return ClientEvent.from_mapping(event).to_dict()
 
 
 async def _pump_turn(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin, get_type_hints
 
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
     from XBotv2.core.messages import ImageContent
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject = dict[str, JsonValue]
 
 
 @dataclass(frozen=True)
@@ -81,10 +83,45 @@ class ToolError:
 @dataclass(frozen=True)
 class ClientEvent:
     type: str
-    data: dict[str, JsonValue] = field(default_factory=dict)
+    data: JsonObject = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, JsonValue]:
-        return {"type": self.type, "data": self.data}
+    def __post_init__(self) -> None:
+        if not self.type:
+            raise ValueError("client event type must not be empty")
+        object.__setattr__(self, "data", json_object(self.data))
+
+    @classmethod
+    def from_mapping(cls, event: Mapping[str, object]) -> "ClientEvent":
+        event_type = event.get("type")
+        data = event.get("data")
+        if not isinstance(event_type, str) or not event_type:
+            raise TypeError("client event requires a non-empty string type")
+        if not isinstance(data, Mapping):
+            raise TypeError("client event data must be an object")
+        return cls(type=event_type, data=json_object(data))
+
+    def to_dict(self) -> JsonObject:
+        return {"type": self.type, "data": json_object(self.data)}
+
+
+def json_object(value: Mapping[object, object]) -> JsonObject:
+    """Copy one mapping while enforcing the core JSON value contract."""
+    result: JsonObject = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("JSON object keys must be strings")
+        result[key] = _json_value(item)
+    return result
+
+
+def _json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return json_object(value)
+    raise TypeError(f"value must be JSON-compatible, got {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -286,12 +323,14 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
 __all__ = [
     "ArtifactRef",
     "ClientEvent",
+    "JsonObject",
     "JsonValue",
     "Tool",
     "ToolCall",
     "ToolCallDelta",
     "ToolError",
     "ToolResult",
+    "json_object",
     "tool_parameters_schema",
     "provider_tool_schema",
 ]

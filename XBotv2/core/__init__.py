@@ -56,6 +56,7 @@ from XBotv2.core.tokens import (
 from XBotv2.core.tools import (
     ArtifactRef,
     ClientEvent,
+    JsonObject,
     JsonValue,
     Tool,
     ToolCall,
@@ -84,6 +85,7 @@ __all__ = [
     "ImageContent",
     "ImagePart",
     "InputModality",
+    "JsonObject",
     "JsonValue",
     "MESSAGE_FORMAT_KEY",
     "Message",

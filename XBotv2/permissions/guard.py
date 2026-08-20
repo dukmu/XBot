@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from XBotv2.core.events import EventContext, Events
-from XBotv2.core.tools import GuardDecision
+from XBotv2.core.tools import ClientEvent, GuardDecision
 from XBotv2.permission_request import PermissionRequestData
 
 
@@ -40,7 +40,7 @@ def make_permission_guard(
             Events.PERMISSION_REQUEST,
             EventContext(
                 tool_call=tool_call,
-                client_event=event,
+                client_event=ClientEvent.from_mapping(event),
             ),
         )
         result = await approval.request(event) if approval is not None else {

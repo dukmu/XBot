@@ -1700,6 +1700,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
     expected_value: str,
 ) -> None:
     from XBotv2.application.client_events import ClientEventRouter
+    from XBotv2.core import ClientEvent
     from XBotv2.interactions.interactions import InteractionWaiter
     permission_waiter = InteractionWaiter()
     user_input_waiter = InteractionWaiter()
@@ -1715,10 +1716,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
     router.register_waiter(event_type, waiter)
     sink_task = asyncio.create_task(
         _live_sink(
-            {
-                "type": event_type,
-                "data": {"request_id": request_id},
-            },
+            ClientEvent(event_type, {"request_id": request_id}),
             client_events=router,
             events=events,
             disconnect_task=disconnect_task,

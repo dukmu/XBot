@@ -759,3 +759,21 @@
   message/history/undo round trip passed in 60.77s. Selected Engine event tests
   completed their assertions, but the existing Engine suite teardown remained
   intermittently non-terminating and is not recorded as a passing selection.
+
+### 2026-08-20 · Typed client-event routing
+
+- Promoted the existing capability-neutral `ClientEvent` envelope to the XCore
+  event boundary. `EventContext.client_event`, the application router, its sink,
+  and waiter ports are now typed; plugins still own and validate every concrete
+  payload schema.
+- Session converts envelopes to dictionaries only at its stream boundary, and
+  Persistence reads the generic envelope directly. The router no longer passes
+  feature events through untyped callable arguments, and non-JSON payloads are
+  rejected before routing.
+- Removed Session's duplicate JSON-value walker in favor of the shared core
+  contract. No event-name inventory or business response model was added to
+  core, application, server, or Session.
+- Verification: architecture checker reports zero violations; 80 focused
+  protocol/public API/Session/Tool/Compact tests passed, and the real typed SDK
+  plus SSE integration passed in 60.74s. Python compilation and
+  `git diff --check` passed.

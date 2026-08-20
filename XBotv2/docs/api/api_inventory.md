@@ -47,6 +47,7 @@ plugin implementations.
 | `ImageContent` | dataclass |  |
 | `ImagePart` | dataclass |  |
 | `InputModality` | type alias |  |
+| `JsonObject` | type alias | JSON object carried by generic core envelopes. |
 | `JsonValue` | type alias |  |
 | `MESSAGE_FORMAT_KEY` | constant |  |
 | `Message` | dataclass |  |

@@ -16,7 +16,7 @@ from XBotv2.core.context import ContextComponent
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.runtime import SessionInfo
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.tools import ClientEvent, ToolCall
 
 
 class Events:
@@ -149,7 +149,7 @@ class EventContext:
     error: Any | None = None
     context_kwargs: dict[str, Any] | None = None
     rebuild: bool = False
-    client_event: dict[str, Any] | None = None
+    client_event: ClientEvent | None = None
     stop_reason: str | None = None
     response: ModelResponse | None = None
     short_circuit_result: Any = None

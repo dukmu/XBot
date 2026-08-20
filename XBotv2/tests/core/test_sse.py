@@ -15,6 +15,7 @@ from XBotv2.agentloop import (
     TurnData,
     agentloop_event,
 )
+from XBotv2.core import ClientEvent
 from XBotv2.interactions import (
     UserInputRequiredData,
     UserInputResponseRequest,
@@ -213,6 +214,12 @@ def test_session_stream_event_rejects_non_json_payloads() -> None:
     with pytest.raises(TypeError, match="JSON-compatible"):
         SessionStreamEvent.from_mapping({
             "type": "message",
+            "data": {"invalid": object()},
+        })
+
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        ClientEvent.from_mapping({
+            "type": "plugin_event",
             "data": {"invalid": object()},
         })
 

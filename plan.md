@@ -325,7 +325,8 @@ manager/service implementation；route mount/unmount/collision 由 fiber 测试�
    typed events（Agent loop/Session/Jobs/approval/interactions 主要事件已完成）；
 2. 发布前验证 payload，未知类型不静默透传（主要 C/S stream 已完成，optional
    runtime events 待审计）；
-3. 建立 capability-neutral session stream bridge；
+3. 建立 capability-neutral session stream bridge（通用 `ClientEvent` 信封与 typed
+   router/sink 已完成；插件仍拥有 payload schema）；
 4. 删除 `server/events.py`、`server/event_registry.py` 和 server profile entry；
 5. 删除 SessionRuntime 对 jobs/history/agent/completion 的业务投影；
 6. 保留 reconnect/resume/mailbox/history 各自独立语义。

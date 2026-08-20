@@ -203,7 +203,8 @@ async def test_human_command_compacts_and_persists_immediately(
     runtime_events = []
 
     def record_runtime_event(event: EventContext) -> None:
-        runtime_events.append(event.client_event or {})
+        if event.client_event is not None:
+            runtime_events.append(event.client_event.to_dict())
 
     setup.ctx.on(Events.RUNTIME_EVENT, record_runtime_event)
     result = await setup.commands["compact"].handler("")

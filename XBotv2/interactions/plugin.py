@@ -15,6 +15,7 @@ import uuid
 from XBotv2.interactions.interactions import InteractionResult, InteractionWaiter
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.tools import ClientEvent
 
 
 class InteractionsService:
@@ -81,10 +82,10 @@ class InteractionsService:
             options=list(options or []),
             timeout_seconds=timeout_seconds,
         )
-        client_event = {
-            "type": "user_input_required",
-            "data": payload.model_dump(),
-        }
+        client_event = ClientEvent(
+            "user_input_required",
+            payload.model_dump(),
+        )
         await self.ctx.emit(
             Events.CLIENT_EVENT,
             EventContext(client_event=client_event),

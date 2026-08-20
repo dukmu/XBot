@@ -103,11 +103,9 @@ class PersistenceComponent:
         ctx.on(Events.AGENT_CONFIGURED, persist_session_metadata)
 
         async def persist_runtime_event(event: Any) -> None:
-            record = event.client_event or {}
-            store.append_event(
-                str(record.get("type") or ""),
-                dict(record.get("data") or {}),
-            )
+            record = event.client_event
+            if record is not None:
+                store.append_event(record.type, record.data)
 
         ctx.on(Events.INBOX_SPLICE, persist_runtime_event)
 

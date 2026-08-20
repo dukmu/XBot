@@ -12,6 +12,7 @@ from XBotv2.core.agents import AgentDefinition, AgentSession
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
+from XBotv2.core.tools import ClientEvent, JsonObject
 from XBotv2.permissions import PermissionsPort
 
 
@@ -48,6 +49,15 @@ class ApplicationEventsPort(OperationContext, Protocol):
     async def emit(self, event: str, *args: object) -> None: ...
 
 
+class InteractionResultPort(Protocol):
+    request_id: str
+    status: str
+    answer: object
+    decision: str
+    scope: str
+    reason: str
+
+
 class InteractionWaiterPort(Protocol):
     def register(self, request_id: str) -> object: ...
 
@@ -56,13 +66,40 @@ class InteractionWaiterPort(Protocol):
         request_id: str,
         pending: object,
         timeout_seconds: float | None,
-    ) -> object: ...
+    ) -> InteractionResultPort: ...
 
-    def answer(self, request_id: str, **values: object) -> object: ...
+    def answer(self, request_id: str, **values: object) -> InteractionResultPort: ...
+
+
+class ClientEventSink(Protocol):
+    async def __call__(
+        self,
+        event: ClientEvent,
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> JsonObject: ...
 
 
 class ClientEventsPort(Protocol):
-    def set_sink(self, sink: object | None) -> object | None: ...
+    def set_sink(
+        self,
+        sink: ClientEventSink | None,
+    ) -> ClientEventSink | None: ...
+
+    async def request(
+        self,
+        event: ClientEvent,
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> JsonObject | None: ...
+
+    def register_waiter(
+        self,
+        event_type: str,
+        waiter: InteractionWaiterPort,
+    ) -> Callable[[], bool]: ...
 
     def waiter(self, event_type: str) -> InteractionWaiterPort | None: ...
 
@@ -146,7 +183,9 @@ __all__ = [
     "COLLECT_STATUS_SLOTS",
     "ChildApplicationRequest",
     "ChildApplicationsPort",
+    "ClientEventSink",
     "ClientEventsPort",
+    "InteractionResultPort",
     "InteractionWaiterPort",
     "LoopStateView",
     "MediaStoragePort",

@@ -407,7 +407,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
         calls.append((
             "permission_request",
             ctx.tool_call.name,
-            ctx.client_event["data"]["decision"],
+            ctx.client_event.data["decision"],
         ))
 
     async def tool_denied(ctx):

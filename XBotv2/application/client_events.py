@@ -7,11 +7,10 @@ feature plugin that may need a client response.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Callable
 
-
-ClientEventSink = Callable[..., Awaitable[dict[str, Any]]]
+from XBotv2.application.services import ClientEventSink, InteractionWaiterPort
+from XBotv2.core.tools import ClientEvent, JsonObject
 
 
 class ClientEventRouter:
@@ -29,11 +28,11 @@ class ClientEventRouter:
 
     async def request(
         self,
-        event: dict[str, Any],
+        event: ClientEvent,
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, Any] | None:
+    ) -> JsonObject | None:
         if self._sink is not None:
             return await self._sink(
                 event,
@@ -48,7 +47,11 @@ class ClientEventRouter:
             )
         return None
 
-    def register_waiter(self, event_type: str, waiter: Any) -> Callable[[], bool]:
+    def register_waiter(
+        self,
+        event_type: str,
+        waiter: InteractionWaiterPort,
+    ) -> Callable[[], bool]:
         if event_type in self._waiters:
             raise ValueError(f"client event waiter already registered: {event_type}")
         self._waiters[event_type] = waiter
@@ -58,7 +61,7 @@ class ClientEventRouter:
 
         return dispose
 
-    def waiter(self, event_type: str) -> Any | None:
+    def waiter(self, event_type: str) -> InteractionWaiterPort | None:
         return self._waiters.get(event_type)
 
     def pending_request_ids(self) -> list[str]:
