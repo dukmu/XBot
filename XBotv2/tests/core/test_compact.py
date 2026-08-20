@@ -20,7 +20,7 @@ from XBotv2.core import (
     ToolCall,
     estimate_request_tokens,
 )
-from XBotv2.agentloop import EventContext, Events, LoopSettings
+from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.session import HISTORY_CHANGED
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
@@ -288,7 +288,7 @@ async def test_large_context_does_not_use_fixed_character_threshold():
 
     result = await plugin._on_before_model_request(EventContext(
         messages=original,
-        model_request={"messages": context, "tools": []},
+        model_request=ModelRequest(context, [], plugin.model),
         settings=LoopSettings(
             provider="test",
             context_window=1_048_576,
@@ -318,7 +318,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
 
     result = await plugin._on_before_model_request(EventContext(
         messages=original,
-        model_request={"messages": context, "tools": []},
+        model_request=ModelRequest(context, [], plugin.model),
         settings=LoopSettings(
             provider="test",
             context_window=200_000,
@@ -360,10 +360,11 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
 
     ctx = EventContext(
         messages=original,
-        model_request={
-            "messages": [Message(role="system", content="stable"), *original],
-            "tools": [],
-        },
+        model_request=ModelRequest(
+            [Message(role="system", content="stable"), *original],
+            [],
+            plugin.model,
+        ),
         settings=LoopSettings(
             provider="test",
             context_window=100,
@@ -407,10 +408,11 @@ async def test_failed_automatic_summary_continues_with_original_history():
 
     ctx = EventContext(
         messages=original,
-        model_request={
-            "messages": [Message(role="system", content="stable"), *original],
-            "tools": [],
-        },
+        model_request=ModelRequest(
+            [Message(role="system", content="stable"), *original],
+            [],
+            plugin.model,
+        ),
         settings=LoopSettings(
             provider="test",
             context_window=1_000,

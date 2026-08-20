@@ -36,6 +36,7 @@ from XBotv2.agentloop.contracts import (
     DEFAULT_MAX_ITERATIONS,
     LoopSettings,
     LoopState,
+    ModelRequest,
 )
 from XBotv2.agentloop.services import ToolsPort
 from XBotv2.core.messages import (
@@ -88,7 +89,7 @@ class _ContextBuildResult:
 
 @dataclass(slots=True)
 class _ModelRequestResult:
-    request: dict[str, Any] | None = None
+    request: ModelRequest | None = None
     event: dict[str, Any] | None = None
     turn_complete: bool | None = None
     rebuild: bool = False
@@ -532,10 +533,10 @@ class Engine:
                 assert model_preparation.request is not None
                 model_request = model_preparation.request
                 if finalizing:
-                    model_request["tools"] = []
-                    model_request["llm"] = self._llm_without_tools()
-                context_messages = model_request["messages"]
-                llm_with_tools = model_request["llm"]
+                    model_request.tools = []
+                    model_request.llm = self._llm_without_tools()
+                context_messages = model_request.messages
+                llm_with_tools = model_request.llm
                 break
             if turn_complete:
                 break
@@ -605,7 +606,7 @@ class Engine:
             response_metadata = dict(response.response_metadata)
             response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
                 context_messages,
-                list(model_request.get("tools") or []),
+                model_request.tools,
             )
             response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.settings.context_window
             response_metadata[REQUEST_PROVIDER_KEY] = (
@@ -968,11 +969,11 @@ class Engine:
             return _ModelRequestResult(turn_complete=True)
 
         tools = self.tools.enabled()
-        pre_schema_request = {
-            "messages": context_messages,
-            "tools": tools,
-            "llm": self.model_client,
-        }
+        pre_schema_request = ModelRequest(
+            messages=context_messages,
+            tools=list(tools),
+            llm=self.model_client,
+        )
         pre_schema_ctx = self._make_event_context(context_messages=context_messages,
             model_request=pre_schema_request,
         )
@@ -981,11 +982,11 @@ class Engine:
         )
         if isinstance(pre_schema_result, dict):
             if "tools" in pre_schema_result:
-                tools = pre_schema_result["tools"]
-                pre_schema_request["tools"] = tools
+                tools = list(pre_schema_result["tools"])
+                pre_schema_request.tools = tools
             if "messages" in pre_schema_result:
-                context_messages = pre_schema_result["messages"]
-                pre_schema_request["messages"] = context_messages
+                context_messages = list(pre_schema_result["messages"])
+                pre_schema_request.messages = context_messages
             if "event" in pre_schema_result:
                 return _ModelRequestResult(
                     event=pre_schema_result["event"],
@@ -998,12 +999,15 @@ class Engine:
                 event=self._default_hook_rejection_event(Events.BEFORE_TOOL_SCHEMA_BIND),
                 turn_complete=True,
             )
+        pre_schema_request = pre_schema_ctx.model_request or pre_schema_request
+        tools = list(pre_schema_request.tools)
+        context_messages = list(pre_schema_request.messages)
 
-        model_request = {
-            "messages": context_messages,
-            "tools": tools,
-            "llm": self._bind_tools_for_provider(tools),
-        }
+        model_request = ModelRequest(
+            messages=context_messages,
+            tools=list(tools),
+            llm=self._bind_tools_for_provider(list(tools)),
+        )
         schema_ctx = self._make_event_context(context_messages=context_messages,
             model_request=model_request,
         )
@@ -1013,10 +1017,16 @@ class Engine:
 
         request_ctx = self._make_event_context(
             context_messages=context_messages,
-            model_request=dict(model_request),
+            model_request=ModelRequest(
+                messages=list(model_request.messages),
+                tools=list(model_request.tools),
+                llm=model_request.llm,
+            ),
         )
         model_request = request_ctx.model_request
         assert model_request is not None
+        tools_before_hook = tuple(model_request.tools)
+        llm_before_hook = model_request.llm
         request_result = await self._dispatch(Events.BEFORE_MODEL_REQUEST, request_ctx,
             short_circuit=True,
         )
@@ -1024,14 +1034,14 @@ class Engine:
             if request_result.get("rebuild"):
                 return _ModelRequestResult(rebuild=True)
             if "messages" in request_result:
-                model_request["messages"] = request_result["messages"]
+                model_request.messages = list(request_result["messages"])
             if "tools" in request_result:
-                model_request["tools"] = request_result["tools"]
-                model_request["llm"] = self._bind_tools_for_provider(
-                    model_request["tools"]
+                model_request.tools = list(request_result["tools"])
+                model_request.llm = self._bind_tools_for_provider(
+                    model_request.tools
                 )
             if "llm" in request_result:
-                model_request["llm"] = request_result["llm"]
+                model_request.llm = request_result["llm"]
             if "event" in request_result:
                 return _ModelRequestResult(
                     event=request_result["event"],
@@ -1041,6 +1051,13 @@ class Engine:
             return _ModelRequestResult(
                 event=self._default_hook_rejection_event(Events.BEFORE_MODEL_REQUEST),
                 turn_complete=True,
+            )
+        if (
+            tuple(model_request.tools) != tools_before_hook
+            and model_request.llm is llm_before_hook
+        ):
+            model_request.llm = self._bind_tools_for_provider(
+                model_request.tools
             )
         ready_ctx = self._make_event_context(
             context_messages=context_messages,
@@ -1200,7 +1217,7 @@ class Engine:
         user_input: str | None = None,
         context_messages: list[Message] | None = None,
         agent_response: ModelResponse | None = None,
-        model_request: dict[str, Any] | None = None,
+        model_request: ModelRequest | None = None,
         model_response: ModelResponse | None = None,
         tool_calls: list[ToolCall] | None = None,
         tool_call: ToolCall | None = None,

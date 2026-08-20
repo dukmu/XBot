@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from XBotv2.agentloop.contracts import LoopSettings
+from XBotv2.agentloop.contracts import LoopSettings, ModelRequest
 from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
@@ -117,7 +117,7 @@ class EventContext:
     turn_complete: bool = False
     context_messages: list[Message] | None = None
     agent_response: ModelResponse | None = None
-    model_request: dict[str, Any] | None = None
+    model_request: ModelRequest | None = None
     model_response: ModelResponse | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call: ToolCall | None = None

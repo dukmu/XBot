@@ -113,6 +113,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "LoopFactoryOptions",
         "LoopSettings",
         "LoopState",
+        "ModelRequest",
         "SHORT_CIRCUIT_EVENTS",
         "ToolsPort",
     }

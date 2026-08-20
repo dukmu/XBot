@@ -29,9 +29,9 @@ class TokenManagerPlugin:
         ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 
     async def _on_before_model_request(self, ctx: EventContext) -> None:
-        request = ctx.model_request or {}
-        messages = list(request.get("messages") or [])
-        tools = list(request.get("tools") or [])
+        request = ctx.model_request
+        messages = list(request.messages) if request is not None else []
+        tools = list(request.tools) if request is not None else []
         context_window = int(
             getattr(ctx.settings, "context_window", 0)
             or 0

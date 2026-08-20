@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import JsonObject, Tool
+from XBotv2.llm import ModelPort
 from XBotv2.session import SessionInfo
 
 DEFAULT_MAX_ITERATIONS = 200
@@ -50,6 +51,15 @@ class LoopSettings:
     llm_is_override: bool = False
 
 
+@dataclass(slots=True)
+class ModelRequest:
+    """Mutable provider request exposed to Agent-loop event listeners."""
+
+    messages: list[Message]
+    tools: list[Tool]
+    llm: ModelPort
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDescription:
     name: str
@@ -85,6 +95,7 @@ __all__ = [
     "LIST_TOOLS",
     "LoopSettings",
     "LoopState",
+    "ModelRequest",
     "ToolCatalog",
     "ToolDescription",
     "ToolRegistration",

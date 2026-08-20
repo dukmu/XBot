@@ -13,8 +13,9 @@ from XBotv2.core import (
     context_token_limit,
     estimate_request_tokens,
 )
-from XBotv2.agentloop import EventContext, Events, LoopSettings
+from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
+from XBotv2.llm.mock import MockLLM
 
 
 def make_plugin() -> TokenManagerPlugin:
@@ -85,7 +86,7 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
         messages=messages,
         settings=LoopSettings(provider="test", context_window=204_800),
         session=SimpleNamespace(turn_count=3),
-        model_request={"messages": messages, "tools": []},
+        model_request=ModelRequest(messages, [], MockLLM(responses=[])),
     )
 
     await plugin._on_before_model_request(ctx)

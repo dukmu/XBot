@@ -4,6 +4,7 @@ from XBotv2.agentloop.contracts import (
     DEFAULT_MAX_ITERATIONS,
     LoopSettings,
     LoopState,
+    ModelRequest,
     ToolRegistration,
 )
 from XBotv2.agentloop.events import (
@@ -34,6 +35,7 @@ __all__ = [
     "LoopFactoryOptions",
     "LoopSettings",
     "LoopState",
+    "ModelRequest",
     "ToolGuard",
     "ToolCallData",
     "ToolCallDeltaData",

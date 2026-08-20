@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.agentloop import Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
@@ -59,12 +59,12 @@ class ContentCacheComponent:
         service = ContentCacheService()
         ctx.set("content_cache", service)
 
-        async def bind_model_request(event: Any) -> None:
+        async def bind_model_request(event: EventContext) -> None:
             request = event.model_request
-            if request is None or "messages" not in request:
+            if request is None:
                 return
-            request["messages"] = service.bound_context_messages(
-                request["messages"],
+            request.messages = service.bound_context_messages(
+                request.messages,
                 ctx.storage,
             )
 

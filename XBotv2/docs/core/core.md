@@ -93,6 +93,11 @@ allow, deny, stop, or synthesize a result. Observer events are dispatched with
 `ctx.emit`; listeners must not return values. Failures in a short-circuit
 listener propagate immediately; observer failures propagate out of `emit`.
 
+Model preparation events expose `EventContext.model_request` as the public
+mutable `ModelRequest` contract. Listeners update its `messages`, `tools`, or
+`llm` attributes directly; changing `tools` automatically rebinds the provider
+unless the listener also supplies a different model port.
+
 ### Compaction
 
 The compact plugin observes `BEFORE_CONTEXT` or `BEFORE_MODEL_REQUEST`, runs

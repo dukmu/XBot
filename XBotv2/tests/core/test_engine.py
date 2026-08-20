@@ -574,12 +574,12 @@ class TestEngineHooks:
             calls.append(("context", len(ctx.messages)))
 
         async def after_tool_schema_bind(ctx):
-            request = ctx.model_request or {}
-            calls.append(("tools", [tool.name for tool in request["tools"]]))
+            request = ctx.model_request
+            calls.append(("tools", [tool.name for tool in request.tools]))
 
         async def before_model_request(ctx):
-            request = ctx.model_request or {}
-            calls.append(("request", len(request["messages"])))
+            request = ctx.model_request
+            calls.append(("request", len(request.messages)))
 
         async def after_model_response(ctx):
             calls.append(("response", ctx.model_response.content))
@@ -935,8 +935,8 @@ class TestEngineHooks:
         registry.register(echo_tool)
 
         async def filter_tools(ctx):
-            assert [tool.name for tool in ctx.model_request["tools"]] == ["echo"]
-            return {"tools": []}
+            assert [tool.name for tool in ctx.model_request.tools] == ["echo"]
+            ctx.model_request.tools = []
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, filter_tools)
@@ -976,7 +976,10 @@ class TestEngineHooks:
         registry.register(shout_tool)
 
         async def keep_echo(ctx):
-            return {"tools": [tool for tool in ctx.model_request["tools"] if tool.name == "echo"]}
+            ctx.model_request.tools = [
+                tool for tool in ctx.model_request.tools
+                if tool.name == "echo"
+            ]
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, keep_echo)
@@ -1004,11 +1007,11 @@ class TestEngineHooks:
         calls = []
 
         async def on_model_error(ctx):
-            request = ctx.model_request or {}
+            request = ctx.model_request
             calls.append((
                 "model",
                 type(ctx.error).__name__,
-                len(request["messages"]),
+                len(request.messages),
             ))
 
         async def on_error(ctx):
@@ -1837,7 +1840,7 @@ async def test_before_model_request_hook_can_override_messages(state_store, temp
 
     async def before_request(ctx):
         recorded.append("before_request")
-        msgs = list(ctx.model_request["messages"]) if ctx.model_request else []
+        msgs = list(ctx.model_request.messages) if ctx.model_request else []
         msgs.append(Message(role="system", content="REQUEST: last-moment override"))
         return {"messages": msgs}
 

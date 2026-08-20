@@ -118,9 +118,9 @@ class CompactService:
             return None
 
         messages = list(ctx.messages)
-        request = ctx.model_request or {}
-        context_messages = list(request.get("messages") or [])
-        tools = list(request.get("tools") or [])
+        request = ctx.model_request
+        context_messages = list(request.messages) if request is not None else []
+        tools = list(request.tools) if request is not None else []
         max_context = _context_window(ctx.settings)
         context_tokens, request_estimate, estimate_source = calibrated_context_tokens(
             context_messages,

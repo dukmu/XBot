@@ -100,8 +100,8 @@ class SkillsPlugin:
         )
 
     async def _on_before_tool_schema(self, ctx: EventContext):
-        request = ctx.model_request or {}
-        tools = list(request.get("tools") or [])
+        request = ctx.model_request
+        tools = list(request.tools) if request is not None else []
         if not tools or not self._model_skill_names:
             return None
         remaining = self._metadata_budget_chars
@@ -122,7 +122,7 @@ class SkillsPlugin:
                     replace(tool, description=description[: remaining - len(name)])
                 )
                 remaining = 0
-        return {"tools": selected}
+        request.tools = selected
 
     def _skill_as_tool(self, skill: Skill) -> Tool:
         async def invoke(*, sandbox=None) -> ToolResult:

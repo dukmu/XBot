@@ -284,8 +284,10 @@ Body
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
+        from XBotv2.agentloop import ModelRequest
         from XBotv2.skills.plugin import SkillsPlugin
         from XBotv2.core import Tool
+        from XBotv2.llm.mock import MockLLM
 
         plugin = SkillsPlugin()
         plugin._model_skill_names = {"long-skill"}
@@ -301,13 +303,18 @@ Body
             function=invoke,
             parameters={"type": "object", "properties": {}},
         )
-        result = await plugin._on_before_tool_schema(SimpleNamespace(
-            model_request={"tools": [ordinary, skill]},
+        request = ModelRequest(
+            messages=[],
+            tools=[ordinary, skill],
+            llm=MockLLM(responses=[]),
+        )
+        await plugin._on_before_tool_schema(SimpleNamespace(
+            model_request=request,
         ))
 
-        assert result["tools"][0] is ordinary
-        assert result["tools"][1].name == "long-skill"
-        assert result["tools"][1].description == "a ve"
+        assert request.tools[0] is ordinary
+        assert request.tools[1].name == "long-skill"
+        assert request.tools[1].description == "a ve"
 
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
