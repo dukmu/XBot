@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from XBotv2.core import (
     Tool,
@@ -283,7 +283,10 @@ class GoalPlugin:
     async def start(self) -> None:
         """Schedule the next active-goal turn if one is not already pending."""
         goal = await self._active_goal()
-        engine: AgentLoopDriverPort | None = getattr(self.ctx, "engine", None)
+        engine = cast(
+            AgentLoopDriverPort | None,
+            self.ctx.get("engine", strict=False),
+        )
         if goal is None or self._continuation_pending or engine is None:
             return
         self._continuation_pending = True
