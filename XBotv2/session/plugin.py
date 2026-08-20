@@ -10,11 +10,11 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agentloop import LoopState
-from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.filesystem.storage import ThreadStorage
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
+from XBotv2.session.types import SessionInfo
 
 
 class SessionComponent:

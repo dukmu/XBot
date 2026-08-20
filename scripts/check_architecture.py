@@ -48,7 +48,7 @@ TOOLS = (
     PACKAGE / "agentloop" / "tool_registry.py",
 )
 
-ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "agents", "core", "llm"}
+ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "agents", "core", "llm", "session"}
 TOOLS_ALLOWED_XBOT_ROOTS = {"agentloop", "core"}
 TOOL_SERVICE_FORBIDDEN_LITERALS = {
     "approval",

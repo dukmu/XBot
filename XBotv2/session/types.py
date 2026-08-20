@@ -23,6 +23,19 @@ class ThreadNotActive(RuntimeError):
     """The thread exists on disk but has no live runtime."""
 
 
+@dataclass
+class SessionInfo:
+    """Mutable identity and counters for one active Agent thread."""
+
+    session_id: str
+    thread_id: str
+    workspace_root: str = ""
+    provider: str = "default"
+    turn_count: int = 0
+    event_count: int = 0
+    status: str = "active"
+
+
 @dataclass(frozen=True, slots=True)
 class ImageUpload:
     data: str
@@ -165,6 +178,7 @@ __all__ = [
     "OpenThread",
     "SendMessage",
     "SessionExists",
+    "SessionInfo",
     "SessionNotFound",
     "SessionStreamEvent",
     "SessionSnapshot",

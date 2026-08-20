@@ -224,7 +224,7 @@ def test_invalid_mcp_tool_schema_is_rejected():
 async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(tmp_path):
     from XBotv2.mcp_plugin.callbacks import client_callbacks
     from mcp import types
-    from XBotv2.core import SessionInfo
+    from XBotv2.session import SessionInfo
     from XBotv2.llm.mock import MockLLM
     requested = []
     llm = MockLLM(responses=[{"content": "Done"}])
@@ -299,7 +299,7 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
 
 def _mcp_plugin(servers):
     from XBotv2.mcp_plugin.plugin import MCPPlugin
-    from XBotv2.core import SessionInfo
+    from XBotv2.session import SessionInfo
     from plugin_harness import mount_plugin_standalone
 
     plugin = MCPPlugin()

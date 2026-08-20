@@ -1,4 +1,4 @@
-"""Display-safe serialization for provider-neutral conversation history."""
+"""Session-owned display projection for conversation history."""
 
 from __future__ import annotations
 

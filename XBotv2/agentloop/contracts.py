@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
-from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.tools import JsonObject, Tool
+from XBotv2.session import SessionInfo
 
 DEFAULT_MAX_ITERATIONS = 200
 

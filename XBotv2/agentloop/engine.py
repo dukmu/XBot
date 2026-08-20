@@ -38,7 +38,6 @@ from XBotv2.agentloop.contracts import (
     LoopState,
 )
 from XBotv2.agentloop.services import ToolsPort
-from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.messages import (
     ImageContent,
     Message,
@@ -55,6 +54,7 @@ from XBotv2.core.tokens import (
     estimate_request_tokens,
 )
 from XBotv2.llm import ModelPort
+from XBotv2.session import SessionInfo
 from XBotv2.core.tools import (
     ClientEvent,
     Tool,

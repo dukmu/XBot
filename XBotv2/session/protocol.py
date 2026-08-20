@@ -29,7 +29,7 @@ from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
-from XBotv2.core.history import display_history
+from XBotv2.session.history import display_history
 from XBotv2.server import ModelOverride, ServerOptions, contribute_router
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (

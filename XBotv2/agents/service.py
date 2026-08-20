@@ -24,7 +24,7 @@ from XBotv2.agentloop import (
     LoopSettings,
 )
 from XBotv2.core.errors import OperationError
-from XBotv2.core.runtime import SessionInfo
+from XBotv2.session import SessionInfo
 from XBotv2.agents.services import AgentCatalogPort
 
 

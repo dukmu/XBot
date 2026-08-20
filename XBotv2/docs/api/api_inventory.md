@@ -55,7 +55,6 @@ plugin implementations.
 | `ReasoningPart` | dataclass |  |
 | `RuntimePaths` | class |  |
 | `RuntimeVariables` | class |  |
-| `SessionInfo` | dataclass |  |
 | `SessionPaths` | class |  |
 | `TextPart` | dataclass |  |
 | `ThreadPaths` | class |  |
@@ -110,6 +109,10 @@ output stores remain internal implementations.
 The same rule applies to the `llm`, `session`, `permissions`, and `sandbox`
 package roots. Packages without an explicit declaration module do not expose
 their concrete implementation through `__init__.py`.
+
+The Session root exports `SessionInfo` and its other domain declarations;
+Session wire DTOs remain lazily exported from the same root. Display-history
+projection is internal to the Session plugin.
 
 The Loader root exports plugin-tree declarations and reload operations.
 Concrete loading and XCore mounting live in `loader.runtime` and are used only

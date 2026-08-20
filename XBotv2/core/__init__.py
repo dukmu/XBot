@@ -31,7 +31,6 @@ from XBotv2.core.providers import (
     ProviderCapabilities,
     ProviderRetryExhaustedError,
 )
-from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.tokens import (
     calibrated_context_tokens,
     context_token_limit,
@@ -75,7 +74,6 @@ __all__ = [
     "ReasoningPart",
     "RuntimePaths",
     "RuntimeVariables",
-    "SessionInfo",
     "SessionPaths",
     "TextPart",
     "ThreadPaths",

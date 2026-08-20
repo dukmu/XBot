@@ -93,6 +93,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "AgentApplicationFactory",
         "SessionsPort",
         "SessionPort",
+        "SessionInfo",
         "SessionRef",
         "ThreadSummary",
     }
