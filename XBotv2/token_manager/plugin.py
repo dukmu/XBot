@@ -33,8 +33,7 @@ class TokenManagerPlugin:
         messages = list(request.get("messages") or [])
         tools = list(request.get("tools") or [])
         context_window = int(
-            getattr(ctx.config, "context_window", None)
-            or getattr(ctx.config, "max_context_tokens", 0)
+            getattr(ctx.settings, "context_window", 0)
             or 0
         )
         context_tokens, raw_estimate, source = calibrated_context_tokens(

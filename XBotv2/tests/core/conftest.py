@@ -82,8 +82,5 @@ def event_context(session_info, tool_registry):
     """Basic EventContext for loop events."""
     return EventContext(
         messages=[],
-        config=None,
-        tools=tool_registry,
-        plugin_store=None,
         session=session_info,
     )

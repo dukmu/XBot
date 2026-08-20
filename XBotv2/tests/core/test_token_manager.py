@@ -13,7 +13,7 @@ from XBotv2.core import (
     context_token_limit,
     estimate_request_tokens,
 )
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import EventContext, Events, LoopSettings
 from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
 
 
@@ -83,7 +83,7 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     messages = [Message(role="user", content="hello")]
     ctx = EventContext(
         messages=messages,
-        config=SimpleNamespace(max_context_tokens=204_800),
+        settings=LoopSettings(provider="test", context_window=204_800),
         session=SimpleNamespace(turn_count=3),
         model_request={"messages": messages, "tools": []},
     )

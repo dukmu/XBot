@@ -241,8 +241,9 @@ class InitFailPlugin:
         ctx.dispose(self.on_unload)
         ctx.on(Events.SESSION_INIT, self.on_session_init)
 
-    async def on_session_init(self, ctx):
-        name = ctx.tools.register(
+    async def on_session_init(self, event):
+        del event
+        name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:init-fail",
         )
@@ -307,8 +308,9 @@ class NormalClosePlugin:
         ctx.on(Events.SESSION_INIT, self.on_session_init)
         ctx.on(Events.SESSION_CLOSE, self.on_session_close)
 
-    async def on_session_init(self, ctx):
-        name = ctx.tools.register(
+    async def on_session_init(self, event):
+        del event
+        name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:normal-close",
         )

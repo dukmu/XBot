@@ -9,7 +9,7 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
 from XBotv2.commands import Command, CommandResult
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 
@@ -19,12 +19,14 @@ _STATUSES = {"active", "complete", "blocked", "paused"}
 
 
 class GoalPlugin:
-    inject = ['tools', 'commands']
+    inject = {
+        "required": ["tools", "commands"],
+        "optional": ["engine"],
+    }
     name = "goal"
 
     def __init__(self) -> None:
         self._continuation_pending = False
-        self._send_input = None
 
     async def on_unload(self) -> None:
         self._continuation_pending = False
@@ -40,8 +42,6 @@ class GoalPlugin:
         ctx.on(Events.TURN_START, self._start_goal_turn)
         ctx.on(Events.TURN_END, self._on_turn_end)
         ctx.on(COLLECT_STATUS_SLOTS, self._contribute_status)
-        ctx.on(Events.SESSION_START, self._capture_send_input)
-        ctx.on(Events.SESSION_RESUME, self._capture_send_input)
         ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
         )
@@ -139,11 +139,8 @@ class GoalPlugin:
         else:
             result = await self._finish(action, value)
         if result.status == "success" and action in {"set", "resume"}:
-            await self.start(self._send_input)
+            await self.start()
         return _command_result(result)
-
-    def _capture_send_input(self, event: EventContext) -> None:
-        self._send_input = event.send_input
 
     async def _get(self) -> ToolResult:
         goal = await self._read_goal()
@@ -281,15 +278,16 @@ class GoalPlugin:
             goal["status"] = "paused"
             await self.store.set("goal", goal)
             return
-        await self.start(ctx.send_input)
+        await self.start()
 
-    async def start(self, send_input) -> None:
+    async def start(self) -> None:
         """Schedule the next active-goal turn if one is not already pending."""
         goal = await self._active_goal()
-        if goal is None or self._continuation_pending or send_input is None:
+        engine: AgentLoopDriverPort | None = getattr(self.ctx, "engine", None)
+        if goal is None or self._continuation_pending or engine is None:
             return
         self._continuation_pending = True
-        await send_input(
+        await engine.followup(
             "[goal continuation]",
             source="goal",
             metadata={"continuation": True},

@@ -64,7 +64,7 @@ class SkillsPlugin:
         ws = getattr(ctx.session, "workspace_root", "") or str(Path.cwd())
         self._registry.discover(Path(ws))
         max_context = int(
-            getattr(getattr(ctx, "config", None), "max_context_tokens", 0) or 0
+            getattr(ctx.settings, "context_window", 0) or 0
         )
         if max_context > 0:
             self._metadata_budget_chars = min(

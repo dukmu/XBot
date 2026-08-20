@@ -12,7 +12,7 @@ from XBotv2.core import (
     context_token_limit,
     estimate_messages_tokens,
 )
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import EventContext, Events, LoopSettings
 from XBotv2.commands import CommandResult
 
 from XBotv2.compact.commands import run_compact_command
@@ -114,7 +114,7 @@ class CompactService:
         request = ctx.model_request or {}
         context_messages = list(request.get("messages") or [])
         tools = list(request.get("tools") or [])
-        max_context = _context_window(ctx.config)
+        max_context = _context_window(ctx.settings)
         context_tokens, request_estimate, estimate_source = calibrated_context_tokens(
             context_messages,
             tools,
@@ -124,7 +124,7 @@ class CompactService:
         )
         configured_output = max(
             0,
-            int(getattr(ctx.config, "max_output_tokens", 0) or 0),
+            int(getattr(ctx.settings, "max_output_tokens", 0) or 0),
         )
         output_reservation = (
             self._output_reservation
@@ -318,12 +318,8 @@ class CompactService:
         }
 
 
-def _context_window(config: Any) -> int:
-    value = (
-        getattr(config, "context_window", None)
-        or getattr(config, "max_context_tokens", None)
-        or 32_000
-    )
+def _context_window(settings: LoopSettings | None) -> int:
+    value = settings.context_window if settings is not None else 32_000
     result = int(value)
     return result if result > 0 else 32_000
 

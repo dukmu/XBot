@@ -1228,9 +1228,7 @@ class Engine:
         return EventContext(
             request_id=self._request_id.get(),
             messages=self.messages,
-            config=self.settings,
-            tools=self.tools,
-            send_input=self.followup,
+            settings=self.settings,
             continuation=self.continuation,
             session=self.session,
             user_input=user_input,

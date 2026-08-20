@@ -10,8 +10,9 @@ observer events with ``ctx.emit``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
+from XBotv2.agentloop.contracts import LoopSettings
 from XBotv2.context_builder import ContextComponent
 from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
@@ -126,10 +127,8 @@ class EventContext:
     """
 
     messages: list[Message] = field(default_factory=list)
-    config: Any | None = None
-    tools: Any | None = None
+    settings: LoopSettings | None = None
     agent: AgentDefinition | None = None
-    send_input: Callable[..., Awaitable[Any]] | None = None
     continuation: bool = False
     session: SessionInfo | None = None
     user_input: str | None = None

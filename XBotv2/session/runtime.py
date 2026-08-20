@@ -114,8 +114,8 @@ class SessionRuntime:
 
     async def _on_agent_configured(self, event: EventContext) -> None:
         """Project provider/model selection changes for status displays."""
-        config = event.config
-        provider = getattr(config, "provider", None)
+        settings = event.settings
+        provider = getattr(settings, "provider", None)
         if provider:
             self.provider_name = str(provider)
         data = {
@@ -127,7 +127,7 @@ class SessionRuntime:
                 "model_mode",
                 "context_window",
             )
-            if (value := getattr(config, key, None)) is not None
+            if (value := getattr(settings, key, None)) is not None
         }
         if data and self.session_events is not None:
             await self.session_events.put(session_event("agent_configured", data))

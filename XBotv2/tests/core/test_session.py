@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop import EventContext
+from XBotv2.agentloop import EventContext, LoopSettings
 from XBotv2.session.runtime import SessionRuntime
 
 
@@ -138,9 +138,9 @@ async def test_agent_configuration_updates_session_provider_projection(tmp_path)
     session = runtime(tmp_path)
 
     await session._on_agent_configured(EventContext(
-        config=SimpleNamespace(
-            agent_name="default",
+        settings=LoopSettings(
             provider="selected",
+            agent_name="default",
             model="model-1",
             model_mode="chat",
             context_window=4096,

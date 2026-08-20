@@ -185,7 +185,7 @@ Body
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.agentloop import EventContext
+        from XBotv2.agentloop import EventContext, LoopSettings
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -194,7 +194,7 @@ Body
         tools = plugin.ctx.tools
         ctx = EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
-            config=SimpleNamespace(max_context_tokens=1_000),
+            settings=LoopSettings(provider="test", context_window=1_000),
         )
 
         await plugin._on_session_init(ctx)
@@ -274,7 +274,6 @@ Body
         mount_plugin(plugin, state_store)
         await plugin._on_session_init(EventContext(
             session=SimpleNamespace(workspace_root=str(skill_workspace)),
-            config=None,
         ))
         results = await plugin.ctx.tools.execute_all(
             [ToolCall("manual", "manual-only", {})],

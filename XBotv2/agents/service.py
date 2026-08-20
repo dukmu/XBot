@@ -93,9 +93,7 @@ class AgentsService:
         await ctx.emit(
             Events.SESSION_INIT,
             EventContext(
-                config=config,
                 agent=definition,
-                tools=ctx.tools,
                 session=SessionInfo(
                     session_id=options.session_id,
                     thread_id=options.thread_id,
@@ -227,9 +225,8 @@ class AgentsService:
             "context_window": config.max_context_tokens,
         })
         await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
-            config=config,
+            settings=engine.settings,
             agent=definition,
-            tools=ctx.tools,
             session=state.session,
         ))
         return {
@@ -280,7 +277,7 @@ class AgentsService:
             "context_window": model_config.max_context_tokens,
         })
         await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
-            config=engine.settings,
+            settings=engine.settings,
             session=state.session,
         ))
         return {

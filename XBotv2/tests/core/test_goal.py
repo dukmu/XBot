@@ -78,12 +78,6 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
 @pytest.mark.asyncio
 async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
-    queued = []
-
-    async def enqueue(*_args, **_kwargs):
-        queued.append(True)
-
-    plugin._send_input = enqueue
 
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
@@ -147,10 +141,10 @@ async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     async def send_input(*_args, **_kwargs):
         requests.append(True)
 
+    plugin.ctx.set("engine", SimpleNamespace(followup=send_input))
     turn_end = EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        send_input=send_input,
     )
     await plugin._on_turn_end(turn_end)
     await plugin._on_turn_end(turn_end)
@@ -177,10 +171,10 @@ async def test_runtime_notification_does_not_drive_active_goal(state_store):
     async def send_input(*_args, **_kwargs):
         requests.append(True)
 
+    plugin.ctx.set("engine", SimpleNamespace(followup=send_input))
     await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        send_input=send_input,
     ))
 
     assert len(requests) == 1
@@ -211,10 +205,10 @@ async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store
     async def send_input(*_args, **_kwargs):
         requests.append(True)
 
+    plugin.ctx.set("engine", SimpleNamespace(followup=send_input))
     await plugin._on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="client_interrupt",
-        send_input=send_input,
     ))
 
     assert requests == []

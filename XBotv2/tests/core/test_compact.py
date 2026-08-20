@@ -19,7 +19,7 @@ from XBotv2.core import (
     ToolCall,
     estimate_request_tokens,
 )
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import EventContext, Events, LoopSettings
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
@@ -286,9 +286,9 @@ async def test_large_context_does_not_use_fixed_character_threshold():
     result = await plugin._on_before_model_request(EventContext(
         messages=original,
         model_request={"messages": context, "tools": []},
-        config=SimpleNamespace(
-            max_context_tokens=1_048_576,
-            max_output_tokens=None,
+        settings=LoopSettings(
+            provider="test",
+            context_window=1_048_576,
         ),
         session=SimpleNamespace(turn_count=3),
     ))
@@ -316,8 +316,9 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
     result = await plugin._on_before_model_request(EventContext(
         messages=original,
         model_request={"messages": context, "tools": []},
-        config=SimpleNamespace(
-            max_context_tokens=200_000,
+        settings=LoopSettings(
+            provider="test",
+            context_window=200_000,
             max_output_tokens=64_000,
         ),
         session=SimpleNamespace(turn_count=3),
@@ -360,9 +361,9 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
             "messages": [Message(role="system", content="stable"), *original],
             "tools": [],
         },
-        config=SimpleNamespace(
-            max_context_tokens=100,
-            max_output_tokens=None,
+        settings=LoopSettings(
+            provider="test",
+            context_window=100,
         ),
         session=SimpleNamespace(turn_count=1),
     )
@@ -407,9 +408,9 @@ async def test_failed_automatic_summary_continues_with_original_history():
             "messages": [Message(role="system", content="stable"), *original],
             "tools": [],
         },
-        config=SimpleNamespace(
-            max_context_tokens=1_000,
-            max_output_tokens=None,
+        settings=LoopSettings(
+            provider="test",
+            context_window=1_000,
         ),
         session=SimpleNamespace(turn_count=2),
     )
