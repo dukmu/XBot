@@ -31,8 +31,8 @@ the resulting core-state mutation for persistence observers.
   requirements, decisions, feedback, verified results, current state, remaining
   work, and known unknowns while distinguishing evidence from plans.
 - The summary becomes a system history message. The plugin runs
-  `PRE_COMPACT` and `POST_COMPACT`, then publishes `STATE_CHANGED`; persistence
-  appends a `history_checkpoint`
+  `PRE_COMPACT` and `POST_COMPACT`, then publishes the typed session
+  `HISTORY_CHANGED` event; persistence appends a `history_checkpoint`
   record. Earlier raw records remain available, while resume starts replay at
   the latest checkpoint.
 - The summary instruction explicitly requires preservation of human directives;

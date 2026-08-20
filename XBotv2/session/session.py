@@ -6,10 +6,16 @@ import secrets
 import shutil
 from typing import Any
 
-from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.errors import OperationError
+from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
-from XBotv2.session.contracts import PREPARE_FORK, PrepareFork, SessionStatus
+from XBotv2.session.contracts import (
+    HISTORY_CHANGED,
+    PREPARE_FORK,
+    HistoryChanged,
+    PrepareFork,
+    SessionStatus,
+)
 
 
 def fork_persisted_session(paths: Any, source_session_id: str) -> str:
@@ -87,7 +93,7 @@ class Session:
         await self._replace_history([], operation="clear")
         return removed
 
-    async def undo_history(self, count: int) -> list[Any]:
+    async def undo_history(self, count: int) -> list[Message]:
         """Undo complete user turns; caller owns idle-check and turn lock."""
         messages = list(self.ctx.engine.messages)
         user_indexes = [
@@ -105,18 +111,17 @@ class Session:
 
     async def _replace_history(
         self,
-        messages: list[Any],
+        messages: list[Message],
         *,
         operation: str,
         turns: int = 0,
     ) -> None:
         state = self.state
         state.replace_messages(messages)
-        await self.ctx.emit(Events.STATE_CHANGED, EventContext(
-            messages=state.messages,
-            session=state.session,
-            event={"history_operation": (operation, turns)},
-        ))
+        await self.ctx.emit(
+            HISTORY_CHANGED,
+            HistoryChanged(tuple(state.messages), operation, turns),
+        )
 
     def new_thread_id(self, agent: str) -> str:
         while True:

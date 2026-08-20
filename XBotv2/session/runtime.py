@@ -18,6 +18,7 @@ from XBotv2.session.history import display_history
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
+from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.session.protocol import session_error_event, session_event
 logger = logging.getLogger("xbotv2.session")
 
@@ -78,7 +79,7 @@ class SessionRuntime:
         events = self.application.events
         events.on(Events.INBOX_SPLICE, self._on_runtime_event)
         events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
-        events.on(Events.STATE_CHANGED, self._on_state_changed)
+        events.on(HISTORY_CHANGED, self._on_history_changed)
         events.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
 
     def touch(self) -> None:
@@ -90,18 +91,16 @@ class SessionRuntime:
         self.touch()
         return await self.engine.followup(content, **kwargs)
 
-    async def _on_state_changed(self, event: EventContext) -> None:
+    async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
-        operation = (event.event or {}).get("history_operation")
-        if not operation or self.session_events is None:
+        if self.session_events is None:
             return
-        op, turns = operation
         await self.session_events.put(session_event(
             "history_updated",
             {
-                "history": display_history(event.messages or []),
-                "operation": op,
-                "turns": turns,
+                "history": display_history(event.messages),
+                "operation": event.operation,
+                "turns": event.turns,
             },
         ))
 

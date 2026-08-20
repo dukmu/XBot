@@ -177,8 +177,9 @@ orchestrator and never cross the C/S event boundary.
 
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, and `ON_STOP_FAILURE`. Compact owns
-its own `PRE_COMPACT`/`POST_COMPACT` transaction; persistence observes the
-neutral `STATE_CHANGED` event.
+its own `PRE_COMPACT`/`POST_COMPACT` transaction and publishes the typed
+session `HISTORY_CHANGED` event; persistence observes both history mutations
+and the agent loop's neutral `STATE_CHANGED` commits.
 
 ### Tool System (`agentloop/tool_*.py`)
 
@@ -297,8 +298,9 @@ system messages.
 ### CompactPlugin (`compact/`)
 
 Observes context pressure and uses its injected LLM service to summarize a
-completed history prefix. It owns pre/post bracketing, core-history replacement,
-and `STATE_CHANGED`; persistence independently records the checkpoint.
+completed history prefix. It owns pre/post bracketing and core-history
+replacement, then publishes session-owned `HISTORY_CHANGED`; persistence
+independently records the checkpoint.
 
 ### TodolistPlugin (`todolist/`)
 

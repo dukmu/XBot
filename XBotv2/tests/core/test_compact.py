@@ -20,6 +20,7 @@ from XBotv2.core import (
     estimate_request_tokens,
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings
+from XBotv2.session import HISTORY_CHANGED
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
@@ -198,6 +199,7 @@ async def test_human_command_compacts_and_persists_immediately(
 
     persistence = PersistenceService(state_store, engine.state)
     setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
     await engine.start_session()
     runtime_events = []
 
@@ -476,6 +478,7 @@ async def test_compact_tool_rewrites_and_persists_history(
 
     persistence = PersistenceService(state_store, engine.state)
     setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
     await engine.start_session()
 
     events = [event async for event in engine.run_turn("compact this history")]
@@ -568,6 +571,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
 
     persistence = PersistenceService(state_store, engine.state)
     setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
+    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
     await engine.start_session()
 
     events = [event async for event in engine.run_turn("continue")]

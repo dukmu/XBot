@@ -7,7 +7,9 @@ import pytest
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import EventContext, LoopSettings
+from XBotv2.core import Message
 from XBotv2.core.tools import ClientEvent
+from XBotv2.session import HistoryChanged
 from XBotv2.session.runtime import SessionRuntime
 
 
@@ -126,6 +128,25 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     notice = await asyncio.wait_for(events.get(), timeout=1)
     assert notice["type"] == "completion_notice"
     assert session.turn_task is None
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_history_change_is_projected_from_typed_session_event(tmp_path):
+    session = runtime(tmp_path)
+    events = session.attach_event_stream()
+
+    await session._on_history_changed(HistoryChanged(
+        messages=(Message(role="user", content="keep"),),
+        operation="undo",
+        turns=1,
+    ))
+
+    event = await asyncio.wait_for(events.get(), timeout=1)
+    assert event["type"] == "history_updated"
+    assert event["data"]["operation"] == "undo"
+    assert event["data"]["turns"] == 1
+    assert event["data"]["history"][0]["content"] == "keep"
     await session.close()
 
 

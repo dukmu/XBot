@@ -14,6 +14,7 @@ from XBotv2.core import (
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings
 from XBotv2.commands import CommandResult
+from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
@@ -218,11 +219,16 @@ class CompactService:
                 "metrics": metrics,
                 "previous_message_count": previous_count,
                 "current_message_count": len(ctx.messages),
-                "history_operation": (f"compact:{reason}", 0),
             },
         )
         await self.ctx.emit(Events.POST_COMPACT, committed)
-        await self.ctx.emit(Events.STATE_CHANGED, committed)
+        await self.ctx.emit(
+            HISTORY_CHANGED,
+            HistoryChanged(
+                tuple(ctx.messages),
+                operation=f"compact:{reason}",
+            ),
+        )
 
         self._record_committed(reason, metrics, ctx.session)
         await self._publish_runtime_event(compact_event(

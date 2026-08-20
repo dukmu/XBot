@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agentloop import Events, LoopState
-from XBotv2.session import PREPARE_FORK
+from XBotv2.session import HISTORY_CHANGED, PREPARE_FORK, HistoryChanged
 
 
 class PersistenceService:
@@ -22,10 +22,11 @@ class PersistenceService:
         self._refs = list(state.messages)
         self._fingerprints = [message.fingerprint() for message in state.messages]
 
-    async def state_changed(self, event: Any) -> bool:
-        details = event.event if isinstance(event.event, dict) else {}
-        operation = details.get("history_operation")
-        return self._sync(operation)
+    async def state_changed(self, _event: object) -> bool:
+        return self._sync(None)
+
+    async def history_changed(self, event: HistoryChanged) -> bool:
+        return self._sync((event.operation, event.turns))
 
     async def flush(self) -> bool:
         """Explicit application-level durability barrier."""
@@ -92,6 +93,7 @@ class PersistenceComponent:
         service = PersistenceService(store, state)
         ctx.set("persistence", service)
         ctx.on(Events.STATE_CHANGED, service.state_changed)
+        ctx.on(HISTORY_CHANGED, service.history_changed)
         ctx.on(PREPARE_FORK, lambda _request: service.flush())
 
         async def persist_session_metadata(event: Any) -> None:

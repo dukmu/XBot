@@ -8,6 +8,7 @@ from typing import Generic, Protocol, TypeVar
 
 from XBotv2.application import AgentApplicationPort
 from XBotv2.agents import AgentDefinition
+from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.errors import OperationError
@@ -22,12 +23,20 @@ DISPATCH_OPERATION = "session/dispatch"
 DISPATCH_SESSION_OPERATION = "session/dispatch-all"
 OPERATION_COMPLETED = "session/operation/completed"
 PREPARE_FORK = "session/prepare-fork"
+HISTORY_CHANGED = "session/history-changed"
 
 
 @dataclass(frozen=True, slots=True)
 class PrepareFork:
     session_id: str
     thread_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryChanged:
+    messages: tuple[Message, ...]
+    operation: str
+    turns: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +170,8 @@ __all__ = [
     "AgentApplicationOptions",
     "DISPATCH_OPERATION",
     "DISPATCH_SESSION_OPERATION",
+    "HISTORY_CHANGED",
+    "HistoryChanged",
     "OPERATION_COMPLETED",
     "PREPARE_FORK",
     "PrepareFork",

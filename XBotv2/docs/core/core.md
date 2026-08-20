@@ -92,7 +92,8 @@ listener propagate immediately; observer failures propagate out of `emit`.
 ### Compaction
 
 The compact plugin observes `BEFORE_CONTEXT` or `BEFORE_MODEL_REQUEST`, runs
-`PRE_COMPACT`, replaces core history, emits `POST_COMPACT` and `STATE_CHANGED`,
+`PRE_COMPACT`, replaces core history, emits `POST_COMPACT` and the typed session
+`HISTORY_CHANGED` event,
 then requests a generic rebuild. Engine has no compaction branch or persistence
 call.
 
