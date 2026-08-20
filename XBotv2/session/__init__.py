@@ -1,4 +1,4 @@
-"""Public declarations for the session identity and runtime-host plugin."""
+"""Public declarations for session identity and runtime management."""
 
 from XBotv2.session.types import (
     AttachmentUpload,

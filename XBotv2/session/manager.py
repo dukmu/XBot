@@ -207,7 +207,7 @@ class SessionManager:
             if self.application_factory is None:
                 raise OperationError(
                     "application_factory_unavailable",
-                    "session host has no Agent application factory",
+                    "session management has no Agent application factory",
                 )
             application = await self.application_factory(AgentApplicationOptions(
                 paths=self.paths,
@@ -621,7 +621,7 @@ class SessionManager:
         operation: ScopedOperation[ScopeT, RequestT, ResponseT],
         request: RequestT,
     ) -> ResponseT:
-        """Route an operation with its host-owned typed session scope."""
+        """Route an operation with its manager-owned typed session scope."""
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
         return await dispatch_scoped_operation(

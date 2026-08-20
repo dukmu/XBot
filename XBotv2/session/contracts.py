@@ -1,4 +1,4 @@
-"""Public contracts for creating Agent applications from the session host."""
+"""Public contracts for session management and Agent application creation."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ async def dispatch_session_operation(
     if result is None or result is False:
         raise OperationError(
             "sessions_unavailable",
-            "No session host handles typed operation dispatch",
+            "Session management is unavailable for typed operation dispatch",
         )
     if not isinstance(result, operation.response_type):
         raise TypeError(
@@ -119,7 +119,7 @@ async def dispatch_session_group_operation(
     if result is None or result is False:
         raise OperationError(
             "sessions_unavailable",
-            "No session host handles typed session operation dispatch",
+            "Session management is unavailable for grouped operation dispatch",
         )
     if not isinstance(result, tuple) or any(
         not isinstance(item, operation.response_type) for item in result
@@ -151,7 +151,7 @@ class AgentApplicationOptions:
 
 
 class AgentApplicationFactory(Protocol):
-    """Composition-owned factory consumed by the session host."""
+    """Composition-owned factory consumed by process session management."""
 
     async def __call__(self, options: AgentApplicationOptions) -> AgentApplicationPort: ...
 

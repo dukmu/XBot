@@ -153,8 +153,7 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        host = self.sessions
-        opened = await host.open(OpenSession(
+        opened = await self.sessions.open(OpenSession(
             session_id=None,
             thread_id="agent",
             provider_name=self.provider_name,
@@ -211,8 +210,7 @@ class XBotACPAgent:
         if cursor:
             return ListSessionsResponse(sessions=[])
         sessions: list[SessionInfo] = []
-        host = self.sessions
-        for snapshot in await host.list_sessions():
+        for snapshot in await self.sessions.list_sessions():
             workspace = snapshot.workspace_root
             if not workspace or (
                 cwd and Path(workspace).resolve() != Path(cwd).resolve()
@@ -245,8 +243,7 @@ class XBotACPAgent:
     ) -> ForkSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        host = self.sessions
-        snapshot = await host.session_summary(session_id)
+        snapshot = await self.sessions.session_summary(session_id)
         stored_workspace = snapshot.workspace_root
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
             raise RequestError.invalid_params({
@@ -256,7 +253,7 @@ class XBotACPAgent:
             })
 
         try:
-            forked_id = await host.fork_session(session_id)
+            forked_id = await self.sessions.fork_session(session_id)
         except OperationError as exc:
             raise RequestError.invalid_params({
                 "sessionId": session_id,
@@ -275,7 +272,6 @@ class XBotACPAgent:
         prompt: list[Any],
         **_: Any,
     ) -> PromptResponse:
-        host = self.sessions
         summary = await self._thread(session_id)
         content, images = _prompt_content(prompt)
         command = await self._slash_command(session_id, content)
@@ -288,7 +284,7 @@ class XBotACPAgent:
             self._commands_announced.add(session_id)
 
         mapper = ACPEventMapper(context_size=summary.context_window)
-        stream = await host.stream_message(SendMessage(
+        stream = await self.sessions.stream_message(SendMessage(
             session_id=session_id,
             thread_id="agent",
             content=content,
@@ -327,17 +323,16 @@ class XBotACPAgent:
                 "configId": config_id,
                 "value": value,
             })
-        host = self.sessions
         try:
             if config_id == "agent":
-                await host.dispatch(
+                await self.sessions.dispatch(
                     session_id,
                     "agent",
                     SELECT_AGENT,
                     SelectAgent(value),
                 )
             elif config_id == "provider":
-                await host.dispatch(
+                await self.sessions.dispatch(
                     session_id,
                     "agent",
                     SELECT_PROVIDER,
@@ -390,9 +385,8 @@ class XBotACPAgent:
         cwd: str,
         mcp_servers: list[Any] | None = None,
     ) -> None:
-        host = self.sessions
         try:
-            snapshot = await host.session_summary(session_id)
+            snapshot = await self.sessions.session_summary(session_id)
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
         stored_workspace = snapshot.workspace_root
@@ -404,7 +398,7 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
         try:
-            await host.open(OpenSession(
+            await self.sessions.open(OpenSession(
                 session_id=session_id,
                 thread_id="agent",
                 provider_name=self.provider_name,
@@ -503,9 +497,8 @@ class XBotACPAgent:
         self,
         session_id: str,
     ) -> list[SessionConfigOptionSelect]:
-        host = self.sessions
         options: list[SessionConfigOptionSelect] = []
-        catalog = await host.dispatch(
+        catalog = await self.sessions.dispatch(
             session_id,
             "agent",
             LIST_AGENTS,
@@ -534,7 +527,7 @@ class XBotACPAgent:
                 ],
             ))
 
-        providers = await host.dispatch(
+        providers = await self.sessions.dispatch(
             session_id,
             "agent",
             LIST_PROVIDERS,
@@ -700,10 +693,9 @@ class XBotACPAgent:
         if event.type not in {"permission_request", "user_input_required"}:
             return
         result = await self._handle_interaction(session_id, event)
-        host = self.sessions
         request_id = str(result.get("request_id") or "")
         if result.get("status") != "answered":
-            await host.cancel_interaction(
+            await self.sessions.cancel_interaction(
                 session_id,
                 "agent",
                 event.type,
@@ -712,7 +704,7 @@ class XBotACPAgent:
             )
             return
         if event.type == "permission_request":
-            await host.respond_permission(
+            await self.sessions.respond_permission(
                 session_id,
                 "agent",
                 request_id,
@@ -720,7 +712,7 @@ class XBotACPAgent:
                 str(result.get("scope") or "once"),
             )
             return
-        await host.respond_user_input(
+        await self.sessions.respond_user_input(
             session_id,
             "agent",
             request_id,

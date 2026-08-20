@@ -337,7 +337,7 @@ async def _interaction_response(
 
 def build_session_router(
     *,
-    host: SessionsPort,
+    sessions: SessionsPort,
     options: ServerOptions,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
@@ -354,7 +354,7 @@ def build_session_router(
         if (
             payload.mode == "new"
             and raw_session_id is not None
-            and host.session_exists(raw_session_id)
+            and sessions.session_exists(raw_session_id)
         ):
             raise HttpServerError(
                 "session_exists",
@@ -365,7 +365,7 @@ def build_session_router(
             Path(payload.workspace_root or options.workspace_root).resolve()
         )
         try:
-            opened = await host.open(OpenSession(
+            opened = await sessions.open(OpenSession(
                 session_id=raw_session_id,
                 thread_id=thread_id,
                 provider_name=options.provider_name,
@@ -396,19 +396,19 @@ def build_session_router(
     @router.get("/sessions", operation_id="list_sessions")
     async def list_sessions_endpoint() -> SessionListResponse:
         return SessionListResponse(sessions=[
-            _session_summary(value) for value in await host.list_sessions()
+            _session_summary(value) for value in await sessions.list_sessions()
         ])
 
     @router.get("/sessions/{session_id}", operation_id="get_session")
     async def get_session_endpoint(session_id: str) -> SessionSummary:
-        return _session_summary(await host.session_summary(session_id))
+        return _session_summary(await sessions.session_summary(session_id))
 
     @router.post(
         "/sessions/{session_id}/fork",
         operation_id="fork_session",
     )
     async def fork_session_endpoint(session_id: str) -> ForkResponse:
-        forked_id = await host.fork_session(session_id)
+        forked_id = await sessions.fork_session(session_id)
         return ForkResponse(
             session_id=forked_id,
             source_session_id=session_id,
@@ -423,7 +423,7 @@ def build_session_router(
             session_id=session_id,
             threads=[
                 _thread_summary(value)
-                for value in await host.list_threads(session_id)
+                for value in await sessions.list_threads(session_id)
             ],
         )
 
@@ -437,7 +437,7 @@ def build_session_router(
         llm_override: ModelOverride,
     ) -> OpenSessionResponse:
         try:
-            opened = await host.open_thread(OpenThread(
+            opened = await sessions.open_thread(OpenThread(
                 session_id=session_id,
                 thread_id=payload.thread_id,
                 parent_thread_id=payload.parent_thread_id,
@@ -462,7 +462,9 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> ThreadSummary:
-        return _thread_summary(await host.thread_summary(session_id, thread_id))
+        return _thread_summary(
+            await sessions.thread_summary(session_id, thread_id)
+        )
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/messages",
@@ -472,7 +474,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> ThreadMessagesResponse:
-        messages = await host.messages(session_id, thread_id)
+        messages = await sessions.messages(session_id, thread_id)
         return ThreadMessagesResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -487,7 +489,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> HistoryMutationResponse:
-        result = await host.clear_history(session_id, thread_id)
+        result = await sessions.clear_history(session_id, thread_id)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -504,7 +506,7 @@ def build_session_router(
         thread_id: str,
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
-        result = await host.undo_history(session_id, thread_id, payload.count)
+        result = await sessions.undo_history(session_id, thread_id, payload.count)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -544,7 +546,7 @@ def build_session_router(
             ),
         )
         try:
-            events = await host.stream_message(message)
+            events = await sessions.stream_message(message)
         except ValueError as exc:
             raise HttpServerError(
                 "invalid_request",
@@ -625,7 +627,7 @@ def build_session_router(
         responses=_SSE_RESPONSE,
     )
     async def session_events(session_id: str, thread_id: str) -> Response:
-        events = await host.stream_events(session_id, thread_id)
+        events = await sessions.stream_events(session_id, thread_id)
 
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
@@ -661,7 +663,7 @@ def build_session_router(
         thread_id: str,
         payload: PermissionResponseRequest,
     ) -> InteractionResponse:
-        result = await _interaction_response(host.respond_permission(
+        result = await _interaction_response(sessions.respond_permission(
             session_id,
             thread_id,
             payload.request_id,
@@ -679,7 +681,7 @@ def build_session_router(
         thread_id: str,
         payload: UserInputResponseRequest,
     ) -> InteractionResponse:
-        result = await _interaction_response(host.respond_user_input(
+        result = await _interaction_response(sessions.respond_user_input(
             session_id,
             thread_id,
             payload.request_id,
@@ -692,7 +694,7 @@ def build_session_router(
         operation_id="close_session",
     )
     async def shutdown_session(session_id: str) -> CloseResponse:
-        await host.close_session(session_id)
+        await sessions.close_session(session_id)
         return CloseResponse(session_id=session_id)
 
     @router.post(
@@ -700,7 +702,7 @@ def build_session_router(
         operation_id="close_thread",
     )
     async def close_thread(session_id: str, thread_id: str) -> CloseResponse:
-        await host.close_thread(session_id, thread_id)
+        await sessions.close_thread(session_id, thread_id)
         return CloseResponse(session_id=session_id, thread_id=thread_id)
 
     @router.post(
@@ -711,7 +713,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> InterruptResponse:
-        result = await host.interrupt(session_id, thread_id)
+        result = await sessions.interrupt(session_id, thread_id)
         if not result.cancelled:
             # No running turn to cancel — treat as no-op success so
             # the TUI can press ESC any time without a 4xx.
@@ -762,7 +764,7 @@ class SessionProtocolPlugin:
             ctx,
             owner=self.name,
             router=build_session_router(
-                host=ctx.sessions,
+                sessions=ctx.sessions,
                 options=ctx.server_options,
             ),
             exception_handlers=(

@@ -1,4 +1,4 @@
-"""Public domain types for the process-wide Session host."""
+"""Public domain types for process-wide session management."""
 
 from __future__ import annotations
 
