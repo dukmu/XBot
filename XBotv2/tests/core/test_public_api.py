@@ -148,8 +148,12 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "StatusSlots",
     }
     assert set(compact.__all__) >= {
+        "AfterCompact",
+        "BeforeCompact",
         "CompactionMetrics",
         "CompactionStartedData",
+        "POST_COMPACT",
+        "PRE_COMPACT",
         "compact_event",
     }
     for module, forbidden in (

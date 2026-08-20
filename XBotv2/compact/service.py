@@ -19,6 +19,12 @@ from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
 from XBotv2.compact.config import CompactConfig
+from XBotv2.compact.events import (
+    POST_COMPACT,
+    PRE_COMPACT,
+    AfterCompact,
+    BeforeCompact,
+)
 from XBotv2.compact.history import history_chars, leading_system_messages
 from XBotv2.compact.protocol import compact_event
 
@@ -166,22 +172,16 @@ class CompactService:
         original_messages = list(ctx.messages)
         reason = str(proposal.get("compact_reason") or "context")
         proposed_messages = list(proposal["messages"])
-        pre = EventContext(
+        pre = BeforeCompact(
             messages=list(proposed_messages),
             session=ctx.session,
-            event={"reason": reason},
+            reason=reason,
         )
-        pre_result = await self.ctx.serial(Events.PRE_COMPACT, pre)
+        pre_result = await self.ctx.serial(PRE_COMPACT, pre)
 
-        # PRE_COMPACT supports both EventContext mutation and explicit dict
-        # replacement.  This matches the rest of XBot's event contract.
         messages = list(pre.messages)
-        if isinstance(pre.event, dict):
-            reason = str(pre.event.get("reason") or reason)
-        if isinstance(pre_result, dict):
-            messages = list(pre_result.get("messages", messages))
-            reason = str(pre_result.get("compact_reason") or reason)
-        elif pre_result is not None:
+        reason = pre.reason
+        if pre_result is not None:
             message = "Compaction was rejected before commit."
             await self._publish_runtime_event(compact_event(
                 "compaction_failed",
@@ -193,7 +193,7 @@ class CompactService:
                     "data": {
                         "code": "hook_rejected",
                         "message": message,
-                        "stage": Events.PRE_COMPACT,
+                        "stage": PRE_COMPACT,
                     },
                 },
                 "turn_complete": True,
@@ -211,17 +211,15 @@ class CompactService:
 
         previous_count = len(original_messages)
         ctx.messages[:] = messages
-        committed = EventContext(
-            messages=ctx.messages,
+        committed = AfterCompact(
+            messages=tuple(ctx.messages),
             session=ctx.session,
-            event={
-                "reason": reason,
-                "metrics": metrics,
-                "previous_message_count": previous_count,
-                "current_message_count": len(ctx.messages),
-            },
+            reason=reason,
+            metrics=metrics,
+            previous_message_count=previous_count,
+            current_message_count=len(ctx.messages),
         )
-        await self.ctx.emit(Events.POST_COMPACT, committed)
+        await self.ctx.emit(POST_COMPACT, committed)
         await self.ctx.emit(
             HISTORY_CHANGED,
             HistoryChanged(

@@ -13,6 +13,7 @@ from XBotv2.compact.plugin import (
     _compact_prefix_end,
     _history_chars,
 )
+from XBotv2.compact import POST_COMPACT, PRE_COMPACT
 from XBotv2.core import (
     Message,
     ModelResponse,
@@ -111,18 +112,18 @@ async def test_commit_dispatches_pre_and_post_compact_bracket():
     calls = []
 
     async def pre_compact(ctx):
-        calls.append(("pre", str(ctx.event.get("reason")), len(ctx.messages)))
+        calls.append(("pre", ctx.reason, len(ctx.messages)))
 
     async def post_compact(ctx):
         calls.append((
             "post",
-            str(ctx.event.get("reason")),
-            ctx.event.get("previous_message_count"),
-            ctx.event.get("current_message_count"),
+            ctx.reason,
+            ctx.previous_message_count,
+            ctx.current_message_count,
         ))
 
-    setup.ctx.on(Events.PRE_COMPACT, pre_compact)
-    setup.ctx.on(Events.POST_COMPACT, post_compact)
+    setup.ctx.on(PRE_COMPACT, pre_compact)
+    setup.ctx.on(POST_COMPACT, post_compact)
     plugin._manual_requested = True
     original = history(3)
     ctx = EventContext(messages=original, session=SimpleNamespace(turn_count=3))

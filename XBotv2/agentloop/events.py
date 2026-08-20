@@ -42,8 +42,6 @@ class Events:
     AFTER_USER_MESSAGE_ACCEPT = "after/user-message-accept"
     # Context building
     BEFORE_CONTEXT = "before/context"
-    PRE_COMPACT = "before/compact"
-    POST_COMPACT = "after/compact"
     BEFORE_CONTEXT_BUILD = "before/context-build"
     CONTEXT_BUILD = "context/build"
     AFTER_CONTEXT = "after/context"
@@ -96,7 +94,6 @@ class EventPort(Protocol):
 SHORT_CIRCUIT_EVENTS = frozenset({
     Events.BEFORE_USER_MESSAGE_ACCEPT,
     Events.BEFORE_CONTEXT,
-    Events.PRE_COMPACT,
     Events.BEFORE_CONTEXT_BUILD,
     Events.AFTER_CONTEXT,
     Events.BEFORE_MODEL_REQUEST,
@@ -123,7 +120,6 @@ class EventContext:
     continuation: bool = False
     session: SessionInfo | None = None
     user_input: str | None = None
-    event: Any | None = None
     turn_complete: bool = False
     context_components: list[ContextComponent] | None = None
     context_messages: list[Message] | None = None
