@@ -11,8 +11,8 @@ from pydantic import ValidationError
 import XBotv2.core as public_api
 
 from XBotv2.agents import AgentDefinition, AgentSession
+from XBotv2.context_builder import ContextComponent
 from XBotv2.core import (
-    ContextComponent,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -55,6 +55,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.commands as commands
     import XBotv2.compact as compact
     import XBotv2.config as config
+    import XBotv2.context_builder as context_builder
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
     import XBotv2.loader as loader
@@ -128,6 +129,10 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "POLICY_CHANGED",
         "PolicyChanged",
         "SettingsPort",
+    }
+    assert set(context_builder.__all__) == {
+        "ContextComponent",
+        "PromptFragmentStage",
     }
     assert set(loader.__all__) >= {
         "PluginEntry",

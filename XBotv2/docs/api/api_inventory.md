@@ -35,7 +35,6 @@ plugin implementations.
 | `ArtifactRef` | dataclass |  |
 | `ClientEvent` | dataclass |  |
 | `ContentPart` | type alias |  |
-| `ContextComponent` | dataclass |  |
 | `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
 | `Operation` | dataclass | Typed XCore operation name and request/response contract. |
 | `OperationContext` | protocol | Narrow event-dispatch surface used by typed operations. |
@@ -51,7 +50,6 @@ plugin implementations.
 | `BaseProvider` | abstract class | Provider-neutral configuration and Tool binding contract for model adapters. |
 | `ProviderRetryExhaustedError` | exception | A provider request failed after all configured retries were consumed. |
 | `ProviderCapabilities` | dataclass |  |
-| `PromptFragmentStage` | type alias |  |
 | `ReasoningPart` | dataclass |  |
 | `RuntimePaths` | class |  |
 | `RuntimeVariables` | class |  |
@@ -86,6 +84,12 @@ narrow `EventPort`, `SHORT_CIRCUIT_EVENTS`, `LoopState`, `LoopSettings`, and
 the typed loop factory input. It also exports its Tool and loop service
 contracts. Concrete loop drivers, Tool registries, and services remain
 internal. The LLM root exports the `ModelPort` consumed by that factory.
+
+## Context Builder Declarations (`XBotv2.context_builder`)
+
+The Context Builder root exports `ContextComponent` and
+`PromptFragmentStage`. Context contributors use those declarations without
+importing the concrete builder or plugin implementation.
 
 ## Jobs Declarations (`XBotv2.jobs`)
 

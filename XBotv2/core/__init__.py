@@ -5,7 +5,6 @@ package. Plugin-owned declarations are exported by their owning package roots;
 engine internals remain implementation details.
 """
 
-from XBotv2.core.context import ContextComponent, PromptFragmentStage
 from XBotv2.core.messages import (
     ContentPart,
     ImageContent,
@@ -54,7 +53,6 @@ __all__ = [
     "ArtifactRef",
     "ClientEvent",
     "ContentPart",
-    "ContextComponent",
     "EmptyRequest",
     "Operation",
     "OperationContext",
@@ -70,7 +68,6 @@ __all__ = [
     "BaseProvider",
     "ProviderRetryExhaustedError",
     "ProviderCapabilities",
-    "PromptFragmentStage",
     "ReasoningPart",
     "RuntimePaths",
     "RuntimeVariables",

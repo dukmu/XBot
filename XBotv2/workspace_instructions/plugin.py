@@ -18,9 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from XBotv2.core import (
-    ContextComponent,
-)
+from XBotv2.context_builder import ContextComponent
 from XBotv2.agentloop import EventContext, Events
 
 

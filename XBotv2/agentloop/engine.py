@@ -45,7 +45,7 @@ from XBotv2.core.messages import (
     ModelResponse,
     merge_model_chunk,
 )
-from XBotv2.core.context import ContextComponent
+from XBotv2.context_builder import ContextComponent
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,

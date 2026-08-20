@@ -15,7 +15,7 @@ from XBotv2.tests.helpers import make_engine as helpers_make_engine
 from XBotv2.tests.helpers import make_tool_ctx
 from XBotv2.agentloop import Events
 from XBotv2.llm.mock import MockLLM
-from XBotv2.core import ContextComponent
+from XBotv2.context_builder import ContextComponent
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider
 from XBotv2.agentloop.tool_registry import ToolRegistry

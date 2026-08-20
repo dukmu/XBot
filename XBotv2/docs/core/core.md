@@ -168,7 +168,7 @@ and consumes that state but never a plugin service container. Persistence may
 hydrate the state and observes `STATE_CHANGED`; inbox splices are restored
 through `LoopState`. Interaction waiters remain runtime-only.
 
-## Context Builder (`core/context.py`)
+## Context Builder (`context_builder/contracts.py`)
 
 Assembly order:
 ```

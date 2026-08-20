@@ -1,4 +1,4 @@
-"""Public context component contracts for prompt-building plugins."""
+"""Public context component contracts owned by Context Builder."""
 
 from __future__ import annotations
 

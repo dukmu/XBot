@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
-from XBotv2.core.context import ContextComponent
+from XBotv2.context_builder import ContextComponent
 from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall

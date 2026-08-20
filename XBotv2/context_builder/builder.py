@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from xml.etree import ElementTree
 
-from XBotv2.core.context import ContextComponent, PromptFragmentStage
+from XBotv2.context_builder.contracts import ContextComponent, PromptFragmentStage
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import (
     MESSAGE_FORMAT_KEY,

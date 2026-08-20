@@ -13,7 +13,7 @@ import yaml
 from XBotv2.goal.plugin import GoalPlugin
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.core import ContextComponent
+from XBotv2.context_builder import ContextComponent
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
 from XBotv2.config.models import RuntimeConfig
