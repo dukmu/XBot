@@ -51,6 +51,7 @@ def test_public_api_inventory_is_explicit():
 def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.agentloop as agentloop
     import XBotv2.application as application
+    import XBotv2.compact as compact
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
     import XBotv2.permissions as permissions
@@ -91,9 +92,15 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "ClientEventsPort",
         "StatusSlots",
     }
+    assert set(compact.__all__) >= {
+        "CompactionMetrics",
+        "CompactionStartedData",
+        "compact_event",
+    }
     for module, forbidden in (
         (agentloop, {"Engine", "ToolRegistry", "ToolsService"}),
         (application, {"MountedAgentApplication", "start_application"}),
+        (compact, {"CompactService"}),
         (jobs, {"JobRegistry", "JobRunner"}),
         (llm, {"LlmService", "ModelService"}),
         (permissions, {"PermissionSystem"}),

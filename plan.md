@@ -322,9 +322,9 @@ manager/service implementation；route mount/unmount/collision 由 fiber 测试�
 ### Phase 5: Outbound events
 
 1. 为 message/history/jobs/agents/compact/approval/interactions 定义 producer-owned
-   typed events（Agent loop/Session/Jobs/approval/interactions 主要事件已完成）；
-2. 发布前验证 payload，未知类型不静默透传（主要 C/S stream 已完成，optional
-   runtime events 待审计）；
+   typed events（当前 producer 已完成）；
+2. 发布前验证 payload，未知类型不静默透传（当前 C/S stream 与 Compact runtime
+   events 已完成）；
 3. 建立 capability-neutral session stream bridge（通用 `ClientEvent` 信封与 typed
    router/sink 已完成；插件仍拥有 payload schema）；
 4. 删除 `server/events.py`、`server/event_registry.py` 和 server profile entry；

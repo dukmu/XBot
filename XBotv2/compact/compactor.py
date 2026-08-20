@@ -7,9 +7,10 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from XBotv2.core import Message, estimate_messages_tokens
+from XBotv2.core import ClientEvent, Message, estimate_messages_tokens
 
 from XBotv2.compact.history import compact_prefix_end, history_chars
+from XBotv2.compact.protocol import compact_event
 from XBotv2.compact.summary import (
     compacted_message,
     invoke_llm,
@@ -20,7 +21,7 @@ from XBotv2.compact.summary import (
 
 logger = logging.getLogger("xbotv2.compact")
 
-RuntimePublisher = Callable[[dict[str, Any]], Awaitable[None]]
+RuntimePublisher = Callable[[ClientEvent], Awaitable[None]]
 
 
 async def build_compaction_proposal(
@@ -74,16 +75,16 @@ async def build_compaction_proposal(
         context_limit,
         estimate_source,
     )
-    await publish_runtime_event({
-        "type": "compaction_started",
-        "data": {
+    await publish_runtime_event(compact_event(
+        "compaction_started",
+        {
             "reason": reason,
             "messages_before": len(messages),
             "history_chars_before": chars_before,
             "context_tokens_before": context_tokens_before,
             "context_limit": context_limit,
         },
-    })
+    ))
 
     try:
         summary_messages = prefix_messages
@@ -111,16 +112,16 @@ async def build_compaction_proposal(
             summary_max_chars,
         )
     except asyncio.CancelledError:
-        await publish_runtime_event({
-            "type": "compaction_failed",
-            "data": {"reason": reason, "message": "Compaction cancelled."},
-        })
+        await publish_runtime_event(compact_event(
+            "compaction_failed",
+            {"reason": reason, "message": "Compaction cancelled."},
+        ))
         raise
     except Exception as exc:
-        await publish_runtime_event({
-            "type": "compaction_failed",
-            "data": {"reason": reason, "message": str(exc)},
-        })
+        await publish_runtime_event(compact_event(
+            "compaction_failed",
+            {"reason": reason, "message": str(exc)},
+        ))
         if reason == "manual":
             raise
         logger.exception(
@@ -142,10 +143,10 @@ async def build_compaction_proposal(
             "the generated summary is not smaller than the removable prefix."
         )
         logger.warning(message)
-        await publish_runtime_event({
-            "type": "compaction_failed",
-            "data": {"reason": reason, "message": message},
-        })
+        await publish_runtime_event(compact_event(
+            "compaction_failed",
+            {"reason": reason, "message": message},
+        ))
         return None
 
     metrics = {

@@ -16,6 +16,7 @@ from XBotv2.agentloop import (
     agentloop_event,
 )
 from XBotv2.core import ClientEvent
+from XBotv2.compact import compact_event
 from XBotv2.interactions import (
     UserInputRequiredData,
     UserInputResponseRequest,
@@ -208,6 +209,13 @@ def test_plugin_event_builders_validate_at_the_producer_boundary() -> None:
         agentloop_event("turn_started", {"turn": 0})
     with pytest.raises(ValidationError):
         session_event("message", {"id": "request-1", "role": "user", "extra": 1})
+    with pytest.raises(ValidationError):
+        compact_event("compaction_started", {
+            "reason": "manual",
+            "messages_before": -1,
+            "history_chars_before": 10,
+            "context_tokens_before": 5,
+        })
 
 
 def test_session_stream_event_rejects_non_json_payloads() -> None:

@@ -20,6 +20,7 @@ from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
 from XBotv2.compact.config import CompactConfig
 from XBotv2.compact.history import history_chars, leading_system_messages
+from XBotv2.compact.protocol import compact_event
 
 logger = logging.getLogger("xbotv2.compact")
 
@@ -182,10 +183,10 @@ class CompactService:
             reason = str(pre_result.get("compact_reason") or reason)
         elif pre_result is not None:
             message = "Compaction was rejected before commit."
-            await self._publish_runtime_event({
-                "type": "compaction_failed",
-                "data": {"reason": reason, "message": message},
-            })
+            await self._publish_runtime_event(compact_event(
+                "compaction_failed",
+                {"reason": reason, "message": message},
+            ))
             return {
                 "event": {
                     "type": "error",
@@ -225,10 +226,10 @@ class CompactService:
         await self.ctx.emit(Events.STATE_CHANGED, committed)
 
         self._record_committed(reason, metrics, ctx.session)
-        await self._publish_runtime_event({
-            "type": "compaction_completed",
-            "data": {"reason": reason, "metrics": metrics},
-        })
+        await self._publish_runtime_event(compact_event(
+            "compaction_completed",
+            {"reason": reason, "metrics": metrics},
+        ))
         return {"rebuild": True}
 
     async def _compact(
@@ -270,10 +271,10 @@ class CompactService:
             removable_estimate=removable_estimate,
         )
 
-    async def _publish_runtime_event(self, event: dict[str, Any]) -> None:
+    async def _publish_runtime_event(self, event: ClientEvent) -> None:
         await self.ctx.emit(
             Events.RUNTIME_EVENT,
-            EventContext(client_event=ClientEvent.from_mapping(event)),
+            EventContext(client_event=event),
         )
 
     def _record_committed(

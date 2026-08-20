@@ -304,7 +304,7 @@ capability rather than by a parallel server registry:
 | `client_message` | `{message, level, source, tool_call_id}` | Session producer |
 | `history_updated` | `{history, operation, turns}` | Session producer |
 | `compaction_started` | `{reason, messages_before, history_chars_before, context_tokens_before, context_limit}` | Compact producer |
-| `compaction_completed` | `{reason, metrics, usage}` | Compact producer |
+| `compaction_completed` | `{reason, metrics}` | Compact producer |
 | `compaction_failed` | `{reason, message}` | Compact producer |
 | `task_updated` | `{task_id, kind, command, cwd, status, created_at, started_at, finished_at, output, error, agent?, thread_id?, usage?}` | `XBotv2.protocol.models` (shared with `TaskListResponse`) |
 

@@ -777,3 +777,17 @@
   protocol/public API/Session/Tool/Compact tests passed, and the real typed SDK
   plus SSE integration passed in 60.74s. Python compilation and
   `git diff --check` passed.
+
+### 2026-08-20 · Compact-owned outbound protocol
+
+- Added Compact-owned models for started, completed, and failed events,
+  including the stable compaction metrics contract. The plugin root exports
+  these declarations and its event builder, but not the concrete service.
+- Compactor and service now publish validated `ClientEvent` values directly;
+  the generic XCore route and Session projection contain no Compact event-name
+  or payload knowledge.
+- Corrected protocol documentation that still described a separate completion
+  `usage` field even though usage is part of metrics.
+- Verification: architecture checker reports zero violations; 52 focused
+  Compact/protocol/public API tests passed. Python compilation and
+  `git diff --check` passed.
