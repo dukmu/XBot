@@ -75,7 +75,7 @@ class _TurnStartResult:
 
 @dataclass(slots=True)
 class _ContextBuildResult:
-    messages: list[Any] | None = None
+    messages: list[Message] | None = None
     event: dict[str, Any] | None = None
     turn_complete: bool | None = None
 
@@ -969,7 +969,7 @@ class Engine:
 
     async def _prepare_model_request(
         self,
-        context_messages: list[Any],
+        context_messages: list[Message],
     ) -> _ModelRequestResult:
         before_agent_ctx = self._make_event_context()
         before_agent = await self._dispatch(Events.BEFORE_AGENT, before_agent_ctx,
@@ -1212,18 +1212,18 @@ class Engine:
         *,
         user_input: str | None = None,
         context_components: list[ContextComponent] | None = None,
-        context_messages: list[Any] | None = None,
+        context_messages: list[Message] | None = None,
         context_kwargs: dict[str, Any] | None = None,
-        agent_response: Any = None,
+        agent_response: ModelResponse | None = None,
         model_request: dict[str, Any] | None = None,
-        model_response: Any = None,
+        model_response: ModelResponse | None = None,
         tool_calls: list[ToolCall] | None = None,
         tool_call: ToolCall | None = None,
-        tool_results: list[Any] | None = None,
-        tool_result: Any = None,
+        tool_results: list[Message] | None = None,
+        tool_result: Message | None = None,
         stop_reason: str | None = None,
         client_event: ClientEvent | None = None,
-        error: Exception | None = None,
+        error: BaseException | None = None,
     ) -> EventContext:
         return EventContext(
             request_id=self._request_id.get(),

@@ -135,23 +135,20 @@ class EventContext:
     event: Any | None = None
     turn_complete: bool = False
     context_components: list[ContextComponent] | None = None
-    context_messages: list[Any] | None = None
-    agent_response: Any | None = None
+    context_messages: list[Message] | None = None
+    agent_response: ModelResponse | None = None
     model_request: dict[str, Any] | None = None
-    model_response: Any | None = None
+    model_response: ModelResponse | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call: ToolCall | None = None
     args: dict[str, Any] | None = None
-    tool_result: Any | None = None
-    tool_results: list[Any] | None = None
-    reason: Any | None = None
-    error: Any | None = None
+    tool_result: Message | None = None
+    tool_results: list[Message] | None = None
+    error: BaseException | None = None
     context_kwargs: dict[str, Any] | None = None
     rebuild: bool = False
     client_event: ClientEvent | None = None
     stop_reason: str | None = None
-    response: ModelResponse | None = None
-    short_circuit_result: Any = None
     request_id: str = ""
 
 

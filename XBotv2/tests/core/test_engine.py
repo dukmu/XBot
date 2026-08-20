@@ -533,10 +533,10 @@ class TestEngineHooks:
         registry = ToolRegistry()
 
         async def replace_response(ctx):
-            ctx.short_circuit_result = {
+            del ctx
+            return {
                 "messages": [Message(role="assistant", content="Hijacked!")]
             }
-            return ctx.short_circuit_result
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_AGENT, replace_response)
