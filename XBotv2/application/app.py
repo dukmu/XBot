@@ -2,8 +2,8 @@
 
 This module is the application boundary corresponding to DSH's app boot: it
 creates the root context, publishes launcher-owned entry services, mounts and
-settles the configured plugin tree, and asks ``ctx.agents`` to create the
-Agent through its registered loop factory.  It disposes partial state when
+settles the configured plugin tree, and dispatches the public Agent initialize
+operation. It disposes partial state when
 startup fails; it does not construct an Engine or implement Agent policy.
 """
 
@@ -18,9 +18,14 @@ from typing import Any
 from XBotv2.application.boot import boot_application
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
+from XBotv2.application.services import ParentPermissions, SessionLaunch
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.config.tree import load_agent_tree
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
+from XBotv2.core.operations import dispatch_operation
+from XBotv2.agents.contracts import INITIALIZE_AGENT
+from XBotv2.session.contracts import AgentApplicationOptions
+from XBotv2.loader.contracts import ReloadPlan
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
@@ -93,9 +98,25 @@ async def start_application(
     )
 
     def prepare(ctx: Any) -> None:
+        ctx.set("runtime_paths", paths)
+        ctx.set("session_launch", SessionLaunch(
+            session_id=session_id,
+            thread_id=thread_id,
+            workspace_root=workspace_root,
+            provider_name=provider_name,
+            session_paths=session_paths,
+            interactive=interactive,
+            is_subagent=is_subagent,
+        ))
+        ctx.set("parent_permissions", ParentPermissions(parent_permission_system))
+        ctx.set("reload_plan", ReloadPlan(
+            config_path=paths.config_dir / "plugins.yaml",
+            variables={"disabled": tuple(
+                ["subagents"] if is_subagent else []
+            )},
+        ))
         ctx.set("client_events", ClientEventRouter(parent=client_events))
         ctx.set("child_applications", children)
-        children.bind(ctx)
 
     try:
         plugin_ctx = await boot_application(
@@ -104,17 +125,21 @@ async def start_application(
             plugin_dirs=plugin_dirs,
             prepare=prepare,
         )
-        await plugin_ctx.agents.create(AgentCreateOptions(
-            session_id=session_id,
-            thread_id=thread_id,
-            workspace_root=str(workspace_root),
-            provider_name=provider_name,
-            agent_definition=agent_definition,
-            model_override=llm_override,
-            selected_agent=selected_agent,
-            parent_thread_id=parent_thread_id,
-            is_subagent=is_subagent,
-        ))
+        await dispatch_operation(
+            plugin_ctx,
+            INITIALIZE_AGENT,
+            AgentCreateOptions(
+                session_id=session_id,
+                thread_id=thread_id,
+                workspace_root=str(workspace_root),
+                provider_name=provider_name,
+                agent_definition=agent_definition,
+                model_override=llm_override,
+                selected_agent=selected_agent,
+                parent_thread_id=parent_thread_id,
+                is_subagent=is_subagent,
+            ),
+        )
 
         return plugin_ctx
     except BaseException as startup_error:
@@ -132,6 +157,34 @@ async def start_application(
             else:
                 shutil.rmtree(thread_paths.root, ignore_errors=True)
         raise
+
+
+async def create_agent_application(options: AgentApplicationOptions) -> Any:
+    """Typed factory exported to composition roots, not session internals."""
+    extra_plugins = (
+        [
+            {"id": name, "name": name, "config": config}
+            for name, config in options.plugin_configs.items()
+        ]
+        if options.plugin_configs
+        else None
+    )
+    return await start_application(
+        paths=options.paths,
+        provider_name=options.provider_name,
+        session_id=options.session_id,
+        thread_id=options.thread_id,
+        workspace_root=options.workspace_root,
+        plugin_dirs=[] if options.no_plugins else None,
+        extra_plugins=extra_plugins,
+        llm_override=options.model_override,
+        selected_agent=options.selected_agent,
+        agent_definition=options.agent_definition,
+        parent_thread_id=options.parent_thread_id,
+        parent_permission_system=options.parent_permission_system,
+        is_subagent=options.is_subagent,
+        interactive=options.interactive,
+    )
 
 
 def _validate_identifier(field: str, value: str) -> None:

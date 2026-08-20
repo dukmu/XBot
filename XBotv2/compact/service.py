@@ -40,6 +40,7 @@ class CompactService:
     def bind(self, ctx: Any, model: Any, config: CompactConfig) -> None:
         self.ctx = ctx
         self.model = model
+        self.state = ctx.loop_state
         self._automatic = config.automatic
         self._output_reservation = config.output_reservation
         self._trigger_ratio = config.trigger_ratio
@@ -62,17 +63,18 @@ class CompactService:
         self._manual_requested = False
         return True
 
-    async def _compact_command(self, ctx: Any, raw_args: str) -> CommandResult:
-        return await run_compact_command(self, ctx, raw_args)
-
-    async def _compact_engine_history(
+    async def _compact_command(
         self,
-        engine: Any,
+        raw_args: str,
+    ) -> CommandResult:
+        return await run_compact_command(self, raw_args)
+
+    async def _compact_current_history(
+        self,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         event_ctx = EventContext(
-            messages=engine.messages,
-            config=engine.settings,
-            session=engine.session,
+            messages=self.state.messages,
+            session=self.state.session,
         )
         messages = list(event_ctx.messages)
         proposal = await self._compact(

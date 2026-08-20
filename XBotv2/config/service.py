@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.config.contracts import PatchPolicy, PolicySnapshot
+from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.config.models import (
     RuntimeConfig,
     UserContext,
@@ -19,8 +21,19 @@ from XBotv2.config.models import (
 class ConfigService:
     """Path-bound configuration reader with a resolved user context."""
 
-    def __init__(self, paths: Any, user_context: UserContext | None = None) -> None:
+    def __init__(
+        self,
+        paths: Any,
+        *,
+        session_id: str,
+        workspace_root: Any,
+        events: Any,
+        user_context: UserContext | None = None,
+    ) -> None:
         self.paths = paths
+        self.session_id = session_id
+        self.workspace_root = workspace_root
+        self.events = events
         self._user_context = user_context or UserContext()
 
     def user_context(self) -> UserContext:
@@ -31,10 +44,37 @@ class ConfigService:
 
         return load_runtime_config(self.paths, workspace, session_id)
 
-    def patch_session_policy(self, **kwargs: Any) -> dict[str, Any]:
+    def policy(self) -> PolicySnapshot:
+        from XBotv2.config.policy import load_session_policy
+
+        config = self.load_runtime_config(self.workspace_root, self.session_id)
+        return PolicySnapshot(
+            policy=load_session_policy(self.paths, self.session_id),
+            effective_permissions=config.permissions.model_dump(),
+            effective_sandbox=config.sandbox.model_dump(),
+        )
+
+    async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot:
         from XBotv2.config.policy import patch_session_policy
 
-        return patch_session_policy(paths=self.paths, **kwargs)
+        policy = patch_session_policy(
+            paths=self.paths,
+            session_id=self.session_id,
+            permissions=patch.permissions,
+            remove_permissions=patch.remove_permissions,
+            sandbox=patch.sandbox,
+            remove_sandbox=patch.remove_sandbox,
+        )
+        config = self.load_runtime_config(self.workspace_root, self.session_id)
+        await self.events.emit(
+            POLICY_CHANGED,
+            PolicyChanged(policy=policy, config=config),
+        )
+        return PolicySnapshot(
+            policy=policy,
+            effective_permissions=config.permissions.model_dump(),
+            effective_sandbox=config.sandbox.model_dump(),
+        )
 
 
 __all__ = ["ConfigService"]

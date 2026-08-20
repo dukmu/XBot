@@ -4,10 +4,9 @@ Every capability is a plugin package under ``XBotv2`` (``<pkg>/plugin.py``
 exporting ``plugin``), wired by the declarative tree (``xcore.yaml``).
 Boundaries:
 
-* capability plugins (goal, skills, mcp_plugin, ...) only import the shared
-  contracts (``XBotv2.core`` / ``XBotv2.jobs``), ``xcore``, and third-party
-  libraries — never other plugin implementations (they use services via
-  ``ctx.*``);
+* capability plugins may import another plugin's explicit public declaration
+  modules (contracts, commands, events, invariants, services, and types), but
+  never another plugin's concrete implementation;
 * service plugins never import capability plugins;
 * contract modules (the ``XBotv2.core`` surface) never import plugin
   implementations (the shared ``XBotv2.config`` library is allowed).
@@ -49,6 +48,14 @@ _SERVICE_PLUGINS = {
 
 # Shared contract packages plugins may import.
 _CONTRACT_PACKAGES = {"XBotv2.core", "XBotv2.jobs"}
+_PUBLIC_DECLARATION_MODULES = {
+    "commands",
+    "contracts",
+    "events",
+    "invariants",
+    "services",
+    "types",
+}
 
 # The shared configuration library (types + parsing), allowed for contracts.
 _ALLOWED_CONTRACT_IMPORTS = _CONTRACT_PACKAGES | {"XBotv2.config"}
@@ -83,12 +90,27 @@ def test_capability_plugins_only_import_public_contracts():
         for path in pkg.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for module in _imported_modules(tree):
-                if module.startswith("XBotv2.") and not (
+                if not module.startswith("XBotv2."):
+                    continue
+                allowed = (
                     module in _CONTRACT_PACKAGES
                     or module.startswith("XBotv2.core.")
                     or module.startswith("XBotv2.jobs.")
                     or module.startswith(f"XBotv2.{name}.")
-                ):
+                    or module.rsplit(".", 1)[-1]
+                    in _PUBLIC_DECLARATION_MODULES
+                )
+                if not allowed and path.name in ("router.py", "events.py"):
+                    allowed = (
+                        module.startswith("XBotv2.server.")
+                        or module.startswith("XBotv2.protocol.")
+                        or any(
+                            module == f"XBotv2.{svc}"
+                            or module.startswith(f"XBotv2.{svc}.")
+                            for svc in _SERVICE_PLUGINS
+                        )
+                    )
+                if not allowed:
                     violations.append(
                         f"{name}/{path.relative_to(pkg)} imports {module}"
                     )

@@ -275,7 +275,6 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 
 | Event | Data |
 |---|---|
-| `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` |
 | `turn_started` | `{turn}` |
 | `turn_finished` | `{turn}` |
 | `turn_cancelled` | `{turn, reason}` |
@@ -285,9 +284,6 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `tool_call_delta` | `{tool_calls: [{tool_call_id, id, name, args_delta, args, index, replaces_tool_call_id?}]}` |
 | `tool_calls_started` | `{tool_calls: [{id, name, args, type}]}` |
 | `tool_result` | `{tool_call_id, name, content, status, data?, error?, artifacts?}` |
-| `task_updated` | `{task_id, kind, command, cwd, status, created_at, started_at, finished_at, output, error, agent?, thread_id?, usage?}` |
-| `history_updated` | `{history, operation, turns}` |
-| `client_message` | `{message, level, source, tool_call_id}` |
 | `permission_denied` | `{request_id, reason, tool_call, decision}` |
 | `permission_request` | `{request_id, source, reason, tool_call, decision, resume_supported}` |
 | `permission_response_recorded` | `{request_id, status, decision, scope, answer, pending_interactions}` |
@@ -297,6 +293,24 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `error` | `{code, message, details?, retryable?, stage?}` |
 | `end` | `{status}` |
 
+The protocol-core event DTOs above live in `protocol.models`. Capability-owned
+stream events are declared through the server composition root's event
+registry (`ctx.server_events`, `XBotv2.server.events.ServerEvents`) and their
+DTOs live in the owning capability:
+
+| Event | Data | DTO owner |
+|---|---|---|
+| `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` | `XBotv2.session.events` |
+| `client_message` | `{message, level, source, tool_call_id}` | `XBotv2.session.events` |
+| `history_updated` | `{history, operation, turns}` | `XBotv2.session.events` |
+| `compaction_started` | `{reason, messages_before, history_chars_before, context_tokens_before, context_limit}` | `XBotv2.compact.events` |
+| `compaction_completed` | `{reason, metrics, usage}` | `XBotv2.compact.events` |
+| `compaction_failed` | `{reason, message}` | `XBotv2.compact.events` |
+| `task_updated` | `{task_id, kind, command, cwd, status, created_at, started_at, finished_at, output, error, agent?, thread_id?, usage?}` | `XBotv2.protocol.models` (shared with `TaskListResponse`) |
+
+The server validates registered event payloads against their DTO before SSE
+framing; protocol core events are validated by `ServerEvent`.
+
 After `turn_started`, the stream emits exactly one turn terminal event:
 `turn_finished` for normal or failed completion, or `turn_cancelled` for an
 interrupt. A failed turn emits its diagnostic `error` immediately before
@@ -304,9 +318,10 @@ interrupt. A failed turn emits its diagnostic `error` immediately before
 state. `end` is a transport sentinel indicating that the SSE response closed
 cleanly. Its `status` does not describe the semantic outcome of the turn.
 
-The current event type inventory lives in
-`protocol.models.KNOWN_SERVER_EVENT_TYPES`. Golden SSE fixtures live
-under `XBotv2/tests/fixtures/sse/`.
+The protocol core event inventory lives in
+`protocol.models.KNOWN_SERVER_EVENT_TYPES`. Registered capability events
+come from the server event registry (`ServerEvents.types()`). Golden SSE
+fixtures live under `XBotv2/tests/fixtures/sse/`.
 
 ## Agent-Initiated Interaction
 
@@ -350,8 +365,12 @@ The protocol DTO inventory for this family is:
 
 Stable non-interaction event DTOs currently include `ToolResultData`,
 `UsageData`, `ErrorEventData`, `TurnData`, `TurnCancelledData`,
-`AssistantMessageData`, `AssistantMessageDeltaData`, `ClientMessageData`,
-`ToolCallData`, `ToolCallDeltaData`, and `ToolCallsStartedData`. HTTP failures
+`AssistantMessageData`, `AssistantMessageDeltaData`, `ToolCallData`,
+`ToolCallDeltaData`, and `ToolCallsStartedData`. Capability-owned event DTOs
+(`ClientMessageData`, `HistoryUpdatedData`, `AgentConfiguredData`,
+`CompactionStartedData`, `CompactionCompletedData`, `CompactionFailedData`)
+live in the owning packages and are registered through the server event
+registry. HTTP failures
 use `ErrorResponse`; all HTTP exception handlers serialize through that model
 and always return `code`, `message`, `details`, and `retryable`.
 

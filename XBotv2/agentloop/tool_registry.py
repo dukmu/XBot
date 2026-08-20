@@ -15,21 +15,14 @@ bare names (default namespace).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Any
-@dataclass
-class ToolEntry:
-    tool: Any
-    registered_name: str
-    namespace: str = "builtin"
-    model_visible: bool = True
-    timeout_seconds: float | None = None
-    injected: dict[str, Any] | None = None
+
+from XBotv2.agentloop.contracts import ToolRegistration
 
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._entries: dict[str, ToolEntry] = {}
+        self._entries: dict[str, ToolRegistration] = {}
         self._enabled_names: set[str] | None = None
 
     def register(
@@ -58,7 +51,7 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool name {name!r} is already registered as {duplicate!r}"
             )
-        self._entries[full_name] = ToolEntry(
+        self._entries[full_name] = ToolRegistration(
             tool=tool,
             registered_name=full_name,
             namespace=ns,
@@ -76,7 +69,7 @@ class ToolRegistry:
             self._enabled_names.discard(name)
         return True
 
-    def get(self, name: str) -> ToolEntry | None:
+    def get(self, name: str) -> ToolRegistration | None:
         if (
             name in self._entries
             and self._entries[name].model_visible
@@ -93,7 +86,7 @@ class ToolRegistry:
                 return entry
         return None
 
-    def get_registered(self, name: str) -> ToolEntry | None:
+    def get_registered(self, name: str) -> ToolRegistration | None:
         """Resolve an entry without applying model-visible tool restrictions."""
         if name in self._entries:
             return self._entries[name]
@@ -122,7 +115,7 @@ class ToolRegistry:
     def registered_names(self) -> list[str]:
         return list(self._entries)
 
-    def registered_entries(self) -> tuple[ToolEntry, ...]:
+    def registered_entries(self) -> tuple[ToolRegistration, ...]:
         """Return all registered tools in registration order."""
         return tuple(self._entries.values())
 

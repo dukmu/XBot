@@ -1,6 +1,7 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
+import types
 from pathlib import Path
 
 import pytest
@@ -170,9 +171,25 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from XBotv2.protocol import http_server
+    from XBotv2.server import http
 
-    monkeypatch.setattr(http_server, "create_app", lambda **_kwargs: object())
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.state = types.SimpleNamespace(manager=object())
+            self.routes: list[object] = []
+            self.exception_handlers: dict[object, object] = {}
+
+        def include_router(self, router: object) -> None:
+            self.routes.append(router)
+
+        def exception_handler(self, exc_class: object):
+            def _decorate(handler):
+                self.exception_handlers[exc_class] = handler
+                return handler
+
+            return _decorate
+
+    monkeypatch.setattr(http, "create_app", lambda **_kwargs: _FakeApp())
     served = {}
     monkeypatch.setattr(
         uvicorn,

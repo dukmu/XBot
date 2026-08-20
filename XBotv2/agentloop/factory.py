@@ -25,11 +25,10 @@ class AgentLoopFactory:
 
 
 class AgentLoopFactoryComponent:
-    inject = ["agents"]
     name = "xbot.agentloop.factory"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        ctx.agents.set_factory(AgentLoopFactory())
+        ctx.set("agent_loop_factory", AgentLoopFactory())
 
 
 plugin = AgentLoopFactoryComponent()

@@ -32,7 +32,7 @@ from XBotv2.core.paths import RuntimePaths
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
-from XBotv2.protocol.http_server import set_llm_override
+from XBotv2.server.http import set_llm_override
 from XBotv2.application.server import start_server_application
 
 

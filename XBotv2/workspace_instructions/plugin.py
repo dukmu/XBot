@@ -28,7 +28,7 @@ from XBotv2.core import (
 class WorkspaceInstructionsPlugin:
     inject = {
         "required": ["session", "loader", "variables", "workspace_root"],
-        "optional": ["agents"],
+        "optional": ["agent_catalog"],
     }
     name = "workspace_instructions"
 
@@ -105,14 +105,14 @@ class WorkspaceInstructionsPlugin:
 
     def _register_workspace_agents(self, ctx: Any) -> None:
         """Discover and register workspace Agent definitions as overlays."""
-        agents = getattr(ctx, "agents", None)
-        if agents is None:
+        catalog = ctx.get("agent_catalog", strict=False)
+        if catalog is None:
             return
         directory = self.workspace_root / ".agents"
         if not directory.is_dir():
             return
-        agents.unregister_owned(self.name, overlay=True)
-        agents.register_markdown(
+        catalog.unregister_owned(self.name, overlay=True)
+        catalog.register_markdown(
             directory,
             variables=ctx.variables,
             overlay=True,
@@ -120,10 +120,10 @@ class WorkspaceInstructionsPlugin:
         )
 
     def _clear_workspace_agents(self, ctx: Any) -> None:
-        agents = getattr(ctx, "agents", None)
-        if agents is None:
+        catalog = ctx.get("agent_catalog", strict=False)
+        if catalog is None:
             return
-        agents.unregister_owned(self.name, overlay=True)
+        catalog.unregister_owned(self.name, overlay=True)
 
     async def _apply_workspace_patch(self, ctx: Any, overlay: Path) -> None:
         """Apply ``<workspace>/.xbot/plugins.yaml`` as a tree patch."""

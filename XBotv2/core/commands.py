@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from XBotv2.core.errors import OperationError
 
-CommandHandler = Callable[[Any, str], Awaitable["CommandResult"]]
+CommandHandler = Callable[[str], Awaitable["CommandResult"]]
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -36,7 +36,9 @@ def command_usage(usage: str) -> CommandResult:
     return command_error(f"Usage: {usage}")
 
 
-def guard_command(handler: Callable[[Any, str], Awaitable[CommandResult]]):
+def guard_command(
+    handler: CommandHandler,
+) -> CommandHandler:
     """Convert handler failures into command error results.
 
     Wraps one command handler so argument-parsing errors and rejected
@@ -44,10 +46,10 @@ def guard_command(handler: Callable[[Any, str], Awaitable[CommandResult]]):
     ``status="error"`` instead of raising through the wire endpoint.
     """
 
-    async def wrapped(ctx: Any, raw_args: str) -> CommandResult:
+    async def wrapped(raw_args: str) -> CommandResult:
         try:
-            return await handler(ctx, raw_args)
-        except ValueError as error:
+            return await handler(raw_args)
+        except (OperationError, ValueError) as error:
             return command_error(str(error))
 
     return wrapped

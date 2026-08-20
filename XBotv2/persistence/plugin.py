@@ -11,6 +11,7 @@ from typing import Any
 
 from XBotv2.core.events import Events
 from XBotv2.core.loop import LoopState
+from XBotv2.session.contracts import PREPARE_FORK
 
 
 class PersistenceService:
@@ -63,7 +64,7 @@ class PersistenceService:
 class PersistenceComponent:
     """Hydrate and persist the session-owned core loop state."""
 
-    inject = ["loop_state", "thread_paths"]
+    inject = ["loop_state", "thread_paths", "session_launch"]
 
     name = "xbot.persistence"
 
@@ -76,7 +77,7 @@ class PersistenceComponent:
             ctx.thread_paths,
             thread_id=state.session.thread_id,
             workspace_root=state.session.workspace_root,
-            provider=str(config.get("provider") or state.session.provider),
+            provider=ctx.session_launch.provider_name,
         )
         ctx.set("state_store", store)
         resumed = store.has_existing_session()
@@ -92,6 +93,7 @@ class PersistenceComponent:
         service = PersistenceService(store, state)
         ctx.set("persistence", service)
         ctx.on(Events.STATE_CHANGED, service.state_changed)
+        ctx.on(PREPARE_FORK, lambda _request: service.flush())
 
         async def persist_session_metadata(event: Any) -> None:
             store.provider = state.session.provider

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 import XBotv2.core as public_api
@@ -27,7 +28,6 @@ from XBotv2.core import (
     Tool,
 )
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.protocol.http_server import create_app
 from XBotv2.protocol.models import (
     KNOWN_SERVER_EVENT_TYPES,
     HelloRequest,
@@ -215,18 +215,12 @@ def test_server_event_rejects_ask_user_without_choices():
         )
 
 
-def test_server_event_type_inventory_covers_current_stream_events():
+def test_server_event_type_inventory_covers_core_stream_events():
     assert set(KNOWN_SERVER_EVENT_TYPES) == {
-        "agent_configured",
         "assistant_message",
         "assistant_message_delta",
-        "client_message",
-        "compaction_completed",
-        "compaction_failed",
-        "compaction_started",
         "end",
         "error",
-        "history_updated",
         "input_rejected",
         "message",
         "permission_denied",
@@ -235,7 +229,6 @@ def test_server_event_type_inventory_covers_current_stream_events():
         "tool_call_delta",
         "tool_calls_started",
         "tool_result",
-        "task_updated",
         "turn_cancelled",
         "turn_finished",
         "turn_started",
@@ -245,14 +238,41 @@ def test_server_event_type_inventory_covers_current_stream_events():
     }
 
 
-def test_openapi_uses_typed_request_contracts():
-    from XBotv2.llm.service import LlmService
+@pytest.mark.asyncio
+async def test_openapi_uses_typed_request_contracts(tmp_path):
+    from XBotv2.application.server import start_server_application
 
-    schema = create_app(
-        paths=RuntimePaths.from_data_dir("data"),
+    data_dir = tmp_path / "data"
+    config_dir = data_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "llm",
+            "name": "llm",
+            "config": {
+                "default": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "openai",
+                        "api_key": "test",
+                        "default_model": "test",
+                        "models": [{"model": "test"}],
+                    }
+                },
+            },
+        }]),
+        encoding="utf-8",
+    )
+    application = await start_server_application(
+        paths=RuntimePaths.from_data_dir(data_dir),
+        provider_name="test",
+        workspace_root=str(tmp_path),
         no_plugins=True,
-        llm=LlmService(),
-    ).openapi()
+    )
+    try:
+        schema = application.server.openapi()
+    finally:
+        await application.stop()
     assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
     assert set(paths) == {

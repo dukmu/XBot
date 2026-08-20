@@ -6,17 +6,38 @@ import asyncio
 import logging
 import time
 import uuid
+from contextlib import AsyncExitStack
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.application import start_application
 from XBotv2.core.errors import OperationError
 from XBotv2.session.runtime import SessionRuntime
-from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.models import SessionSummary, ThreadSummary
+from XBotv2.session.contracts import (
+    AgentApplicationFactory,
+    AgentApplicationOptions,
+    DISPATCH_OPERATION,
+    DISPATCH_SESSION_OPERATION,
+    OPERATION_COMPLETED,
+    SessionDispatch,
+    SessionGroupDispatch,
+    SessionOperationCompleted,
+    SessionRef,
+)
+from XBotv2.server.contracts import QUERY_STATUS, ServerStatus
+from XBotv2.core.operations import (
+    Operation,
+    RequestT,
+    ResponseT,
+    ScopeT,
+    ScopedOperation,
+    dispatch_operation,
+    dispatch_scoped_operation,
+)
 
 logger = logging.getLogger("xbotv2.session_manager")
 
@@ -42,13 +63,38 @@ class SessionManager:
         *,
         idle_timeout: float | None = 3600.0,
         reap_interval: float = 60.0,
+        state_store_factory: Any | None = None,
+        application_factory: AgentApplicationFactory | None = None,
     ) -> None:
         self.paths = paths
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
+        self.state_store_factory = state_store_factory
+        self.application_factory = application_factory
         self._sessions: dict[tuple[str, str], SessionRuntime] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
+
+    def _state_store(
+        self,
+        session_paths: Any,
+        *,
+        thread_id: str,
+        workspace_root: str = "",
+        provider: str = "",
+    ) -> Any:
+        """Construct a persisted-state reader through the persistence host."""
+        if self.state_store_factory is None:
+            raise OperationError(
+                "persistence_unavailable",
+                "no state_store_factory (persistence host not mounted)",
+            )
+        return self.state_store_factory(
+            session_paths,
+            thread_id=thread_id,
+            workspace_root=workspace_root,
+            provider=provider,
+        )
 
     def start_reaper(self) -> None:
         """Start the idle-reaper loop; idempotent."""
@@ -150,28 +196,25 @@ class SessionManager:
             )
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
-            extra_plugins = (
-                [
-                    {"id": name, "name": name, "config": cfg}
-                    for name, cfg in plugin_configs.items()
-                ]
-                if plugin_configs
-                else None
-            )
-            services = await start_application(
+            if self.application_factory is None:
+                raise OperationError(
+                    "application_factory_unavailable",
+                    "session host has no Agent application factory",
+                )
+            services = await self.application_factory(AgentApplicationOptions(
                 paths=self.paths,
                 provider_name=provider_name,
                 session_id=session_id,
                 thread_id=thread_id,
-                workspace_root=workspace_root,
-                plugin_dirs=[] if no_plugins else None,
-                extra_plugins=extra_plugins,
-                llm_override=llm_override,
+                workspace_root=Path(workspace_root),
+                no_plugins=no_plugins,
+                plugin_configs=plugin_configs,
+                model_override=llm_override,
                 selected_agent=selected_agent,
                 parent_thread_id=parent_thread_id,
                 parent_permission_system=parent_permission_system,
                 is_subagent=is_subagent,
-            )
+            ))
             engine = services.engine
             if mode == "resume":
                 if services.get("state_store", strict=False) is None:
@@ -264,6 +307,35 @@ class SessionManager:
         async with self._lock:
             return dict(self._sessions)
 
+    async def dispatch(
+        self,
+        session_id: str,
+        thread_id: str,
+        operation: Operation[RequestT, ResponseT],
+        request: RequestT,
+    ) -> ResponseT:
+        """Route one typed operation to the owning session application."""
+        runtime = await self.get(session_id, thread_id)
+        runtime.touch()
+        return await dispatch_operation(runtime.services, operation, request)
+
+    async def dispatch_scoped(
+        self,
+        session_id: str,
+        thread_id: str,
+        operation: ScopedOperation[ScopeT, RequestT, ResponseT],
+        request: RequestT,
+    ) -> ResponseT:
+        """Route an operation with its host-owned typed session scope."""
+        runtime = await self.get(session_id, thread_id)
+        runtime.touch()
+        return await dispatch_scoped_operation(
+            runtime.services,
+            operation,
+            runtime,
+            request,
+        )
+
 
 def _has_persisted_session(
     session_paths: Any,
@@ -322,11 +394,9 @@ async def thread_summary(
     session = manager.paths.session(session_id)
     if not session.has_thread(thread_id):
         raise SessionNotFound(f"{session_id}/{thread_id}")
-    store = CoreStateStore(
+    store = manager._state_store(
         session,
         thread_id=thread_id,
-        workspace_root="",
-        provider="",
     )
     metadata = store.read_thread_metadata()
     parent_thread_id = str(metadata.get("parent_thread_id") or "")
@@ -406,3 +476,134 @@ __all__ = [
     "session_summary",
     "thread_summary",
 ]
+
+
+class SessionHost:
+    """Provides ``ctx.session_host`` in the server composition root.
+
+    Constructed before the dumb web carrier so ``create_app`` can attach the
+    host to ``app.state.manager``. Requires the persistence read service.
+    """
+
+    name = "xbot.session.host"
+    inject = [
+        "state_store_factory",
+        "runtime_paths",
+        "agent_application_factory",
+        "server_options",
+    ]
+
+    def apply(self, ctx, config=None) -> None:
+        manager = SessionManager(
+            ctx.runtime_paths,
+            state_store_factory=ctx.state_store_factory,
+            application_factory=ctx.agent_application_factory,
+        )
+        ctx.set("session_host", manager)
+
+        async def dispatch(envelope: SessionDispatch) -> object:
+            if not isinstance(envelope, SessionDispatch):
+                raise TypeError("session/dispatch requires SessionDispatch")
+            runtime = await manager.get(
+                envelope.target.session_id,
+                envelope.target.thread_id,
+            )
+            runtime.touch()
+            if not envelope.operation.exclusive:
+                result = await dispatch_operation(
+                    runtime.services,
+                    envelope.operation,
+                    envelope.request,
+                )
+            else:
+                if runtime.turn_lock.locked():
+                    raise OperationError(
+                        "thread_busy",
+                        f"Cannot run {envelope.operation.name!r} while a turn is active.",
+                        retryable=True,
+                    )
+                async with runtime.turn_lock:
+                    result = await dispatch_operation(
+                        runtime.services,
+                        envelope.operation,
+                        envelope.request,
+                    )
+            await ctx.emit(
+                OPERATION_COMPLETED,
+                SessionOperationCompleted(
+                    target=envelope.target,
+                    operation_name=envelope.operation.name,
+                    result=result,
+                ),
+            )
+            return result
+
+        ctx.on(DISPATCH_OPERATION, dispatch)
+
+        async def dispatch_all(envelope: SessionGroupDispatch) -> object:
+            if not isinstance(envelope, SessionGroupDispatch):
+                raise TypeError(
+                    "session/dispatch-all requires SessionGroupDispatch"
+                )
+            active = await manager.active_threads()
+            runtimes = sorted(
+                (
+                    runtime
+                    for (session_id, _thread_id), runtime in active.items()
+                    if session_id == envelope.session_id
+                ),
+                key=lambda runtime: runtime.thread_id,
+            )
+            if not runtimes:
+                raise OperationError(
+                    "thread_not_active",
+                    "Session operations require at least one active thread.",
+                )
+            if envelope.operation.exclusive and any(
+                runtime.turn_lock.locked() for runtime in runtimes
+            ):
+                raise OperationError(
+                    "thread_busy",
+                    f"Cannot run {envelope.operation.name!r} while a turn is active.",
+                    retryable=True,
+                )
+            async with AsyncExitStack() as stack:
+                if envelope.operation.exclusive:
+                    for runtime in runtimes:
+                        await stack.enter_async_context(runtime.turn_lock)
+                results = []
+                for runtime in runtimes:
+                    runtime.touch()
+                    result = await dispatch_operation(
+                        runtime.services,
+                        envelope.operation,
+                        envelope.request,
+                    )
+                    results.append(result)
+                    await ctx.emit(
+                        OPERATION_COMPLETED,
+                        SessionOperationCompleted(
+                            target=SessionRef(
+                                envelope.session_id,
+                                runtime.thread_id,
+                            ),
+                            operation_name=envelope.operation.name,
+                            result=result,
+                        ),
+                    )
+            return tuple(results)
+
+        ctx.on(DISPATCH_SESSION_OPERATION, dispatch_all)
+        ctx.on(
+            QUERY_STATUS,
+            lambda: ServerStatus(
+                sessions=manager.size,
+                threads=manager.thread_count,
+                workspace_root=str(ctx.server_options.workspace_root),
+            ),
+        )
+        manager.start_reaper()
+        ctx.dispose(manager.close_all)
+
+
+plugin = SessionHost()

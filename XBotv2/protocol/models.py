@@ -433,16 +433,10 @@ class ErrorEventData(ErrorResponse):
 
 
 ServerEventType = Literal[
-    "agent_configured",
     "assistant_message",
     "assistant_message_delta",
-    "client_message",
-    "compaction_completed",
-    "compaction_failed",
-    "compaction_started",
     "end",
     "error",
-    "history_updated",
     "input_rejected",
     "message",
     "permission_denied",
@@ -451,7 +445,6 @@ ServerEventType = Literal[
     "tool_call_delta",
     "tool_calls_started",
     "tool_result",
-    "task_updated",
     "turn_cancelled",
     "turn_finished",
     "turn_started",
@@ -541,32 +534,6 @@ class AssistantMessageDeltaData(WireModel):
         return self
 
 
-class ClientMessageData(WireModel):
-    message: str
-    level: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    tool_call_id: str = ""
-
-
-class CompactionStartedData(WireModel):
-    reason: Literal["manual", "automatic"]
-    messages_before: int = Field(ge=0)
-    history_chars_before: int = Field(ge=0)
-    context_tokens_before: int = Field(default=0, ge=0)
-    context_limit: int | None = Field(default=None, ge=1)
-
-
-class CompactionCompletedData(WireModel):
-    reason: str = Field(min_length=1)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-    usage: UsageData = Field(default_factory=_empty_usage)
-
-
-class CompactionFailedData(WireModel):
-    reason: Literal["manual", "automatic"]
-    message: str = Field(min_length=1)
-
-
 class InputRejectedData(WireModel):
     reason: str
     request_id: str = ""
@@ -630,20 +597,6 @@ class TaskListResponse(WireModel):
     tasks: list[TaskUpdatedData] = Field(default_factory=list)
 
 
-class AgentConfiguredData(WireModel):
-    agent_name: str | None = None
-    provider: str | None = None
-    model: str | None = None
-    model_mode: str | None = None
-    context_window: int | None = None
-
-
-class HistoryUpdatedData(WireModel):
-    history: list[dict[str, Any]] = Field(default_factory=list)
-    operation: Literal["undo", "clear"] = "undo"
-    turns: int = Field(ge=0)
-
-
 class TaskStopResponse(TaskListResponse):
     matched_count: int = Field(ge=0)
 
@@ -668,16 +621,10 @@ class MessageData(WireModel):
 
 
 _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
-    "agent_configured": AgentConfiguredData,
     "assistant_message": AssistantMessageData,
     "assistant_message_delta": AssistantMessageDeltaData,
-    "client_message": ClientMessageData,
-    "compaction_completed": CompactionCompletedData,
-    "compaction_failed": CompactionFailedData,
-    "compaction_started": CompactionStartedData,
     "end": EndData,
     "error": ErrorEventData,
-    "history_updated": HistoryUpdatedData,
     "input_rejected": InputRejectedData,
     "message": MessageData,
     "permission_denied": PermissionDeniedData,
@@ -686,7 +633,6 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "tool_call_delta": ToolCallDeltaData,
     "tool_calls_started": ToolCallsStartedData,
     "tool_result": ToolResultData,
-    "task_updated": TaskUpdatedData,
     "turn_cancelled": TurnCancelledData,
     "turn_finished": TurnData,
     "turn_started": TurnData,
@@ -746,16 +692,11 @@ SessionMode = Literal["new", "resume"]
 __all__ = [
     "AssistantMessageData",
     "AssistantMessageDeltaData",
-    "AgentConfiguredData",
     "AgentSelectionRequest",
     "AgentSelectionResponse",
     "AgentInfo",
     "AgentListResponse",
     "AttachmentInput",
-    "ClientMessageData",
-    "CompactionCompletedData",
-    "CompactionFailedData",
-    "CompactionStartedData",
     "CloseResponse",
     "CommandInfo",
     "CommandListResponse",
@@ -770,7 +711,6 @@ __all__ = [
     "HelloResponse",
     "HealthResponse",
     "HistoryMutationResponse",
-    "HistoryUpdatedData",
     "ImageInput",
     "InteractionResponse",
     "InteractionRecordedData",

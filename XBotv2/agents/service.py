@@ -1,8 +1,8 @@
-"""Agent registry, selection, and creation service.
+"""Active Agent selection and loop composition service.
 
-The service owns Agent definitions and delegates concrete driver construction
-to the factory registered by the agent-loop component.  Application startup
-only supplies launcher facts and calls :meth:`AgentsService.create`.
+Definitions live in the independent Agent catalog. This service consumes that
+catalog and a loop factory, then owns only active Agent/model selection and
+loop composition.
 """
 
 from __future__ import annotations
@@ -10,9 +10,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from xcore import bound_effect, current_plugin_name
-
-from XBotv2.agents.loader import load_definitions
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.errors import OperationError
@@ -22,92 +19,26 @@ from XBotv2.core.loop import (
     LoopSettings,
 )
 from XBotv2.core.runtime import SessionInfo
-
-
-class AgentRegistry:
-    """Store immutable Agent definitions under their registering owner.
-
-    Base definitions (built-ins, data root, programmatic registrations) and
-    workspace overlays live in separate layers: an overlay replaces a base
-    definition by name without mutating it, and unloading either side keeps
-    the other intact.
-    """
-
-    def __init__(self) -> None:
-        self._base: dict[str, AgentDefinition] = {}
-        self._base_owners: dict[str, str] = {}
-        self._overlay: dict[str, AgentDefinition] = {}
-        self._overlay_owners: dict[str, str] = {}
-
-    def register(
-        self,
-        definition: AgentDefinition,
-        *,
-        owner: str,
-        overlay: bool = False,
-    ) -> str:
-        layer = self._overlay if overlay else self._base
-        owners = self._overlay_owners if overlay else self._base_owners
-        if definition.name in layer:
-            raise ValueError(f"Agent {definition.name!r} is already registered")
-        layer[definition.name] = definition
-        owners[definition.name] = owner
-        return definition.name
-
-    def unregister(self, name: str, *, owner: str) -> bool:
-        for layer, owners in (
-            (self._overlay, self._overlay_owners),
-            (self._base, self._base_owners),
-        ):
-            if owners.get(name) == owner:
-                owners.pop(name, None)
-                layer.pop(name, None)
-                return True
-        return False
-
-    def unregister_owner(self, owner: str, *, overlay: bool = True) -> list[str]:
-        """Remove every registration owned by ``owner`` in one layer."""
-        layer = self._overlay if overlay else self._base
-        owners = self._overlay_owners if overlay else self._base_owners
-        removed = [name for name, own in owners.items() if own == owner]
-        for name in removed:
-            owners.pop(name, None)
-            layer.pop(name, None)
-        return removed
-
-    def get(self, name: str) -> AgentDefinition | None:
-        return self._overlay.get(name) or self._base.get(name)
-
-    def definitions(self) -> tuple[AgentDefinition, ...]:
-        merged = dict(self._base)
-        merged.update(self._overlay)
-        return tuple(merged.values())
+from XBotv2.agents.services import AgentCatalogPort
+from XBotv2.agents.contracts import AgentSelection
+from XBotv2.agentloop.services import AgentLoopFactoryPort
 
 
 class AgentsService:
-    """Own Agent definitions and delegate creation to the active loop factory."""
+    """Compose and reconfigure the active Agent loop."""
 
-    def __init__(self, ctx: Any, registry: AgentRegistry | None = None) -> None:
+    def __init__(
+        self,
+        ctx: Any,
+        catalog: AgentCatalogPort,
+        factory: AgentLoopFactoryPort,
+    ) -> None:
         self.ctx = ctx
-        self.registry = registry or AgentRegistry()
-        self._factory: Any = None
-
-    def set_factory(self, factory: Any) -> Any:
-        if self._factory is not None:
-            raise RuntimeError("an Agent factory is already registered")
+        self.catalog = catalog
         self._factory = factory
-
-        def clear() -> None:
-            if self._factory is factory:
-                self._factory = None
-
-        return bound_effect(clear)
 
     async def create(self, options: AgentCreateOptions) -> Any:
         """Resolve one Agent and publish the driver returned by its factory."""
-        if self._factory is None:
-            raise RuntimeError("no Agent factory registered")
-
         ctx = self.ctx
         state = ctx.loop_state
         config = ctx.settings.load_runtime_config(
@@ -160,7 +91,7 @@ class AgentsService:
             EventContext(
                 config=config,
                 agent=definition,
-                tools=ctx.tools.registry,
+                tools=ctx.tools,
                 session=SessionInfo(
                     session_id=options.session_id,
                     thread_id=options.thread_id,
@@ -169,7 +100,7 @@ class AgentsService:
                 ),
             ),
         )
-        self._restrict_tools(ctx.tools.registry, config, definition)
+        self._restrict_tools(ctx.tools, config, definition)
 
         user = ctx.settings.user_context()
         engine = self._factory.create(LoopFactoryOptions(
@@ -203,7 +134,10 @@ class AgentsService:
         return engine
 
     def definition(self, name: str) -> AgentDefinition | None:
-        return self.registry.get(name)
+        return self.catalog.get(name)
+
+    def definitions(self) -> tuple[AgentDefinition, ...]:
+        return self.catalog.definitions()
 
     def active_definition(self) -> AgentDefinition | None:
         stored = self.ctx.loop_state.metadata.get("agent_definition")
@@ -211,6 +145,16 @@ class AgentsService:
             self._restore_definition(stored)
             if isinstance(stored, dict)
             else None
+        )
+
+    def current_selection(self) -> AgentSelection:
+        engine = self.ctx.engine
+        return AgentSelection(
+            active=engine.settings.agent_name,
+            provider=engine.settings.provider,
+            model=engine.settings.model,
+            model_mode=engine.settings.model_mode,
+            context_window=engine.context_window,
         )
 
     def runtime_config(
@@ -230,7 +174,7 @@ class AgentsService:
 
     async def activate(self, name: str) -> dict[str, Any]:
         """Atomically apply a registered primary Agent to the live driver."""
-        definition = self.registry.get(name)
+        definition = self.catalog.get(name)
         if definition is None or definition.mode == "subagent":
             raise ValueError(f"Unknown primary Agent: {name}")
 
@@ -254,7 +198,7 @@ class AgentsService:
                 ctx.llm.create(provider, model_config, media_root=state.media_root)
             )
 
-        self._restrict_tools(ctx.tools.registry, config, definition)
+        self._restrict_tools(ctx.tools, config, definition)
         engine.configure(
             model_client=ctx.model,
             max_iterations=definition.max_iterations or DEFAULT_MAX_ITERATIONS,
@@ -281,7 +225,7 @@ class AgentsService:
         await ctx.emit(Events.AGENT_CONFIGURED, EventContext(
             config=config,
             agent=definition,
-            tools=ctx.tools.registry,
+            tools=ctx.tools,
             session=state.session,
         ))
         return {
@@ -480,8 +424,11 @@ class AgentsService:
         """
         loader = self.ctx.loader
         active = self.ctx.engine.settings.agent_name
-        if not await loader.reload("agents"):
-            raise OperationError("plugin_unavailable", "Agent plugin is not loaded.")
+        if not await loader.reload("agents-builtins"):
+            raise OperationError(
+                "plugin_unavailable",
+                "Agent definition plugin is not loaded.",
+            )
         await self.ctx.emit(Events.SOFT_RELOAD, EventContext(event={
             "scope": "agents",
             "result": {},
@@ -543,11 +490,11 @@ class AgentsService:
         if selected is None and options.agent_definition is None:
             selected = stored_name
         if selected is None and definition is None:
-            default = self.registry.get("default")
+            default = self.catalog.get("default")
             if default is not None and default.mode != "subagent":
                 selected = default.name
         if selected is not None:
-            registered = self.registry.get(selected)
+            registered = self.catalog.get(selected)
             if definition is None:
                 if registered is None or (
                     registered.mode == "subagent" and not options.is_subagent
@@ -640,7 +587,7 @@ class AgentsService:
 
     @staticmethod
     def _restrict_tools(
-        registry: Any,
+        tools: Any,
         config: Any,
         definition: AgentDefinition | None,
     ) -> None:
@@ -649,71 +596,8 @@ class AgentsService:
             if definition is not None and definition.tools is not None
             else list(config.tools) if config.tools is not None else None
         )
-        registry.restrict(selectors)
+        tools.restrict(selectors)
         if definition is not None and definition.disabled_tools:
-            registry.exclude(list(definition.disabled_tools))
+            tools.exclude(list(definition.disabled_tools))
 
-    def register(
-        self,
-        definition: AgentDefinition,
-        *,
-        overlay: bool = False,
-    ) -> str:
-        owner = current_plugin_name()
-        name = self.registry.register(definition, owner=owner, overlay=overlay)
-        bound_effect(lambda: self.registry.unregister(name, owner=owner))
-        return name
-
-    def register_markdown(
-        self,
-        directory: Any,
-        *,
-        variables: Any = None,
-        overlay: bool = True,
-        owner: str | None = None,
-    ) -> tuple[str, ...]:
-        """Parse and register every Markdown definition in *directory*.
-
-        Used by workspace-scoped plugins (``workspace_instructions``) to
-        register definitions discovered outside the data root.  Overlay
-        registrations replace a same-named base definition without mutating
-        it, so unloading the discoverer restores the underlying definition.
-        """
-        owner = owner or current_plugin_name()
-        names = [
-            self.registry.register(
-                definition,
-                owner=owner,
-                overlay=overlay,
-            )
-            for definition in load_definitions(directory, variables)
-        ]
-        if names:
-            bound_effect(
-                lambda: [
-                    self.registry.unregister(name, owner=owner)
-                    for name in names
-                ]
-            )
-        return tuple(names)
-
-    def unregister(self, name: str, owner: str | None = None) -> bool:
-        """Unregister one definition; default owner is the current plugin."""
-        return self.registry.unregister(name, owner=owner or current_plugin_name())
-
-    def unregister_owned(
-        self,
-        owner: str | None = None,
-        *,
-        overlay: bool = True,
-    ) -> list[str]:
-        """Remove every registration owned by ``owner`` (default current)."""
-        return self.registry.unregister_owner(
-            owner or current_plugin_name(), overlay=overlay
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.registry, name)
-
-
-__all__ = ["AgentRegistry", "AgentsService"]
+__all__ = ["AgentsService"]

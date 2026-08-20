@@ -4,7 +4,7 @@ import pytest
 
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.core import AgentDefinition, RuntimeVariables
-from XBotv2.agents.service import AgentRegistry
+from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agents.loader import load_definition
 
@@ -16,61 +16,55 @@ def test_agent_definition_requires_stable_name_and_description():
         AgentDefinition(name="bad/name", description="Review code")
 
 
-def test_registry_enforces_name_ownership():
-    registry = AgentRegistry()
+def test_catalog_enforces_name_ownership():
+    catalog = AgentCatalog()
     definition = AgentDefinition(name="reviewer", description="Review code")
 
-    assert registry.register(definition, owner="agents") == "reviewer"
+    assert catalog.register(definition) == "reviewer"
     with pytest.raises(ValueError, match="already registered"):
-        registry.register(definition, owner="other")
-    assert not registry.unregister("reviewer", owner="other")
-    assert registry.get("reviewer") is definition
-    assert registry.unregister("reviewer", owner="agents")
+        catalog.register(definition)
+    assert catalog.get("reviewer") is definition
+    assert catalog.unregister_owned("other") == []
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
 
 
-def test_registry_workspace_overlay_replaces_and_restores_base():
-    registry = AgentRegistry()
+def test_catalog_workspace_overlay_replaces_and_restores_base():
+    catalog = AgentCatalog()
     base = AgentDefinition(name="reviewer", description="Base reviewer")
     overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
 
-    registry.register(base, owner="agents")
-    registry.register(overlay, owner="workspace_instructions", overlay=True)
+    catalog.register(base)
+    catalog.register(overlay, overlay=True)
 
-    assert registry.get("reviewer") is overlay
-    assert registry.definitions() == (overlay,)
+    assert catalog.get("reviewer") is overlay
+    assert catalog.definitions() == (overlay,)
     # Unloading the overlay reveals the untouched base definition.
-    assert registry.unregister("reviewer", owner="workspace_instructions")
-    assert registry.get("reviewer") is base
-    assert registry.unregister("reviewer", owner="agents")
-    assert registry.get("reviewer") is None
+    assert catalog.unregister_owned("unknown") == ["reviewer"]
+    assert catalog.get("reviewer") is base
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
+    assert catalog.get("reviewer") is None
 
 
-def test_registry_base_unload_keeps_workspace_overlay():
-    registry = AgentRegistry()
+def test_catalog_base_unload_keeps_workspace_overlay():
+    catalog = AgentCatalog()
     base = AgentDefinition(name="reviewer", description="Base reviewer")
     overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
 
-    registry.register(base, owner="agents")
-    registry.register(overlay, owner="workspace_instructions", overlay=True)
+    catalog.register(base)
+    catalog.register(overlay, overlay=True)
 
     # Reloading the agents plugin removes its base layer only.
-    assert registry.unregister("reviewer", owner="agents")
-    assert registry.get("reviewer") is overlay
-    assert registry.unregister("reviewer", owner="workspace_instructions")
-    assert registry.get("reviewer") is None
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
+    assert catalog.get("reviewer") is overlay
+    assert catalog.unregister_owned("unknown") == ["reviewer"]
+    assert catalog.get("reviewer") is None
 
 
-def test_registry_overlay_layer_rejects_duplicate_names():
-    registry = AgentRegistry()
-    registry.register(
-        AgentDefinition(name="worker", description="Worker"),
-        owner="agents",
-    )
+def test_catalog_layer_rejects_duplicate_names():
+    catalog = AgentCatalog()
+    catalog.register(AgentDefinition(name="worker", description="Worker"))
     with pytest.raises(ValueError, match="already registered"):
-        registry.register(
-            AgentDefinition(name="worker", description="Other"),
-            owner="agents",
-        )
+        catalog.register(AgentDefinition(name="worker", description="Other"))
 
 
 def test_builtin_agents_cover_default_and_explorer():

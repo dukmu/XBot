@@ -25,6 +25,7 @@ class GoalPlugin:
 
     def __init__(self) -> None:
         self._continuation_pending = False
+        self._send_input = None
 
     async def on_unload(self) -> None:
         self._continuation_pending = False
@@ -38,6 +39,8 @@ class GoalPlugin:
         self.store = ctx.state.namespace("goal")
         ctx.on(Events.TURN_START, self._start_goal_turn)
         ctx.on(Events.TURN_END, self._on_turn_end)
+        ctx.on(Events.SESSION_START, self._capture_send_input)
+        ctx.on(Events.SESSION_RESUME, self._capture_send_input)
         ctx.tools.register(
             Tool.from_function(self.create_goal, name="create_goal"),
         )
@@ -117,7 +120,10 @@ class GoalPlugin:
             summary,
         )
 
-    async def _goal_command(self, ctx: Any, raw_args: str) -> CommandResult:
+    async def _goal_command(
+        self,
+        raw_args: str,
+    ) -> CommandResult:
         action, value, token_budget = _parse_goal_command(raw_args)
         if action == "get":
             result = await self._get()
@@ -132,8 +138,11 @@ class GoalPlugin:
         else:
             result = await self._finish(action, value)
         if result.status == "success" and action in {"set", "resume"}:
-            await self.start(ctx.send_input)
+            await self.start(self._send_input)
         return _command_result(result)
+
+    def _capture_send_input(self, event: EventContext) -> None:
+        self._send_input = event.send_input
 
     async def _get(self) -> ToolResult:
         goal = await self._read_goal()

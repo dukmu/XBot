@@ -68,7 +68,7 @@ class TestApplicationStartupBasics:
             interactive=False,
         )
 
-        names = set(application.engine.tools.registry.names())
+        names = set(application.engine.tools.names())
         assert "send_message" in names
         assert "ask_user" not in names
         assert "request_permission" not in names
@@ -342,7 +342,7 @@ plugin = NormalClosePlugin()""",
         engine = application.engine
         tool_name = "plugin:normal-close:runtime_tool"
         assert loader is not None
-        assert engine.tools.registry.registered(tool_name)
+        assert tool_name in engine.tools.registered_names()
 
         await engine.start_session()
         await engine.close_session()
@@ -352,7 +352,7 @@ plugin = NormalClosePlugin()""",
             "close",
             "unload",
         ]
-        assert not engine.tools.registry.registered(tool_name)
+        assert tool_name not in engine.tools.registered_names()
         assert loader.loaded_ids == ()
         assert application.get("loader", strict=False) is None
 
@@ -380,7 +380,7 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        tool_names = set(application.engine.tools.registry.names())
+        tool_names = set(application.engine.tools.names())
         assert {
             "shell",
             "read",
@@ -414,8 +414,11 @@ plugin = NormalClosePlugin()""",
             "list_shells",
             "request_permission",
             "wait_shell",
-        } <= set(application.engine.tools.registry.names())
-        assert application.engine.tools.registry.names() == application.engine.tools.registry.registered_names()
+        } <= set(application.engine.tools.names())
+        assert (
+            application.engine.tools.names()
+            == application.engine.tools.registered_names()
+        )
 
     @pytest.mark.asyncio
     async def test_application_startup_tool_filter_limits_visible_tools(self, temp_data_dir):
@@ -430,8 +433,8 @@ plugin = NormalClosePlugin()""",
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.engine.tools.registry.names() == ["read"]
-        assert [tool.name for tool in application.engine.tools.registry.get_all()] == ["read"]
+        assert application.engine.tools.names() == ("read",)
+        assert [tool.name for tool in application.engine.tools.enabled()] == ["read"]
 
     @pytest.mark.asyncio
     async def test_application_startup_unknown_tool_filter_silently_ignored(self, temp_data_dir):
@@ -445,7 +448,7 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        assert len(application.engine.tools.registry) == 0
+        assert application.engine.tools.names() == ()
 
     @pytest.mark.asyncio
     async def test_application_startup_tool_filter_can_select_plugin_tools(
@@ -484,9 +487,11 @@ plugin = SimplePlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.engine.tools.registry.names() == ["plugin_tool"]
-        assert [tool.name for tool in application.engine.tools.registry.get_all()] == ["plugin_tool"]
-        assert application.engine.tools.registry.get("read") is None
+        assert application.engine.tools.names() == ("plugin_tool",)
+        assert [tool.name for tool in application.engine.tools.enabled()] == [
+            "plugin_tool"
+        ]
+        assert application.engine.tools.resolve("read") is None
 
     @pytest.mark.asyncio
     async def test_application_startup_registers_system_hooks(
@@ -635,7 +640,7 @@ async def before_user_message(ctx):
 
         result = next(event for event in events if event["type"] == "tool_result")
         assert result["data"]["content"] == "hello Ada"
-        assert "workspace:workspace_greeting" in application.engine.tools.registry.names()
+        assert "workspace:workspace_greeting" in application.engine.tools.names()
 
     @pytest.mark.asyncio
     async def test_application_startup_passes_external_plugin_configs(
@@ -896,8 +901,8 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.agents.definition("reviewer") is None
-        assert {item.name for item in application.agents.definitions()} == {
+        assert application.agent_catalog.get("reviewer") is None
+        assert {item.name for item in application.agent_catalog.definitions()} == {
             "default",
             "Explorer",
         }
@@ -1024,13 +1029,6 @@ plugin = ConfiguredPlugin()
         )
 
         ps = application.permissions
-        perms_entry = next(e for e in application.loader.tree.entries if e.id == "permissions")
-        print("DIAG tree permissions config keys:", list(perms_entry.config.keys()))
-        print("DIAG svc config:", str(application.permissions.config)[:120])
-        print("DIAG overlay:", (Path(temp_data_dir) / "config" / "plugins.yaml").read_text(encoding="utf-8")[:100])
-        print("DIAG allow paths:", [getattr(r, "paths", None) for r in ps._allow_rules][:3])
-        print("DIAG check notes:", ps.check("edit", {"path": "notes.md", "mode": "write"}))
-        print("DIAG check outside:", ps.check("edit", {"path": str(temp_data_dir / "outside.md"), "mode": "write"}))
         assert ps.check(
             "edit", {"path": "notes.md", "mode": "write"}
         ) == "allow"
@@ -1065,7 +1063,8 @@ class TestApplicationStartupNoPlugins:
         ids = {entry.id for entry in tree.entries}
         assert "goal" not in ids
         assert "tools" in ids
-        assert "agents-service" in ids
+        assert "agent-catalog" in ids
+        assert "agent-runtime" in ids
         assert "agentloop" in ids
 
     def test_default_plugin_dirs_scan_builtins(self):
@@ -1075,7 +1074,8 @@ class TestApplicationStartupNoPlugins:
         assert "goal" in ids
         assert "todolist" in ids
         assert "tools" in ids
-        assert "agents-service" in ids
+        assert "agent-catalog" in ids
+        assert "agent-runtime" in ids
         assert "agentloop" in ids
 
     @pytest.mark.asyncio

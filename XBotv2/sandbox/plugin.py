@@ -12,15 +12,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.core.events import Events
 from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.sandbox.commands import SANDBOX_COMMANDS
+from XBotv2.sandbox.commands import build_sandbox_commands
 
 
 class SandboxComponent:
     inject = [
         "storage", "session", "tools", "data_root", "variables",
-        "workspace_root", "commands",
+        "workspace_root", "commands", "settings",
     ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
@@ -36,8 +37,13 @@ class SandboxComponent:
         )
         ctx.set("sandbox", policy)
         ctx.tools.guard(policy.make_guard())
-        for command in SANDBOX_COMMANDS:
+        for command in build_sandbox_commands(ctx.settings):
             ctx.commands.register(command)
+
+        async def update_policy(event: PolicyChanged) -> None:
+            policy.replace_config(event.config.sandbox)
+
+        ctx.on(POLICY_CHANGED, update_policy)
 
         async def contribute_context(event: Any) -> None:
             if event.context_kwargs is not None:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from XBotv2.application.services import ChildApplicationRequest
 from XBotv2.core.agents import AgentSessionResult, SubagentTurnError
 from XBotv2.core.paths import SessionPaths
 
@@ -27,45 +28,32 @@ class ChildApplications:
     parent_thread_id: str
     interactive: bool
     session_paths: SessionPaths
-    _parent: Any = None
-
-    def bind(self, parent: Any) -> None:
-        self._parent = parent
-
-    async def __call__(
+    async def spawn(
         self,
-        definition: Any,
-        child_thread_id: str,
-        prompt: str,
+        request: ChildApplicationRequest,
     ) -> "ChildApplicationSession":
-        if self._parent is None:
-            raise RuntimeError("child application factory is not bound")
         from XBotv2.application.app import start_application
 
         child_ctx = await start_application(
             paths=self.paths,
-            provider_name=definition.provider or self.provider_name,
+            provider_name=request.definition.provider or self.provider_name,
             session_id=self.session_id,
-            thread_id=child_thread_id,
+            thread_id=request.thread_id,
             workspace_root=self.workspace_root,
             plugin_dirs=self.plugin_dirs,
             llm_override=self.llm_override,
-            agent_definition=definition,
-            parent_permission_system=self._parent.get(
-                "permissions", strict=False
-            ),
+            agent_definition=request.definition,
+            parent_permission_system=request.parent_permissions,
             parent_thread_id=self.parent_thread_id,
             is_subagent=True,
             interactive=self.interactive,
-            client_events=(
-                self._parent.client_events if self.interactive else None
-            ),
+            client_events=request.client_events if self.interactive else None,
         )
         child = ChildApplicationSession(
             context=child_ctx,
-            prompt=prompt,
-            agent=definition.name,
-            thread_id=child_thread_id,
+            prompt=request.prompt,
+            agent=request.definition.name,
+            thread_id=request.thread_id,
             session_paths=self.session_paths,
             parent_thread_id=self.parent_thread_id,
         )

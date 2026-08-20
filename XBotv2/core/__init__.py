@@ -34,6 +34,12 @@ from XBotv2.core.messages import (
     TextPart,
     ToolCallPart,
 )
+from XBotv2.core.operations import (
+    EmptyRequest,
+    Operation,
+    OperationContext,
+    dispatch_operation,
+)
 from XBotv2.core.paths import RuntimePaths, SessionPaths, ThreadPaths
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, prompt_container, prompt_element
 from XBotv2.core.providers import (
@@ -73,7 +79,10 @@ __all__ = [
     "ContentPart",
     "ContextComponent",
     "EventContext",
+    "EmptyRequest",
     "Events",
+    "Operation",
+    "OperationContext",
     "ImageContent",
     "ImagePart",
     "InputModality",
@@ -107,6 +116,7 @@ __all__ = [
     "calibrated_context_tokens",
     "context_token_limit",
     "estimate_messages_tokens",
+    "dispatch_operation",
     "estimate_request_tokens",
     "prompt_container",
     "prompt_element",

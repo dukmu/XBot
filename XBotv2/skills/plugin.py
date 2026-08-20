@@ -93,8 +93,8 @@ class SkillsPlugin:
         self._initialized = True
 
     def _register_skill_tool(self, skill: Skill) -> str:
-        """Register one skill tool on the raw registry (tracked for cleanup)."""
-        return self.ctx.tools.registry.register(
+        """Register one skill Tool through the public service."""
+        return self.ctx.tools.register(
             self._skill_as_tool(skill),
             injected={"sandbox": self.ctx.sandbox},
             namespace=f"skills:{skill.scope}",

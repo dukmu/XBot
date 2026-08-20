@@ -14,22 +14,23 @@ from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.filesystem.storage import ThreadStorage
 from XBotv2.session.session import Session
-from XBotv2.session.commands import SESSION_COMMANDS
+from XBotv2.session.commands import build_session_commands
 
 
 class SessionComponent:
-    inject = ['agents', 'child_applications', 'commands']
+    inject = ["runtime_paths", "session_launch", "commands"]
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         config = config or {}
-        paths = config["paths"]
-        session_id = config["session_id"]
-        thread_id = config["thread_id"]
-        workspace_root = config["workspace_root"]
-        session_paths = config["session_paths"]
+        launch = ctx.session_launch
+        paths = ctx.runtime_paths
+        session_id = launch.session_id
+        thread_id = launch.thread_id
+        workspace_root = launch.workspace_root
+        session_paths = launch.session_paths
 
         thread_paths = session_paths.thread(
             thread_id,
@@ -58,7 +59,6 @@ class SessionComponent:
         )
         session = Session(
             ctx=ctx,
-            agents=ctx.agents,
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=str(workspace_root),
@@ -66,7 +66,6 @@ class SessionComponent:
             variables=variables,
             state=state,
             session_paths=session_paths,
-            child_applications=ctx.child_applications,
         )
 
         ctx.set("session", session)
@@ -77,8 +76,9 @@ class SessionComponent:
         ctx.set("thread_paths", thread_paths)
         ctx.set("loop_state", state)
         ctx.set("storage", storage)
-        for command in SESSION_COMMANDS:
+        for command in build_session_commands(session):
             ctx.commands.register(command)
+
 
 
 plugin = SessionComponent()

@@ -1,25 +1,27 @@
-"""Agent registration and model-facing subagent job tools.
+"""Model-facing subagent job tools.
 
 Subagents run as SUBAGENT jobs in the shared JobRegistry. This plugin only
 implements the adapter that requests a child session from the session service,
 and the typed model-facing tools. It never owns lifecycle
 state; waiting, cancellation, output storage, and listing live in the registry.
-It registers the built-in and data-root definitions; workspace definitions
-are discovered and overlaid by the ``workspace_instructions`` plugin.
+Agent definition registration belongs to the independent catalog plugins.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
-from XBotv2.agents.commands import AGENTS_COMMANDS
-from XBotv2.agents.loader import load_definitions
+from XBotv2.agents.services import AgentCatalogPort
+from XBotv2.application.services import (
+    ChildApplicationRequest,
+    ChildApplicationsPort,
+)
 from XBotv2.core import (
     Events,
     Tool,
     ToolResult,
 )
+from XBotv2.core.agents import AgentSession, SubagentAgentError
 from XBotv2.core.jobs import (
     Job,
     JobKind,
@@ -28,10 +30,54 @@ from XBotv2.core.jobs import (
     JobResult,
     JobStatus,
 )
+from XBotv2.session.services import SessionPort
 from xcore import S
 
 _MAX_PROMPT_PREVIEW = 100
 _MAX_SUMMARY = 256
+
+
+class SubagentLauncher:
+    """Resolve definitions and request child applications for subagent jobs."""
+
+    def __init__(
+        self,
+        *,
+        catalog: AgentCatalogPort,
+        session: SessionPort,
+        children: ChildApplicationsPort,
+        parent_permissions: object,
+        client_events: object | None,
+    ) -> None:
+        self._catalog = catalog
+        self._session = session
+        self._children = children
+        self._parent_permissions = parent_permissions
+        self._client_events = client_events
+        self._active: list[AgentSession] = []
+
+    async def spawn_subagent(
+        self,
+        agent: str,
+        prompt: str,
+        *,
+        parent_job_id: str | None = None,
+    ) -> AgentSession:
+        del parent_job_id
+        definition = self._catalog.get(agent)
+        if definition is None or definition.mode == "primary":
+            raise SubagentAgentError(f"Unknown subagent: {agent}")
+        if not prompt.strip():
+            raise SubagentAgentError("Subagent prompt cannot be empty")
+        child = await self._children.spawn(ChildApplicationRequest(
+            definition=definition,
+            thread_id=self._session.new_thread_id(definition.name),
+            prompt=prompt,
+            parent_permissions=self._parent_permissions,
+            client_events=self._client_events,
+        ))
+        self._active.append(child)
+        return child
 
 
 class SubagentRunner:
@@ -75,14 +121,20 @@ class SubagentRunner:
             await handle.cancel()
 
 
-class AgentsPlugin:
+class SubagentsPlugin:
     inject = [
-        "session", "agents", "jobs", "tools", "prompts",
-        "data_root", "variables", "workspace_root", "commands",
+        "session",
+        "agent_catalog",
+        "child_applications",
+        "permissions",
+        "client_events",
+        "jobs",
+        "tools",
+        "prompts",
     ]
-    """Register built-in/data-root Agent definitions and subagent job tools."""
+    """Register subagent job tools and their prompt catalog."""
 
-    name = "agents"
+    name = "agents.subagents"
     Config = S.object({
         "timeout_seconds": S.number().optional(),
     })
@@ -93,30 +145,17 @@ class AgentsPlugin:
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
-        # Built-ins are the base layer; a same-named Markdown definition in the
-        # data root replaces them.  Workspace definitions are discovered by
-        # workspace_instructions and registered as an overlay layer.
-        definitions = {
-            definition.name: definition
-            for definition in BUILTIN_AGENT_DEFINITIONS
-        }
-        definitions.update({
-            definition.name: definition
-            for definition in load_definitions(
-                ctx.data_root / ".agents",
-                ctx.variables,
-            )
-        })
-        for definition in definitions.values():
-            ctx.agents.register(definition)
-        for command in AGENTS_COMMANDS:
-            ctx.commands.register(command)
         ctx.on(Events.SESSION_INIT, self._on_session_init)
-        ctx.on(Events.SOFT_RELOAD, ctx.agents.rebind_on_soft_reload)
         if ctx.session is None or ctx.jobs is None:
             return
 
-        session = ctx.session
+        launcher = SubagentLauncher(
+            catalog=ctx.agent_catalog,
+            session=ctx.session,
+            children=ctx.child_applications,
+            parent_permissions=ctx.permissions,
+            client_events=ctx.client_events,
+        )
         registry = ctx.jobs
 
         async def spawn_subagent(
@@ -142,7 +181,7 @@ class AgentsPlugin:
                 return ToolResult.failure(
                     "session_closing", "Session is closing"
                 )
-            definition = session.definitions()
+            definition = ctx.agent_catalog.definitions()
             known = {item.name for item in definition}
             if agent not in known:
                 return ToolResult.failure(
@@ -167,7 +206,7 @@ class AgentsPlugin:
                 )
             registry.start(
                 job.id,
-                SubagentRunner(session=session, agent=agent, prompt=prompt),
+                SubagentRunner(session=launcher, agent=agent, prompt=prompt),
             )
             return ToolResult.success(f"Started {job.id} (status: {job.status.value})")
 
@@ -283,7 +322,7 @@ class AgentsPlugin:
         """Publish the subagent catalog once all definitions are registered."""
         visible_subagents = [
             definition
-            for definition in self.ctx.agents.definitions()
+            for definition in self.ctx.agent_catalog.definitions()
             if definition.mode in {"subagent", "all"} and not definition.hidden
         ]
         if visible_subagents:
@@ -314,4 +353,4 @@ def _preview(value: str, limit: int) -> str:
     return f"{value[:limit]}[truncated]"
 
 
-plugin = AgentsPlugin()
+plugin = SubagentsPlugin()

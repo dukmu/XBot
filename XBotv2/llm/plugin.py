@@ -14,7 +14,11 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.llm.service import LlmService, ModelService
-from XBotv2.llm.commands import LLM_COMMANDS
+from XBotv2.core.operations import EmptyRequest
+from XBotv2.llm.contracts import (
+    LIST_PROVIDERS,
+    ProviderCatalog,
+)
 
 
 def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
@@ -36,6 +40,8 @@ def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
         config.get("default"),
         config.get("providers"),
     )
+    for name in service.names():
+        service.provider_config(name, require_key=False)
     return service
 
 
@@ -45,13 +51,15 @@ class LlmComponent:
     name = "xbot.llm"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        ctx.set("llm", build_llm_service(dict(config or {})))
+        service = build_llm_service(dict(config or {}))
+        ctx.set("llm", service)
         ctx.set("model", ModelService())
-        # The server host mounts this component without a command registry;
-        # register the LLM commands only where the session tree provides one.
-        if ctx.has("commands"):
-            for command in LLM_COMMANDS:
-                ctx.commands.register(command)
+
+        def list_providers(_request: EmptyRequest) -> ProviderCatalog:
+            return service.catalog()
+
+        ctx.on(LIST_PROVIDERS.name, list_providers)
+
 
 
 plugin = LlmComponent()

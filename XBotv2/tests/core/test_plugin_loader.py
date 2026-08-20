@@ -31,7 +31,7 @@ def make_plugin_ctx(tmp_path):
     from xcore import Context
     from XBotv2.jobs import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.agents.service import AgentRegistry, AgentsService
+    from XBotv2.agents.catalog import AgentCatalog
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.agentloop.tool_service import ToolsService
     from XBotv2.commands.plugin import CommandsService
@@ -42,7 +42,7 @@ def make_plugin_ctx(tmp_path):
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agents", AgentsService(ctx, AgentRegistry()))
+    ctx.set("agent_catalog", AgentCatalog())
     ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", tmp_path)
@@ -194,7 +194,7 @@ plugin = BetaPlugin()
         ]))
         await loader.load()
         assert loader.loaded_ids == ("alpha",)
-        assert ctx.tools.registry.registered("alpha_tool")
+        assert "alpha_tool" in ctx.tools.registered_names()
         assert loader.get("alpha").name == "alpha"
 
     async def test_unload_cleans_registrations(self, tmp_path):
@@ -214,10 +214,10 @@ plugin = GammaPlugin()
             {"id": "gamma", "name": "gamma"},
         ]))
         await loader.load()
-        assert ctx.tools.registry.registered("gamma_tool")
+        assert "gamma_tool" in ctx.tools.registered_names()
         await loader.unload("gamma")
         assert loader.loaded_ids == ()
-        assert not ctx.tools.registry.registered("gamma_tool")
+        assert "gamma_tool" not in ctx.tools.registered_names()
 
     async def test_config_reaches_apply(self, tmp_path):
         _write_plugin(tmp_path, "delta", """
@@ -327,7 +327,7 @@ class TestOrderIndependence:
         from XBotv2.loader import PluginTree
 
         # Shuffle the bundled tree (config preserved) into a temp yaml.
-        tree = PluginTree.from_yaml(config_tree.DEFAULT_TREE)
+        tree = PluginTree.from_yaml(config_tree.DEFAULT_TREE).for_profile("agent")
         entries = list(tree.entries)
         random.Random(7).shuffle(entries)
         lines = []
@@ -371,5 +371,5 @@ class TestOrderIndependence:
         )
         assert application.engine is not None
         assert "tools" in application.loader.loaded_ids
-        assert "agents-service" in application.loader.loaded_ids
+        assert "agent-runtime" in application.loader.loaded_ids
         assert "agentloop" in application.loader.loaded_ids

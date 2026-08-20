@@ -113,7 +113,7 @@ class InteractionsService:
 class InteractionsComponent:
     """Register the interactions service as ``ctx.interactions``."""
 
-    inject = ["tools", "client_events"]
+    inject = ["tools", "client_events", "session_launch"]
     name = "xbot.interactions"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
@@ -126,7 +126,7 @@ class InteractionsComponent:
         from XBotv2.interactions.tools import ask_user, send_message
 
         ctx.tools.register(send_message)
-        if bool(config.get("interactive", True)):
+        if ctx.session_launch.interactive:
             ctx.tools.register(ask_user, injected={"interactions": service})
         ctx.on(
             Events.SESSION_CLOSE,

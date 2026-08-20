@@ -31,8 +31,8 @@ flowchart TB
 
     subgraph Transport["Protocol / transport"]
         UDS["Unix domain socket (__main__.py)"]
-        HTTP["HTTP/SSE server (protocol/http_server.py)"]
-        SCM["SessionManager (protocol/session_manager.py)"]
+        HTTP["HTTP/SSE server (server/http.py)"]
+        SCM["SessionManager (server/session_manager.py)"]
     end
 
     subgraph Core["Core"]
@@ -358,9 +358,16 @@ and description. A Tool namespace is never interpreted as a slash-command path.
 
 ## Transport
 
-### HTTP/SSE (`protocol/http_server.py`)
+### HTTP/SSE (`server/http.py`)
 
-FastAPI app with SSE streaming. `SessionManager` owns one `SessionRuntime` per
+FastAPI app with SSE streaming. The wire protocol stays pure (`protocol/`);
+the application server layer owns the FastAPI carrier (`server/http.py`),
+the `SessionManager` host (`server/session_manager.py`), and the business
+helpers (`server/http_util.py`). Each server capability owns its router
+(`<cap>/router.py`) and registers it into `ctx.web_server` from its host
+plugin (`server/hosts/`); the carrier mounts only the core health/hello
+routes, and `create_app` mounts the full default surface for standalone
+use. `SessionManager` owns one `SessionRuntime` per
 live thread. It owns the XCore application, Engine handle, turn task,
 client-event sink, and event stream; the agent inbox belongs to Engine. Runtime
 stops active delivery before stopping the application and plugin fibers.

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from XBotv2.application.boot import boot_application
+from XBotv2.application.app import create_agent_application
 from XBotv2.config.tree import load_server_tree
+from XBotv2.server.contracts import ServerOptions
 
 
 async def start_server_application(
@@ -22,7 +25,22 @@ async def start_server_application(
         workspace_root=workspace_root,
         no_plugins=no_plugins,
     )
-    return await boot_application(tree=tree, data_dir=paths.data_dir)
+    options = ServerOptions(
+        provider_name=provider_name,
+        workspace_root=Path(workspace_root).resolve(),
+        no_plugins=no_plugins,
+    )
+
+    def prepare(ctx: Any) -> None:
+        ctx.set("runtime_paths", paths)
+        ctx.set("server_options", options)
+        ctx.set("agent_application_factory", create_agent_application)
+
+    return await boot_application(
+        tree=tree,
+        data_dir=paths.data_dir,
+        prepare=prepare,
+    )
 
 
-__all__ = ["start_server_application"]
+__all__ = ["ServerOptions", "start_server_application"]

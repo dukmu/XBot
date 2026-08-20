@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader import PluginTree
 
 
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
-SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"agents"})
+SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"subagents"})
 OPTIONAL_CAPABILITIES = frozenset({
-    "goal", "todolist", "skills", "mcp_plugin", "compact", "agents", "browser",
+    "goal", "todolist", "skills", "mcp_plugin", "compact", "subagents", "browser",
     "token_manager",
 })
 
@@ -32,17 +32,7 @@ def load_agent_tree(
 ) -> PluginTree:
     """Load the bundled Agent tree and apply external configuration layers."""
     disabled = SUBAGENT_FORBIDDEN_PLUGINS if is_subagent else frozenset()
-    values = {
-        "paths": paths,
-        "session_paths": session_paths,
-        "session_id": session_id,
-        "thread_id": thread_id,
-        "workspace_root": workspace_root,
-        "provider_name": provider_name,
-        "parent_permission_system": parent_permission_system,
-        "interactive": interactive,
-        "disabled": disabled,
-    }
+    values = {"disabled": disabled}
     tree = PluginTree.from_yaml(DEFAULT_TREE, values=values)
     if plugin_dirs is not None:
         tree = tree.excluding(set(OPTIONAL_CAPABILITIES))
@@ -56,7 +46,7 @@ def load_agent_tree(
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
         tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
-    return tree
+    return tree.for_profile("agent")
 
 
 def load_server_tree(
@@ -66,26 +56,28 @@ def load_server_tree(
     workspace_root: str,
     no_plugins: bool,
 ) -> PluginTree:
-    """Load the provider directory and HTTP host tree."""
-    tree = PluginTree.from_yaml(DEFAULT_TREE)
+    """Load the provider directory and HTTP host tree.
+
+    The host tree composes the dumb carrier (``server``) with one plugin entry
+    per server capability. Each capability's own router module (``<cap>.router``
+    inside the owning package) exports its registration plugin, which mounts
+    the router into ``ctx.web_server``, so extending the server surface means
+    adding a tree entry, not editing the carrier.
+    """
+    values = {
+        "paths": paths,
+        "provider_name": provider_name,
+        "workspace_root": workspace_root,
+        "no_plugins": no_plugins,
+    }
+    tree = PluginTree.from_yaml(DEFAULT_TREE, values=values)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
-    llm = next((entry for entry in tree.entries if entry.id == "llm"), None)
-    if llm is None:
+        tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
+    selected = tree.for_profile("server")
+    if not any(entry.id == "llm" for entry in selected.entries):
         raise ValueError("server application requires the llm profile entry")
-    server = PluginEntry(
-        id="server",
-        name="server",
-        inject=["llm"],
-        config={
-            "paths": paths,
-            "provider_name": provider_name,
-            "workspace_root": workspace_root,
-            "no_plugins": no_plugins,
-        },
-    )
-    return PluginTree([llm, server])
+    return selected
 
 
 def _external_entries(

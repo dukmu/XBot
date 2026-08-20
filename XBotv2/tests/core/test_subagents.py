@@ -15,8 +15,7 @@ from XBotv2.core import AgentDefinition, AgentSessionResult, RuntimePaths
 from XBotv2.core.jobs import JobKind
 from XBotv2.jobs import JobRegistry
 from XBotv2.core.messages import ModelChunk
-from XBotv2.agents.service import AgentRegistry
-from XBotv2.session.session import Session
+from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.application import start_application
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
@@ -27,7 +26,7 @@ from XBotv2.permissions.system import (
     normalize_agent_permissions,
 )
 
-from XBotv2.agents.plugin import SubagentRunner
+from XBotv2.agents.subagents import SubagentLauncher, SubagentRunner
 
 
 class RoutingLLM(MockLLM):
@@ -402,7 +401,7 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     _ = [event async for event in first.run_turn("build")]
 
     assert first.settings.agent_name == "builder"
-    assert first.tools.registry.get_all() == []
+    assert first.tools.enabled() == ()
     assert "Follow the builder workflow." in "\n".join(
         str(message.content) for message in first_llm.get_call_messages(0)
     )
@@ -432,7 +431,7 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
 
     assert resumed.settings.agent_name == "builder"
     assert resumed.settings.agent_role == "Build focused changes"
-    assert resumed.tools.registry.get_all() == []
+    assert resumed.tools.enabled() == ()
     assert "Follow the builder workflow." in resumed.settings.agent_instructions
     assert "Changed instructions" not in resumed.settings.agent_instructions
     assert [message.content for message in resumed.messages] == ["build", "built"]
@@ -477,7 +476,7 @@ async def test_workspace_agent_overrides_builtin_definition(
     )
 
     engine = application.engine
-    definition = application.agents.registry.get("reviewer")
+    definition = application.agent_catalog.get("reviewer")
     assert definition.description == "Workspace reviewer"
     assert definition.provider == "default"
     assert definition.model == "test-model"
@@ -496,7 +495,7 @@ async def test_workspace_agent_overrides_builtin_definition(
     assert engine.settings.model == "test-model"
     assert engine.settings.context_window == 64000
     assert engine.max_iterations == 7
-    assert engine.tools.registry.get("edit") is None
+    assert engine.tools.resolve("edit") is None
     await engine.close_session()
     await application.stop()
 
@@ -527,7 +526,7 @@ async def test_new_primary_thread_selects_builtin_default_agent(
 
 
 @pytest.mark.asyncio
-async def test_subagent_runtime_does_not_load_agents_plugin(
+async def test_subagent_runtime_does_not_load_subagents_plugin(
     temp_data_dir, temp_workspace
 ):
     definition = AgentDefinition(
@@ -546,9 +545,11 @@ async def test_subagent_runtime_does_not_load_agents_plugin(
     )
 
     engine = application.engine
-    assert application.loader.get_command("agent") is None
-    assert engine.tools.registry.get_registered("spawn_subagent") is None
-    assert engine.tools.registry.get_registered("wait_subagent") is None
+    assert application.agent_catalog is not None
+    assert application.agent_runtime is not None
+    assert application.tools.resolve("spawn_subagent") is None
+    assert engine.tools.resolve("spawn_subagent", include_disabled=True) is None
+    assert engine.tools.resolve("wait_subagent", include_disabled=True) is None
     await engine.close_session()
     await application.stop()
 
@@ -599,31 +600,30 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
 def _make_session(tmp_path, *, registry, factory):
     import types
 
-    agents = types.SimpleNamespace(
-        definition=registry.get,
-        definitions=registry.definitions,
+    session = types.SimpleNamespace(
+        new_thread_id=lambda agent: f"{agent}-child",
     )
-    return Session(
-        agents=agents,
-        session_id="s",
-        thread_id="agent",
-        workspace_root=str(tmp_path),
-        paths=None,
-        variables=None,
-        state=types.SimpleNamespace(
-            session=types.SimpleNamespace(provider="default")
-        ),
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        child_applications=factory,
+    children = types.SimpleNamespace(
+        spawn=lambda request: factory(
+            request.definition,
+            request.thread_id,
+            request.prompt,
+        )
+    )
+    return SubagentLauncher(
+        catalog=registry,
+        session=session,
+        children=children,
+        parent_permissions=object(),
+        client_events=None,
     )
 
 
 @pytest.mark.asyncio
 async def test_agent_runtime_rejects_unknown_and_primary_agents(tmp_path):
-    registry = AgentRegistry()
+    registry = AgentCatalog()
     registry.register(
-        AgentDefinition(name="primary", description="Primary", mode="primary"),
-        owner="test",
+        AgentDefinition(name="primary", description="Primary", mode="primary")
     )
 
     async def unused_factory(*_args):
@@ -665,9 +665,9 @@ class _ChildSession:
 
 @pytest.mark.asyncio
 async def test_background_subagent_returns_immediately_and_completes(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     definition = AgentDefinition(name="worker", description="Do focused work")
-    agent_registry.register(definition, owner="test")
+    agent_registry.register(definition)
     release = asyncio.Event()
     child = _ChildSession(wait=release)
 
@@ -697,10 +697,9 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     agent_registry.register(
-        AgentDefinition(name="worker", description="Do focused work"),
-        owner="test",
+        AgentDefinition(name="worker", description="Do focused work")
     )
 
     async def factory(*_args):
@@ -793,10 +792,9 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
 
 @pytest.mark.asyncio
 async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     agent_registry.register(
-        AgentDefinition(name="worker", description="Do focused work"),
-        owner="test",
+        AgentDefinition(name="worker", description="Do focused work")
     )
     child = _ChildSession(wait=asyncio.Event())
 

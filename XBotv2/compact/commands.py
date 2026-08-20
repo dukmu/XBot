@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Protocol
 
 from XBotv2.core import CommandResult
 
 
 class _CompactCommandOwner(Protocol):
-    async def _compact_engine_history(
+    async def _compact_current_history(
         self,
-        engine: Any,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]: ...
 
 
@@ -30,7 +28,6 @@ def compact_result_message(metrics: dict[str, Any]) -> str:
 
 async def run_compact_command(
     owner: _CompactCommandOwner,
-    ctx: Any,
     raw_args: str,
 ) -> CommandResult:
     if raw_args.strip():
@@ -39,19 +36,13 @@ async def run_compact_command(
             status="error",
         )
 
-    await ctx.turn_lock.acquire()
     try:
-        try:
-            result, metrics = await owner._compact_engine_history(ctx.engine)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return CommandResult(
-                f"Conversation compaction failed: {exc}",
-                status="error",
-            )
-    finally:
-        ctx.turn_lock.release()
+        result, metrics = await owner._compact_current_history()
+    except Exception as exc:
+        return CommandResult(
+            f"Conversation compaction failed: {exc}",
+            status="error",
+        )
 
     if isinstance(result, dict) and result.get("event"):
         event = result.get("event") or {}

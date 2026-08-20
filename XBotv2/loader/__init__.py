@@ -45,8 +45,10 @@ class PluginEntry:
     # False marks session-lifecycle entries whose live re-apply would destroy
     # engine/session state; the soft-restart path skips them.
     reloadable: bool = True
-    inject: dict[str, Any] | list[str] | None = None
     isolate: dict[str, Any] | None = None
+    # Bundled entries may opt into one or more application profiles. External
+    # entries without a profile belong to the Agent profile by default.
+    profiles: frozenset[str] | None = None
 
 
 _MISSING = object()
@@ -119,14 +121,25 @@ def _entry_from_dict(
         # A bare ${...} reference without runtime values stays literal;
         # treat it as the default (no config).
         resolved_config = {}
+    raw_profiles = data.get("profiles")
+    if raw_profiles is None:
+        profiles = None
+    elif isinstance(raw_profiles, str):
+        profiles = frozenset({raw_profiles})
+    elif isinstance(raw_profiles, list) and all(
+        isinstance(item, str) and item for item in raw_profiles
+    ):
+        profiles = frozenset(raw_profiles)
+    else:
+        raise TypeError("plugin entry profiles must be a string or list of strings")
     entry = PluginEntry(
         id=str(data.get("id") or data.get("name")),
         name=str(data["name"]),
         config=dict(resolved_config or {}),
         disabled=bool(_resolve_ref(data.get("disabled", False), values)),
         reloadable=bool(_resolve_ref(data.get("reloadable", True), values)),
-        inject=_resolve_ref(data.get("inject"), values),
         isolate=_resolve_ref(data.get("isolate"), values),
+        profiles=profiles,
     )
     if not entry.id:
         raise ValueError("plugin tree entry requires an id or name")
@@ -177,8 +190,9 @@ class PluginTree:
 
         The later entry's ``config`` is deep-merged into the base entry's
         config (so an overlay can patch one field without restating the
-        session-dynamic values); ``disabled`` / ``inject`` / ``isolate`` are
-        replaced by the later entry.
+        session-dynamic values); ``disabled`` / ``reloadable`` / ``isolate`` /
+        ``profiles`` are replaced by the later entry. Service dependencies are
+        plugin declarations and are intentionally absent from tree entries.
         """
         merged: dict[str, PluginEntry] = {entry.id: entry for entry in self.entries}
         for entry in other.entries:
@@ -190,8 +204,12 @@ class PluginTree:
                     config=_merge_config(existing.config, entry.config),
                     disabled=entry.disabled,
                     reloadable=entry.reloadable,
-                    inject=entry.inject if entry.inject is not None else existing.inject,
                     isolate=entry.isolate if entry.isolate is not None else existing.isolate,
+                    profiles=(
+                        entry.profiles
+                        if entry.profiles is not None
+                        else existing.profiles
+                    ),
                 )
             merged[entry.id] = entry
         return PluginTree(list(merged.values()))
@@ -201,6 +219,23 @@ class PluginTree:
         return PluginTree(
             [entry for entry in self.entries if entry.id not in entry_ids]
         )
+
+    def for_profile(self, profile: str) -> "PluginTree":
+        """Select entries for one application profile.
+
+        Unscoped entries are Agent plugins. Server/client extensions must opt
+        in explicitly so a user Agent plugin cannot accidentally execute in a
+        process-wide host.
+        """
+        return PluginTree([
+            entry
+            for entry in self.entries
+            if (
+                profile in entry.profiles
+                if entry.profiles is not None
+                else profile == "agent"
+            )
+        ])
 
 
 def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

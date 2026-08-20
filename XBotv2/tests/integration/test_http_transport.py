@@ -45,11 +45,11 @@ from httpx import ASGITransport
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application.server import start_server_application
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.protocol.http_server import (
+from XBotv2.server.http import (
     _format_sse,
     set_llm_override,
 )
-from XBotv2.protocol.session_manager import ThreadNotActive
+from XBotv2.session.manager import ThreadNotActive
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
 from XBotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from XBotv2.tui.terminal import TerminalSession
@@ -1056,10 +1056,9 @@ async def test_http_command_plane_exposes_platform_builtins(
     assert body["type"] == "command_result"
     assert body["data"]["status"] == "ok"
     assert "provider=" in body["data"]["message"]
-    state_root = http_app.state.paths.session("cmds").thread("t").state_dir
-    messages_path = state_root / "messages.jsonl"
-    messages = messages_path.read_text(encoding="utf-8") if messages_path.exists() else ""
-    assert "command_result" not in messages
+    messages_response = await client.get("/sessions/cmds/threads/t/messages")
+    assert messages_response.status_code == 200
+    assert messages_response.json()["messages"] == []
 
 
 @pytest.mark.asyncio
@@ -1636,7 +1635,7 @@ async def test_http_policy_api_updates_live_session_policy(
 
 @pytest.mark.asyncio
 async def test_http_permission_response_preserves_scope() -> None:
-    from XBotv2.protocol.http_server import _resolve_interaction
+    from XBotv2.session.http_util import _resolve_interaction
 
     request_id = "permission:scope"
     captured: dict[str, str] = {}
@@ -1778,7 +1777,7 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from XBotv2.protocol.http_server import _resolve_interaction
+    from XBotv2.session.http_util import _resolve_interaction
 
     class _Engine:
         permission_waiter = object()

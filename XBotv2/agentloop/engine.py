@@ -974,7 +974,7 @@ class Engine:
                 self.messages.extend(before_agent["messages"])
             return _ModelRequestResult(turn_complete=True)
 
-        tools = self.tools.get_all()
+        tools = self.tools.enabled()
         pre_schema_request = {
             "messages": context_messages,
             "tools": tools,
@@ -1223,7 +1223,7 @@ class Engine:
             request_id=self._request_id.get(),
             messages=self.messages,
             config=self.settings,
-            tools=self.tools.registry,
+            tools=self.tools,
             send_input=self.followup,
             continuation=self.continuation,
             session=self.session,

@@ -12,6 +12,9 @@ import argparse
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,13 +126,39 @@ EVENT_CONTEXT_FORBIDDEN_PLUGIN_FIELDS = {
     "request_user_input",
     "services",
 }
-REQUIRED_PLUGIN_INJECTIONS = {
-    "agents": {"data_root", "variables", "workspace_root"},
-    "browser": {"sandbox", "variables"},
-    "coretools": {"storage", "workspace_root"},
-    "permissions": {"variables"},
-    "sandbox": {"data_root", "storage", "variables", "workspace_root"},
-    "workspace_instructions": {"variables", "workspace_root"},
+PUBLIC_DECLARATION_MODULES = {
+    "commands",
+    "contracts",  # Transitional declaration module.
+    "events",
+    "invariant",
+    "invariants",
+    "services",
+    "types",
+}
+SHARED_DECLARATION_ROOTS = {"core"}
+TRANSPORT_ROOTS = {"acp", "client", "http_transport", "server", "tui"}
+XCORE_CONTEXT_API = {
+    "bail",
+    "dispose",
+    "effect",
+    "emit",
+    "extend",
+    "filter",
+    "get",
+    "has",
+    "inject",
+    "isolate",
+    "middleware",
+    "on",
+    "once",
+    "parallel",
+    "plugin",
+    "require",
+    "serial",
+    "set",
+    "state",
+    "stop",
+    "unset",
 }
 
 
@@ -158,6 +187,162 @@ def _string_values(node: ast.AST | None) -> set[str]:
         for item in node.elts
         if isinstance(item, ast.Constant) and isinstance(item.value, str)
     }
+
+
+def _literal_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _assignment_value(
+    body: Iterable[ast.stmt],
+    name: str,
+) -> ast.AST | None:
+    for node in body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            return node.value
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
+            return node.value
+    return None
+
+
+def _inject_values(node: ast.AST | None) -> tuple[set[str], set[str]]:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return _string_values(node), set()
+    if not isinstance(node, ast.Dict):
+        return set(), set()
+    required: set[str] = set()
+    optional: set[str] = set()
+    for key, value in zip(node.keys, node.values):
+        label = _literal_string(key)
+        if label == "required":
+            required.update(_string_values(value))
+        elif label == "optional":
+            optional.update(_string_values(value))
+    return required, optional
+
+
+def _explicit_exports(path: Path) -> set[str] | None:
+    value = _assignment_value(_tree(path).body, "__all__")
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return None
+    return _string_values(value)
+
+
+def _module_path(module: str) -> Path | None:
+    parts = module.split(".")
+    if not parts or parts[0] != "XBotv2":
+        return None
+    candidate = ROOT.joinpath(*parts).with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+    package = ROOT.joinpath(*parts, "__init__.py")
+    return package if package.is_file() else None
+
+
+def _plugin_source(module: str) -> Path | None:
+    path = _module_path(f"XBotv2.{module}")
+    if path is None:
+        return None
+    if path.name == "__init__.py":
+        plugin_path = path.parent / "plugin.py"
+        if plugin_path.is_file():
+            return plugin_path
+    return path
+
+
+def _plugin_class(path: Path) -> ast.ClassDef | None:
+    tree = _tree(path)
+    class_name: str | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "plugin"
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
+            class_name = node.value.func.id
+            break
+    if class_name is None:
+        return None
+    return next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class PluginSpec:
+    entry_id: str
+    module: str
+    profiles: frozenset[str]
+    path: Path
+    line: int
+    required: frozenset[str]
+    optional: frozenset[str]
+    provided: frozenset[str]
+
+
+def _provided_services(node: ast.AST) -> set[str]:
+    services: set[str] = set()
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Call) or not isinstance(item.func, ast.Attribute):
+            continue
+        if item.func.attr != "set" or not item.args:
+            continue
+        service = _literal_string(item.args[0])
+        if service:
+            services.add(service)
+    return services
+
+
+def _plugin_specs() -> list[PluginSpec]:
+    document = yaml.safe_load(XCORE_TREE.read_text(encoding="utf-8")) or []
+    specs: list[PluginSpec] = []
+    for entry in document:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        module = str(entry["name"])
+        path = _plugin_source(module)
+        if path is None:
+            continue
+        plugin_class = _plugin_class(path)
+        if plugin_class is None:
+            continue
+        required, optional = _inject_values(
+            _assignment_value(plugin_class.body, "inject")
+        )
+        raw_profiles = entry.get("profiles")
+        profiles = (
+            frozenset({str(raw_profiles)})
+            if isinstance(raw_profiles, str)
+            else frozenset(str(item) for item in raw_profiles)
+            if isinstance(raw_profiles, list)
+            else frozenset({"agent"})
+        )
+        specs.append(PluginSpec(
+            entry_id=str(entry.get("id") or module),
+            module=module,
+            profiles=profiles,
+            path=path,
+            line=plugin_class.lineno,
+            required=frozenset(required),
+            optional=frozenset(optional),
+            provided=frozenset(_provided_services(plugin_class)),
+        ))
+    return specs
 
 
 def _module_root(module: str) -> str | None:
@@ -200,6 +385,20 @@ def _is_context_get(node: ast.AST) -> bool:
         and isinstance(owner.value, ast.Name)
         and owner.value.id == "self"
         and owner.attr in {"ctx", "plugin_ctx", "services"}
+    )
+
+
+def _is_service_bag_get(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr != "get":
+        return False
+    owner = node.func.value
+    if isinstance(owner, ast.Name):
+        return owner.id == "services"
+    return (
+        isinstance(owner, ast.Attribute)
+        and owner.attr == "services"
     )
 
 
@@ -734,52 +933,131 @@ def check_tools() -> list[Violation]:
     return violations
 
 
+def _plugin_roots() -> set[str]:
+    roots = {path.parent.name for path in PACKAGE.glob("*/plugin.py")}
+    roots.update(spec.module.split(".", 1)[0] for spec in _plugin_specs())
+    return roots
+
+
+def _public_import_violation(
+    *,
+    path: Path,
+    owner: str,
+    node: ast.Import | ast.ImportFrom,
+    module: str,
+    plugin_roots: set[str],
+) -> Violation | None:
+    imported = _module_root(module)
+    if imported is None or imported == owner or imported in SHARED_DECLARATION_ROOTS:
+        return None
+    if imported == "protocol":
+        if owner in TRANSPORT_ROOTS:
+            return None
+        return Violation(
+            path,
+            node.lineno,
+            "plugin-wire-import",
+            f"capability package imports wire contract {module}",
+        )
+    if imported not in plugin_roots:
+        return None
+    if owner == "server" and imported == "http_transport":
+        return Violation(
+            path,
+            node.lineno,
+            "server-transport-dependency",
+            "server owns route contribution contracts and must not import adapters",
+        )
+    if module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES:
+        return Violation(
+            path,
+            node.lineno,
+            "plugin-concrete-import",
+            f"imports plugin implementation {module}",
+        )
+    declaration_path = _module_path(module)
+    exports = _explicit_exports(declaration_path) if declaration_path else None
+    if exports is None:
+        return Violation(
+            path,
+            node.lineno,
+            "plugin-implicit-public-module",
+            f"public declaration module {module} has no explicit __all__",
+        )
+    if isinstance(node, ast.ImportFrom):
+        imported_names = {
+            alias.name for alias in node.names if alias.name != "*"
+        }
+        missing = sorted(imported_names - exports)
+        if missing or any(alias.name == "*" for alias in node.names):
+            detail = "*" if not missing else ", ".join(missing)
+            return Violation(
+                path,
+                node.lineno,
+                "plugin-private-symbol-import",
+                f"imports non-public symbol(s) {detail} from {module}",
+            )
+    return None
+
+
 def check_plugin_imports() -> list[Violation]:
     violations: list[Violation] = []
-    plugin_roots = {
-        path.parent
-        for path in PACKAGE.glob("*/plugin.py")
-    }
-    plugin_names = {root.name for root in plugin_roots}
-    for root in sorted(plugin_roots):
-        owner = root.name
+    plugin_roots = _plugin_roots()
+    for owner in sorted(plugin_roots):
+        root = PACKAGE / owner
+        if not root.is_dir():
+            continue
+        router = root / "router.py"
+        if router.is_file() and owner != "http_transport":
+            violations.append(Violation(
+                router,
+                1,
+                "plugin-router-location",
+                "HTTP route implementations belong in XBotv2.http_transport",
+            ))
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
             parsed = _tree(path)
-            if path.name == "plugin.py" and owner in REQUIRED_PLUGIN_INJECTIONS:
-                declared: set[str] = set()
-                for node in ast.walk(parsed):
-                    if not isinstance(node, ast.Assign):
-                        continue
-                    if not any(
-                        isinstance(target, ast.Name) and target.id == "inject"
-                        for target in node.targets
-                    ):
-                        continue
-                    if isinstance(node.value, (ast.List, ast.Tuple)):
-                        declared.update(
-                            item.value
-                            for item in node.value.elts
-                            if isinstance(item, ast.Constant)
-                            and isinstance(item.value, str)
-                        )
-                    elif isinstance(node.value, ast.Dict):
-                        for key in node.value.keys:
-                            if not isinstance(key, ast.Constant):
-                                continue
-                            if key.value == "required":
-                                declared.update(_string_values(node.value.values[0]))
-                            elif key.value == "optional":
-                                declared.update(_string_values(node.value.values[0]))
-                for missing in sorted(REQUIRED_PLUGIN_INJECTIONS[owner] - declared):
+            for node in ast.walk(parsed):
+                if _is_service_bag_get(node):
                     violations.append(Violation(
                         path,
-                        1,
-                        "plugin-undeclared-service",
-                        f"plugin reads service {missing!r} without injecting it",
+                        node.lineno,
+                        "plugin-service-locator",
+                        "plugin discovers runtime services through a service bag",
                     ))
-            for node in ast.walk(parsed):
+                if (
+                    isinstance(node, ast.ClassDef)
+                    and node.name.endswith("Service")
+                    and any(
+                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == "__getattr__"
+                        for item in node.body
+                    )
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        "plugin-service-proxy",
+                        f"{node.name} exposes implementation through __getattr__",
+                    ))
+                if (
+                    owner != "agentloop"
+                    and
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "registry"
+                    and (
+                        isinstance(node.value, ast.Attribute)
+                        and node.value.attr in {"agents", "jobs", "tools"}
+                    )
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        "plugin-registry-leak",
+                        f"plugin bypasses the {node.value.attr!r} public service",
+                    ))
                 if (
                     owner != "persistence"
                     and isinstance(node, ast.Attribute)
@@ -789,7 +1067,7 @@ def check_plugin_imports() -> list[Violation]:
                         path,
                         node.lineno,
                         "plugin-persistence-coupling",
-                        "capability plugins must consume storage/state contracts, not state_store",
+                        "capabilities consume persistence Protocols, not state_store",
                     ))
                 if (
                     isinstance(node, ast.Attribute)
@@ -803,72 +1081,260 @@ def check_plugin_imports() -> list[Violation]:
                         "plugin-tool-policy-event",
                         "tool policy belongs on one monotonic ctx.tools guard",
                     ))
-                modules: list[str] = []
                 if isinstance(node, ast.Import):
                     modules = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     modules = [node.module]
+                else:
+                    modules = []
                 for module in modules:
-                    imported = _module_root(module)
-                    if (
-                        imported in plugin_names
-                        and imported != owner
-                    ):
-                        violations.append(Violation(
-                            path,
-                            node.lineno,
-                            "plugin-concrete-import",
-                            f"imports plugin implementation {module}",
-                        ))
+                    violation = _public_import_violation(
+                        path=path,
+                        owner=owner,
+                        node=node,
+                        module=module,
+                        plugin_roots=plugin_roots,
+                    )
+                    if violation is not None:
+                        violations.append(violation)
     return violations
 
 
 def check_plugin_reexports() -> list[Violation]:
-    """Plugin packages must not masquerade core contracts as plugin APIs."""
+    """Package roots may re-export declarations, never implementations."""
     violations: list[Violation] = []
-    plugin_roots = {path.parent for path in PACKAGE.glob("*/plugin.py")}
-    for root in sorted(plugin_roots):
-        for path in sorted(root.rglob("*.py")):
-            if "__pycache__" in path.parts:
+    for owner in sorted(_plugin_roots()):
+        path = PACKAGE / owner / "__init__.py"
+        if not path.is_file():
+            continue
+        exports = _explicit_exports(path) or set()
+        for node in _tree(path).body:
+            if not isinstance(node, ast.ImportFrom) or not node.module:
                 continue
-            tree = _tree(path)
-            explicit_exports: set[str] = set()
-            for node in tree.body:
-                if (
-                    isinstance(node, ast.Assign)
-                    and any(
-                        isinstance(target, ast.Name) and target.id == "__all__"
-                        for target in node.targets
-                    )
-                    and isinstance(node.value, (ast.List, ast.Tuple))
-                ):
-                    explicit_exports.update(
-                        item.value
-                        for item in node.value.elts
-                        if isinstance(item, ast.Constant)
-                        and isinstance(item.value, str)
-                    )
-            for node in ast.walk(tree):
-                if not (
-                    isinstance(node, ast.ImportFrom)
-                    and node.module
-                    and (
-                        node.module == "XBotv2.core"
-                        or node.module.startswith("XBotv2.core.")
-                    )
-                ):
-                    continue
-                imported = {alias.asname or alias.name for alias in node.names}
-                exported = imported if path.name == "__init__.py" else imported & explicit_exports
-                if not exported:
-                    continue
-                names = ", ".join(sorted(exported))
+            imported = {alias.asname or alias.name for alias in node.names}
+            exposed = sorted(imported & exports)
+            if not exposed:
+                continue
+            module_owner = _module_root(node.module)
+            if module_owner != owner:
                 violations.append(Violation(
                     path,
                     node.lineno,
-                    "plugin-core-reexport",
-                    f"re-exports core contract(s) {names}; import them from XBotv2.core",
+                    "plugin-foreign-reexport",
+                    f"re-exports {', '.join(exposed)} from {node.module}",
                 ))
+                continue
+            if node.module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES:
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    "plugin-concrete-reexport",
+                    f"re-exports implementation {', '.join(exposed)} from {node.module}",
+                ))
+    return violations
+
+
+class _ContextAccessVisitor(ast.NodeVisitor):
+    def __init__(self, context_name: str, root: ast.AST) -> None:
+        self.context_name = context_name
+        self.root = root
+        self.services: dict[str, int] = {}
+        self.locators: list[int] = []
+
+    def _record(self, name: str, line: int) -> None:
+        if name not in XCORE_CONTEXT_API:
+            self.services.setdefault(name, line)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is not self.root and any(
+            argument.arg == self.context_name
+            for argument in (*node.args.args, *node.args.kwonlyargs)
+        ):
+            return
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)  # type: ignore[arg-type]
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.value, ast.Name) and node.value.id == self.context_name:
+            if node.attr == "services":
+                self.locators.append(node.lineno)
+            else:
+                self._record(node.attr, node.lineno)
+        if (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "self"
+            and node.value.attr == "ctx"
+        ):
+            if node.attr == "services":
+                self.locators.append(node.lineno)
+            else:
+                self._record(node.attr, node.lineno)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == self.context_name
+        ):
+            self.locators.append(node.lineno)
+            service = _literal_string(node.args[1])
+            if service:
+                self._record(service, node.lineno)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "get", "has", "require"
+        } and node.args:
+            owner = node.func.value
+            is_context = (
+                isinstance(owner, ast.Name) and owner.id == self.context_name
+            ) or (
+                isinstance(owner, ast.Attribute)
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "self"
+                and owner.attr == "ctx"
+            )
+            if is_context:
+                service = _literal_string(node.args[0])
+                if service:
+                    self._record(service, node.lineno)
+        self.generic_visit(node)
+
+
+def _plugin_context_accesses(spec: PluginSpec) -> tuple[dict[str, int], list[int]]:
+    plugin_class = _plugin_class(spec.path)
+    if plugin_class is None:
+        return {}, []
+    accesses: dict[str, int] = {}
+    locators: list[int] = []
+    apply = next(
+        (
+            node
+            for node in plugin_class.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "apply"
+        ),
+        None,
+    )
+    if apply is not None:
+        arguments = [*apply.args.args, *apply.args.kwonlyargs]
+        context_name = next(
+            (argument.arg for argument in arguments if argument.arg == "ctx"),
+            "ctx",
+        )
+        visitor = _ContextAccessVisitor(context_name, apply)
+        visitor.visit(apply)
+        accesses.update(visitor.services)
+        locators.extend(visitor.locators)
+    for node in ast.walk(plugin_class):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "self"
+            and node.value.attr == "ctx"
+        ):
+            if node.attr == "services":
+                locators.append(node.lineno)
+            elif node.attr not in XCORE_CONTEXT_API:
+                accesses.setdefault(node.attr, node.lineno)
+    return accesses, locators
+
+
+def _required_cycles(specs: list[PluginSpec], profile: str) -> list[list[PluginSpec]]:
+    active = [spec for spec in specs if profile in spec.profiles]
+    providers: dict[str, list[PluginSpec]] = {}
+    for spec in active:
+        for service in spec.provided:
+            providers.setdefault(service, []).append(spec)
+    edges = {
+        spec: {
+            provider
+            for service in spec.required
+            for provider in providers.get(service, [])
+            if provider != spec
+        }
+        for spec in active
+    }
+    index = 0
+    indexes: dict[PluginSpec, int] = {}
+    lowlinks: dict[PluginSpec, int] = {}
+    stack: list[PluginSpec] = []
+    stacked: set[PluginSpec] = set()
+    cycles: list[list[PluginSpec]] = []
+
+    def visit(spec: PluginSpec) -> None:
+        nonlocal index
+        indexes[spec] = index
+        lowlinks[spec] = index
+        index += 1
+        stack.append(spec)
+        stacked.add(spec)
+        for target in edges[spec]:
+            if target not in indexes:
+                visit(target)
+                lowlinks[spec] = min(lowlinks[spec], lowlinks[target])
+            elif target in stacked:
+                lowlinks[spec] = min(lowlinks[spec], indexes[target])
+        if lowlinks[spec] != indexes[spec]:
+            return
+        component: list[PluginSpec] = []
+        while stack:
+            member = stack.pop()
+            stacked.remove(member)
+            component.append(member)
+            if member == spec:
+                break
+        if len(component) > 1:
+            cycles.append(component)
+
+    for spec in active:
+        if spec not in indexes:
+            visit(spec)
+    return cycles
+
+
+def check_plugin_dependencies() -> list[Violation]:
+    violations: list[Violation] = []
+    specs = _plugin_specs()
+    seen_modules: set[str] = set()
+    for spec in specs:
+        if spec.module in seen_modules:
+            continue
+        seen_modules.add(spec.module)
+        accesses, locators = _plugin_context_accesses(spec)
+        declared = set(spec.required | spec.optional | spec.provided)
+        for service, line in sorted(accesses.items()):
+            if service not in declared:
+                violations.append(Violation(
+                    spec.path,
+                    line,
+                    "plugin-undeclared-service",
+                    f"plugin reads service {service!r} without injecting it",
+                ))
+        for line in sorted(set(locators)):
+            violations.append(Violation(
+                spec.path,
+                line,
+                "plugin-service-locator",
+                "plugin accesses a whole service bag or dynamic context attribute",
+            ))
+    for profile in ("agent", "server"):
+        for cycle in _required_cycles(specs, profile):
+            ordered = sorted(cycle, key=lambda item: item.entry_id)
+            violations.append(Violation(
+                ordered[0].path,
+                ordered[0].line,
+                "plugin-inject-cycle",
+                f"{profile} profile required-service cycle: "
+                + " -> ".join(spec.entry_id for spec in ordered)
+                + f" -> {ordered[0].entry_id}",
+            ))
     return violations
 
 
@@ -889,7 +1355,11 @@ def main() -> int:
             *check_inbox(),
         ],
         "tools": check_tools,
-        "plugins": lambda: [*check_plugin_imports(), *check_plugin_reexports()],
+        "plugins": lambda: [
+            *check_plugin_imports(),
+            *check_plugin_reexports(),
+            *check_plugin_dependencies(),
+        ],
     }
     selected = checks.values() if args.scope == "all" else (checks[args.scope],)
     violations = sorted({item for check in selected for item in check()})

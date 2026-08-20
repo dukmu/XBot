@@ -374,3 +374,238 @@
     创建 inbox。
 - **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
   `uv run xbot tui` pty 实测 Ready 无错误。
+
+## 2026-08（Round 2：应用层插件化 Phase 1）
+
+### 2026-08-20 · protocol 纯线协议化 + 服务端哑加载（app 层插件化 Phase 1）
+
+- **用户指示**：① protocol 不应导入 persistence 等具体插件逻辑，protocol
+  应收缩为纯线协议（wire contract）；② 参考 DSH 的哑加载（dumb loading），
+  服务端作为哑载体（carrier）插件暴露路由注册；③ 计划写入 `plan.md`
+  （`/home/shefrin/repo/XBot/plan.md`），按计划实施并同步开发日志。
+- **实施**：
+  - **protocol 收缩为纯线协议**：`protocol/` 现在只含 `models.py`（全部 wire
+    DTO / ServerEvent 信封）、`sse.py`（编解码）、`commands.py`（命令平面）、
+    `version.py`、`http_util.py`（仅 `HttpServerError`、`_SSE_RESPONSE`、
+    `_error_payload`、`_format_sse`，仅导入 protocol 自身）。
+  - **应用服务端层移入 `XBotv2/server/`**：`session_manager.py`（SessionManager、
+    SessionExists/NotFound/ThreadNotActive、pending_interactions、
+    persisted_thread_ids、session_summary/thread_summary）、`http.py`
+    （`create_app`/`set_llm_override`/异常处理器，保持公开签名）、
+    `http_util.py`（`_open_session_response`/`_session_policy_response`/
+    `_effective_runtime_policy`/`_resolve_interaction`/`_plugin_service`）、
+    `routes/`（34 个内联路由按能力拆成 7 个 `build_*_router(*, manager, state)`
+    工厂：core/llm/session/agents/tasks/tools/commands，`feature_routers`/
+    `default_routers` 组装）。protocol 不再导入 application/业务插件。
+  - **哑载体插件**：`server/plugin.py` 的 `ServerComponent` 现在既是
+    `ctx.server`（兼容 main.py 与既有测试），又提供 `ctx.web_server`
+    （`WebServer.register(router) -> disposer`，注册即 effect；重复
+    path+method 视为组合期错误并抛错；disposer 精确移除本 router 新增路由）。
+    `config["routes"]` 可限定挂载的能力子集（默认全量）。
+  - **测试面同步**：test_http_transport.py / test_public_api.py /
+    test_http_latency.py / test_cli.py 的 import 更新为 `XBotv2.server.*`；
+    新增 `test_server_plugin.py` 两条 HMR 安全测试（register/dispose 后路由
+    消失；重复路径注册必须抛错）。
+  - **文档**：`plan.md` 记录完整方案与阶段；`architecture.md` 的
+    HTTP/SSE 与 SessionManager 归属更新为 `server/`。
+- **验证**：XBotv2 **755 passed**（Phase 1 全绿，含新增 2 条 WebServer
+  契约测试）；`protocol/` 内不再出现对 persistence/config/session 等业务包
+  的导入（纯线协议）；`test_server_plugin.py` 证明 register/dispose 即 effect。
+  Phase 2+（session host 化 `ctx.session_host`、事件注册表 `ctx.server_events`、
+  TUI/ACP 组合根）留待后续轮次。
+
+### 2026-08-20 · 能力路由器归属各自插件（app 层插件化 Phase 2）
+
+- **用户指示**（评审）："routes 依然在耦合，建议每个插件自己负责，在自己的
+  router.py 中往 ctx.web_server 中注册。而不是你现在的表面重构" —— 删除集中式
+  `server/routes/`，每个能力插件拥有自己的 `router.py` 并自行注册。
+- **实施**：
+  - **删除 `server/routes/`**，路由器移入所属包：`session/router.py`、
+    `jobs/router.py`（tasks）、`agents/router.py`（agents/provider/effort/
+    config-reload）、`llm/router.py`（/providers）、`agentloop/router.py`
+    （/tools）、`commands/router.py`（command plane）、`permissions/router.py`
+    （会话策略，从 session 路由拆出）。
+  - **宿主插件 `server/hosts/`**：7 个 `XxxHost`（inject `['web_server',
+    'session_host']`），apply 中用 `ctx.effect(lambda:
+    ctx.web_server.register(build_*_router(manager=ctx.session_host,
+    state=ctx.web_server.app.state)))` —— 注册即 effect，卸载时 disposer
+    移除路由。
+  - **`load_server_tree` 展开**：`[llm, server, host.session, host.policy,
+    host.jobs, host.agents, host.llm, host.tools, host.commands]`；宿主条目
+    `name="server.hosts.<cap>"` 由 loader 的 `XBotv2.{name}` 回退导入。
+  - **载体收敛**：`server/http.py` 的 `create_app(features=[])` 只挂载核心
+    health/hello 路由（`build_core_router` 内联在 http.py）；`_default_routers`
+    惰性导入各能力路由器，`create_app` 独立使用（测试/ACP）时挂载全量表面，
+    `features` 为 None/空/子集 三种语义保留。
+  - **边界门更新**：`test_architecture_boundaries.py` 允许能力包内
+    `router.py`（HTTP 适配器）额外导入 `XBotv2.server.*`、
+    `XBotv2.protocol.*` 与服务插件，仍禁止跨能力插件引用。
+  - **文档**：`plan.md`、`architecture.md`（Transport 节）同步。
+- **验证**：XBotv2 **756 passed**（全绿）。每能力路由注册进 `ctx.web_server`
+  而非集中在协议层；新增能力只需 `router.py` + `server/hosts/` 条目。
+  Phase 3（`ctx.server_events` 事件注册表）、Phase 4（TUI 组合根）、Phase 5
+  （ACP/web 组合根）待续。
+
+### 2026-08-20 · 事件库存解耦：ctx.server_events 注册表（app 层插件化 Phase 3）
+
+- **用户指示**（延续 Phase 2 方向）：能力事件不应由中央 `protocol/models.py`
+  常量统一拥有，由能力插件自行声明。
+- **实施**：
+  - **protocol 核心事件收缩**：`protocol/models.py` 的 `ServerEventType` /
+    `_SERVER_EVENT_DATA_MODELS` 收敛为协议核心 18 类（turn/assistant/tool/
+    interaction/usage/error/end）；`ServerEvent` 仍校验核心事件。
+  - **能力事件 DTO 移入所属包**：`session/events.py`（ClientMessageData、
+    HistoryUpdatedData、AgentConfiguredData）、`compact/events.py`
+    （CompactionStartedData/CompletedData/FailedData）。`TaskUpdatedData` 留
+    在 protocol（与 `TaskListResponse` HTTP 响应共享）。
+  - **`XBotv2/server/events.py` `ServerEvents` 注册表**：`register(type,dto)
+    -> disposer`（重复注册或抢占核心类型即 RuntimeError，注册即 effect）、
+    `validate(type,data)`（应用注册 DTO，未注册透传）、`types()`。server 插件
+    `ctx.set("server_events", ...)` 并把同一实例注入 `SessionManager`。
+  - **宿主插件声明事件**：`host.session` 注册 client_message/history_updated/
+    agent_configured，`host.jobs` 注册 task_updated。
+  - **会话 SSE 路由**：`session/router.py` 的 session_events 流在编码前按
+    `manager.server_events.validate` 归一化能力事件载荷。
+  - **测试**：`tests/fixtures/sse/server_event_contracts.jsonl` 收为 18 类核心
+    事件；新增 `server_registered_event_contracts.jsonl` +
+    `tests/core/test_server_events.py`（注册/disposer/冲突/核心抢占/校验/编码
+    契约 6 项）；`test_sse.py` 中 task_updated、client_message 的非法载荷校验
+    改经注册表验证；`test_architecture_boundaries.py` 允许能力包 `events.py`
+    导入 `XBotv2.protocol.*`（线契约，与 router.py 同规则）。
+  - **文档**：`plan.md`、`docs/protocol/protocol.md`（事件表拆核心/注册两组）
+    同步。
+- **验证**：XBotv2 **762 passed**（全绿）。wire 输出与重构前逐字节一致（能力
+  事件生产者 dict 本已符合 DTO 形状，`validate` 的 `exclude_unset=True` 与
+  `ServerEvent` 旧行为相同）。Phase 4（TUI 组合根）、Phase 5（ACP/web）待续。
+
+### 2026-08-20 · 重定计划：配置真源、XCore 路由事件与哑 Server Carrier
+
+- **用户指示**：以最新要求重新分析并替换 `plan.md`；server、router 和能力调用
+  必须统一利用 XCore 事件路由，清除 config/硬编码、跨插件实现导入以及用 `Any`
+  绕过边界的做法；原 DeepSeek 计划仅供参考。
+- **计划纠偏**：`plan.md` 已完整替换。此前 Phase 1–3 的文件移动保留为迁移起点，
+  但 `_DEFAULT_ROUTERS`、`app.state` 业务容器、`ServerEvents` 平行注册表和
+  `SessionManager -> application` 反向导入明确列为待删除的过渡结构。
+- **声明式 profile**：`PluginEntry` 新增 `profiles`，`xcore.yaml` 直接声明 server
+  composition（persistence/session/server/core route/各能力 route）；
+  `load_server_tree()` 只解析、合并并选择 `server` profile，不再在 Python 构造
+  `PluginEntry` 能力清单。无效的 `PluginEntry.inject` 配置字段删除，依赖只由插件
+  静态 `inject` 声明。
+- **XCore route event**：新增 typed `RouteContribution` 和 `server/route` event。
+  Server carrier 是唯一 listener；router plugin 用 `ctx.bail()` 注册，并把返回的
+  disposer 绑定自身 fiber。route 与 exception handler 作为同一 contribution 原子
+  装卸，重复 path/method 或 exception handler 在加载期报错。
+- **哑 carrier**：`create_app()` 只创建 FastAPI 与协议通用错误信封；删除默认 router
+  动态 import、`features`、SessionManager fallback、lifespan reaper/close 和全部业务
+  `app.state` 字段。health/hello 移入普通 `server.router` 插件；health 数据由
+  SessionHost 响应 typed `server/status` event。
+- **生命周期与反向依赖**：server composition root 提供 `runtime_paths`、typed
+  `ServerOptions` 和 `AgentApplicationFactory` services。SessionManager 消费 factory，
+  不再导入 `application.start_application`；SessionHost fiber 启停 reaper 并在卸载时
+  `close_all()`。路径和 server launch facts 不再通过 plugin YAML config 传 Python
+  对象。
+- **测试接缝**：Mock provider 改走 FastAPI `dependency_overrides`，生产 app 不保存
+  mutable override。OpenAPI 测试从真实 server plugin tree 获取 schema；server 测试
+  明确验证不存在 `app.state.manager`，并验证 XCore event 注册/卸载 route。
+- **当前验证**：plugin loader + protocol 30 passed；server/public API/protocol +
+  health/hello/SDK HTTP focused 37 passed。尚未运行全量；能力 operation event、typed
+  SessionHost public API、outbound event 和客户端组合根继续实施中。
+### 2026-08-20 · 边界校正：Agents 不是组合根
+
+- 进一步审计发现 `agents/router.py` 直接导入 SessionManager、LLM service、
+  session reload 和 server route contract，`AgentsService` 也直接操作 LLM、loader、
+  engine、tools 和 session state。这些是现有迁移中仍未消除的隐藏组合根，
+  不是目标架构。
+- 计划已收紧：`agents/` 只拥有 Agent catalog/profile 与自身 typed event；
+  HTTP 适配器与能力实现分离；provider/effort 归 LLM，config reload 归
+  config/session owner；llm/tools/permissions 通过 XCore 订阅 Agent lifecycle event。
+- 依赖规则明确为：跨插件只可使用 public typed contract，不导入 service、
+  manager、router 或 plugin implementation，不通过动态上下文属性找邻居。
+- 本次仅校正分析与实施计划，未声称该边界已在代码中完成，也未运行
+  新的验证。
+
+### 2026-08-20 · 边界再校正：允许 DSH 式公开导出
+
+- 用户校正了“不允许任何跨插件 import”的过度限制。目标改为 DSH 式
+  边界：插件显式导出 types、invariants、commands、event payload 和 service
+  Protocol，其他插件可导入这些声明以完成静态 typing。
+- 跨插件运行时逻辑仍必须走 XCore event 或已声明 `inject` 的 public
+  service Protocol。禁止的是 service/manager/plugin/router 实现导入、未声明
+  `services.get()`、私有字段和整个 runtime/context 逃逸。
+- 因此 `ctx.llm` 不再被一概判定为旁路；当消费插件声明 `inject =
+  ['llm']` 并按公开 Protocol 使用时，它是标准 XCore service 交互。
+
+### 2026-08-20 · 插件职责与公开导出目录审计
+
+- 暂停继续扩大迁移，先在 `plan.md` 建立了完整插件边界目录。目录按
+  会话内基础插件、可选能力插件、server host/HTTP adapter 分组，对每项记录
+  职责、目标 `inject`、public types/invariants/commands/service Protocol、运行时
+  service/event/route 和当前违规。
+- 确定 Python 下的 DSH 式 public export 规则：`types.py`、`invariants.py`、
+  `commands.py`、`events.py`、`services.py` 可作为明确声明面；过渡期
+  `contracts.py` 可保留但不混入实现。package `__init__.py` 只 re-export 声明，
+  不 re-export concrete provider/service/registry/manager。
+- 审计发现的高优先级问题包括：`mcp`/`mcp_plugin` 完整重复；
+  `agents.service_component` 实际消费 settings/llm/model/tools/loop_state/loader 等但
+  未声明 inject；skills/MCP 实际读 session 但未 inject；permissions/sandbox commands
+  使用未声明相邻服务；ToolsService 和 AgentsService 的 `__getattr__` 泄漏了
+  具体 registry/runtime surface。
+- 新规则下，当前 `scripts/check_architecture.py` 的“任意跨插件 import 均违规”
+  检查已过时。后续将改为只允许目标 package 明确 public export 的 allowlist，
+  并增加 service attribute 与 plugin `inject` 的一致性检查。
+- 本轮审计前的聚焦验证实际结果为 20 passed / 1 failed。失败用例仍发送
+  旧 `server/route` 事件，而 carrier 已改监听 `http/route`；尚未根据最终插件
+  导出规则修正测试，不记录为通过。
+- 按新规则回看后，删除了为回避合法 Agent→LLM public service 依赖而临时新增的
+  `runtime_binding` 插件。provider/effort typed operation handler 回到 Agent runtime
+  composition，`agents.service_component` 显式声明当前消费的 settings/llm/model/
+  tools/loop_state/loader services。后续再用窄 public Protocol 取代无类型 ctx。
+
+### 2026-08-20 · 完整重置插件边界实施计划
+
+- 按用户要求删除 `plan.md` 原内容，以最新 DSH 式公开导出规则重新编写完整计划。
+  新计划明确区分 public declaration import、required/optional service inject 和
+  typed XCore event/operation，且不把 `TYPE_CHECKING` 当作架构要求。
+- 修正此前职责表的四个关键错误：`/reload` 归 Loader 而非 Session/Config；
+  Agent 拆为 catalog、runtime/controller、subagent integration；agentloop factory
+  提供 service 而非反向注入 Agents；route contribution contract 归 server carrier
+  所有而非 HTTP adapter 所有。
+- 记录当前首要实现阻塞：`agents.service_component -> loop_state` 与
+  `session -> agents` 已形成 required-service 环；当前代码不能因为 YAML 顺序而被
+  视为可激活。该问题列为 Phase 1 第一验收项。
+- 配置规则进一步收紧：plugin config 只能来自 XCore `apply(ctx, config)`；LLM
+  反向扫描 `DEFAULT_TREE`/硬编码 `llm` entry、Session reload 重建整个 service bag、
+  parent service 写入 YAML config 均列为必须删除的旁路。
+- 本条只记录计划与当前证据，不声称 Phase 0 或后续实现已经完成；尚未运行新的
+  测试。工作树中已有暂存和未暂存更改继续保留，未执行 commit。
+
+### 2026-08-20 · Typed plugin boundary migration checkpoint
+
+- Agent ownership is split into catalog, runtime/controller, loop factory, and
+  subagent integration services. Session no longer owns Agent construction or
+  catalog state, and startup uses the typed `INITIALIZE_AGENT` operation.
+- Tool consumers now use the declared `ToolsPort` surface. The public service
+  exposes resolution, inventory, restriction, and execution methods without a
+  `.registry` escape hatch or `__getattr__` implementation proxy.
+- Capability HTTP adapters for tools, jobs, commands, agents, LLM, config, and
+  policy live under `http_transport` and dispatch typed XCore operations.
+  Route contribution declarations are owned by the dumb server carrier.
+- Config owns session policy persistence through `GET_POLICY` and
+  `UPDATE_POLICY`. Permissions and Sandbox subscribe to `POLICY_CHANGED` and
+  update only their own runtime policy. Their commands capture the declared
+  `SettingsPort`; the old `CommandContext` and cross-policy service bag were
+  removed.
+- Loader owns reload configuration and `/reload`; application composition now
+  supplies runtime launch facts as typed services instead of serializing
+  Python objects through plugin YAML.
+- Verification for this checkpoint: 76 focused application/loader/public API/
+  server/architecture/operation tests passed; 67 Agent/subagent/command/
+  permission tests passed; `git diff --check` passed; standalone server and
+  Agent compositions both started and stopped successfully.
+- The committed checkpoint architecture scanner reports 40 remaining
+  violations, principally
+  Session HTTP ownership/runtime service lookup, outbound wire event DTOs,
+  package-root concrete re-exports, LLM config tree scanning, and one legacy
+  tool policy hook. This is an intermediate migration checkpoint, not final
+  architectural completion. MCP callback injection changes remain uncommitted
+  until their focused failures and connection cleanup are resolved.

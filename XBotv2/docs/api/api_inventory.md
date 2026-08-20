@@ -38,7 +38,10 @@ make a plugin masquerade as their owner.
 | `ContentPart` | type alias |  |
 | `ContextComponent` | dataclass |  |
 | `EventContext` | dataclass |  |
+| `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
 | `Events` | class |  |
+| `Operation` | dataclass | Typed XCore operation name and request/response contract. |
+| `OperationContext` | protocol | Narrow event-dispatch surface used by typed operations. |
 | `ImageContent` | dataclass |  |
 | `ImagePart` | dataclass |  |
 | `InputModality` | type alias |  |
@@ -72,6 +75,7 @@ make a plugin masquerade as their owner.
 | `calibrated_context_tokens` | function |  |
 | `context_token_limit` | function |  |
 | `estimate_messages_tokens` | function |  |
+| `dispatch_operation` | function | Dispatch and validate a typed XCore operation. |
 | `estimate_request_tokens` | function |  |
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |

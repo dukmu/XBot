@@ -1,10 +1,4 @@
-"""Session identity and its spawned child-application hierarchy.
-
-A :class:`Session` is one active conversation (session id + thread id).  It
-holds paths, workspace variables, persisted state, and child Agent sessions.
-Spawning a subagent asks the application service to start a child application
-on its own thread.
-"""
+"""Session identity, paths, and history mutations."""
 
 from __future__ import annotations
 
@@ -12,13 +6,10 @@ import secrets
 import shutil
 from typing import Any
 
-from XBotv2.core.agents import (
-    AgentSession,
-    SubagentAgentError,
-)
-from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.errors import OperationError
 from XBotv2.core.paths import SessionPaths
+from XBotv2.session.contracts import PREPARE_FORK, PrepareFork, SessionStatus
 
 
 def fork_persisted_session(paths: Any, source_session_id: str) -> str:
@@ -40,60 +31,13 @@ def _new_fork_id() -> str:
     return f"{stamp}-{secrets.token_hex(2)}"
 
 
-def require_forkable(*contexts: Any) -> None:
-    """Fail when any live context is busy or running background tasks."""
-    for ctx in contexts:
-        if ctx.turn_lock.locked():
-            raise OperationError(
-                "thread_busy",
-                f"Cannot fork while a turn is active.",
-                retryable=True,
-            )
-        registry = ctx.services.get("jobs")
-        if registry is not None and registry.is_busy():
-            raise OperationError(
-                "thread_busy",
-                "Cannot fork while a background task is active.",
-                retryable=True,
-            )
-
-
-async def fork_session(
-    paths: Any,
-    source_session_id: str,
-    contexts: list[Any],
-) -> str:
-    """Persist and copy one idle session while all live threads are locked."""
-    from contextlib import AsyncExitStack
-
-    require_forkable(*contexts)
-    async with AsyncExitStack() as stack:
-        for ctx in sorted(contexts, key=lambda item: item.thread_id):
-            await stack.enter_async_context(ctx.turn_lock)
-        for ctx in contexts:
-            persistence = ctx.services.get("persistence", strict=False)
-            if persistence is None:
-                raise OperationError(
-                    "persistence_unavailable",
-                    "Cannot fork a live session while message persistence "
-                    "is disabled",
-                )
-            await persistence.flush()
-        return fork_persisted_session(paths, source_session_id)
-
-
 class Session:
-    """One active session: identity, session runtime, and the agent hierarchy.
-
-    Child sessions are spawned through :meth:`spawn_subagent` and tracked in
-    :attr:`subagents`; application startup owns their construction and close.
-    """
+    """One active session's identity, path allocation, and history surface."""
 
     def __init__(
         self,
         *,
         ctx: Any = None,
-        agents: Any,
         session_id: str,
         thread_id: str,
         workspace_root: str,
@@ -101,10 +45,8 @@ class Session:
         variables: Any,
         state: Any,
         session_paths: SessionPaths,
-        child_applications: Any,
     ) -> None:
         self.ctx = ctx
-        self.agents = agents
         self.session_id = session_id
         self.thread_id = thread_id
         self.workspace_root = workspace_root
@@ -112,8 +54,6 @@ class Session:
         self.variables = variables
         self.state = state
         self.session_paths = session_paths
-        self.child_applications = child_applications
-        self.subagents: list[AgentSession] = []
 
     # -- session identity (SessionInfo-compatible surface) ------------------
 
@@ -121,29 +61,20 @@ class Session:
     def provider(self) -> str:
         return self.state.session.provider
 
-    # -- subagent instances -------------------------------------------------
+    def status(self) -> SessionStatus:
+        return SessionStatus(
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+            provider=str(self.state.metadata.get("provider") or self.provider),
+            model=str(self.state.metadata.get("model") or ""),
+        )
 
-    async def spawn_subagent(
-        self,
-        agent: str,
-        prompt: str,
-        *,
-        parent_job_id: str | None = None,
-    ) -> AgentSession:
-        """Spawn one subagent instance on its own thread (recursive)."""
-        del parent_job_id
-        definition = self.agents.definition(agent)
-        if definition is None or definition.mode == "primary":
-            raise SubagentAgentError(f"Unknown subagent: {agent}")
-        if not prompt.strip():
-            raise SubagentAgentError("Subagent prompt cannot be empty")
-        thread_id = self._new_thread_id(definition.name)
-        session = await self.child_applications(definition, thread_id, prompt)
-        self.subagents.append(session)
-        return session
-
-    def definitions(self) -> tuple[Any, ...]:
-        return self.agents.definitions()
+    async def fork(self) -> str:
+        await self.ctx.emit(
+            PREPARE_FORK,
+            PrepareFork(self.session_id, self.thread_id),
+        )
+        return fork_persisted_session(self.paths, self.session_id)
 
     # -- history mutations --------------------------------------------------
 
@@ -187,7 +118,7 @@ class Session:
             event={"history_operation": (operation, turns)},
         ))
 
-    def _new_thread_id(self, agent: str) -> str:
+    def new_thread_id(self, agent: str) -> str:
         while True:
             thread_id = f"{agent}-{secrets.token_hex(3)}"
             if not self.session_paths.has_thread(thread_id):

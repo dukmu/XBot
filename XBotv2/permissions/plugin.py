@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.core.events import EventContext, Events
-from XBotv2.core.errors import OperationError
 from XBotv2.core.tools import ToolCall
 from XBotv2.permissions.guard import make_permission_guard
-from XBotv2.permissions.commands import PERMISSIONS_COMMANDS
+from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
     requested_permission_rule,
@@ -29,30 +29,16 @@ from XBotv2.permissions.system import (
 _KEEP_PARENT = object()
 
 
-def reload_live_policies(ctx: Any) -> None:
-    """Rebuild active permission and sandbox objects after config changes."""
-    services = ctx.services
-    definition = services.agents.active_definition()
-    base_config = services.agents.runtime_config(definition)
-    _apply_live_policies(ctx, base_config)
-    if definition is not None:
-        ctx.services.permissions.configure_agent(definition.permissions)
-
-
-def _apply_live_policies(ctx: Any, config: Any) -> None:
-    """Apply one already-resolved policy to live runtime objects."""
-    ctx.services.permissions.replace_rules(config.permissions)
-    ctx.services.sandbox.replace_config(config.sandbox)
-
-
 class PermissionsService:
     """Stable plugin capability whose concrete policy remains plugin-owned."""
 
     def __init__(self, config: Any, variables: Any, parent: Any = None) -> None:
         self._variables = variables
         self._base_config = self._as_dict(config)
+        self._agent_overlay: Any = None
+        self._parent = parent
         self._system: Any = None
-        self.configure(config, parent=parent)
+        self._rebuild()
 
     @property
     def config(self) -> Any:
@@ -60,9 +46,25 @@ class PermissionsService:
         return getattr(target, "config", None)
 
     def configure(self, config: Any, *, parent: Any = None) -> None:
+        self._base_config = self._as_dict(config)
         self._parent = parent
-        child = PermissionSystem(config, variables=self._variables)
-        parent_system = getattr(parent, "_system", parent)
+        self._agent_overlay = None
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        overlay = normalize_agent_permissions(self._agent_overlay)
+        merged = {
+            decision: [
+                *list(overlay.get(decision) or []),
+                *list(self._base_config.get(decision) or []),
+            ]
+            for decision in ("deny", "allow", "ask")
+        }
+        child = PermissionSystem(
+            {key: value for key, value in merged.items() if value},
+            variables=self._variables,
+        )
+        parent_system = self._parent
         self._system = (
             PermissionIntersection(parent_system, child)
             if parent_system is not None
@@ -75,70 +77,14 @@ class PermissionsService:
         *,
         parent: Any = _KEEP_PARENT,
     ) -> None:
-        overlay = normalize_agent_permissions(overlay)
-        merged = {
-            decision: [
-                *list(overlay.get(decision) or []),
-                *list(self._base_config.get(decision) or []),
-            ]
-            for decision in ("deny", "allow", "ask")
-        }
-        self.configure(
-            {key: value for key, value in merged.items() if value},
-            parent=self._parent if parent is _KEEP_PARENT else parent,
-        )
+        self._agent_overlay = overlay
+        if parent is not _KEEP_PARENT:
+            self._parent = parent
+        self._rebuild()
 
     def replace_rules(self, config: Any) -> None:
         self._base_config = self._as_dict(config)
-        self.configure(self._base_config, parent=self._parent)
-
-    async def update_session_policy(
-        self,
-        *,
-        paths: Any,
-        session_id: str,
-        contexts: list[Any],
-        permissions: dict[str, str] | None = None,
-        remove_permissions: list[str] | None = None,
-        sandbox: dict[str, Any] | None = None,
-        remove_sandbox: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Persist a session policy patch and apply it to every live thread."""
-        from contextlib import AsyncExitStack
-
-        for ctx in contexts:
-            if ctx.turn_lock.locked():
-                raise OperationError(
-                    "thread_busy",
-                    "Cannot update session policy while a turn is active.",
-                    retryable=True,
-                )
-            registry = ctx.services.get("jobs")
-            if registry is not None and registry.is_busy():
-                raise OperationError(
-                    "thread_busy",
-                    "Cannot update session policy while a background task "
-                    "is active.",
-                    retryable=True,
-                )
-        async with AsyncExitStack() as stack:
-            for ctx in sorted(contexts, key=lambda item: item.thread_id):
-                await stack.enter_async_context(ctx.turn_lock)
-            if not contexts:
-                raise OperationError(
-                    "thread_not_active",
-                    "Session policy updates require one active thread.",
-                )
-            policy = contexts[0].services.settings.patch_session_policy(
-                session_id=session_id,
-                permissions=permissions,
-                remove_permissions=remove_permissions or (),
-                sandbox=sandbox,
-                remove_sandbox=remove_sandbox or (),
-            )
-            for ctx in contexts:
-                reload_live_policies(ctx)
-        return policy
+        self._rebuild()
 
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
@@ -152,12 +98,40 @@ class PermissionsService:
         target = getattr(self._system, "child", self._system)
         target.add_rule(decision, rule)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._system, name)
+    def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str:
+        return self._system.check(tool_name, args)
+
+    def explicit_allow(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        constrain_param: str | None = None,
+    ) -> bool:
+        return self._system.explicit_allow(
+            tool_name,
+            args,
+            constrain_param=constrain_param,
+        )
+
+    def check_tool_call(self, tool_call: ToolCall) -> tuple[str, str]:
+        return self._system.check_tool_call(tool_call)
+
+    def grant_once(self, tool_name: str, param_patterns: dict[str, str]) -> None:
+        self._system.grant_once(tool_name, param_patterns)
 
 
 class PermissionsComponent:
-    inject = ["session", "tools", "approval", "variables", "commands"]
+    inject = [
+        "session",
+        "session_launch",
+        "parent_permissions",
+        "tools",
+        "approval",
+        "variables",
+        "commands",
+        "settings",
+    ]
     """Register the permission system as ``ctx.permissions`` and its guard."""
 
     name = "xbot.permissions"
@@ -167,10 +141,10 @@ class PermissionsComponent:
         permissions = PermissionsService(
             config.get("permissions"),
             ctx.variables,
-            parent=config.get("parent_permission_system"),
+            parent=ctx.parent_permissions.value,
         )
         ctx.set("permissions", permissions)
-        for command in PERMISSIONS_COMMANDS:
+        for command in build_permissions_commands(ctx.settings):
             ctx.commands.register(command)
 
         async def record_permission_decision(
@@ -215,7 +189,12 @@ class PermissionsComponent:
         ctx.on(Events.SESSION_INIT, configure_agent, prepend=True)
         ctx.on(Events.AGENT_CONFIGURED, configure_agent, prepend=True)
 
-        if bool(config.get("interactive", True)):
+        async def update_policy(event: PolicyChanged) -> None:
+            permissions.replace_rules(event.config.permissions)
+
+        ctx.on(POLICY_CHANGED, update_policy)
+
+        if ctx.session_launch.interactive:
             from XBotv2.permissions.tools import request_permission
 
             ctx.tools.register(request_permission, injected={

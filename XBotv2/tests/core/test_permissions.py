@@ -201,65 +201,10 @@ async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
         parent=parent_permissions,
     )
 
-    class Settings:
-        def patch_session_policy(self, **_kwargs):
-            return {"permissions": {"allow": [{"tool": "shell"}]}}
-
-        def load_runtime_config(self, *_args):
-            return SimpleNamespace(
-                permissions={"allow": [{"tool": "shell"}]},
-                sandbox={},
-            )
-
-    settings = Settings()
-
-    def runtime(thread_id, permissions, base_permissions):
-        services = SimpleNamespace(
-            get=lambda _name: None,
-            settings=settings,
-            permissions=permissions,
-            sandbox=SimpleNamespace(replace_config=lambda _config: None),
-            agents=SimpleNamespace(
-                active_definition=lambda: SimpleNamespace(
-                    permissions=base_permissions
-                ),
-                runtime_config=lambda _definition: SimpleNamespace(
-                    permissions={"allow": [{"tool": "shell"}]},
-                    sandbox={},
-                ),
-            ),
-            state_store=SimpleNamespace(
-                read_thread_metadata=lambda: {
-                    "agent_definition": {
-                        "name": thread_id,
-                        "description": "test agent",
-                        "permissions": base_permissions,
-                    }
-                }
-            ),
-        )
-        return SimpleNamespace(
-            session_id="s",
-            thread_id=thread_id,
-            paths=paths,
-            workspace_root=str(tmp_path),
-            services=services,
-            turn_lock=asyncio.Lock(),
-        )
-
-    parent = runtime(
-        "agent", parent_permissions, {"deny": [{"tool": "shell"}]}
-    )
-    child = runtime(
-        "child", child_permissions, {"allow": [{"tool": "shell"}]}
-    )
-
-    await parent.services.permissions.update_session_policy(
-        paths=paths,
-        session_id="s",
-        contexts=[parent, child],
-        permissions={"shell": "allow"},
-    )
+    parent_permissions.configure_agent({"deny": [{"tool": "shell"}]})
+    child_permissions.configure_agent({"allow": [{"tool": "shell"}]})
+    parent_permissions.replace_rules({"allow": [{"tool": "shell"}]})
+    child_permissions.replace_rules({"allow": [{"tool": "shell"}]})
 
     assert child_permissions.check("shell") == "deny"
 

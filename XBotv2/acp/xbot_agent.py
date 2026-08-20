@@ -57,11 +57,12 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.application.app import create_agent_application
 from XBotv2.config.loader import load_runtime_config
 from XBotv2.core.errors import OperationError
 from XBotv2.persistence.store import CoreStateStore
 from XBotv2.protocol.commands import execute_command, list_commands
-from XBotv2.protocol.session_manager import (
+from XBotv2.session.manager import (
     SessionManager,
     SessionNotFound,
     ThreadNotActive,
@@ -89,7 +90,10 @@ class XBotACPAgent:
         self.no_plugins = no_plugins
         self.selected_agent = selected_agent
         self.llm_override = llm_override
-        self.manager = SessionManager(paths)
+        self.manager = SessionManager(
+            paths,
+            application_factory=create_agent_application,
+        )
         self.connection: Any | None = None
         self.client_capabilities: ClientCapabilities | None = None
         self._commands_announced: set[str] = set()
@@ -483,7 +487,7 @@ class XBotACPAgent:
 
     def _config_options(self, runtime: Any) -> list[SessionConfigOptionSelect]:
         options: list[SessionConfigOptionSelect] = []
-        definitions = runtime.services.agents.definitions()
+        definitions = runtime.services.agent_catalog.definitions()
         agents = [
             definition
             for definition in definitions
@@ -735,7 +739,7 @@ async def _select_agent(runtime: Any, name: str) -> None:
     """Activate one primary Agent under the runtime's turn lock."""
     require_idle(runtime, "switch Agent")
     async with runtime.turn_lock:
-        await runtime.services.agents.select(name)
+        await runtime.services.agent_runtime.select(name)
     runtime.provider_name = runtime.engine.settings.provider
 
 
@@ -743,7 +747,7 @@ async def _select_provider(runtime: Any, name: str) -> None:
     """Select one provider under the runtime's turn lock."""
     require_idle(runtime, "switch provider")
     async with runtime.turn_lock:
-        await runtime.services.agents.select_provider(name)
+        await runtime.services.agent_runtime.select_provider(name)
     runtime.provider_name = name
 
 

@@ -14,8 +14,6 @@
 - id: config
   name: config
   config:
-    paths: ${paths}
-    session_id: ${session_id}
     user:
       user_id: default-user
       user_name: User
@@ -25,25 +23,20 @@
 - id: persistence
   name: persistence
   reloadable: false
-  config:
-    provider: ${provider_name}
 
 - id: usage
   name: usage
 
-- id: agents-service
-  name: agents.service_component
+- id: agent-catalog
+  name: agents.catalog_component
   reloadable: false
 
 - id: session
   name: session
   reloadable: false
-  config:
-    paths: ${paths}
-    session_id: ${session_id}
-    thread_id: ${thread_id}
-    workspace_root: ${workspace_root}
-    session_paths: ${session_paths}
+
+- id: agents-builtins
+  name: agents.builtins_component
 
 - id: jobs
   name: jobs
@@ -56,6 +49,7 @@
 
 - id: llm
   name: llm
+  profiles: [agent, server]
   config:
     default: minimax
     providers:
@@ -157,6 +151,18 @@
   name: agentloop.factory
   reloadable: false
 
+- id: agent-runtime
+  name: agents.service_component
+  reloadable: false
+
+- id: llm-commands
+  name: llm.commands_component
+  profiles: [agent]
+
+- id: loader-reload
+  name: loader.reload_component
+  profiles: [agent]
+
 - id: context_builder
   name: context_builder
 
@@ -181,8 +187,6 @@
 - id: permissions
   name: permissions
   config:
-    interactive: ${interactive}
-    parent_permission_system: ${parent_permission_system}
     permissions:
       allow:
         - tool: (?:create_goal|get_goal|update_goal)
@@ -214,7 +218,6 @@
 - id: coretools
   name: coretools
   config:
-    interactive: ${interactive}
     tool_results:
       max_inline_chars: 12000
       preview_chars: 4000
@@ -222,9 +225,9 @@
     tools: null
     workspace_tools: []
 
-- id: agents
-  name: agents
-  disabled: ${disabled.agents}
+- id: subagents
+  name: agents.subagents
+  disabled: ${disabled.subagents}
 
 - id: goal
   name: goal
@@ -260,8 +263,62 @@
 
 - id: interactions
   name: interactions
-  config:
-    interactive: ${interactive}
 
 - id: content_cache
   name: content_cache
+
+# Server application profile. These entries are selected declaratively by
+# load_server_tree; Python code does not maintain a parallel capability list.
+- id: server.persistence
+  name: persistence.host
+  profiles: [server]
+
+- id: server.session
+  name: session.manager
+  profiles: [server]
+  reloadable: false
+
+- id: server
+  name: server
+  profiles: [server]
+  reloadable: false
+
+- id: server.events
+  name: server.event_registry
+  profiles: [server]
+
+- id: server.routes.core
+  name: http_transport.core
+  profiles: [server]
+
+- id: server.routes.session
+  name: session.router
+  profiles: [server]
+
+- id: server.routes.permissions
+  name: http_transport.policy
+  profiles: [server]
+
+- id: server.routes.jobs
+  name: http_transport.jobs
+  profiles: [server]
+
+- id: server.routes.agents
+  name: http_transport.agents
+  profiles: [server]
+
+- id: server.routes.llm
+  name: http_transport.llm
+  profiles: [server]
+
+- id: server.routes.config
+  name: http_transport.config
+  profiles: [server]
+
+- id: server.routes.tools
+  name: http_transport.tools
+  profiles: [server]
+
+- id: server.routes.commands
+  name: http_transport.commands
+  profiles: [server]
