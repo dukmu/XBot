@@ -12,7 +12,8 @@ from typing import Any
 
 import yaml
 
-from XBotv2.core import AgentDefinition, RuntimeVariables
+from XBotv2.agents.contracts import AgentDefinition
+from XBotv2.core import RuntimeVariables
 
 _FRONTMATTER = "---"
 _FIELDS = {

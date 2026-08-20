@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.permissions.guard import make_permission_guard
 from XBotv2.permissions.commands import build_permissions_commands

@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     calibrated_context_tokens,
 )
+from XBotv2.agentloop import EventContext, Events
 
 
 class TokenManagerPlugin:

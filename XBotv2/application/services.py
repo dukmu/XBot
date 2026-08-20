@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.core.agents import AgentDefinition, AgentSession
+from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext

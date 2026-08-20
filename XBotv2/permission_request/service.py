@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ClientEvent
 from XBotv2.permission_request.waiter import ApprovalWaiter
 

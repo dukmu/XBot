@@ -1,6 +1,12 @@
 """Public declarations for the Agent loop and Tool runtime plugins."""
 
 from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.agentloop.events import (
+    EventContext,
+    EventPort,
+    Events,
+    SHORT_CIRCUIT_EVENTS,
+)
 from XBotv2.agentloop.services import (
     AgentLoopDriverPort,
     AgentLoopFactoryPort,
@@ -12,6 +18,9 @@ __all__ = [
     "AgentLoopDriverPort",
     "AgentLoopEventType",
     "AgentLoopFactoryPort",
+    "EventContext",
+    "EventPort",
+    "Events",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
     "InputRejectedData",
@@ -27,6 +36,7 @@ __all__ = [
     "ToolsPort",
     "TurnCancelledData",
     "TurnData",
+    "SHORT_CIRCUIT_EVENTS",
     "agentloop_event",
 ]
 

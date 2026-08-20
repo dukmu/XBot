@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from xcore import Context, FiberState
 
 logger = logging.getLogger("loader")

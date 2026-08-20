@@ -4,9 +4,9 @@ Every capability is a plugin package under ``XBotv2`` (``<pkg>/plugin.py``
 exporting ``plugin``), wired by the declarative tree (``xcore.yaml``).
 Boundaries:
 
-* capability plugins may import another plugin's explicit public declaration
-  modules (contracts, commands, events, invariants, services, and types), but
-  never another plugin's concrete implementation;
+* capability plugins import another plugin's declarations from its package
+  root; explicit declaration modules remain temporarily accepted during the
+  migration, but concrete implementation modules are forbidden;
 * service plugins never import capability plugins;
 * contract modules (the ``XBotv2.core`` surface) never import plugin
   implementations (the shared ``XBotv2.config`` library is allowed).
@@ -92,8 +92,14 @@ def test_capability_plugins_only_import_public_contracts():
             for module in _imported_modules(tree):
                 if not module.startswith("XBotv2."):
                     continue
+                parts = module.split(".")
+                is_public_package_root = (
+                    len(parts) == 2
+                    and (root / parts[1] / "__init__.py").is_file()
+                )
                 allowed = (
-                    module in _CONTRACT_PACKAGES
+                    is_public_package_root
+                    or module in _CONTRACT_PACKAGES
                     or module.startswith("XBotv2.core.")
                     or module.startswith("XBotv2.jobs.")
                     or module.startswith(f"XBotv2.{name}.")

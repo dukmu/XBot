@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.filesystem.atomic import write_text_atomic
 
 

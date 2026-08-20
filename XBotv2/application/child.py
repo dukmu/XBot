@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from XBotv2.application.services import ChildApplicationRequest
-from XBotv2.core.agents import AgentSessionResult, SubagentTurnError
+from XBotv2.agents import AgentSessionResult, SubagentTurnError
 from XBotv2.core.paths import SessionPaths
 
 

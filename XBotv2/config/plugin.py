@@ -6,7 +6,7 @@ from typing import Any
 
 from XBotv2.config.models import UserContext
 from XBotv2.config.service import ConfigService
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
 from XBotv2.core.operations import EmptyRequest
 

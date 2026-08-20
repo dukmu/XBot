@@ -35,7 +35,7 @@ from pydantic import ValidationError
 from xcore import Context
 from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import Tool
 from XBotv2.client import XBotClient, XBotClientError
@@ -2063,7 +2063,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from XBotv2.core import Events
+    from XBotv2.agentloop import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -2096,7 +2096,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from XBotv2.core import Events
+    from XBotv2.agentloop import Events
 
     open_resp = await client.post(
         "/sessions",

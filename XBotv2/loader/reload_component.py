@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.commands import Command, CommandResult, command_usage, guard_command
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.loader.contracts import RELOAD_PLUGINS, Reloaded
 

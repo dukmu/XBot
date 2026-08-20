@@ -13,7 +13,7 @@ from XBotv2.config.models import RuntimeConfig
 import xcore
 from XBotv2.tests.helpers import make_engine as helpers_make_engine
 from XBotv2.tests.helpers import make_tool_ctx
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.llm.mock import MockLLM
 from XBotv2.core import ContextComponent
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse

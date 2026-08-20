@@ -17,11 +17,11 @@ from XBotv2.application.services import (
     ChildApplicationsPort,
 )
 from XBotv2.core import (
-    Events,
     Tool,
     ToolResult,
 )
-from XBotv2.core.agents import AgentSession, SubagentAgentError
+from XBotv2.agentloop import Events
+from XBotv2.agents import AgentSession, SubagentAgentError
 from XBotv2.jobs import (
     Job,
     JobKind,

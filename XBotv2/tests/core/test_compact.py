@@ -14,13 +14,12 @@ from XBotv2.compact.plugin import (
     _history_chars,
 )
 from XBotv2.core import (
-    EventContext,
-    Events,
     Message,
     ModelResponse,
     ToolCall,
     estimate_request_tokens,
 )
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,

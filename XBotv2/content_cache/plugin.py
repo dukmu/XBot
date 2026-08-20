@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,

@@ -227,7 +227,8 @@ class TestApplicationStartupBasics:
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from XBotv2.core import Events, Tool
+from XBotv2.agentloop import Events
+from XBotv2.core import Tool
 
 def runtime_tool() -> str:
     return "ok"
@@ -289,7 +290,8 @@ plugin = InitFailPlugin()""",
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from XBotv2.core import Events, Tool
+from XBotv2.agentloop import Events
+from XBotv2.core import Tool
 
 LOG = Path({str(lifecycle_log)!r})
 

@@ -11,7 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from XBotv2.core.events import EventPort, Events
+from XBotv2.agentloop.events import EventPort, Events
 from XBotv2.core.tools import GuardDecision, ToolCall, ToolError, ToolResult, tool_parameters_schema
 from XBotv2.core.messages import Message
 

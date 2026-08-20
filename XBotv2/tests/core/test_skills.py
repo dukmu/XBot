@@ -185,7 +185,7 @@ Body
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext
+        from XBotv2.agentloop import EventContext
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -265,7 +265,8 @@ Body
         state_store,
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext, ToolCall
+        from XBotv2.agentloop import EventContext
+        from XBotv2.core import ToolCall
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
@@ -338,7 +339,8 @@ Body
         temp_workspace,
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import Events, Tool
+        from XBotv2.agentloop import Events
+        from XBotv2.core import Tool
         from XBotv2.context_builder.builder import ContextBuilder
         from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
@@ -421,7 +423,8 @@ Body
         self, skill_workspace, state_store
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext, Tool
+        from XBotv2.agentloop import EventContext
+        from XBotv2.core import Tool
         from plugin_harness import mount_plugin
 
         def existing_tool() -> str:

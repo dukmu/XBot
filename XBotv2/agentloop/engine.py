@@ -31,7 +31,7 @@ from XBotv2.agentloop.internal_messages import (
 )
 from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
 from XBotv2.agentloop.protocol import agentloop_event
-from XBotv2.core.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
+from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
 from XBotv2.core.loop import DEFAULT_MAX_ITERATIONS, LoopSettings, LoopState
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.runtime import SessionInfo

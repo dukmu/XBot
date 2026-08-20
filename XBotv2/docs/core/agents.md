@@ -1,6 +1,7 @@
 # Agents And Subagents
 
-Agent definitions are core data contracts. Plugins register them during
+Agent definitions are declarations owned and exported by the Agents plugin.
+Plugins register them during
 `apply()` with `ctx.agents.register()`. The mandatory agents service owns the
 registry and the `set_factory/create` seam; the agentloop factory owns concrete
 Engine construction. Registrations are unique and fiber-scoped. Plugins must

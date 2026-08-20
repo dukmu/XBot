@@ -14,7 +14,7 @@ from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.application import AgentApplicationPort, ClientEventsPort
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.history import display_history
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths

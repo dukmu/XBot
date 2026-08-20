@@ -6,7 +6,7 @@ import secrets
 import shutil
 from typing import Any
 
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.errors import OperationError
 from XBotv2.core.paths import SessionPaths
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork, SessionStatus

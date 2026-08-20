@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Generic, Protocol, TypeVar
 
 from XBotv2.application import AgentApplicationPort
-from XBotv2.core.agents import AgentDefinition
+from XBotv2.agents import AgentDefinition
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.errors import OperationError

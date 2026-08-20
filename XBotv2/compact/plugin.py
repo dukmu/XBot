@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.commands import Command
-from XBotv2.core import Events
+from XBotv2.agentloop import Events
 from XBotv2.compact.commands import compact_result_message as _compact_result_message
 from XBotv2.compact.config import CONFIG_SCHEMA, parse_compact_config
 from XBotv2.compact.history import (

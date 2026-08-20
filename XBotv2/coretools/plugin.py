@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.core.tools import Tool
 
 class CoreToolsComponent:

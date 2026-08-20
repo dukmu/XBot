@@ -16,8 +16,8 @@ from XBotv2.agents.contracts import (
     SELECT_AGENT,
     SelectAgent,
 )
-from XBotv2.core.agents import AgentCreateOptions
-from XBotv2.core.events import Events
+from XBotv2.agents.contracts import AgentCreateOptions
+from XBotv2.agentloop import Events
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.llm.contracts import (
     EffortSelection,

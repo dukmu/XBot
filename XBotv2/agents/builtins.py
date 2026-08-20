@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 
-from XBotv2.core.agents import AgentDefinition
+from XBotv2.agents.contracts import AgentDefinition
 
 
 def _tool_pattern(value: str) -> dict[str, str]:

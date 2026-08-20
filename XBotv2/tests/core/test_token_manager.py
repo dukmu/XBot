@@ -7,14 +7,13 @@ import pytest
 from XBotv2.token_manager.plugin import TokenManagerPlugin
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     Message,
     Tool,
     calibrated_context_tokens,
     context_token_limit,
     estimate_request_tokens,
 )
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
 
 

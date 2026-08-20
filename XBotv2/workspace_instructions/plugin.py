@@ -20,9 +20,8 @@ from typing import Any
 
 from XBotv2.core import (
     ContextComponent,
-    EventContext,
-    Events,
 )
+from XBotv2.agentloop import EventContext, Events
 
 
 class WorkspaceInstructionsPlugin:

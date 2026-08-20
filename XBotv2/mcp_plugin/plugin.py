@@ -6,11 +6,10 @@ import json
 from typing import Any
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     Tool,
     ToolResult,
 )
+from XBotv2.agentloop import EventContext, Events
 from xcore import S
 
 from .mcp_client import MCPClient

@@ -28,7 +28,7 @@ from XBotv2.application.services import (
 )
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
-from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
+from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.operations import dispatch_operation
 from XBotv2.agents.contracts import INITIALIZE_AGENT
 from XBotv2.session import AgentApplicationOptions

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
+from XBotv2.agents.contracts import AgentCreateOptions, AgentDefinition
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.agents.contracts import AgentSelection
 

@@ -73,7 +73,7 @@ externalization.
 
 ### Runtime events
 
-Named events (`core.events.Events`) cover the existing lifecycle: session
+Named events (`agentloop.events.Events`) cover the existing lifecycle: session
 (`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
 (`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
 (`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building

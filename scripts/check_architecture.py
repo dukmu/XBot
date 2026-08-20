@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "XBotv2"
 ENGINE = PACKAGE / "agentloop" / "engine.py"
 TOOL_RUNTIME = PACKAGE / "agentloop" / "tool_runtime.py"
-CORE_EVENTS = PACKAGE / "core" / "events.py"
+AGENTLOOP_EVENTS = PACKAGE / "agentloop" / "events.py"
 SESSION = PACKAGE / "session" / "runtime.py"
 BOOTSTRAP = PACKAGE / "bootstrap.py"
 APPLICATION_PLUGIN = PACKAGE / "application" / "plugin.py"
@@ -48,7 +48,7 @@ TOOLS = (
     PACKAGE / "agentloop" / "tool_registry.py",
 )
 
-ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "core"}
+ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "agents", "core"}
 TOOLS_ALLOWED_XBOT_ROOTS = {"agentloop", "core"}
 TOOL_SERVICE_FORBIDDEN_LITERALS = {
     "approval",
@@ -484,9 +484,9 @@ def check_engine() -> list[Violation]:
     return violations
 
 
-def check_core_event_context() -> list[Violation]:
+def check_agentloop_event_context() -> list[Violation]:
     violations: list[Violation] = []
-    for node in _tree(CORE_EVENTS).body:
+    for node in _tree(AGENTLOOP_EVENTS).body:
         if not isinstance(node, ast.ClassDef) or node.name != "EventContext":
             continue
         for item in node.body:
@@ -496,9 +496,9 @@ def check_core_event_context() -> list[Violation]:
                 and item.target.id in EVENT_CONTEXT_FORBIDDEN_PLUGIN_FIELDS
             ):
                 violations.append(Violation(
-                    CORE_EVENTS,
+                    AGENTLOOP_EVENTS,
                     item.lineno,
-                    "core-plugin-payload",
+                    "loop-plugin-payload",
                     f"EventContext names plugin operation {item.target.id!r}",
                 ))
     return violations
@@ -681,6 +681,7 @@ def check_application_startup() -> list[Violation]:
             isinstance(node, ast.ImportFrom)
             and node.module
             and node.module.startswith("XBotv2.agentloop")
+            and node.module != "XBotv2.agentloop"
             and node.module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES
         ):
             violations.append(Violation(
@@ -1115,7 +1116,7 @@ def check_plugin_imports() -> list[Violation]:
                         "capabilities consume persistence Protocols, not state_store",
                     ))
                 if (
-                    path != TOOL_RUNTIME
+                    path not in {AGENTLOOP_EVENTS, TOOL_RUNTIME}
                     and
                     isinstance(node, ast.Attribute)
                     and isinstance(node.value, ast.Name)
@@ -1427,7 +1428,7 @@ def main() -> int:
     checks = {
         "loop": lambda: [
             *check_engine(),
-            *check_core_event_context(),
+            *check_agentloop_event_context(),
             *check_agentloop_imports(),
             *check_application_startup(),
             *check_inbox(),

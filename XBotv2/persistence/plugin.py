@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.core.loop import LoopState
 from XBotv2.session.contracts import PREPARE_FORK
 

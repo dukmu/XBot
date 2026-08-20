@@ -124,7 +124,7 @@ def make_engine(
         workspace=str(state_store.workspace_root),
     )
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.core.events import EventContext, Events
+    from XBotv2.agentloop import EventContext, Events
 
     builder = ContextBuilder()
 

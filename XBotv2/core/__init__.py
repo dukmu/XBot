@@ -5,20 +5,7 @@ package. Plugin-owned declarations are exported by their owning package roots;
 engine internals remain implementation details.
 """
 
-from XBotv2.core.agents import (
-    AgentDefinition,
-    AgentMode,
-    AgentSession,
-    AgentSessionResult,
-    SubagentAgentError,
-    SubagentTurnError,
-)
 from XBotv2.core.context import ContextComponent, PromptFragmentStage
-from XBotv2.core.events import (
-    EventContext,
-    Events,
-    SHORT_CIRCUIT_EVENTS,
-)
 from XBotv2.core.messages import (
     ContentPart,
     ImageContent,
@@ -65,17 +52,11 @@ from XBotv2.core.tools import (
 from XBotv2.core.variables import RuntimeVariables
 
 __all__ = [
-    "AgentDefinition",
-    "AgentMode",
-    "AgentSession",
-    "AgentSessionResult",
     "ArtifactRef",
     "ClientEvent",
     "ContentPart",
     "ContextComponent",
-    "EventContext",
     "EmptyRequest",
-    "Events",
     "Operation",
     "OperationContext",
     "ImageContent",
@@ -96,9 +77,6 @@ __all__ = [
     "RuntimeVariables",
     "SessionInfo",
     "SessionPaths",
-    "SHORT_CIRCUIT_EVENTS",
-    "SubagentAgentError",
-    "SubagentTurnError",
     "TextPart",
     "ThreadPaths",
     "Tool",

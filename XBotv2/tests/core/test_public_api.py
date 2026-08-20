@@ -10,10 +10,9 @@ from pydantic import ValidationError
 
 import XBotv2.core as public_api
 
+from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.core import (
     ContextComponent,
-    EventContext,
-    Events,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -23,6 +22,7 @@ from XBotv2.core import (
     ToolResult,
     Tool,
 )
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.commands import Command, CommandResult
 from XBotv2.config import SessionPolicyPatch
 from XBotv2.interactions import UserInputRequiredData
@@ -50,6 +50,7 @@ def test_public_api_inventory_is_explicit():
 
 def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.agentloop as agentloop
+    import XBotv2.agents as agents
     import XBotv2.application as application
     import XBotv2.commands as commands
     import XBotv2.compact as compact
@@ -97,7 +98,21 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "RouteContribution",
         "ServerOptions",
     }
-    assert set(agentloop.__all__) >= {"AgentLoopDriverPort", "ToolsPort"}
+    assert set(agentloop.__all__) >= {
+        "AgentLoopDriverPort",
+        "EventContext",
+        "EventPort",
+        "Events",
+        "SHORT_CIRCUIT_EVENTS",
+        "ToolsPort",
+    }
+    assert set(agents.__all__) >= {
+        "AgentCreateOptions",
+        "AgentDefinition",
+        "AgentMode",
+        "AgentSession",
+        "AgentSessionResult",
+    }
     assert set(application.__all__) >= {
         "AgentApplicationPort",
         "ClientEventsPort",
@@ -110,6 +125,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     }
     for module, forbidden in (
         (agentloop, {"Engine", "ToolRegistry", "ToolsService"}),
+        (agents, {"AgentService", "AgentRegistry"}),
         (application, {"MountedAgentApplication", "start_application"}),
         (compact, {"CompactService"}),
         (jobs, {"JobRegistry", "TextOutputStore"}),
@@ -142,6 +158,8 @@ def test_public_api_exports_core_extension_types():
     assert EventContext(
         request_id="request-1",
     ).request_id == "request-1"
+    assert AgentDefinition(name="sample", description="Sample").name == "sample"
+    assert inspect.isclass(AgentSession)
 
 
 def test_public_job_contract_excludes_registry_runtime_state():

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.events import EventContext
+from XBotv2.agentloop import EventContext
 from XBotv2.session.runtime import SessionRuntime
 
 

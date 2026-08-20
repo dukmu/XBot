@@ -29,17 +29,11 @@ plugin implementations.
 
 | Symbol | Kind | Purpose |
 |---|---|---|
-| `AgentDefinition` | dataclass |  |
-| `AgentMode` | type alias |  |
-| `AgentSession` | protocol |  |
-| `AgentSessionResult` | dataclass |  |
 | `ArtifactRef` | dataclass |  |
 | `ClientEvent` | dataclass |  |
 | `ContentPart` | type alias |  |
 | `ContextComponent` | dataclass |  |
-| `EventContext` | dataclass |  |
 | `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
-| `Events` | class |  |
 | `Operation` | dataclass | Typed XCore operation name and request/response contract. |
 | `OperationContext` | protocol | Narrow event-dispatch surface used by typed operations. |
 | `ImageContent` | dataclass |  |
@@ -60,9 +54,6 @@ plugin implementations.
 | `RuntimeVariables` | class |  |
 | `SessionInfo` | dataclass |  |
 | `SessionPaths` | class |  |
-| `SHORT_CIRCUIT_EVENTS` | frozenset |  |
-| `SubagentAgentError` | exception |  |
-| `SubagentTurnError` | exception |  |
 | `TextPart` | dataclass |  |
 | `ThreadPaths` | class |  |
 | `Tool` | class |  |
@@ -78,6 +69,20 @@ plugin implementations.
 | `estimate_request_tokens` | function |  |
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |
+
+## Agents Declarations (`XBotv2.agents`)
+
+The Agents plugin owns Agent definitions, creation options, catalog and
+selection operations, child-session protocols, and subagent errors. These
+declarations are exported from `XBotv2.agents`; concrete catalogs, loaders,
+services, and subagent runners remain internal.
+
+## Agentloop Declarations (`XBotv2.agentloop`)
+
+The Agentloop plugin owns runtime lifecycle event names, `EventContext`, the
+narrow `EventPort`, and `SHORT_CIRCUIT_EVENTS`. It also exports its Tool and
+loop service contracts. Concrete loop drivers, Tool registries, and services
+remain internal.
 
 ## Jobs Declarations (`XBotv2.jobs`)
 

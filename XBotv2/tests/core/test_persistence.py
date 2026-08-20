@@ -339,7 +339,7 @@ def make_engine(llm, registry, store, workspace, plugin_ctx=None):
     when the store already holds a session; the loop driver never calls the
     store directly.
     """
-    from XBotv2.core.events import Events
+    from XBotv2.agentloop import Events
     from XBotv2.persistence.plugin import PersistenceService
 
     ctx = plugin_ctx or xcore.Context()

@@ -7,13 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     prompt_container,
     prompt_element,
     Tool,
     ToolResult,
 )
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.commands import Command
 from XBotv2.core.tools import GuardDecision
 

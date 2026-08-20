@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from XBotv2.core.events import EventPort
+from XBotv2.agentloop.events import EventPort
 from XBotv2.core.tools import GuardDecision, Tool
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.contracts import LIST_TOOLS, ToolCatalog, ToolDescription

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 
 
 class ContextBuilderComponent:

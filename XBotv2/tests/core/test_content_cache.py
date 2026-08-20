@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message, ReasoningPart
 from XBotv2.core.tools import ToolCall
 from XBotv2.content_cache.content_cache import (

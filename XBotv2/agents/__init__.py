@@ -2,23 +2,39 @@
 
 from XBotv2.agents.contracts import (
     AgentCatalog,
+    AgentCreateOptions,
+    AgentDefinition,
+    AgentInitialized,
+    AgentMode,
+    AgentSession,
+    AgentSessionResult,
     AgentSelection,
     LIST_AGENTS,
     RELOAD_AGENTS,
     SELECT_AGENT,
     SelectAgent,
+    SubagentAgentError,
+    SubagentTurnError,
 )
 __all__ = [
     "AgentCatalog",
+    "AgentCreateOptions",
+    "AgentDefinition",
     "AgentInfo",
     "AgentListResponse",
     "AgentSelection",
+    "AgentInitialized",
+    "AgentMode",
+    "AgentSession",
+    "AgentSessionResult",
     "AgentSelectionRequest",
     "AgentSelectionResponse",
     "LIST_AGENTS",
     "RELOAD_AGENTS",
     "SELECT_AGENT",
     "SelectAgent",
+    "SubagentAgentError",
+    "SubagentTurnError",
 ]
 
 _PROTOCOL_EXPORTS = {

@@ -7,7 +7,7 @@ from pathlib import Path
 from xcore import bound_effect, current_plugin_name
 
 from XBotv2.agents.loader import load_definitions
-from XBotv2.core.agents import AgentDefinition
+from XBotv2.agents.contracts import AgentDefinition
 from XBotv2.core.variables import RuntimeVariables
 
 

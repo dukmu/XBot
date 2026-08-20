@@ -3,7 +3,7 @@
 import pytest
 
 import xcore
-from XBotv2.core.events import EventContext, Events
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.permissions.system import PermissionSystem

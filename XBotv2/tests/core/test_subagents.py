@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 from xcore import Context
 
-from XBotv2.core import AgentDefinition, AgentSessionResult, RuntimePaths
+from XBotv2.agents import AgentDefinition, AgentSessionResult
+from XBotv2.core import RuntimePaths
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.messages import ModelChunk

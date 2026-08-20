@@ -1,10 +1,13 @@
 # Public API
 
-XBotv2 exposes shared contracts from `core`:
+XBotv2 exposes capability-neutral contracts from `core` and plugin-owned
+declarations from their package roots:
 
 ```python
-from XBotv2.core import Events, Tool, ToolResult, EventContext
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.agents import AgentDefinition
 from XBotv2.commands import Command, CommandResult
+from XBotv2.core import Tool, ToolResult
 ```
 
 Each plugin also owns a declaration surface through its package root. Package
@@ -25,9 +28,10 @@ by `tests/core/test_public_api.py`.
 
 API v1 covers:
 
-- event names, payloads, and short-circuit dispatch (`Events`, `EventContext`);
+- Agentloop event names, payloads, and short-circuit dispatch (`Events`,
+  `EventContext`);
 - tool definitions, calls, results, errors, artifacts, and client events;
-- command, agent, and prompt contracts;
+- command, Agent, and prompt contracts through their owning package roots;
 - canonical runtime and session paths.
 
 The C/S wire API is separate. Each plugin owns its request and response DTOs

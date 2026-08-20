@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from XBotv2.core import EventContext
+from XBotv2.agentloop import EventContext
 
 
 def _tool_definition(name, **values):

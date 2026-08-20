@@ -7,13 +7,12 @@ from typing import Any, Sequence
 
 from XBotv2.core import (
     ClientEvent,
-    EventContext,
-    Events,
     Message,
     calibrated_context_tokens,
     context_token_limit,
     estimate_messages_tokens,
 )
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.commands import CommandResult
 
 from XBotv2.compact.commands import run_compact_command
