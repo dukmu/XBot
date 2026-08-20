@@ -4,12 +4,15 @@ import json
 import pytest
 
 from XBotv2.jobs import JobKind, JobResult
+from XBotv2.jobs.plugin import JobsComponent
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
 from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
+from XBotv2.agentloop import Events
+from XBotv2.commands.plugin import CommandsService
 from XBotv2.permission_request.service import ApprovalService
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.tests.helpers import make_tool_ctx
@@ -37,6 +40,57 @@ def patch_shell_executor(monkeypatch, replacement):
         "run_shell_command",
         replacement,
     )
+
+
+@pytest.mark.asyncio
+async def test_jobs_plugin_owns_updates_and_completion_delivery():
+    class Engine:
+        def __init__(self):
+            self.injected = []
+
+        async def inject(self, content, **kwargs):
+            self.injected.append((content, kwargs))
+
+    ctx = xcore.Context()
+    engine = Engine()
+    ctx.set("commands", CommandsService())
+    ctx.set("engine", engine)
+    runtime_events = []
+
+    async def record(event):
+        runtime_events.append(event.client_event)
+
+    ctx.on(Events.RUNTIME_EVENT, record)
+    JobsComponent().apply(ctx, {})
+    snapshot = {
+        "task_id": "sh_1",
+        "kind": "shell",
+        "command": "printf x",
+        "cwd": "/workspace",
+        "status": "completed",
+        "created_at": 1.0,
+        "started_at": 2.0,
+        "finished_at": 3.0,
+        "output": "x",
+        "error": "",
+        "agent": "",
+        "thread_id": "",
+        "usage": {},
+    }
+
+    assert ctx.jobs.on_update is not None
+    assert ctx.jobs.on_complete is not None
+    await ctx.jobs.on_update(snapshot)
+    await ctx.jobs.on_complete(snapshot)
+
+    assert [event.type for event in runtime_events] == [
+        "task_updated",
+        "completion_notice",
+    ]
+    assert runtime_events[1].data["kind"] == "background_task"
+    assert len(engine.injected) == 1
+    assert engine.injected[0][1]["source"] == "sh_1"
+    assert "background_task" in engine.injected[0][0]
 
 
 @pytest.mark.asyncio

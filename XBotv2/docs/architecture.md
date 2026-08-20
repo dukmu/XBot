@@ -229,7 +229,7 @@ are replayed on resume.
 sequenceDiagram
     participant Job as background job (shell / subagent)
     participant Reg as JobRegistry (jobs/)
-    participant Ses as SessionRuntime (session/runtime.py)
+    participant Jobs as JobsComponent (jobs/plugin.py)
     participant IBX as AgentInbox
     participant Loop as agent loop
     participant TUI
@@ -237,12 +237,12 @@ sequenceDiagram
 
     Note over Job,IBX: Completions never start a turn
     Job-->>Reg: finishes
-    Reg-->>Ses: JOB_COMPLETED event
-    Ses->>IBX: inject(notification)
-    Ses-->>TUI: completion_notice (task panel tracks status)
+    Reg-->>Jobs: typed completion callback
+    Jobs->>IBX: inject(notification)
+    Jobs-->>TUI: runtime event (completion_notice)
 
     Note over Loop,IBX: inject does not wake an idle loop
-    Ses->>IBX: followup(user message)
+    Loop->>IBX: followup(user message)
     Loop->>IBX: claim next-step + one next-turn
     IBX-->>Loop: notification + user message
 

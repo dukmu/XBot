@@ -8,7 +8,14 @@ from typing import Any, Literal
 from fastapi import APIRouter
 from pydantic import Field
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.jobs.contracts import LIST_TASKS, STOP_ALL_TASKS, STOP_TASK, StopTask
+from XBotv2.core.tools import ClientEvent
+from XBotv2.jobs.contracts import (
+    LIST_TASKS,
+    STOP_ALL_TASKS,
+    STOP_TASK,
+    StopTask,
+    TaskSnapshot,
+)
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
 from XBotv2.session import SessionRef, dispatch_session_operation
@@ -28,6 +35,33 @@ class TaskUpdatedData(WireModel):
     agent: str = ""
     thread_id: str = ""
     usage: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskCompletionData(WireModel):
+    type: Literal["background_task", "subagent"]
+    kind: Literal["background_task", "subagent"]
+    task_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    command: str = ""
+    agent: str = ""
+
+
+def task_updated_event(task: TaskSnapshot) -> ClientEvent:
+    payload = TaskUpdatedData.model_validate(asdict(task))
+    return ClientEvent("task_updated", payload.model_dump())
+
+
+def task_completion_event(task: TaskSnapshot) -> ClientEvent:
+    kind = "background_task" if task.kind == "shell" else "subagent"
+    payload = TaskCompletionData(
+        type=kind,
+        kind=kind,
+        task_id=task.task_id,
+        status=task.status,
+        command=task.command,
+        agent=task.agent,
+    )
+    return ClientEvent("completion_notice", payload.model_dump())
 
 
 class TaskListResponse(WireModel):
@@ -129,8 +163,11 @@ plugin = JobsProtocolPlugin()
 
 
 __all__ = [
+    "TaskCompletionData",
     "TaskListResponse",
     "TaskStopResponse",
     "TaskUpdatedData",
     "build_tasks_router",
+    "task_completion_event",
+    "task_updated_event",
 ]

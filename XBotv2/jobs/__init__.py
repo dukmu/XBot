@@ -58,6 +58,7 @@ __all__ = [
     "StopTask",
     "StoppedTasks",
     "TaskCatalog",
+    "TaskCompletionData",
     "TaskListResponse",
     "TaskSnapshot",
     "TaskStopResponse",
@@ -67,13 +68,18 @@ __all__ = [
     "WaitMode",
     "WaitResult",
     "build_jobs_commands",
+    "task_completion_event",
     "task_snapshot",
+    "task_updated_event",
 ]
 
 _PROTOCOL_EXPORTS = {
+    "TaskCompletionData",
     "TaskListResponse",
     "TaskStopResponse",
     "TaskUpdatedData",
+    "task_completion_event",
+    "task_updated_event",
 }
 
 

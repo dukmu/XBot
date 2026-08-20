@@ -15,7 +15,9 @@ from xcore import Context
 from XBotv2.agents import AgentDefinition, AgentSessionResult
 from XBotv2.core import RuntimePaths
 from XBotv2.jobs import JobKind
+from XBotv2.jobs.plugin import JobsComponent
 from XBotv2.jobs.registry import JobRegistry
+from XBotv2.commands.plugin import CommandsService
 from XBotv2.core.messages import ModelChunk
 from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.application.app import start_application
@@ -727,7 +729,6 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         return _ChildSession()
 
     paths = RuntimePaths.from_data_dir(tmp_path)
-    job_registry = JobRegistry()
     runtime_impl = _make_session(
         tmp_path, registry=agent_registry, factory=factory
     )
@@ -762,6 +763,10 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         application=RuntimeApplication(services, parent_engine),
         engine=parent_engine,
     )
+    services.set("commands", CommandsService())
+    services.set("engine", parent_engine)
+    JobsComponent().apply(services, {})
+    job_registry = services.jobs
 
     job = await job_registry.create(
         kind=JobKind.SUBAGENT, metadata={"agent": "worker"}
@@ -770,38 +775,21 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         job.id,
         SubagentRunner(session=runtime_impl, agent="worker", prompt="Do work"),
     )
-    for _ in range(20):
-        if job.status.value == "completed":
-            break
-        await asyncio.sleep(0)
+    await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
 
     # Completions stage into the agent inbox with a small notification; they
     # do not wake a turn and do not carry the full subagent output.
     await runtime.turn_lock.acquire()
-    await runtime._collect_completion({
-        "type": "subagent",
-        "kind": "subagent",
-        "task_id": "sa_1",
-        "status": "completed",
-        "agent": "worker",
-        "command": "",
-        "data": {"output": "background result"},
-    })
-    await runtime._collect_completion({
-        "type": "subagent",
-        "kind": "subagent",
-        "task_id": "sa_2",
-        "status": "completed",
-        "agent": "worker",
-        "command": "",
-        "data": {"output": "x" * 13_000},
-    })
-    assert len(parent_engine.inbox) == 2
+    for _ in range(20):
+        if parent_engine.inbox:
+            break
+        await asyncio.sleep(0)
+    assert len(parent_engine.inbox) == 1
     staged = {
         message.source: message for message in parent_engine.inbox.pending
     }
-    assert "sa_1" in staged
-    short = staged["sa_1"]
+    assert job.id in staged
+    short = staged[job.id]
     assert short.metadata["kind"] == "notification"
     assert short.metadata["payload"]["status"] == "completed"
     assert short.metadata["payload"]["agent"] == "worker"

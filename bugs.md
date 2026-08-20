@@ -13,6 +13,9 @@ scope.
   `ctx.engine.tools.registry` or transport internals such as
   `app.state.manager` and `app.state.paths` instead of exercising public
   services and routes.
+- `XBotv2/tests/integration/test_http_transport.py` also invokes the removed
+  session-private `_collect_completion` helper instead of completing a job
+  through the jobs capability.
 - These tests must be migrated to public XCore services or observable behavior.
   The removed internal attributes must not be restored for test compatibility.
 
@@ -22,4 +25,3 @@ scope.
   `add_exception_handler`, which the real FastAPI application setup calls.
 - The fixture should model the application interface actually consumed by the
   CLI startup path, or the test should use a real application instance.
-

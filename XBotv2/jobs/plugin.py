@@ -1,21 +1,20 @@
 """Jobs component: the background job registry as an XCore service.
 
-The registry is created by this plugin (mounted after the session component,
-whose ``ctx.runtime`` supplies the concurrency limits) and provided as
-``ctx.jobs``.  Job lifecycle — waiting, cancellation, output storage — lives
-in the registry; domain adapters (subagents, shell) implement ``JobRunner``.
+The plugin owns registry limits, lifecycle notifications, cancellation, and
+output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, cast
 
 from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
+from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
-from XBotv2.core.tools import ClientEvent
 from XBotv2.jobs.commands import build_jobs_commands
-from XBotv2.jobs.protocol import TaskUpdatedData
+from XBotv2.jobs.protocol import task_completion_event, task_updated_event
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
@@ -31,7 +30,10 @@ from XBotv2.session import PREPARE_FORK, PrepareFork
 
 
 class JobsComponent:
-    inject = ['session', 'commands']
+    inject = {
+        "required": ["commands"],
+        "optional": ["engine"],
+    }
     """Register the job registry as ``ctx.jobs``."""
 
     name = "xbot.jobs"
@@ -43,20 +45,43 @@ class JobsComponent:
         for command in build_jobs_commands(registry):
             ctx.commands.register(command)
 
-        async def publish(event_name: str, snapshot: dict[str, Any]) -> None:
-            payload = TaskUpdatedData.model_validate(snapshot).model_dump()
+        async def publish_update(snapshot: dict[str, Any]) -> None:
             await ctx.emit(
-                event_name,
-                EventContext(
-                    event=snapshot,
-                    client_event=ClientEvent("task_updated", payload),
-                ),
+                Events.RUNTIME_EVENT,
+                EventContext(client_event=task_updated_event(
+                    task_snapshot(snapshot)
+                )),
             )
 
-        registry.on_update = lambda snapshot: publish(Events.JOB_UPDATED, snapshot)
-        registry.on_complete = lambda snapshot: publish(
-            Events.JOB_COMPLETED, snapshot
-        )
+        async def publish_completion(snapshot: dict[str, Any]) -> None:
+            task = task_snapshot(snapshot)
+            event = task_completion_event(task)
+            engine = cast(
+                AgentLoopDriverPort | None,
+                ctx.get("engine", strict=False),
+            )
+            if engine is not None:
+                payload = event.data
+                await engine.inject(
+                    prompt_container(
+                        "runtime_event",
+                        [prompt_element(
+                            "payload",
+                            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                            attributes={"encoding": "json"},
+                        )],
+                        attributes={"source": "tasks", "event": "completed"},
+                    ),
+                    source=task.task_id,
+                    metadata={"kind": "notification", "payload": payload},
+                )
+            await ctx.emit(
+                Events.RUNTIME_EVENT,
+                EventContext(client_event=event),
+            )
+
+        registry.on_update = publish_update
+        registry.on_complete = publish_completion
 
         def list_tasks(_request: EmptyRequest) -> TaskCatalog:
             return TaskCatalog(tuple(

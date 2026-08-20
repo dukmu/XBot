@@ -1,13 +1,13 @@
 """Core live-session lifecycle tests independent of HTTP."""
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import EventContext, LoopSettings
+from XBotv2.core.tools import ClientEvent
 from XBotv2.session.runtime import SessionRuntime
 
 
@@ -113,23 +113,19 @@ async def test_idle_user_turn_runs_directly(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_completion_stages_into_inbox_without_a_turn(tmp_path):
+async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     session = runtime(tmp_path)
     events = session.attach_event_stream()
 
-    await session._collect_completion({
-        "type": "background_task",
-        "kind": "background_task",
-        "task_id": "t1",
-        "status": "completed",
-        "command": "printf x",
-        "data": {},
-    })
+    session._on_runtime_event(EventContext(client_event=ClientEvent(
+        "completion_notice",
+        {"task_id": "t1", "status": "completed"},
+    )))
 
-    assert len(session.engine.inbox) == 1
+    assert session.engine.inbox == []
     notice = await asyncio.wait_for(events.get(), timeout=1)
     assert notice["type"] == "completion_notice"
-    assert session.turn_task is None, "completion must not start a turn"
+    assert session.turn_task is None
     await session.close()
 
 

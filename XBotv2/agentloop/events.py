@@ -84,10 +84,6 @@ class Events:
     # Non-blocking application output projected by live transports. Feature
     # plugins publish a payload; neither they nor Engine own a client sink.
     RUNTIME_EVENT = "runtime/event"
-    # Application runtime jobs. The jobs plugin owns lifecycle and publishes
-    # neutral snapshots; transports observe them without locating the plugin.
-    JOB_UPDATED = "job/updated"
-    JOB_COMPLETED = "job/completed"
     # Core state projection changed. Persistence is one possible observer;
     # the loop does not request or name storage operations.
     STATE_CHANGED = "state/changed"

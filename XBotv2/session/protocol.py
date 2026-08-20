@@ -194,25 +194,14 @@ class AgentConfiguredData(WireModel):
     context_window: int = Field(default=0, ge=0)
 
 
-class CompletionNoticeData(WireModel):
-    type: Literal["background_task", "subagent"]
-    kind: Literal["background_task", "subagent"]
-    task_id: str = Field(min_length=1)
-    status: str = Field(min_length=1)
-    command: str = ""
-    agent: str = ""
-
-
 SessionEventType = Literal[
     "agent_configured",
-    "completion_notice",
     "history_updated",
     "message",
 ]
 
 _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
     "agent_configured": AgentConfiguredData,
-    "completion_notice": CompletionNoticeData,
     "history_updated": HistoryUpdatedData,
     "message": MessageData,
 }
@@ -781,7 +770,6 @@ __all__ = [
     "AgentConfiguredData",
     "AttachmentInput",
     "CloseResponse",
-    "CompletionNoticeData",
     "ForkResponse",
     "HistoryMutationResponse",
     "HistoryUpdatedData",

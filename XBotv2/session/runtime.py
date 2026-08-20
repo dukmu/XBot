@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from contextlib import asynccontextmanager, nullcontext
@@ -16,7 +15,6 @@ from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.session.history import display_history
-from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
@@ -80,8 +78,6 @@ class SessionRuntime:
         events = self.application.events
         events.on(Events.INBOX_SPLICE, self._on_runtime_event)
         events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
-        events.on(Events.JOB_UPDATED, self._on_runtime_event)
-        events.on(Events.JOB_COMPLETED, self._on_job_completed)
         events.on(Events.STATE_CHANGED, self._on_state_changed)
         events.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
 
@@ -93,9 +89,6 @@ class SessionRuntime:
         """Queue a plugin-command follow-up through the Agent's sole inbox."""
         self.touch()
         return await self.engine.followup(content, **kwargs)
-
-    async def _on_job_completed(self, event: EventContext) -> None:
-        await self._enqueue_job_completion(dict(event.event or {}))
 
     async def _on_state_changed(self, event: EventContext) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
@@ -137,6 +130,7 @@ class SessionRuntime:
             self.session_events.put_nowait(event)
 
     def _on_runtime_event(self, event: EventContext) -> None:
+        self.touch()
         payload = event.client_event
         if payload is not None:
             self._publish_runtime_event(payload.to_dict())
@@ -155,72 +149,6 @@ class SessionRuntime:
             self.session_events.put_nowait(event)
         else:
             self._pending_message_events.append(event)
-
-    async def _enqueue_job_completion(self, task: dict[str, Any]) -> None:
-        if str(task.get("kind") or "") == "shell":
-            await self._collect_completion({
-                "type": "background_task",
-                "kind": "background_task",
-                "task_id": str(task.get("task_id") or ""),
-                "status": str(task.get("status") or "finished"),
-                "command": str(task.get("command") or ""),
-                "data": task,
-            })
-        else:
-            await self._collect_completion({
-                "type": "subagent",
-                "kind": "subagent",
-                "task_id": str(task.get("task_id") or ""),
-                "status": str(task.get("status") or "finished"),
-                "agent": str(task.get("agent") or ""),
-                "data": task,
-            })
-
-    async def _collect_completion(self, notice: dict[str, Any]) -> None:
-        """Stage one completion into the agent inbox and broadcast a notice.
-
-        The completion is model-visible via ``inbox`` (drained into the next
-        turn's context) but never starts a turn by itself: the TUI task panel
-        already tracks status through ``task_updated``.
-        """
-        payload = {
-                "kind": str(notice.get("kind") or ""),
-                "status": str(notice.get("status") or ""),
-                "task_id": str(notice.get("task_id") or ""),
-                "command": str(notice.get("command") or ""),
-                "agent": str(notice.get("agent") or ""),
-        }
-        fused = prompt_container(
-            "runtime_event",
-            [prompt_element(
-                "payload",
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                attributes={"encoding": "json"},
-            )],
-            attributes={"source": "tasks", "event": "completed"},
-        )
-        await self.engine.inject(
-            fused,
-            source=str(notice.get("task_id") or "tasks"),
-            metadata={"kind": "notification", "payload": payload},
-        )
-        self.touch()
-        if self.session_events is not None:
-            await self.session_events.put(session_event(
-                "completion_notice",
-                {
-                    key: notice[key]
-                    for key in (
-                        "type",
-                        "kind",
-                        "task_id",
-                        "status",
-                        "command",
-                        "agent",
-                    )
-                    if key in notice
-                },
-            ))
 
     async def stream_message(
         self,
