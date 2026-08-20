@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Generic, Protocol, TypeVar
 
-from xcore import Context
-
+from XBotv2.application import AgentApplicationPort
 from XBotv2.core.agents import AgentDefinition
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import Operation, OperationContext
+from XBotv2.permissions import PermissionsPort
 
 
 RequestT = TypeVar("RequestT")
@@ -144,7 +144,7 @@ class AgentApplicationOptions:
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
     parent_thread_id: str = ""
-    parent_permission_system: object | None = None
+    parent_permission_system: PermissionsPort | None = None
     is_subagent: bool = False
     interactive: bool = True
 
@@ -152,7 +152,7 @@ class AgentApplicationOptions:
 class AgentApplicationFactory(Protocol):
     """Composition-owned factory consumed by the session host."""
 
-    async def __call__(self, options: AgentApplicationOptions) -> Context: ...
+    async def __call__(self, options: AgentApplicationOptions) -> AgentApplicationPort: ...
 
 
 __all__ = [

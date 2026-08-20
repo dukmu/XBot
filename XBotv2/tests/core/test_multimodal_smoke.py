@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.application import start_application
+from XBotv2.application.app import start_application
 from XBotv2.coretools.filesystem import read
 from XBotv2.coretools.filesystem import read_file
 from XBotv2.llm.anthropic import anthropic_request_messages

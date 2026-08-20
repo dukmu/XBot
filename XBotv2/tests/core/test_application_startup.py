@@ -36,7 +36,7 @@ def _write_runtime_config(data_dir, config):
 from XBotv2.core.paths import RuntimePaths
 import yaml
 
-from XBotv2.application import start_application
+from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
 
 

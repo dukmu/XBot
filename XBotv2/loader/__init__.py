@@ -311,29 +311,6 @@ class Loader:
     def loaded_ids(self) -> tuple[str, ...]:
         return tuple(self._handles)
 
-    async def status_slots(self) -> dict[str, str]:
-        """Collect validated status slots without exposing plugin objects."""
-        slots: dict[str, str] = {}
-        for plugin in self._plugins.values():
-            status_slots = getattr(plugin, "status_slots", None)
-            if status_slots is None:
-                continue
-            try:
-                values = await status_slots()
-            except Exception:
-                logger.exception(
-                    "Plugin %s status slots failed", getattr(plugin, "name", "?")
-                )
-                continue
-            if not isinstance(values, dict):
-                continue
-            for raw_name, raw_value in values.items():
-                name = str(raw_name).strip()
-                value = str(raw_value).strip()
-                if name and value and name not in slots:
-                    slots[name] = value
-        return slots
-
     # -- mounting -----------------------------------------------------------
 
     async def load(self) -> None:

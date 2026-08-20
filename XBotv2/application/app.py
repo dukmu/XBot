@@ -15,16 +15,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from xcore import Context
+
 from XBotv2.application.boot import boot_application
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
-from XBotv2.application.services import ParentPermissions, SessionLaunch
+from XBotv2.application.host import mounted_application
+from XBotv2.application.services import (
+    AgentApplicationPort,
+    ParentPermissions,
+    SessionLaunch,
+)
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.operations import dispatch_operation
 from XBotv2.agents.contracts import INITIALIZE_AGENT
-from XBotv2.session.contracts import AgentApplicationOptions
+from XBotv2.session import AgentApplicationOptions
 from XBotv2.loader.contracts import ReloadPlan
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
@@ -47,7 +54,7 @@ async def start_application(
     interactive: bool = True,
     extra_plugins: list[dict[str, Any]] | None = None,
     client_events=None,
-) -> Any:
+) -> Context:
     """Assemble the XBot runtime on an XCore context.
 
     Returns the owning XCore application context. Consumers obtain the loop
@@ -69,7 +76,7 @@ async def start_application(
     thread_preexisting = session_paths.has_thread(thread_id)
     thread_paths = session_paths.thread(thread_id)
 
-    plugin_ctx: Any = None
+    plugin_ctx: Context | None = None
 
     tree = load_agent_tree(
         paths=paths,
@@ -152,7 +159,9 @@ async def start_application(
         raise
 
 
-async def create_agent_application(options: AgentApplicationOptions) -> Any:
+async def create_agent_application(
+    options: AgentApplicationOptions,
+) -> AgentApplicationPort:
     """Typed factory exported to composition roots, not session internals."""
     extra_plugins = (
         [
@@ -162,7 +171,7 @@ async def create_agent_application(options: AgentApplicationOptions) -> Any:
         if options.plugin_configs
         else None
     )
-    return await start_application(
+    context = await start_application(
         paths=options.paths,
         provider_name=options.provider_name,
         session_id=options.session_id,
@@ -178,6 +187,7 @@ async def create_agent_application(options: AgentApplicationOptions) -> Any:
         is_subagent=options.is_subagent,
         interactive=options.interactive,
     )
+    return mounted_application(context)
 
 
 def _validate_identifier(field: str, value: str) -> None:

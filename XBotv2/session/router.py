@@ -153,7 +153,7 @@ def build_session_router(
             if active_session_id == session_id
         ]
         for context in session_contexts:
-            await context.services.emit(
+            await context.application.events.emit(
                 PREPARE_FORK,
                 PrepareFork(session_id, context.thread_id),
             )
@@ -232,7 +232,7 @@ def build_session_router(
                 no_plugins=options.no_plugins,
                 llm_override=llm_override,
                 parent_thread_id=parent_thread_id,
-                parent_permission_system=parent.services.permissions,
+                parent_permission_system=parent.application.parent_permissions,
                 is_subagent=True,
             )
         except SessionNotFound as exc:
@@ -288,7 +288,7 @@ def build_session_router(
         ctx = await manager.get(session_id, thread_id)
         require_idle(ctx, "rewrite history")
         async with ctx.turn_lock:
-            removed_turns = await ctx.services.session.clear_history()
+            removed_turns = await ctx.application.history.clear_history()
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -308,7 +308,7 @@ def build_session_router(
         ctx = await manager.get(session_id, thread_id)
         require_idle(ctx, "rewrite history")
         async with ctx.turn_lock:
-            messages = await ctx.services.session.undo_history(payload.count)
+            messages = await ctx.application.history.undo_history(payload.count)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -332,13 +332,13 @@ def build_session_router(
         ctx = await manager.get(session_id, thread_id)
         try:
             images = [
-                ctx.services.storage.store_image(
+                ctx.application.media.store_image(
                     image.data, image.media_type
                 )
                 for image in payload.images
             ]
             attachments = [
-                ctx.services.storage.store_attachment(
+                ctx.application.media.store_attachment(
                     attachment.data,
                     attachment.media_type,
                     attachment.name,

@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from XBotv2.goal.plugin import GoalPlugin
+from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 from XBotv2.core import ContextComponent, EventContext, Events
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
@@ -188,11 +189,16 @@ async def test_runtime_notification_does_not_drive_active_goal(state_store):
 async def test_goal_exposes_compact_status_slot(state_store):
     plugin = make_plugin(state_store)
 
-    assert await plugin.status_slots() == {}
+    async def status_slots() -> dict[str, str]:
+        slots = StatusSlots()
+        await plugin.ctx.emit(COLLECT_STATUS_SLOTS, slots)
+        return slots.values
+
+    assert await status_slots() == {}
     await plugin.create_goal("show status")
-    assert await plugin.status_slots() == {"goal": "active"}
+    assert await status_slots() == {"goal": "active"}
     await plugin.update_goal("complete", "done")
-    assert await plugin.status_slots() == {"goal": "complete"}
+    assert await status_slots() == {"goal": "complete"}
 
 
 @pytest.mark.asyncio

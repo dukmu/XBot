@@ -321,7 +321,7 @@ class TestOrderIndependence:
         import random
 
         from XBotv2.application import tree as application_tree
-        from XBotv2.application import start_application
+        from XBotv2.application.app import start_application
         from XBotv2.core.paths import RuntimePaths
         from XBotv2.llm.mock import MockLLM
         from XBotv2.loader import PluginTree

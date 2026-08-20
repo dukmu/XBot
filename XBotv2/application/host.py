@@ -1,0 +1,78 @@
+"""Narrow handle for one mounted Agent application."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from xcore import Context
+
+from XBotv2.agentloop import AgentLoopDriverPort
+from XBotv2.application.services import (
+    AgentApplicationSnapshot,
+    ApplicationEventsPort,
+    ClientEventsPort,
+    COLLECT_STATUS_SLOTS,
+    LoopStateView,
+    MediaStoragePort,
+    SessionHistoryPort,
+    StatusSlots,
+    UsageSnapshotPort,
+)
+from XBotv2.permissions import PermissionsPort
+
+
+@dataclass(slots=True)
+class MountedAgentApplication:
+    """Expose host operations without leaking the XCore service container."""
+
+    _context: Context
+    events: ApplicationEventsPort
+    driver: AgentLoopDriverPort
+    media: MediaStoragePort
+    client_events: ClientEventsPort
+    history: SessionHistoryPort
+    usage: UsageSnapshotPort
+    loop_state: LoopStateView
+    parent_permissions: PermissionsPort
+    persistence_available: bool
+
+    async def status_slots(self) -> dict[str, str]:
+        slots = StatusSlots()
+        await self.events.emit(COLLECT_STATUS_SLOTS, slots)
+        return dict(slots.values)
+
+    async def snapshot(self) -> AgentApplicationSnapshot:
+        settings = self.driver.settings
+        return AgentApplicationSnapshot(
+            agent=settings.agent_name,
+            provider=settings.provider,
+            model=settings.model,
+            model_mode=settings.model_mode,
+            context_window=self.driver.context_window,
+            messages=tuple(self.driver.messages),
+            usage=dict(self.usage.snapshot()),
+            metadata=dict(self.loop_state.metadata),
+            status_slots=await self.status_slots(),
+        )
+
+    async def close(self) -> None:
+        await self._context.stop()
+
+
+def mounted_application(context: Context) -> MountedAgentApplication:
+    """Project a fully initialized XCore context to its host contract."""
+    return MountedAgentApplication(
+        _context=context,
+        events=context,
+        driver=context.engine,
+        media=context.storage,
+        client_events=context.client_events,
+        history=context.session,
+        usage=context.usage,
+        loop_state=context.loop_state,
+        parent_permissions=context.permissions,
+        persistence_available=context.has("state_store"),
+    )
+
+
+__all__ = ["MountedAgentApplication", "mounted_application"]

@@ -59,6 +59,20 @@ from XBotv2.tui.transport_http import HttpTransport
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
 
 
+class RuntimeApplication:
+    def __init__(self, context, driver) -> None:
+        self._context = context
+        self.driver = driver
+        self.events = context
+        self.client_events = SimpleNamespace(set_sink=lambda _sink: None)
+
+    async def status_slots(self):
+        return {}
+
+    async def close(self):
+        await self._context.stop()
+
+
 async def _drain_stream(stream):
     return [event async for event in stream]
 
@@ -261,6 +275,8 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
     engine = Engine()
     task = asyncio.create_task(hanging_turn())
     await asyncio.sleep(0)
+    context = Context(data_dir=tmp_path)
+    await context.start()
     ctx = SessionRuntime(
         session_id="closing",
         thread_id="agent",
@@ -268,7 +284,7 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
         paths=RuntimePaths.from_data_dir(tmp_path),
         workspace_root=str(tmp_path),
         no_plugins=True,
-        services=Context(data_dir=tmp_path),
+        application=RuntimeApplication(context, engine),
         engine=engine,
         turn_task=task,
     )
@@ -315,6 +331,9 @@ async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
             finally:
                 cancelled.set()
 
+    engine = HangingEngine()
+    context = Context(data_dir=tmp_path)
+    await context.start()
     ctx = SessionRuntime(
         session_id="disconnect",
         thread_id="agent",
@@ -322,8 +341,8 @@ async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
         paths=RuntimePaths.from_data_dir(tmp_path),
         workspace_root=str(tmp_path),
         no_plugins=True,
-        services=Context(data_dir=tmp_path),
-        engine=HangingEngine(),
+        application=RuntimeApplication(context, engine),
+        engine=engine,
     )
     stream = run_turn_stream(ctx, content="wait", request_id="request")
 
@@ -1724,7 +1743,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
                 "type": event_type,
                 "data": {"request_id": request_id},
             },
-            services={"client_events": router},
+            client_events=router,
             events=events,
             disconnect_task=disconnect_task,
         )

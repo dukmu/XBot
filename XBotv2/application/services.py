@@ -2,12 +2,112 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.core.agents import AgentDefinition, AgentSession
+from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.paths import SessionPaths
+from XBotv2.core.operations import OperationContext
+from XBotv2.permissions import PermissionsPort
+
+
+COLLECT_STATUS_SLOTS = "application/status-slots/collect"
+
+
+@dataclass(slots=True)
+class StatusSlots:
+    values: dict[str, str] = field(default_factory=dict)
+
+    def add(self, name: str, value: str) -> None:
+        name = str(name).strip()
+        value = str(value).strip()
+        if name and value:
+            self.values[name] = value
+
+
+@dataclass(frozen=True, slots=True)
+class AgentApplicationSnapshot:
+    agent: str
+    provider: str
+    model: str
+    model_mode: str
+    context_window: int
+    messages: tuple[Message, ...]
+    usage: dict[str, int]
+    metadata: dict[str, object]
+    status_slots: dict[str, str]
+
+
+class ApplicationEventsPort(OperationContext, Protocol):
+    def on(self, event: str, callback: Callable[..., object], **kwargs: Any) -> object: ...
+
+    async def emit(self, event: str, *args: object) -> None: ...
+
+
+class InteractionWaiterPort(Protocol):
+    def register(self, request_id: str) -> object: ...
+
+    async def wait_registered(
+        self,
+        request_id: str,
+        pending: object,
+        timeout_seconds: float | None,
+    ) -> object: ...
+
+    def answer(self, request_id: str, **values: object) -> object: ...
+
+
+class ClientEventsPort(Protocol):
+    def set_sink(self, sink: object | None) -> object | None: ...
+
+    def waiter(self, event_type: str) -> InteractionWaiterPort | None: ...
+
+    def pending_request_ids(self) -> list[str]: ...
+
+
+class MediaStoragePort(Protocol):
+    def store_image(self, data: str, media_type: str) -> ImageContent: ...
+
+    def store_attachment(
+        self,
+        data: str,
+        media_type: str,
+        name: str,
+    ) -> dict[str, Any]: ...
+
+
+class SessionHistoryPort(Protocol):
+    async def clear_history(self) -> int: ...
+
+    async def undo_history(self, count: int) -> list[Message]: ...
+
+
+class UsageSnapshotPort(Protocol):
+    def snapshot(self) -> dict[str, int]: ...
+
+
+class LoopStateView(Protocol):
+    metadata: dict[str, Any]
+
+
+class AgentApplicationPort(Protocol):
+    events: ApplicationEventsPort
+    driver: AgentLoopDriverPort
+    media: MediaStoragePort
+    client_events: ClientEventsPort
+    history: SessionHistoryPort
+    persistence_available: bool
+    parent_permissions: PermissionsPort
+
+    async def status_slots(self) -> dict[str, str]: ...
+
+    async def snapshot(self) -> AgentApplicationSnapshot: ...
+
+    async def close(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +123,7 @@ class SessionLaunch:
 
 @dataclass(frozen=True, slots=True)
 class ParentPermissions:
-    value: object | None
+    value: PermissionsPort | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +131,8 @@ class ChildApplicationRequest:
     definition: AgentDefinition
     thread_id: str
     prompt: str
-    parent_permissions: object
-    client_events: object | None
+    parent_permissions: PermissionsPort
+    client_events: ClientEventsPort | None
 
 
 class ChildApplicationsPort(Protocol):
@@ -40,8 +140,19 @@ class ChildApplicationsPort(Protocol):
 
 
 __all__ = [
+    "AgentApplicationPort",
+    "AgentApplicationSnapshot",
+    "ApplicationEventsPort",
+    "COLLECT_STATUS_SLOTS",
     "ChildApplicationRequest",
     "ChildApplicationsPort",
+    "ClientEventsPort",
+    "InteractionWaiterPort",
+    "LoopStateView",
+    "MediaStoragePort",
     "ParentPermissions",
     "SessionLaunch",
+    "SessionHistoryPort",
+    "StatusSlots",
+    "UsageSnapshotPort",
 ]

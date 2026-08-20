@@ -52,6 +52,8 @@ def test_public_api_inventory_is_explicit():
 
 
 def test_plugin_package_roots_export_declarations_not_implementations():
+    import XBotv2.agentloop as agentloop
+    import XBotv2.application as application
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
     import XBotv2.permissions as permissions
@@ -68,14 +70,25 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "LlmCatalogPort",
         "ProviderCatalog",
     }
-    assert permissions.__all__ == ["build_permissions_commands"]
+    assert set(permissions.__all__) == {
+        "PermissionsPort",
+        "build_permissions_commands",
+    }
     assert sandbox.__all__ == ["build_sandbox_commands"]
     assert set(session.__all__) >= {
         "AgentApplicationFactory",
         "SessionPort",
         "SessionRef",
     }
+    assert set(agentloop.__all__) >= {"AgentLoopDriverPort", "ToolsPort"}
+    assert set(application.__all__) >= {
+        "AgentApplicationPort",
+        "ClientEventsPort",
+        "StatusSlots",
+    }
     for module, forbidden in (
+        (agentloop, {"Engine", "ToolRegistry", "ToolsService"}),
+        (application, {"MountedAgentApplication", "start_application"}),
         (jobs, {"JobRegistry", "JobRunner"}),
         (llm, {"LlmService", "ModelService"}),
         (permissions, {"PermissionSystem"}),

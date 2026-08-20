@@ -971,6 +971,31 @@ def _public_import_violation(
             "server-transport-dependency",
             "server owns route contribution contracts and must not import adapters",
         )
+    package_root = module == f"XBotv2.{imported}"
+    if package_root:
+        declaration_path = _module_path(module)
+        exports = _explicit_exports(declaration_path) if declaration_path else None
+        if exports is None:
+            return Violation(
+                path,
+                node.lineno,
+                "plugin-implicit-public-module",
+                f"plugin package {module} has no explicit __all__",
+            )
+        if isinstance(node, ast.ImportFrom):
+            imported_names = {
+                alias.name for alias in node.names if alias.name != "*"
+            }
+            missing = sorted(imported_names - exports)
+            if missing or any(alias.name == "*" for alias in node.names):
+                detail = "*" if not missing else ", ".join(missing)
+                return Violation(
+                    path,
+                    node.lineno,
+                    "plugin-private-symbol-import",
+                    f"imports non-public symbol(s) {detail} from {module}",
+                )
+        return None
     if module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES:
         return Violation(
             path,

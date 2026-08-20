@@ -663,3 +663,26 @@
   ownership. Broader Engine and Skills selections each reached the affected
   test successfully but did not terminate during later async teardown, so they
   are not recorded as passing.
+
+### 2026-08-20 · Typed mounted Agent application handle
+
+- SessionRuntime now owns a narrow `AgentApplicationPort` instead of the XCore
+  Context/service bag. The handle exposes the loop driver, event dispatcher,
+  media/history/client-event ports, parent permissions, persistence presence,
+  snapshots, status contribution, and lifecycle close only.
+- Loader's reflective `status_slots()` hook was removed. Application emits the
+  typed `application/status-slots/collect` event and Goal contributes its state
+  through that event.
+- Plugin package roots now act as the cross-plugin declaration surface.
+  `application`, `agentloop`, and `permissions` re-export explicit public
+  Protocols/types/commands only; Application startup implementations are no
+  longer re-exported, which also removes the Session/Application import cycle.
+- CLI once mode and affected Session/subagent/interaction tests now construct
+  or fake the typed mounted handle. Production Session code no longer contains
+  `ctx.services`, `services.get()`, or a SessionRuntime `services` field.
+- Verification: 84 focused Session/Goal/Application/public API/subagent tests
+  passed, plus 8 focused HTTP lifecycle/interaction and subagent tests. Python
+  compilation and `git diff --check` passed. The architecture scanner now
+  reports 7 remaining violations, all in Session HTTP/wire ownership. The full
+  HTTP integration file was interrupted after making only one test's progress
+  in roughly one minute and is not recorded as passing.

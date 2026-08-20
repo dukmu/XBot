@@ -47,11 +47,15 @@
 同一插件包内部可以正常导入自己的实现模块。跨插件允许：
 
 ```python
-from XBotv2.jobs.services import JobsPort
-from XBotv2.llm.types import ProviderCatalog
-from XBotv2.agents.events import AgentConfigured
-from XBotv2.permissions.commands import PERMISSIONS_COMMANDS
+from XBotv2.jobs import JobsPort
+from XBotv2.llm import ProviderCatalog
+from XBotv2.agents import AgentConfigured
+from XBotv2.permissions import PermissionsPort, build_permissions_commands
 ```
+
+插件根 `__init__.py` 是唯一的跨插件 Python import 面；它只从
+`types/invariants/commands/events/services/contracts` 重导出显式 `__all__` 中的声明。
+声明文件仍可供插件内部直接导入，但外部消费者不依赖其目录布局。
 
 跨插件禁止：
 
@@ -111,20 +115,24 @@ from XBotv2.permissions.plugin import PermissionsComponent
    operations；server 只拥有 route contribution 与 ASGI carrier；
 8. 平行 `ServerEvents` registry 已删除，MCP 已改为显式 service 注入；
 9. package root 只 re-export 已声明的 contracts/commands/service Protocol。
+10. SessionRuntime 已改为持有窄 `AgentApplicationPort`，不再保存 XCore Context 或
+    service bag；状态槽通过 `application/status-slots/collect` typed event 聚合，Goal
+    已迁移为事件贡献者。
 
 tool policy 已完成收敛：`BEFORE_TOOL_CALL` 只允许重写 ToolCall/args，schema
 validation 和全部 guard 必须在执行前通过；`ToolDecision`/`ToolAction`、事件拒绝、
 stop 和伪造结果入口已删除。
 
-当前 architecture scanner 可复现 **16 项**，全部集中在 session：
+当前 architecture scanner 可复现 **7 项**，全部集中在 Session HTTP 所有权：
 
-1. `session/http_util.py` 混有 wire mapping 和两处 service-bag lookup（4 项）；
-2. `session/manager.py` 导入 wire DTO，并从 child Context 查 persistence、状态投影和
-   client event router（4 项）；
-3. `session/router.py` 仍位于 capability package，导入 wire DTO 与 concrete
-   `server.http`（4 项）；
-4. `session/runtime.py` 仍通过 service bag 查 jobs/loader/client event 等能力并硬编码
-   outbound projection（4 项）。
+1. `session/http_util.py` 仍拥有 protocol wire mapping（2 项）；
+2. `session/manager.py` 仍直接构造 protocol Session/Thread DTO（1 项）；
+3. `session/router.py` 仍位于 capability package，并导入 protocol wire DTO、HTTP
+   helper 与 concrete `server.http`（4 项）。
+
+下一步不是简单移动 router，而是先公开 `SessionHostPort` 与领域 request/result，
+让 `http_transport.session` 只依赖 Session 根声明，再删除 `session/http_util.py` 和
+`session/router.py`。producer-owned outbound event projection 随后单独收敛。
 
 扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
 语义、ACP 的 concrete composition import、producer-owned outbound event 完整迁移，

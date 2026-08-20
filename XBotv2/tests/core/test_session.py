@@ -56,14 +56,32 @@ class FakeEngine:
         self.close_count += 1
 
 
-def runtime(tmp_path) -> SessionRuntime:
-    from types import SimpleNamespace
+class FakeClientEvents:
+    def __init__(self) -> None:
+        self.sink = None
 
-    services = SimpleNamespace(
-        on=lambda *_args, **_kwargs: None,
-        get=lambda _name: None,
-        stop=lambda: asyncio.sleep(0),
-    )
+    def set_sink(self, sink):
+        previous = self.sink
+        self.sink = sink
+        return previous
+
+
+class FakeApplication:
+    def __init__(self, driver) -> None:
+        self.driver = driver
+        self.events = SimpleNamespace(on=lambda *_args, **_kwargs: None)
+        self.client_events = FakeClientEvents()
+        self.closed = False
+
+    async def status_slots(self):
+        return {}
+
+    async def close(self):
+        self.closed = True
+
+
+def runtime(tmp_path) -> SessionRuntime:
+    engine = FakeEngine()
     return SessionRuntime(
         session_id="session",
         thread_id="agent",
@@ -71,8 +89,8 @@ def runtime(tmp_path) -> SessionRuntime:
         paths=RuntimePaths.from_data_dir(tmp_path),
         workspace_root=str(tmp_path),
         no_plugins=True,
-        services=services,
-        engine=FakeEngine(),
+        application=FakeApplication(engine),
+        engine=engine,
     )
 
 

@@ -482,12 +482,12 @@ def _workspace_root(args) -> Path:
 
 async def _terminal_loop(args):
     """Direct engine terminal session — reads from stdin, prints responses."""
-    from XBotv2.application import start_application
+    from XBotv2.application.app import start_application
 
     print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
 
     try:
-        services = await start_application(
+        application = await start_application(
             paths=RuntimePaths.from_data_dir(args.data_dir),
             provider_name=args.provider,
             session_id=getattr(args, "session", None),
@@ -496,11 +496,11 @@ async def _terminal_loop(args):
             plugin_dirs=[] if args.no_plugins else None,
             selected_agent=getattr(args, "agent", None),
         )
-        engine = services.engine
+        engine = application.engine
         await engine.start_session()
         from XBotv2.session.runtime import install_client_event_sink
 
-        install_client_event_sink(services, _terminal_interaction)
+        install_client_event_sink(application.client_events, _terminal_interaction)
     except Exception as exc:
         print(f"Error starting engine: {exc}")
         return
@@ -550,7 +550,7 @@ async def _terminal_loop(args):
     try:
         await engine.close_session()
     finally:
-        await services.stop()
+        await application.stop()
 
 
 async def _terminal_interaction(
@@ -608,10 +608,11 @@ async def _terminal_interaction(
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.application import start_application
+    from XBotv2.application.app import start_application
+    from XBotv2.application.host import mounted_application
     from XBotv2.session.runtime import SessionRuntime
 
-    services = await start_application(
+    context = await start_application(
         paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
@@ -621,9 +622,10 @@ async def _run_once(args):
         selected_agent=getattr(args, "agent", None),
         interactive=False,
     )
-    engine = services.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
-    session = services.loop_state.session
+    session = context.loop_state.session
     runtime = SessionRuntime(
         session_id=session.session_id,
         thread_id=session.thread_id,
@@ -631,7 +633,7 @@ async def _run_once(args):
         paths=RuntimePaths.from_data_dir(args.data_dir),
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
-        services=services,
+        application=application,
         engine=engine,
         interactive=False,
     )

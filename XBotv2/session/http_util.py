@@ -22,20 +22,19 @@ from XBotv2.session.manager import (
 
 
 async def _open_session_response(ctx: Any) -> OpenSessionResponse:
-    loader = ctx.services.get("loader")
-    status_slots = await loader.status_slots() if loader is not None else {}
+    snapshot = await ctx.application.snapshot()
     return OpenSessionResponse(
         session_id=ctx.session_id,
         thread_id=ctx.thread_id,
-        agent_name=ctx.engine.settings.agent_name,
+        agent_name=snapshot.agent,
         workspace_root=ctx.workspace_root,
         provider=ctx.provider_name,
-        model=ctx.engine.settings.model,
-        model_mode=ctx.engine.settings.model_mode,
-        context_window=ctx.engine.settings.context_window,
-        usage=ctx.services.usage.snapshot(),
-        history=display_history(ctx.engine.messages),
-        status_slots=status_slots,
+        model=snapshot.model,
+        model_mode=snapshot.model_mode,
+        context_window=snapshot.context_window,
+        usage=snapshot.usage,
+        history=display_history(snapshot.messages),
+        status_slots=snapshot.status_slots,
     )
 
 
@@ -72,10 +71,10 @@ async def _resolve_interaction(
                 status=400,
             )
         try:
-            approval = _plugin_service(ctx, "approval")
-            if approval is None or not hasattr(approval, "submit"):
+            waiter = ctx.application.client_events.waiter("permission_request")
+            if waiter is None:
                 raise RuntimeError("Required approval service is unavailable")
-            approval.submit(request_id, decision, scope)
+            waiter.answer(request_id, decision=decision, scope=scope)
         except Exception as exc:  # noqa: BLE001
             raise HttpServerError(
                 "interaction_no_longer_pending",
@@ -89,10 +88,10 @@ async def _resolve_interaction(
 
     answer = payload.get("answer", "")
     try:
-        interactions = _plugin_service(ctx, "interactions")
-        if interactions is None or not hasattr(interactions, "submit_user_input"):
+        waiter = ctx.application.client_events.waiter("user_input_required")
+        if waiter is None:
             raise RuntimeError("Required interactions service is unavailable")
-        interactions.submit_user_input(request_id, answer)
+        waiter.answer(request_id, answer=answer)
     except Exception as exc:  # noqa: BLE001
         raise HttpServerError(
             "interaction_no_longer_pending",
@@ -103,11 +102,3 @@ async def _resolve_interaction(
         request_id=request_id,
         pending_interactions=pending_interactions(ctx),
     )
-
-
-def _plugin_service(ctx: Any, name: str) -> Any:
-    """Resolve one plugin service from the owning session application."""
-    services = getattr(ctx, "services", None)
-    if services is None or not hasattr(services, "get"):
-        return None
-    return services.get(name)

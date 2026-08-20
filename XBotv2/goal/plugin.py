@@ -13,6 +13,7 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
+from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 
 
 _MAX_TEXT_CHARS = 2_000
@@ -30,15 +31,17 @@ class GoalPlugin:
     async def on_unload(self) -> None:
         self._continuation_pending = False
 
-    async def status_slots(self) -> dict[str, str]:
+    async def _contribute_status(self, slots: StatusSlots) -> None:
         goal = await self._read_goal()
-        return {"goal": goal["status"]} if goal is not None else {}
+        if goal is not None:
+            slots.add("goal", goal["status"])
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self.store = ctx.state.namespace("goal")
         ctx.on(Events.TURN_START, self._start_goal_turn)
         ctx.on(Events.TURN_END, self._on_turn_end)
+        ctx.on(COLLECT_STATUS_SLOTS, self._contribute_status)
         ctx.on(Events.SESSION_START, self._capture_send_input)
         ctx.on(Events.SESSION_RESUME, self._capture_send_input)
         ctx.tools.register(

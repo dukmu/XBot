@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from XBotv2.agentloop import AgentLoopDriverPort
+from XBotv2.application import AgentApplicationPort, ClientEventsPort
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
@@ -52,8 +54,8 @@ class SessionRuntime:
     paths: RuntimePaths
     workspace_root: str
     no_plugins: bool
-    services: Any
-    engine: Any
+    application: AgentApplicationPort
+    engine: AgentLoopDriverPort
     interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
@@ -72,12 +74,13 @@ class SessionRuntime:
     def __post_init__(self) -> None:
         self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
-        self.services.on(Events.INBOX_SPLICE, self._on_runtime_event)
-        self.services.on(Events.RUNTIME_EVENT, self._on_runtime_event)
-        self.services.on(Events.JOB_UPDATED, self._on_job_updated)
-        self.services.on(Events.JOB_COMPLETED, self._on_job_completed)
-        self.services.on(Events.STATE_CHANGED, self._on_state_changed)
-        self.services.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
+        events = self.application.events
+        events.on(Events.INBOX_SPLICE, self._on_runtime_event)
+        events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
+        events.on(Events.JOB_UPDATED, self._on_job_updated)
+        events.on(Events.JOB_COMPLETED, self._on_job_completed)
+        events.on(Events.STATE_CHANGED, self._on_state_changed)
+        events.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
@@ -366,7 +369,7 @@ class SessionRuntime:
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
             # the surrounding application context.
-            await self.services.stop()
+            await self.application.close()
 
 
 def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
@@ -376,7 +379,7 @@ def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
 async def _live_sink(
     client_event: dict[str, Any],
     *,
-    services: Any,
+    client_events: ClientEventsPort,
     events: asyncio.Queue[dict[str, Any] | None],
     disconnect_task: asyncio.Task[Any],
     timeout_seconds: float | None = None,
@@ -384,8 +387,7 @@ async def _live_sink(
     event_type = str(client_event.get("type") or "")
     event_data = client_event.get("data") or {}
     request_id = str(event_data.get("request_id") or "")
-    router = services.get("client_events")
-    waiter = router.waiter(event_type) if router is not None else None
+    waiter = client_events.waiter(event_type)
     if waiter is None:
         raise RuntimeError(f"No waiter registered for client event {event_type!r}")
     pending = waiter.register(request_id)
@@ -444,43 +446,39 @@ async def _live_interaction_sink(
         del tool_call_id
         return await _live_sink(
             client_event,
-            services=runtime.services,
+            client_events=runtime.application.client_events,
             events=events,
             disconnect_task=disconnect_task,
             timeout_seconds=timeout_seconds,
         )
 
-    previous = install_client_event_sink(runtime.services, sink)
+    previous = install_client_event_sink(runtime.application.client_events, sink)
     try:
         yield
     finally:
-        restore_client_event_sinks(runtime.services, previous)
+        restore_client_event_sinks(runtime.application.client_events, previous)
         if not disconnect_task.done():
             disconnect_task.cancel()
             await asyncio.gather(disconnect_task, return_exceptions=True)
 
 
-def install_client_event_sink(services: Any, sink: Any | None) -> Any | None:
+def install_client_event_sink(
+    client_events: ClientEventsPort,
+    sink: Any | None,
+) -> Any | None:
     """Install one live protocol sink on the application event router.
 
     Feature services publish through the shared router, so the transport does
     not discover or modify individual plugins. Returns the previous sink.
     """
-    if not hasattr(services, "get"):
-        return None
-    router = services.get("client_events")
-    return router.set_sink(sink) if router is not None else None
+    return client_events.set_sink(sink)
 
 
 def restore_client_event_sinks(
-    services: Any,
+    client_events: ClientEventsPort,
     previous: Any | None,
 ) -> None:
-    if not hasattr(services, "get"):
-        return
-    router = services.get("client_events")
-    if router is not None:
-        router.set_sink(previous)
+    client_events.set_sink(previous)
 
 
 async def _pump_turn(
@@ -506,11 +504,9 @@ async def _pump_turn(
         async for event in turn_stream:
             payload = _event_payload(event)
             if payload["type"] in {"turn_finished", "turn_cancelled"}:
-                loader = runtime.services.get("loader")
-                if loader is not None:
-                    slots = await loader.status_slots()
-                    if slots:
-                        payload["data"]["status_slots"] = slots
+                slots = await runtime.application.status_slots()
+                if slots:
+                    payload["data"]["status_slots"] = slots
             await events.put(payload)
     except asyncio.CancelledError:
         logger.info("Turn cancelled for session %s", runtime.session_id)

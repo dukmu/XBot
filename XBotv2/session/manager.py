@@ -201,7 +201,7 @@ class SessionManager:
                     "application_factory_unavailable",
                     "session host has no Agent application factory",
                 )
-            services = await self.application_factory(AgentApplicationOptions(
+            application = await self.application_factory(AgentApplicationOptions(
                 paths=self.paths,
                 provider_name=provider_name,
                 session_id=session_id,
@@ -215,10 +215,10 @@ class SessionManager:
                 parent_permission_system=parent_permission_system,
                 is_subagent=is_subagent,
             ))
-            engine = services.engine
+            engine = application.driver
             if mode == "resume":
-                if services.get("state_store", strict=False) is None:
-                    await services.destroy()
+                if not application.persistence_available:
+                    await application.close()
                     raise OperationError(
                         "persistence_unavailable",
                         f"Cannot resume {session_id}/{thread_id}: "
@@ -235,7 +235,7 @@ class SessionManager:
                         session_paths.thread(thread_id, legacy=True),
                     ):
                         thread_paths.metadata_file.unlink(missing_ok=True)
-                    await services.destroy()
+                    await application.close()
                     raise SessionNotFound(
                         f"{session_id}/{thread_id} has no persisted session"
                     )
@@ -246,7 +246,7 @@ class SessionManager:
                 paths=self.paths,
                 workspace_root=workspace_root,
                 no_plugins=no_plugins,
-                services=services,
+                application=application,
                 engine=engine,
             )
             try:
@@ -317,7 +317,7 @@ class SessionManager:
         """Route one typed operation to the owning session application."""
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
-        return await dispatch_operation(runtime.services, operation, request)
+        return await dispatch_operation(runtime.application.events, operation, request)
 
     async def dispatch_scoped(
         self,
@@ -330,7 +330,7 @@ class SessionManager:
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
         return await dispatch_scoped_operation(
-            runtime.services,
+            runtime.application.events,
             operation,
             runtime,
             request,
@@ -367,11 +367,8 @@ async def thread_summary(
 ) -> ThreadSummary:
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
-        engine = active.engine
-        services = active.services
-        loader = services.get("loader")
-        status_slots = await loader.status_slots() if loader is not None else {}
-        metadata = services.loop_state.metadata
+        snapshot = await active.application.snapshot()
+        metadata = snapshot.metadata
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
         return ThreadSummary(
             session_id=session_id,
@@ -380,15 +377,15 @@ async def thread_summary(
             kind="subagent" if parent_thread_id else "main",
             turn_status="running" if active.turn_lock.locked() else "idle",
             parent_thread_id=parent_thread_id,
-            agent=str(metadata.get("agent") or engine.settings.agent_name),
+            agent=str(metadata.get("agent") or snapshot.agent),
             provider=active.provider_name,
-            model=engine.settings.model,
-            model_mode=engine.settings.model_mode,
-            context_window=engine.context_window,
-            message_count=len(engine.messages),
-            usage=services.usage.snapshot(),
+            model=snapshot.model,
+            model_mode=snapshot.model_mode,
+            context_window=snapshot.context_window,
+            message_count=len(snapshot.messages),
+            usage=snapshot.usage,
             pending_interactions=pending_interactions(active),
-            status_slots=status_slots,
+            status_slots=snapshot.status_slots,
         )
 
     session = manager.paths.session(session_id)
@@ -448,8 +445,7 @@ async def session_summary(
 
 def pending_interactions(ctx: SessionRuntime) -> list[str]:
     """List pending requests through the application client-event router."""
-    router = ctx.services.get("client_events")
-    return router.pending_request_ids() if router is not None else []
+    return ctx.application.client_events.pending_request_ids()
 
 
 def _empty_usage() -> dict[str, int]:
@@ -511,7 +507,7 @@ class SessionHost:
             runtime.touch()
             if not envelope.operation.exclusive:
                 result = await dispatch_operation(
-                    runtime.services,
+                    runtime.application.events,
                     envelope.operation,
                     envelope.request,
                 )
@@ -524,7 +520,7 @@ class SessionHost:
                     )
                 async with runtime.turn_lock:
                     result = await dispatch_operation(
-                        runtime.services,
+                        runtime.application.events,
                         envelope.operation,
                         envelope.request,
                     )
@@ -575,7 +571,7 @@ class SessionHost:
                 for runtime in runtimes:
                     runtime.touch()
                     result = await dispatch_operation(
-                        runtime.services,
+                        runtime.application.events,
                         envelope.operation,
                         envelope.request,
                     )

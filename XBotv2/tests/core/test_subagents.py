@@ -7,6 +7,7 @@ owns the runner while application owns child instance construction.
 import asyncio
 import json
 import xml.etree.ElementTree as ET
+from types import SimpleNamespace
 
 import pytest
 from xcore import Context
@@ -16,7 +17,8 @@ from XBotv2.core.jobs import JobKind
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.messages import ModelChunk
 from XBotv2.agents.catalog import AgentCatalog
-from XBotv2.application import start_application
+from XBotv2.application.app import start_application
+from XBotv2.application.host import mounted_application
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
 from XBotv2.agentloop.inbox import AgentInbox
@@ -27,6 +29,22 @@ from XBotv2.permissions.system import (
 )
 
 from XBotv2.agents.subagents import SubagentLauncher, SubagentRunner
+
+
+class RuntimeApplication:
+    def __init__(self, context, driver) -> None:
+        self._context = context
+        self.driver = driver
+        self.events = context
+        self.client_events = SimpleNamespace(
+            set_sink=lambda _sink: None,
+        )
+
+    async def status_slots(self):
+        return {}
+
+    async def close(self):
+        await self._context.stop()
 
 
 class RoutingLLM(MockLLM):
@@ -234,14 +252,15 @@ async def test_subagent_can_ask_user_through_parent_session(
         ],
     )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    application = await start_application(
+    context = await start_application(
         paths=paths,
         session_id="interaction-session",
         thread_id="agent",
         workspace_root=temp_workspace,
         llm_override=llm,
     )
-    engine = application.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
     runtime = SessionRuntime(
         session_id="interaction-session",
@@ -250,7 +269,7 @@ async def test_subagent_can_ask_user_through_parent_session(
         paths=paths,
         workspace_root=str(temp_workspace),
         no_plugins=False,
-        services=application,
+        application=application,
         engine=engine,
     )
 
@@ -258,8 +277,8 @@ async def test_subagent_can_ask_user_through_parent_session(
     async for event in runtime.stream_message("Clarify this", "request-1"):
         events.append(event)
         if event["type"] == "user_input_required":
-            application.interactions.submit_user_input(
-                event["data"]["request_id"], "A"
+            application.client_events.waiter("user_input_required").answer(
+                event["data"]["request_id"], answer="A"
             )
 
     assert any(event["type"] == "user_input_required" for event in events)
@@ -330,14 +349,15 @@ async def test_subagent_can_request_permission_through_parent_session(
         ],
     )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    application = await start_application(
+    context = await start_application(
         paths=paths,
         session_id="permission-session",
         thread_id="agent",
         workspace_root=temp_workspace,
         llm_override=llm,
     )
-    engine = application.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
     runtime = SessionRuntime(
         session_id="permission-session",
@@ -346,7 +366,7 @@ async def test_subagent_can_request_permission_through_parent_session(
         paths=paths,
         workspace_root=str(temp_workspace),
         no_plugins=False,
-        services=application,
+        application=application,
         engine=engine,
     )
 
@@ -354,10 +374,10 @@ async def test_subagent_can_request_permission_through_parent_session(
     async for event in runtime.stream_message("Read this", "request-1"):
         events.append(event)
         if event["type"] == "permission_request":
-            application.approval.submit(
+            application.client_events.waiter("permission_request").answer(
                 event["data"]["request_id"],
-                "allow",
-                "once",
+                decision="allow",
+                scope="once",
             )
 
     assert any(event["type"] == "permission_request" for event in events)
@@ -738,7 +758,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         paths=paths,
         workspace_root=str(tmp_path),
         no_plugins=False,
-        services=services,
+        application=RuntimeApplication(services, parent_engine),
         engine=parent_engine,
     )
 
