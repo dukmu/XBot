@@ -217,6 +217,7 @@ def test_server_event_rejects_ask_user_without_choices():
 
 def test_server_event_type_inventory_covers_current_stream_events():
     assert set(KNOWN_SERVER_EVENT_TYPES) == {
+        "agent_configured",
         "assistant_message",
         "assistant_message_delta",
         "client_message",
@@ -225,6 +226,7 @@ def test_server_event_type_inventory_covers_current_stream_events():
         "compaction_started",
         "end",
         "error",
+        "history_updated",
         "input_rejected",
         "message",
         "permission_denied",

@@ -46,10 +46,8 @@ async def test_clear_dispatch_distinguishes_screen_and_history_commands():
 
 
 @pytest.mark.asyncio
-async def test_remote_command_replaces_tui_history_from_command_result():
+async def test_remote_command_dispatch_shows_command_notice():
     from XBotv2.tui.textual_client import XBotTextualApp
-
-    history = [{"role": "user", "content": "kept"}]
 
     class Handler:
         _connected = True
@@ -59,8 +57,6 @@ async def test_remote_command_replaces_tui_history_from_command_result():
                     "command": "undo",
                     "status": "ok",
                     "message": "Removed 1 conversation turn.",
-                    "data": {"removed_turns": 1},
-                    "history": history,
                 }
             }
         )})()
@@ -77,56 +73,44 @@ async def test_remote_command_replaces_tui_history_from_command_result():
         name="undo", kind="server", description="undo", raw="/undo",
     ))
 
-    handler._cmd_clear.assert_awaited_once()
-    assert [(message.role, message.content) for message in handler.state.messages] == [
-        ("user", "kept"),
-    ]
     handler._append_local_notice.assert_awaited_once_with(
         "/undo", "Removed 1 conversation turn."
     )
 
 
-@pytest.mark.asyncio
-async def test_remote_command_refreshes_status_metadata() -> None:
-    from XBotv2.tui.textual_client import XBotTextualApp
+def test_history_updated_event_restores_tui_history() -> None:
+    state = TuiState()
+    state.apply_event({
+        "type": "history_updated",
+        "data": {
+            "history": [{"role": "user", "content": "kept"}],
+            "operation": "undo",
+            "turns": 1,
+        },
+    })
 
-    class Handler:
-        _connected = True
-        session = type("Session", (), {"run_command": AsyncMock(
-            return_value={
-                "data": {
-                    "command": "provider",
-                    "status": "ok",
-                    "message": "Provider switched.",
-                    "data": {
-                        "provider": "minimax",
-                        "workspace_root": "/repo",
-                    },
-                }
-            }
-        )})()
-        state = TuiState(provider="old", workspace_root="/old")
-        _append_local_notice = AsyncMock()
-        _refresh_status = Mock()
+    assert [(message.role, message.content) for message in state.messages] == [
+        ("user", "kept"),
+    ]
 
-        def _record_error(self, error):
-            raise AssertionError(error)
 
-    handler = Handler()
-    await XBotTextualApp._dispatch_remote_command(
-        handler,
-        CommandSpec(
-            name="provider",
-            kind="server",
-            description="switch provider",
-            args="use minimax",
-            raw="/provider use minimax",
-        ),
-    )
+def test_agent_configured_event_refreshes_status_metadata() -> None:
+    state = TuiState(provider="old", workspace_root="/old")
+    state.apply_event({
+        "type": "agent_configured",
+        "data": {
+            "provider": "minimax",
+            "model": "m3",
+            "model_mode": "reasoning",
+            "context_window": 32000,
+        },
+    })
 
-    assert handler.state.provider == "minimax"
-    assert handler.state.workspace_root == "/repo"
-    handler._refresh_status.assert_called_once_with()
+    assert state.provider == "minimax"
+    assert state.model == "m3"
+    assert state.model_mode == "reasoning"
+    assert state.context_window == 32000
+    assert state.workspace_root == "/old"
 
 
 @pytest.mark.asyncio

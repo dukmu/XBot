@@ -360,8 +360,6 @@ class CommandResult(WireModel):
     command: str
     status: Literal["ok", "error"]
     message: str
-    data: Any = None
-    history: list[SessionHistoryItem] | None = None
 
 
 class CommandResponse(WireModel):
@@ -435,6 +433,7 @@ class ErrorEventData(ErrorResponse):
 
 
 ServerEventType = Literal[
+    "agent_configured",
     "assistant_message",
     "assistant_message_delta",
     "client_message",
@@ -443,6 +442,7 @@ ServerEventType = Literal[
     "compaction_started",
     "end",
     "error",
+    "history_updated",
     "input_rejected",
     "message",
     "permission_denied",
@@ -630,6 +630,20 @@ class TaskListResponse(WireModel):
     tasks: list[TaskUpdatedData] = Field(default_factory=list)
 
 
+class AgentConfiguredData(WireModel):
+    agent_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    model_mode: str | None = None
+    context_window: int | None = None
+
+
+class HistoryUpdatedData(WireModel):
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    operation: Literal["undo", "clear"] = "undo"
+    turns: int = Field(ge=0)
+
+
 class TaskStopResponse(TaskListResponse):
     matched_count: int = Field(ge=0)
 
@@ -654,6 +668,7 @@ class MessageData(WireModel):
 
 
 _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
+    "agent_configured": AgentConfiguredData,
     "assistant_message": AssistantMessageData,
     "assistant_message_delta": AssistantMessageDeltaData,
     "client_message": ClientMessageData,
@@ -662,6 +677,7 @@ _SERVER_EVENT_DATA_MODELS: dict[str, type[WireModel]] = {
     "compaction_started": CompactionStartedData,
     "end": EndData,
     "error": ErrorEventData,
+    "history_updated": HistoryUpdatedData,
     "input_rejected": InputRejectedData,
     "message": MessageData,
     "permission_denied": PermissionDeniedData,
@@ -730,6 +746,7 @@ SessionMode = Literal["new", "resume"]
 __all__ = [
     "AssistantMessageData",
     "AssistantMessageDeltaData",
+    "AgentConfiguredData",
     "AgentSelectionRequest",
     "AgentSelectionResponse",
     "AgentInfo",
@@ -753,6 +770,7 @@ __all__ = [
     "HelloResponse",
     "HealthResponse",
     "HistoryMutationResponse",
+    "HistoryUpdatedData",
     "ImageInput",
     "InteractionResponse",
     "InteractionRecordedData",

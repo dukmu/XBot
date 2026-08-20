@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.config.loader import load_runtime_config
-from XBotv2.config.policy import load_session_policy
 from XBotv2.core.commands import (
     Command,
     CommandResult,
@@ -26,21 +25,14 @@ async def permission_command(ctx: Any, raw_args: str) -> CommandResult:
     action = parts[0].lower() if parts else "status"
     if action in {"status", "list"} and len(parts) <= 1:
         config = load_runtime_config(ctx.paths, ctx.workspace_root, ctx.session_id)
-        persisted = load_session_policy(ctx.paths, ctx.session_id)
-        data = {
-            "session_id": ctx.session_id,
-            "permissions": persisted.get("permissions") or {},
-            "effective_permissions": config.permissions.model_dump(),
-        }
-        value = data["effective_permissions"]
-        return CommandResult(f"Session permission policy: {value}", data=data)
+        value = config.permissions.model_dump()
+        return CommandResult(f"Session permission policy: {value}")
     if action == "set" and len(parts) == 3:
         tool, decision = parts[1], parts[2].lower()
         if decision not in {"allow", "deny", "ask"}:
             return CommandResult(
                 "Permission value must be allow, deny, or ask.",
                 status="error",
-                data={"code": "invalid_value"},
             )
         return await run_command_operation(
             ctx.services.permissions.update_session_policy(

@@ -19,7 +19,6 @@ from XBotv2.core.commands import (
 )
 from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
-from XBotv2.core.history import display_history
 from XBotv2.session.session import fork_session
 
 
@@ -27,22 +26,16 @@ async def status_command(ctx: Any, raw_args: str) -> CommandResult:
     if raw_args.strip():
         return command_usage("/status")
     settings = ctx.engine.settings
-    data = {
-        "session_id": ctx.session_id,
-        "thread_id": ctx.thread_id,
-        "provider": settings.provider,
-        "model": settings.model,
-        "model_mode": settings.model_mode,
-        "context_window": ctx.engine.context_window,
-        "agent_name": settings.agent_name,
-        "workspace_root": ctx.workspace_root,
-    }
     return CommandResult(
         " ".join(
-            f"{key}={data[key]}"
-            for key in ("session_id", "thread_id", "provider", "model")
-        ),
-        data=data,
+            f"{key}={value}"
+            for key, value in (
+                ("session_id", ctx.session_id),
+                ("thread_id", ctx.thread_id),
+                ("provider", settings.provider),
+                ("model", settings.model),
+            )
+        )
     )
 
 
@@ -52,9 +45,7 @@ async def clear_command(ctx: Any, raw_args: str) -> CommandResult:
     return await run_command_operation(
         ctx.services.session.clear_history(),
         lambda removed: CommandResult(
-            f"Cleared {removed} conversation turns.",
-            data={"removed_turns": removed, "messages": []},
-            history=[],
+            f"Cleared {removed} conversation turns."
         ),
     )
 
@@ -69,20 +60,16 @@ async def undo_command(ctx: Any, raw_args: str) -> CommandResult:
         return CommandResult(
             "Undo count must be a positive integer.",
             status="error",
-            data={"code": "invalid_count"},
         )
     if count < 1:
         return CommandResult(
             "Undo count must be a positive integer.",
             status="error",
-            data={"code": "invalid_count"},
         )
     return await run_command_operation(
         ctx.services.session.undo_history(count),
         lambda messages: CommandResult(
-            f"Removed {count} conversation turn(s).",
-            data={"removed_turns": count, "messages": display_history(messages)},
-            history=display_history(messages),
+            f"Removed {count} conversation turn(s)."
         ),
     )
 
@@ -93,8 +80,7 @@ async def fork_command(ctx: Any, raw_args: str) -> CommandResult:
     return await run_command_operation(
         fork_session(ctx.paths, ctx.session_id, [ctx]),
         lambda session_id: CommandResult(
-            f"Forked session to {session_id}.",
-            data={"session_id": session_id},
+            f"Forked session to {session_id}."
         ),
     )
 

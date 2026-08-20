@@ -39,15 +39,10 @@ async def execute_command(
         return _result(command, f"Unknown server command: /{command}", status="error")
     assert extension.handler is not None
     result = await extension.handler(ctx, raw_args)
-    data = dict(result.data) if isinstance(result.data, dict) else result.data
-    if isinstance(data, dict):
-        data["status_slots"] = await loader.status_slots()
     return _result(
         command,
         result.message,
         status=result.status,
-        data=data,
-        history=result.history,
     )
 
 
@@ -68,8 +63,6 @@ def _result(
     message: str,
     *,
     status: str = "ok",
-    data: Any = None,
-    history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "command_result",
@@ -77,7 +70,5 @@ def _result(
             "command": command,
             "status": status,
             "message": message,
-            "data": data,
-            "history": history,
         },
     }

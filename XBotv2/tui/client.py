@@ -384,6 +384,23 @@ class TuiState:
                 tool.permission_pending = False
                 tool.status = decision if decision else "approved"
                 self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "history_updated":
+            history = data.get("history")
+            if isinstance(history, list):
+                self.restore_history(history)
+            self._refresh_status()
+        elif event_type == "agent_configured":
+            if data.get("agent_name"):
+                self.agent_name = str(data["agent_name"])
+            if data.get("provider"):
+                self.provider = str(data["provider"])
+            if data.get("model"):
+                self.model = str(data["model"])
+            if "model_mode" in data:
+                self.model_mode = str(data["model_mode"] or "")
+            if "context_window" in data:
+                self.context_window = int(data["context_window"] or 0)
+            self._refresh_status()
         elif event_type == "error":
             self._clear_pending_interactions(tool_status="failed")
             self.compaction_active = False

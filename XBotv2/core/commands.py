@@ -17,8 +17,6 @@ _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 class CommandResult:
     message: str
     status: Literal["ok", "error"] = "ok"
-    data: Any = None
-    history: list[dict[str, Any]] | None = None
 
 
 def split_command_args(raw_args: str) -> list[str]:
@@ -29,13 +27,9 @@ def split_command_args(raw_args: str) -> list[str]:
         raise ValueError(f"Invalid command syntax: {error}") from error
 
 
-def command_error(
-    message: str,
-    *,
-    code: str = "command_failed",
-) -> CommandResult:
+def command_error(message: str) -> CommandResult:
     """Build a failing command result without raising through the wire."""
-    return CommandResult(message, status="error", data={"code": code})
+    return CommandResult(message, status="error")
 
 
 def command_usage(usage: str) -> CommandResult:
@@ -68,20 +62,18 @@ async def run_command_operation(
     Command handlers use this instead of awaiting a use case directly:
     ``OperationError`` / ``ValueError`` become a ``CommandResult`` with
     ``status="error"`` (never a raised wire error), and ``render(data)`` may
-    return a ``CommandResult`` or a message string (data is then attached).
+    return a ``CommandResult`` or a message string.
     """
     try:
         data = await coroutine
     except OperationError as error:
-        return CommandResult(str(error), status="error", data={"code": error.code})
+        return CommandResult(str(error), status="error")
     except ValueError as error:
-        return CommandResult(
-            str(error), status="error", data={"code": "invalid_command"}
-        )
+        return CommandResult(str(error), status="error")
     result = render(data)
     if isinstance(result, CommandResult):
         return result
-    return CommandResult(result, data=data)
+    return CommandResult(result)
 
 
 @dataclass(frozen=True, slots=True)

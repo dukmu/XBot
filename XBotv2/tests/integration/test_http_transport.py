@@ -1086,11 +1086,10 @@ async def test_http_builtin_commands_execute_through_command_plane(
     listed = await run("/model list")
     assert listed["status"] == "ok"
     assert "default: test*" in listed["message"]
-    assert listed["data"]["current_model"] == "test"
 
     switched = await run("/model use test")
     assert switched["status"] == "ok"
-    assert switched["data"]["model"] == "test"
+    assert switched["message"] == "Model switched to default (test)."
 
     effort = await run("/effort")
     assert effort["status"] == "ok"
@@ -1099,7 +1098,6 @@ async def test_http_builtin_commands_execute_through_command_plane(
     reloaded = await run("/reload")
     assert reloaded["status"] == "ok"
     assert "Reloaded" in reloaded["message"]
-    assert reloaded["data"]["provider"] == "default"
 
     tasks = await run("/tasks")
     assert tasks["status"] == "ok"
@@ -1115,11 +1113,11 @@ async def test_http_builtin_commands_execute_through_command_plane(
 
     policy = await run("/permission status")
     assert policy["status"] == "ok"
-    assert "effective_permissions" in policy["data"]
+    assert "Session permission policy:" in policy["message"]
 
     sandbox = await run("/sandbox status")
     assert sandbox["status"] == "ok"
-    assert "effective_sandbox" in sandbox["data"]
+    assert "Session sandbox policy:" in sandbox["message"]
 
 
 @pytest.mark.asyncio

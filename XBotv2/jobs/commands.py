@@ -31,7 +31,7 @@ async def tasks_command(ctx: Any, raw_args: str) -> CommandResult:
         f"{task['kind']}  {task['task_id']}  {task['status']}  {task['command']}"
         for task in tasks
     )
-    return CommandResult(message, data={"tasks": tasks})
+    return CommandResult(message)
 
 
 async def task_command(ctx: Any, raw_args: str) -> CommandResult:
@@ -42,24 +42,22 @@ async def task_command(ctx: Any, raw_args: str) -> CommandResult:
             return _error("Jobs registry is not loaded.")
         job = registry.get_or_none(parts[1])
         if job is None:
-            return _error(f"Unknown task: {parts[1]}", code="task_not_found")
+            return _error(f"Unknown task: {parts[1]}")
         await registry.cancel(parts[1])
         return CommandResult(
-            f"Stopped background task {parts[1]}.",
-            data=registry.snapshot(job),
+            f"Stopped background task {parts[1]}."
         )
     if parts == ["stopall"]:
         registry = ctx.services.get("jobs")
         tasks = await registry.stop_all() if registry is not None else []
         return CommandResult(
-            f"Stopped {len(tasks)} background task(s).",
-            data={"matched_count": len(tasks), "tasks": tasks},
+            f"Stopped {len(tasks)} background task(s)."
         )
     return command_usage("/task stop <id> | /task stopall")
 
 
-def _error(message: str, *, code: str = "command_failed") -> CommandResult:
-    return CommandResult(message, status="error", data={"code": code})
+def _error(message: str) -> CommandResult:
+    return CommandResult(message, status="error")
 
 
 JOBS_COMMANDS: tuple[Command, ...] = (

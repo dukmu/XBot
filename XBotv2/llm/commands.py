@@ -25,9 +25,7 @@ async def provider_command(ctx: Any, raw_args: str) -> CommandResult:
     action = parts[0].lower() if parts else "status"
     if action == "status" and len(parts) <= 1:
         data = _model_status(ctx)
-        return CommandResult(
-            f"Provider: {data['provider']} ({data['model']})", data=data
-        )
+        return CommandResult(f"Provider: {data['provider']} ({data['model']})")
     if action == "list" and len(parts) == 1:
         return _provider_list(ctx)
     if action == "use" and len(parts) == 2:
@@ -45,22 +43,18 @@ async def model_command(ctx: Any, raw_args: str) -> CommandResult:
     action = parts[0].lower() if parts else "status"
     if action == "status" and len(parts) <= 1:
         data = _model_status(ctx)
-        return CommandResult(
-            f"Model: {data['provider']} ({data['model']})", data=data
-        )
+        return CommandResult(f"Model: {data['provider']} ({data['model']})")
     if action == "list" and len(parts) == 1:
-        listed = _provider_list(ctx)
+        providers = _provider_catalog(ctx)
         current = ctx.engine.settings.model
-        data = dict(listed.data or {})
-        data["current_model"] = current
         lines = []
-        for item in data.get("providers") or []:
+        for item in providers:
             models = ", ".join(
                 f"{model['model']}{'*' if model['model'] == current else ''}"
                 for model in item["models"]
             )
             lines.append(f"{item['name']}: {models}")
-        return CommandResult("Models: " + " | ".join(lines), data=data)
+        return CommandResult("Models: " + " | ".join(lines))
     if action == "use":
         rest = [part for part in parts[1:] if part]
         if len(rest) == 1:
@@ -100,15 +94,7 @@ async def effort_command(ctx: Any, raw_args: str) -> CommandResult:
             if tiers
             else "; model advertises no effort tiers"
         )
-        return CommandResult(
-            message,
-            data={
-                "provider": settings.provider,
-                "model": settings.model,
-                "model_mode": settings.model_mode,
-                "effort": tiers,
-            },
-        )
+        return CommandResult(message)
     if len(parts) == 1:
         return await _select_effort(
             ctx,
@@ -127,19 +113,17 @@ async def _select_provider(
         return CommandResult(
             "Cannot switch provider while a turn is active.",
             status="error",
-            data={"code": "thread_busy"},
         )
     async with ctx.turn_lock:
         try:
             selected = await ctx.services.agents.select_provider(name, model=model)
         except ValueError as error:
             return CommandResult(
-                str(error), status="error", data={"code": "selection_failed"}
+                str(error), status="error"
             )
         ctx.provider_name = selected["provider"]
     return CommandResult(
         f"{verb} {selected['provider']} ({selected['model']}).",
-        data=selected,
     )
 
 
@@ -148,20 +132,18 @@ async def _select_effort(ctx: Any, level: str) -> CommandResult:
         return CommandResult(
             "Cannot switch effort while a turn is active.",
             status="error",
-            data={"code": "thread_busy"},
         )
     async with ctx.turn_lock:
         try:
             selected = await ctx.services.agents.select_effort(level)
         except ValueError as error:
             return CommandResult(
-                str(error), status="error", data={"code": "unsupported_effort"}
+                str(error), status="error"
             )
         ctx.provider_name = selected["provider"]
     return CommandResult(
         f"Effort switched to {selected['reasoning_effort']} "
         f"({selected['model_mode']}).",
-        data=selected,
     )
 
 
@@ -203,9 +185,22 @@ def _provider_list(ctx: Any) -> CommandResult:
     llm = ctx.services.get("llm")
     if llm is None:
         return CommandResult(
-            "LLM plugin is not loaded.", status="error", data={"code": "unavailable"}
+            "LLM plugin is not loaded.", status="error"
         )
     current = ctx.engine.settings.provider
+    providers = _provider_catalog(ctx)
+    return CommandResult(
+        "Providers: " + ", ".join(
+            f"{item['name']}{' (current)' if item['name'] == current else ''}"
+            for item in providers
+        )
+    )
+
+
+def _provider_catalog(ctx: Any) -> list[dict[str, Any]]:
+    llm = ctx.services.get("llm")
+    if llm is None:
+        return []
     providers = []
     for name in llm.names():
         entry = llm.provider_config(name, require_key=False)
@@ -226,13 +221,7 @@ def _provider_list(ctx: Any) -> CommandResult:
                 for model in entry.models
             ],
         })
-    return CommandResult(
-        "Providers: " + ", ".join(
-            f"{item['name']}{' (current)' if item['name'] == current else ''}"
-            for item in providers
-        ),
-        data={"providers": providers, "current": current},
-    )
+    return providers
 
 
 __all__ = ["LLM_COMMANDS", "provider_command", "model_command", "effort_command"]

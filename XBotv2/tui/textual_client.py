@@ -577,47 +577,12 @@ class XBotTextualApp(App[None]):
             )
             data = result.get("data") if isinstance(result, dict) else {}
             message = str(data.get("message") or result)
-            command_data = data.get("data")
-            metadata = command_data if isinstance(command_data, dict) else data
-            history = data.get("history")
         except ValueError as exc:
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
         except Exception as exc:
             self._record_error(exc)
             return
-        if isinstance(metadata, dict):
-            metadata_changed = False
-            if metadata.get("agent_name"):
-                self.state.agent_name = str(metadata["agent_name"])
-                metadata_changed = True
-            if metadata.get("provider"):
-                self.state.provider = str(metadata["provider"])
-                metadata_changed = True
-            if metadata.get("model"):
-                self.state.model = str(metadata["model"])
-                metadata_changed = True
-            if "model_mode" in metadata:
-                self.state.model_mode = str(metadata["model_mode"] or "")
-                metadata_changed = True
-            slots = metadata.get("status_slots")
-            if isinstance(slots, dict):
-                self.state.status_slots = {
-                    str(name): str(value) for name, value in slots.items()
-                }
-                metadata_changed = True
-            if "context_window" in metadata:
-                self.state.context_window = int(metadata["context_window"] or 0)
-                metadata_changed = True
-            if metadata.get("workspace_root"):
-                self.state.workspace_root = str(metadata["workspace_root"])
-                metadata_changed = True
-            if metadata_changed:
-                self._refresh_status()
-        if isinstance(history, list):
-            await self._cmd_clear()
-            self.state.restore_history(history)
-            await self._render_new_transcript_entries()
         await self._append_local_notice(f"/{spec.name}", message)
 
     async def _cmd_clear(self) -> None:
@@ -1139,6 +1104,13 @@ class XBotTextualApp(App[None]):
             await self._refresh_changed_tool_widgets()
         elif event_type == "task_updated":
             self._refresh_task_panel()
+        elif event_type == "history_updated":
+            await self._cmd_clear()
+            data = event.get("data") or {}
+            history = data.get("history")
+            if isinstance(history, list):
+                self.state.restore_history(history)
+            await self._render_new_transcript_entries()
         elif event_type == "permission_request":
             await self._render_new_transcript_entries()
             await self._refresh_changed_tool_widgets()

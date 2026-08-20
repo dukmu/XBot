@@ -31,22 +31,7 @@ async def agent_command(ctx: Any, raw_args: str) -> CommandResult:
             return _error(str(error))
         ctx.provider_name = ctx.engine.settings.provider
         return CommandResult(
-            f"Reloaded {len(data['agents'])} Agent definitions.",
-            data={
-                "active": data["active"],
-                "agents": [
-                    {
-                        "name": definition.name,
-                        "description": definition.description,
-                        "mode": definition.mode,
-                        "provider": definition.provider or "",
-                        "model": definition.model or "",
-                        "context_window": definition.context_window or 0,
-                    }
-                    for definition in data["agents"]
-                    if not definition.hidden
-                ],
-            },
+            f"Reloaded {len(data['agents'])} Agent definitions."
         )
     if action in {"status", "list"} and len(parts) <= 1:
         return _agent_list(ctx, action)
@@ -64,8 +49,7 @@ async def agent_command(ctx: Any, raw_args: str) -> CommandResult:
     except (ValueError, RuntimeError) as error:
         return _error(str(error))
     return CommandResult(
-        f"Active Agent: {data['agent_name']}.",
-        data=data,
+        f"Active Agent: {data['agent_name']}."
     )
 
 
@@ -85,31 +69,18 @@ def _agent_list(ctx: Any, action: str) -> CommandResult:
         for definition in ctx.services.agents.definitions()
         if not definition.hidden
     ]
-    data = {
-        "active": ctx.engine.settings.agent_name,
-        "agents": [
-            {
-                "name": definition.name,
-                "description": definition.description,
-                "mode": definition.mode,
-                "provider": definition.provider or "",
-                "model": definition.model or "",
-                "context_window": definition.context_window or 0,
-            }
-            for definition in definitions
-        ],
-    }
-    lines = [f"Active Agent: {data['active']}"]
+    active = ctx.engine.settings.agent_name
+    lines = [f"Active Agent: {active}"]
     if action == "list":
         lines.extend(
-            f"{item['name']}  {item['mode']}  {item['description']}"
-            for item in data["agents"]
+            f"{definition.name}  {definition.mode}  {definition.description}"
+            for definition in definitions
         )
-    return CommandResult("\n".join(lines), data=data)
+    return CommandResult("\n".join(lines))
 
 
 def _error(message: str) -> CommandResult:
-    return CommandResult(message, status="error", data={"code": "command_failed"})
+    return CommandResult(message, status="error")
 
 
 __all__ = ["AGENTS_COMMANDS", "agent_command"]

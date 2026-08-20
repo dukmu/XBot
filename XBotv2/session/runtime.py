@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
+from XBotv2.core.history import display_history
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
 logger = logging.getLogger("xbotv2.session")
@@ -75,6 +76,8 @@ class SessionRuntime:
         self.services.on(Events.RUNTIME_EVENT, self._on_runtime_event)
         self.services.on(Events.JOB_UPDATED, self._on_job_updated)
         self.services.on(Events.JOB_COMPLETED, self._on_job_completed)
+        self.services.on(Events.STATE_CHANGED, self._on_state_changed)
+        self.services.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
@@ -94,6 +97,41 @@ class SessionRuntime:
 
     async def _on_job_completed(self, event: EventContext) -> None:
         await self._enqueue_job_completion(dict(event.event or {}))
+
+    async def _on_state_changed(self, event: EventContext) -> None:
+        """Project history replacement (``/clear``, ``/undo``) as an event."""
+        operation = (event.event or {}).get("history_operation")
+        if not operation or self.session_events is None:
+            return
+        op, turns = operation
+        await self.session_events.put({
+            "type": "history_updated",
+            "data": {
+                "history": display_history(event.messages or []),
+                "operation": op,
+                "turns": turns,
+            },
+        })
+
+    async def _on_agent_configured(self, event: EventContext) -> None:
+        """Project provider/model selection changes for status displays."""
+        config = event.config
+        data = {
+            key: value
+            for key in (
+                "agent_name",
+                "provider",
+                "model",
+                "model_mode",
+                "context_window",
+            )
+            if (value := getattr(config, key, None)) is not None
+        }
+        if data and self.session_events is not None:
+            await self.session_events.put({
+                "type": "agent_configured",
+                "data": data,
+            })
 
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
         if self.session_events is not None:

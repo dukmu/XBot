@@ -85,7 +85,7 @@ history.
 
 `/clear`, `/undo`, and `/clear-screen` replace the mounted transcript widgets,
 not only the client-side history model. Server history mutations redraw from
-the authoritative history returned by the command.
+the authoritative history delivered by the `history_updated` stream event.
 
 Policy commands validate keys and values. `set` and `reset` both update the
 session overrides and the live in-memory session policy. Sandbox reset removes

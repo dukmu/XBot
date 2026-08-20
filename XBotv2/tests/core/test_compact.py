@@ -229,8 +229,6 @@ async def test_human_command_compacts_and_persists_immediately(
     )
 
     assert result.status == "ok"
-    assert result.data.get("requested") is True
-    assert result.data.get("compacted") is True
     history_chars_before = _history_chars(original)
     history_chars_after = _history_chars(engine.messages)
     # Compaction reduces message count; character count may not always decrease

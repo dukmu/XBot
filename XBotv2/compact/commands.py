@@ -37,7 +37,6 @@ async def run_compact_command(
         return CommandResult(
             "Usage: /compact",
             status="error",
-            data={"requested": False},
         )
 
     await ctx.turn_lock.acquire()
@@ -50,7 +49,6 @@ async def run_compact_command(
             return CommandResult(
                 f"Conversation compaction failed: {exc}",
                 status="error",
-                data={"requested": False},
             )
     finally:
         ctx.turn_lock.release()
@@ -61,18 +59,13 @@ async def run_compact_command(
         return CommandResult(
             str(data.get("message") or "Conversation compaction was rejected."),
             status="error",
-            data={"requested": True, "compacted": False},
         )
     if not (isinstance(result, dict) and result.get("rebuild")):
         return CommandResult(
             "Conversation history is too short to compact.",
-            data={"requested": False, "compacted": False},
         )
 
-    data: dict[str, Any] = {"requested": True, "compacted": True}
-    if metrics:
-        data["metrics"] = metrics
-    return CommandResult(compact_result_message(metrics), data=data)
+    return CommandResult(compact_result_message(metrics))
 
 
 __all__ = ["compact_result_message", "run_compact_command"]

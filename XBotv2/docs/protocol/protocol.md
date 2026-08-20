@@ -275,6 +275,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 
 | Event | Data |
 |---|---|
+| `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` |
 | `turn_started` | `{turn}` |
 | `turn_finished` | `{turn}` |
 | `turn_cancelled` | `{turn, reason}` |
@@ -285,6 +286,7 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `tool_calls_started` | `{tool_calls: [{id, name, args, type}]}` |
 | `tool_result` | `{tool_call_id, name, content, status, data?, error?, artifacts?}` |
 | `task_updated` | `{task_id, kind, command, cwd, status, created_at, started_at, finished_at, output, error, agent?, thread_id?, usage?}` |
+| `history_updated` | `{history, operation, turns}` |
 | `client_message` | `{message, level, source, tool_call_id}` |
 | `permission_denied` | `{request_id, reason, tool_call, decision}` |
 | `permission_request` | `{request_id, source, reason, tool_call, decision, resume_supported}` |

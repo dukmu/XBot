@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.config.loader import load_runtime_config
-from XBotv2.config.policy import load_session_policy
 from XBotv2.core.commands import (
     Command,
     CommandResult,
@@ -25,14 +24,8 @@ async def sandbox_command(ctx: Any, raw_args: str) -> CommandResult:
     action = parts[0].lower() if parts else "status"
     if action in {"status", "list"} and len(parts) <= 1:
         config = load_runtime_config(ctx.paths, ctx.workspace_root, ctx.session_id)
-        persisted = load_session_policy(ctx.paths, ctx.session_id)
-        data = {
-            "session_id": ctx.session_id,
-            "sandbox": persisted.get("sandbox") or {},
-            "effective_sandbox": config.sandbox.model_dump(),
-        }
         return CommandResult(
-            f"Session sandbox policy: {data['effective_sandbox']}", data=data
+            f"Session sandbox policy: {config.sandbox.model_dump()}"
         )
     if action == "set" and len(parts) == 3:
         key, value = parts[1], parts[2].lower()
@@ -40,7 +33,7 @@ async def sandbox_command(ctx: Any, raw_args: str) -> CommandResult:
             parsed = _sandbox_value(key, value)
         except ValueError as error:
             return CommandResult(
-                str(error), status="error", data={"code": "invalid_value"}
+                str(error), status="error"
             )
         return await run_command_operation(
             ctx.services.permissions.update_session_policy(
