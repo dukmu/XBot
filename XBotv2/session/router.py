@@ -50,7 +50,6 @@ from XBotv2.session.http_util import (
 )
 from XBotv2.server.contracts import contribute_router
 from XBotv2.server.contracts import ServerOptions
-from XBotv2.server.events import ServerEvents
 from XBotv2.server.http import ModelOverride
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
 from XBotv2.session.session import fork_persisted_session
@@ -72,7 +71,6 @@ def build_session_router(
     *,
     manager: SessionManager,
     options: ServerOptions,
-    server_events: ServerEvents,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
 
@@ -450,14 +448,6 @@ def build_session_router(
                     if event is None:
                         return
                     seq += 1
-                    event_type = str(event.get("type") or "")
-                    if event_type:
-                        event = {
-                            **event,
-                            "data": server_events.validate(
-                                event_type, event.get("data")
-                            ),
-                        }
                     yield _format_sse(
                         event=event,
                         seq=seq,
@@ -562,33 +552,19 @@ class SessionRouterPlugin:
     """Register the session HTTP surface into ``ctx.web_server``.
 
     The session capability owns its routes: when the server tree mounts this
-    plugin, it registers the session router and its stream-event DTOs into the
-    dumb ``ctx.web_server`` / ``ctx.server_events`` carriers.  Registration is
-    a fiber effect, so it is undone when the plugin unloads.
+    plugin, it contributes the session router to the dumb ``ctx.web_server``
+    carrier. Registration is a fiber effect, so it is undone when the plugin
+    unloads.
     """
 
     inject = [
         'server',
         'session_host',
-        'server_events',
         'server_options',
     ]
     name = "xbot.session.router"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
-        from XBotv2.session.events import (
-            AgentConfiguredData,
-            ClientMessageData,
-            HistoryUpdatedData,
-        )
-
-        for event_type, dto in (
-            ("client_message", ClientMessageData),
-            ("history_updated", HistoryUpdatedData),
-            ("agent_configured", AgentConfiguredData),
-        ):
-            ctx.effect(lambda t=event_type, d=dto: ctx.server_events.register(t, d))
-
         async def _on_session_not_found(
             _: Request, exc: SessionNotFound
         ) -> JSONResponse:
@@ -611,7 +587,6 @@ class SessionRouterPlugin:
             router=build_session_router(
                 manager=ctx.session_host,
                 options=ctx.server_options,
-                server_events=ctx.server_events,
             ),
             exception_handlers=(
                 (SessionNotFound, _on_session_not_found),

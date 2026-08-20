@@ -1,27 +1,29 @@
 # API Inventory
 
-This inventory records the current supported Python extension surface. It is
-kept in sync with `XBotv2.core.__all__` and `tests/core/test_public_api.py`.
-Updating the list is allowed, but it must be deliberate, documented, and tested.
+This inventory records the shared core extension surface and the plugin-owned
+declaration rule. It is kept in sync by `tests/core/test_public_api.py`.
+Updating an export is allowed, but it must be deliberate, documented, and
+tested.
 
 ## Import Rule
 
-Plugins and external extensions import the shared contracts from:
+Plugins and external extensions import shared contracts from:
 
 ```python
 from XBotv2.core import ...
 ```
 
-Job contracts are imported from core, while the jobs package exposes runtime
-implementations only:
+Plugin-owned declarations are imported from the owning package root:
 
 ```python
-from XBotv2.core.jobs import ...
-from XBotv2.jobs import JobRegistry, JobRunner
+from XBotv2.jobs import LIST_TASKS, TaskSnapshot
+from XBotv2.llm import LlmCatalogPort, ProviderCatalog
 ```
 
-Feature plugins must not import these contracts from `XBotv2.jobs`; that would
-make a plugin masquerade as their owner.
+Package roots may re-export explicit declaration modules only: `types`,
+`invariants`, `commands`, `events`, `services`, and transitional `contracts`.
+They must not export concrete registries, services, managers, routers, or
+plugin implementations.
 
 ## Exported Symbols (XBotv2.core)
 
@@ -89,6 +91,10 @@ The background job subsystem contract: `Job`, `JobStatus`, `JobKind`,
 
 ## Exported Symbols (`XBotv2.jobs`)
 
-Runtime implementations only: `JobRegistry`, `JobContext`, `JobRunner`,
-`OutputStore`, `TextOutputStore`, `StreamOutputStore`, `OutputChunk`,
-`CombinedShellOutput`, `job_summary`, and `normalize_error`.
+The package root exports the typed operations and DTOs from `contracts.py` plus
+the command declarations from `commands.py`. `JobRegistry`, output stores, and
+runner implementations are deliberately excluded.
+
+The same rule applies to the `llm`, `session`, `permissions`, and `sandbox`
+package roots. Packages without an explicit declaration module do not expose
+their concrete implementation through `__init__.py`.

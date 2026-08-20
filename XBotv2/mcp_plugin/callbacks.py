@@ -14,22 +14,8 @@ from XBotv2.core import Message, prompt_element
 logger = logging.getLogger("xbotv2.mcp")
 
 
-def client_callbacks(services: Any, session: Any) -> dict[str, Any]:
-    def _llm() -> Any | None:
-        return services.get("llm")
-
-    def _request_user_input() -> Any | None:
-        interactions = services.get("interactions")
-        if interactions is not None and hasattr(
-            interactions, "request_user_input"
-        ):
-            return interactions.request_user_input
-        return None
-
+def client_callbacks(model: Any, interactions: Any, session: Any) -> dict[str, Any]:
     async def sample(_request_context: Any, params: Any) -> Any:
-        llm = _llm()
-        if llm is None:
-            return types.ErrorData(code=-32603, message="Model invocation unavailable")
         messages: list[Message] = []
         if params.systemPrompt:
             messages.append(Message(
@@ -49,7 +35,7 @@ def client_callbacks(services: Any, session: Any) -> dict[str, Any]:
                 )
             messages.append(Message(role=message.role, content=text))
         aggregate: Any = None
-        async for chunk in llm.astream(messages):
+        async for chunk in model.astream(messages):
             aggregate = _merge_response(aggregate, chunk)
         if aggregate is None:
             return types.ErrorData(
@@ -69,13 +55,13 @@ def client_callbacks(services: Any, session: Any) -> dict[str, Any]:
         )
 
     async def elicit(_request_context: Any, params: Any) -> Any:
-        request_user_input = _request_user_input()
-        if request_user_input is None:
-            return types.ElicitResult(action="cancel")
         question = params.message
         if isinstance(params, types.ElicitRequestURLParams):
             question = f"{question}\n{params.url}"
-        result = await request_user_input(question, source="mcp_elicitation")
+        result = await interactions.request_user_input(
+            question,
+            source="mcp_elicitation",
+        )
         if result.get("status") != "answered":
             return types.ElicitResult(action="cancel")
         answer = result.get("answer")

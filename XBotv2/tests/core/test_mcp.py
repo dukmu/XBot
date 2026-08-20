@@ -226,8 +226,6 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
     from mcp import types
     from XBotv2.core import SessionInfo
     from XBotv2.llm.mock import MockLLM
-    from xcore import Context
-
     requested = []
     llm = MockLLM(responses=[{"content": "Done"}])
 
@@ -236,12 +234,9 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
             requested.append((question, kwargs))
             return {"status": "answered", "answer": "focused"}
 
-    services = Context()
-    services.set("llm", llm)
-    services.set("interactions", FakeInteractions())
-
     callbacks = client_callbacks(
-        services,
+        llm,
+        FakeInteractions(),
         SessionInfo(
             session_id="s",
             thread_id="t",
@@ -304,10 +299,24 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
 
 def _mcp_plugin(servers):
     from XBotv2.mcp_plugin.plugin import MCPPlugin
+    from XBotv2.core import SessionInfo
     from plugin_harness import mount_plugin_standalone
 
     plugin = MCPPlugin()
     mount_plugin_standalone(plugin, {"servers": servers})
+    plugin.ctx.set(
+        "interactions",
+        type("Interactions", (), {"request_user_input": AsyncMock()})(),
+    )
+    plugin.ctx.set(
+        "session",
+        SessionInfo(
+            session_id="s",
+            thread_id="t",
+            workspace_root=str(plugin.ctx.workspace_root),
+            provider="mock",
+        ),
+    )
     plugin._client.connect_and_list = AsyncMock()
     plugin._client.server_capabilities = lambda _server: {"tools": {}}
     plugin._client.disconnect = AsyncMock(return_value=True)
@@ -322,11 +331,11 @@ async def test_optional_server_registration_failure_rolls_back_that_server():
         _tool_definition("duplicate"),
         _tool_definition("duplicate"),
     ]
-    registry = plugin.ctx.tools.registry
+    tools = plugin.ctx.tools
 
     await plugin._on_session_init(EventContext())
 
-    assert registry.registered_names() == []
+    assert tools.registered_names() == ()
     assert plugin._server_tools == {}
     assert plugin._server_status["optional"]["status"] == "error"
     assert plugin._initialized is True
@@ -343,12 +352,12 @@ async def test_required_server_registration_failure_rolls_back_all_servers():
         [_tool_definition("first")],
         [_tool_definition("duplicate"), _tool_definition("duplicate")],
     ]
-    registry = plugin.ctx.tools.registry
+    tools = plugin.ctx.tools
 
     with pytest.raises(ValueError, match="already registered"):
         await plugin._on_session_init(EventContext())
 
-    assert registry.registered_names() == []
+    assert tools.registered_names() == ()
     assert plugin._server_tools == {}
     assert plugin._initialized is False
     assert plugin._client.disconnect.await_args_list == [
@@ -362,20 +371,20 @@ async def test_required_server_registration_failure_rolls_back_all_servers():
 async def test_session_close_removes_tools_and_allows_reinitialization():
     plugin = _mcp_plugin({"server": {}})
     plugin._client.connect_and_list.return_value = [_tool_definition("echo")]
-    registry = plugin.ctx.tools.registry
+    tools = plugin.ctx.tools
 
     await plugin._on_session_init(EventContext())
     registered_name = "mcp:server:mcp__server__echo"
-    assert registry.registered(registered_name)
+    assert registered_name in tools.registered_names()
 
     await plugin._on_session_close(EventContext())
-    assert registry.registered_names() == []
+    assert tools.registered_names() == ()
     assert plugin._server_tools == {}
     assert plugin._server_status == {}
     assert plugin._initialized is False
 
     await plugin._on_session_init(EventContext())
-    assert registry.registered(registered_name)
+    assert registered_name in tools.registered_names()
     assert plugin._client.connect_and_list.await_count == 2
 
 
@@ -395,7 +404,7 @@ async def test_negotiated_server_features_register_agent_bridges():
     plugin._client.complete = AsyncMock(return_value={
         "completion": {"values": ["one"]},
     })
-    registry = plugin.ctx.tools.registry
+    tools = plugin.ctx.tools
 
     await plugin._on_session_init(EventContext())
 
@@ -403,21 +412,21 @@ async def test_negotiated_server_features_register_agent_bridges():
         "status": "ready", "tools": 0, "bridges": 3,
     }
     assert len(plugin._server_tools["server"]) == 3
-    resource = registry.get("mcp:server:mcp__server__protocol_resources")
-    prompt = registry.get("mcp:server:mcp__server__protocol_prompts")
-    completion = registry.get("mcp:server:mcp__server__protocol_complete")
+    resource = tools.resolve("mcp:server:mcp__server__protocol_resources")
+    prompt = tools.resolve("mcp:server:mcp__server__protocol_prompts")
+    completion = tools.resolve("mcp:server:mcp__server__protocol_complete")
     assert resource is not None and prompt is not None and completion is not None
-    assert resource.tool.parameters["properties"]["operation"]["enum"] == [
+    assert resource.parameters["properties"]["operation"]["enum"] == [
         "list", "read",
     ]
 
-    read_result = await resource.tool.ainvoke({
+    read_result = await resource.ainvoke({
         "operation": "read", "uri": "memo://one",
     })
-    prompt_result = await prompt.tool.ainvoke({
+    prompt_result = await prompt.ainvoke({
         "operation": "get", "name": "review", "arguments": {"scope": "diff"},
     })
-    completion_result = await completion.tool.ainvoke({
+    completion_result = await completion.ainvoke({
         "reference_type": "prompt",
         "reference": "review",
         "argument": {"name": "scope", "value": "d"},

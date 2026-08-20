@@ -53,6 +53,41 @@ def test_public_api_inventory_is_explicit():
     assert all(hasattr(public_api, name) for name in documented)
 
 
+def test_plugin_package_roots_export_declarations_not_implementations():
+    import XBotv2.jobs as jobs
+    import XBotv2.llm as llm
+    import XBotv2.permissions as permissions
+    import XBotv2.sandbox as sandbox
+    import XBotv2.session as session
+
+    assert set(jobs.__all__) >= {
+        "JobsCommandPort",
+        "LIST_TASKS",
+        "TaskSnapshot",
+    }
+    assert set(llm.__all__) >= {
+        "LIST_PROVIDERS",
+        "LlmCatalogPort",
+        "ProviderCatalog",
+    }
+    assert permissions.__all__ == ["build_permissions_commands"]
+    assert sandbox.__all__ == ["build_sandbox_commands"]
+    assert set(session.__all__) >= {
+        "AgentApplicationFactory",
+        "SessionPort",
+        "SessionRef",
+    }
+    for module, forbidden in (
+        (jobs, {"JobRegistry", "JobRunner"}),
+        (llm, {"LlmService", "ModelService"}),
+        (permissions, {"PermissionSystem"}),
+        (sandbox, {"SandboxPolicy"}),
+        (session, {"Session", "SessionManager", "SessionRuntime"}),
+    ):
+        assert forbidden.isdisjoint(module.__all__)
+        assert all(not hasattr(module, name) for name in forbidden)
+
+
 def test_public_api_exports_core_extension_types():
     assert ToolCall(id="1", name="read").args == {}
     assert ContextComponent(

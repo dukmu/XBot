@@ -208,7 +208,6 @@ def test_server_event_rejects_incomplete_interaction_payloads(
     with pytest.raises(ValidationError):
         ServerEvent(type=event_type, data=data)
 
-
 @pytest.mark.parametrize(
     ("event_type", "data"),
     [
@@ -289,34 +288,3 @@ def test_server_event_rejects_invalid_client_and_tool_call_payloads(
 ) -> None:
     with pytest.raises(ValidationError):
         ServerEvent(type=event_type, data=data)
-
-
-@pytest.mark.parametrize(
-    ("event_type", "data"),
-    [
-        ("task_updated", {"task_id": "task-1", "status": "running"}),
-        (
-            "client_message",
-            {"message": "notice", "level": "info", "source": ""},
-        ),
-    ],
-)
-def test_registered_events_reject_invalid_payloads_via_registry(
-    event_type: str,
-    data: dict[str, object],
-) -> None:
-    from XBotv2.compact.events import CompactionStartedData
-    from XBotv2.protocol.models import TaskUpdatedData
-    from XBotv2.server.events import ServerEvents
-    from XBotv2.session.events import ClientMessageData, HistoryUpdatedData
-
-    registry = ServerEvents()
-    for etype, dto in (
-        ("client_message", ClientMessageData),
-        ("history_updated", HistoryUpdatedData),
-        ("compaction_started", CompactionStartedData),
-        ("task_updated", TaskUpdatedData),
-    ):
-        registry.register(etype, dto)
-    with pytest.raises(ValidationError):
-        registry.validate(event_type, dict(data))

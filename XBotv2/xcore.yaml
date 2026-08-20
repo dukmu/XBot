@@ -283,10 +283,6 @@
   profiles: [server]
   reloadable: false
 
-- id: server.events
-  name: server.event_registry
-  profiles: [server]
-
 - id: server.routes.core
   name: http_transport.core
   profiles: [server]

@@ -29,7 +29,7 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
     from xcore import Context
-    from XBotv2.jobs import JobRegistry
+    from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
     from XBotv2.agents.catalog import AgentCatalog
     from XBotv2.context_builder.builder import ContextBuilder
@@ -320,14 +320,14 @@ class TestOrderIndependence:
         """A shuffled xcore.yaml still activates every plugin (inject-driven)."""
         import random
 
-        from XBotv2.config import tree as config_tree
+        from XBotv2.application import tree as application_tree
         from XBotv2.application import start_application
         from XBotv2.core.paths import RuntimePaths
         from XBotv2.llm.mock import MockLLM
         from XBotv2.loader import PluginTree
 
         # Shuffle the bundled tree (config preserved) into a temp yaml.
-        tree = PluginTree.from_yaml(config_tree.DEFAULT_TREE).for_profile("agent")
+        tree = PluginTree.from_yaml(application_tree.DEFAULT_TREE).for_profile("agent")
         entries = list(tree.entries)
         random.Random(7).shuffle(entries)
         lines = []
@@ -342,7 +342,7 @@ class TestOrderIndependence:
                 lines.append("  disabled: true")
         shuffled = tmp_path / "shuffled.yaml"
         shuffled.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setattr(config_tree, "DEFAULT_TREE", shuffled)
+        monkeypatch.setattr(application_tree, "DEFAULT_TREE", shuffled)
 
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
         paths.config_dir.mkdir(parents=True, exist_ok=True)

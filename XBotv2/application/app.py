@@ -20,7 +20,7 @@ from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.application.services import ParentPermissions, SessionLaunch
 from XBotv2.config.seed import ensure_initial_config
-from XBotv2.config.tree import load_agent_tree
+from XBotv2.application.tree import load_agent_tree
 from XBotv2.core.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.operations import dispatch_operation
 from XBotv2.agents.contracts import INITIALIZE_AGENT
@@ -73,13 +73,6 @@ async def start_application(
 
     tree = load_agent_tree(
         paths=paths,
-        session_paths=session_paths,
-        session_id=session_id,
-        thread_id=thread_id,
-        workspace_root=workspace_root,
-        provider_name=provider_name,
-        parent_permission_system=parent_permission_system,
-        interactive=interactive,
         is_subagent=is_subagent,
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,

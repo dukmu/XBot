@@ -1,30 +1,26 @@
-"""Unified runtime job subsystem.
+"""Public declarations for the background-jobs plugin."""
 
-Internal jobs (subagent, shell, and future kinds) share one lifecycle model so
-the registry owns waiting, cancellation, output storage, and cleanup. Domain
-adapters implement a ``JobRunner`` and expose typed, model-facing tools; the
-generic ``job``/``task`` vocabulary never reaches the model.
-"""
-
-from XBotv2.jobs.output import (
-    CombinedShellOutput,
-    OutputChunk,
-    OutputStore,
-    StreamOutputStore,
-    TextOutputStore,
+from XBotv2.jobs.commands import JobsCommandPort, build_jobs_commands
+from XBotv2.jobs.contracts import (
+    LIST_TASKS,
+    STOP_ALL_TASKS,
+    STOP_TASK,
+    StopTask,
+    StoppedTasks,
+    TaskCatalog,
+    TaskSnapshot,
+    task_snapshot,
 )
-from XBotv2.jobs.registry import JobRegistry, job_summary, normalize_error
-from XBotv2.jobs.runner import JobContext, JobRunner
 
 __all__ = [
-    "CombinedShellOutput",
-    "JobContext",
-    "JobRegistry",
-    "JobRunner",
-    "OutputChunk",
-    "OutputStore",
-    "StreamOutputStore",
-    "TextOutputStore",
-    "job_summary",
-    "normalize_error",
+    "JobsCommandPort",
+    "LIST_TASKS",
+    "STOP_ALL_TASKS",
+    "STOP_TASK",
+    "StopTask",
+    "StoppedTasks",
+    "TaskCatalog",
+    "TaskSnapshot",
+    "build_jobs_commands",
+    "task_snapshot",
 ]

@@ -7,7 +7,7 @@ from typing import Any
 
 from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
-from XBotv2.config.tree import load_server_tree
+from XBotv2.application.tree import load_server_tree
 from XBotv2.server.contracts import ServerOptions
 
 
@@ -19,12 +19,7 @@ async def start_server_application(
     no_plugins: bool,
 ) -> Any:
     """Start the server host without constructing an Agent session."""
-    tree = load_server_tree(
-        paths=paths,
-        provider_name=provider_name,
-        workspace_root=workspace_root,
-        no_plugins=no_plugins,
-    )
+    tree = load_server_tree(paths=paths)
     options = ServerOptions(
         provider_name=provider_name,
         workspace_root=Path(workspace_root).resolve(),

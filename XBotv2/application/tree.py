@@ -1,4 +1,4 @@
-"""Resolve the plugin tree from the bundled configuration and user overlays."""
+"""Resolve application plugin trees from bundled and external layers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,13 @@ from XBotv2.loader import PluginTree
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
 SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"subagents"})
 OPTIONAL_CAPABILITIES = frozenset({
-    "goal", "todolist", "skills", "mcp_plugin", "compact", "subagents", "browser",
+    "goal",
+    "todolist",
+    "skills",
+    "mcp_plugin",
+    "compact",
+    "subagents",
+    "browser",
     "token_manager",
 })
 
@@ -19,13 +25,6 @@ OPTIONAL_CAPABILITIES = frozenset({
 def load_agent_tree(
     *,
     paths: Any,
-    session_paths: Any,
-    session_id: str,
-    thread_id: str,
-    workspace_root: Path,
-    provider_name: str,
-    parent_permission_system: Any,
-    interactive: bool,
     is_subagent: bool,
     plugin_dirs: list[Path | str] | None,
     extra_plugins: list[dict[str, Any]] | None,
@@ -49,31 +48,12 @@ def load_agent_tree(
     return tree.for_profile("agent")
 
 
-def load_server_tree(
-    *,
-    paths: Any,
-    provider_name: str,
-    workspace_root: str,
-    no_plugins: bool,
-) -> PluginTree:
-    """Load the provider directory and HTTP host tree.
-
-    The host tree composes the dumb carrier (``server``) with one plugin entry
-    per server capability. Each capability's own router module (``<cap>.router``
-    inside the owning package) exports its registration plugin, which mounts
-    the router into ``ctx.web_server``, so extending the server surface means
-    adding a tree entry, not editing the carrier.
-    """
-    values = {
-        "paths": paths,
-        "provider_name": provider_name,
-        "workspace_root": workspace_root,
-        "no_plugins": no_plugins,
-    }
-    tree = PluginTree.from_yaml(DEFAULT_TREE, values=values)
+def load_server_tree(*, paths: Any) -> PluginTree:
+    """Load the declarative server application profile."""
+    tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
+        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
     selected = tree.for_profile("server")
     if not any(entry.id == "llm" for entry in selected.entries):
         raise ValueError("server application requires the llm profile entry")

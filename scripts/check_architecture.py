@@ -31,14 +31,14 @@ PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
 USAGE_PLUGIN = PACKAGE / "usage" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
-APPLICATION_OPERATIONS = PACKAGE / "application" / "operations.py"
+AGENT_OPERATIONS = PACKAGE / "agents" / "service_component.py"
 APPLICATION_AGENTS = PACKAGE / "application" / "agents.py"
 APPLICATION_MODEL = PACKAGE / "application" / "model.py"
 AGENTS_SERVICE = PACKAGE / "agents" / "service.py"
 APPLICATION_CONFIG_SEED = PACKAGE / "application" / "config_seed.py"
-CONFIG_TREE = PACKAGE / "config" / "tree.py"
+APPLICATION_TREE = PACKAGE / "application" / "tree.py"
 SERVER_APP = PACKAGE / "application" / "server.py"
-HTTP_SERVER = PACKAGE / "protocol" / "http_server.py"
+HTTP_SERVER = PACKAGE / "server" / "http.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
     PACKAGE / "agentloop" / "tool_service.py",
@@ -628,7 +628,7 @@ def check_application_startup() -> list[Violation]:
                 APPLICATION_APP,
                 node.lineno,
                 "application-profile-mixing",
-                "plugin-tree parsing belongs to config",
+                "plugin-tree parsing belongs to the application tree module",
             ))
     for node in ast.walk(_tree(APPLICATION_BOOT)):
         if (
@@ -642,13 +642,13 @@ def check_application_startup() -> list[Violation]:
                 "application-boot-mixing",
                 "generic boot must receive app preparation, not a service bag",
             ))
-    for node in ast.walk(_tree(CONFIG_TREE)):
+    for node in ast.walk(_tree(APPLICATION_TREE)):
         if (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == "resolve_llm_config"
         ):
             violations.append(Violation(
-                CONFIG_TREE,
+                APPLICATION_TREE,
                 node.lineno,
                 "application-config-ownership",
                 "applications consume mounted LLM services; they do not export config readers",
@@ -667,6 +667,7 @@ def check_application_startup() -> list[Violation]:
             isinstance(node, ast.ImportFrom)
             and node.module
             and node.module.startswith("XBotv2.agentloop")
+            and node.module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES
         ):
             violations.append(Violation(
                 AGENTS_SERVICE,
@@ -674,7 +675,7 @@ def check_application_startup() -> list[Violation]:
                 "agents-loop-construction",
                 "agents service must delegate through its registered factory",
             ))
-    for node in ast.walk(_tree(APPLICATION_OPERATIONS)):
+    for node in ast.walk(_tree(AGENT_OPERATIONS)):
         if not isinstance(node, ast.Attribute):
             continue
         is_service_access = (
@@ -686,14 +687,14 @@ def check_application_startup() -> list[Violation]:
         )
         if is_service_access and node.attr in {"llm", "model", "state_store"}:
             violations.append(Violation(
-                APPLICATION_OPERATIONS,
+                AGENT_OPERATIONS,
                 node.lineno,
                 "application-agent-reassembly",
                 f"Agent operations must not assemble runtime service {node.attr!r}",
             ))
         if node.attr in {"apply_definition", "apply_provider", "apply_tools"}:
             violations.append(Violation(
-                APPLICATION_OPERATIONS,
+                AGENT_OPERATIONS,
                 node.lineno,
                 "application-agent-reassembly",
                 f"Agent operations must use a high-level agents service, not {node.attr}()",
@@ -704,7 +705,7 @@ def check_application_startup() -> list[Violation]:
             and node.value.attr == "engine"
         ):
             violations.append(Violation(
-                APPLICATION_OPERATIONS,
+                AGENT_OPERATIONS,
                 node.lineno,
                 "application-agent-reassembly",
                 "Agent operations must not configure Engine directly",
@@ -724,6 +725,7 @@ def check_application_startup() -> list[Violation]:
             and node.module
             and node.module in {
                 "XBotv2.application",
+                "XBotv2.application.tree",
                 "XBotv2.config.tree",
             }
         ):

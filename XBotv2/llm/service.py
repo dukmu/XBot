@@ -16,11 +16,17 @@ configured provider lacks a key.
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 from XBotv2.llm.config import ProviderConfig, parse_provider_config
 from XBotv2.core.providers import BaseProvider
+from XBotv2.core.messages import Message, ModelChunk
+from XBotv2.llm.contracts import (
+    ModelDescription,
+    ProviderCatalog,
+    ProviderDescription,
+)
 
 ProviderFactory = Callable[..., BaseProvider]
 
@@ -64,33 +70,35 @@ class LlmService:
         """Name of the provider used when no provider is selected."""
         return self._default
 
-    def validate_catalog(self, paths: Any, workspace_root: Any) -> dict[str, Any]:
-        """Fail-closed validation of the merged provider catalog.
-
-        Owned by the LLM service so a system soft restart can reject an
-        invalid catalog before any tree entry is re-applied.  Returns the
-        validated merged catalog.
-        """
-        from XBotv2.core.errors import OperationError
-        from XBotv2.llm.config import merged_provider_config, parse_provider_config
-
-        merged = merged_provider_config(paths, Path(workspace_root))
-        errors: list[str] = []
-        for name, raw in (merged.get("providers") or {}).items():
-            try:
-                parse_provider_config(dict(raw), require_key=False)
-            except Exception as error:  # noqa: BLE001 - report catalog errors
-                errors.append(f"{name}: {error}")
-        if errors:
-            raise OperationError(
-                "config_invalid",
-                "Provider catalog is invalid: " + "; ".join(errors),
-            )
-        return merged
-
     def names(self) -> tuple[str, ...]:
         """Configured provider names (minimax / deepseek / ...)."""
         return tuple(self._providers)
+
+    def catalog(self) -> ProviderCatalog:
+        return ProviderCatalog(
+            default=self.default_name(),
+            providers=tuple(
+                ProviderDescription(
+                    name=name,
+                    protocol=provider.protocol,
+                    default_model=provider.default_model,
+                    models=tuple(
+                        ModelDescription(
+                            model=model.model,
+                            max_context_tokens=model.max_context_tokens,
+                            max_output_tokens=model.max_output_tokens,
+                            reasoning_effort=model.reasoning_effort or "",
+                            effort=tuple(model.effort or ()),
+                            thinking=model.thinking or "",
+                            input_modalities=tuple(model.input_modalities),
+                        )
+                        for model in provider.models
+                    ),
+                )
+                for name in self.names()
+                for provider in (self.provider_config(name, require_key=False),)
+            ),
+        )
 
     def provider_config(
         self,
@@ -155,8 +163,20 @@ class ModelService:
             raise RuntimeError("model port is not bound")
         return self._provider
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.provider, name)
+    def bind_tools(
+        self,
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> BaseProvider:
+        return self.provider.bind_tools(tools, **kwargs)
+
+    async def astream(
+        self,
+        messages: list[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[ModelChunk]:
+        async for chunk in self.provider.astream(messages, **kwargs):
+            yield chunk
 
 
 __all__ = ["LlmService", "ModelService"]

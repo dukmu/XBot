@@ -23,7 +23,7 @@ logger = logging.getLogger("xbotv2.mcp")
 
 
 class MCPPlugin:
-    inject = ['tools']
+    inject = ["tools", "model", "interactions", "session"]
     name = "mcp_plugin"
     Config = S.object({
         "servers": S.any().optional(),
@@ -69,7 +69,11 @@ class MCPPlugin:
                 tools = await self._client.connect_and_list(
                     server_name,
                     server_cfg,
-                    callbacks=client_callbacks(self.ctx, ctx.session),
+                    callbacks=client_callbacks(
+                        self.ctx.model,
+                        self.ctx.interactions,
+                        self.ctx.session,
+                    ),
                 )
                 registered_names = self._register_server_tools(
                     server_name,
@@ -124,8 +128,8 @@ class MCPPlugin:
         return registered_names
 
     def _register_tool(self, tool: Tool, server_name: str) -> str:
-        """Register one MCP tool on the raw registry (tracked for cleanup)."""
-        return self.ctx.tools.registry.register(
+        """Register one MCP Tool through the public service."""
+        return self.ctx.tools.register(
             tool,
             namespace=f"mcp:{server_name}",
         )

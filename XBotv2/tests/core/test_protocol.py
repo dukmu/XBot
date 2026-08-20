@@ -263,7 +263,7 @@ class TestProviderConfigLoader:
 
     def test_server_profile_reads_merged_llm_entry(self, tmp_path):
         """The server application consumes the overlaid LLM profile entry."""
-        from XBotv2.config.tree import load_server_tree
+        from XBotv2.application.tree import load_server_tree
 
         config_dir = tmp_path / "config"
         config_dir.mkdir(parents=True)
@@ -283,12 +283,7 @@ class TestProviderConfigLoader:
             encoding="utf-8",
         )
 
-        tree = load_server_tree(
-            paths=RuntimePaths.from_data_dir(tmp_path),
-            provider_name="default",
-            workspace_root=str(tmp_path),
-            no_plugins=False,
-        )
+        tree = load_server_tree(paths=RuntimePaths.from_data_dir(tmp_path))
         llm = next(entry for entry in tree.entries if entry.id == "llm")
         assert llm.config["default"] == "custom"
         assert llm.config["providers"]["custom"]["default_model"] == "custom-model"

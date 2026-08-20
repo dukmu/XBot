@@ -90,20 +90,13 @@ def build_tasks_router(*, events: Any) -> APIRouter:
 class JobsHttpAdapter:
     """Register the background-task HTTP surface into ``ctx.web_server``.
 
-    The jobs capability owns its routes: when the server tree mounts this
-    plugin, it registers ``build_tasks_router`` and the ``task_updated``
-    stream-event DTO into the dumb ``ctx.web_server`` / ``ctx.server_events``
-    carriers.  Registration is a fiber effect, undone on unload.
+    The adapter contributes ``build_tasks_router`` to the dumb server carrier.
     """
 
-    inject = ["server", "server_events"]
+    inject = ["server"]
     name = "xbot.http.jobs"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
-        from XBotv2.protocol.models import TaskUpdatedData
-
-        ctx.effect(lambda: ctx.server_events.register("task_updated", TaskUpdatedData))
-
         await contribute_router(
             ctx,
             owner=self.name,

@@ -1,22 +1,25 @@
 # Public API
 
-XBotv2 exposes one supported Python extension surface:
+XBotv2 exposes shared contracts from `core`:
 
 ```python
 from XBotv2.core import Events, Tool, ToolResult, Command, EventContext
 ```
 
-Job data and lifecycle contracts come directly from core; the plugin package
-exports only runtime implementations:
+Each plugin also owns a declaration surface through its package root. Package
+roots may re-export only explicit `types`, `invariants`, `commands`, `events`,
+`services`, or transitional `contracts` declarations:
 
 ```python
 from XBotv2.core.jobs import Job, JobKind, JobStatus
-from XBotv2.jobs import JobRegistry
+from XBotv2.jobs import LIST_TASKS, TaskSnapshot
+from XBotv2.llm import LlmCatalogPort, ProviderCatalog
 ```
 
-`XBotv2.jobs` does not re-export core models. The
-current symbol list is maintained in [API inventory](api_inventory.md) and
-checked by `tests/core/test_public_api.py`.
+Concrete services, registries, managers, routers, and plugin implementations
+must be imported from their owning implementation module only by composition
+or tests; they are not package-root API. The current symbol lists are checked
+by `tests/core/test_public_api.py`.
 
 API v1 covers:
 
@@ -32,8 +35,8 @@ SSE streams. Wire models reject unknown fields where they are declared as
 unsupported version receives `unsupported_protocol` with HTTP 426. Plugin
 manifests declare `api_version: "1"`.
 
-The API is an explicit inventory that must be updated with behavior, docs, and
-tests whenever the extension surface changes. Additive fields need defaults.
-Shape changes need a migration note and a contract test that proves the
-intended behavior. The public API must own its types; feature plugins must not
-re-export core contracts as plugin APIs.
+The API is explicit and must be updated with behavior, docs, and tests whenever
+the extension surface changes. Additive fields need defaults. Shape changes
+need a migration note and a contract test that proves the intended behavior.
+Plugin roots must export their own declarations, not shared core contracts or
+runtime implementations.

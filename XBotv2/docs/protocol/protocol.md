@@ -293,23 +293,25 @@ consumes the final `end` sentinel, so UI reducers receive domain events only.
 | `error` | `{code, message, details?, retryable?, stage?}` |
 | `end` | `{status}` |
 
-The protocol-core event DTOs above live in `protocol.models`. Capability-owned
-stream events are declared through the server composition root's event
-registry (`ctx.server_events`, `XBotv2.server.events.ServerEvents`) and their
-DTOs live in the owning capability:
+The protocol-core event DTOs above live in `protocol.models`. During the
+typed outbound-event migration, capability-owned stream events may also pass
+through the SSE carrier. Their payload contracts remain owned by the producing
+capability rather than by a parallel server registry:
 
 | Event | Data | DTO owner |
 |---|---|---|
-| `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` | `XBotv2.session.events` |
-| `client_message` | `{message, level, source, tool_call_id}` | `XBotv2.session.events` |
-| `history_updated` | `{history, operation, turns}` | `XBotv2.session.events` |
-| `compaction_started` | `{reason, messages_before, history_chars_before, context_tokens_before, context_limit}` | `XBotv2.compact.events` |
-| `compaction_completed` | `{reason, metrics, usage}` | `XBotv2.compact.events` |
-| `compaction_failed` | `{reason, message}` | `XBotv2.compact.events` |
+| `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` | Agent/session producer |
+| `client_message` | `{message, level, source, tool_call_id}` | Session producer |
+| `history_updated` | `{history, operation, turns}` | Session producer |
+| `compaction_started` | `{reason, messages_before, history_chars_before, context_tokens_before, context_limit}` | Compact producer |
+| `compaction_completed` | `{reason, metrics, usage}` | Compact producer |
+| `compaction_failed` | `{reason, message}` | Compact producer |
 | `task_updated` | `{task_id, kind, command, cwd, status, created_at, started_at, finished_at, output, error, agent?, thread_id?, usage?}` | `XBotv2.protocol.models` (shared with `TaskListResponse`) |
 
-The server validates registered event payloads against their DTO before SSE
-framing; protocol core events are validated by `ServerEvent`.
+`ServerEvent` validates protocol-core payloads before framing. Unknown
+capability events currently retain their payload unchanged; producers must
+publish their declared payload type. This transitional behavior will be
+replaced by typed producer-owned outbound events.
 
 After `turn_started`, the stream emits exactly one turn terminal event:
 `turn_finished` for normal or failed completion, or `turn_cancelled` for an
@@ -319,9 +321,8 @@ state. `end` is a transport sentinel indicating that the SSE response closed
 cleanly. Its `status` does not describe the semantic outcome of the turn.
 
 The protocol core event inventory lives in
-`protocol.models.KNOWN_SERVER_EVENT_TYPES`. Registered capability events
-come from the server event registry (`ServerEvents.types()`). Golden SSE
-fixtures live under `XBotv2/tests/fixtures/sse/`.
+`protocol.models.KNOWN_SERVER_EVENT_TYPES`. Golden SSE fixtures live under
+`XBotv2/tests/fixtures/sse/`.
 
 ## Agent-Initiated Interaction
 

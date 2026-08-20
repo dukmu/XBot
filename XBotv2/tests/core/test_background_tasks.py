@@ -4,7 +4,7 @@ import json
 import pytest
 
 from XBotv2.core.jobs import JobKind, JobResult
-from XBotv2.jobs import JobRegistry
+from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
 from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
 from XBotv2.permissions.system import PermissionSystem

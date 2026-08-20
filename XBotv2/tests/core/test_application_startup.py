@@ -1042,16 +1042,12 @@ class TestApplicationStartupNoPlugins:
 
     def _make_tree(self, plugin_dirs, include_builtins):
         import tempfile
-        from XBotv2.config.tree import load_agent_tree
+        from XBotv2.application.tree import load_agent_tree
 
         tmp = Path(tempfile.mkdtemp())
         paths = RuntimePaths.from_data_dir(tmp)
         return load_agent_tree(
             paths=paths,
-            session_paths=paths.session("s"),
-            session_id="s", thread_id="t",
-            workspace_root=Path("."), provider_name="default",
-            parent_permission_system=None, interactive=True,
             is_subagent=False,
             plugin_dirs=plugin_dirs if not include_builtins else None,
             extra_plugins=None,

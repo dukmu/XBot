@@ -609,3 +609,31 @@
   tool policy hook. This is an intermediate migration checkpoint, not final
   architectural completion. MCP callback injection changes remain uncommitted
   until their focused failures and connection cleanup are resolved.
+
+### 2026-08-20 · Remove composition and event-registry bypasses
+
+- MCP callbacks now receive the declared model, interactions, and session
+  services explicitly; MCP tool registration uses the public Tools service
+  instead of its concrete registry. `ModelService` exposes only its declared
+  model operations and no longer proxies arbitrary provider attributes through
+  `__getattr__`.
+- Application composition owns plugin-tree loading. The LLM plugin no longer
+  scans the bundled tree or overlay files, hard-codes its entry id, or performs
+  a second configuration merge behind Loader.
+- Plugin package roots no longer re-export concrete registries, services, or
+  implementations. Roots with owned declarations now re-export their explicit
+  typed contracts, service Protocols, and command declarations; packages with
+  implementation-only modules expose no root API.
+- The parallel `ServerEvents` registry and capability DTO registration path
+  were removed. The SSE carrier validates protocol-core events and currently
+  passes capability payloads through until typed producer-owned outbound
+  events replace the remaining SessionRuntime projections.
+- This remains an intermediate checkpoint. Session HTTP ownership and runtime
+  service-bag removal, typed outbound events, and the tool policy pipeline are
+  still pending and are intentionally not represented as complete here.
+- Verification: 140 focused application/loader/protocol/server/SSE/public API/
+  jobs/subagent/architecture tests passed; 7 directly affected MCP callback
+  and plugin tests passed; `git diff --check` passed. The architecture scanner
+  reproducibly reports 17 remaining migration violations. The broader MCP
+  selection was interrupted after 9 passes because an unchanged Tool wrapper
+  error-result test did not terminate; it is not recorded as passing.

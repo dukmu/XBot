@@ -12,7 +12,7 @@ def mount_ctx(state_store):
     from XBotv2.prompts.plugin import PromptsService
     from XBotv2.agentloop.tool_registry import ToolRegistry
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.jobs import JobRegistry
+    from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
 
     ctx = Context(data_dir=state_store.paths.state_dir)
