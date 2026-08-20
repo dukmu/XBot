@@ -3,7 +3,8 @@
 XBotv2 exposes shared contracts from `core`:
 
 ```python
-from XBotv2.core import Events, Tool, ToolResult, Command, EventContext
+from XBotv2.core import Events, Tool, ToolResult, EventContext
+from XBotv2.commands import Command, CommandResult
 ```
 
 Each plugin also owns a declaration surface through its package root. Package
@@ -11,6 +12,7 @@ roots may re-export only explicit `types`, `invariants`, `commands`, `events`,
 `services`, or transitional `contracts` declarations:
 
 ```python
+from XBotv2.commands import Command, CommandResult
 from XBotv2.core.jobs import Job, JobKind, JobStatus
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
 from XBotv2.llm import LlmCatalogPort, ProviderCatalog
@@ -28,10 +30,11 @@ API v1 covers:
 - command, agent, and prompt contracts;
 - canonical runtime and session paths.
 
-The C/S wire API is separate. Request and response DTOs live in
-`protocol.models`; the runtime currently serves HTTP JSON endpoints and
-SSE streams. Wire models reject unknown fields where they are declared as
-`WireModel`. A client sends `protocol_version` during `POST /hello`; an
+The C/S wire API is separate. Each plugin owns its request and response DTOs
+in its `protocol.py`; the central protocol package contains only carrier-level
+contracts such as hello, errors, versioning, and SSE envelopes. Wire models
+reject unknown fields where they are declared as `WireModel`. A client sends
+`protocol_version` during `POST /hello`; an
 unsupported version receives `unsupported_protocol` with HTTP 426. Plugin
 manifests declare `api_version: "1"`.
 

@@ -3,11 +3,25 @@
 from XBotv2.commands.contracts import (
     EXECUTE_COMMAND,
     LIST_COMMANDS,
+    Command,
     CommandCatalog,
+    CommandDescription,
+    CommandExecution,
+    CommandHandler,
+    CommandResult,
     ExecuteCommand,
+    command_error,
+    command_usage,
+    guard_command,
+    run_command_operation,
+    split_command_args,
 )
 __all__ = [
+    "Command",
     "CommandCatalog",
+    "CommandDescription",
+    "CommandExecution",
+    "CommandHandler",
     "CommandInfo",
     "CommandListResponse",
     "CommandRequest",
@@ -16,6 +30,11 @@ __all__ = [
     "EXECUTE_COMMAND",
     "ExecuteCommand",
     "LIST_COMMANDS",
+    "command_error",
+    "command_usage",
+    "guard_command",
+    "run_command_operation",
+    "split_command_args",
 ]
 
 _PROTOCOL_EXPORTS = {
@@ -23,7 +42,6 @@ _PROTOCOL_EXPORTS = {
     "CommandListResponse",
     "CommandRequest",
     "CommandResponse",
-    "CommandResult",
 }
 
 

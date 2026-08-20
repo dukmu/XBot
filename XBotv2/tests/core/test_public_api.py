@@ -11,8 +11,6 @@ from pydantic import ValidationError
 import XBotv2.core as public_api
 
 from XBotv2.core import (
-    Command,
-    CommandResult,
     ContextComponent,
     EventContext,
     Events,
@@ -25,6 +23,7 @@ from XBotv2.core import (
     ToolResult,
     Tool,
 )
+from XBotv2.commands import Command, CommandResult
 from XBotv2.config import SessionPolicyPatch
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.protocol import HelloRequest, server_event
@@ -51,6 +50,7 @@ def test_public_api_inventory_is_explicit():
 def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.agentloop as agentloop
     import XBotv2.application as application
+    import XBotv2.commands as commands
     import XBotv2.compact as compact
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
@@ -64,6 +64,12 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "JobsCommandPort",
         "LIST_TASKS",
         "TaskSnapshot",
+    }
+    assert set(commands.__all__) >= {
+        "Command",
+        "CommandResult",
+        "EXECUTE_COMMAND",
+        "LIST_COMMANDS",
     }
     assert set(llm.__all__) >= {
         "LIST_PROVIDERS",

@@ -420,7 +420,7 @@ MCP Tools do not become slash commands.
 
 `application/` owns only startup/assembly; per-domain logic lives in plugin
 services and command handlers resolve those services at runtime.
-`core.commands` translates use-case failures into command results.  A
+The Commands plugin translates use-case failures into command results. A
 system soft restart is the `SOFT_RELOAD` event: `/reload` (session) and
 `/agent reload` emit it, the LLM service validates its merged catalog
 fail-closed first, the loader re-applies the external tree layer, the

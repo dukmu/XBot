@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import pytest
-
-from XBotv2.core.commands import Command, CommandResult
+from XBotv2.commands import Command, CommandResult
 
 from XBotv2.tui.command import CommandRegistry
 
@@ -241,31 +237,3 @@ def test_parse_preserves_args_for_skill() -> None:
     assert spec.name == "git-release"
     assert spec.kind == "prompt"
     assert spec.args == "Create v2.1.0"
-
-
-@pytest.mark.asyncio
-async def test_plugin_command_registry_owns_server_dispatch() -> None:
-    from XBotv2.protocol.commands import execute_command
-
-    async def handler(_ctx, raw_args):
-        return CommandResult(f"sample:{raw_args}")
-
-    extension = Command(
-        name="sample",
-        description="Sample extension command.",
-        handler=handler,
-    )
-    loader = SimpleNamespace(
-        get_command=lambda name: extension if name == "sample" else None,
-        status_slots=lambda: {},
-    )
-    ctx = SimpleNamespace(
-        engine=SimpleNamespace(plugin_loader=loader),
-        services=SimpleNamespace(
-            get=lambda name: loader if name == "loader" else None
-        ),
-    )
-
-    result = await execute_command(ctx, "sample", ["a", "b"], raw_args="a b")
-
-    assert result["data"]["message"] == "sample:a b"

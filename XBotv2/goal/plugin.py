@@ -6,13 +6,12 @@ import json
 from typing import Any, Literal
 
 from XBotv2.core import (
-    Command,
-    CommandResult,
     EventContext,
     Events,
     Tool,
     ToolResult,
 )
+from XBotv2.commands import Command, CommandResult
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 
 

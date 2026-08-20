@@ -7,7 +7,6 @@ from typing import Any, Sequence
 
 from XBotv2.core import (
     ClientEvent,
-    CommandResult,
     EventContext,
     Events,
     Message,
@@ -15,6 +14,7 @@ from XBotv2.core import (
     context_token_limit,
     estimate_messages_tokens,
 )
+from XBotv2.commands import CommandResult
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal

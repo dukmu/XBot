@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from XBotv2.core import (
-    Command,
     EventContext,
     Events,
     prompt_container,
@@ -15,6 +14,7 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
+from XBotv2.commands import Command
 from XBotv2.core.tools import GuardDecision
 
 from .permission_scope import SkillPermissionScope

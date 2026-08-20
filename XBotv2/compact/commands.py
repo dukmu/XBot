@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from XBotv2.core import CommandResult
+from XBotv2.commands import CommandResult
 
 
 class _CompactCommandOwner(Protocol):

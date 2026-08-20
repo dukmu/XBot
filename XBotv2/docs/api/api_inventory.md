@@ -35,8 +35,6 @@ plugin implementations.
 | `AgentSessionResult` | dataclass |  |
 | `ArtifactRef` | dataclass |  |
 | `ClientEvent` | dataclass |  |
-| `Command` | dataclass |  |
-| `CommandResult` | dataclass |  |
 | `ContentPart` | type alias |  |
 | `ContextComponent` | dataclass |  |
 | `EventContext` | dataclass |  |
@@ -87,6 +85,13 @@ The background job subsystem contract: `Job`, `JobStatus`, `JobKind`,
 `JobResult`, `JobSummary`, `JobError`,
 `JobId`, `JobNotFound`, `JobRegistryClosed`, `CancelResult`, `WaitResult`,
 `TERMINAL_STATES`, and `MAX_SUMMARY_CHARS`.
+
+## Exported Symbols (`XBotv2.commands`)
+
+The Commands plugin root exports `Command`, `CommandResult`, handler helpers,
+and the typed list/execute operation declarations. Wire request and response
+models remain owned by `commands.protocol`; concrete registry and plugin
+implementations are not exported.
 
 ## Exported Symbols (`XBotv2.jobs`)
 

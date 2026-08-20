@@ -827,3 +827,19 @@
 - Verification: architecture checker reports zero violations; 22 focused
   Session/server/public API tests and all 4 ACP tests passed. Python
   compilation and `git diff --check` passed.
+
+### 2026-08-20 · Commands-owned declarations
+
+- Moved `Command`, `CommandResult`, handler typing, parsing, guards, and typed
+  operation rendering from `core.commands` into the Commands plugin contracts
+  and package-root export surface. Core no longer owns command capability
+  declarations.
+- Removed the unused central `protocol.commands` executor, which still used a
+  service bag and an obsolete handler signature. Commands wire models remain
+  in `commands.protocol`; its result payload is named separately from the
+  domain handler result.
+- Architecture checks now validate symbol imports from the shared core root,
+  so removing a core export cannot leave a latent plugin import failure.
+- Verification: architecture checker reports zero violations; 102 command,
+  application startup, public API, Compact, and Goal tests passed. Python
+  compilation and `git diff --check` passed.

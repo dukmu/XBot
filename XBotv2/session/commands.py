@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from XBotv2.core.commands import (
+from XBotv2.commands import (
     Command,
     CommandResult,
     command_usage,

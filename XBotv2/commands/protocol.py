@@ -40,7 +40,7 @@ class CommandListResponse(WireModel):
     commands: list[CommandInfo]
 
 
-class CommandResult(WireModel):
+class CommandResultData(WireModel):
     command: str
     status: Literal["ok", "error"]
     message: str
@@ -48,7 +48,7 @@ class CommandResult(WireModel):
 
 class CommandResponse(WireModel):
     type: Literal["command_result"] = "command_result"
-    data: CommandResult
+    data: CommandResultData
 
 
 def build_commands_router(*, events: Any) -> APIRouter:
@@ -159,6 +159,6 @@ __all__ = [
     "CommandListResponse",
     "CommandRequest",
     "CommandResponse",
-    "CommandResult",
+    "CommandResultData",
     "build_commands_router",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from XBotv2.config.contracts import PatchPolicy
 from XBotv2.config.services import SettingsPort
-from XBotv2.core.commands import (
+from XBotv2.commands import (
     Command,
     CommandResult,
     command_usage,

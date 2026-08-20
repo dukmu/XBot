@@ -14,7 +14,6 @@ from XBotv2.core.agents import (
     SubagentAgentError,
     SubagentTurnError,
 )
-from XBotv2.core.commands import Command, CommandResult
 from XBotv2.core.context import ContextComponent, PromptFragmentStage
 from XBotv2.core.events import (
     EventContext,
@@ -73,8 +72,6 @@ __all__ = [
     "AgentSessionResult",
     "ArtifactRef",
     "ClientEvent",
-    "Command",
-    "CommandResult",
     "ContentPart",
     "ContextComponent",
     "EventContext",

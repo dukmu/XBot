@@ -964,7 +964,26 @@ def _public_import_violation(
     plugin_roots: set[str],
 ) -> Violation | None:
     imported = _module_root(module)
-    if imported is None or imported == owner or imported in SHARED_DECLARATION_ROOTS:
+    if imported is None or imported == owner:
+        return None
+    if imported in SHARED_DECLARATION_ROOTS:
+        if module == f"XBotv2.{imported}" and isinstance(node, ast.ImportFrom):
+            declaration_path = _module_path(module)
+            exports = _explicit_exports(declaration_path) if declaration_path else None
+            imported_names = {
+                alias.name for alias in node.names if alias.name != "*"
+            }
+            missing = sorted(imported_names - (exports or set()))
+            if exports is None or missing or any(
+                alias.name == "*" for alias in node.names
+            ):
+                detail = "*" if not missing else ", ".join(missing)
+                return Violation(
+                    path,
+                    node.lineno,
+                    "shared-private-symbol-import",
+                    f"imports non-public symbol(s) {detail} from {module}",
+                )
         return None
     if imported == "protocol":
         if owner in TRANSPORT_ROOTS or path.name == "protocol.py":
