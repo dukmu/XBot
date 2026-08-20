@@ -13,6 +13,8 @@ from typing import Any
 
 from XBotv2.agents.services import AgentCatalogPort
 from XBotv2.application import (
+    APPLICATION_INITIALIZED,
+    ApplicationInitialized,
     ChildApplicationRequest,
     ChildApplicationsPort,
 )
@@ -20,7 +22,6 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
-from XBotv2.agentloop import Events
 from XBotv2.agents import AgentSession, SubagentAgentError
 from XBotv2.jobs import (
     Job,
@@ -148,7 +149,7 @@ class SubagentsPlugin:
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
-        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         if ctx.session is None or ctx.jobs is None:
             return
 
@@ -321,7 +322,7 @@ class SubagentsPlugin:
                 Tool.from_function(function),
             )
 
-    def _on_session_init(self, ctx: Any) -> None:
+    def _on_session_init(self, _event: ApplicationInitialized) -> None:
         """Publish the subagent catalog once all definitions are registered."""
         visible_subagents = [
             definition

@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from XBotv2.agentloop.contracts import LoopSettings, ModelRequest
-from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.session import SessionInfo
@@ -23,7 +22,6 @@ class Events:
     """Event names dispatched by the runtime (see module docstring)."""
 
     # Session lifecycle
-    SESSION_INIT = "session/init"
     SESSION_START = "session/start"
     SESSION_RESUME = "session/resume"
     SESSION_CLOSE = "session/close"
@@ -102,7 +100,6 @@ class EventContext:
 
     messages: list[Message] = field(default_factory=list)
     settings: LoopSettings | None = None
-    agent: AgentDefinition | None = None
     continuation: bool = False
     session: SessionInfo | None = None
     user_input: str | None = None

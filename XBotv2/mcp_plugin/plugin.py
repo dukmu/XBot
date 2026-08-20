@@ -1,10 +1,11 @@
-"""MCPPlugin — connects MCP servers, registers tools in ToolRegistry via ON_SESSION_INIT hook."""
+"""MCP plugin lifecycle and Tool registration."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.core import (
     Tool,
     ToolResult,
@@ -49,10 +50,10 @@ class MCPPlugin:
         self.ctx = ctx
         self._config = dict(config or {})
         ctx.dispose(self._on_unload)
-        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.SESSION_CLOSE, self._on_session_close)
 
-    async def _on_session_init(self, ctx: EventContext) -> None:
+    async def _on_session_init(self, _event: ApplicationInitialized) -> None:
         if self._initialized:
             return
         servers = self._config.get("servers", {})

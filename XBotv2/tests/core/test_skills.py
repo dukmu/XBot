@@ -184,16 +184,24 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.agentloop import EventContext, LoopSettings
+        from XBotv2.agentloop import LoopSettings
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         mount_plugin(plugin, state_store)
         tools = plugin.ctx.tools
-        ctx = EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        ctx = ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
+            ),
             settings=LoopSettings(provider="test", context_window=1_000),
         )
 
@@ -264,16 +272,25 @@ Body
         skill_workspace,
         state_store,
     ):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.agentloop import EventContext
+        from XBotv2.agentloop import LoopSettings
         from XBotv2.core import ToolCall
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
         plugin._registry._scan_global = lambda: None
         mount_plugin(plugin, state_store)
-        await plugin._on_session_init(EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        await plugin._on_session_init(ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
+            ),
+            settings=LoopSettings(provider="test"),
         ))
         results = await plugin.ctx.tools.execute_all(
             [ToolCall("manual", "manual-only", {})],

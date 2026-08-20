@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agents import AGENT_CONFIGURED
+from XBotv2.application import APPLICATION_INITIALIZED
 from XBotv2.agentloop import Events, LoopState
 from XBotv2.session import HISTORY_CHANGED, PREPARE_FORK, HistoryChanged
 
@@ -101,7 +102,7 @@ class PersistenceComponent:
             store.provider = state.session.provider
             store.write_thread_metadata(state.metadata)
 
-        ctx.on(Events.SESSION_INIT, persist_session_metadata)
+        ctx.on(APPLICATION_INITIALIZED, persist_session_metadata)
         ctx.on(AGENT_CONFIGURED, persist_session_metadata)
 
         async def persist_runtime_event(event: Any) -> None:

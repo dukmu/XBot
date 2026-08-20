@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.core import (
     prompt_container,
     prompt_element,
@@ -38,7 +39,7 @@ class SkillsPlugin:
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         ctx.dispose(self._cleanup_runtime)
-        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
         ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
         ctx.on(Events.TURN_END, self._on_turn_end)
@@ -58,13 +59,13 @@ class SkillsPlugin:
         self._model_skill_names.clear()
         self._initialized = False
 
-    async def _on_session_init(self, ctx: EventContext) -> None:
+    async def _on_session_init(self, event: ApplicationInitialized) -> None:
         if self._initialized:
             return
-        ws = getattr(ctx.session, "workspace_root", "") or str(Path.cwd())
+        ws = event.session.workspace_root or str(Path.cwd())
         self._registry.discover(Path(ws))
         max_context = int(
-            getattr(ctx.settings, "context_window", 0) or 0
+            event.settings.context_window or 0
         )
         if max_context > 0:
             self._metadata_budget_chars = min(

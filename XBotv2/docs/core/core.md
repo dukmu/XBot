@@ -74,7 +74,7 @@ externalization.
 ### Runtime events
 
 Named events (`agentloop.events.Events`) cover the existing lifecycle: session
-(`SESSION_INIT`/`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
+(`SESSION_START`/`SESSION_RESUME`/`SESSION_CLOSE`), turn
 (`TURN_START`/`TURN_END`/`ON_STOP`/`ON_STOP_FAILURE`), user input
 (`BEFORE_USER_MESSAGE_ACCEPT`/`AFTER_USER_MESSAGE_ACCEPT`), context building
 (`BEFORE_CONTEXT`/`AFTER_CONTEXT`), model
@@ -84,7 +84,8 @@ tools (`BEFORE_TOOLS`/`AFTER_TOOLS`/`BEFORE_TOOL_CALL`/`AFTER_TOOL_CALL`/
 
 Context construction events and their typed payloads are exported by
 `XBotv2.context_builder`; compaction lifecycle events are exported by
-`XBotv2.compact`.
+`XBotv2.compact`. Application initialization and runtime output events are
+exported by `XBotv2.application`.
 
 Agent-loop short-circuit events are dispatched with `ctx.serial` and their
 first non-`None` result is interpreted by the caller as a documented dictionary.

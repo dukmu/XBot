@@ -155,7 +155,9 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "ReloadPlan",
     }
     assert set(application.__all__) >= {
+        "APPLICATION_INITIALIZED",
         "AgentApplicationPort",
+        "ApplicationInitialized",
         "ClientEventsPort",
         "RUNTIME_EVENT",
         "RuntimeEvent",

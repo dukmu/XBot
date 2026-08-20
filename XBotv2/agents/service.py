@@ -16,17 +16,15 @@ from XBotv2.agents.contracts import (
     AgentSelection,
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
     AgentLoopFactoryPort,
-    EventContext,
-    Events,
     LoopFactoryOptions,
     LoopSettings,
 )
 from XBotv2.core.errors import OperationError
 from XBotv2.loader import SOFT_RELOAD, SoftReload
-from XBotv2.session import SessionInfo
 from XBotv2.agents.services import AgentCatalogPort
 
 
@@ -91,43 +89,40 @@ class AgentsService:
             if options.model_override is not None
             else ctx.llm.create(provider, model_config, media_root=state.media_root)
         )
+        user = ctx.settings.user_context()
+        loop_settings = LoopSettings(
+            provider=provider_name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=config.max_context_tokens,
+            max_output_tokens=config.max_output_tokens or 0,
+            agent_name=config.agent_name,
+            agent_role=config.agent_role,
+            user_name=user.user_name,
+            user_id=user.user_id,
+            developer_instructions=config.instructions,
+            agent_instructions=config.agent_instructions,
+            memory=config.memory,
+            workspace=options.workspace_root,
+            llm_is_override=options.model_override is not None,
+        )
         ctx.model.replace(model)
         await ctx.emit(
-            Events.SESSION_INIT,
-            EventContext(
+            APPLICATION_INITIALIZED,
+            ApplicationInitialized(
                 agent=definition,
-                session=SessionInfo(
-                    session_id=options.session_id,
-                    thread_id=options.thread_id,
-                    workspace_root=options.workspace_root,
-                    provider=provider_name,
-                ),
+                session=state.session,
+                settings=loop_settings,
             ),
         )
         self._restrict_tools(ctx.tools, config, definition)
 
-        user = ctx.settings.user_context()
         engine = self._factory.create(LoopFactoryOptions(
             model_client=ctx.model,
             tools=ctx.tools,
             events=ctx,
             state=state,
-            settings=LoopSettings(
-                provider=provider_name,
-                model=model_config.model,
-                model_mode=model_config.model_mode,
-                context_window=config.max_context_tokens,
-                max_output_tokens=config.max_output_tokens or 0,
-                agent_name=config.agent_name,
-                agent_role=config.agent_role,
-                user_name=user.user_name,
-                user_id=user.user_id,
-                developer_instructions=config.instructions,
-                agent_instructions=config.agent_instructions,
-                memory=config.memory,
-                workspace=options.workspace_root,
-                llm_is_override=options.model_override is not None,
-            ),
+            settings=loop_settings,
             max_iterations=(
                 definition.max_iterations
                 if definition is not None and definition.max_iterations is not None

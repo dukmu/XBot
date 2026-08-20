@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.filesystem.atomic import write_text_atomic
 
@@ -109,7 +110,7 @@ class UsageComponent:
         )
         ctx.set("usage", service)
 
-        async def initialize(event: EventContext) -> None:
+        async def initialize(_event: ApplicationInitialized) -> None:
             service.initialize(ctx.loop_state.messages)
 
         async def record(event: EventContext) -> None:
@@ -117,7 +118,7 @@ class UsageComponent:
             service.add(usage)
 
         ctx.on(Events.AFTER_MODEL_RESPONSE, record)
-        ctx.on(Events.SESSION_INIT, initialize, prepend=True)
+        ctx.on(APPLICATION_INITIALIZED, initialize, prepend=True)
 
 
 plugin = UsageComponent()

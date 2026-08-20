@@ -227,7 +227,7 @@ class TestApplicationStartupBasics:
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from XBotv2.agentloop import Events
+from XBotv2.application import APPLICATION_INITIALIZED
 from XBotv2.core import Tool
 
 def runtime_tool() -> str:
@@ -239,7 +239,7 @@ class InitFailPlugin:
         self.ctx = ctx
         self._tool_names = []
         ctx.dispose(self.on_unload)
-        ctx.on(Events.SESSION_INIT, self.on_session_init)
+        ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
 
     async def on_session_init(self, event):
         del event
@@ -291,6 +291,7 @@ plugin = InitFailPlugin()""",
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
+from XBotv2.application import APPLICATION_INITIALIZED
 from XBotv2.agentloop import Events
 from XBotv2.core import Tool
 
@@ -305,7 +306,7 @@ class NormalClosePlugin:
         self.ctx = ctx
         self._tool_names = []
         ctx.dispose(self.on_unload)
-        ctx.on(Events.SESSION_INIT, self.on_session_init)
+        ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
         ctx.on(Events.SESSION_CLOSE, self.on_session_close)
 
     async def on_session_init(self, event):
