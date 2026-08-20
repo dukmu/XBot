@@ -1,6 +1,11 @@
 """Public declarations for the Agent loop and Tool runtime plugins."""
 
-from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.agentloop.contracts import (
+    DEFAULT_MAX_ITERATIONS,
+    LoopSettings,
+    LoopState,
+    ToolRegistration,
+)
 from XBotv2.agentloop.events import (
     EventContext,
     EventPort,
@@ -10,6 +15,7 @@ from XBotv2.agentloop.events import (
 from XBotv2.agentloop.services import (
     AgentLoopDriverPort,
     AgentLoopFactoryPort,
+    LoopFactoryOptions,
     ToolGuard,
     ToolsPort,
 )
@@ -18,12 +24,16 @@ __all__ = [
     "AgentLoopDriverPort",
     "AgentLoopEventType",
     "AgentLoopFactoryPort",
+    "DEFAULT_MAX_ITERATIONS",
     "EventContext",
     "EventPort",
     "Events",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
     "InputRejectedData",
+    "LoopFactoryOptions",
+    "LoopSettings",
+    "LoopState",
     "ToolGuard",
     "ToolCallData",
     "ToolCallDeltaData",

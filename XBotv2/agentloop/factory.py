@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agentloop.engine import Engine
-from XBotv2.core.loop import LoopFactoryOptions
+from XBotv2.agentloop.services import LoopFactoryOptions
 
 
 class AgentLoopFactory:

@@ -27,7 +27,7 @@ def mount_ctx(state_store):
     ctx.set("session", None)
     ctx.set("runtime", None)
     ctx.set("paths", state_store.paths)
-    from XBotv2.core.loop import LoopState
+    from XBotv2.agentloop import LoopState
     from XBotv2.core.runtime import SessionInfo
     from XBotv2.llm.service import ModelService
     from XBotv2.sandbox.policy import SandboxPolicy

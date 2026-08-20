@@ -25,7 +25,7 @@ from XBotv2.context_builder.plugin import ContextBuilderComponent
 import xcore
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.runtime import SessionInfo
-from XBotv2.core.loop import LoopSettings, LoopState
+from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.permission_request import PermissionRequestData
 from XBotv2.llm.mock import MockLLM

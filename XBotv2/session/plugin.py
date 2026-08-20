@@ -1,6 +1,6 @@
 """Session component: the active session and session-level runtime services.
 
-Provides the session identity, thread paths, core ``LoopState``, and
+Provides the session identity, thread paths, Agentloop ``LoopState``, and
 session-level runtime services. Persistence may hydrate and observe that state,
 but it does not create the state consumed by the loop.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.core.loop import LoopState
+from XBotv2.agentloop import LoopState
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.filesystem.storage import ThreadStorage

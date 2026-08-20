@@ -83,7 +83,7 @@ def make_engine(
     """
     from XBotv2.agentloop.engine import Engine
     from XBotv2.config.models import RuntimeConfig
-    from XBotv2.core.loop import LoopSettings, LoopState
+    from XBotv2.agentloop import LoopSettings, LoopState
     from XBotv2.core.runtime import SessionInfo
     from XBotv2.permissions.system import PermissionSystem
     from XBotv2.sandbox.policy import SandboxPolicy

@@ -15,13 +15,15 @@ from XBotv2.agents.contracts import (
     AgentDefinition,
     AgentSelection,
 )
-from XBotv2.agentloop import AgentLoopFactoryPort, EventContext, Events
-from XBotv2.core.errors import OperationError
-from XBotv2.core.loop import (
+from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
+    AgentLoopFactoryPort,
+    EventContext,
+    Events,
     LoopFactoryOptions,
     LoopSettings,
 )
+from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.agents.services import AgentCatalogPort
 

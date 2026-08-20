@@ -32,8 +32,12 @@ from XBotv2.agentloop.internal_messages import (
 from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
 from XBotv2.agentloop.protocol import agentloop_event
 from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
-from XBotv2.core.loop import DEFAULT_MAX_ITERATIONS, LoopSettings, LoopState
-from XBotv2.core.providers import BaseProvider
+from XBotv2.agentloop.contracts import (
+    DEFAULT_MAX_ITERATIONS,
+    LoopSettings,
+    LoopState,
+)
+from XBotv2.agentloop.services import ToolsPort
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.messages import (
     ImageContent,
@@ -50,8 +54,10 @@ from XBotv2.core.tokens import (
     REQUEST_PROVIDER_KEY,
     estimate_request_tokens,
 )
+from XBotv2.llm import ModelPort
 from XBotv2.core.tools import (
     ClientEvent,
+    Tool,
     ToolCall,
     ToolCallDelta,
     provider_tool_schema,
@@ -165,8 +171,8 @@ class Engine:
     def __init__(
         self,
         *,
-        model_client: BaseProvider,
-        tools: Any,
+        model_client: ModelPort,
+        tools: ToolsPort,
         events: EventPort,
         state: LoopState,
         settings: LoopSettings,
@@ -1086,7 +1092,7 @@ class Engine:
             {"turn": self.turn_count},
         )
 
-    def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
+    def _bind_tools_for_provider(self, tools: list[Tool]) -> ModelPort:
         if not tools:
             return self.model_client
         schemas = [provider_tool_schema(tool) for tool in tools]
@@ -1095,7 +1101,7 @@ class Engine:
         except NotImplementedError:
             return self.model_client
 
-    def _llm_without_tools(self) -> BaseProvider:
+    def _llm_without_tools(self) -> ModelPort:
         try:
             return self.model_client.bind_tools([])
         except NotImplementedError:
@@ -1111,7 +1117,7 @@ class Engine:
 
     async def _stream_model_response(
         self,
-        llm: BaseProvider,
+        llm: ModelPort,
         context_messages: list[Message],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream provider chunks and reconstruct the final response."""

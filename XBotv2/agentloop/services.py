@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
-from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core.loop import LoopFactoryOptions, LoopSettings
+from XBotv2.agentloop.contracts import LoopSettings, LoopState, ToolRegistration
+from XBotv2.agentloop.events import EventContext, EventPort
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.tools import GuardDecision, Tool
+from XBotv2.core.tools import GuardDecision, JsonObject, Tool, ToolCall
+from XBotv2.llm import ModelPort
 
 
-class AgentLoopFactoryPort(Protocol):
-    def create(self, options: LoopFactoryOptions) -> object: ...
+@dataclass(frozen=True, slots=True)
+class LoopFactoryOptions:
+    """Resolved ports consumed by an Agent loop factory."""
+
+    model_client: ModelPort
+    tools: ToolsPort
+    events: EventPort
+    state: LoopState
+    settings: LoopSettings
+    max_iterations: int
 
 
 class AgentLoopDriverPort(Protocol):
@@ -43,14 +53,14 @@ class AgentLoopDriverPort(Protocol):
         *,
         request_id: str = "",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]: ...
+        artifacts: list[JsonObject] | None = None,
+    ) -> AsyncIterator[JsonObject]: ...
 
     def run_pending(
         self,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[dict[str, Any]]: ...
+    ) -> AsyncIterator[JsonObject]: ...
 
 
 ToolGuard = Callable[
@@ -67,7 +77,7 @@ class ToolsPort(Protocol):
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
-        injected: dict[str, Any] | None = None,
+        injected: dict[str, object] | None = None,
     ) -> str: ...
 
     def unregister(self, name: str) -> bool: ...
@@ -90,15 +100,20 @@ class ToolsPort(Protocol):
 
     async def execute_all(
         self,
-        tool_calls: list[object],
+        tool_calls: list[ToolCall],
         *,
-        context_factory: object = None,
-    ) -> list[object]: ...
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> list[Message]: ...
+
+
+class AgentLoopFactoryPort(Protocol):
+    def create(self, options: LoopFactoryOptions) -> AgentLoopDriverPort: ...
 
 
 __all__ = [
     "AgentLoopDriverPort",
     "AgentLoopFactoryPort",
+    "LoopFactoryOptions",
     "ToolGuard",
     "ToolsPort",
 ]

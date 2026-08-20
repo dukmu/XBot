@@ -13,7 +13,7 @@ from XBotv2.llm.contracts import (
     SelectEffort,
     SelectProvider,
 )
-from XBotv2.llm.services import LlmCatalogPort
+from XBotv2.llm.services import LlmCatalogPort, ModelPort
 
 __all__ = [
     "EffortSelection",
@@ -23,6 +23,7 @@ __all__ = [
     "LlmCatalogPort",
     "ModelDescription",
     "ModelInfo",
+    "ModelPort",
     "ProviderCatalog",
     "ProviderDescription",
     "ProviderInfo",

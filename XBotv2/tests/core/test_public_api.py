@@ -80,6 +80,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert set(llm.__all__) >= {
         "LIST_PROVIDERS",
         "LlmCatalogPort",
+        "ModelPort",
         "ProviderCatalog",
     }
     assert mcp_plugin.__all__ == ["MCP_PLUGIN_ID"]
@@ -105,6 +106,9 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "EventContext",
         "EventPort",
         "Events",
+        "LoopFactoryOptions",
+        "LoopSettings",
+        "LoopState",
         "SHORT_CIRCUIT_EVENTS",
         "ToolsPort",
     }

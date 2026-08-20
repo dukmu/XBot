@@ -148,12 +148,12 @@ selection, instructions, tool selectors, and policy are resolved by
 `ctx.settings`; they are not copied through an application config plugin.
 
 The agents service resolves that selection through the mounted config and LLM
-services, then passes provider-neutral core ports to the registered agentloop
+services, then passes typed LLM, Tool, event, and state ports to the registered Agentloop
 factory. The LLM plugin owns the mutable `ctx.model` binding; Engine and
 auxiliary model capabilities consume that port, while `ctx.llm` remains the
 provider route directory.
 
-The session service creates thread paths, `LoopState`, and the neutral
+The session service creates thread paths, the Agentloop-owned `LoopState`, and the neutral
 `ThreadStorage` used for artifacts and plugin-local files. Message persistence
 is a separate optional projection: it hydrates `LoopState` when mounted and
 observes state changes, but sandbox, caches, tools, uploads, and usage do not

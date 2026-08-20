@@ -48,7 +48,7 @@ TOOLS = (
     PACKAGE / "agentloop" / "tool_registry.py",
 )
 
-ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "agents", "core"}
+ENGINE_ALLOWED_XBOT_ROOTS = {"agentloop", "agents", "core", "llm"}
 TOOLS_ALLOWED_XBOT_ROOTS = {"agentloop", "core"}
 TOOL_SERVICE_FORBIDDEN_LITERALS = {
     "approval",
@@ -793,7 +793,7 @@ def check_application_startup() -> list[Violation]:
             SESSION_PLUGIN,
             1,
             "session-state-ownership",
-            "session must create the core LoopState",
+            "session must create the Agentloop-owned LoopState",
         ))
     for node in ast.walk(_tree(PERSISTENCE_PLUGIN)):
         if (
@@ -805,7 +805,7 @@ def check_application_startup() -> list[Violation]:
                 PERSISTENCE_PLUGIN,
                 node.lineno,
                 "persistence-state-ownership",
-                "persistence may hydrate LoopState but must not construct it",
+                "persistence may hydrate Agentloop state but must not construct it",
             ))
     for node in ast.walk(_tree(USAGE_PLUGIN)):
         if (

@@ -163,7 +163,7 @@ records; Compact replay starts at the last checkpoint for bounded reconstruction
 There is no separate `events.jsonl` or `state.yaml`.
 
 `SessionRuntime` (`session/runtime.py`) owns transport waiters and event
-streams. The session service creates `LoopState`; Engine owns the agent inbox
+streams. The session service creates the Agentloop-owned `LoopState`; Engine owns the agent inbox
 and consumes that state but never a plugin service container. Persistence may
 hydrate the state and observes `STATE_CHANGED`; inbox splices are restored
 through `LoopState`. Interaction waiters remain runtime-only.

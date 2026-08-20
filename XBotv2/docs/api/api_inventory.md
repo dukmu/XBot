@@ -83,9 +83,10 @@ services, and subagent runners remain internal.
 ## Agentloop Declarations (`XBotv2.agentloop`)
 
 The Agentloop plugin owns runtime lifecycle event names, `EventContext`, the
-narrow `EventPort`, and `SHORT_CIRCUIT_EVENTS`. It also exports its Tool and
-loop service contracts. Concrete loop drivers, Tool registries, and services
-remain internal.
+narrow `EventPort`, `SHORT_CIRCUIT_EVENTS`, `LoopState`, `LoopSettings`, and
+the typed loop factory input. It also exports its Tool and loop service
+contracts. Concrete loop drivers, Tool registries, and services remain
+internal. The LLM root exports the `ModelPort` consumed by that factory.
 
 ## Jobs Declarations (`XBotv2.jobs`)
 
