@@ -13,7 +13,9 @@ Plugins and external extensions import shared contracts from:
 from XBotv2.core import ...
 ```
 
-Plugin-owned declarations are imported from the owning package root:
+Plugin-owned declarations are imported from the owning package root. Direct
+cross-plugin imports from declaration submodules are not part of the public
+API:
 
 ```python
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
@@ -21,7 +23,8 @@ from XBotv2.llm import LlmCatalogPort, ProviderCatalog
 ```
 
 Package roots may re-export explicit declaration modules only: `types`,
-`invariants`, `commands`, `events`, `services`, and transitional `contracts`.
+`invariants`, `commands`, `events`, `services`, `protocol`, and transitional
+`contracts`.
 They must not export concrete registries, services, managers, routers, or
 plugin implementations.
 
@@ -106,3 +109,7 @@ output stores remain internal implementations.
 The same rule applies to the `llm`, `session`, `permissions`, and `sandbox`
 package roots. Packages without an explicit declaration module do not expose
 their concrete implementation through `__init__.py`.
+
+The Loader root exports plugin-tree declarations and reload operations.
+Concrete loading and XCore mounting live in `loader.runtime` and are used only
+by application composition.

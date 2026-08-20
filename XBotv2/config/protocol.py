@@ -13,7 +13,7 @@ from XBotv2.config.contracts import (
     PatchPolicy,
     PolicySnapshot,
 )
-from XBotv2.loader.contracts import RELOAD_PLUGINS
+from XBotv2.loader import RELOAD_PLUGINS
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router

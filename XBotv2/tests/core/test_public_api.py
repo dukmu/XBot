@@ -54,8 +54,10 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.application as application
     import XBotv2.commands as commands
     import XBotv2.compact as compact
+    import XBotv2.config as config
     import XBotv2.jobs as jobs
     import XBotv2.llm as llm
+    import XBotv2.loader as loader
     import XBotv2.mcp_plugin as mcp_plugin
     import XBotv2.permissions as permissions
     import XBotv2.sandbox as sandbox
@@ -107,11 +109,26 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "ToolsPort",
     }
     assert set(agents.__all__) >= {
+        "AgentCatalogPort",
         "AgentCreateOptions",
         "AgentDefinition",
         "AgentMode",
+        "AgentRuntimePort",
         "AgentSession",
         "AgentSessionResult",
+        "INITIALIZE_AGENT",
+    }
+    assert set(config.__all__) >= {
+        "PatchPolicy",
+        "POLICY_CHANGED",
+        "PolicyChanged",
+        "SettingsPort",
+    }
+    assert set(loader.__all__) >= {
+        "PluginEntry",
+        "PluginTree",
+        "RELOAD_PLUGINS",
+        "ReloadPlan",
     }
     assert set(application.__all__) >= {
         "AgentApplicationPort",
@@ -128,6 +145,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         (agents, {"AgentService", "AgentRegistry"}),
         (application, {"MountedAgentApplication", "start_application"}),
         (compact, {"CompactService"}),
+        (loader, {"Loader", "LoaderComponent"}),
         (jobs, {"JobRegistry", "TextOutputStore"}),
         (llm, {"LlmService", "ModelService"}),
         (permissions, {"PermissionSystem"}),

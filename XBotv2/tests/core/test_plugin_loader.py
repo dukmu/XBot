@@ -6,12 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from XBotv2.loader import (
-    Loader,
-    PluginEntry,
-    PluginTree,
-    resolve_plugin_from_module,
-)
+from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader.runtime import Loader, resolve_plugin_from_module
 
 
 def _write_plugin(tmp_path, name: str, code: str) -> Path:
@@ -128,7 +124,7 @@ class DemoPlugin:
 
 plugin = DemoPlugin()
 """)
-        from XBotv2.loader import Loader as _  # noqa
+        from XBotv2.loader.runtime import Loader as _  # noqa
         import importlib
 
         module = importlib.import_module("demo")

@@ -8,7 +8,7 @@ from typing import Any
 from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.tree import load_server_tree
-from XBotv2.server.contracts import ServerOptions
+from XBotv2.server import ServerOptions
 
 
 async def start_server_application(

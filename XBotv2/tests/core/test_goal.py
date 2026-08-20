@@ -348,7 +348,8 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
         Path(__file__).parents[2] / "goal",
         target_is_directory=True,
     )
-    from XBotv2.loader import Loader, PluginTree
+    from XBotv2.loader import PluginTree
+    from XBotv2.loader.runtime import Loader
 
     ctx = mount_ctx(state_store)
     tools = ctx.tools

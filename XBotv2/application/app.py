@@ -30,9 +30,9 @@ from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.operations import dispatch_operation
-from XBotv2.agents.contracts import INITIALIZE_AGENT
+from XBotv2.agents import INITIALIZE_AGENT
 from XBotv2.session import AgentApplicationOptions
-from XBotv2.loader.contracts import ReloadPlan
+from XBotv2.loader import ReloadPlan
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 

@@ -184,7 +184,8 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
         Path(__file__).parents[2] / "todolist",
         target_is_directory=True,
     )
-    from XBotv2.loader import Loader, PluginTree
+    from XBotv2.loader import PluginTree
+    from XBotv2.loader.runtime import Loader
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools.registry

@@ -6,16 +6,22 @@ from XBotv2.config.contracts import (
     PatchPolicy,
     PolicySnapshot,
 )
+from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
+from XBotv2.config.services import SettingsPort
+
 __all__ = [
     "ConfigReloadResponse",
     "GET_POLICY",
     "PatchPolicy",
+    "POLICY_CHANGED",
     "PermissionDecision",
+    "PolicyChanged",
     "PolicySnapshot",
     "SandboxKey",
     "SandboxValue",
     "SessionPolicyPatch",
     "SessionPolicyResponse",
+    "SettingsPort",
     "UPDATE_POLICY",
 ]
 

@@ -11,7 +11,7 @@ from typing import Any
 
 from XBotv2.agentloop import Events
 from XBotv2.core.loop import LoopState
-from XBotv2.session.contracts import PREPARE_FORK
+from XBotv2.session import PREPARE_FORK
 
 
 class PersistenceService:

@@ -10,15 +10,17 @@ from XBotv2.commands import Command, CommandResult
 from XBotv2.core import Tool, ToolResult
 ```
 
-Each plugin also owns a declaration surface through its package root. Package
-roots may re-export only explicit `types`, `invariants`, `commands`, `events`,
-`services`, or transitional `contracts` declarations:
+Each plugin also owns a declaration surface through its package root.
+Cross-plugin consumers use that root, not the underlying declaration module.
+Package roots may re-export only explicit `types`, `invariants`, `commands`,
+`events`, `services`, `protocol`, or transitional `contracts` declarations:
 
 ```python
 from XBotv2.commands import Command, CommandResult
 from XBotv2.jobs import Job, JobKind, JobStatus, JobsPort
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
 from XBotv2.llm import LlmCatalogPort, ProviderCatalog
+from XBotv2.loader import PluginTree, ReloadPlan
 ```
 
 Concrete services, registries, managers, routers, and plugin implementations

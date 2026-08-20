@@ -27,7 +27,7 @@ from XBotv2.jobs.contracts import (
     TaskCatalog,
     task_snapshot,
 )
-from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
+from XBotv2.session import PREPARE_FORK, PrepareFork
 
 
 class JobsComponent:

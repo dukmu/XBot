@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agents.services import AgentCatalogPort
-from XBotv2.application.services import (
+from XBotv2.application import (
     ChildApplicationRequest,
     ChildApplicationsPort,
 )
@@ -32,7 +32,7 @@ from XBotv2.jobs import (
     JobsPort,
     JobStatus,
 )
-from XBotv2.session.services import SessionPort
+from XBotv2.session import SessionPort
 from xcore import S
 
 _MAX_PROMPT_PREVIEW = 100

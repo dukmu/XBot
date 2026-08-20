@@ -19,7 +19,7 @@ from XBotv2.agents.contracts import (
 from XBotv2.agents.contracts import AgentCreateOptions
 from XBotv2.agentloop import Events
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.llm.contracts import (
+from XBotv2.llm import (
     EffortSelection,
     ProviderSelection,
     SELECT_EFFORT,

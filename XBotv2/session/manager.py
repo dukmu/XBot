@@ -48,7 +48,7 @@ from XBotv2.session.types import (
     ThreadNotActive,
     ThreadSnapshot,
 )
-from XBotv2.server.contracts import QUERY_STATUS, ServerStatus
+from XBotv2.server import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
     Operation,
     RequestT,

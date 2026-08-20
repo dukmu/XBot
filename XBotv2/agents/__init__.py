@@ -9,6 +9,7 @@ from XBotv2.agents.contracts import (
     AgentSession,
     AgentSessionResult,
     AgentSelection,
+    INITIALIZE_AGENT,
     LIST_AGENTS,
     RELOAD_AGENTS,
     SELECT_AGENT,
@@ -16,8 +17,11 @@ from XBotv2.agents.contracts import (
     SubagentAgentError,
     SubagentTurnError,
 )
+from XBotv2.agents.services import AgentCatalogPort, AgentRuntimePort
+
 __all__ = [
     "AgentCatalog",
+    "AgentCatalogPort",
     "AgentCreateOptions",
     "AgentDefinition",
     "AgentInfo",
@@ -25,10 +29,12 @@ __all__ = [
     "AgentSelection",
     "AgentInitialized",
     "AgentMode",
+    "AgentRuntimePort",
     "AgentSession",
     "AgentSessionResult",
     "AgentSelectionRequest",
     "AgentSelectionResponse",
+    "INITIALIZE_AGENT",
     "LIST_AGENTS",
     "RELOAD_AGENTS",
     "SELECT_AGENT",

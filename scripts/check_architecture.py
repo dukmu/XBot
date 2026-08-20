@@ -601,7 +601,14 @@ def check_application_startup() -> list[Violation]:
             "the plugin tree must not carry application launch facts",
         ))
     for node in ast.walk(_tree(APPLICATION_APP)):
-        if isinstance(node, ast.ImportFrom) and node.module == "XBotv2.loader":
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "XBotv2.loader"
+            and any(
+                alias.name in {"Loader", "LoaderComponent", "PluginTree"}
+                for alias in node.names
+            )
+        ):
             violations.append(Violation(
                 APPLICATION_APP,
                 node.lineno,
@@ -1022,36 +1029,19 @@ def _public_import_violation(
                     f"imports non-public symbol(s) {detail} from {module}",
                 )
         return None
-    if module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES:
+    if module.rsplit(".", 1)[-1] in PUBLIC_DECLARATION_MODULES:
         return Violation(
             path,
             node.lineno,
-            "plugin-concrete-import",
-            f"imports plugin implementation {module}",
+            "plugin-declaration-submodule",
+            f"imports {module}; import public declarations from XBotv2.{imported}",
         )
-    declaration_path = _module_path(module)
-    exports = _explicit_exports(declaration_path) if declaration_path else None
-    if exports is None:
-        return Violation(
-            path,
-            node.lineno,
-            "plugin-implicit-public-module",
-            f"public declaration module {module} has no explicit __all__",
-        )
-    if isinstance(node, ast.ImportFrom):
-        imported_names = {
-            alias.name for alias in node.names if alias.name != "*"
-        }
-        missing = sorted(imported_names - exports)
-        if missing or any(alias.name == "*" for alias in node.names):
-            detail = "*" if not missing else ", ".join(missing)
-            return Violation(
-                path,
-                node.lineno,
-                "plugin-private-symbol-import",
-                f"imports non-public symbol(s) {detail} from {module}",
-            )
-    return None
+    return Violation(
+        path,
+        node.lineno,
+        "plugin-concrete-import",
+        f"imports plugin implementation {module}",
+    )
 
 
 def check_plugin_imports() -> list[Violation]:

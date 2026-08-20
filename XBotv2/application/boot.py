@@ -10,7 +10,8 @@ from typing import Any
 
 import xcore
 
-from XBotv2.loader import LoaderComponent, PluginTree
+from XBotv2.loader import PluginTree
+from XBotv2.loader.runtime import LoaderComponent
 
 
 async def boot_application(
