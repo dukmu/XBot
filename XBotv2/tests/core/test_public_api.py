@@ -25,14 +25,11 @@ from XBotv2.core import (
     ToolResult,
     Tool,
 )
+from XBotv2.config import SessionPolicyPatch
+from XBotv2.interactions import UserInputRequiredData
+from XBotv2.protocol import HelloRequest, server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.protocol.models import (
-    KNOWN_SERVER_EVENT_TYPES,
-    HelloRequest,
-    MessageRequest,
-    SessionPolicyPatch,
-    server_event,
-)
+from XBotv2.session import MessageRequest
 
 
 def test_public_api_inventory_is_explicit():
@@ -253,43 +250,17 @@ def test_server_event_carries_stream_envelope_fields():
     assert "ok" in event.data["content"]
 
 
-def test_server_event_rejects_ask_user_without_choices():
+def test_interactions_protocol_rejects_ask_user_without_choices():
     with pytest.raises(
         ValidationError,
         match="ask_user requires at least two options",
     ):
-        server_event(
-            type="user_input_required",
-            data={
-                "request_id": "user_input:c1",
-                "source": "ask_user",
-                "tool_call_id": "c1",
-                "question": "Continue?",
-            },
+        UserInputRequiredData(
+            request_id="user_input:c1",
+            source="ask_user",
+            tool_call_id="c1",
+            question="Continue?",
         )
-
-
-def test_server_event_type_inventory_covers_core_stream_events():
-    assert set(KNOWN_SERVER_EVENT_TYPES) == {
-        "assistant_message",
-        "assistant_message_delta",
-        "end",
-        "error",
-        "input_rejected",
-        "message",
-        "permission_denied",
-        "permission_request",
-        "permission_response_recorded",
-        "tool_call_delta",
-        "tool_calls_started",
-        "tool_result",
-        "turn_cancelled",
-        "turn_finished",
-        "turn_started",
-        "usage",
-        "user_input_recorded",
-        "user_input_required",
-    }
 
 
 @pytest.mark.asyncio

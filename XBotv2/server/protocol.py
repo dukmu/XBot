@@ -10,7 +10,7 @@ from xcore import Context
 
 from XBotv2.core.errors import OperationError
 from XBotv2.protocol.http_util import HttpServerError
-from XBotv2.protocol.models import (
+from XBotv2.protocol import (
     HealthResponse,
     HelloRequest,
     HelloResponse,
@@ -70,8 +70,8 @@ def build_core_router(
     return router
 
 
-class CoreHttpAdapter:
-    name = "xbot.http.core"
+class ServerProtocolPlugin:
+    name = "xbot.protocol.core"
     inject = ["server", "server_info"]
 
     async def apply(self, ctx: Context, config: object = None) -> None:
@@ -82,7 +82,7 @@ class CoreHttpAdapter:
         )
 
 
-plugin = CoreHttpAdapter()
+plugin = ServerProtocolPlugin()
 
 
-__all__ = ["build_core_router", "plugin"]
+__all__ = ["build_core_router"]

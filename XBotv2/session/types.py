@@ -75,7 +75,7 @@ class OpenedSession:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionSummary:
+class SessionSnapshot:
     session_id: str
     status: Literal["active", "inactive"]
     active_threads: int = 0
@@ -83,7 +83,7 @@ class SessionSummary:
 
 
 @dataclass(frozen=True, slots=True)
-class ThreadSummary:
+class ThreadSnapshot:
     session_id: str
     thread_id: str
     status: Literal["active", "inactive"]
@@ -147,7 +147,7 @@ __all__ = [
     "SessionExists",
     "SessionNotFound",
     "SessionStreamEvent",
-    "SessionSummary",
+    "SessionSnapshot",
     "ThreadNotActive",
-    "ThreadSummary",
+    "ThreadSnapshot",
 ]

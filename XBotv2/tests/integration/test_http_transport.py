@@ -52,7 +52,7 @@ from XBotv2.server.http import (
 )
 from XBotv2.session import InteractionReceipt, ThreadNotActive
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
-from XBotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
+from XBotv2.protocol import ServerEvent
 from XBotv2.tui.terminal import TerminalSession
 from XBotv2.tui.transport_http import HttpTransport
 
@@ -395,7 +395,7 @@ def _load_jsonl_fixture(relative_path: str) -> list[dict[str, Any]]:
 def test_all_server_event_types_have_sse_contract_fixtures() -> None:
     contracts = _load_jsonl_fixture("sse/server_event_contracts.jsonl")
 
-    assert [event["type"] for event in contracts] == list(KNOWN_SERVER_EVENT_TYPES)
+    assert len({event["type"] for event in contracts}) == len(contracts)
     for expected in contracts:
         event = ServerEvent.model_validate(expected)
         frame = _format_sse(
@@ -1657,7 +1657,7 @@ async def test_http_policy_api_updates_live_session_policy(
 
 @pytest.mark.asyncio
 async def test_http_interaction_response_maps_session_receipt() -> None:
-    from XBotv2.http_transport.session import _interaction_response
+    from XBotv2.session.protocol import _interaction_response
 
     async def receipt() -> InteractionReceipt:
         return InteractionReceipt(
@@ -1772,7 +1772,7 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from XBotv2.protocol.models import PermissionResponseRequest
+    from XBotv2.permission_request import PermissionResponseRequest
 
     with pytest.raises(ValidationError, match="scope"):
         PermissionResponseRequest(

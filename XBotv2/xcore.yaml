@@ -284,37 +284,33 @@
   reloadable: false
 
 - id: server.routes.core
-  name: http_transport.core
+  name: server.protocol
   profiles: [server]
 
 - id: server.routes.session
-  name: http_transport.session
-  profiles: [server]
-
-- id: server.routes.permissions
-  name: http_transport.policy
+  name: session.protocol
   profiles: [server]
 
 - id: server.routes.jobs
-  name: http_transport.jobs
+  name: jobs.protocol
   profiles: [server]
 
 - id: server.routes.agents
-  name: http_transport.agents
+  name: agents.protocol
   profiles: [server]
 
 - id: server.routes.llm
-  name: http_transport.llm
+  name: llm.protocol
   profiles: [server]
 
 - id: server.routes.config
-  name: http_transport.config
+  name: config.protocol
   profiles: [server]
 
 - id: server.routes.tools
-  name: http_transport.tools
+  name: agentloop.protocol
   profiles: [server]
 
 - id: server.routes.commands
-  name: http_transport.commands
+  name: commands.protocol
   profiles: [server]

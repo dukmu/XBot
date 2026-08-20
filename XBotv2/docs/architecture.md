@@ -361,20 +361,20 @@ and description. A Tool namespace is never interpreted as a slash-command path.
 
 ### HTTP/SSE (`server/http.py`)
 
-FastAPI app with SSE streaming. The wire protocol stays pure (`protocol/`);
-the application server layer owns the FastAPI carrier (`server/http.py`),
-the `SessionManager` host (`server/session_manager.py`), and the business
-helpers (`server/http_util.py`). Each server capability owns its router
-(`<cap>/router.py`) and registers it into `ctx.web_server` from its host
-plugin (`server/hosts/`); the carrier mounts only the core health/hello
-routes, and `create_app` mounts the full default surface for standalone
-use. `SessionManager` owns one `SessionRuntime` per
+FastAPI app with SSE streaming. The central `protocol/` package owns only the
+version, hello/health/error contracts, and SSE envelope/framing. Each business
+plugin owns its C/S wire models and FastAPI mapping in `<cap>/protocol.py` and
+registers its router through the typed XCore `http/route` event. The server
+carrier imports no business plugin, keeps no Session manager in `app.state`,
+and exposes no route-registration service locator. `SessionManager` owns one
+`SessionRuntime` per
 live thread. It owns the XCore application, Engine handle, turn task,
 client-event sink, and event stream; the agent inbox belongs to Engine. Runtime
 stops active delivery before stopping the application and plugin fibers.
 Once mode uses the same runtime so immediate Goal continuations are not lost
 after the first model turn.
-Wire DTOs are owned by `protocol/models.py`; `core/` contains no transport types.
+Business wire DTOs are owned by their plugins; `core/` contains no transport
+types.
 The HTTP bridge owns the Engine async stream and closes it when the SSE
 consumer completes or disconnects.
 

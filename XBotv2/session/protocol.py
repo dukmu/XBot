@@ -12,10 +12,11 @@ import logging
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import Field, model_validator
 from xcore import Context
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
@@ -23,29 +24,15 @@ from XBotv2.protocol.http_util import (
     HttpServerError,
     _format_sse,
 )
-from XBotv2.protocol.models import (
-    CloseResponse,
-    ForkResponse,
-    HistoryMutationResponse,
-    InteractionResponse,
-    InterruptResponse,
-    MessageRequest,
-    OpenSessionRequest,
-    OpenSessionResponse,
-    OpenThreadRequest,
-    PermissionResponseRequest,
-    SessionListResponse,
-    SessionSummary,
-    ThreadListResponse,
-    ThreadMessagesResponse,
-    ThreadSummary,
-    UndoRequest,
-    UserInputResponseRequest,
-)
+from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
+from XBotv2.permission_request import PermissionResponseRequest
+from XBotv2.protocol import WireModel
+from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import display_history
 from XBotv2.server import ModelOverride, ServerOptions, contribute_router
-from XBotv2.session import (
+from XBotv2.session.services import SessionHostPort
+from XBotv2.session.types import (
     AttachmentUpload,
     ImageUpload,
     InteractionReceipt,
@@ -54,14 +41,172 @@ from XBotv2.session import (
     OpenThread,
     SendMessage,
     SessionExists,
-    SessionHostPort,
     SessionNotFound,
-    SessionSummary as SessionSummaryData,
+    SessionSnapshot,
     ThreadNotActive,
-    ThreadSummary as ThreadSummaryData,
+    ThreadSnapshot,
 )
 
 logger = logging.getLogger("xbotv2.http_server")
+
+
+def _empty_usage() -> UsageData:
+    return UsageData(
+        input_tokens=0,
+        output_tokens=0,
+        total_tokens=0,
+        requests=0,
+    )
+
+
+class OpenSessionRequest(WireModel):
+    session_id: str | None = None
+    thread_id: str = "agent"
+    workspace_root: str | None = None
+    mode: Literal["new", "resume"] = "new"
+    agent: str | None = None
+
+
+class SessionHistoryItem(WireModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_call_id: str = ""
+    status: str = ""
+    data: Any = None
+    error: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    images: list[dict[str, Any]] = Field(default_factory=list)
+    runtime: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+
+class ThreadSummary(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    status: Literal["active", "inactive"]
+    kind: Literal["main", "subagent"] = "main"
+    turn_status: Literal["idle", "running"] = "idle"
+    parent_thread_id: str = ""
+    agent: str = ""
+    provider: str = ""
+    model: str = ""
+    model_mode: str = ""
+    context_window: int = Field(default=0, ge=0)
+    message_count: int = Field(default=0, ge=0)
+    usage: UsageData = Field(default_factory=_empty_usage)
+    pending_interactions: list[str] = Field(default_factory=list)
+    status_slots: dict[str, str] = Field(default_factory=dict)
+
+
+class ThreadListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    threads: list[ThreadSummary] = Field(default_factory=list)
+
+
+class SessionSummary(WireModel):
+    session_id: str = Field(min_length=1)
+    status: Literal["active", "inactive"]
+    active_threads: int = Field(default=0, ge=0)
+    thread_count: int = Field(default=0, ge=0)
+
+
+class SessionListResponse(WireModel):
+    sessions: list[SessionSummary] = Field(default_factory=list)
+
+
+class OpenSessionResponse(WireModel):
+    session_id: str
+    thread_id: str
+    status: Literal["ready"] = "ready"
+    agent_name: str
+    workspace_root: str
+    provider: str
+    model: str = ""
+    model_mode: str = ""
+    context_window: int = Field(default=0, ge=0)
+    usage: UsageData = Field(default_factory=_empty_usage)
+    history: list[SessionHistoryItem] = Field(default_factory=list)
+    status_slots: dict[str, str] = Field(default_factory=dict)
+
+
+class OpenThreadRequest(WireModel):
+    thread_id: str = Field(min_length=1)
+    parent_thread_id: str = Field(default="agent", min_length=1)
+    workspace_root: str | None = None
+    mode: Literal["new", "resume"] = "new"
+    agent: str | None = None
+
+
+class ThreadMessagesResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    messages: list[SessionHistoryItem] = Field(default_factory=list)
+
+
+class UndoRequest(WireModel):
+    count: int = Field(default=1, ge=1)
+
+
+class HistoryMutationResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    removed_turns: int = Field(ge=0)
+    messages: list[SessionHistoryItem] = Field(default_factory=list)
+
+
+class ForkResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    source_session_id: str = Field(min_length=1)
+    status: Literal["forked"] = "forked"
+
+
+class ImageInput(WireModel):
+    data: str = Field(min_length=1)
+    media_type: str = Field(pattern=r"^image/[A-Za-z0-9.+-]+$")
+
+
+class AttachmentInput(WireModel):
+    data: str = Field(min_length=1)
+    media_type: str = "application/octet-stream"
+    name: str = Field(min_length=1)
+
+
+class MessageData(WireModel):
+    id: str
+    role: str
+    content: str = ""
+
+
+class MessageRequest(WireModel):
+    content: str = ""
+    request_id: str = ""
+    images: list[ImageInput] = Field(default_factory=list)
+    attachments: list[AttachmentInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_content(self) -> "MessageRequest":
+        if not self.content.strip() and not self.images and not self.attachments:
+            raise ValueError("message requires text, image, or attachment content")
+        return self
+
+
+class InterruptResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    status: Literal["idle", "interrupting"]
+    cancelled: bool
+
+
+class CloseResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = ""
+    status: Literal["closed"] = "closed"
+
+
+SessionMode = Literal["new", "resume"]
 
 
 def _open_session_response(value: OpenedSession) -> OpenSessionResponse:
@@ -80,7 +225,7 @@ def _open_session_response(value: OpenedSession) -> OpenSessionResponse:
     )
 
 
-def _session_summary(value: SessionSummaryData) -> SessionSummary:
+def _session_summary(value: SessionSnapshot) -> SessionSummary:
     return SessionSummary(
         session_id=value.session_id,
         status=value.status,
@@ -89,7 +234,7 @@ def _session_summary(value: SessionSummaryData) -> SessionSummary:
     )
 
 
-def _thread_summary(value: ThreadSummaryData) -> ThreadSummary:
+def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
     return ThreadSummary(
         session_id=value.session_id,
         thread_id=value.thread_id,
@@ -524,7 +669,7 @@ def build_session_router(
     return router
 
 
-class SessionHttpAdapter:
+class SessionProtocolPlugin:
     """Map the public Session host API to HTTP and SSE."""
 
     inject = [
@@ -532,7 +677,7 @@ class SessionHttpAdapter:
         'session_host',
         'server_options',
     ]
-    name = "xbot.http.session"
+    name = "xbot.protocol.session"
 
     async def apply(self, ctx: Context, config: object = None) -> None:
         async def _on_session_not_found(
@@ -565,4 +710,28 @@ class SessionHttpAdapter:
         )
 
 
-plugin = SessionHttpAdapter()
+plugin = SessionProtocolPlugin()
+
+
+__all__ = [
+    "AttachmentInput",
+    "CloseResponse",
+    "ForkResponse",
+    "HistoryMutationResponse",
+    "ImageInput",
+    "InterruptResponse",
+    "MessageData",
+    "MessageRequest",
+    "OpenSessionRequest",
+    "OpenSessionResponse",
+    "OpenThreadRequest",
+    "SessionHistoryItem",
+    "SessionListResponse",
+    "SessionMode",
+    "SessionSummary",
+    "ThreadListResponse",
+    "ThreadMessagesResponse",
+    "ThreadSummary",
+    "UndoRequest",
+    "build_session_router",
+]

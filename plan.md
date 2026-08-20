@@ -14,8 +14,8 @@
 3. 不跨插件导入 concrete service、manager、registry、plugin 或 router；
 4. 不通过整个 XCore Context、SessionRuntime、service bag、`getattr()` 或无类型函数
    参数隐藏运行时依赖；
-5. server 只是 ASGI/FastAPI carrier，HTTP adapter 通过 XCore route contribution
-   注册路由，并通过 typed operation 调用能力；
+5. server 只是 ASGI/FastAPI carrier；各业务插件的 `protocol.py` 同时拥有 wire
+   model 和 route contribution，并通过 typed operation 调用能力；
 6. 配置文件只保存可序列化配置，运行时 paths、factory、parent service 和 launch
    facts 通过 typed composition-owned services 提供；
 7. 插件卸载时，其 services、listeners、routes、commands、tools 和后台任务全部由
@@ -38,6 +38,7 @@
 - `commands`：human command 声明及其 typed handler factory；
 - `events`：事件名称及 typed payload；
 - `services`：窄 service Protocol，不包含实现类；
+- `protocol`：该插件拥有的 C/S wire model、route mapping 和 route contribution；
 - 迁移期 `contracts.py` 可以保留，但只能包含上述声明。
 
 公开符号必须由模块 `__all__` 显式列出。package `__init__.py` 只能 re-export
@@ -54,7 +55,8 @@ from XBotv2.permissions import PermissionsPort, build_permissions_commands
 ```
 
 插件根 `__init__.py` 是唯一的跨插件 Python import 面；它只从
-`types/invariants/commands/events/services/contracts` 重导出显式 `__all__` 中的声明。
+`types/invariants/commands/events/services/contracts/protocol` 重导出显式 `__all__`
+中的声明。
 声明文件仍可供插件内部直接导入，但外部消费者不依赖其目录布局。
 
 跨插件禁止：
@@ -89,13 +91,17 @@ from XBotv2.permissions.plugin import PermissionsComponent
 - paths、session launch options、application factory、parent permissions 和 client
   event sink 是 composition-owned services，不写入 YAML config。
 
-### 4. HTTP and outbound events
+### 4. Plugin-owned protocol and outbound events
 
 - route contribution 是 server carrier 拥有的 public event contract；server 不反向
-  导入 `http_transport`；
-- 所有 route implementation 位于 `http_transport/`，能力包不保留 `router.py`；
-- adapter 只导入 protocol wire DTO、能力 public declaration 和 server route event；
-- adapter 通过 root/session typed operation 调用能力，不读取 child services；
+  导入任何业务插件；
+- 每个业务插件的 `protocol.py` 拥有该能力的 request/response/event wire models、
+  FastAPI mapping 和 route contribution plugin；
+- `protocol.py` 只从其他插件根导入公开声明，通过 root/session typed operation 或
+  声明的 service Protocol 调用能力，不读取 child services；
+- `http_transport/` 被删除，不再存在平行 adapter ownership；
+- 中央 `XBotv2.protocol` 只拥有 hello/health/error、SSE envelope/framing 和版本，
+  不拥有业务 request/response，也不维护所有业务 event payload 的总表；
 - 能力发布 producer-owned typed outbound event；通用 session stream bridge 只负责
   排序、重放、背压和 SSE 编码，不解释 jobs/agents/history 等能力语义。
 
@@ -111,7 +117,7 @@ from XBotv2.permissions.plugin import PermissionsComponent
 4. command owner 已用 typed factory 捕获声明依赖，`CommandContext` 已删除；
 5. Loader 拥有 reload，application 提供 typed launch ports，LLM 不再反向扫描 tree；
 6. config 拥有 policy persistence，permissions/sandbox 只更新各自 policy；
-7. capability HTTP adapters（除 session）已迁入 `http_transport` 并派发 typed
+7. capability HTTP routes 已迁入各 owner 的 `protocol.py` 并派发 typed
    operations；server 只拥有 route contribution 与 ASGI carrier；
 8. 平行 `ServerEvents` registry 已删除，MCP 已改为显式 service 注入；
 9. package root 只 re-export 已声明的 contracts/commands/service Protocol。
@@ -123,17 +129,19 @@ tool policy 已完成收敛：`BEFORE_TOOL_CALL` 只允许重写 ToolCall/args�
 validation 和全部 guard 必须在执行前通过；`ToolDecision`/`ToolAction`、事件拒绝、
 stop 和伪造结果入口已删除。
 
-当前 architecture scanner 已达到 **0 项**。Session HTTP 所有权已完成迁移：
+当前 architecture scanner 已达到 **0 项**。业务协议所有权迁移已完成：
 
 1. Session 根公开 `SessionHostPort`、host request/result、summary、stream event 和
    公开错误；
 2. `SessionManager` 实现 transport-neutral host API，内部拥有 runtime、persistence、
    parent permission、history lock、media、interaction waiter 和 stream lifecycle；
 3. Session/Thread summary 不再使用 protocol Pydantic DTO；
-4. route implementation 已迁到 `http_transport/session.py`，只导入 protocol wire
-   DTO、Session 根声明、server 根声明和 shared core；
-5. `session/router.py` 与 `session/http_util.py` 已删除，`xcore.yaml` 直接激活
-   `http_transport.session`。
+4. Session route implementation 与 wire DTO 已合入 `session/protocol.py`；
+5. agents/agentloop/commands/config/jobs/llm/session 各自拥有 `protocol.py`，usage、
+   interactions、permission_request 拥有各自 wire event/request models；
+6. `xcore.yaml` 直接激活 `<plugin>.protocol`，集中 `http_transport` 已删除；
+7. server 不再提供 `web_server` 兼容 service，也不把 manager/paths/services 写入
+   FastAPI `app.state`。
 
 扫描零违规只是当前门禁的证据，不代表最终完成。下一步依次收敛
 producer-owned typed outbound events、ACP 对 concrete SessionManager/runtime 的依赖，
@@ -152,7 +160,7 @@ producer-owned typed outbound events、ACP 对 concrete SessionManager/runtime �
 |---|---|---|---|
 | `runtime_paths` | application launcher | config/session/persistence host | `RuntimePaths` |
 | `session_launch` | Agent application launcher | config/session/agent runtime | immutable `SessionLaunch` |
-| `server_options` | server launcher | session host/core HTTP adapter | `ServerOptions` |
+| `server_options` | server launcher | session host/server protocol | `ServerOptions` |
 | `agent_application_factory` | application composition | session host | `AgentApplicationFactory` |
 | `child_applications` | Agent application composition | subagent adapter | `ChildApplicationsPort` |
 | `client_events` | client/application adapter | approval/interactions/outbound bridge | `ClientEventsPort` |
@@ -201,23 +209,26 @@ producer-owned typed outbound events、ACP 对 concrete SessionManager/runtime �
 | `token_manager` | request budget projection | none | token snapshot/accounting invariants；model event listeners |
 | `workspace_instructions` | AGENTS.md、workspace Agent overlay/plugin patch | `loader`, `variables`, `workspace_root`; optional `agent_catalog` | instruction/overlay types/invariants；context/reload listeners |
 
-### D. Server and HTTP adapters
+### D. Server and plugin protocols
 
 | Plugin | 目标 inject | Public/runtime surface |
 |---|---|---|
 | `persistence.host` | `runtime_paths` | typed `StateReaderFactory` |
 | `session.host` | `state_reader_factory`, `runtime_paths`, `agent_application_factory`, `server_options` | `SessionHostPort`; root-to-child typed operation routing |
 | `server` | none | server route contribution event、ASGI app、generic error mapping |
-| `http.core` | `server`, `server_info` | health/hello routes |
-| `http.session` | `server`, `session_host` | session/thread/message/history/SSE routes |
-| `http.agents` | `server`, `session_host` | Agent list/select/reload routes |
-| `http.llm` | `server`, `llm`, `session_host` | provider list/select/effort routes |
-| `http.policy` | `server`, `session_host` | persisted/effective policy routes |
-| `http.jobs` | `server`, `session_host` | task list/stop routes |
-| `http.tools` | `server`, `session_host` | Tool list route |
-| `http.commands` | `server`, `session_host` | plugin command list/execute routes |
+| `server.protocol` | `server`, `server_info` | hello/health wire models 与 routes |
+| `session.protocol` | `server`, `session_host`, `server_options` | session/thread/message/history/SSE wire models 与 routes |
+| `agents.protocol` | `server` | Agent list/select/reload wire models 与 routes |
+| `llm.protocol` | `server`, `llm` | provider list/select/effort wire models 与 routes |
+| `config.protocol` | `server` | reload/persisted/effective policy wire models 与 routes |
+| `jobs.protocol` | `server` | task event/list/stop wire models 与 routes |
+| `agentloop.protocol` | `server` | Tool/turn/assistant wire models 与 Tool list route |
+| `commands.protocol` | `server` | command wire models 与 list/execute routes |
+| `usage.protocol` | none | usage event wire model |
+| `permission_request.protocol` | none | approval request/response/event wire models |
+| `interactions.protocol` | none | user-input request/response/event wire models |
 
-HTTP adapter 的 required services 只用于激活门控，具体调用仍走 typed XCore
+Protocol plugin 的 required services 只用于激活门控，具体调用仍走 typed XCore
 operation。缺失 operation handler 返回明确 `capability_unavailable`，不 fallback 到
 manager 或 service lookup。
 
@@ -248,7 +259,7 @@ Command owner 负责注册与卸载。需要其他能力时，handler factory �
 3. 检查 package re-export 只指向 public declaration；
 4. 检查 plugin 的直接 service access 与 required/optional inject 一致；
 5. 检查 required-service provider graph 无环；
-6. 检查 capability package 不含 router，server 不导入 HTTP adapter；
+6. 检查 capability route 只位于 owner `protocol.py`，server 不导入业务插件；
 7. 修正旧测试仍发送 `server/route` 而实现监听 `http/route` 的失败。
 
 验收：architecture checker 不误报合法声明导入，并能报告 Agent/Session 环、
@@ -293,16 +304,16 @@ SessionExecutionContext；命令执行不携带 runtime scope。
 验收：插件不读取其他插件配置、不解析全局 tree、不重建 launch facts；改变 entry
 id 不影响插件实现。
 
-### Phase 4: HTTP transport
+### Phase 4: Plugin-owned C/S protocol
 
-1. 将 session/jobs/permissions/tools/commands routers 迁入 `http_transport`；
+1. 将业务 wire models 和 routes 迁入各 owner 的 `protocol.py`；
 2. route contribution contract 迁到 server public events/types；
-3. adapters 只做 wire DTO 与 typed operation 转换；
+3. protocol plugins 只做 wire DTO 与 typed operation 转换；
 4. SessionHost 提供 typed open/query/close/dispatch operations；
 5. persistence host 提供 typed reader，删除 router 对 paths/private store 的访问；
-6. 删除 `web_server` compatibility service 和能力包 router modules。
+6. 删除集中 `http_transport`、`web_server` compatibility service 和旧 router modules。
 
-验收：server package 不导入 capability 或 `http_transport` 实现；adapter 不导入
+验收：server package 不导入 capability 实现；protocol plugin 不导入
 manager/service implementation；route mount/unmount/collision 由 fiber 测试证明。
 
 ### Phase 5: Outbound events

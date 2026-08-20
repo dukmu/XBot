@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from XBotv2.core.errors import OperationError
 from XBotv2.core.providers import BaseProvider
 from XBotv2.protocol.http_util import HttpServerError, _error_payload
-from XBotv2.protocol.models import ErrorResponse
+from XBotv2.protocol import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.server.contracts import (
     ModelOverride,

@@ -31,7 +31,7 @@ ModelOverride = Annotated[
 
 @dataclass(frozen=True, slots=True)
 class RouteContribution:
-    """One route contribution owned by an HTTP adapter fiber."""
+    """One route contribution owned by a protocol plugin fiber."""
 
     owner: str
     router: APIRouter

@@ -3,23 +3,52 @@
 from __future__ import annotations
 
 import shlex
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
+from pydantic import Field
 from XBotv2.protocol.http_util import HttpServerError
-from XBotv2.protocol.models import (
-    CommandListResponse,
-    CommandRequest,
-    CommandResponse,
-)
-from XBotv2.server.contracts import contribute_router
+from XBotv2.protocol import WireModel
+from XBotv2.server import contribute_router
 from XBotv2.commands.contracts import (
     EXECUTE_COMMAND,
     ExecuteCommand,
     LIST_COMMANDS,
 )
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.session.contracts import SessionRef, dispatch_session_operation
+from XBotv2.session import SessionRef, dispatch_session_operation
+
+
+class CommandRequest(WireModel):
+    command: str = ""
+    args: list[str] | None = None
+    raw: str = ""
+    kind: Literal["server", "prompt"] = "server"
+
+
+class CommandInfo(WireModel):
+    name: str
+    slash: str
+    kind: Literal["client", "server", "prompt"]
+    description: str
+    usage: str = ""
+    examples: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandListResponse(WireModel):
+    commands: list[CommandInfo]
+
+
+class CommandResult(WireModel):
+    command: str
+    status: Literal["ok", "error"]
+    message: str
+
+
+class CommandResponse(WireModel):
+    type: Literal["command_result"] = "command_result"
+    data: CommandResult
 
 
 def build_commands_router(*, events: Any) -> APIRouter:
@@ -108,17 +137,11 @@ def build_commands_router(*, events: Any) -> APIRouter:
     return router
 
 
-class CommandsHttpAdapter:
-    """Register the command-plane HTTP surface into ``ctx.web_server``.
-
-    The commands capability owns its routes: when the server tree mounts this
-    plugin, it registers ``build_commands_router`` into the dumb
-    ``ctx.web_server`` carrier.  Registration is a fiber effect, undone on
-    unload.
-    """
+class CommandsProtocolPlugin:
+    """Contribute command-plane routes through the XCore route event."""
 
     inject = ["server"]
-    name = "xbot.http.commands"
+    name = "xbot.protocol.commands"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(
@@ -128,4 +151,14 @@ class CommandsHttpAdapter:
         )
 
 
-plugin = CommandsHttpAdapter()
+plugin = CommandsProtocolPlugin()
+
+
+__all__ = [
+    "CommandInfo",
+    "CommandListResponse",
+    "CommandRequest",
+    "CommandResponse",
+    "CommandResult",
+    "build_commands_router",
+]

@@ -1,11 +1,9 @@
 """Server root component exposing the HTTP/SSE protocol as ``ctx.server``.
 
-The wire protocol types and handlers stay in the protocol package; this
-plugin is the dumb carrier: it builds the empty FastAPI application and
-exposes it as ``ctx.server``. HTTP adapter plugins contribute routes through
-the typed ``http/route`` XCore event. ``ctx.web_server`` remains temporarily
-available while older adapters migrate; business state and session lifecycle
-do not belong to the carrier.
+The plugin is the dumb carrier: it builds the empty FastAPI application and
+exposes it as ``ctx.server``. Capability protocol plugins contribute routes
+through the typed ``http/route`` XCore event; business state and session
+lifecycle do not belong to the carrier.
 """
 
 from __future__ import annotations
@@ -122,9 +120,6 @@ class ServerComponent:
         ctx.on(REGISTER_ROUTE, register_route)
         ctx.set("server_info", info)
         ctx.set("server", app)
-        # Temporary compatibility service for callers not yet migrated. Route
-        # plugins use the XCore event boundary above.
-        ctx.set("web_server", carrier)
 
 
 plugin = ServerComponent()

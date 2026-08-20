@@ -712,3 +712,29 @@
   and `git diff --check` passed. The complete HTTP integration suite was not
   run because its shared fixture currently adds roughly 60s teardown per
   session-bearing test.
+
+### 2026-08-20 · Plugin-owned C/S protocol and routes
+
+- Merged every centralized `http_transport` route contribution into its owning
+  plugin `protocol.py`. Agents, Agent loop, Commands, Config, Jobs, LLM, Session,
+  and Server now own their request/response models and FastAPI mapping; Usage,
+  Permission Request, and Interactions own their event and interaction wire
+  models.
+- `xcore.yaml` now mounts `<plugin>.protocol` entries directly. Config owns both
+  reload and policy routes, and the centralized `http_transport` package was
+  removed.
+- Reduced central `XBotv2.protocol` to version, hello/health/error models, and
+  generic SSE envelopes/framing. It no longer contains business requests,
+  responses, payload models, or a global server-event type registry.
+- Plugin roots explicitly export public protocol declarations while keeping
+  concrete protocol plugins private. Runtime route registration continues
+  through the typed XCore `http/route` event. The unused `web_server`
+  compatibility service was removed; no manager, paths, or service bag was
+  restored in FastAPI state.
+- Verification: architecture checker reports zero violations; 41 focused
+  SSE/public API/server tests passed after removing the final compatibility
+  service; 8 real ASGI integration tests passed for hello/health, provider,
+  permission, Session validation, and error routes. A full HTTP integration
+  run was stopped after its third test because old tests still inspect removed
+  `app.state.paths` and `app.state.manager`; this is a test migration gap, not
+  a reason to restore those runtime bypasses.

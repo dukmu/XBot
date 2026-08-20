@@ -27,7 +27,7 @@ from XBotv2.core.events import EventContext, Events
 from XBotv2.core.runtime import SessionInfo
 from XBotv2.core.loop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
-from XBotv2.protocol.models import PermissionRequestData
+from XBotv2.permission_request import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry

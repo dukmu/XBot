@@ -43,9 +43,9 @@ from XBotv2.session.types import (
     SessionExists,
     SessionNotFound,
     SessionStreamEvent,
-    SessionSummary,
+    SessionSnapshot,
     ThreadNotActive,
-    ThreadSummary,
+    ThreadSnapshot,
 )
 from XBotv2.server.contracts import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
@@ -330,7 +330,7 @@ class SessionManager:
         )
         return await _opened_session(runtime)
 
-    async def list_sessions(self) -> tuple[SessionSummary, ...]:
+    async def list_sessions(self) -> tuple[SessionSnapshot, ...]:
         root = self.paths.sessions_dir
         session_ids = sorted(
             path.name for path in root.iterdir() if path.is_dir()
@@ -340,7 +340,7 @@ class SessionManager:
             for session_id in session_ids
         ])
 
-    async def session_summary(self, session_id: str) -> SessionSummary:
+    async def session_summary(self, session_id: str) -> SessionSnapshot:
         return await session_summary(self, session_id)
 
     async def fork_session(self, session_id: str) -> str:
@@ -358,7 +358,7 @@ class SessionManager:
             )
         return fork_persisted_session(self.paths, session_id)
 
-    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
+    async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]:
         await session_summary(self, session_id)
         return tuple([
             await thread_summary(self, session_id, thread_id)
@@ -413,7 +413,7 @@ class SessionManager:
         self,
         session_id: str,
         thread_id: str,
-    ) -> ThreadSummary:
+    ) -> ThreadSnapshot:
         return await thread_summary(self, session_id, thread_id)
 
     async def messages(
@@ -655,13 +655,13 @@ async def thread_summary(
     manager: SessionManager,
     session_id: str,
     thread_id: str,
-) -> ThreadSummary:
+) -> ThreadSnapshot:
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
         parent_thread_id = str(metadata.get("parent_thread_id") or "")
-        return ThreadSummary(
+        return ThreadSnapshot(
             session_id=session_id,
             thread_id=thread_id,
             status="active",
@@ -688,7 +688,7 @@ async def thread_summary(
     )
     metadata = store.read_thread_metadata()
     parent_thread_id = str(metadata.get("parent_thread_id") or "")
-    return ThreadSummary(
+    return ThreadSnapshot(
         session_id=session_id,
         thread_id=thread_id,
         status="inactive",
@@ -717,7 +717,7 @@ def _read_usage(path: Any) -> dict[str, int]:
 async def session_summary(
     manager: SessionManager,
     session_id: str,
-) -> SessionSummary:
+) -> SessionSnapshot:
     session = manager.paths.session(session_id)
     if not session.root.is_dir():
         raise SessionNotFound(session_id)
@@ -726,7 +726,7 @@ async def session_summary(
     active_threads = sum(
         1 for active_session_id, _ in active if active_session_id == session_id
     )
-    return SessionSummary(
+    return SessionSnapshot(
         session_id=session_id,
         status="active" if active_threads else "inactive",
         active_threads=active_threads,
@@ -768,8 +768,8 @@ __all__ = [
 class SessionHost:
     """Provides ``ctx.session_host`` in the server composition root.
 
-    Constructed before the dumb web carrier so ``create_app`` can attach the
-    host to ``app.state.manager``. Requires the persistence read service.
+    Requires the persistence read service and exposes lifecycle operations
+    only through the public SessionHostPort and typed dispatch events.
     """
 
     name = "xbot.session.host"

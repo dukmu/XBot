@@ -8,50 +8,59 @@ from urllib.parse import quote
 
 import httpx
 
-from XBotv2.protocol.models import (
+from XBotv2.agents import (
     AgentListResponse,
     AgentSelectionRequest,
     AgentSelectionResponse,
-    AttachmentInput,
-    CloseResponse,
+)
+from XBotv2.agentloop import ToolListResponse
+from XBotv2.config import (
+    ConfigReloadResponse,
+    PermissionDecision,
+    SandboxKey,
+    SandboxValue,
+    SessionPolicyPatch,
+    SessionPolicyResponse,
+)
+from XBotv2.interactions import (
+    InteractionResponse,
+    UserInputResponseRequest,
+)
+from XBotv2.jobs import TaskListResponse, TaskStopResponse
+from XBotv2.llm import (
+    EffortSelectionRequest,
+    EffortSelectionResponse,
+    ProviderListResponse,
+    ProviderSelectionRequest,
+    ProviderSelectionResponse,
+)
+from XBotv2.permission_request import PermissionResponseRequest
+from XBotv2.protocol import (
     ErrorResponse,
-    ForkResponse,
     HealthResponse,
     HelloRequest,
     HelloResponse,
+    ServerEvent,
+    WireModel,
+)
+from XBotv2.session import (
+    AttachmentInput,
+    CloseResponse,
+    ForkResponse,
     HistoryMutationResponse,
-    InteractionResponse,
     ImageInput,
     InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
     OpenThreadRequest,
-    PermissionResponseRequest,
-    PermissionDecision,
-    ProviderListResponse,
-    ProviderSelectionRequest,
-    ProviderSelectionResponse,
-    ConfigReloadResponse,
-    EffortSelectionRequest,
-    EffortSelectionResponse,
-    ServerEvent,
     SessionListResponse,
     SessionMode,
-    SessionPolicyPatch,
-    SessionPolicyResponse,
     SessionSummary,
-    SandboxKey,
-    SandboxValue,
-    TaskListResponse,
-    TaskStopResponse,
     ThreadListResponse,
     ThreadMessagesResponse,
     ThreadSummary,
-    ToolListResponse,
     UndoRequest,
-    UserInputResponseRequest,
-    WireModel,
 )
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION

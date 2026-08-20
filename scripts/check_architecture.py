@@ -133,11 +133,12 @@ PUBLIC_DECLARATION_MODULES = {
     "events",
     "invariant",
     "invariants",
+    "protocol",
     "services",
     "types",
 }
 SHARED_DECLARATION_ROOTS = {"core"}
-TRANSPORT_ROOTS = {"acp", "client", "http_transport", "server", "tui"}
+TRANSPORT_ROOTS = {"acp", "client", "server", "tui"}
 XCORE_CONTEXT_API = {
     "bail",
     "dispose",
@@ -529,6 +530,8 @@ def check_agentloop_imports() -> list[Violation]:
             "cross-capability use cases belong to application ownership",
         ))
     for path in sorted(root.glob("*.py")):
+        if path.name == "protocol.py":
+            continue
         violations.extend(
             _imports(path, ENGINE_ALLOWED_XBOT_ROOTS, "loop-import")
         )
@@ -954,7 +957,7 @@ def _public_import_violation(
     if imported is None or imported == owner or imported in SHARED_DECLARATION_ROOTS:
         return None
     if imported == "protocol":
-        if owner in TRANSPORT_ROOTS:
+        if owner in TRANSPORT_ROOTS or path.name == "protocol.py":
             return None
         return Violation(
             path,
@@ -964,13 +967,6 @@ def _public_import_violation(
         )
     if imported not in plugin_roots:
         return None
-    if owner == "server" and imported == "http_transport":
-        return Violation(
-            path,
-            node.lineno,
-            "server-transport-dependency",
-            "server owns route contribution contracts and must not import adapters",
-        )
     package_root = module == f"XBotv2.{imported}"
     if package_root:
         declaration_path = _module_path(module)
@@ -1035,14 +1031,6 @@ def check_plugin_imports() -> list[Violation]:
         root = PACKAGE / owner
         if not root.is_dir():
             continue
-        router = root / "router.py"
-        if router.is_file() and owner != "http_transport":
-            violations.append(Violation(
-                router,
-                1,
-                "plugin-router-location",
-                "HTTP route implementations belong in XBotv2.http_transport",
-            ))
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue

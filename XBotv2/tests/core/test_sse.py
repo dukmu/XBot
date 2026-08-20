@@ -5,14 +5,31 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from XBotv2.protocol.models import (
-    KNOWN_SERVER_EVENT_TYPES,
-    PermissionResponseRequest,
-    ServerEvent,
-    TYPED_SERVER_EVENT_TYPES,
+from XBotv2.agentloop import (
+    AssistantMessageData,
+    AssistantMessageDeltaData,
+    ToolCallDeltaData,
+    ToolCallsStartedData,
+    ToolResultData,
+    TurnCancelledData,
+    TurnData,
+)
+from XBotv2.interactions import (
+    UserInputRequiredData,
     UserInputResponseRequest,
+)
+from XBotv2.permission_request import (
+    PermissionDeniedData,
+    PermissionRequestData,
+    PermissionResponseRequest,
+)
+from XBotv2.protocol import (
+    EndData,
+    ErrorEventData,
+    ServerEvent,
     server_event,
 )
+from XBotv2.usage import UsageData
 from XBotv2.protocol.sse import (
     SseDecoder,
     SseMessage,
@@ -37,10 +54,6 @@ def test_encode_server_event_preserves_envelope_and_unicode() -> None:
     assert encoded.endswith("\n\n")
     payload = json.loads(encoded.split("data: ", 1)[1].strip())
     assert payload == event.model_dump()
-
-
-def test_every_known_server_event_type_has_a_payload_dto() -> None:
-    assert set(TYPED_SERVER_EVENT_TYPES) == set(KNOWN_SERVER_EVENT_TYPES)
 
 
 def test_decoder_handles_comments_multiline_data_and_text_id() -> None:
@@ -92,7 +105,7 @@ def test_decode_server_event_surfaces_malformed_json() -> None:
     assert event.data == {"code": "sse_decode_error", "message": "not-json"}
 
 
-def test_decode_server_event_surfaces_invalid_interaction_payload() -> None:
+def test_decode_server_event_preserves_plugin_owned_payload() -> None:
     event = decode_server_event(
         SseMessage(
             event="user_input_required",
@@ -104,9 +117,8 @@ def test_decode_server_event_surfaces_invalid_interaction_payload() -> None:
         )
     )
 
-    assert event.type == "error"
-    assert event.data["code"] == "sse_decode_error"
-    assert "data.question" in event.data["message"]
+    assert event.type == "user_input_required"
+    assert event.data == {"request_id": "user_input:c1"}
 
 
 def test_user_input_event_preserves_structured_options() -> None:
@@ -180,10 +192,10 @@ def test_interaction_response_requests_have_distinct_schemas() -> None:
 
 
 @pytest.mark.parametrize(
-    ("event_type", "data"),
+    ("model", "data"),
     [
         (
-            "permission_request",
+            PermissionRequestData,
             {
                 "request_id": "permission:c1",
                 "source": "permission_system",
@@ -191,7 +203,7 @@ def test_interaction_response_requests_have_distinct_schemas() -> None:
             },
         ),
         (
-            "user_input_required",
+            UserInputRequiredData,
             {
                 "request_id": "user_input:c2",
                 "source": "ask_user",
@@ -201,23 +213,23 @@ def test_interaction_response_requests_have_distinct_schemas() -> None:
         ),
     ],
 )
-def test_server_event_rejects_incomplete_interaction_payloads(
-    event_type: str,
+def test_plugin_models_reject_incomplete_interaction_payloads(
+    model: type,
     data: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ServerEvent(type=event_type, data=data)
+        model.model_validate(data)
 
 @pytest.mark.parametrize(
-    ("event_type", "data"),
+    ("model", "data"),
     [
-        ("error", {"message": "missing code"}),
+        (ErrorEventData, {"message": "missing code"}),
         (
-            "tool_result",
+            ToolResultData,
             {"name": "shell", "content": "ok", "status": "success"},
         ),
         (
-            "usage",
+            UsageData,
             {
                 "input_tokens": -1,
                 "output_tokens": 1,
@@ -227,37 +239,37 @@ def test_server_event_rejects_incomplete_interaction_payloads(
         ),
     ],
 )
-def test_server_event_rejects_invalid_stable_payloads(
-    event_type: str,
+def test_owner_models_reject_invalid_stable_payloads(
+    model: type,
     data: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ServerEvent(type=event_type, data=data)
+        model.model_validate(data)
 
 
 @pytest.mark.parametrize(
-    ("event_type", "data"),
+    ("model", "data"),
     [
-        ("assistant_message", {"tool_calls": []}),
-        ("assistant_message_delta", {}),
-        ("turn_started", {"turn": 0}),
-        ("turn_cancelled", {"turn": 1}),
-        ("end", {"status": ""}),
+        (AssistantMessageData, {"tool_calls": []}),
+        (AssistantMessageDeltaData, {}),
+        (TurnData, {"turn": 0}),
+        (TurnCancelledData, {"turn": 1}),
+        (EndData, {"status": ""}),
     ],
 )
-def test_server_event_rejects_invalid_turn_and_assistant_payloads(
-    event_type: str,
+def test_owner_models_reject_invalid_turn_and_assistant_payloads(
+    model: type,
     data: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ServerEvent(type=event_type, data=data)
+        model.model_validate(data)
 
 
 @pytest.mark.parametrize(
-    ("event_type", "data"),
+    ("model", "data"),
     [
         (
-            "permission_denied",
+            PermissionDeniedData,
             {
                 "request_id": "permission:c1",
                 "source": "permission_system",
@@ -266,9 +278,9 @@ def test_server_event_rejects_invalid_turn_and_assistant_payloads(
                 "reason": "denied",
             },
         ),
-        ("tool_calls_started", {"tool_calls": []}),
+        (ToolCallsStartedData, {"tool_calls": []}),
         (
-            "tool_call_delta",
+            ToolCallDeltaData,
             {
                 "tool_calls": [{
                     "tool_call_id": "c1",
@@ -282,9 +294,9 @@ def test_server_event_rejects_invalid_turn_and_assistant_payloads(
         ),
     ],
 )
-def test_server_event_rejects_invalid_client_and_tool_call_payloads(
-    event_type: str,
+def test_owner_models_reject_invalid_client_and_tool_call_payloads(
+    model: type,
     data: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ServerEvent(type=event_type, data=data)
+        model.model_validate(data)

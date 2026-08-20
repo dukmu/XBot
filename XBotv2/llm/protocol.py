@@ -1,13 +1,14 @@
-"""HTTP adapter for LLM catalog and session binding operations."""
+"""LLM C/S wire models and route contribution."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
+from pydantic import Field
 
 from XBotv2.core.operations import EmptyRequest, dispatch_operation
-from XBotv2.server.contracts import contribute_router
+from XBotv2.server import contribute_router
 from XBotv2.llm.contracts import (
     LIST_PROVIDERS,
     SELECT_EFFORT,
@@ -16,16 +17,59 @@ from XBotv2.llm.contracts import (
     SelectProvider,
 )
 from XBotv2.protocol.http_util import HttpServerError
-from XBotv2.protocol.models import (
-    EffortSelectionRequest,
-    EffortSelectionResponse,
-    ModelInfo,
-    ProviderInfo,
-    ProviderListResponse,
-    ProviderSelectionRequest,
-    ProviderSelectionResponse,
-)
-from XBotv2.session.contracts import SessionRef, dispatch_session_operation
+from XBotv2.protocol import WireModel
+from XBotv2.session import SessionRef, dispatch_session_operation
+
+
+class ModelInfo(WireModel):
+    model: str = Field(min_length=1)
+    max_context_tokens: int = Field(ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    reasoning_effort: str = ""
+    effort: list[str] = Field(default_factory=list)
+    thinking: str = ""
+    input_modalities: list[Literal["text", "image"]] = Field(
+        default_factory=lambda: ["text"]
+    )
+
+
+class ProviderInfo(WireModel):
+    name: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    default_model: str = Field(min_length=1)
+    models: list[ModelInfo] = Field(default_factory=list)
+
+
+class ProviderListResponse(WireModel):
+    default: str
+    providers: list[ProviderInfo] = Field(default_factory=list)
+
+
+class ProviderSelectionRequest(WireModel):
+    name: str = Field(min_length=1)
+    model: str | None = Field(default=None, min_length=1)
+
+
+class ProviderSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    model_mode: str = ""
+
+
+class EffortSelectionRequest(WireModel):
+    effort: str = Field(min_length=1)
+
+
+class EffortSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    reasoning_effort: str = ""
+    model_mode: str = ""
+    available: list[str] = Field(default_factory=list)
 
 
 def build_router(*, events: Any) -> APIRouter:
@@ -116,12 +160,24 @@ def build_router(*, events: Any) -> APIRouter:
     return router
 
 
-class LlmHttpAdapter:
-    name = "xbot.http.llm"
+class LlmProtocolPlugin:
+    name = "xbot.protocol.llm"
     inject = ["server", "llm"]
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
 
 
-plugin = LlmHttpAdapter()
+plugin = LlmProtocolPlugin()
+
+
+__all__ = [
+    "EffortSelectionRequest",
+    "EffortSelectionResponse",
+    "ModelInfo",
+    "ProviderInfo",
+    "ProviderListResponse",
+    "ProviderSelectionRequest",
+    "ProviderSelectionResponse",
+    "build_router",
+]

@@ -6,12 +6,12 @@ from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 from XBotv2.client import XBotClient
-from XBotv2.protocol.models import (
+from XBotv2.commands import (
     CommandListResponse,
     CommandRequest,
     CommandResponse,
-    ServerEvent,
 )
+from XBotv2.protocol import ServerEvent
 from XBotv2.tui.trace import trace_event
 
 

@@ -3,17 +3,41 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
+from pydantic import Field
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import LIST_TASKS, STOP_ALL_TASKS, STOP_TASK, StopTask
-from XBotv2.protocol.models import (
-    TaskListResponse,
-    TaskStopResponse,
-)
-from XBotv2.server.contracts import contribute_router
-from XBotv2.session.contracts import SessionRef, dispatch_session_operation
+from XBotv2.protocol import WireModel
+from XBotv2.server import contribute_router
+from XBotv2.session import SessionRef, dispatch_session_operation
+
+
+class TaskUpdatedData(WireModel):
+    task_id: str = Field(min_length=1)
+    kind: Literal["shell", "agent"] = "shell"
+    command: str = Field(min_length=1)
+    cwd: str
+    status: Literal["pending", "running", "completed", "failed", "stopped"]
+    created_at: float = Field(ge=0)
+    started_at: float = Field(ge=0)
+    finished_at: float = Field(ge=0)
+    output: str = ""
+    error: str = ""
+    agent: str = ""
+    thread_id: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    tasks: list[TaskUpdatedData] = Field(default_factory=list)
+
+
+class TaskStopResponse(TaskListResponse):
+    matched_count: int = Field(ge=0)
 
 
 def build_tasks_router(*, events: Any) -> APIRouter:
@@ -87,14 +111,11 @@ def build_tasks_router(*, events: Any) -> APIRouter:
     return router
 
 
-class JobsHttpAdapter:
-    """Register the background-task HTTP surface into ``ctx.web_server``.
-
-    The adapter contributes ``build_tasks_router`` to the dumb server carrier.
-    """
+class JobsProtocolPlugin:
+    """Contribute task routes through the XCore route event."""
 
     inject = ["server"]
-    name = "xbot.http.jobs"
+    name = "xbot.protocol.jobs"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(
@@ -104,4 +125,12 @@ class JobsHttpAdapter:
         )
 
 
-plugin = JobsHttpAdapter()
+plugin = JobsProtocolPlugin()
+
+
+__all__ = [
+    "TaskListResponse",
+    "TaskStopResponse",
+    "TaskUpdatedData",
+    "build_tasks_router",
+]

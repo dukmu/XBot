@@ -1,10 +1,11 @@
-"""HTTP adapter for Agent catalog and selection operations."""
+"""Agent C/S wire models and route contribution."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
+from pydantic import Field
 
 from XBotv2.agents.contracts import (
     LIST_AGENTS,
@@ -13,14 +14,37 @@ from XBotv2.agents.contracts import (
     SelectAgent,
 )
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.server.contracts import contribute_router
-from XBotv2.protocol.models import (
-    AgentInfo,
-    AgentListResponse,
-    AgentSelectionRequest,
-    AgentSelectionResponse,
-)
-from XBotv2.session.contracts import SessionRef, dispatch_session_operation
+from XBotv2.protocol import WireModel
+from XBotv2.server import contribute_router
+from XBotv2.session import SessionRef, dispatch_session_operation
+
+
+class AgentInfo(WireModel):
+    name: str = Field(min_length=1)
+    description: str
+    mode: Literal["primary", "subagent", "all"]
+    provider: str = ""
+    model: str = ""
+    context_window: int = Field(default=0, ge=0)
+
+
+class AgentListResponse(WireModel):
+    active: str = ""
+    agents: list[AgentInfo] = Field(default_factory=list)
+
+
+class AgentSelectionRequest(WireModel):
+    name: str = Field(min_length=1)
+
+
+class AgentSelectionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    agent: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str
+    model_mode: str = ""
+    context_window: int = Field(ge=0)
 
 
 def build_router(*, events: Any) -> APIRouter:
@@ -109,12 +133,21 @@ def build_router(*, events: Any) -> APIRouter:
     return router
 
 
-class AgentsHttpAdapter:
-    name = "xbot.http.agents"
+class AgentsProtocolPlugin:
+    name = "xbot.protocol.agents"
     inject = ["server"]
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
 
 
-plugin = AgentsHttpAdapter()
+plugin = AgentsProtocolPlugin()
+
+
+__all__ = [
+    "AgentInfo",
+    "AgentListResponse",
+    "AgentSelectionRequest",
+    "AgentSelectionResponse",
+    "build_router",
+]

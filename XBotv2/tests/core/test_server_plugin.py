@@ -118,7 +118,7 @@ async def test_server_composition_root_owns_session_host(booted_server) -> None:
     app = booted_server.server
     assert booted_server.session_host is not None
     assert not hasattr(app.state, "manager")
-    assert not hasattr(booted_server.web_server, "manager")
+    assert not hasattr(booted_server, "web_server")
 
 
 @pytest.mark.asyncio

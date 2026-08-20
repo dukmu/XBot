@@ -2,7 +2,7 @@
 
 This module is pure protocol: error envelopes and SSE framing built from the
 wire DTOs and SSE encoder only. It imports no application or plugin logic.
-Capability response builders live in their ``XBotv2.http_transport`` adapters.
+Capability response builders live in their owning plugin ``protocol`` modules.
 """
 
 from __future__ import annotations
@@ -10,10 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from XBotv2.protocol.models import (
-    ErrorResponse,
-    server_event,
-)
+from XBotv2.protocol.models import ErrorResponse, server_event
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
