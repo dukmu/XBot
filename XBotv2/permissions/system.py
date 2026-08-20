@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
+from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 
 PermissionDecision = Literal["allow", "deny", "ask"]
 _DECISIONS = {"allow", "deny", "ask"}

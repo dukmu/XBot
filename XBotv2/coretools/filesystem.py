@@ -29,7 +29,7 @@ import httpx
 
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
-from XBotv2.filesystem.operations import PATH_ACCESS, execute
+from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
 
 _FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
 

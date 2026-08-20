@@ -12,7 +12,7 @@ import yaml
 
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.paths import ThreadPaths
-from XBotv2.filesystem.atomic import write_text_atomic
+from XBotv2.core.filesystem.atomic import write_text_atomic
 
 
 class ThreadStorage:

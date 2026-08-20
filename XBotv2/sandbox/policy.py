@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.filesystem import operations as filesystem_ops
+from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
 PathAccess = Literal["allow", "readwrite", "readonly", "deny"]

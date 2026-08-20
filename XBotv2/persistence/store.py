@@ -17,7 +17,7 @@ import yaml
 
 from XBotv2.core.messages import Message, part_from_dict
 from XBotv2.core.paths import SessionPaths, ThreadPaths
-from XBotv2.filesystem.storage import ThreadStorage
+from XBotv2.core.filesystem.storage import ThreadStorage
 _PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
 
 

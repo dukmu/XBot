@@ -19,7 +19,7 @@ from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
+from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
@@ -389,7 +389,7 @@ class TestConfigLoading:
         for tool_name in ("shell", "update_todos"):
             assert permissions.check(tool_name, {}) == "allow"
 
-        from XBotv2.filesystem.operations import resolve_operation
+        from XBotv2.core.filesystem.operations import resolve_operation
         for tool in FILESYSTEM_TOOLS:
             operation = resolve_operation(tool.name, _shipped_args(tool.name))
             fields = PATH_ACCESS[operation]

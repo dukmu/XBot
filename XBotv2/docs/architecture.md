@@ -61,7 +61,7 @@ flowchart TB
     end
 
     subgraph PersistenceLayer["Persistence"]
-        STORAGE["ThreadStorage (filesystem/)<br/>artifacts · plugin state"]
+        STORAGE["ThreadStorage (core/filesystem/)<br/>artifacts · plugin state"]
         STORE["CoreStateStore (persistence/store.py)"]
         JRNL["messages.jsonl (append-only)"]
     end
