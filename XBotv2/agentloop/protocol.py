@@ -6,11 +6,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import Field, model_validator
-from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
+from XBotv2.protocol import ErrorEventData, WireModel
+from XBotv2.usage import UsageData
 from XBotv2.agentloop.contracts import LIST_TOOLS
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.session import SessionRef, dispatch_session_operation
 
 
 class ToolInfo(WireModel):
@@ -92,8 +91,48 @@ class TurnCancelledData(TurnData):
     reason: str = Field(min_length=1)
 
 
+AgentLoopEventType = Literal[
+    "assistant_message",
+    "assistant_message_delta",
+    "error",
+    "input_rejected",
+    "tool_call_delta",
+    "tool_calls_started",
+    "tool_result",
+    "turn_cancelled",
+    "turn_finished",
+    "turn_started",
+    "usage",
+]
+
+_EVENT_MODELS: dict[str, type[WireModel]] = {
+    "assistant_message": AssistantMessageData,
+    "assistant_message_delta": AssistantMessageDeltaData,
+    "error": ErrorEventData,
+    "input_rejected": InputRejectedData,
+    "tool_call_delta": ToolCallDeltaData,
+    "tool_calls_started": ToolCallsStartedData,
+    "tool_result": ToolResultData,
+    "turn_cancelled": TurnCancelledData,
+    "turn_finished": TurnData,
+    "turn_started": TurnData,
+    "usage": UsageData,
+}
+
+
+def agentloop_event(
+    type: AgentLoopEventType,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate one Agent-loop-owned event at its producer boundary."""
+    payload = _EVENT_MODELS[type].model_validate(data)
+    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+
+
 def build_tools_router(*, events: Any) -> APIRouter:
     """Read-only tool catalog for the active thread."""
+
+    from XBotv2.session import SessionRef, dispatch_session_operation
 
     router = APIRouter()
 
@@ -133,6 +172,8 @@ class ToolsProtocolPlugin:
     name = "xbot.protocol.tools"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
+        from XBotv2.server import contribute_router
+
         await contribute_router(
             ctx,
             owner=self.name,
@@ -144,6 +185,7 @@ plugin = ToolsProtocolPlugin()
 
 
 __all__ = [
+    "AgentLoopEventType",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
     "InputRejectedData",
@@ -156,5 +198,6 @@ __all__ = [
     "ToolResultData",
     "TurnCancelledData",
     "TurnData",
+    "agentloop_event",
     "build_tools_router",
 ]

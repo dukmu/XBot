@@ -13,6 +13,7 @@ from typing import Any
 import uuid
 
 from XBotv2.interactions.interactions import InteractionResult, InteractionWaiter
+from XBotv2.interactions import UserInputRequiredData
 from XBotv2.core.events import EventContext, Events
 
 
@@ -72,16 +73,17 @@ class InteractionsService:
         ``unsupported``).
         """
         request_id = f"user_input:{tool_call_id or uuid.uuid4().hex}"
+        payload = UserInputRequiredData(
+            request_id=request_id,
+            tool_call_id=tool_call_id,
+            source=source,
+            question=question,
+            options=list(options or []),
+            timeout_seconds=timeout_seconds,
+        )
         client_event = {
             "type": "user_input_required",
-            "data": {
-                "request_id": request_id,
-                "tool_call_id": tool_call_id,
-                "source": source,
-                "question": question,
-                "options": list(options or []),
-                "timeout_seconds": timeout_seconds,
-            },
+            "data": payload.model_dump(),
         }
         await self.ctx.emit(
             Events.CLIENT_EVENT,

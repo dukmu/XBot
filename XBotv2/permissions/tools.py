@@ -7,6 +7,7 @@ import secrets
 from typing import Any
 
 from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.permission_request import PermissionRequestData
 
 
 async def request_tool_permission(
@@ -35,16 +36,17 @@ async def request_tool_permission(
             "approval_unavailable",
             "Permission approval is unavailable in this session.",
         )
+    payload = PermissionRequestData(
+        request_id=f"permission:{secrets.token_hex(8)}",
+        source="request_permission",
+        permission={"tool": tool, "params": params},
+        decision="ask",
+        reason=reason,
+        resume_supported=False,
+    )
     event = {
         "type": "permission_request",
-        "data": {
-            "request_id": f"permission:{secrets.token_hex(8)}",
-            "source": "request_permission",
-            "permission": {"tool": tool, "params": params},
-            "decision": "ask",
-            "reason": reason,
-            "resume_supported": False,
-        },
+        "data": payload.model_dump(exclude_none=True),
     }
     result = await approval.request(event)
     decision = str(result.get("decision") or "")

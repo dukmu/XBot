@@ -7,6 +7,7 @@ import json
 from typing import Any, Literal
 
 from XBotv2.core.tools import ClientEvent, Tool, ToolResult
+from XBotv2.interactions import ClientMessageData
 
 
 _ASK_USER_SCHEMA = {
@@ -42,7 +43,11 @@ def send_message_to_user(
         content=f"Message sent to user: {message}",
         client_events=(ClientEvent(
             type="client_message",
-            data={"message": message, "level": level, "source": "send_message"},
+            data=ClientMessageData(
+                message=message,
+                level=level,
+                source="send_message",
+            ).model_dump(),
         ),),
     )
 

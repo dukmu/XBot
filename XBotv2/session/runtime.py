@@ -18,6 +18,8 @@ from XBotv2.core.events import EventContext, Events
 from XBotv2.core.history import display_history
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.interactions import interaction_recorded_event
+from XBotv2.session.protocol import session_error_event, session_event
 logger = logging.getLogger("xbotv2.session")
 
 
@@ -77,7 +79,7 @@ class SessionRuntime:
         events = self.application.events
         events.on(Events.INBOX_SPLICE, self._on_runtime_event)
         events.on(Events.RUNTIME_EVENT, self._on_runtime_event)
-        events.on(Events.JOB_UPDATED, self._on_job_updated)
+        events.on(Events.JOB_UPDATED, self._on_runtime_event)
         events.on(Events.JOB_COMPLETED, self._on_job_completed)
         events.on(Events.STATE_CHANGED, self._on_state_changed)
         events.on(Events.AGENT_CONFIGURED, self._on_agent_configured)
@@ -91,13 +93,6 @@ class SessionRuntime:
         self.touch()
         return await self.engine.followup(content, **kwargs)
 
-    async def _publish_task_update(self, task: dict[str, Any]) -> None:
-        if self.session_events is not None:
-            await self.session_events.put({"type": "task_updated", "data": task})
-
-    async def _on_job_updated(self, event: EventContext) -> None:
-        await self._publish_task_update(dict(event.event or {}))
-
     async def _on_job_completed(self, event: EventContext) -> None:
         await self._enqueue_job_completion(dict(event.event or {}))
 
@@ -107,14 +102,14 @@ class SessionRuntime:
         if not operation or self.session_events is None:
             return
         op, turns = operation
-        await self.session_events.put({
-            "type": "history_updated",
-            "data": {
+        await self.session_events.put(session_event(
+            "history_updated",
+            {
                 "history": display_history(event.messages or []),
                 "operation": op,
                 "turns": turns,
             },
-        })
+        ))
 
     async def _on_agent_configured(self, event: EventContext) -> None:
         """Project provider/model selection changes for status displays."""
@@ -131,10 +126,7 @@ class SessionRuntime:
             if (value := getattr(config, key, None)) is not None
         }
         if data and self.session_events is not None:
-            await self.session_events.put({
-                "type": "agent_configured",
-                "data": data,
-            })
+            await self.session_events.put(session_event("agent_configured", data))
 
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
         if self.session_events is not None:
@@ -151,10 +143,10 @@ class SessionRuntime:
         Input ordering is owned by the agent inbox. This event is only the
         protocol projection used by clients to render accepted input.
         """
-        event = {
-            "type": "message",
-            "data": {"id": message_id, "role": "user", "content": content},
-        }
+        event = session_event(
+            "message",
+            {"id": message_id, "role": "user", "content": content},
+        )
         if self.session_events is not None:
             self.session_events.put_nowait(event)
         else:
@@ -210,10 +202,21 @@ class SessionRuntime:
         )
         self.touch()
         if self.session_events is not None:
-            await self.session_events.put({
-                "type": "completion_notice",
-                "data": notice,
-            })
+            await self.session_events.put(session_event(
+                "completion_notice",
+                {
+                    key: notice[key]
+                    for key in (
+                        "type",
+                        "kind",
+                        "task_id",
+                        "status",
+                        "command",
+                        "agent",
+                    )
+                    if key in notice
+                },
+            ))
 
     async def stream_message(
         self,
@@ -416,13 +419,13 @@ async def _live_sink(
         result = wait_task.result()
     except Exception as exc:
         return {"request_id": request_id, "status": "error", "reason": str(exc)}
-    await events.put({
-        "type": (
+    await events.put(interaction_recorded_event(
+        (
             "permission_response_recorded"
             if event_type == "permission_request"
             else "user_input_recorded"
         ),
-        "data": {
+        {
             "request_id": request_id,
             "status": result.status,
             "decision": result.decision,
@@ -430,7 +433,7 @@ async def _live_sink(
             "answer": result.answer,
             "pending_interactions": [],
         },
-    })
+    ))
     return result.__dict__
 
 
@@ -513,14 +516,11 @@ async def _pump_turn(
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Engine run_turn failed")
-        await events.put({
-            "type": "error",
-            "data": {
-                "code": "turn_failed",
-                "message": str(exc),
-                "details": {"exception_type": type(exc).__name__},
-            },
-        })
+        await events.put(session_error_event(
+            "turn_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+        ))
     finally:
         close = getattr(turn_stream, "aclose", None)
         if close is not None:

@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.core.jobs import JobKind
-from XBotv2.jobs.registry import JobRegistry
-from XBotv2.jobs.commands import build_jobs_commands
-from XBotv2.core.events import EventContext, Events
 from XBotv2.core.errors import OperationError
+from XBotv2.core.events import EventContext, Events
+from XBotv2.core.jobs import JobKind
+from XBotv2.jobs.commands import build_jobs_commands
+from XBotv2.jobs.protocol import TaskUpdatedData
+from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
     LIST_TASKS,
@@ -42,7 +43,14 @@ class JobsComponent:
             ctx.commands.register(command)
 
         async def publish(event_name: str, snapshot: dict[str, Any]) -> None:
-            await ctx.emit(event_name, EventContext(event=snapshot))
+            payload = TaskUpdatedData.model_validate(snapshot).model_dump()
+            await ctx.emit(
+                event_name,
+                EventContext(
+                    event=snapshot,
+                    client_event={"type": "task_updated", "data": payload},
+                ),
+            )
 
         registry.on_update = lambda snapshot: publish(Events.JOB_UPDATED, snapshot)
         registry.on_complete = lambda snapshot: publish(

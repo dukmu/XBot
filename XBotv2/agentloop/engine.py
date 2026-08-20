@@ -30,6 +30,7 @@ from XBotv2.agentloop.internal_messages import (
     structure_tool_message,
 )
 from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
+from XBotv2.agentloop.protocol import agentloop_event
 from XBotv2.core.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
 from XBotv2.core.loop import DEFAULT_MAX_ITERATIONS, LoopSettings, LoopState
 from XBotv2.core.providers import BaseProvider
@@ -402,13 +403,13 @@ class Engine:
                 await self._dispatch(Events.TURN_END, turn_ctx,
                     short_circuit=False,
                 )
-            yield {
-                "type": "turn_cancelled",
-                "data": {
+            yield agentloop_event(
+                "turn_cancelled",
+                {
                     "turn": self.turn_count,
                     "reason": "client_interrupt",
                 },
-            }
+            )
             raise
         except BaseException as exc:
             logger.exception("Turn failed")
@@ -431,19 +432,19 @@ class Engine:
                 user_input=current_input,
             )
             await self._dispatch(Events.ON_ERROR, ctx, short_circuit=False)
-            yield {
-                "type": "error",
-                "data": {
+            yield agentloop_event(
+                "error",
+                {
                     "code": "engine_error",
                     "message": str(exc),
                     "details": {"exception_type": type(exc).__name__},
                 },
-            }
+            )
             if turn_started:
-                yield {
-                    "type": "turn_finished",
-                    "data": {"turn": self.turn_count},
-                }
+                yield agentloop_event(
+                    "turn_finished",
+                    {"turn": self.turn_count},
+                )
         finally:
             try:
                 await self._publish_state_change()
@@ -601,18 +602,15 @@ class Engine:
                 additional_kwargs=response.additional_kwargs,
             )
             self.messages.append(response_msg)
-            yield {
-                "type": "assistant_message",
-                "data": {
+            yield agentloop_event(
+                "assistant_message",
+                {
                     "content": content,
                     "tool_calls": [call.to_dict() for call in response.tool_calls],
                 },
-            }
+            )
             if response_msg.usage_metadata:
-                yield {
-                    "type": "usage",
-                    "data": response_msg.usage_metadata,
-                }
+                yield agentloop_event("usage", response_msg.usage_metadata)
 
             # ON_ASSISTANT_MESSAGE hook
             am_ctx = self._make_event_context(agent_response=response
@@ -701,10 +699,10 @@ class Engine:
             len(tool_calls),
             [call.name for call in tool_calls],
         )
-        yield {
-            "type": "tool_calls_started",
-            "data": {"tool_calls": [call.to_dict() for call in tool_calls]},
-        }
+        yield agentloop_event(
+            "tool_calls_started",
+            {"tool_calls": [call.to_dict() for call in tool_calls]},
+        )
         tool_names_by_id = {
             call.id: call.name or "tool" for call in tool_calls
         }
@@ -750,10 +748,7 @@ class Engine:
                     short_circuit=False,
                 )
                 yield client_event
-            yield {
-                "type": "tool_result",
-                "data": event_payload,
-            }
+            yield agentloop_event("tool_result", event_payload)
 
         for message in tool_messages:
             message_ctx = self._make_event_context(tool_results=[message],
@@ -806,10 +801,10 @@ class Engine:
             # active goal context on a continuation turn); reflect it in the
             # retained message so the model sees it on the next step.
             self.messages[-1] = Message(role="user", content=str(turn_ctx.user_input))
-        accepted.events.append({
-            "type": "turn_started",
-            "data": {"turn": self.turn_count},
-        })
+        accepted.events.append(agentloop_event(
+            "turn_started",
+            {"turn": self.turn_count},
+        ))
         return accepted
 
     async def _start_claimed_turn(
@@ -853,13 +848,13 @@ class Engine:
 
     @staticmethod
     def _user_message_rejected_event() -> dict[str, Any]:
-        return {
-            "type": "error",
-            "data": {
+        return agentloop_event(
+            "error",
+            {
                 "code": "user_message_rejected",
                 "message": "User message was rejected before entering history.",
             },
-        }
+        )
 
     async def _build_turn_context(self) -> _ContextBuildResult:
         before_ctx = self._make_event_context()
@@ -1081,7 +1076,10 @@ class Engine:
                 short_circuit=False,
             )
             raise
-        return {"type": "turn_finished", "data": {"turn": self.turn_count}}
+        return agentloop_event(
+            "turn_finished",
+            {"turn": self.turn_count},
+        )
 
     def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
         if not tools:
@@ -1118,22 +1116,19 @@ class Engine:
             if isinstance(chunk, ModelChunk):
                 aggregate = merge_model_chunk(aggregate, chunk)
                 if chunk.content:
-                    yield {
-                        "type": "assistant_message_delta",
-                        "data": {"content": chunk.content},
-                    }
+                    yield agentloop_event(
+                        "assistant_message_delta",
+                        {"content": chunk.content},
+                    )
                 if chunk.reasoning:
-                    yield {
-                        "type": "assistant_message_delta",
-                        "data": {"reasoning": chunk.reasoning},
-                    }
+                    yield agentloop_event(
+                        "assistant_message_delta",
+                        {"reasoning": chunk.reasoning},
+                    )
                 for tool_delta in xbot_tool_call_deltas(
                     chunk, tool_stream_ids
                 ):
-                    yield {
-                        "type": "tool_call_delta",
-                        "data": tool_delta,
-                    }
+                    yield agentloop_event("tool_call_delta", tool_delta)
                 continue
             if isinstance(chunk, ModelResponse):
                 aggregate = chunk
@@ -1192,14 +1187,14 @@ class Engine:
             self.messages.append(message)
 
     def _default_hook_rejection_event(event: str) -> dict[str, Any]:
-        return {
-            "type": "error",
-            "data": {
+        return agentloop_event(
+            "error",
+            {
                 "code": "hook_short_circuit_rejected",
                 "message": f"Hook {event} short-circuited without a structured result.",
                 "stage": event,
             },
-        }
+        )
 
     def _make_event_context(
         self,

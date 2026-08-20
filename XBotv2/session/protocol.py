@@ -26,7 +26,7 @@ from XBotv2.protocol.http_util import (
 )
 from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.permission_request import PermissionResponseRequest
-from XBotv2.protocol import WireModel
+from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import display_history
@@ -178,6 +178,68 @@ class MessageData(WireModel):
     id: str
     role: str
     content: str = ""
+
+
+class HistoryUpdatedData(WireModel):
+    history: list[SessionHistoryItem] = Field(default_factory=list)
+    operation: str = Field(min_length=1)
+    turns: int = Field(ge=0)
+
+
+class AgentConfiguredData(WireModel):
+    agent_name: str = ""
+    provider: str = ""
+    model: str = ""
+    model_mode: str = ""
+    context_window: int = Field(default=0, ge=0)
+
+
+class CompletionNoticeData(WireModel):
+    type: Literal["background_task", "subagent"]
+    kind: Literal["background_task", "subagent"]
+    task_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    command: str = ""
+    agent: str = ""
+
+
+SessionEventType = Literal[
+    "agent_configured",
+    "completion_notice",
+    "history_updated",
+    "message",
+]
+
+_SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
+    "agent_configured": AgentConfiguredData,
+    "completion_notice": CompletionNoticeData,
+    "history_updated": HistoryUpdatedData,
+    "message": MessageData,
+}
+
+
+def session_event(
+    type: SessionEventType,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate one Session-owned event at its producer boundary."""
+    payload = _SESSION_EVENT_MODELS[type].model_validate(data)
+    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+
+
+def session_error_event(
+    code: str,
+    message: str,
+    *,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate a Session-produced generic error event."""
+    payload = ErrorEventData(
+        code=code,
+        message=message,
+        details=details or {},
+    )
+    return {"type": "error", "data": payload.model_dump(exclude_unset=True)}
 
 
 class MessageRequest(WireModel):
@@ -714,10 +776,13 @@ plugin = SessionProtocolPlugin()
 
 
 __all__ = [
+    "AgentConfiguredData",
     "AttachmentInput",
     "CloseResponse",
+    "CompletionNoticeData",
     "ForkResponse",
     "HistoryMutationResponse",
+    "HistoryUpdatedData",
     "ImageInput",
     "InterruptResponse",
     "MessageData",
@@ -728,10 +793,13 @@ __all__ = [
     "SessionHistoryItem",
     "SessionListResponse",
     "SessionMode",
+    "SessionEventType",
     "SessionSummary",
     "ThreadListResponse",
     "ThreadMessagesResponse",
     "ThreadSummary",
     "UndoRequest",
     "build_session_router",
+    "session_event",
+    "session_error_event",
 ]

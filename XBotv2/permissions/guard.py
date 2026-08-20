@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from XBotv2.core.events import EventContext, Events
 from XBotv2.core.tools import GuardDecision
+from XBotv2.permission_request import PermissionRequestData
 
 
 def make_permission_guard(
@@ -23,16 +24,17 @@ def make_permission_guard(
             return None
         if decision == "deny":
             return GuardDecision("deny", reason, source="permissions")
+        payload = PermissionRequestData(
+            request_id=f"permission:{tool_call.id}",
+            source="permission_system",
+            tool_call=tool_call.to_dict(),
+            decision="ask",
+            reason=reason,
+            resume_supported=False,
+        )
         event = {
             "type": "permission_request",
-            "data": {
-                "request_id": f"permission:{tool_call.id}",
-                "source": "permission_system",
-                "tool_call": tool_call.to_dict(),
-                "decision": "ask",
-                "reason": reason,
-                "resume_supported": False,
-            },
+            "data": payload.model_dump(exclude_none=True),
         }
         await emit(
             Events.PERMISSION_REQUEST,

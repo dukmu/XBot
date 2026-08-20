@@ -143,8 +143,11 @@ stop 和伪造结果入口已删除。
 7. server 不再提供 `web_server` 兼容 service，也不把 manager/paths/services 写入
    FastAPI `app.state`。
 
-扫描零违规只是当前门禁的证据，不代表最终完成。下一步依次收敛
-producer-owned typed outbound events、ACP 对 concrete SessionManager/runtime 的依赖，
+扫描零违规只是当前门禁的证据，不代表最终完成。Agent loop、Permission Request、
+Interactions、Jobs 和 Session 的主要 C/S events 已在 producer boundary 通过 owner
+protocol model 校验；Session host stream DTO 只接受 JSON-compatible payload。下一步
+继续收敛 Compact 等可选插件 events、通用 `EventContext.client_event` 类型和 ACP 对
+concrete SessionManager/runtime 的依赖，
 再执行全仓配置硬编码、Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 
 扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
@@ -319,8 +322,9 @@ manager/service implementation；route mount/unmount/collision 由 fiber 测试�
 ### Phase 5: Outbound events
 
 1. 为 message/history/jobs/agents/compact/approval/interactions 定义 producer-owned
-   typed events；
-2. 发布前验证 payload，未知类型不静默透传；
+   typed events（Agent loop/Session/Jobs/approval/interactions 主要事件已完成）；
+2. 发布前验证 payload，未知类型不静默透传（主要 C/S stream 已完成，optional
+   runtime events 待审计）；
 3. 建立 capability-neutral session stream bridge；
 4. 删除 `server/events.py`、`server/event_registry.py` 和 server profile entry；
 5. 删除 SessionRuntime 对 jobs/history/agent/completion 的业务投影；

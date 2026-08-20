@@ -10,6 +10,7 @@ from XBotv2.agentloop.services import (
 
 __all__ = [
     "AgentLoopDriverPort",
+    "AgentLoopEventType",
     "AgentLoopFactoryPort",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
@@ -26,9 +27,11 @@ __all__ = [
     "ToolsPort",
     "TurnCancelledData",
     "TurnData",
+    "agentloop_event",
 ]
 
 _PROTOCOL_EXPORTS = {
+    "AgentLoopEventType",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
     "InputRejectedData",
@@ -41,6 +44,7 @@ _PROTOCOL_EXPORTS = {
     "ToolResultData",
     "TurnCancelledData",
     "TurnData",
+    "agentloop_event",
 }
 
 

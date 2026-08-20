@@ -738,3 +738,24 @@
   run was stopped after its third test because old tests still inspect removed
   `app.state.paths` and `app.state.manager`; this is a test migration gap, not
   a reason to restore those runtime bypasses.
+
+### 2026-08-20 · Producer-validated outbound events
+
+- Agent loop now validates assistant, Tool, turn, usage, and error payloads
+  through its owner-local protocol event mapping before yielding them. Route
+  dependencies in `agentloop.protocol` are resolved only while building or
+  mounting the route, so Engine can use its own protocol declarations without
+  a Session/server import cycle.
+- Permission Request, Interactions, and Jobs now construct their public wire
+  models before publishing permission prompts, user-input requests, client
+  notices, and task updates. Session forwards those validated envelopes rather
+  than reconstructing Jobs fields.
+- Session validates its own message, history, Agent-configuration, completion,
+  interaction-recorded, and error projections. Completion notices no longer
+  duplicate the full Job snapshot. The public `SessionStreamEvent` rejects
+  non-JSON payload values at the host boundary.
+- Verification: architecture checker reports zero violations; 43 focused
+  protocol/public API/Session/interaction tests passed; a real typed SDK + SSE
+  message/history/undo round trip passed in 60.77s. Selected Engine event tests
+  completed their assertions, but the existing Engine suite teardown remained
+  intermittently non-terminating and is not recorded as a passing selection.

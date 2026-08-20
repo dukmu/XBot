@@ -12,6 +12,13 @@ class UserInputOption(WireModel):
     description: str = Field(min_length=1)
 
 
+class ClientMessageData(WireModel):
+    message: str = Field(min_length=1)
+    level: Literal["info", "warning", "error"] = "info"
+    source: str = Field(min_length=1)
+    tool_call_id: str = ""
+
+
 class UserInputRequiredData(WireModel):
     request_id: str = Field(min_length=1)
     source: str = Field(min_length=1)
@@ -48,10 +55,28 @@ class InteractionResponse(WireModel):
     pending_interactions: list[str] = Field(default_factory=list)
 
 
+InteractionEventType = Literal[
+    "permission_response_recorded",
+    "user_input_recorded",
+]
+
+
+def interaction_recorded_event(
+    type: InteractionEventType,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate a recorded interaction before publishing it."""
+    payload = InteractionRecordedData.model_validate(data)
+    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+
+
 __all__ = [
+    "ClientMessageData",
     "InteractionRecordedData",
+    "InteractionEventType",
     "InteractionResponse",
     "UserInputOption",
     "UserInputRequiredData",
     "UserInputResponseRequest",
+    "interaction_recorded_event",
 ]

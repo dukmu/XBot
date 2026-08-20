@@ -19,10 +19,13 @@ from XBotv2.session.contracts import (
 )
 from XBotv2.session.services import SessionHostPort, SessionPort
 from XBotv2.session.protocol import (
+    AgentConfiguredData,
     AttachmentInput,
     CloseResponse,
+    CompletionNoticeData,
     ForkResponse,
     HistoryMutationResponse,
+    HistoryUpdatedData,
     ImageInput,
     InterruptResponse,
     MessageData,
@@ -32,12 +35,15 @@ from XBotv2.session.protocol import (
     OpenThreadRequest,
     SessionHistoryItem,
     SessionListResponse,
+    SessionEventType,
     SessionMode,
     SessionSummary,
     ThreadListResponse,
     ThreadMessagesResponse,
     ThreadSummary,
     UndoRequest,
+    session_event,
+    session_error_event,
 )
 from XBotv2.session.types import (
     AttachmentUpload,
@@ -60,12 +66,15 @@ from XBotv2.session.types import (
 __all__ = [
     "AgentApplicationFactory",
     "AgentApplicationOptions",
+    "AgentConfiguredData",
     "AttachmentInput",
     "DISPATCH_OPERATION",
     "DISPATCH_SESSION_OPERATION",
     "CloseResponse",
+    "CompletionNoticeData",
     "ForkResponse",
     "HistoryMutationResponse",
+    "HistoryUpdatedData",
     "ImageInput",
     "InterruptResponse",
     "MessageData",
@@ -82,6 +91,7 @@ __all__ = [
     "SessionHostPort",
     "SessionHistoryItem",
     "SessionListResponse",
+    "SessionEventType",
     "SessionMode",
     "SessionSummary",
     "SessionPort",
@@ -109,4 +119,6 @@ __all__ = [
     "build_session_commands",
     "dispatch_session_group_operation",
     "dispatch_session_operation",
+    "session_event",
+    "session_error_event",
 ]

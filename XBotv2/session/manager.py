@@ -476,7 +476,7 @@ class SessionManager:
                 images=images,
                 artifacts=attachments,
             ):
-                yield _stream_event(event)
+                yield SessionStreamEvent.from_mapping(event)
 
         return stream()
 
@@ -500,7 +500,7 @@ class SessionManager:
                     event = await events.get()
                     if event is None:
                         return
-                    yield _stream_event(event)
+                    yield SessionStreamEvent.from_mapping(event)
             finally:
                 runtime.detach_event_stream(events)
 
@@ -629,14 +629,6 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
     )
-
-
-def _stream_event(event: dict[str, Any]) -> SessionStreamEvent:
-    event_type = event.get("type")
-    data = event.get("data")
-    if not isinstance(event_type, str) or not isinstance(data, dict):
-        raise TypeError("session stream event requires string type and object data")
-    return SessionStreamEvent(type=event_type, data=dict(data))
 
 
 def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:

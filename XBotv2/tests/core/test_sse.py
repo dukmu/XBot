@@ -13,6 +13,7 @@ from XBotv2.agentloop import (
     ToolResultData,
     TurnCancelledData,
     TurnData,
+    agentloop_event,
 )
 from XBotv2.interactions import (
     UserInputRequiredData,
@@ -30,6 +31,7 @@ from XBotv2.protocol import (
     server_event,
 )
 from XBotv2.usage import UsageData
+from XBotv2.session import SessionStreamEvent, session_event
 from XBotv2.protocol.sse import (
     SseDecoder,
     SseMessage,
@@ -189,6 +191,30 @@ def test_interaction_response_requests_have_distinct_schemas() -> None:
             request_id="permission:c1",
             decision="approve",
         )
+
+
+def test_plugin_event_builders_validate_at_the_producer_boundary() -> None:
+    started = agentloop_event("turn_started", {"turn": 1})
+    message = session_event(
+        "message",
+        {"id": "request-1", "role": "user", "content": "hello"},
+    )
+
+    assert started == {"type": "turn_started", "data": {"turn": 1}}
+    assert message["data"]["id"] == "request-1"
+
+    with pytest.raises(ValidationError):
+        agentloop_event("turn_started", {"turn": 0})
+    with pytest.raises(ValidationError):
+        session_event("message", {"id": "request-1", "role": "user", "extra": 1})
+
+
+def test_session_stream_event_rejects_non_json_payloads() -> None:
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        SessionStreamEvent.from_mapping({
+            "type": "message",
+            "data": {"invalid": object()},
+        })
 
 
 @pytest.mark.parametrize(

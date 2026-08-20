@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Literal
 
 from XBotv2.core.messages import Message
 from XBotv2.core.providers import BaseProvider
+from XBotv2.core.tools import JsonValue
 
 
 class SessionNotFound(KeyError):
@@ -120,7 +122,17 @@ class SendMessage:
 @dataclass(frozen=True, slots=True)
 class SessionStreamEvent:
     type: str
-    data: dict[str, Any]
+    data: dict[str, JsonValue]
+
+    @classmethod
+    def from_mapping(cls, event: Mapping[str, object]) -> "SessionStreamEvent":
+        event_type = event.get("type")
+        data = event.get("data")
+        if not isinstance(event_type, str) or not event_type:
+            raise TypeError("session stream event requires a non-empty string type")
+        if not isinstance(data, dict):
+            raise TypeError("session stream event data must be an object")
+        return cls(type=event_type, data=_json_object(data))
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +144,30 @@ class InteractionReceipt:
 @dataclass(frozen=True, slots=True)
 class InterruptResult:
     cancelled: bool
+
+
+def _json_object(value: Mapping[object, object]) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("session stream event object keys must be strings")
+        result[key] = _json_value(item)
+    return result
+
+
+def _json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return _json_object(value)
+    raise TypeError(
+        "session stream event values must be JSON-compatible, got "
+        f"{type(value).__name__}"
+    )
 
 
 __all__ = [
