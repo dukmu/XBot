@@ -29,6 +29,7 @@ from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.permission_request import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions import PERMISSION_REQUESTED
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.coretools.result_cache import make_tool_result_cache_hook
@@ -416,7 +417,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     async def post_batch(ctx):
         calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
 
-    plugin_ctx.on(Events.PERMISSION_REQUEST, permission_request)
+    plugin_ctx.on(PERMISSION_REQUESTED, permission_request)
     plugin_ctx.on(Events.TOOL_DENIED, tool_denied)
     plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 

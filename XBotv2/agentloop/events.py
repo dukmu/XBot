@@ -63,8 +63,6 @@ class Events:
     ASSISTANT_MESSAGE = "assistant/message"
     TOOL_MESSAGE = "tool/message"
     # Permissions / client
-    PERMISSION_REQUEST = "permission/request"
-    PERMISSION_DENIED = "permission/denied"
     CLIENT_EVENT = "client/event"
     # Non-blocking application output projected by live transports. Feature
     # plugins publish a payload; neither they nor Engine own a client sink.

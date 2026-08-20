@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ClientEvent, GuardDecision
 from XBotv2.permission_request import PermissionRequestData
+from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
 
 
 def make_permission_guard(
@@ -37,8 +37,8 @@ def make_permission_guard(
             "data": payload.model_dump(exclude_none=True),
         }
         await emit(
-            Events.PERMISSION_REQUEST,
-            EventContext(
+            PERMISSION_REQUESTED,
+            PermissionRequested(
                 tool_call=tool_call,
                 client_event=ClientEvent.from_mapping(event),
             ),
