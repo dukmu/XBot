@@ -25,3 +25,14 @@ scope.
   `add_exception_handler`, which the real FastAPI application setup calls.
 - The fixture should model the application interface actually consumed by the
   CLI startup path, or the test should use a real application instance.
+
+## Engine streaming tool-call test leaks ordering-sensitive state
+
+- Tests run after `test_streaming_tool_call_chunks_precede_tool_execution`
+  consistently time out, while the same following test passes by itself.
+- Reproduce with the first five tests in `TestEngineBasics` in declaration
+  order; the first four pass and the fifth does not complete within 30 seconds.
+- The same class-level ordering issue appears in `TestEngineHooks`: 21 tests
+  pass, then the following persistence-hook test does not complete before the
+  60-second class timeout, while focused context-hook selections pass.
+- The engine/tool test fixtures need an isolation and resource-cleanup audit.
