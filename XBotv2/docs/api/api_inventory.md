@@ -79,10 +79,11 @@ plugin implementations.
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |
 
-## Exported Symbols (`XBotv2.core.jobs`)
+## Jobs Declarations (`XBotv2.jobs`)
 
-The background job subsystem contract: `Job`, `JobStatus`, `JobKind`,
-`JobResult`, `JobSummary`, `JobError`,
+The Jobs plugin exports its domain and service contracts: `Job`, `JobStatus`,
+`JobKind`, `JobResult`, `JobSummary`, `JobError`, `JobsPort`, `JobRunner`,
+`JobRunnerContext`, and output reader protocols, plus
 `JobId`, `JobNotFound`, `JobRegistryClosed`, `CancelResult`, `WaitResult`,
 `TERMINAL_STATES`, and `MAX_SUMMARY_CHARS`.
 
@@ -93,11 +94,9 @@ and the typed list/execute operation declarations. Wire request and response
 models remain owned by `commands.protocol`; concrete registry and plugin
 implementations are not exported.
 
-## Exported Symbols (`XBotv2.jobs`)
-
-The package root exports the typed operations and DTOs from `contracts.py` plus
-the command declarations from `commands.py`. `JobRegistry`, output stores, and
-runner implementations are deliberately excluded.
+The package root also exports typed operations and DTOs from `contracts.py`
+plus command declarations from `commands.py`. `JobRegistry` and concrete
+output stores remain internal implementations.
 
 The same rule applies to the `llm`, `session`, `permissions`, and `sandbox`
 package roots. Packages without an explicit declaration module do not expose

@@ -33,7 +33,7 @@ import XBotv2.client as client_module
 import yaml
 from pydantic import ValidationError
 from xcore import Context
-from XBotv2.core.jobs import JobKind
+from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.events import Events
 from XBotv2.core.messages import Message

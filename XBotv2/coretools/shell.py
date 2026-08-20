@@ -20,12 +20,14 @@ import subprocess
 import tempfile
 from typing import Any, Literal
 
-from XBotv2.core.jobs import (
+from XBotv2.jobs import (
     Job,
     JobKind,
     JobNotFound,
     JobRegistryClosed,
     JobResult,
+    JobRunnerContext,
+    JobsPort,
     JobStatus,
     WaitResult,
 )
@@ -53,9 +55,10 @@ class ShellRunner:
     def __init__(self, *, sandbox: Any = None) -> None:
         self.sandbox = sandbox
 
-    async def run(self, job: Job, ctx: Any) -> JobResult:
+    async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
         command = str(job.metadata.get("command") or "")
-        cwd = job.metadata.get("cwd") or None
+        cwd_value = job.metadata.get("cwd")
+        cwd = str(cwd_value) if cwd_value else None
         escalated = bool(job.metadata.get("escalated"))
         output = ctx.outputs.create_text()
         ctx.primary_output = output
@@ -97,7 +100,7 @@ async def shell(
     justification: str | None = None,
     *,
     sandbox: Any = None,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
     default_cwd: str | None = None,
 ) -> ToolResult:
     """Run a shell command in the foreground, or start one in the background.
@@ -169,7 +172,7 @@ async def start_shell(
     justification: str | None = None,
     *,
     sandbox: Any = None,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Start a shell command in the background and return its job ID.
 
@@ -226,7 +229,11 @@ async def start_shell(
     )
 
 
-async def list_shells(status: str | None = None, *, job_registry: Any = None) -> ToolResult:
+async def list_shells(
+    status: str | None = None,
+    *,
+    job_registry: JobsPort | None = None,
+) -> ToolResult:
     """List session-owned background shells with lightweight metadata.
 
     Never includes command output; use ``read_shell`` for text. Jobs are
@@ -252,7 +259,7 @@ async def wait_shell(
     mode: Literal["all", "any"] = "all",
     timeout_ms: int | None = None,
     *,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Wait for background shells to reach a terminal state.
 
@@ -294,7 +301,7 @@ async def read_shell(
     cursor: int | None = None,
     max_bytes: int = 8000,
     *,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Read captured output from one background shell job.
 
@@ -327,7 +334,11 @@ async def read_shell(
     )
 
 
-async def cancel_shell(id: str, *, job_registry: Any = None) -> ToolResult:
+async def cancel_shell(
+    id: str,
+    *,
+    job_registry: JobsPort | None = None,
+) -> ToolResult:
     """Cancel one background shell job (idempotent).
 
     Args:
@@ -355,7 +366,7 @@ SHELL_TOOLS: tuple[Tool, ...] = (
 )
 
 
-def _wait_payload(result: WaitResult, registry: Any) -> dict[str, Any]:
+def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, Any]:
     ready: list[dict[str, Any]] = []
     for summary in result.ready:
         item = summary.to_dict()

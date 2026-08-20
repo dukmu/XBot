@@ -843,3 +843,23 @@
 - Verification: architecture checker reports zero violations; 102 command,
   application startup, public API, Compact, and Goal tests passed. Python
   compilation and `git diff --check` passed.
+
+### 2026-08-20 · Jobs-owned runtime contracts
+
+- Moved Job domain types and service/runner/output Protocols from `core.jobs`
+  into the Jobs plugin contracts and package-root exports. Shell and Subagents
+  now consume the typed `JobsPort`; injected `job_registry: Any` and runner
+  `ctx: Any` parameters were removed.
+- Removed completion events, runner tasks, runner instances, and runtime
+  handles from the public `Job` record. `JobRegistry` owns those private
+  lifecycle objects in side tables, while SubagentRunner owns its cancellable
+  child-session handle.
+- Tests now observe completion through `JobsPort.wait()` rather than reading
+  registry task fields. The public API contract explicitly rejects those
+  private fields.
+- Verification: architecture checker reports zero violations; 78 Jobs,
+  Subagents, public API, and application startup tests passed. Four selected
+  older HTTP integration tests still fail before exercising Jobs because they
+  access the intentionally removed `app.state.manager` compatibility path;
+  that bypass was not restored. Python compilation and `git diff --check`
+  passed.

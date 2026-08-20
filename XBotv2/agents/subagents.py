@@ -22,12 +22,14 @@ from XBotv2.core import (
     ToolResult,
 )
 from XBotv2.core.agents import AgentSession, SubagentAgentError
-from XBotv2.core.jobs import (
+from XBotv2.jobs import (
     Job,
     JobKind,
     JobNotFound,
     JobRegistryClosed,
     JobResult,
+    JobRunnerContext,
+    JobsPort,
     JobStatus,
 )
 from XBotv2.session.services import SessionPort
@@ -93,14 +95,15 @@ class SubagentRunner:
         self.session = session
         self.agent = agent
         self.prompt = prompt
+        self._child: AgentSession | None = None
 
-    async def run(self, job: Job, ctx: Any) -> JobResult:
+    async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
         session = await self.session.spawn_subagent(
             self.agent,
             self.prompt,
             parent_job_id=job.parent_job_id,
         )
-        ctx.set_handle(session)
+        self._child = session
         result = await session.wait()
         output = ctx.outputs.create_text(result.final_response)
         ctx.primary_output = output
@@ -116,9 +119,9 @@ class SubagentRunner:
         )
 
     async def cancel(self, job: Job) -> None:
-        handle = job.runtime_handle
-        if handle is not None:
-            await handle.cancel()
+        del job
+        if self._child is not None:
+            await self._child.cancel()
 
 
 class SubagentsPlugin:
@@ -156,7 +159,7 @@ class SubagentsPlugin:
             parent_permissions=ctx.permissions,
             client_events=ctx.client_events,
         )
-        registry = ctx.jobs
+        registry: JobsPort = ctx.jobs
 
         async def spawn_subagent(
             agent: str,

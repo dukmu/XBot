@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from XBotv2.core.jobs import JobKind, JobResult
+from XBotv2.jobs import JobKind, JobResult
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
 from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
@@ -138,7 +138,6 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
         tools, "shell", {"command": "generate output", "background": True}, registry
     )
     job = registry.get(started.content.split("Started ")[1])
-    await job.runner_task
     await registry.wait([job.id])
 
     assert len(registry.snapshot(job)["output"]) < 2_100
@@ -166,7 +165,7 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
 
     assert result.status == "success"
     assert job.status.value == "cancelled"
-    assert job.runner_task.done()
+    assert (await registry.wait([job.id])).pending == []
 
 
 @pytest.mark.asyncio
@@ -255,7 +254,7 @@ async def test_escalated_background_shell_requires_approval(
     assert "Need host access." in events[0]["data"]["reason"]
     job = job_registry.get("sh_1")
     assert job.metadata["escalated"] is True
-    await job.runner_task
+    await job_registry.wait([job.id])
     assert job.status.value == "completed"
 
 

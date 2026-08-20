@@ -1,9 +1,8 @@
 """Shared contracts for XBotv2.
 
-Plugins and applications import the stable contracts from this package
-(``XBotv2.core``). Event names live in ``XBotv2.core.events`` and job models
-live in ``XBotv2.core.jobs``; engine internals are implementation
-details and may change without a compatibility shim.
+Plugins and applications import capability-neutral contracts from this
+package. Plugin-owned declarations are exported by their owning package roots;
+engine internals remain implementation details.
 """
 
 from XBotv2.core.agents import (

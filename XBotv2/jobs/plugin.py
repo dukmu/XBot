@@ -12,7 +12,7 @@ from typing import Any
 
 from XBotv2.core.errors import OperationError
 from XBotv2.core.events import EventContext, Events
-from XBotv2.core.jobs import JobKind
+from XBotv2.jobs import JobKind
 from XBotv2.core.tools import ClientEvent
 from XBotv2.jobs.commands import build_jobs_commands
 from XBotv2.jobs.protocol import TaskUpdatedData

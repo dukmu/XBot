@@ -26,6 +26,7 @@ from XBotv2.core import (
 from XBotv2.commands import Command, CommandResult
 from XBotv2.config import SessionPolicyPatch
 from XBotv2.interactions import UserInputRequiredData
+from XBotv2.jobs import Job, JobKind
 from XBotv2.protocol import HelloRequest, server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.session import MessageRequest
@@ -61,6 +62,8 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.session as session
 
     assert set(jobs.__all__) >= {
+        "JobRunner",
+        "JobsPort",
         "JobsCommandPort",
         "LIST_TASKS",
         "TaskSnapshot",
@@ -109,7 +112,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         (agentloop, {"Engine", "ToolRegistry", "ToolsService"}),
         (application, {"MountedAgentApplication", "start_application"}),
         (compact, {"CompactService"}),
-        (jobs, {"JobRegistry", "JobRunner"}),
+        (jobs, {"JobRegistry", "TextOutputStore"}),
         (llm, {"LlmService", "ModelService"}),
         (permissions, {"PermissionSystem"}),
         (sandbox, {"SandboxPolicy"}),
@@ -139,6 +142,14 @@ def test_public_api_exports_core_extension_types():
     assert EventContext(
         request_id="request-1",
     ).request_id == "request-1"
+
+
+def test_public_job_contract_excludes_registry_runtime_state():
+    job = Job("job-1", JobKind.SHELL)
+
+    assert not hasattr(job, "completion_event")
+    assert not hasattr(job, "runner_task")
+    assert not hasattr(job, "runtime_handle")
 
 
 def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):

@@ -7,27 +7,7 @@ explicit ``read_*`` tool backed by these stores.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
-
-
-@dataclass(frozen=True)
-class OutputChunk:
-    data: str
-    next_cursor: int | None = None
-    eof: bool = False
-    truncated: bool = False
-
-
-class OutputStore(Protocol):
-    """Cursor-based readable output buffer."""
-
-    async def read(
-        self,
-        *,
-        cursor: int | None = None,
-        max_bytes: int = 8000,
-    ) -> OutputChunk: ...
+from XBotv2.jobs.contracts import OutputChunk, OutputStore
 
 
 class TextOutputStore:
@@ -144,8 +124,6 @@ async def _read_text(
 
 __all__ = [
     "CombinedShellOutput",
-    "OutputChunk",
-    "OutputStore",
     "StreamOutputStore",
     "TextOutputStore",
 ]

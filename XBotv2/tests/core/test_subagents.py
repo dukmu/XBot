@@ -13,7 +13,7 @@ import pytest
 from xcore import Context
 
 from XBotv2.core import AgentDefinition, AgentSessionResult, RuntimePaths
-from XBotv2.core.jobs import JobKind
+from XBotv2.jobs import JobKind
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.messages import ModelChunk
 from XBotv2.agents.catalog import AgentCatalog

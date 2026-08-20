@@ -12,9 +12,9 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable
 
-from XBotv2.core.jobs import (
+from XBotv2.jobs.contracts import (
     TERMINAL_STATES,
     CancelResult,
     Job,
@@ -28,14 +28,16 @@ from XBotv2.core.jobs import (
     JobSummary,
     MAX_SUMMARY_CHARS,
     WaitResult,
+    WaitMode,
+    JobRunner,
 )
-from XBotv2.jobs.runner import JobContext, JobRunner
+from XBotv2.jobs.runner import JobContext
+from XBotv2.core.tools import JsonObject
 
 logger = logging.getLogger("xbotv2.jobs")
 
 JobSnapshot = dict[str, Any]
 TaskCallback = Callable[[JobSnapshot], Awaitable[None]]
-WaitMode = Literal["any", "all"]
 
 # Client-facing kind names preserved for the protocol / TUI task surface.
 _PROTOCOL_KIND = {
@@ -64,6 +66,9 @@ class JobRegistry:
         prefix: str = "job",
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
+        self._completion_events: dict[JobId, asyncio.Event] = {}
+        self._runners: dict[JobId, JobRunner] = {}
+        self._tasks: dict[JobId, asyncio.Task[None]] = {}
         self._next_id = 1
         self._prefix = prefix
         self._limits: dict[JobKind, asyncio.Semaphore] = {
@@ -87,7 +92,7 @@ class JobRegistry:
         self,
         *,
         kind: JobKind,
-        metadata: dict[str, Any] | None = None,
+        metadata: JsonObject | None = None,
         parent_job_id: JobId | None = None,
         name: str | None = None,
     ) -> Job:
@@ -101,9 +106,9 @@ class JobRegistry:
             parent_job_id=parent_job_id,
             name=name,
             metadata=dict(metadata or {}),
-            completion_event=asyncio.Event(),
         )
         self._jobs[job.id] = job
+        self._completion_events[job.id] = asyncio.Event()
         await self._notify_update(job)
         return job
 
@@ -112,7 +117,8 @@ class JobRegistry:
         job = self._require(job_id)
         if job.status is not JobStatus.PENDING:
             raise ValueError(f"Job {job_id} is not pending")
-        job.runner_task = asyncio.create_task(
+        self._runners[job.id] = runner
+        self._tasks[job.id] = asyncio.create_task(
             self._execute(job, runner),
             name=f"xbotv2-{job.id}",
         )
@@ -187,7 +193,7 @@ class JobRegistry:
         jobs: list[Job],
         timeout: float | None,
     ) -> WaitResult:
-        events = [job.completion_event for job in jobs if job.completion_event]
+        events = [self._completion_events[job.id] for job in jobs]
         timed_out = False
         if events:
             try:
@@ -214,9 +220,8 @@ class JobRegistry:
     ) -> WaitResult:
         active = [job for job in jobs if not job.terminal]
         done_tasks = [
-            asyncio.create_task(job.completion_event.wait())
+            asyncio.create_task(self._completion_events[job.id].wait())
             for job in active
-            if job.completion_event is not None
         ]
         timed_out = False
         if done_tasks:
@@ -254,10 +259,10 @@ class JobRegistry:
             self._finish(job, JobStatus.CANCELLED)
             return CancelResult(job_id, job.status.value, cancelled=True)
 
-        runner_task = job.runner_task
+        runner_task = self._tasks.get(job.id)
         if runner_task is None or runner_task.done():
             return CancelResult(job_id, job.status.value, cancelled=False)
-        runner = getattr(job, "runner", None)
+        runner = self._runners.get(job.id)
         if runner is not None:
             try:
                 await runner.cancel(job)
@@ -272,7 +277,9 @@ class JobRegistry:
         job = self._jobs.pop(job_id, None)
         if job is None:
             return
-        job.completion_event = None
+        self._completion_events.pop(job_id, None)
+        self._runners.pop(job_id, None)
+        self._tasks.pop(job_id, None)
         job.result = None
         job.metadata.clear()
 
@@ -302,8 +309,7 @@ class JobRegistry:
     # ------------------------------------------------------------------
 
     async def _execute(self, job: Job, runner: JobRunner) -> None:
-        ctx = JobContext(self, job)
-        job.runner = runner
+        ctx = JobContext()
         semaphore = self._limits.get(job.kind)
         acquired = False
         try:
@@ -331,8 +337,9 @@ class JobRegistry:
     def _finish(self, job: Job, status: JobStatus) -> None:
         job.status = status
         job.finished_at = time.time()
-        if job.completion_event is not None:
-            job.completion_event.set()
+        event = self._completion_events.get(job.id)
+        if event is not None:
+            event.set()
         # Publish the terminal state so live clients (e.g. the TUI task panel)
         # see the task leave "running"; ``on_complete`` alone only produces a
         # completion notice that the TUI does not apply to its task map.

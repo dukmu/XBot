@@ -13,7 +13,7 @@ roots may re-export only explicit `types`, `invariants`, `commands`, `events`,
 
 ```python
 from XBotv2.commands import Command, CommandResult
-from XBotv2.core.jobs import Job, JobKind, JobStatus
+from XBotv2.jobs import Job, JobKind, JobStatus, JobsPort
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
 from XBotv2.llm import LlmCatalogPort, ProviderCatalog
 ```

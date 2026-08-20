@@ -323,7 +323,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     completion notice the TUI never applies); no terminal ``task_updated``
     reached live clients, so tasks stayed "running" forever."""
 
-    from XBotv2.core.jobs import JobKind
+    from XBotv2.jobs import JobKind
     from XBotv2.coretools.shell import SHELL_TOOLS
 
     ctx = await foldin_app.state.manager.open_session(
