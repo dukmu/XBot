@@ -288,7 +288,7 @@
   profiles: [server]
 
 - id: server.routes.session
-  name: session.router
+  name: http_transport.session
   profiles: [server]
 
 - id: server.routes.permissions

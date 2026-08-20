@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
@@ -15,18 +16,36 @@ import yaml
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.errors import OperationError
-from XBotv2.session.runtime import SessionRuntime
-from XBotv2.protocol.models import SessionSummary, ThreadSummary
+from XBotv2.core.messages import Message
+from XBotv2.session.runtime import SessionBusy, SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
     AgentApplicationOptions,
     DISPATCH_OPERATION,
     DISPATCH_SESSION_OPERATION,
     OPERATION_COMPLETED,
+    PREPARE_FORK,
+    PrepareFork,
     SessionDispatch,
     SessionGroupDispatch,
     SessionOperationCompleted,
     SessionRef,
+)
+from XBotv2.session.session import fork_persisted_session
+from XBotv2.session.types import (
+    HistoryMutation,
+    InteractionReceipt,
+    InterruptResult,
+    OpenedSession,
+    OpenSession,
+    OpenThread,
+    SendMessage,
+    SessionExists,
+    SessionNotFound,
+    SessionStreamEvent,
+    SessionSummary,
+    ThreadNotActive,
+    ThreadSummary,
 )
 from XBotv2.server.contracts import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
@@ -40,18 +59,6 @@ from XBotv2.core.operations import (
 )
 
 logger = logging.getLogger("xbotv2.session_manager")
-
-
-class SessionNotFound(KeyError):
-    """The caller asked for a session or thread that does not exist."""
-
-
-class SessionExists(RuntimeError):
-    """A new session or thread conflicts with persisted state."""
-
-
-class ThreadNotActive(RuntimeError):
-    """The thread exists on disk but has no live runtime."""
 
 
 class SessionManager:
@@ -307,6 +314,265 @@ class SessionManager:
         async with self._lock:
             return dict(self._sessions)
 
+    def session_exists(self, session_id: str) -> bool:
+        return self.paths.session(session_id).root.is_dir()
+
+    async def open(self, request: OpenSession) -> OpenedSession:
+        runtime = await self.open_session(
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            provider_name=request.provider_name,
+            workspace_root=request.workspace_root,
+            selected_agent=request.selected_agent,
+            mode=request.mode,
+            no_plugins=request.no_plugins,
+            llm_override=request.model_override,
+        )
+        return await _opened_session(runtime)
+
+    async def list_sessions(self) -> tuple[SessionSummary, ...]:
+        root = self.paths.sessions_dir
+        session_ids = sorted(
+            path.name for path in root.iterdir() if path.is_dir()
+        ) if root.is_dir() else []
+        return tuple([
+            await session_summary(self, session_id)
+            for session_id in session_ids
+        ])
+
+    async def session_summary(self, session_id: str) -> SessionSummary:
+        return await session_summary(self, session_id)
+
+    async def fork_session(self, session_id: str) -> str:
+        await session_summary(self, session_id)
+        active = await self.active_threads()
+        runtimes = [
+            runtime
+            for (active_session_id, _), runtime in active.items()
+            if active_session_id == session_id
+        ]
+        for runtime in runtimes:
+            await runtime.application.events.emit(
+                PREPARE_FORK,
+                PrepareFork(session_id, runtime.thread_id),
+            )
+        return fork_persisted_session(self.paths, session_id)
+
+    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
+        await session_summary(self, session_id)
+        return tuple([
+            await thread_summary(self, session_id, thread_id)
+            for thread_id in persisted_thread_ids(self.paths, session_id)
+        ])
+
+    async def open_thread(self, request: OpenThread) -> OpenedSession:
+        await session_summary(self, request.session_id)
+        parent_thread_id = request.parent_thread_id
+        if request.mode == "resume":
+            session = self.paths.session(request.session_id)
+            if not session.has_thread(request.thread_id):
+                raise SessionNotFound(
+                    f"{request.session_id}/{request.thread_id}"
+                )
+            store = self._state_store(session, thread_id=request.thread_id)
+            parent_thread_id = str(
+                store.read_thread_metadata().get("parent_thread_id") or ""
+            )
+        if not parent_thread_id or parent_thread_id == request.thread_id:
+            raise OperationError(
+                "invalid_request",
+                "A subagent thread requires a different parent_thread_id",
+            )
+        try:
+            parent = await self.get(request.session_id, parent_thread_id)
+        except (SessionNotFound, ThreadNotActive) as exc:
+            raise OperationError(
+                "parent_thread_not_active",
+                str(exc),
+                retryable=True,
+            ) from exc
+        workspace_root = str(Path(
+            request.workspace_root or parent.workspace_root
+        ).resolve())
+        runtime = await self.open_session(
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            provider_name=request.provider_name,
+            workspace_root=workspace_root,
+            mode=request.mode,
+            selected_agent=request.selected_agent,
+            no_plugins=request.no_plugins,
+            llm_override=request.model_override,
+            parent_thread_id=parent_thread_id,
+            parent_permission_system=parent.application.parent_permissions,
+            is_subagent=True,
+        )
+        return await _opened_session(runtime)
+
+    async def thread_summary(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> ThreadSummary:
+        return await thread_summary(self, session_id, thread_id)
+
+    async def messages(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> tuple[Message, ...]:
+        active = (await self.active_threads()).get((session_id, thread_id))
+        if active is not None:
+            return tuple(active.engine.messages)
+        session = self.paths.session(session_id)
+        if not session.has_thread(thread_id):
+            raise SessionNotFound(f"{session_id}/{thread_id}")
+        return tuple(self._state_store(session, thread_id=thread_id).read_messages())
+
+    async def clear_history(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> HistoryMutation:
+        runtime = await self.get(session_id, thread_id)
+        require_idle(runtime, "rewrite history")
+        async with runtime.turn_lock:
+            removed = await runtime.application.history.clear_history()
+        return HistoryMutation(removed_turns=removed, messages=())
+
+    async def undo_history(
+        self,
+        session_id: str,
+        thread_id: str,
+        count: int,
+    ) -> HistoryMutation:
+        runtime = await self.get(session_id, thread_id)
+        require_idle(runtime, "rewrite history")
+        async with runtime.turn_lock:
+            messages = await runtime.application.history.undo_history(count)
+        return HistoryMutation(removed_turns=count, messages=tuple(messages))
+
+    async def stream_message(
+        self,
+        request: SendMessage,
+    ) -> AsyncIterator[SessionStreamEvent]:
+        runtime = await self.get(request.session_id, request.thread_id)
+        images = [
+            runtime.application.media.store_image(item.data, item.media_type)
+            for item in request.images
+        ]
+        attachments = [
+            runtime.application.media.store_attachment(
+                item.data,
+                item.media_type,
+                item.name,
+            )
+            for item in request.attachments
+        ]
+        async def stream():
+            async for event in runtime.stream_message(
+                request.content,
+                request.request_id,
+                images=images,
+                artifacts=attachments,
+            ):
+                yield _stream_event(event)
+
+        return stream()
+
+    async def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> AsyncIterator[SessionStreamEvent]:
+        runtime = await self.get(session_id, thread_id)
+        try:
+            events = runtime.attach_event_stream()
+        except SessionBusy as exc:
+            raise OperationError(
+                "event_stream_connected",
+                str(exc),
+                retryable=True,
+            ) from exc
+        async def stream():
+            try:
+                while True:
+                    event = await events.get()
+                    if event is None:
+                        return
+                    yield _stream_event(event)
+            finally:
+                runtime.detach_event_stream(events)
+
+        return stream()
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        thread_id: str,
+        request_id: str,
+        decision: str,
+        scope: str,
+    ) -> InteractionReceipt:
+        return await self._respond_interaction(
+            session_id,
+            thread_id,
+            "permission_request",
+            request_id,
+            decision=decision,
+            scope=scope,
+        )
+
+    async def respond_user_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        request_id: str,
+        answer: Any,
+    ) -> InteractionReceipt:
+        return await self._respond_interaction(
+            session_id,
+            thread_id,
+            "user_input_required",
+            request_id,
+            answer=answer,
+        )
+
+    async def _respond_interaction(
+        self,
+        session_id: str,
+        thread_id: str,
+        event_type: str,
+        request_id: str,
+        **values: object,
+    ) -> InteractionReceipt:
+        runtime = await self.get(session_id, thread_id)
+        waiter = runtime.application.client_events.waiter(event_type)
+        if waiter is None:
+            raise OperationError(
+                "capability_unavailable",
+                f"No waiter is registered for {event_type!r}",
+            )
+        try:
+            waiter.answer(request_id, **values)
+        except Exception as exc:
+            raise OperationError(
+                "interaction_no_longer_pending",
+                str(exc),
+            ) from exc
+        return InteractionReceipt(
+            request_id=request_id,
+            pending_interactions=tuple(pending_interactions(runtime)),
+        )
+
+    async def interrupt(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> InterruptResult:
+        runtime = await self.get(session_id, thread_id)
+        return InterruptResult(cancelled=runtime.request_interrupt())
+
     async def dispatch(
         self,
         session_id: str,
@@ -346,6 +612,31 @@ def _has_persisted_session(
         return True
     legacy = session_paths.thread(thread_id, legacy=True)
     return legacy.metadata_file.exists()
+
+
+async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
+    snapshot = await runtime.application.snapshot()
+    return OpenedSession(
+        session_id=runtime.session_id,
+        thread_id=runtime.thread_id,
+        agent_name=snapshot.agent,
+        workspace_root=runtime.workspace_root,
+        provider=runtime.provider_name,
+        model=snapshot.model,
+        model_mode=snapshot.model_mode,
+        context_window=snapshot.context_window,
+        usage=snapshot.usage,
+        history=snapshot.messages,
+        status_slots=snapshot.status_slots,
+    )
+
+
+def _stream_event(event: dict[str, Any]) -> SessionStreamEvent:
+    event_type = event.get("type")
+    data = event.get("data")
+    if not isinstance(event_type, str) or not isinstance(data, dict):
+        raise TypeError("session stream event requires string type and object data")
+    return SessionStreamEvent(type=event_type, data=dict(data))
 
 
 def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:

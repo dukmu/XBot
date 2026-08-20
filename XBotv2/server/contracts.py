@@ -5,15 +5,28 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Annotated, Protocol
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from starlette.responses import Response
 from xcore import Disposer
+
+from XBotv2.core.providers import BaseProvider
 
 QUERY_STATUS = "server/status"
 REGISTER_ROUTE = "http/route"
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
+
+
+def current_model_override() -> BaseProvider | None:
+    """FastAPI dependency used by tests and embedded server compositions."""
+    return None
+
+
+ModelOverride = Annotated[
+    BaseProvider | None,
+    Depends(current_model_override),
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +93,7 @@ class ServerStatus:
 
 __all__ = [
     "ExceptionHandler",
+    "ModelOverride",
     "QUERY_STATUS",
     "REGISTER_ROUTE",
     "RouteContribution",
@@ -88,4 +102,5 @@ __all__ = [
     "ServerOptions",
     "ServerStatus",
     "contribute_router",
+    "current_model_override",
 ]

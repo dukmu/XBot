@@ -31,6 +31,7 @@ import pytest
 import pytest_asyncio
 import XBotv2.client as client_module
 import yaml
+from pydantic import ValidationError
 from xcore import Context
 from XBotv2.core.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
@@ -49,7 +50,7 @@ from XBotv2.server.http import (
     _format_sse,
     set_llm_override,
 )
-from XBotv2.session.manager import ThreadNotActive
+from XBotv2.session import InteractionReceipt, ThreadNotActive
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
 from XBotv2.protocol.models import KNOWN_SERVER_EVENT_TYPES, ServerEvent
 from XBotv2.tui.terminal import TerminalSession
@@ -1142,6 +1143,7 @@ async def test_http_builtin_commands_execute_through_command_plane(
 async def test_typed_history_undo_fork_and_clear_persist_atomically(
     client: httpx.AsyncClient,
     http_app,
+    tmp_path: Path,
 ) -> None:
     set_llm_override(http_app, MockLLM(responses=[
         {"content": "first answer"},
@@ -1169,12 +1171,13 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
             "data": None, "error": None, "artifacts": [], "images": [],
         },
     ]
-    ctx = await http_app.state.manager.get("history", "t")
-    assert [message.content for message in ctx.engine.messages] == [
+    current = await client.get("/sessions/history/threads/t/messages")
+    assert [message["content"] for message in current.json()["messages"]] == [
         "first", "first answer",
     ]
 
-    source_session = http_app.state.paths.session("history")
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    source_session = paths.session("history")
     source = source_session.thread("t")
     source_records = [
         json.loads(line)
@@ -1190,7 +1193,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     source_session.config_file.write_text("permissions: {}\n")
     forked = await client.post("/sessions/history/fork")
     fork_id = forked.json()["session_id"]
-    fork_session = http_app.state.paths.session(fork_id)
+    fork_session = paths.session(fork_id)
     fork_paths = fork_session.thread("t")
 
     assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
@@ -1210,8 +1213,8 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     )
     assert cleared.json()["removed_turns"] == 1
     assert cleared.json()["messages"] == []
-    assert ctx.engine.messages == []
-    assert ctx.services.state_store.read_messages() == []
+    current = await client.get("/sessions/history/threads/t/messages")
+    assert current.json()["messages"] == []
     cleared_records = [
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
@@ -1653,47 +1656,20 @@ async def test_http_policy_api_updates_live_session_policy(
 
 
 @pytest.mark.asyncio
-async def test_http_permission_response_preserves_scope() -> None:
-    from XBotv2.session.http_util import _resolve_interaction
+async def test_http_interaction_response_maps_session_receipt() -> None:
+    from XBotv2.http_transport.session import _interaction_response
 
-    request_id = "permission:scope"
-    captured: dict[str, str] = {}
+    async def receipt() -> InteractionReceipt:
+        return InteractionReceipt(
+            request_id="permission:scope",
+            pending_interactions=("user-input:next",),
+        )
 
-    class _ApprovalSpy:
-        def submit(self, request_id: str, decision: str, scope: str = "once"):
-            captured.update({"request_id": request_id, "decision": decision, "scope": scope})
-            from XBotv2.interactions.interactions import InteractionResult
-
-            return InteractionResult(
-                request_id=request_id,
-                status="answered",
-                decision=decision,
-                scope=scope,
-            )
-
-    class _Context:
-        services = {"approval": _ApprovalSpy()}
-
-    class _Manager:
-        async def get(self, session_id: str, thread_id: str):
-            assert session_id == "permission-scope"
-            assert thread_id == "t"
-            return _Context()
-
-    response = await _resolve_interaction(
-        manager=_Manager(),
-        session_id="permission-scope",
-        thread_id="t",
-        payload={"request_id": request_id, "decision": "allow", "scope": "session"},
-        kind="permission",
-    )
+    response = await _interaction_response(receipt())
 
     assert response.recorded is True
-    assert captured == {
-        "request_id": request_id,
-        "decision": "allow",
-        "scope": "session",
-    }
+    assert response.request_id == "permission:scope"
+    assert response.pending_interactions == ["user-input:next"]
 
 
 @pytest.mark.parametrize(
@@ -1796,36 +1772,14 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from XBotv2.session.http_util import _resolve_interaction
+    from XBotv2.protocol.models import PermissionResponseRequest
 
-    class _Engine:
-        permission_waiter = object()
-        user_input_waiter = object()
-
-    class _Context:
-        engine = _Engine()
-
-    class _Manager:
-        async def get(self, session_id: str, thread_id: str):
-            assert session_id == "permission-scope"
-            assert thread_id == "t"
-            return _Context()
-
-    with pytest.raises(Exception) as exc_info:
-        await _resolve_interaction(
-            manager=_Manager(),
-            session_id="permission-scope",
-            thread_id="t",
-            payload={
-                "request_id": "permission:scope",
-                "decision": "allow",
-                "scope": "always",
-            },
-            kind="permission",
+    with pytest.raises(ValidationError, match="scope"):
+        PermissionResponseRequest(
+            request_id="permission:scope",
+            decision="allow",
+            scope="always",
         )
-
-    assert getattr(exc_info.value, "code") == "invalid_request"
-    assert "once or session" in getattr(exc_info.value, "message")
 
 
 @pytest.mark.asyncio

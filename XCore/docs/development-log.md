@@ -686,3 +686,29 @@
   reports 7 remaining violations, all in Session HTTP/wire ownership. The full
   HTTP integration file was interrupted after making only one test's progress
   in roughly one minute and is not recorded as passing.
+
+### 2026-08-20 · Typed Session host and HTTP ownership
+
+- Added public Session host domain dataclasses and `SessionHostPort`, exported
+  through `XBotv2.session`. The API covers session/thread open and query,
+  history mutation, messages, fork, interaction responses, interrupts, and
+  typed stream envelopes without exposing SessionRuntime, paths, stores, or
+  the mounted child application.
+- SessionManager now owns parent-thread resolution, persistence reads, history
+  locking, media preparation, interaction waiters, fork preparation, and event
+  stream attach/detach behind that port. Session summaries no longer construct
+  protocol Pydantic models.
+- Moved all Session HTTP/SSE mapping to `http_transport.session`; deleted
+  `session.router` and `session.http_util`. The default tree now activates
+  `http_transport.session`. The adapter imports only protocol wire models,
+  public Session declarations, public server declarations, and shared core.
+- Model override dependency declarations moved to the server public contract,
+  while the FastAPI implementation retains only carrier construction and test
+  override installation.
+- Verification: architecture checker reports zero violations; 110 focused
+  core/Application/Session/subagent/loader/server tests and 4 focused adapter
+  lifecycle/interaction tests passed. Real HTTP open-session passed in 61s;
+  real undo/fork/resume/clear history flow passed in 122s. Python compilation
+  and `git diff --check` passed. The complete HTTP integration suite was not
+  run because its shared fixture currently adds roughly 60s teardown per
+  session-bearing test.

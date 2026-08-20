@@ -2,8 +2,7 @@
 
 This module is pure protocol: error envelopes and SSE framing built from the
 wire DTOs and SSE encoder only. It imports no application or plugin logic.
-Session/policy response builders live in ``XBotv2.session.http_util`` and
-``XBotv2.http_transport.policy``.
+Capability response builders live in their ``XBotv2.http_transport`` adapters.
 """
 
 from __future__ import annotations

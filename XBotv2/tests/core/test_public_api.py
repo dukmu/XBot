@@ -58,6 +58,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     import XBotv2.llm as llm
     import XBotv2.permissions as permissions
     import XBotv2.sandbox as sandbox
+    import XBotv2.server as server
     import XBotv2.session as session
 
     assert set(jobs.__all__) >= {
@@ -77,8 +78,15 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert sandbox.__all__ == ["build_sandbox_commands"]
     assert set(session.__all__) >= {
         "AgentApplicationFactory",
+        "SessionHostPort",
         "SessionPort",
         "SessionRef",
+        "ThreadSummary",
+    }
+    assert set(server.__all__) >= {
+        "ModelOverride",
+        "RouteContribution",
+        "ServerOptions",
     }
     assert set(agentloop.__all__) >= {"AgentLoopDriverPort", "ToolsPort"}
     assert set(application.__all__) >= {
@@ -93,6 +101,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         (llm, {"LlmService", "ModelService"}),
         (permissions, {"PermissionSystem"}),
         (sandbox, {"SandboxPolicy"}),
+        (server, {"create_app", "SessionHttpAdapter"}),
         (session, {"Session", "SessionManager", "SessionRuntime"}),
     ):
         assert forbidden.isdisjoint(module.__all__)

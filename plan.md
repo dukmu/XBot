@@ -123,16 +123,21 @@ tool policy 已完成收敛：`BEFORE_TOOL_CALL` 只允许重写 ToolCall/args�
 validation 和全部 guard 必须在执行前通过；`ToolDecision`/`ToolAction`、事件拒绝、
 stop 和伪造结果入口已删除。
 
-当前 architecture scanner 可复现 **7 项**，全部集中在 Session HTTP 所有权：
+当前 architecture scanner 已达到 **0 项**。Session HTTP 所有权已完成迁移：
 
-1. `session/http_util.py` 仍拥有 protocol wire mapping（2 项）；
-2. `session/manager.py` 仍直接构造 protocol Session/Thread DTO（1 项）；
-3. `session/router.py` 仍位于 capability package，并导入 protocol wire DTO、HTTP
-   helper 与 concrete `server.http`（4 项）。
+1. Session 根公开 `SessionHostPort`、host request/result、summary、stream event 和
+   公开错误；
+2. `SessionManager` 实现 transport-neutral host API，内部拥有 runtime、persistence、
+   parent permission、history lock、media、interaction waiter 和 stream lifecycle；
+3. Session/Thread summary 不再使用 protocol Pydantic DTO；
+4. route implementation 已迁到 `http_transport/session.py`，只导入 protocol wire
+   DTO、Session 根声明、server 根声明和 shared core；
+5. `session/router.py` 与 `session/http_util.py` 已删除，`xcore.yaml` 直接激活
+   `http_transport.session`。
 
-下一步不是简单移动 router，而是先公开 `SessionHostPort` 与领域 request/result，
-让 `http_transport.session` 只依赖 Session 根声明，再删除 `session/http_util.py` 和
-`session/router.py`。producer-owned outbound event projection 随后单独收敛。
+扫描零违规只是当前门禁的证据，不代表最终完成。下一步依次收敛
+producer-owned typed outbound events、ACP 对 concrete SessionManager/runtime 的依赖，
+再执行全仓配置硬编码、Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 
 扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
 语义、ACP 的 concrete composition import、producer-owned outbound event 完整迁移，

@@ -7,9 +7,7 @@ event.
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,23 +17,16 @@ from XBotv2.core.providers import BaseProvider
 from XBotv2.protocol.http_util import HttpServerError, _error_payload
 from XBotv2.protocol.models import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.server.contracts import (
+    ModelOverride,
+    current_model_override,
+)
 
 # Preserve the established helper import surface.
 from XBotv2.protocol.http_util import (  # noqa: F401
     _SSE_RESPONSE,
     _format_sse,
 )
-
-
-def current_model_override() -> BaseProvider | None:
-    """FastAPI dependency used only to override providers in tests/embedders."""
-    return None
-
-
-ModelOverride = Annotated[
-    BaseProvider | None,
-    Depends(current_model_override),
-]
 
 
 def create_app(*, server_name: str = "xbotv2") -> FastAPI:
@@ -76,7 +67,12 @@ def create_app(*, server_name: str = "xbotv2") -> FastAPI:
     ) -> JSONResponse:
         if exc.code.endswith("_not_found"):
             status = 404
-        elif exc.code in {"thread_busy", "task_not_background"}:
+        elif exc.code in {
+            "event_stream_connected",
+            "parent_thread_not_active",
+            "task_not_background",
+            "thread_busy",
+        }:
             status = 409
         else:
             status = 400

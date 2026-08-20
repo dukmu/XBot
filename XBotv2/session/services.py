@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import AsyncIterator
+from typing import Any, Protocol
 
+from XBotv2.core.messages import Message
 from XBotv2.session.contracts import SessionStatus
+from XBotv2.session.types import (
+    HistoryMutation,
+    InteractionReceipt,
+    InterruptResult,
+    OpenedSession,
+    OpenSession,
+    OpenThread,
+    SendMessage,
+    SessionStreamEvent,
+    SessionSummary,
+    ThreadSummary,
+)
 
 
 class SessionPort(Protocol):
@@ -23,7 +37,79 @@ class SessionPort(Protocol):
 
     async def clear_history(self) -> int: ...
 
-    async def undo_history(self, count: int) -> list[object]: ...
+    async def undo_history(self, count: int) -> list[Message]: ...
 
 
-__all__ = ["SessionPort"]
+class SessionHostPort(Protocol):
+    """Transport-neutral process API for persistent sessions and threads."""
+
+    def session_exists(self, session_id: str) -> bool: ...
+
+    async def open(self, request: OpenSession) -> OpenedSession: ...
+
+    async def list_sessions(self) -> tuple[SessionSummary, ...]: ...
+
+    async def session_summary(self, session_id: str) -> SessionSummary: ...
+
+    async def fork_session(self, session_id: str) -> str: ...
+
+    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]: ...
+
+    async def open_thread(self, request: OpenThread) -> OpenedSession: ...
+
+    async def thread_summary(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> ThreadSummary: ...
+
+    async def messages(self, session_id: str, thread_id: str) -> tuple[Message, ...]: ...
+
+    async def clear_history(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> HistoryMutation: ...
+
+    async def undo_history(
+        self,
+        session_id: str,
+        thread_id: str,
+        count: int,
+    ) -> HistoryMutation: ...
+
+    async def stream_message(
+        self,
+        request: SendMessage,
+    ) -> AsyncIterator[SessionStreamEvent]: ...
+
+    async def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> AsyncIterator[SessionStreamEvent]: ...
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        thread_id: str,
+        request_id: str,
+        decision: str,
+        scope: str,
+    ) -> InteractionReceipt: ...
+
+    async def respond_user_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        request_id: str,
+        answer: Any,
+    ) -> InteractionReceipt: ...
+
+    async def close_session(self, session_id: str) -> None: ...
+
+    async def close_thread(self, session_id: str, thread_id: str) -> None: ...
+
+    async def interrupt(self, session_id: str, thread_id: str) -> InterruptResult: ...
+
+__all__ = ["SessionHostPort", "SessionPort"]

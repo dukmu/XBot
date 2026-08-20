@@ -1,9 +1,8 @@
 """Session-host routes: sessions, threads, messages, history, fork, events,
 close, interrupt, and interactions.
 
-This group owns the per-session application lifecycle and reaches the
-session application through ``manager`` (the ``SessionManager`` host).
-Session policy routes live in :mod:`XBotv2.http_transport.policy`.
+Session lifecycle and persistence remain behind the public SessionHostPort;
+this module owns only HTTP request/response and SSE mapping.
 """
 
 from __future__ import annotations
@@ -11,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from xcore import Context
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     _error_payload,
@@ -25,7 +26,6 @@ from XBotv2.protocol.http_util import (
 from XBotv2.protocol.models import (
     CloseResponse,
     ForkResponse,
-    HelloResponse,
     HistoryMutationResponse,
     InteractionResponse,
     InterruptResponse,
@@ -44,32 +44,93 @@ from XBotv2.protocol.models import (
 )
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import display_history
-from XBotv2.session.http_util import (
-    _open_session_response,
-    _resolve_interaction,
-)
-from XBotv2.server.contracts import contribute_router
-from XBotv2.server.contracts import ServerOptions
-from XBotv2.server.http import ModelOverride
-from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
-from XBotv2.session.session import fork_persisted_session
-from XBotv2.session.runtime import SessionBusy, require_idle
-from XBotv2.session.manager import (
+from XBotv2.server import ModelOverride, ServerOptions, contribute_router
+from XBotv2.session import (
+    AttachmentUpload,
+    ImageUpload,
+    InteractionReceipt,
+    OpenedSession,
+    OpenSession,
+    OpenThread,
+    SendMessage,
     SessionExists,
-    SessionManager,
+    SessionHostPort,
     SessionNotFound,
+    SessionSummary as SessionSummaryData,
     ThreadNotActive,
-    persisted_thread_ids,
-    session_summary,
-    thread_summary,
+    ThreadSummary as ThreadSummaryData,
 )
 
 logger = logging.getLogger("xbotv2.http_server")
 
 
+def _open_session_response(value: OpenedSession) -> OpenSessionResponse:
+    return OpenSessionResponse(
+        session_id=value.session_id,
+        thread_id=value.thread_id,
+        agent_name=value.agent_name,
+        workspace_root=value.workspace_root,
+        provider=value.provider,
+        model=value.model,
+        model_mode=value.model_mode,
+        context_window=value.context_window,
+        usage=value.usage,
+        history=display_history(value.history),
+        status_slots=value.status_slots,
+    )
+
+
+def _session_summary(value: SessionSummaryData) -> SessionSummary:
+    return SessionSummary(
+        session_id=value.session_id,
+        status=value.status,
+        active_threads=value.active_threads,
+        thread_count=value.thread_count,
+    )
+
+
+def _thread_summary(value: ThreadSummaryData) -> ThreadSummary:
+    return ThreadSummary(
+        session_id=value.session_id,
+        thread_id=value.thread_id,
+        status=value.status,
+        kind=value.kind,
+        turn_status=value.turn_status,
+        parent_thread_id=value.parent_thread_id,
+        agent=value.agent,
+        provider=value.provider,
+        model=value.model,
+        model_mode=value.model_mode,
+        context_window=value.context_window,
+        message_count=value.message_count,
+        usage=value.usage,
+        pending_interactions=list(value.pending_interactions),
+        status_slots=value.status_slots,
+    )
+
+
+async def _interaction_response(
+    pending: Awaitable[InteractionReceipt],
+) -> InteractionResponse:
+    try:
+        value = await pending
+    except OperationError as exc:
+        if exc.code != "interaction_no_longer_pending":
+            raise
+        raise HttpServerError(
+            exc.code,
+            exc.message,
+            status=410,
+        ) from exc
+    return InteractionResponse(
+        request_id=value.request_id,
+        pending_interactions=list(value.pending_interactions),
+    )
+
+
 def build_session_router(
     *,
-    manager: SessionManager,
+    host: SessionHostPort,
     options: ServerOptions,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
@@ -86,7 +147,7 @@ def build_session_router(
         if (
             payload.mode == "new"
             and raw_session_id is not None
-            and manager.paths.session(raw_session_id).root.exists()
+            and host.session_exists(raw_session_id)
         ):
             raise HttpServerError(
                 "session_exists",
@@ -97,7 +158,7 @@ def build_session_router(
             Path(payload.workspace_root or options.workspace_root).resolve()
         )
         try:
-            ctx = await manager.open_session(
+            opened = await host.open(OpenSession(
                 session_id=raw_session_id,
                 thread_id=thread_id,
                 provider_name=options.provider_name,
@@ -105,8 +166,8 @@ def build_session_router(
                 mode=payload.mode,
                 selected_agent=payload.agent,
                 no_plugins=options.no_plugins,
-                llm_override=llm_override,
-            )
+                model_override=llm_override,
+            ))
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
@@ -123,41 +184,24 @@ def build_session_router(
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return await _open_session_response(ctx)
+        return _open_session_response(opened)
 
     @router.get("/sessions", operation_id="list_sessions")
     async def list_sessions_endpoint() -> SessionListResponse:
-        root = manager.paths.sessions_dir
-        session_ids = sorted(
-            path.name for path in root.iterdir() if path.is_dir()
-        ) if root.is_dir() else []
         return SessionListResponse(sessions=[
-            await session_summary(manager, session_id)
-            for session_id in session_ids
+            _session_summary(value) for value in await host.list_sessions()
         ])
 
     @router.get("/sessions/{session_id}", operation_id="get_session")
     async def get_session_endpoint(session_id: str) -> SessionSummary:
-        return await session_summary(manager, session_id)
+        return _session_summary(await host.session_summary(session_id))
 
     @router.post(
         "/sessions/{session_id}/fork",
         operation_id="fork_session",
     )
     async def fork_session_endpoint(session_id: str) -> ForkResponse:
-        await session_summary(manager, session_id)
-        active = await manager.active_threads()
-        session_contexts = [
-            ctx
-            for (active_session_id, _), ctx in active.items()
-            if active_session_id == session_id
-        ]
-        for context in session_contexts:
-            await context.application.events.emit(
-                PREPARE_FORK,
-                PrepareFork(session_id, context.thread_id),
-            )
-        forked_id = fork_persisted_session(manager.paths, session_id)
+        forked_id = await host.fork_session(session_id)
         return ForkResponse(
             session_id=forked_id,
             source_session_id=session_id,
@@ -168,12 +212,11 @@ def build_session_router(
         operation_id="list_threads",
     )
     async def list_threads_endpoint(session_id: str) -> ThreadListResponse:
-        await session_summary(manager, session_id)
         return ThreadListResponse(
             session_id=session_id,
             threads=[
-                await thread_summary(manager, session_id, thread_id)
-                for thread_id in persisted_thread_ids(manager.paths, session_id)
+                _thread_summary(value)
+                for value in await host.list_threads(session_id)
             ],
         )
 
@@ -186,60 +229,23 @@ def build_session_router(
         payload: OpenThreadRequest,
         llm_override: ModelOverride,
     ) -> OpenSessionResponse:
-        await session_summary(manager, session_id)
-        parent_thread_id = payload.parent_thread_id
-        if payload.mode == "resume":
-            session = manager.paths.session(session_id)
-            if not session.has_thread(payload.thread_id):
-                raise HttpServerError(
-                    "session_not_found",
-                    f"{session_id}/{payload.thread_id}",
-                    status=404,
-                )
-            store = manager._state_store(
-                session,
-                thread_id=payload.thread_id,
-            )
-            parent_thread_id = str(
-                store.read_thread_metadata().get("parent_thread_id") or ""
-            )
-        if not parent_thread_id or parent_thread_id == payload.thread_id:
-            raise HttpServerError(
-                "invalid_request",
-                "A subagent thread requires a different parent_thread_id",
-                status=400,
-            )
         try:
-            parent = await manager.get(session_id, parent_thread_id)
-        except (SessionNotFound, ThreadNotActive) as exc:
-            raise HttpServerError(
-                "parent_thread_not_active",
-                str(exc),
-                status=409,
-                retryable=True,
-            ) from exc
-        workspace_root = str(
-            Path(payload.workspace_root or parent.workspace_root).resolve()
-        )
-        try:
-            ctx = await manager.open_session(
+            opened = await host.open_thread(OpenThread(
                 session_id=session_id,
                 thread_id=payload.thread_id,
+                parent_thread_id=payload.parent_thread_id,
                 provider_name=options.provider_name,
-                workspace_root=workspace_root,
+                workspace_root=payload.workspace_root,
                 mode=payload.mode,
                 selected_agent=payload.agent,
                 no_plugins=options.no_plugins,
-                llm_override=llm_override,
-                parent_thread_id=parent_thread_id,
-                parent_permission_system=parent.application.parent_permissions,
-                is_subagent=True,
-            )
+                model_override=llm_override,
+            ))
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        return await _open_session_response(ctx)
+        return _open_session_response(opened)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}",
@@ -249,7 +255,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> ThreadSummary:
-        return await thread_summary(manager, session_id, thread_id)
+        return _thread_summary(await host.thread_summary(session_id, thread_id))
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/messages",
@@ -259,18 +265,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> ThreadMessagesResponse:
-        active = (await manager.active_threads()).get((session_id, thread_id))
-        if active is not None:
-            messages = active.engine.messages
-        else:
-            session = manager.paths.session(session_id)
-            if not session.has_thread(thread_id):
-                raise SessionNotFound(f"{session_id}/{thread_id}")
-            store = manager._state_store(
-                session,
-                thread_id=thread_id,
-            )
-            messages = store.read_messages()
+        messages = await host.messages(session_id, thread_id)
         return ThreadMessagesResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -285,15 +280,12 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> HistoryMutationResponse:
-        ctx = await manager.get(session_id, thread_id)
-        require_idle(ctx, "rewrite history")
-        async with ctx.turn_lock:
-            removed_turns = await ctx.application.history.clear_history()
+        result = await host.clear_history(session_id, thread_id)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
-            removed_turns=removed_turns,
-            messages=[],
+            removed_turns=result.removed_turns,
+            messages=display_history(result.messages),
         )
 
     @router.post(
@@ -305,15 +297,12 @@ def build_session_router(
         thread_id: str,
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
-        ctx = await manager.get(session_id, thread_id)
-        require_idle(ctx, "rewrite history")
-        async with ctx.turn_lock:
-            messages = await ctx.application.history.undo_history(payload.count)
+        result = await host.undo_history(session_id, thread_id, payload.count)
         return HistoryMutationResponse(
             session_id=session_id,
             thread_id=thread_id,
-            removed_turns=payload.count,
-            messages=display_history(messages),
+            removed_turns=result.removed_turns,
+            messages=display_history(result.messages),
         )
 
     @router.post(
@@ -329,22 +318,26 @@ def build_session_router(
     ) -> Response:
         content = payload.content
         client_request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
-        ctx = await manager.get(session_id, thread_id)
-        try:
-            images = [
-                ctx.application.media.store_image(
-                    image.data, image.media_type
-                )
+        message = SendMessage(
+            session_id=session_id,
+            thread_id=thread_id,
+            content=content,
+            request_id=client_request_id,
+            images=tuple(
+                ImageUpload(image.data, image.media_type)
                 for image in payload.images
-            ]
-            attachments = [
-                ctx.application.media.store_attachment(
+            ),
+            attachments=tuple(
+                AttachmentUpload(
                     attachment.data,
                     attachment.media_type,
                     attachment.name,
                 )
                 for attachment in payload.attachments
-            ]
+            ),
+        )
+        try:
+            events = await host.stream_message(message)
         except ValueError as exc:
             raise HttpServerError(
                 "invalid_request",
@@ -365,25 +358,20 @@ def build_session_router(
                 return _format_sse(
                     event={"type": "end", "data": {"status": "ok"}},
                     seq=seq + 1,
-                    session_id=ctx.session_id,
-                    thread_id=ctx.thread_id,
+                    session_id=session_id,
+                    thread_id=thread_id,
                     request_id=client_request_id,
                 )
 
             try:
                 try:
-                    async for event in ctx.stream_message(
-                        content,
-                        client_request_id,
-                        images=images,
-                        artifacts=attachments,
-                    ):
+                    async for event in events:
                         seq += 1
                         yield _format_sse(
-                            event=event,
+                            event={"type": event.type, "data": event.data},
                             seq=seq,
-                            session_id=ctx.session_id,
-                            thread_id=ctx.thread_id,
+                            session_id=session_id,
+                            thread_id=thread_id,
                             request_id=client_request_id,
                         )
                 except Exception as exc:  # noqa: BLE001
@@ -401,8 +389,8 @@ def build_session_router(
                             },
                         },
                         seq=seq,
-                        session_id=ctx.session_id,
-                        thread_id=ctx.thread_id,
+                        session_id=session_id,
+                        thread_id=thread_id,
                         request_id=client_request_id,
                     )
             except asyncio.CancelledError:
@@ -430,35 +418,23 @@ def build_session_router(
         responses=_SSE_RESPONSE,
     )
     async def session_events(session_id: str, thread_id: str) -> Response:
-        ctx = await manager.get(session_id, thread_id)
-        try:
-            events = ctx.attach_event_stream()
-        except SessionBusy as exc:
-            raise HttpServerError(
-                "event_stream_connected", str(exc), status=409
-            ) from exc
+        events = await host.stream_events(session_id, thread_id)
 
         async def sse_stream() -> AsyncIterator[bytes]:
             seq = 0
-            disconnected = False
             request_id = f"events-{uuid.uuid4().hex}"
             try:
-                while True:
-                    event = await events.get()
-                    if event is None:
-                        return
+                async for event in events:
                     seq += 1
                     yield _format_sse(
-                        event=event,
+                        event={"type": event.type, "data": event.data},
                         seq=seq,
-                        session_id=ctx.session_id,
-                        thread_id=ctx.thread_id,
+                        session_id=session_id,
+                        thread_id=thread_id,
                         request_id=request_id,
                     )
             except asyncio.CancelledError:
-                disconnected = True
-            finally:
-                ctx.detach_event_stream(events)
+                return
 
         return StreamingResponse(
             sse_stream(),
@@ -478,13 +454,14 @@ def build_session_router(
         thread_id: str,
         payload: PermissionResponseRequest,
     ) -> InteractionResponse:
-        return await _resolve_interaction(
-            manager=manager,
-            session_id=session_id,
-            thread_id=thread_id,
-            payload=payload.model_dump(),
-            kind="permission",
-        )
+        result = await _interaction_response(host.respond_permission(
+            session_id,
+            thread_id,
+            payload.request_id,
+            payload.decision,
+            payload.scope,
+        ))
+        return result
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
@@ -495,20 +472,20 @@ def build_session_router(
         thread_id: str,
         payload: UserInputResponseRequest,
     ) -> InteractionResponse:
-        return await _resolve_interaction(
-            manager=manager,
-            session_id=session_id,
-            thread_id=thread_id,
-            payload=payload.model_dump(),
-            kind="user_input",
-        )
+        result = await _interaction_response(host.respond_user_input(
+            session_id,
+            thread_id,
+            payload.request_id,
+            payload.answer,
+        ))
+        return result
 
     @router.post(
         "/sessions/{session_id}/close",
         operation_id="close_session",
     )
     async def shutdown_session(session_id: str) -> CloseResponse:
-        await manager.close_session(session_id)
+        await host.close_session(session_id)
         return CloseResponse(session_id=session_id)
 
     @router.post(
@@ -516,7 +493,7 @@ def build_session_router(
         operation_id="close_thread",
     )
     async def close_thread(session_id: str, thread_id: str) -> CloseResponse:
-        await manager.close_thread(session_id, thread_id)
+        await host.close_thread(session_id, thread_id)
         return CloseResponse(session_id=session_id, thread_id=thread_id)
 
     @router.post(
@@ -527,9 +504,8 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> InterruptResponse:
-        ctx = await manager.get(session_id, thread_id)
-        cancelled = ctx.request_interrupt()
-        if not cancelled:
+        result = await host.interrupt(session_id, thread_id)
+        if not result.cancelled:
             # No running turn to cancel — treat as no-op success so
             # the TUI can press ESC any time without a 4xx.
             return InterruptResponse(
@@ -548,23 +524,17 @@ def build_session_router(
     return router
 
 
-class SessionRouterPlugin:
-    """Register the session HTTP surface into ``ctx.web_server``.
-
-    The session capability owns its routes: when the server tree mounts this
-    plugin, it contributes the session router to the dumb ``ctx.web_server``
-    carrier. Registration is a fiber effect, so it is undone when the plugin
-    unloads.
-    """
+class SessionHttpAdapter:
+    """Map the public Session host API to HTTP and SSE."""
 
     inject = [
         'server',
         'session_host',
         'server_options',
     ]
-    name = "xbot.session.router"
+    name = "xbot.http.session"
 
-    async def apply(self, ctx: Any, config: Any = None) -> None:
+    async def apply(self, ctx: Context, config: object = None) -> None:
         async def _on_session_not_found(
             _: Request, exc: SessionNotFound
         ) -> JSONResponse:
@@ -585,7 +555,7 @@ class SessionRouterPlugin:
             ctx,
             owner=self.name,
             router=build_session_router(
-                manager=ctx.session_host,
+                host=ctx.session_host,
                 options=ctx.server_options,
             ),
             exception_handlers=(
@@ -595,4 +565,4 @@ class SessionRouterPlugin:
         )
 
 
-plugin = SessionRouterPlugin()
+plugin = SessionHttpAdapter()
