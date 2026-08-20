@@ -1,7 +1,7 @@
-"""Session-host routes: sessions, threads, messages, history, fork, events,
+"""Session routes: sessions, threads, messages, history, fork, events,
 close, interrupt, and interactions.
 
-Session lifecycle and persistence remain behind the public SessionHostPort;
+Session lifecycle and persistence remain behind the public SessionsPort;
 this module owns only HTTP request/response and SSE mapping.
 """
 
@@ -31,7 +31,7 @@ from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import display_history
 from XBotv2.server import ModelOverride, ServerOptions, contribute_router
-from XBotv2.session.services import SessionHostPort
+from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
     AttachmentUpload,
     ImageUpload,
@@ -337,7 +337,7 @@ async def _interaction_response(
 
 def build_session_router(
     *,
-    host: SessionHostPort,
+    host: SessionsPort,
     options: ServerOptions,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
@@ -732,11 +732,11 @@ def build_session_router(
 
 
 class SessionProtocolPlugin:
-    """Map the public Session host API to HTTP and SSE."""
+    """Map the public Sessions API to HTTP and SSE."""
 
     inject = [
         'server',
-        'session_host',
+        'sessions',
         'server_options',
     ]
     name = "xbot.protocol.session"
@@ -762,7 +762,7 @@ class SessionProtocolPlugin:
             ctx,
             owner=self.name,
             router=build_session_router(
-                host=ctx.session_host,
+                host=ctx.sessions,
                 options=ctx.server_options,
             ),
             exception_handlers=(

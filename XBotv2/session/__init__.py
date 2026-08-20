@@ -17,7 +17,7 @@ from XBotv2.session.contracts import (
     dispatch_session_group_operation,
     dispatch_session_operation,
 )
-from XBotv2.session.services import SessionHostPort, SessionPort
+from XBotv2.session.services import SessionPort, SessionsPort
 from XBotv2.session.protocol import (
     AgentConfiguredData,
     AttachmentInput,
@@ -56,7 +56,6 @@ from XBotv2.session.types import (
     OpenThread,
     SendMessage,
     SessionExists,
-    SessionHostOptions,
     SessionNotFound,
     SessionStreamEvent,
     SessionSnapshot,
@@ -89,7 +88,7 @@ __all__ = [
     "SessionDispatch",
     "SessionGroupDispatch",
     "SessionOperationCompleted",
-    "SessionHostPort",
+    "SessionsPort",
     "SessionHistoryItem",
     "SessionListResponse",
     "SessionEventType",
@@ -108,7 +107,6 @@ __all__ = [
     "OpenThread",
     "SendMessage",
     "SessionExists",
-    "SessionHostOptions",
     "SessionNotFound",
     "SessionStreamEvent",
     "SessionSnapshot",

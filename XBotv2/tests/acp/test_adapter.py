@@ -20,6 +20,7 @@ from acp.schema import (
 
 from XBotv2.acp.xbot_agent import XBotACPAgent
 from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.application.acp import start_acp_application
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ToolCall
@@ -49,7 +50,7 @@ class FakeConnection:
         )
 
 
-class FakeSessionHost:
+class FakeSessions:
     def __init__(self, events: list[dict[str, Any]]) -> None:
         self.events = events
         self.last_open = None
@@ -155,21 +156,13 @@ class FakeSessionHost:
         await self.event_queue.put(None)
 
 
-class FakeMountedHost:
-    def __init__(self, sessions: FakeSessionHost) -> None:
-        self.sessions = sessions
-
-    async def close(self) -> None:
-        await self.sessions.event_queue.put(None)
-
-
 def _agent(tmp_path, events: list[dict[str, Any]]) -> tuple[XBotACPAgent, FakeConnection]:
+    sessions = FakeSessions(events)
     agent = XBotACPAgent(
-        paths=RuntimePaths.from_data_dir(tmp_path),
+        sessions=sessions,
         provider_name="default",
         no_plugins=True,
     )
-    agent._host_application = FakeMountedHost(FakeSessionHost(events))  # type: ignore[assignment]
     connection = FakeConnection()
     agent.on_connect(connection)
     agent.client_capabilities = ClientCapabilities(
@@ -294,7 +287,8 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
         "scope": "session",
     }
     assert answer["answer"] == "second"
-    host = agent._host_application.sessions
+    host = agent.sessions
+    assert isinstance(host, FakeSessions)
     assert [kind for kind, _ in host.interaction_responses] == [
         "permission",
         "user_input",
@@ -310,12 +304,7 @@ class ProtocolClient:
 
 
 async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
-    agent = XBotACPAgent(
-        paths=RuntimePaths.from_data_dir(tmp_path),
-        provider_name="default",
-        no_plugins=False,
-    )
-    host = FakeSessionHost([
+    host = FakeSessions([
         {"type": "assistant_message_delta", "data": {"content": "done"}},
         {
             "type": "usage",
@@ -328,7 +317,11 @@ async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
         },
         {"type": "turn_finished", "data": {"turn": 1}},
     ])
-    agent._host_application = FakeMountedHost(host)  # type: ignore[assignment]
+    agent = XBotACPAgent(
+        sessions=host,
+        provider_name="default",
+        no_plugins=False,
+    )
     left, right = socket.socketpair()
     agent_reader, agent_writer = await asyncio.open_connection(sock=left)
     client_reader, client_writer = await asyncio.open_connection(sock=right)
@@ -424,10 +417,11 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         }]),
         encoding="utf-8",
     )
-    agent = XBotACPAgent(
+    context = await start_acp_application(
         paths=RuntimePaths.from_data_dir(data_dir),
         provider_name="default",
         no_plugins=True,
+        selected_agent=None,
         llm_override=MockLLM([{
             "content": "real runtime",
             "usage_metadata": {
@@ -437,6 +431,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             },
         }]),
     )
+    agent = context.acp_agent
     connection = FakeConnection()
     agent.on_connect(connection)
     await agent.initialize(PROTOCOL_VERSION, ClientCapabilities())
@@ -455,12 +450,12 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             session.session_id,
             str(workspace),
         )
-        forked_messages = await (await agent._host()).messages(
+        forked_messages = await agent.sessions.messages(
             forked.session_id,
             "agent",
         )
     finally:
-        await agent.close()
+        await context.destroy()
 
     assert response.stop_reason == "end_turn"
     assert response.usage is not None

@@ -813,3 +813,17 @@
   Session/server/protocol tests passed; all 4 ACP tests passed outside the
   socket-restricted sandbox; and the real HTTP typed SDK plus SSE integration
   passed in 61.06s. Python compilation and `git diff --check` passed.
+
+### 2026-08-20 · ACP as an XCore carrier
+
+- Removed the ACP-only `session-host` profile, `MountedSessionHost`,
+  `SessionHostOptions`, and `application/session_host.py`. ACP no longer boots
+  an application from inside its SDK adapter.
+- The process Session manager now provides the shared `sessions` service and
+  public `SessionsPort` to both the HTTP and ACP profiles. ACP is mounted as a
+  normal carrier plugin with its own typed `ACPLaunch` declaration.
+- ACP owns cancellation of its event-forwarding tasks. Shutdown no longer
+  depends on the Session manager closing streams in a particular order.
+- Verification: architecture checker reports zero violations; 22 focused
+  Session/server/public API tests and all 4 ACP tests passed. Python
+  compilation and `git diff --check` passed.

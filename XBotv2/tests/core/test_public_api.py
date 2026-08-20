@@ -78,7 +78,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert sandbox.__all__ == ["build_sandbox_commands"]
     assert set(session.__all__) >= {
         "AgentApplicationFactory",
-        "SessionHostPort",
+        "SessionsPort",
         "SessionPort",
         "SessionRef",
         "ThreadSummary",

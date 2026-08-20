@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Literal
 
 from XBotv2.core.messages import Message
@@ -18,11 +17,6 @@ class SessionNotFound(KeyError):
 
 class SessionExists(RuntimeError):
     """A new session or thread conflicts with persisted state."""
-
-
-@dataclass(frozen=True, slots=True)
-class SessionHostOptions:
-    workspace_root: Path
 
 
 class ThreadNotActive(RuntimeError):
@@ -171,7 +165,6 @@ __all__ = [
     "OpenThread",
     "SendMessage",
     "SessionExists",
-    "SessionHostOptions",
     "SessionNotFound",
     "SessionStreamEvent",
     "SessionSnapshot",

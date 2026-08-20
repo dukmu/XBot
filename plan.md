@@ -2,7 +2,7 @@
 
 ## 目标
 
-将 XBotv2 的 Agent runtime、server、HTTP route、session host、命令、工具、
+将 XBotv2 的 Agent runtime、server、HTTP route、Session 管理、命令、工具、
 配置、客户端通知与可选能力统一到 XCore 的 plugin、service、event 和 fiber
 生命周期中。
 
@@ -131,9 +131,9 @@ stop 和伪造结果入口已删除。
 
 当前 architecture scanner 已达到 **0 项**。业务协议所有权迁移已完成：
 
-1. Session 根公开 `SessionHostPort`、host request/result、summary、stream event 和
+1. Session 根公开 `SessionsPort`、request/result、summary、stream event 和
    公开错误；
-2. `SessionManager` 实现 transport-neutral host API，内部拥有 runtime、persistence、
+2. `SessionManager` 实现 transport-neutral Sessions API，内部拥有 runtime、persistence、
    parent permission、history lock、media、interaction waiter 和 stream lifecycle；
 3. Session/Thread summary 不再使用 protocol Pydantic DTO；
 4. Session route implementation 与 wire DTO 已合入 `session/protocol.py`；
@@ -145,9 +145,9 @@ stop 和伪造结果入口已删除。
 
 扫描零违规只是当前门禁的证据，不代表最终完成。当前 outbound events 已在 producer
 boundary 通过 owner protocol model 校验，通用 `ClientEvent`/router/sink 已 typed；
-Compact 拥有自身 event protocol。ACP 已改用独立 `session-host` XCore profile、
-`SessionHostPort` 和 Agents/LLM/Commands operations，不再导入 SessionManager/runtime、
-Persistence store、Config loader 或访问 service bag。下一步继续执行全仓配置硬编码、
+Compact 拥有自身 event protocol。ACP 已成为独立 carrier profile，由共享 Session
+manager 插件注入 `SessionsPort`，并使用 Agents/LLM/Commands operations；它不再导入
+SessionManager/runtime、Persistence store、Config loader 或访问 service bag。下一步继续执行全仓配置硬编码、
 Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 
 扫描器之外仍需在最终审计处理：policy update 的 inactive-session/active-jobs
@@ -162,8 +162,8 @@ Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 |---|---|---|---|
 | `runtime_paths` | application launcher | config/session/persistence host | `RuntimePaths` |
 | `session_launch` | Agent application launcher | config/session/agent runtime | immutable `SessionLaunch` |
-| `server_options` | server launcher | session host/server protocol | `ServerOptions` |
-| `agent_application_factory` | application composition | session host | `AgentApplicationFactory` |
+| `server_options` | server launcher | server protocol | `ServerOptions` |
+| `agent_application_factory` | application composition | process Sessions manager | `AgentApplicationFactory` |
 | `child_applications` | Agent application composition | subagent adapter | `ChildApplicationsPort` |
 | `client_events` | client/application adapter | approval/interactions/outbound bridge | `ClientEventsPort` |
 | `parent_permissions` | parent composition | child permissions | optional `PermissionsPort` |
@@ -216,10 +216,10 @@ Context/Any 逃逸、直接声明模块导入和 inject 一致性审计。
 | Plugin | 目标 inject | Public/runtime surface |
 |---|---|---|
 | `persistence.host` | `runtime_paths` | typed `StateReaderFactory` |
-| `session.host` | `state_reader_factory`, `runtime_paths`, `agent_application_factory`, `session_host_options` | `SessionHostPort`; root-to-child typed operation routing |
+| `session.manager` | `state_store_factory`, `runtime_paths`, `agent_application_factory`, `workspace_root` | `SessionsPort`; root-to-child typed operation routing |
 | `server` | none | server route contribution event、ASGI app、generic error mapping |
 | `server.protocol` | `server`, `server_info` | hello/health wire models 与 routes |
-| `session.protocol` | `server`, `session_host`, `server_options` | session/thread/message/history/SSE wire models 与 routes |
+| `session.protocol` | `server`, `sessions`, `server_options` | session/thread/message/history/SSE wire models 与 routes |
 | `agents.protocol` | `server` | Agent list/select/reload wire models 与 routes |
 | `llm.protocol` | `server`, `llm` | provider list/select/effort wire models 与 routes |
 | `config.protocol` | `server` | reload/persisted/effective policy wire models 与 routes |
@@ -311,7 +311,7 @@ id 不影响插件实现。
 1. 将业务 wire models 和 routes 迁入各 owner 的 `protocol.py`；
 2. route contribution contract 迁到 server public events/types；
 3. protocol plugins 只做 wire DTO 与 typed operation 转换；
-4. SessionHost 提供 typed open/query/close/dispatch operations；
+4. Session manager 提供 typed open/query/close/dispatch operations；
 5. persistence host 提供 typed reader，删除 router 对 paths/private store 的访问；
 6. 删除集中 `http_transport`、`web_server` compatibility service 和旧 router modules。
 

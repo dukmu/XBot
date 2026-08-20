@@ -84,7 +84,7 @@ class ServerOptions:
 
 @dataclass(frozen=True, slots=True)
 class ServerStatus:
-    """Capability-neutral health projection contributed by SessionHost."""
+    """Capability-neutral health projection contributed by Sessions."""
 
     sessions: int
     threads: int

@@ -112,11 +112,11 @@ async def booted_server(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_server_composition_root_owns_session_host(booted_server) -> None:
-    """SessionHost is an XCore service, not hidden FastAPI carrier state."""
+async def test_server_composition_root_owns_sessions(booted_server) -> None:
+    """Sessions is an XCore service, not hidden FastAPI carrier state."""
 
     app = booted_server.server
-    assert booted_server.session_host is not None
+    assert booted_server.sessions is not None
     assert not hasattr(app.state, "manager")
     assert not hasattr(booted_server, "web_server")
 

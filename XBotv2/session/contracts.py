@@ -46,7 +46,7 @@ class SessionRef:
 
 @dataclass(frozen=True, slots=True)
 class SessionDispatch(Generic[RequestT, ResponseT]):
-    """Root-to-child operation envelope interpreted only by SessionHost."""
+    """Root-to-child operation envelope interpreted by Session management."""
 
     target: SessionRef
     operation: Operation[RequestT, ResponseT]
@@ -86,7 +86,7 @@ async def dispatch_session_operation(
     )
     if result is None or result is False:
         raise OperationError(
-            "session_host_unavailable",
+            "sessions_unavailable",
             "No session host handles typed operation dispatch",
         )
     if not isinstance(result, operation.response_type):
@@ -118,7 +118,7 @@ async def dispatch_session_group_operation(
     )
     if result is None or result is False:
         raise OperationError(
-            "session_host_unavailable",
+            "sessions_unavailable",
             "No session host handles typed session operation dispatch",
         )
     if not isinstance(result, tuple) or any(

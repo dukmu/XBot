@@ -1383,7 +1383,7 @@ def check_plugin_dependencies() -> list[Violation]:
                 "plugin-service-locator",
                 "plugin accesses a whole service bag or dynamic context attribute",
             ))
-    for profile in ("agent", "server", "session-host"):
+    for profile in ("agent", "server", "acp"):
         for cycle in _required_cycles(specs, profile):
             ordered = sorted(cycle, key=lambda item: item.entry_id)
             violations.append(Violation(

@@ -267,15 +267,19 @@
 - id: content_cache
   name: content_cache
 
-# Server application profile. These entries are selected declaratively by
-# load_server_tree; Python code does not maintain a parallel capability list.
-- id: server.persistence
+# Process-level Session services shared by carrier profiles.
+- id: process.persistence
   name: persistence.host
-  profiles: [server, session-host]
+  profiles: [server, acp]
 
-- id: server.session
+- id: process.sessions
   name: session.manager
-  profiles: [server, session-host]
+  profiles: [server, acp]
+  reloadable: false
+
+- id: acp
+  name: acp
+  profiles: [acp]
   reloadable: false
 
 - id: server

@@ -57,10 +57,6 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.acp.events import ACPEventMapper, replay_history
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
-from XBotv2.application.session_host import (
-    MountedSessionHost,
-    start_session_host_application,
-)
 from XBotv2.commands import (
     EXECUTE_COMMAND,
     LIST_COMMANDS,
@@ -68,7 +64,6 @@ from XBotv2.commands import (
     ExecuteCommand,
 )
 from XBotv2.core import EmptyRequest, JsonObject
-from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.errors import OperationError
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin import MCP_PLUGIN_ID
@@ -76,7 +71,7 @@ from XBotv2.session import (
     ImageUpload,
     OpenSession,
     SendMessage,
-    SessionHostPort,
+    SessionsPort,
     SessionNotFound,
     SessionStreamEvent,
     ThreadSnapshot,
@@ -92,18 +87,17 @@ class XBotACPAgent:
     def __init__(
         self,
         *,
-        paths: RuntimePaths,
+        sessions: SessionsPort,
         provider_name: str,
         no_plugins: bool = False,
         selected_agent: str | None = None,
         llm_override: Any | None = None,
     ) -> None:
-        self.paths = paths
+        self.sessions = sessions
         self.provider_name = provider_name
         self.no_plugins = no_plugins
         self.selected_agent = selected_agent
         self.llm_override = llm_override
-        self._host_application: MountedSessionHost | None = None
         self.connection: Any | None = None
         self.client_capabilities: ClientCapabilities | None = None
         self._commands_announced: set[str] = set()
@@ -159,7 +153,7 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        host = await self._host()
+        host = self.sessions
         opened = await host.open(OpenSession(
             session_id=None,
             thread_id="agent",
@@ -217,7 +211,7 @@ class XBotACPAgent:
         if cursor:
             return ListSessionsResponse(sessions=[])
         sessions: list[SessionInfo] = []
-        host = await self._host()
+        host = self.sessions
         for snapshot in await host.list_sessions():
             workspace = snapshot.workspace_root
             if not workspace or (
@@ -234,7 +228,7 @@ class XBotACPAgent:
     async def close_session(
         self, session_id: str, **_: Any
     ) -> CloseSessionResponse:
-        await (await self._host()).close_session(session_id)
+        await self.sessions.close_session(session_id)
         task_entry = self._event_tasks.pop(session_id, None)
         if task_entry is not None:
             await asyncio.gather(task_entry, return_exceptions=True)
@@ -251,7 +245,7 @@ class XBotACPAgent:
     ) -> ForkSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        host = await self._host()
+        host = self.sessions
         snapshot = await host.session_summary(session_id)
         stored_workspace = snapshot.workspace_root
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
@@ -281,7 +275,7 @@ class XBotACPAgent:
         prompt: list[Any],
         **_: Any,
     ) -> PromptResponse:
-        host = await self._host()
+        host = self.sessions
         summary = await self._thread(session_id)
         content, images = _prompt_content(prompt)
         command = await self._slash_command(session_id, content)
@@ -313,7 +307,7 @@ class XBotACPAgent:
         )
 
     async def cancel(self, session_id: str, **_: Any) -> None:
-        await (await self._host()).interrupt(session_id, "agent")
+        await self.sessions.interrupt(session_id, "agent")
 
     async def set_session_mode(
         self, session_id: str, mode_id: str, **_: Any
@@ -333,7 +327,7 @@ class XBotACPAgent:
                 "configId": config_id,
                 "value": value,
             })
-        host = await self._host()
+        host = self.sessions
         try:
             if config_id == "agent":
                 await host.dispatch(
@@ -381,22 +375,14 @@ class XBotACPAgent:
         del method, params
 
     async def close(self) -> None:
-        if self._host_application is not None:
-            await self._host_application.close()
-            self._host_application = None
+        for task in self._event_tasks.values():
+            if not task.done():
+                task.cancel()
         await asyncio.gather(
             *self._event_tasks.values(),
             return_exceptions=True,
         )
         self._event_tasks.clear()
-
-    async def _host(self) -> SessionHostPort:
-        if self._host_application is None:
-            self._host_application = await start_session_host_application(
-                paths=self.paths,
-                workspace_root=self.paths.data_dir,
-            )
-        return self._host_application.sessions
 
     async def _open_existing(
         self,
@@ -404,7 +390,7 @@ class XBotACPAgent:
         cwd: str,
         mcp_servers: list[Any] | None = None,
     ) -> None:
-        host = await self._host()
+        host = self.sessions
         try:
             snapshot = await host.session_summary(session_id)
         except SessionNotFound as exc:
@@ -440,7 +426,7 @@ class XBotACPAgent:
             if not existing.done():
                 existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
-        events = await (await self._host()).stream_events(session_id, "agent")
+        events = await self.sessions.stream_events(session_id, "agent")
         task = asyncio.create_task(
             self._forward_session_events(session_id, events),
             name=f"xbot-acp-events-{session_id}",
@@ -449,7 +435,7 @@ class XBotACPAgent:
 
     async def _thread(self, session_id: str) -> ThreadSnapshot:
         try:
-            return await (await self._host()).thread_summary(session_id, "agent")
+            return await self.sessions.thread_summary(session_id, "agent")
         except (SessionNotFound, ThreadNotActive) as exc:
             raise RequestError.resource_not_found(session_id) from exc
 
@@ -470,7 +456,7 @@ class XBotACPAgent:
         await self.connection.session_update(session_id=session_id, update=update)
 
     async def _command_catalog(self, session_id: str) -> CommandCatalog:
-        return await (await self._host()).dispatch(
+        return await self.sessions.dispatch(
             session_id,
             "agent",
             LIST_COMMANDS,
@@ -517,7 +503,7 @@ class XBotACPAgent:
         self,
         session_id: str,
     ) -> list[SessionConfigOptionSelect]:
-        host = await self._host()
+        host = self.sessions
         options: list[SessionConfigOptionSelect] = []
         catalog = await host.dispatch(
             session_id,
@@ -572,7 +558,7 @@ class XBotACPAgent:
     async def _run_command(
         self, session_id: str, name: str, raw_args: str
     ) -> None:
-        result = await (await self._host()).dispatch(
+        result = await self.sessions.dispatch(
             session_id,
             "agent",
             EXECUTE_COMMAND,
@@ -584,7 +570,7 @@ class XBotACPAgent:
         )
 
     async def _replay_history(self, session_id: str) -> None:
-        messages = await (await self._host()).messages(session_id, "agent")
+        messages = await self.sessions.messages(session_id, "agent")
         for update in replay_history(list(messages)):
             await self._update(session_id, update)
 
@@ -714,7 +700,7 @@ class XBotACPAgent:
         if event.type not in {"permission_request", "user_input_required"}:
             return
         result = await self._handle_interaction(session_id, event)
-        host = await self._host()
+        host = self.sessions
         request_id = str(result.get("request_id") or "")
         if result.get("status") != "answered":
             await host.cancel_interaction(

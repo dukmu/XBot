@@ -797,19 +797,19 @@ __all__ = [
 ]
 
 
-class SessionHost:
-    """Provides ``ctx.session_host`` in the server composition root.
+class SessionManagerComponent:
+    """Provide process-level Session management to carrier profiles.
 
     Requires the persistence read service and exposes lifecycle operations
-    only through the public SessionHostPort and typed dispatch events.
+    only through the public SessionsPort and typed dispatch events.
     """
 
-    name = "xbot.session.host"
+    name = "xbot.session.manager"
     inject = [
         "state_store_factory",
         "runtime_paths",
         "agent_application_factory",
-        "session_host_options",
+        "workspace_root",
     ]
 
     def apply(self, ctx, config=None) -> None:
@@ -818,7 +818,7 @@ class SessionHost:
             state_store_factory=ctx.state_store_factory,
             application_factory=ctx.agent_application_factory,
         )
-        ctx.set("session_host", manager)
+        ctx.set("sessions", manager)
 
         async def dispatch(envelope: SessionDispatch) -> object:
             if not isinstance(envelope, SessionDispatch):
@@ -918,11 +918,11 @@ class SessionHost:
             lambda: ServerStatus(
                 sessions=manager.size,
                 threads=manager.thread_count,
-                workspace_root=str(ctx.session_host_options.workspace_root),
+                workspace_root=str(ctx.workspace_root),
             ),
         )
         manager.start_reaper()
         ctx.dispose(manager.close_all)
 
 
-plugin = SessionHost()
+plugin = SessionManagerComponent()

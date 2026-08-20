@@ -386,12 +386,14 @@ remote HTTP connection.
 
 ### ACP (`acp/`)
 
-ACP mounts the transport-neutral `session-host` XCore profile. It receives a
-`SessionHostPort` handle and uses the public Agents, LLM, and Commands
-operations for discovery and mutation. It does not import SessionManager,
-SessionRuntime, Persistence stores, Config loaders, or an XCore Context.
+ACP is an XCore carrier profile alongside HTTP. The shared process-level
+Session manager injects a `SessionsPort` into the ACP plugin; the adapter does
+not start a private application or own Session lifecycle. It uses the public
+Agents, LLM, and Commands operations for discovery and mutation and does not
+import SessionManager, SessionRuntime, Persistence stores, Config loaders, or
+an XCore Context.
 Permission and user-input requests are consumed from the Session stream and
-answered through the same host interaction API used by HTTP clients.
+answered through the same Sessions API used by HTTP clients.
 
 ### Session Resume
 

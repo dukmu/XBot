@@ -44,7 +44,7 @@ class SessionPort(Protocol):
     async def undo_history(self, count: int) -> list[Message]: ...
 
 
-class SessionHostPort(Protocol):
+class SessionsPort(Protocol):
     """Transport-neutral process API for persistent sessions and threads."""
 
     def session_exists(self, session_id: str) -> bool: ...
@@ -133,4 +133,4 @@ class SessionHostPort(Protocol):
         request: RequestT,
     ) -> ResponseT: ...
 
-__all__ = ["SessionHostPort", "SessionPort"]
+__all__ = ["SessionPort", "SessionsPort"]

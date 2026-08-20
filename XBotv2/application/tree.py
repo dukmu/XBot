@@ -60,13 +60,13 @@ def load_server_tree(*, paths: Any) -> PluginTree:
     return selected
 
 
-def load_session_host_tree(*, paths: Any) -> PluginTree:
-    """Load the transport-neutral process Session host profile."""
+def load_acp_tree(*, paths: Any) -> PluginTree:
+    """Load the ACP carrier application profile."""
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
         tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
-    return tree.for_profile("session-host")
+    return tree.for_profile("acp")
 
 
 def _external_entries(
@@ -97,5 +97,5 @@ __all__ = [
     "DEFAULT_TREE",
     "load_agent_tree",
     "load_server_tree",
-    "load_session_host_tree",
+    "load_acp_tree",
 ]
