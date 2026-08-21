@@ -73,7 +73,7 @@ export function App() {
 
         {state.current ? (
           <>
-            <Timeline entries={state.entries} turnRunning={state.turnRunning} />
+            <Timeline entries={state.entries} turnRunning={state.turnRunning} onRetry={runtime.retryLast} />
             <div className="runtime-controls">
               <TaskDock
                 tasks={Object.values(state.tasks)}

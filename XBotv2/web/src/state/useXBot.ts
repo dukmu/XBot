@@ -13,6 +13,22 @@ export function useXBot() {
   const messageControllers = useRef(new Set<AbortController>());
   const taskTimers = useRef(new Map<string, number>());
   const threadRefreshTimer = useRef<number | null>(null);
+  const streamEvents = useRef<ServerEvent[]>([]);
+  const streamFlushTimer = useRef<number | null>(null);
+
+  const flushStreamEvents = useCallback(() => {
+    streamFlushTimer.current = null;
+    const pending = streamEvents.current;
+    streamEvents.current = [];
+    for (const event of pending) dispatch({ type: "event", event });
+  }, []);
+
+  const queueStreamEvent = useCallback((event: ServerEvent) => {
+    streamEvents.current.push(event);
+    if (streamFlushTimer.current === null) {
+      streamFlushTimer.current = window.setTimeout(flushStreamEvents, 16);
+    }
+  }, [flushStreamEvents]);
 
   const reportError = useCallback((error: unknown) => {
     if (error instanceof DOMException && error.name === "AbortError") return;
@@ -23,7 +39,15 @@ export function useXBot() {
   }, []);
 
   const handleEvent = useCallback((event: ServerEvent) => {
-    dispatch({ type: "event", event });
+    const isHighFrequencyDelta = event.type === "assistant_message_delta" || event.type === "tool_call_delta";
+    if (isHighFrequencyDelta) queueStreamEvent(event);
+    else {
+      if (streamFlushTimer.current !== null) {
+        window.clearTimeout(streamFlushTimer.current);
+        flushStreamEvents();
+      }
+      dispatch({ type: "event", event });
+    }
     if (event.type === "task_updated") {
       const taskId = String(event.data.task_id || "");
       const status = String(event.data.status || "");
@@ -44,7 +68,7 @@ export function useXBot() {
         }, 250);
       }
     }
-  }, [api, reportError]);
+  }, [api, flushStreamEvents, queueStreamEvent, reportError]);
 
   const startEventStream = useCallback((session: OpenSessionResponse) => {
     eventController.current?.abort();
@@ -110,6 +134,8 @@ export function useXBot() {
       for (const controller of messageControllers.current) controller.abort();
       for (const timer of taskTimers.current.values()) window.clearTimeout(timer);
       if (threadRefreshTimer.current) window.clearTimeout(threadRefreshTimer.current);
+      if (streamFlushTimer.current) window.clearTimeout(streamFlushTimer.current);
+      streamEvents.current = [];
     };
   }, [api, reportError]);
 
@@ -191,6 +217,15 @@ export function useXBot() {
       messageControllers.current.delete(controller);
     }
   }, [api, handleEvent, reportError, state.current]);
+
+  const retryLast = useCallback(async () => {
+    if (state.turnRunning || !state.current) return;
+    const lastUser = [...state.entries].reverse().find(
+      (entry) => entry.kind === "message" && entry.role === "user" && entry.content.trim(),
+    );
+    if (!lastUser || lastUser.kind !== "message") return;
+    await sendMessage(lastUser.content);
+  }, [sendMessage, state.current, state.entries, state.turnRunning]);
 
   const interrupt = useCallback(async () => {
     if (!state.current) return;
@@ -318,6 +353,7 @@ export function useXBot() {
     resumeSession,
     selectThread,
     sendMessage,
+    retryLast,
     interrupt,
     resolveInteraction,
     selectAgent,

@@ -1,12 +1,20 @@
-import { useEffect, useRef } from "react";
-import { Brain, Check, ChevronRight, CircleAlert, LoaderCircle, Terminal, UserRound, X } from "lucide-react";
+import { memo, useEffect, useRef, useState } from "react";
+import { Brain, Check, ChevronRight, CircleAlert, Clipboard, ClipboardCheck, LoaderCircle, RotateCcw, Terminal, UserRound, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TimelineEntry, ToolEntry } from "../state/runtime";
 
-export function Timeline({ entries, turnRunning }: { entries: TimelineEntry[]; turnRunning: boolean }) {
+export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineEntry[]; turnRunning: boolean; onRetry: () => Promise<void> }) {
   const viewport = useRef<HTMLDivElement>(null);
   const shouldFollow = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  const latestAssistant = latestAssistantId(entries);
+
+  const scrollToLatest = () => {
+    shouldFollow.current = true;
+    setShowLatest(false);
+    viewport.current?.scrollTo({ top: viewport.current.scrollHeight, behavior: "smooth" });
+  };
 
   useEffect(() => {
     if (shouldFollow.current) viewport.current?.scrollTo({ top: viewport.current.scrollHeight });
@@ -18,47 +26,15 @@ export function Timeline({ entries, turnRunning }: { entries: TimelineEntry[]; t
       ref={viewport}
       onScroll={(event) => {
         const element = event.currentTarget;
-        shouldFollow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+        const following = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+        shouldFollow.current = following;
+        setShowLatest(!following);
       }}
     >
       <div className="timeline-inner">
         {entries.map((entry) => {
           if (entry.kind === "message") {
-            return (
-              <article key={entry.id} className={`message-block ${entry.role}`}>
-                <div className="message-author">
-                  {entry.role === "user" ? <UserRound size={14} /> : <span className="xbot-glyph">X</span>}
-                  <span>{entry.role === "user" ? "You" : "XBot"}</span>
-                </div>
-                {entry.reasoning && (
-                  <details className="reasoning-block" open={entry.streaming}>
-                    <summary>
-                      {entry.streaming ? <LoaderCircle size={14} className="spin" /> : <Brain size={14} />}
-                      Thinking
-                      <ChevronRight size={13} className="summary-chevron" />
-                    </summary>
-                    <div className="reasoning-content">{entry.reasoning}</div>
-                  </details>
-                )}
-                {entry.content && (
-                  <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
-                  </div>
-                )}
-                {entry.images.length > 0 && (
-                  <div className="message-images">
-                    {entry.images.map((image, index) => image.src ? (
-                      <img key={`${image.label}-${index}`} src={image.src} alt={image.label} />
-                    ) : (
-                      <div className="message-image-reference" key={`${image.label}-${index}`}>{image.label}</div>
-                    ))}
-                  </div>
-                )}
-                {entry.streaming && !entry.content && !entry.reasoning && (
-                  <div className="assistant-pending"><i /><i /><i /></div>
-                )}
-              </article>
-            );
+            return <MessageBlock key={entry.id} entry={entry} canRetry={!turnRunning && entry.role === "assistant" && entry.id === latestAssistant} onRetry={onRetry} />;
           }
           if (entry.kind === "tool") return <ToolBlock key={entry.id} tool={entry} />;
           return (
@@ -72,11 +48,81 @@ export function Timeline({ entries, turnRunning }: { entries: TimelineEntry[]; t
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
         )}
       </div>
+      {showLatest && (
+        <button className="timeline-latest" type="button" aria-label="Jump to latest activity" onClick={scrollToLatest}>
+          <ChevronRight size={14} className="timeline-latest-icon" /> Latest activity
+        </button>
+      )}
     </div>
   );
 }
 
-function ToolBlock({ tool }: { tool: ToolEntry }) {
+const MessageBlock = memo(function MessageBlock({
+  entry,
+  canRetry,
+  onRetry,
+}: {
+  entry: Extract<TimelineEntry, { kind: "message" }>;
+  canRetry: boolean;
+  onRetry: () => Promise<void>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    if (!entry.content || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(entry.content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
+  return (
+    <article className={`message-block ${entry.role}`}>
+      <div className="message-author">
+        {entry.role === "user" ? <UserRound size={14} /> : <span className="xbot-glyph">X</span>}
+        <span>{entry.role === "user" ? "You" : "XBot"}</span>
+      </div>
+      {entry.reasoning && (
+        <details className="reasoning-block" open={entry.streaming}>
+          <summary>
+            {entry.streaming ? <LoaderCircle size={14} className="spin" /> : <Brain size={14} />}
+            Thinking
+            <ChevronRight size={13} className="summary-chevron" />
+          </summary>
+          <div className="reasoning-content">{entry.reasoning}</div>
+        </details>
+      )}
+      {entry.content && (
+        entry.streaming
+          ? <div className="streaming-content">{entry.content}</div>
+          : <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
+      )}
+      {!entry.streaming && entry.content && (
+        <div className="message-actions">
+          <button className="icon-button small" title={copied ? "Copied" : "Copy message"} aria-label={copied ? "Copied" : "Copy message"} onClick={() => void copy()}>
+            {copied ? <ClipboardCheck size={13} /> : <Clipboard size={13} />}
+          </button>
+          {entry.role === "assistant" && canRetry && (
+            <button className="icon-button small" title="Regenerate response" aria-label="Regenerate response" onClick={() => void onRetry()}>
+              <RotateCcw size={13} />
+            </button>
+          )}
+        </div>
+      )}
+      {entry.images.length > 0 && (
+        <div className="message-images">
+          {entry.images.map((image, index) => image.src ? (
+            <img key={`${image.label}-${index}`} src={image.src} alt={image.label} loading="lazy" />
+          ) : (
+            <div className="message-image-reference" key={`${image.label}-${index}`}>{image.label}</div>
+          ))}
+        </div>
+      )}
+      {entry.streaming && !entry.content && !entry.reasoning && (
+        <div className="assistant-pending"><i /><i /><i /></div>
+      )}
+    </article>
+  );
+}, (previous, next) => previous.entry === next.entry && previous.canRetry === next.canRetry);
+
+const ToolBlock = memo(function ToolBlock({ tool }: { tool: ToolEntry }) {
   const running = tool.status === "running" || tool.status === "pending";
   return (
     <details className={`tool-block status-${tool.status}`}>
@@ -97,7 +143,7 @@ function ToolBlock({ tool }: { tool: ToolEntry }) {
       </div>
     </details>
   );
-}
+});
 
 function Detail({ label, value }: { label: string; value: unknown }) {
   return (
@@ -123,4 +169,12 @@ function formatValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function latestAssistantId(entries: TimelineEntry[]): string {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" && entry.role === "assistant" && !entry.streaming) return entry.id;
+  }
+  return "";
 }

@@ -381,12 +381,37 @@ summary:focus-visible {
 }
 
 .timeline {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: #3a403a transparent;
 }
+
+.timeline-latest {
+  position: sticky;
+  right: 0;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  min-height: 30px;
+  margin: -46px 20px 16px auto;
+  padding: 0 10px 0 8px;
+  border: 1px solid #405147;
+  border-radius: 15px;
+  color: #bfe5ca;
+  background: #1b2920;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .24);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.timeline-latest:hover { background: #24362a; }
+.timeline-latest-icon { transform: rotate(90deg); }
 
 .timeline-inner {
   width: min(100%, 880px);
@@ -398,6 +423,31 @@ summary:focus-visible {
 .message-block {
   position: relative;
   margin: 0 0 28px;
+}
+
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message-block:hover .message-actions,
+.message-block:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-block.user .message-actions {
+  justify-content: flex-end;
+}
+
+.message-actions .icon-button {
+  color: var(--faint);
+}
+
+@media (hover: none) {
+  .message-actions { opacity: 1; }
 }
 
 .message-block.user {
@@ -461,6 +511,14 @@ summary:focus-visible {
   color: #dfe2dd;
   font-size: 14px;
   line-height: 1.68;
+  overflow-wrap: anywhere;
+}
+
+.streaming-content {
+  color: #dfe2dd;
+  font-size: 14px;
+  line-height: 1.68;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
