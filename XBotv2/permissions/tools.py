@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.permission_request import PermissionRequestData
+from XBotv2.permissions import PermissionsPort
 
 
 async def request_tool_permission(
@@ -63,7 +65,28 @@ async def request_tool_permission(
     return ToolResult.success(f"Permission granted for {tool} ({scope}).")
 
 
-request_permission = Tool.from_function(
-    request_tool_permission,
-    name="request_permission",
-)
+def build_request_permission_tool(
+    permissions: PermissionsPort,
+    approval: Any,
+    record_permission_decision: Callable[
+        [dict[str, Any], str, str], Awaitable[None]
+    ],
+) -> Tool:
+    """Bind permission-policy services to the Agent-facing request Tool."""
+
+    async def invoke(
+        tool: str,
+        params: dict[str, str],
+        reason: str,
+    ) -> ToolResult:
+        return await request_tool_permission(
+            tool,
+            params,
+            reason,
+            permissions=permissions,
+            approval=approval,
+            record_permission_decision=record_permission_decision,
+        )
+
+    invoke.__doc__ = request_tool_permission.__doc__
+    return Tool.from_function(invoke, name="request_permission")

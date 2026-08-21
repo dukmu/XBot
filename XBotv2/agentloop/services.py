@@ -77,7 +77,6 @@ class ToolsPort(Protocol):
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
-        injected: dict[str, object] | None = None,
     ) -> str: ...
 
     def unregister(self, name: str) -> bool: ...

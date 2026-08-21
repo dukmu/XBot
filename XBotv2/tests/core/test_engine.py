@@ -7,8 +7,8 @@ import pytest
 
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.coretools.shell import SHELL_TOOLS
-from XBotv2.permissions.tools import request_permission
+from XBotv2.coretools.shell import shell_tools
+from XBotv2.jobs.registry import JobRegistry
 from XBotv2.config.models import RuntimeConfig
 import xcore
 from XBotv2.tests.helpers import make_engine as helpers_make_engine
@@ -304,7 +304,11 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
-        shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
+        shell = next(
+            tool
+            for tool in shell_tools(None, JobRegistry(), str(temp_workspace))
+            if tool.name == "shell"
+        )
         registry.register(shell)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)

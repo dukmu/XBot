@@ -64,7 +64,6 @@ class ToolsService:
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
-        injected: dict[str, Any] | None = None,
     ) -> str:
         """Register one tool; undone automatically when the plugin unloads.
 
@@ -77,7 +76,6 @@ class ToolsService:
             model_visible=model_visible,
             timeout_seconds=timeout_seconds,
             namespace=namespace,
-            injected=injected,
         )
         bound_effect(lambda: self._registry.unregister(name))
         return name
@@ -121,8 +119,8 @@ class ToolsService:
 
         Pipeline per call: rewrite-only ``BEFORE_TOOL_CALL`` event, schema
         validation, monotonic guards, dispatch, and ``AFTER_TOOL_CALL``.
-        Runtime dependencies belong to this service; the agent loop only
-        submits calls and receives their ordered results.
+        Tool owners bind their runtime dependencies before registration; the
+        agent loop only submits calls and receives their ordered results.
         """
         from XBotv2.agentloop.tool_runtime import execute_tools
 

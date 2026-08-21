@@ -96,7 +96,6 @@ class SkillsPlugin:
         """Register one skill Tool through the public service."""
         return self.ctx.tools.register(
             self._skill_as_tool(skill),
-            injected={"sandbox": self.ctx.sandbox},
             namespace=f"skills:{skill.scope}",
         )
 
@@ -126,11 +125,11 @@ class SkillsPlugin:
         request.tools = selected
 
     def _skill_as_tool(self, skill: Skill) -> Tool:
-        async def invoke(*, sandbox=None) -> ToolResult:
+        async def invoke() -> ToolResult:
             content = await load_skill(
                 skill.name,
                 skill_registry=self._registry,
-                sandbox=sandbox,
+                sandbox=self.ctx.sandbox,
             )
             self._activate_skill(skill)
             return ToolResult.success(

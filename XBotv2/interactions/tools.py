@@ -6,7 +6,12 @@ import inspect
 import json
 from typing import Any, Literal
 
-from XBotv2.core.tools import ClientEvent, Tool, ToolResult
+from XBotv2.core.tools import (
+    ClientEvent,
+    Tool,
+    ToolCall,
+    ToolResult,
+)
 from XBotv2.interactions import ClientMessageData
 
 
@@ -88,11 +93,31 @@ async def ask_user_for_input(
     return ToolResult.success(content)
 
 
+def build_ask_user_tool(interactions: Any) -> Tool:
+    """Bind one session's interaction service to its Agent-facing Tool."""
+
+    async def invoke(
+        question: str,
+        options: list[dict[str, str]],
+        timeout_seconds: float | None = None,
+        *,
+        tool_call: ToolCall,
+    ) -> ToolResult:
+        return await ask_user_for_input(
+            question,
+            options,
+            timeout_seconds,
+            interactions=interactions,
+            tool_call_id=tool_call.id,
+        )
+
+    return Tool(
+        name="ask_user",
+        description=inspect.getdoc(ask_user_for_input) or "",
+        function=invoke,
+        parameters=_ASK_USER_SCHEMA,
+        tool_call_parameter="tool_call",
+    )
+
+
 send_message = Tool.from_function(send_message_to_user, name="send_message")
-ask_user = Tool(
-    name="ask_user",
-    description=inspect.getdoc(ask_user_for_input) or "",
-    function=ask_user_for_input,
-    parameters=_ASK_USER_SCHEMA,
-    injected_parameters=("interactions", "tool_call_id"),
-)

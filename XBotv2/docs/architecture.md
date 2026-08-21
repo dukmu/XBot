@@ -12,11 +12,11 @@ individual tool implementations remain separately owned capabilities.
 
 ```text
 Plugins -> import -> core data contracts
-Plugins -> communicate -> injected services or events
+Plugins -> communicate -> declared services, typed events, or typed operations
 Agent loop -> never imports -> concrete plugins
 ```
 
-Core defines interfaces; application startup wires plugins from manifests.
+Core defines interfaces; application startup wires plugins from plugin-tree entries.
 `plugin_dirs=[]` disables plugin discovery (pure-core test mode).
 `--no-plugins` CLI flag equivalent.
 
@@ -184,7 +184,8 @@ and the agent loop's neutral `STATE_CHANGED` commits.
 ### Tool System (`agentloop/tool_*.py`)
 
 - **Tool** (`core/tools.py`): native tool dataclass with `from_function()`, supports
-  async functions and keyword-only parameter injection (sandbox, skill_registry).
+  async functions and one keyword-only `ToolCall` metadata parameter. Tool
+  owners bind their own runtime services before registration.
 - **ToolRegistry** (`registry.py`): namespace-aware canonical names and
   `restrict()` with wildcard selectors.
 - **SandboxPolicy** (`sandbox.py`): integrates **BubblewrapBackend** (`sandbox_bwrap.py`)

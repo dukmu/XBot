@@ -5,9 +5,8 @@ shells run as SHELL jobs in the shared JobRegistry through ``ShellRunner``;
 ``start_shell`` / ``list_shells`` / ``wait_shell`` / ``read_shell`` /
 ``cancel_shell`` never return bulk output — reading is explicit and bounded.
 
-Like the filesystem tools, all shell tools are stateless module-level values;
-per-session state (the JobRegistry and the sandbox policy) arrives through
-keyword-only injected parameters at invocation time.
+The plugin builds one Tool set per session. The Tool functions close over the
+session's JobRegistry, sandbox policy, and workspace root.
 """
 
 from __future__ import annotations
@@ -18,6 +17,8 @@ import os
 import signal
 import subprocess
 import tempfile
+from dataclasses import replace
+from functools import partial
 from typing import Any, Literal
 
 from XBotv2.jobs import (
@@ -357,13 +358,30 @@ async def cancel_shell(
     )
 
 
-SHELL_TOOLS: tuple[Tool, ...] = (
-    Tool.from_function(shell, name="shell"),
-    Tool.from_function(list_shells, name="list_shells"),
-    Tool.from_function(wait_shell, name="wait_shell"),
-    Tool.from_function(read_shell, name="read_shell"),
-    Tool.from_function(cancel_shell, name="cancel_shell"),
-)
+def shell_tools(
+    sandbox: Any,
+    job_registry: JobsPort,
+    default_cwd: str,
+) -> tuple[Tool, ...]:
+    """Build the shell Tools for one session's runtime services."""
+    bindings = (
+        (shell, {
+            "sandbox": sandbox,
+            "job_registry": job_registry,
+            "default_cwd": default_cwd,
+        }),
+        (list_shells, {"job_registry": job_registry}),
+        (wait_shell, {"job_registry": job_registry}),
+        (read_shell, {"job_registry": job_registry}),
+        (cancel_shell, {"job_registry": job_registry}),
+    )
+    return tuple(
+        replace(
+            Tool.from_function(function),
+            function=partial(function, **dependencies),
+        )
+        for function, dependencies in bindings
+    )
 
 
 def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, Any]:
@@ -468,7 +486,7 @@ async def _wait_process(
 
 
 __all__ = [
-    "SHELL_TOOLS",
+    "shell_tools",
     "ShellCommandError",
     "ShellRunner",
     "run_shell_command",

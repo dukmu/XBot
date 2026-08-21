@@ -94,7 +94,7 @@ SHORT_CIRCUIT_EVENTS = frozenset({
 class EventContext:
     """Payload object passed to runtime event listeners.
 
-    Plugin listeners capture their injected services when they register;
+    Plugin listeners capture their declared services when they register;
     event payloads never expose the application service container.
     """
 

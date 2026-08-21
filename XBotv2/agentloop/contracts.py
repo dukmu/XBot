@@ -84,7 +84,6 @@ class ToolRegistration:
     namespace: str = "builtin"
     model_visible: bool = True
     timeout_seconds: float | None = None
-    injected: dict[str, object] | None = None
 
 
 LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)

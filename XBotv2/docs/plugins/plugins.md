@@ -11,27 +11,29 @@ Plugins extend the engine via hooks, tools, and prompt fragments.
 They live in top-level plugin packages and are loaded by application startup.
 Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 
-## PluginBase
+## Plugin Shape
 
 ```python
-class PluginBase:
-    async def on_load(self, config): ...     # Optional plugin-owned initialization
-    async def on_unload(self): ...           # Optional plugin-owned cleanup
-    def setup(self, ctx): ...                # Register all extensions
+class Plugin:
+    name = "example"
+    inject = {"required": ["tools"], "optional": []}
+
+    def apply(self, ctx, config=None): ...
 ```
 
-`PluginBase` supplies no-op lifecycle defaults. Override only the callbacks the
-plugin needs.
+There is no required base class. A plugin exports a `plugin` object, a `Plugin`
+class, or an object/module with `apply`. The loader creates a fresh instance for
+object plugins, mounts it through XCore, and activates it when every declared
+required service is available. Use the mapping form of `inject` when a service
+is optional; read an optional service with `ctx.get(name, strict=False)`.
 
 ## Lifecycle Contract
 
 | Phase | Plugin responsibility | Loader guarantee |
 |---|---|---|
-| configuration | Declare `config_schema` in the manifest | Schema and values are validated before module import |
-| `on_load(config)` | Create plugin-owned resources from validated config; keep cleanup safe after partial initialization | No core registrations exist yet; `on_unload` is attempted if `on_load` raises |
 | `apply(ctx)` | Register hooks, tools, commands, prompt fragments, and agents through `ctx` services | Registration is a fiber effect; unload undoes it |
 | event listeners | Register `ctx.on(Events.X, handler)` listeners | Listeners are fiber effects; unload undoes them |
-| `on_unload()` | Close clients, subprocesses, and other external resources | Core resources are removed even if this callback raises; store data remains |
+| disposer | Register plugin-owned cleanup with `ctx.dispose(callback)` | Disposers run when setup fails or the plugin unloads; store data remains |
 
 Loading is atomic across dependency order. If a later plugin fails, already
 loaded plugins are unloaded in reverse order. Cleanup failures are attached to
@@ -41,22 +43,20 @@ after every plugin has been cleaned.
 
 The setup transaction also rolls back on task cancellation. Event
 listeners, tools, and prompt fragments registered before a `CancelledError`
-are removed before the cancel propagates; the partially initialized plugin
-still receives
-`on_unload()` for its own resources.
+are removed before the cancel propagates. A disposer registered before the
+failure still runs for plugin-owned resources.
 
 Application boot remains transactional after loading: failures while Agent
-construction creates the model client or runs `SESSION_INIT` destroy the
-partial root Context. This removes runtime tools
+construction creates the model client or publishes `APPLICATION_INITIALIZED`
+destroy the partial root Context. This removes runtime tools
 registered by initialization hooks and closes plugin-owned external resources.
 Normal `Engine.close_session()` emits loop lifecycle events only. The owning
 application context stops plugin fibers; persistence independently observes
 state changes and explicit application-level flushes. Failure in one cleanup
 phase does not authorize Engine to take ownership of plugin teardown.
 
-`on_unload` must be idempotent enough to handle partial initialization. The
-loader invokes it after any entered `on_load`, even when `on_load` itself raises,
-so resources created before the failure can be released.
+Disposers must tolerate partial initialization and repeated owner cleanup. Add
+the disposer before opening resources whose construction can fail.
 
 Tool keys are unique. Duplicate registration fails before registry mutation, so
 a plugin cannot accidentally replace a core or another plugin's tool.
@@ -80,64 +80,68 @@ not supported.
 Plugin names are validated before a store path is constructed, and persisted
 plugin state must contain a mapping.
 
-Plugin configuration uses Draft 2020-12 JSON Schema. An invalid schema prevents
-manifest discovery; invalid values raise `PluginConfigError` with the plugin
-name and failing path before the plugin module is imported. Schema `default`
-keywords are documentation only and are not injected into config; plugins
-should retain explicit runtime defaults in `on_load`.
+Plugins may expose `Config` using XCore's schema helpers. Configuration comes
+from the plugin-tree entry and is passed to `apply`; plugins should retain
+explicit runtime defaults rather than relying on schema documentation.
 
 ## Plugin Template
 
 ```python
-from typing import Any
-
-from XBotv2.core import (
-    EventContext,
-    Events,
-    Tool,
-)
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.core import Tool, ToolCall
 
 
 class ExamplePlugin:
     name = "example"
+    inject = {"required": ["tools"], "optional": ["metrics"]}
 
     def __init__(self) -> None:
         self._tool_names: list[str] = []
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
-        ctx.dispose(self._on_unload)
-        ctx.on(Events.SESSION_INIT, self._on_session_init)
+        self._prefix = str((config or {}).get("prefix") or "example")
+        self._metrics = ctx.get("metrics", strict=False)
+        ctx.dispose(self._cleanup)
+        ctx.on(APPLICATION_INITIALIZED, self._on_initialized)
         # Static registrations are fiber effects: undone automatically on
         # unload (XCore current_fiber binds the cleanup).
-        ctx.tools.register(Tool.from_function(self._run, name="example"))
+        ctx.tools.register(self._build_tool())
 
-    async def _on_unload(self) -> None:
-        # Close only resources owned directly by this plugin.
+    def _cleanup(self) -> None:
         for name in reversed(self._tool_names):
             self.ctx.tools.unregister(name)
 
-    async def _on_session_init(self, ctx: EventContext) -> None:
-        # Runtime-discovered tools register on the raw registry and are
-        # tracked for cleanup in _on_unload.
-        name = ctx.tools.register(Tool.from_function(self._run, name="example-runtime"))
+    async def _on_initialized(self, event: ApplicationInitialized) -> None:
+        # Event-time registrations happen outside apply's fiber effect and
+        # therefore need explicit ownership.
+        name = self.ctx.tools.register(
+            Tool.from_function(self._runtime_status, name="example-runtime")
+        )
         self._tool_names.append(name)
 
-    async def _run(self, value: str) -> str:
-        return value
+    def _build_tool(self) -> Tool:
+        prefix = self._prefix
+        metrics = self._metrics
 
-    def diagnostics(self) -> dict[str, Any]:
-        return {"status": "ready"}
+        async def run(value: str, *, tool_call: ToolCall) -> str:
+            if metrics is not None:
+                metrics.record(tool_call.id)
+            return f"{prefix}: {value}"
+
+        return Tool.from_function(run, name="example")
+
+    async def _runtime_status(self) -> str:
+        return "ready"
 ```
 
 Python plugins override `apply(ctx)` and register through the XCore context:
 `ctx.on(Events.X, callback)` for runtime event listeners,
 `ctx.tools.register(...)`, `ctx.commands.register(...)`,
 `ctx.prompts.add(...)`, and `ctx.agents.register(...)` for agents. Every
-registration is a fiber effect: unload (or a setup failure) undoes it
-automatically, and `ctx.dispose(...)` runs cleanup once as the fiber
-disposer. The `plugin.yaml` manifest supplies metadata and the config schema;
-manifest-declared hooks/tools remain supported for declarative plugins.
+registration during `apply` is a fiber effect: unload (or a setup failure)
+undoes it automatically, and `ctx.dispose(...)` runs cleanup once as the
+fiber disposer. Plugin-tree entries supply configuration and profile selection.
 
 Agent definitions follow the same ownership rules as other resources: names
 are unique, setup failure rolls them back, and unload unregisters them. Core
@@ -149,10 +153,12 @@ definitions replace a same-named base definition without mutating it.
 Prompt fragments use the public `PromptFragmentStage` values as compatible
 ordering zones:
 `system_prefix`, `system_instructions`, `system_rules`, and `context_suffix`.
-Each manifest declaration provides exactly one non-empty `file` or `handler`.
+Each prompt-fragment declaration provides exactly one non-empty `file` or
+`handler`.
 All fragments are rendered as escaped `plugin_instruction` sections in the one
 leading system context; no stage grants core authority or places a system
-message after history. Unknown stages are rejected during manifest validation.
+message after history. Unknown stages are rejected during configuration
+validation.
 Python plugins receive the same validation from the context builder and may
 provide a source label through `ctx.prompts.add(stage, text, source=...)`.
 After assembly, the context-builder-owned `CONTEXT_COMPONENTS_BUILT` event
@@ -164,13 +170,12 @@ Runtime registrations performed from event listeners must be tracked by the
 plugin and unregistered in its disposer; otherwise unload and failure
 rollback cannot be complete.
 
-Dynamic tools discovered at runtime (for example at `SESSION_INIT`) register
-on the raw registry through `ctx.tools.registry.register(...)` (or
-`ctx.tools.register(...)` when the listener receives the plugin context) and
-the registered names are recorded:
+Dynamic tools discovered from an event such as `APPLICATION_INITIALIZED`
+register through the plugin's `ctx.tools` service and record their registered
+names:
 
 ```python
-name = ctx.tools.registry.register(
+name = self.ctx.tools.register(
     tool,
     namespace="plugin:my-plugin",
 )
@@ -187,31 +192,33 @@ automatically when the plugin unloads:
 ```python
 from XBotv2.core import Tool
 
-ctx.tools.register(tool, injected={"capability": ctx.capability})
+capability = ctx.capability
+
+async def invoke(value: str) -> str:
+    return await capability.run(value)
+
+ctx.tools.register(Tool.from_function(invoke, name="my-tool"))
 ```
 
-## plugin.yaml Manifest
+Core supplies no arbitrary invocation dependency dictionary. Capture declared
+services in a plugin-owned factory or closure. When a Tool needs the identity
+of the final rewritten invocation, declare one keyword-only `ToolCall`
+parameter; it is excluded from the model schema. Do not wrap sandbox, session,
+or other services in a generic invocation context.
+
+## Plugin Tree Entry
 
 ```yaml
-name: my-plugin
-version: "1.0.0"
-description: What this plugin does
-hooks:
-  - stage: on_session_init
-    handler: my_plugin.hooks:on_init
-tools:
-  - handler: my_plugin.tools:my_tool
-prompt_fragments:
-  - stage: system_instructions
-    file: prompts/system.md
-config_schema:
-  type: object
-  additionalProperties: false
-  properties:
-    endpoint:
-      type: string
-      minLength: 1
+- id: my-plugin
+  name: my_package.my_plugin
+  profiles: [agent]
+  config:
+    endpoint: https://example.invalid
 ```
+
+Add durable workspace entries to `.xbot/plugins.yaml`; the loader imports
+`<name>.plugin` first and otherwise tries `<name>`. Required service ownership
+belongs in the plugin's `inject` declaration, not in tree configuration.
 
 ## Built-in Plugins
 
@@ -254,14 +261,13 @@ See [Goal plugin](goal.md).
 Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 
 **Files:**
-- `plugin.yaml`: manifest
-- `plugin.py`: SkillsPlugin class
+- `plugin.py`: SkillsPlugin and XCore dependency declarations
 - `registry.py`: SkillRegistry — YAML frontmatter parsing, directory scanning
 - `skill_tool.py`: `load_skill()` with `` !`cmd` `` shell injection preprocessing
 - `permission_scope.py`: per-turn tool permission overrides
 
 **Events:**
-- `SESSION_INIT`: transactionally discover SKILL.md files from 6 paths and
+- `APPLICATION_INITIALIZED`: transactionally discover SKILL.md files from 6 paths and
   register each discovered skill once
 - `BEFORE_USER_MESSAGE_ACCEPT`: detect `/skill-name` prefix, expand content
 - Skill content enters context through the normal prompt-expansion or Tool-result
@@ -304,13 +310,12 @@ Discovers SKILL.md files (agentskills.io format) and registers them as tools.
 Connects to MCP (Model Context Protocol) servers and registers their tools.
 
 **Files:**
-- `plugin.yaml`: manifest
-- `plugin.py`: MCPPlugin class
+- `plugin.py`: MCPPlugin and XCore dependency declarations
 - `client.py`: MCPClient with StdioTransport and HttpTransport
 - `tool.py`: MCP tool adapter returning `ToolResult`
 
 **Events:**
-- `SESSION_INIT`: connect to enabled MCP servers, validate tool definitions,
+- `APPLICATION_INITIALIZED`: connect to enabled MCP servers, validate tool definitions,
   and register each server transactionally
 - `ON_SESSION_CLOSE`: unregister session tools and disconnect all servers
 

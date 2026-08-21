@@ -12,7 +12,13 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from XBotv2.agentloop.events import EventPort, Events
-from XBotv2.core.tools import GuardDecision, ToolCall, ToolError, ToolResult, tool_parameters_schema
+from XBotv2.core.tools import (
+    GuardDecision,
+    ToolCall,
+    ToolError,
+    ToolResult,
+    tool_parameters_schema,
+)
 from XBotv2.core.messages import Message
 
 logger = logging.getLogger("XBotv2.agentloop.tools")
@@ -43,7 +49,7 @@ async def execute_tools(
     1. ``BEFORE_TOOL_CALL`` event waterfall (rewrite only).
     2. Schema validation.
     3. Registered guards. Guards must resolve their own policy to allow/deny.
-    4. Dispatch with dependencies captured when the tool was registered.
+    4. Dispatch with standard invocation metadata.
     5. ``AFTER_TOOL_CALL``.
 
     Args:
@@ -254,7 +260,7 @@ async def _execute_one_tool(
         result = await _invoke_tool(
             tool,
             args,
-            injected={**entry.injected, "tool_call_id": tool_id},
+            tool_call=call,
             timeout_seconds=entry.timeout_seconds,
         )
 
@@ -353,13 +359,12 @@ async def _invoke_tool(
     tool: Any,
     args: dict[str, Any],
     *,
-    injected: dict[str, Any] | None = None,
+    tool_call: ToolCall,
     timeout_seconds: float | None = None,
 ) -> Any:
     """Invoke any registered tool without blocking the event loop."""
-    injected = dict(injected or {})
     if hasattr(tool, "ainvoke"):
-        call = tool.ainvoke(args, **injected)
+        call = tool.ainvoke(args, tool_call=tool_call)
     elif hasattr(tool, "invoke"):
         call = asyncio.to_thread(tool.invoke, args)
     elif callable(tool):

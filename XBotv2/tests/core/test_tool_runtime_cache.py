@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS as FILESYSTEM_TOOLS
+from XBotv2.coretools.filesystem import filesystem_tools
 from XBotv2.coretools.filesystem import (
     edit,
     path,
@@ -15,11 +15,11 @@ from XBotv2.coretools.filesystem import (
     search,
 )
 
-filesystem_edit = next(t for t in FILESYSTEM_TOOLS if t.name == "edit")
-filesystem_path = next(t for t in FILESYSTEM_TOOLS if t.name == "path")
-filesystem_read = next(t for t in FILESYSTEM_TOOLS if t.name == "read")
-filesystem_search = next(t for t in FILESYSTEM_TOOLS if t.name == "search")
-from XBotv2.interactions.tools import ask_user
+filesystem_edit = next(t for t in filesystem_tools(None) if t.name == "edit")
+filesystem_path = next(t for t in filesystem_tools(None) if t.name == "path")
+filesystem_read = next(t for t in filesystem_tools(None) if t.name == "read")
+filesystem_search = next(t for t in filesystem_tools(None) if t.name == "search")
+from XBotv2.interactions.tools import build_ask_user_tool
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.plugin import ContextBuilderComponent
 import xcore
@@ -117,7 +117,7 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
         session_root=session_root,
     )
     registry = ToolRegistry()
-    registry.register(filesystem_read, injected={"sandbox": sandbox})
+    registry.register(next(t for t in filesystem_tools(sandbox) if t.name == "read"))
 
     ctx = make_tool_ctx(
         registry,
@@ -150,8 +150,9 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
         session_root=session_root,
     )
     registry = ToolRegistry()
-    for tool in (filesystem_read, filesystem_search):
-        registry.register(tool, injected={"sandbox": sandbox})
+    for tool in filesystem_tools(sandbox):
+        if tool.name in {"read", "search"}:
+            registry.register(tool)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -216,10 +217,10 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
 
     registry = ToolRegistry()
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
-    registry.register(
-        Tool.from_function(inspect_backend),
-        injected={"sandbox": sandbox},
-    )
+    async def bound_inspect_backend():
+        return await inspect_backend(sandbox=sandbox)
+
+    registry.register(Tool.from_function(bound_inspect_backend, name="inspect_backend"))
 
     ctx = make_tool_ctx(
         registry,
@@ -298,8 +299,6 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
 
 @pytest.mark.asyncio
 async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
-    registry = ToolRegistry()
-    registry.register(ask_user)
     called = False
 
     async def answer(*_args, **_kwargs):
@@ -311,6 +310,8 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
     client_events = ClientEventRouter()
     client_events.set_sink(answer)
     interactions = InteractionsService(service_ctx, client_events)
+    registry = ToolRegistry()
+    registry.register(build_ask_user_tool(interactions))
     ctx = make_tool_ctx(
         registry,
         permissions=PermissionSystem(default_decision="allow"),
@@ -758,6 +759,45 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         str(temp_workspace / "rewritten.txt"),
         "rewritten_id",
     )
+
+
+@pytest.mark.asyncio
+async def test_tool_receives_final_rewritten_tool_call() -> None:
+    seen = []
+
+    async def inspect(value: str, *, tool_call: ToolCall) -> str:
+        seen.append(tool_call)
+        return value
+
+    plugin_ctx = xcore.Context()
+
+    async def rewrite(ctx):
+        return {
+            "tool_call": ToolCall(
+                "rewritten",
+                ctx.tool_call.name,
+                {"value": "updated"},
+            )
+        }
+
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, rewrite)
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(inspect))
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+
+    results = await execute_tools(
+        [ToolCall("original", "inspect", {"value": "initial"})],
+        registry,
+        ctx=ctx,
+        context_factory=_event_context,
+    )
+
+    assert results[0].content == "updated"
+    assert seen == [ToolCall("rewritten", "inspect", {"value": "updated"})]
 
 
 @pytest.mark.asyncio

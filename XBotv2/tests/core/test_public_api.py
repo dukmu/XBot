@@ -1,5 +1,6 @@
 """Contract tests for the supported XBotv2 extension surface."""
 
+import asyncio
 import inspect
 import re
 from pathlib import Path
@@ -275,6 +276,34 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     }
     assert schema["parameters"]["required"] == ["path"]
     assert schema["parameters"]["additionalProperties"] is False
+
+
+def test_tool_from_function_reserves_keyword_only_tool_call_metadata():
+    seen = []
+
+    async def inspect(value: str, *, tool_call: ToolCall) -> str:
+        seen.append(tool_call)
+        return value
+
+    tool = Tool.from_function(inspect)
+    call = ToolCall("call-1", "inspect", {"value": "ok"})
+
+    assert tool.parameters == {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "additionalProperties": False,
+        "required": ["value"],
+    }
+    assert asyncio.run(tool.ainvoke({"value": "ok"}, tool_call=call)) == "ok"
+    assert seen == [call]
+
+
+def test_tool_from_function_rejects_positional_tool_call_metadata():
+    def inspect(tool_call: ToolCall) -> str:
+        return tool_call.id
+
+    with pytest.raises(TypeError, match="keyword-only"):
+        Tool.from_function(inspect)
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():
     async def handler(_ctx, _raw_args):

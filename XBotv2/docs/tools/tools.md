@@ -66,9 +66,13 @@ shipped configuration keeps both client-interaction tools visible so an agent
 can send progress and ask for missing information without a custom tool list.
 
 Tools return `ToolResult`. It separates model-visible text from structured data,
-errors, artifacts, and client events. A tool owner passes keyword-only runtime
-dependencies with `ctx.tools.register(tool, injected={...})`; the executor
-does not infer behavior from a tool name or a sandbox-mode flag.
+errors, artifacts, and client events. A tool owner binds runtime dependencies
+in a plugin-owned factory or closure before calling `ctx.tools.register(tool)`.
+The registry stores only the Tool and registration metadata; the executor does
+not carry a service dictionary or infer behavior from a tool name or sandbox
+mode. A Tool may declare one keyword-only `ToolCall` parameter when it needs
+the final rewritten call identity or arguments. That parameter is omitted from
+the provider schema and is the only invocation metadata supplied by core.
 
 Provider-visible built-ins use their function docstring as the single source of
 Tool guidance. The description covers intended use, limits, result behavior,

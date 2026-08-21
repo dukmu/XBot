@@ -99,8 +99,8 @@ ambiguity before large implementation changes.
 - A plugin whose `on_load` fails now receives best-effort `on_unload`, allowing
   partial external resources to be released before loader-wide rollback.
 - Failures after plugin loading but before bootstrap completes now trigger
-  `unload_all`, including failures from runtime-registering `SESSION_INIT`
-  listeners.
+  `unload_all`, including failures from runtime-registering
+  `APPLICATION_INITIALIZED` listeners.
 - Normal session close now attempts close hooks, message persistence, and
   reverse plugin unload even when an earlier close phase fails.
 - Manifest `config_schema` and configured values now use Draft 2020-12

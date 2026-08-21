@@ -324,7 +324,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     reached live clients, so tasks stayed "running" forever."""
 
     from XBotv2.jobs import JobKind
-    from XBotv2.coretools.shell import SHELL_TOOLS
+    from XBotv2.coretools.shell import shell_tools
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="task-panel",
@@ -339,12 +339,16 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
 
     registry = ctx.services.jobs
     assert registry is not None
-    tools = {tool.name: tool for tool in SHELL_TOOLS}
+    tools = {
+        tool.name: tool
+        for tool in shell_tools(
+            None,
+            registry,
+            str(foldin_app.state.paths.data_dir),
+        )
+    }
     started = await tools["shell"].ainvoke(
         {"command": "echo done", "background": True},
-        job_registry=registry,
-        sandbox=None,
-        sandbox_policy=None,
     )
     job_id = started.content.split("Started ")[1]
     await registry.wait([job_id])

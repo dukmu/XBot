@@ -20,6 +20,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -951,17 +953,20 @@ async def find_files(
 # ----------------------------------------------------------------------
 
 
-def filesystem_tools() -> tuple[Tool, ...]:
-    """The four merged model-facing filesystem tools."""
-    return (
-        Tool.from_function(read, name="read"),
-        Tool.from_function(edit, name="edit"),
-        Tool.from_function(path, name="path"),
-        Tool.from_function(search, name="search"),
+def filesystem_tools(sandbox: Any) -> tuple[Tool, ...]:
+    """Build the merged filesystem Tools for one session sandbox."""
+    return tuple(
+        replace(
+            Tool.from_function(function, name=name),
+            function=partial(function, sandbox=sandbox),
+        )
+        for name, function in (
+            ("read", read),
+            ("edit", edit),
+            ("path", path),
+            ("search", search),
+        )
     )
-
-
-FILESYSTEM_TOOLS = filesystem_tools()
 
 
 async def _structured_operation(
@@ -1092,7 +1097,7 @@ def _with_line_numbers(content: str, first_line: int) -> str:
 
 
 __all__ = [
-    "FILESYSTEM_TOOLS",
+    "filesystem_tools",
     "copy_path",
     "delete_path",
     "edit",

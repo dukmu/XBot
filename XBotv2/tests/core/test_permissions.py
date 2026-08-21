@@ -18,7 +18,7 @@ from XBotv2.config.policy import persist_permission_rule
 from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
+from XBotv2.coretools.filesystem import filesystem_tools
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.sandbox.policy import SandboxPolicy
 
@@ -335,7 +335,7 @@ class TestConfigLoading:
             assert permissions.check(tool_name, {}) == "allow"
 
         from XBotv2.core.filesystem.operations import resolve_operation
-        for tool in FILESYSTEM_TOOLS:
+        for tool in filesystem_tools(None):
             operation = resolve_operation(tool.name, _shipped_args(tool.name))
             fields = PATH_ACCESS[operation]
             args = {field: "notes.md" for field, _access in fields}

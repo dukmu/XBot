@@ -126,11 +126,11 @@ class InteractionsComponent:
         ctx.dispose(ctx.client_events.register_waiter(
             "user_input_required", service.waiter
         ))
-        from XBotv2.interactions.tools import ask_user, send_message
+        from XBotv2.interactions.tools import build_ask_user_tool, send_message
 
         ctx.tools.register(send_message)
         if ctx.session_launch.interactive:
-            ctx.tools.register(ask_user, injected={"interactions": service})
+            ctx.tools.register(build_ask_user_tool(service))
         ctx.on(
             Events.SESSION_CLOSE,
             lambda _event: service.cancel_all("session_closed"),

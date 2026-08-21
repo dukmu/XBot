@@ -42,25 +42,18 @@ class CoreToolsComponent:
             _declaration(item, workspace_xbot)
             for item in config.get("workspace_tools") or []
         ]
-        from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-        from XBotv2.coretools.shell import SHELL_TOOLS
+        from XBotv2.coretools.filesystem import filesystem_tools
+        from XBotv2.coretools.shell import shell_tools
         from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
         # ``read(mode=media)`` is the single model-facing content tool; it
         # covers path, URL, and base64 media input (images today).
-        sandboxed_tools = [*FILESYSTEM_TOOLS, *SHELL_TOOLS]
-        for tool in sandboxed_tools:
-            if tool.name == "shell":
-                injected = {
-                    "sandbox": ctx.sandbox,
-                    "job_registry": ctx.jobs,
-                    "default_cwd": str(ctx.workspace_root),
-                }
-            elif tool in sandboxed_tools:
-                injected = {"sandbox": ctx.sandbox, "job_registry": ctx.jobs}
-            else:
-                injected = None
-            ctx.tools.register(tool, injected=injected)
+        tools = (
+            *filesystem_tools(ctx.sandbox),
+            *shell_tools(ctx.sandbox, ctx.jobs, str(ctx.workspace_root)),
+        )
+        for tool in tools:
+            ctx.tools.register(tool)
 
         ctx.on(
             Events.AFTER_TOOLS,

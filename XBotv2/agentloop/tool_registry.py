@@ -32,7 +32,6 @@ class ToolRegistry:
         namespace: str | None = None,
         model_visible: bool = True,
         timeout_seconds: float | None = None,
-        injected: dict[str, Any] | None = None,
     ) -> str:
         name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
         ns = namespace or "builtin"
@@ -57,7 +56,6 @@ class ToolRegistry:
             namespace=ns,
             model_visible=model_visible,
             timeout_seconds=timeout_seconds,
-            injected=dict(injected or {}),
         )
         return full_name
 

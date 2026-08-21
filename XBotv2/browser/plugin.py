@@ -89,18 +89,13 @@ class BrowserPlugin:
             self.browser_screenshot,
             self.browser_close,
         ):
-            ctx.tools.register(
-                Tool.from_function(function),
-                injected={"sandbox": ctx.sandbox},
-            )
+            ctx.tools.register(Tool.from_function(function))
 
     async def web_search(
         self,
         query: str,
         max_results: int = 5,
         freshness: Literal["day", "week", "month", "year"] | None = None,
-        *,
-        sandbox=None,
     ) -> ToolResult:
         """Search the live public Web and return concise source results.
 
@@ -112,7 +107,7 @@ class BrowserPlugin:
             max_results: Number of results from 1 to 10; defaults to 5.
             freshness: Optional day, week, month, or year recency filter.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._web_access().search(
@@ -124,7 +119,7 @@ class BrowserPlugin:
             safesearch=str(self._search["safesearch"]),
         )
 
-    async def web_fetch(self, url: str, *, sandbox=None) -> ToolResult:
+    async def web_fetch(self, url: str) -> ToolResult:
         """Fetch one public URL and extract readable content with source metadata.
 
         HTML is reduced to Markdown; JSON and text remain textual. Fetches are
@@ -134,12 +129,12 @@ class BrowserPlugin:
         Args:
             url: Absolute public http or https URL without embedded credentials.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._web_access().fetch(url)
 
-    async def browser_open(self, url: str, *, sandbox=None) -> ToolResult:
+    async def browser_open(self, url: str) -> ToolResult:
         """Open a public or sandbox-approved local URL in the browser.
 
         Starts Chromium lazily. Use web_fetch for static reading and this Tool
@@ -149,27 +144,27 @@ class BrowserPlugin:
             url: Absolute public http/https URL, or absolute file:// URL within
                 the sandbox-approved filesystem scope.
         """
-        return await self._browser_session().open(url, sandbox=sandbox)
+        return await self._browser_session().open(url, sandbox=self.ctx.sandbox)
 
-    async def browser_snapshot(self, *, sandbox=None) -> ToolResult:
+    async def browser_snapshot(self) -> ToolResult:
         """Read the active page text and refresh its interactive element refs.
 
         Refs are temporary and may become stale after navigation or page updates.
         """
         return await self._browser_session().snapshot()
 
-    async def browser_click(self, ref: str, *, sandbox=None) -> ToolResult:
+    async def browser_click(self, ref: str) -> ToolResult:
         """Click one element ref from the latest browser snapshot.
 
         Args:
             ref: Element identifier such as e1 from browser_snapshot.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().click(ref)
 
-    async def browser_fill(self, ref: str, text: str, *, sandbox=None) -> ToolResult:
+    async def browser_fill(self, ref: str, text: str) -> ToolResult:
         """Replace the value of one editable element from the latest snapshot.
 
         Never enter credentials or sensitive data unless the human explicitly
@@ -179,39 +174,39 @@ class BrowserPlugin:
             ref: Editable element identifier from browser_snapshot.
             text: Exact text to place in the element.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().fill(ref, text)
 
-    async def browser_press(self, key: str, *, sandbox=None) -> ToolResult:
+    async def browser_press(self, key: str) -> ToolResult:
         """Press one Playwright keyboard key on the active page.
 
         Args:
             key: Key name or chord such as Enter or Control+A.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().press(key)
 
-    async def browser_select(self, ref: str, value: str, *, sandbox=None) -> ToolResult:
+    async def browser_select(self, ref: str, value: str) -> ToolResult:
         """Select one option value in a select element from the latest snapshot.
 
         Args:
             ref: Select element identifier from browser_snapshot.
             value: Exact option value to select.
         """
-        unavailable = network_available(sandbox)
+        unavailable = network_available(self.ctx.sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().select(ref, value)
 
-    async def browser_screenshot(self, *, sandbox=None) -> ToolResult:
+    async def browser_screenshot(self) -> ToolResult:
         """Capture the full active page into the thread's session artifacts."""
         return await self._browser_session().screenshot()
 
-    async def browser_close(self, *, sandbox=None) -> ToolResult:
+    async def browser_close(self) -> ToolResult:
         """Close the active isolated browser and discard its temporary state."""
         return await self._browser_session().close()
 

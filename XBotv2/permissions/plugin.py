@@ -199,13 +199,13 @@ class PermissionsComponent:
         ctx.on(POLICY_CHANGED, update_policy)
 
         if ctx.session_launch.interactive:
-            from XBotv2.permissions.tools import request_permission
+            from XBotv2.permissions.tools import build_request_permission_tool
 
-            ctx.tools.register(request_permission, injected={
-                "permissions": permissions,
-                "approval": ctx.approval,
-                "record_permission_decision": record_permission_decision,
-            })
+            ctx.tools.register(build_request_permission_tool(
+                permissions,
+                ctx.approval,
+                record_permission_decision,
+            ))
 
 
 plugin = PermissionsComponent()

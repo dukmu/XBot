@@ -8,7 +8,8 @@ from XBotv2.jobs import JobKind, JobResult
 from XBotv2.jobs.plugin import JobsComponent
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
-from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
+from XBotv2.coretools import shell as shell_module
+from XBotv2.coretools.shell import run_shell_command, shell_tools
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
@@ -23,24 +24,21 @@ from XBotv2.sandbox.policy import SandboxPolicy
 
 def make_tools(temp_workspace, *, sandbox=None):
     registry = JobRegistry()
-    tools = {tool.name: tool for tool in SHELL_TOOLS}
+    tools = {
+        tool.name: tool
+        for tool in shell_tools(sandbox, registry, str(temp_workspace))
+    }
     return registry, tools
 
 
 def invoke(tools, name, args, registry, sandbox=None):
-    return tools[name].ainvoke(
-        args, job_registry=registry, sandbox=sandbox, sandbox_policy=sandbox
-    )
+    del registry, sandbox
+    return tools[name].ainvoke(args)
 
 
 def patch_shell_executor(monkeypatch, replacement):
-    """Patch the executor used by the already-imported singleton tools."""
-    shell_tool = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
-    monkeypatch.setitem(
-        shell_tool.function.__globals__,
-        "run_shell_command",
-        replacement,
-    )
+    """Patch the executor resolved by session-bound shell Tools."""
+    monkeypatch.setattr(shell_module, "run_shell_command", replacement)
 
 
 @pytest.mark.asyncio
@@ -275,10 +273,11 @@ async def test_escalated_background_shell_requires_approval(
     )
     registry = ToolRegistry()
     job_registry = JobRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
-        injected={"sandbox": sandbox, "job_registry": job_registry},
-    )
+    registry.register(next(
+        tool
+        for tool in shell_tools(sandbox, job_registry, str(temp_workspace))
+        if tool.name == "shell"
+    ))
     events = []
 
     async def approve(event):
@@ -323,10 +322,11 @@ async def test_denied_background_shell_escalation_creates_no_job(
     )
     registry = ToolRegistry()
     job_registry = JobRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
-        injected={"sandbox": sandbox, "job_registry": job_registry},
-    )
+    registry.register(next(
+        tool
+        for tool in shell_tools(sandbox, job_registry, str(temp_workspace))
+        if tool.name == "shell"
+    ))
 
     async def deny(event):
         del event

@@ -121,8 +121,11 @@ class Tool:
 ```
 
 `from_function()` extracts docstrings and signatures. Supports async functions
-via `ainvoke()`. Keyword-only parameters with defaults (like `sandbox=None`)
-are injected at invocation time.
+via `ainvoke()`. Plugin-owned factories bind sandbox, jobs, interactions, and
+other runtime services before registration. Core never injects those services.
+A function may declare one keyword-only parameter annotated as `ToolCall`; it
+is omitted from the model schema and receives the final call after rewrite
+Hooks and before dispatch.
 
 ### ToolRegistry (`agentloop/tool_registry.py`)
 
@@ -139,10 +142,11 @@ example `shell`); non-core examples include `plugin:skills:skill`,
 
 `BubblewrapBackend` provides process isolation via `bwrap`.
 `SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
-`write_file`, `list_dir`. Tools call these directly via `sandbox` kwarg
-injection. Bwrap exposes the complete filesystem read-only, then overlays the
-workspace, `/tmp`, and configured writable resources. Filesystem Tools apply
-the separate path permission policy before entering that sandbox.
+`write_file`, `list_dir`. The core-tools plugin binds its session sandbox when
+it builds the filesystem and shell Tools. Bwrap exposes the complete filesystem
+read-only, then overlays the workspace, `/tmp`, and configured writable
+resources. Filesystem Tools apply the separate path permission policy before
+entering that sandbox.
 
 ### Permissions (`permissions/` plugin)
 
@@ -225,14 +229,14 @@ but is not added to subsequent Chat Completions requests.
 The Agent app supplies launch facts, `boot_application()` creates the Context
 and settles the Loader, then the app creates one Agent instance from the
 mounted services. Order: config tree → boot → services converge → Agent
-construction → `SESSION_INIT` → tool restriction → Engine. Application passes
-only the model port, tool service, event port, loop state, and loop settings
-into Engine.
+construction → `APPLICATION_INITIALIZED` → tool restriction → Engine.
+Application passes only the model port, tool service, event port, loop state,
+and loop settings into Engine.
 
 `application/server.py` uses the same boot primitive with a minimal
 `llm + server` tree. The `server/` package remains a pure plugin package; the
 provider directory is injected into the HTTP host, and the protocol does not
 parse the Agent tree or create a fake session.
 
-`restrict()` runs AFTER `ON_SESSION_INIT` so plugin-discovered tools
-are included in the enabled set.
+`restrict()` runs after the application-owned `APPLICATION_INITIALIZED` event,
+so plugin-discovered tools are included in the enabled set.

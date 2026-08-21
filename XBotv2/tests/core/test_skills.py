@@ -445,9 +445,11 @@ Body
     async def test_plugin_session_init_rolls_back_partial_registration(
         self, skill_workspace, state_store
     ):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.agentloop import EventContext
+        from XBotv2.agentloop import LoopSettings
         from XBotv2.core import Tool
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
 
         def existing_tool() -> str:
@@ -461,8 +463,15 @@ Body
             Tool.from_function(existing_tool, name="test-skill"),
             namespace="skills:project",
         )
-        ctx = EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        ctx = ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
+            ),
+            settings=LoopSettings(provider="test"),
         )
 
         with pytest.raises(ValueError, match="already registered"):
