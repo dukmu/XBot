@@ -45,10 +45,18 @@ class SkillRegistry:
     def __init__(self) -> None:
         self._skills: dict[str, Skill] = {}
 
-    def discover(self, workspace: Path) -> None:
+    def discover(
+        self,
+        workspace: Path,
+        *,
+        global_dirs: list[Path] | tuple[Path, ...] = (),
+    ) -> None:
         self._skills.clear()
         self._scan_project(workspace)
-        self._scan_global()
+        if global_dirs:
+            self._scan_global(global_dirs)
+        else:
+            self._scan_global()
 
     def list_skills(self) -> list[Skill]:
         return sorted(self._skills.values(), key=lambda s: s.name)
@@ -67,8 +75,13 @@ class SkillRegistry:
                 break
             current = current.parent
 
-    def _scan_global(self) -> None:
-        for skills_dir in _GLOBAL_PATHS:
+    def _scan_global(self, extra_dirs: list[Path] | tuple[Path, ...] = ()) -> None:
+        seen: set[Path] = set()
+        for skills_dir in (*extra_dirs, *_GLOBAL_PATHS):
+            skills_dir = Path(skills_dir).expanduser()
+            if skills_dir in seen:
+                continue
+            seen.add(skills_dir)
             self._scan_dir(skills_dir, "global")
 
     def _scan_dir(self, skills_dir: Path, scope: str) -> None:

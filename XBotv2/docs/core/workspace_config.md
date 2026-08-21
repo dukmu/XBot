@@ -10,7 +10,9 @@ There is one bundled default tree and two overlay layers:
 `data_dir` defaults to `~/.xbot` (`--data-dir` / `XBOT_DATA_DIR` overrides).
 On first run the global user tree is seeded (DSH-style boot seed):
 `config/plugins.yaml` is written when missing, so users edit that file
-instead of the bundled tree.
+instead of the bundled tree. Packaged skills are also copied to
+`<data_dir>/.agents/skills`; `<data_dir>` is the configured data root, not an
+independent hard-coded home directory.
 
 Overlays merge per plugin id: the later entry's `config` is deep-merged into
 the base entry, and `disabled` / `inject` / `isolate` are replaced.  New ids

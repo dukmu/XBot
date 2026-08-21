@@ -324,7 +324,11 @@ steps.
 ### SkillsPlugin (`skills/`)
 
 Discovers SKILL.md files (agentskills.io standard) from:
-`.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global `~/.`).
+`.claude/skills/`, `.agents/skills/`, `.opencode/skills/` (project + global
+`~/.`). On startup, the packaged XBot plugin-development skill is copied to
+`<data_dir>/.agents/skills/xbot-plugin-development`; `<data_dir>` is the
+configured `--data-dir`/`XBOT_DATA_DIR` value, defaulting to `~/.xbot` only
+when no override is supplied.
 
 - Registers each discovered skill once through the stable `Tool` API
   (namespace `skills:<scope>:<name>`)

@@ -95,6 +95,28 @@ Invalid permission content.
 
 
 class TestSkillRegistry:
+    def test_discover_scans_runtime_global_skill_directory(self, tmp_path):
+        from XBotv2.skills.registry import SkillRegistry
+
+        global_dir = tmp_path / "data" / ".agents" / "skills" / "runtime-skill"
+        global_dir.mkdir(parents=True)
+        (global_dir / "SKILL.md").write_text("""---
+name: runtime-skill
+description: A skill copied into the XBot data root
+---
+Runtime skill.
+""", encoding="utf-8")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        reg = SkillRegistry()
+        reg.discover(workspace, global_dirs=[global_dir.parent])
+
+        skill = reg.load_skill("runtime-skill")
+        assert skill is not None
+        assert skill.scope == "global"
+
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
         from XBotv2.skills.registry import SkillRegistry
 

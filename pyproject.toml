@@ -65,3 +65,6 @@ source = [
 where = ["."]
 include = ["XBotv2*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+XBotv2 = [".agents/skills/xbot-plugin-development/**"]

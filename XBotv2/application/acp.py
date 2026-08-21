@@ -9,6 +9,7 @@ from XBotv2.acp import ACPLaunch
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_acp_tree
+from XBotv2.config.seed import ensure_initial_config
 
 
 async def start_acp_application(
@@ -20,6 +21,7 @@ async def start_acp_application(
     llm_override: Any | None = None,
 ) -> Any:
     """Start the ACP carrier and its shared process-level services."""
+    ensure_initial_config(paths)
     tree = load_acp_tree(paths=paths)
 
     def prepare(ctx: Any) -> None:

@@ -23,7 +23,10 @@ from .skill_tool import load_skill
 
 
 class SkillsPlugin:
-    inject = ['tools', 'commands', 'sandbox']
+    inject = {
+        "required": ["tools", "commands", "sandbox"],
+        "optional": ["runtime_paths"],
+    }
     name = "skills"
 
     def __init__(self) -> None:
@@ -38,6 +41,7 @@ class SkillsPlugin:
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
+        self._runtime_paths = ctx.get("runtime_paths", strict=False)
         ctx.dispose(self._cleanup_runtime)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
@@ -63,7 +67,11 @@ class SkillsPlugin:
         if self._initialized:
             return
         ws = event.session.workspace_root or str(Path.cwd())
-        self._registry.discover(Path(ws))
+        global_dirs = ()
+        runtime_paths = getattr(self, "_runtime_paths", None)
+        if runtime_paths is not None:
+            global_dirs = (runtime_paths.data_dir / ".agents" / "skills",)
+        self._registry.discover(Path(ws), global_dirs=global_dirs)
         max_context = int(
             event.settings.context_window or 0
         )
