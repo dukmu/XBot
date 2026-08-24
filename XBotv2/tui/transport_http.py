@@ -55,7 +55,7 @@ class HttpTransport:
         *,
         session_id: str,
         thread_id: str,
-        workspace_root: str,
+        workspace_root: str | None,
         mode: str = "new",
         agent: str | None = None,
     ) -> dict[str, Any]:
@@ -69,6 +69,18 @@ class HttpTransport:
             )
         ).model_dump()
         _trace_response("open_session", payload)
+        return payload
+
+    async def list_sessions(self) -> dict[str, Any]:
+        result = await self._client.list_sessions()
+        payload = result.model_dump()
+        _trace_response("list_sessions", payload)
+        return payload
+
+    async def list_threads(self, *, session_id: str) -> dict[str, Any]:
+        result = await self._client.list_threads(session_id)
+        payload = result.model_dump()
+        _trace_response("list_threads", payload)
         return payload
 
     async def list_commands(

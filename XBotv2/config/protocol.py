@@ -13,7 +13,8 @@ from XBotv2.config.contracts import (
     PatchPolicy,
     PolicySnapshot,
 )
-from XBotv2.loader import RELOAD_PLUGINS
+from XBotv2.loader import RELOAD_PLUGINS, SOFT_RELOAD, ReloadPlan, SoftReload
+from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
@@ -109,7 +110,11 @@ def _policy_response(
     )
 
 
-def build_router(*, events: Any) -> APIRouter:
+def build_router(
+    *,
+    events: Any,
+    host_reload_plan: ReloadPlan | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     @router.post(
@@ -126,6 +131,20 @@ def build_router(*, events: Any) -> APIRouter:
             RELOAD_PLUGINS,
             EmptyRequest(),
         )
+        if host_reload_plan is not None:
+            host_event = SoftReload(
+                scope="system",
+                config_path=host_reload_plan.config_path,
+                variables=dict(host_reload_plan.variables),
+            )
+            await events.emit(SOFT_RELOAD, host_event)
+            invalid = [
+                error
+                for error in host_event.errors
+                if error.startswith("llm:")
+            ]
+            if invalid:
+                raise OperationError("config_invalid", "; ".join(invalid))
         return ConfigReloadResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -176,10 +195,14 @@ def build_router(*, events: Any) -> APIRouter:
 
 class ConfigProtocolPlugin:
     name = "xbot.protocol.config"
-    inject = ["server"]
+    inject = ["server", "reload_plan"]
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
+        await contribute_router(
+            ctx,
+            owner=self.name,
+            router=build_router(events=ctx, host_reload_plan=ctx.reload_plan),
+        )
 
 
 plugin = ConfigProtocolPlugin()

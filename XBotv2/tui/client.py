@@ -10,6 +10,35 @@ from textwrap import shorten
 from typing import Any
 
 
+_USAGE_COUNTER_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "requests",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "prompt_cache_write_tokens",
+)
+
+
+def _empty_usage_counters() -> dict[str, int]:
+    return {key: 0 for key in _USAGE_COUNTER_KEYS}
+
+
+def _effective_context_tokens(usage: dict[str, Any], previous: int = 0) -> int:
+    if "context_tokens" in usage:
+        return int(usage.get("context_tokens") or 0)
+    input_keys = (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "prompt_cache_write_tokens",
+    )
+    if any(key in usage for key in input_keys):
+        return sum(int(usage.get(key) or 0) for key in input_keys)
+    return previous
+
+
 @dataclass
 class TuiMessage:
     role: str
@@ -110,22 +139,8 @@ class TuiState:
     context_window: int = 0
     context_input_tokens: int = 0
     status: str = "Disconnected"
-    usage: dict[str, int] = field(default_factory=lambda: {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-    })
-    turn_usage: dict[str, int] = field(default_factory=lambda: {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-    })
+    usage: dict[str, int] = field(default_factory=_empty_usage_counters)
+    turn_usage: dict[str, int] = field(default_factory=_empty_usage_counters)
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
     tasks: dict[str, TuiTask] = field(default_factory=dict)
@@ -165,14 +180,7 @@ class TuiState:
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
             self._clear_pending_interactions(tool_status="cancelled")
-            self.turn_usage = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "requests": 0,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-            }
+            self.turn_usage = _empty_usage_counters()
             self._streaming_assistant_index = None
             self._streaming_tool_ids.clear()
             self._refresh_status(reset_terminal=True)
@@ -289,9 +297,6 @@ class TuiState:
             self._refresh_status()
         elif event_type == "compaction_completed":
             self.compaction_active = False
-            usage = data.get("usage")
-            if isinstance(usage, dict):
-                self._apply_usage({"total": usage})
             self._refresh_status(reset_terminal=True)
             if data.get("reason") == "automatic":
                 metrics = data.get("metrics") or {}
@@ -403,7 +408,14 @@ class TuiState:
             self._refresh_status()
         elif event_type == "error":
             self._clear_pending_interactions(tool_status="failed")
+            self.turn_active = False
             self.compaction_active = False
+            if self._streaming_assistant_index is not None:
+                try:
+                    self.messages[self._streaming_assistant_index].streaming = False
+                except IndexError:
+                    pass
+            self._streaming_assistant_index = None
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
@@ -416,6 +428,7 @@ class TuiState:
 
     def restore_history(self, history: list[dict[str, Any]]) -> None:
         """Rebuild the visible transcript from a resumed session."""
+        self.reset_history()
         for item in history:
             role = str(item.get("role") or "")
             if role == "user":
@@ -463,6 +476,25 @@ class TuiState:
                         "images": item.get("images") or [],
                     },
                 })
+
+    def reset_history(self) -> None:
+        """Clear conversation-derived state before a new history snapshot."""
+        self.messages.clear()
+        self.tools.clear()
+        self.notices.clear()
+        self.errors.clear()
+        self.transcript.clear()
+        self._tool_transcript_keys.clear()
+        self._streaming_assistant_index = None
+        self._streaming_tool_ids.clear()
+        self._changed_tool_ids.clear()
+        self._tool_id_renames.clear()
+        self.pending_user_input_payload = None
+        self.pending_permission_payload = None
+        self.turn = 0
+        self.turn_active = False
+        self.compaction_active = False
+        self.turn_usage = _empty_usage_counters()
 
     def append_assistant_delta(self, content: str, reasoning: str = "") -> None:
         if not content and not reasoning:
@@ -683,42 +715,15 @@ class TuiState:
             self._changed_tool_ids.add(tool_call_id)
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
-        has_total = isinstance(data.get("total"), dict)
-        usage = data.get("total") if has_total else data
-        delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
-        if not isinstance(usage, dict):
-            return
-        current = delta if isinstance(delta, dict) else usage
-        if "context_tokens" in current or "input_tokens" in current:
-            self.context_input_tokens = int(
-                current.get("context_tokens") or current.get("input_tokens") or 0
-            )
-        keys = (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "requests",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
+        self.context_input_tokens = _effective_context_tokens(
+            data, self.context_input_tokens
         )
-        for key in keys:
-            val = int(usage.get(key) or 0)
-            if key in usage:
-                if has_total:
-                    self.usage[key] = val
-                else:
-                    self.usage[key] = self.usage.get(key, 0) + val
-            # When no ``delta`` sub-key exists, treat the flat data
-            # itself as the delta — the engine sends one ``usage``
-            # event per LLM call, and each event carries the current
-            # provider-side consumption, which IS the turn-level delta.
-            if isinstance(delta, dict):
-                if key in delta:
-                    self.turn_usage[key] = self.turn_usage.get(key, 0) + int(
-                        delta.get(key) or 0
-                    )
-            elif key in usage:
-                self.turn_usage[key] = self.turn_usage.get(key, 0) + val
+        for key in _USAGE_COUNTER_KEYS:
+            if key not in data:
+                continue
+            value = int(data.get(key) or 0)
+            self.usage[key] += value
+            self.turn_usage[key] += value
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:

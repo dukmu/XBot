@@ -111,7 +111,10 @@ def set_llm_override(app: FastAPI, llm: BaseProvider | None) -> None:
     if llm is None:
         app.dependency_overrides.pop(current_model_override, None)
     else:
-        app.dependency_overrides[current_model_override] = lambda: llm
+        async def override() -> BaseProvider:
+            return llm
+
+        app.dependency_overrides[current_model_override] = override
 
 
 __all__ = [

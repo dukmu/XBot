@@ -59,6 +59,12 @@ Local commands:
 - `/help`: render all known local and server command labels
 - `/thinking [on|off|toggle]`: control current and future reasoning blocks
 - `/details [on|off|toggle]`: control current and future tool detail blocks
+- `/session`: list persisted sessions with their workspace roots
+- `/session <session-id> [workspace]`: resume the session's main thread and
+  restore its persisted workspace, or explicitly override the workspace for
+  this runtime
+- `/session new [workspace]`: create and enter a new session in the selected
+  workspace
 
 Built-in client commands backed by typed APIs:
 
@@ -79,6 +85,14 @@ Slash dispatch rules:
   the Agent invokes their registered tool when appropriate
 - unknown slash commands render a local notice
 - normal text is sent as a user message
+
+Session switching is a client-side lifecycle operation. The TUI lists sessions
+through `GET /sessions`, resolves the real main thread through
+`GET /sessions/{sid}/threads`, then resumes with `POST /sessions` and the
+thread's persisted workspace when no override was supplied. It clears the old
+transcript, loads the returned display history, refreshes command metadata, and
+starts a new server-event subscription before accepting input. An active turn
+or queued message must be finished or interrupted before switching.
 
 Server command results render as transcript notices but do not enter LLM message
 history.

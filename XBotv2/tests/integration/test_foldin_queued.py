@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 import yaml
+import httpx
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import Tool
@@ -80,6 +81,8 @@ async def foldin_app(tmp_path: Path):
         workspace_root=str(workspace),
         no_plugins=True,
     )
+    server.server.state.manager = server.sessions
+    server.server.state.paths = server.runtime_paths
     try:
         yield server.server
     finally:
@@ -88,6 +91,34 @@ async def foldin_app(tmp_path: Path):
 
 async def _collect(stream):
     return [event async for event in stream]
+
+
+@pytest.mark.asyncio
+async def test_agent_application_snapshot_without_optional_plugins(foldin_app):
+    runtime = await foldin_app.state.manager.open_session(
+        session_id="snapshot",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "ok"}]),
+    )
+
+    snapshot = await asyncio.wait_for(runtime.application.snapshot(), timeout=2)
+    assert snapshot.agent
+
+
+@pytest.mark.asyncio
+async def test_http_open_snapshot_without_optional_plugins(foldin_app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=foldin_app),
+        base_url="http://test",
+    ) as client:
+        response = await asyncio.wait_for(
+            client.post("/sessions", json={"session_id": "snapshot-http", "thread_id": "t"}),
+            timeout=2,
+        )
+    assert response.status_code == 200
 
 
 async def _run_foldin(app, llm):
@@ -99,7 +130,8 @@ async def _run_foldin(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services = ctx.application._context
+    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -108,8 +140,8 @@ async def _run_foldin(app, llm):
         await release_tool.wait()
         return value
 
-    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tools.registry.restrict(None)
+    services.tools._registry.register(Tool.from_function(wait_for_release))
+    services.tools._registry.restrict(None)
 
     ev_stream = ctx.attach_event_stream()
 
@@ -222,7 +254,8 @@ async def _run_multi_queue(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services = ctx.application._context
+    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -231,8 +264,8 @@ async def _run_multi_queue(app, llm):
         await release_tool.wait()
         return value
 
-    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tools.registry.restrict(None)
+    services.tools._registry.register(Tool.from_function(wait_for_release))
+    services.tools._registry.restrict(None)
 
     async def collect(stream):
         events = []
@@ -334,10 +367,11 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
         no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
-    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services = ctx.application._context
+    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     events = ctx.attach_event_stream()
 
-    registry = ctx.services.jobs
+    registry = services.jobs
     assert registry is not None
     tools = {
         tool.name: tool

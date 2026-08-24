@@ -1,4 +1,4 @@
-"""Session-scoped todo list plugin."""
+"""Thread-scoped todo list plugin."""
 
 from __future__ import annotations
 
@@ -38,12 +38,12 @@ _UPDATE_TODOS_SCHEMA = {
 
 
 class TodolistPlugin:
-    inject = ['tools']
+    inject = ["tools", "storage"]
     name = "todolist"
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
-        self.store = ctx.state.namespace("todolist")
+        self.storage = ctx.storage
         ctx.tools.register(
             Tool(
                 name="update_todos",
@@ -90,7 +90,7 @@ class TodolistPlugin:
         active = [] if cleared else normalized
         changed = current != active
         if changed:
-            await self.store.set("state", {"items": active})
+            self.storage.set_plugin_state(self.name, {"items": active})
 
         if cleared:
             content = "All todos completed; the active checklist was cleared."
@@ -104,8 +104,8 @@ class TodolistPlugin:
         return ToolResult.success(content)
 
     async def _read_items(self) -> list[dict[str, str]]:
-        state = await self.store.get("state")
-        if state is None:
+        state = self.storage.get_plugin_state(self.name)
+        if not state:
             return []
         if not isinstance(state, dict) or not isinstance(state.get("items"), list):
             raise ValueError("Todo list state is invalid")
@@ -122,7 +122,7 @@ class TodolistPlugin:
     def diagnostics(self) -> dict[str, Any]:
         return {
             "status": "ready",
-            "scope": "session",
+            "scope": "thread",
             "tool": "update_todos",
             "item_statuses": sorted(_STATUSES),
         }

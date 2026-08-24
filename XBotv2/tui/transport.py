@@ -34,11 +34,17 @@ class Transport(Protocol):
         *,
         session_id: str,
         thread_id: str,
-        workspace_root: str,
+        workspace_root: str | None,
         mode: str = "new",
         agent: str | None = None,
     ) -> dict[str, Any]:
         """Open or resume a session. Returns the agent_name and status."""
+
+    async def list_sessions(self) -> dict[str, Any]:
+        """List persisted sessions visible to the server."""
+
+    async def list_threads(self, *, session_id: str) -> dict[str, Any]:
+        """List persisted and active threads for one session."""
 
     async def list_commands(
         self,

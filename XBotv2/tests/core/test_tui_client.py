@@ -159,7 +159,7 @@ def test_tui_state_applies_protocol_events_and_renders_lines():
         ),
         _frame("tool_result", {"tool_call_id": "call_1", "content": "cached result", "status": "success"}),
         _frame("client_message", {"message": "heads up"}),
-        _frame("usage", {"total": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}}),
+        _frame("usage", {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}),
         _frame("turn_finished", {"turn": 1}),
     ]
 
@@ -182,10 +182,10 @@ def test_tui_state_applies_protocol_events_and_renders_lines():
     assert "Tokens 15" in rendered
 
 
-def test_tui_state_applies_usage_totals():
+def test_tui_state_applies_flat_usage_delta():
     state = TuiState()
 
-    state.apply_event(_frame("usage", {"total": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}}))
+    state.apply_event(_frame("usage", {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}))
 
     assert state.usage == {
         "input_tokens": 12,
@@ -194,6 +194,7 @@ def test_tui_state_applies_usage_totals():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
 
 
@@ -288,6 +289,31 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert [(notice.kind, notice.text) for notice in state.notices] == [
         ("tasks:completed", "tasks completed"),
     ]
+
+
+def test_tui_state_replaces_history_without_stale_tool_indexes():
+    state = TuiState()
+    state.restore_history([
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [{"id": "call-1", "name": "shell", "args": {"command": "pwd"}}],
+        },
+    ])
+    state.restore_history([
+        {"role": "user", "content": "second"},
+        {
+            "role": "assistant",
+            "content": "new",
+            "tool_calls": [{"id": "call-1", "name": "shell", "args": {"command": "ls"}}],
+        },
+    ])
+
+    assert [message.content for message in state.messages] == ["second", "new"]
+    assert state.turn == 1
+    assert state.tools["call-1"].args == {"command": "ls"}
+    assert len([entry for entry in state.transcript if entry.kind == "tool"]) == 1
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -1036,6 +1062,7 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
     assert app.state.context_input_tokens == 8_000
     assert app.state.model_mode == ""
@@ -1093,12 +1120,10 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
             yield {
                 "type": "usage",
                 "data": {
-                    "total": {
-                        "input_tokens": 12,
-                        "output_tokens": 8,
-                        "total_tokens": 20,
-                        "requests": 1,
-                    }
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                    "requests": 1,
                 },
             }
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -1376,6 +1401,9 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
             await pilot.pause()
         assert scroll_ends == 0, (
             "scroll_end must not fire while the user is not at the bottom"
+        )
+        assert len(stream.children) == 0, (
+            "live entries should stay out of the DOM while reading older content"
         )
 
         # At the bottom: follow behavior is preserved.
@@ -2642,13 +2670,11 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
 
 
-def test_apply_usage_with_delta_still_works():
-    """The ``delta`` / ``total`` sub-key format (used by the older
-    integration tests) must keep working.
-    """
+def test_usage_event_accumulates_once():
 
     state = TuiState()
     state.apply_event({"type": "turn_started", "data": {"turn": 1}})
@@ -2656,10 +2682,7 @@ def test_apply_usage_with_delta_still_works():
     state.apply_event(
         {
             "type": "usage",
-            "data": {
-                "delta": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
-                "total": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
-            },
+            "data": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
         }
     )
 
@@ -2667,24 +2690,22 @@ def test_apply_usage_with_delta_still_works():
     assert state.turn_usage["input_tokens"] == 100
 
 
-def test_usage_delta_without_input_tokens_keeps_context_usage():
+def test_usage_accepts_zero_context_tokens():
     state = TuiState(context_input_tokens=120)
 
     state.apply_event(
         {
             "type": "usage",
             "data": {
-                "delta": {"output_tokens": 3, "total_tokens": 3},
-                "total": {
-                    "input_tokens": 120,
-                    "output_tokens": 3,
-                    "total_tokens": 123,
-                },
+                "input_tokens": 0,
+                "output_tokens": 3,
+                "total_tokens": 3,
+                "context_tokens": 0,
             },
         }
     )
 
-    assert state.context_input_tokens == 120
+    assert state.context_input_tokens == 0
 
 
 def test_usage_prefers_effective_context_tokens():
@@ -2732,26 +2753,25 @@ def test_usage_accumulates_cache_read_into_session_totals():
     assert full_input == 9694
 
 
-def test_usage_compaction_total_includes_cache_keys():
-    """The compaction ``total`` replacement path must also set cache keys."""
+def test_usage_accumulates_all_cache_keys():
 
     state = TuiState()
     state.apply_event({
         "type": "usage",
         "data": {
-            "total": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "total_tokens": 150,
-                "requests": 1,
-                "cache_read_input_tokens": 40,
-                "cache_creation_input_tokens": 10,
-            },
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "requests": 1,
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 10,
+            "prompt_cache_write_tokens": 5,
         },
     })
     assert state.usage["input_tokens"] == 100
     assert state.usage["cache_read_input_tokens"] == 40
     assert state.usage["cache_creation_input_tokens"] == 10
+    assert state.usage["prompt_cache_write_tokens"] == 5
 
 
 def test_usage_turn_cycle_with_cache_heavy_provider_does_not_error():

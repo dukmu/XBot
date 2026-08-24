@@ -67,6 +67,7 @@ class CommandsComponent:
                     usage=command.usage or f"/{command.name}",
                     examples=command.examples,
                     parameters=command.parameters,
+                    exclusive=command.exclusive,
                 )
                 for command in service.all()
             ))

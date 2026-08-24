@@ -1,4 +1,5 @@
-import { Bot, ChevronRight, Circle, GitBranch, PanelLeftClose, Plus, TerminalSquare } from "lucide-react";
+import { Bot, ChevronRight, Circle, GitBranch, PanelLeftClose, Plus, RefreshCw, Search, TerminalSquare, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { OpenSessionResponse, SessionSummary, ThreadSummary } from "../api/types";
 
 interface SessionSidebarProps {
@@ -8,11 +9,23 @@ interface SessionSidebarProps {
   current: OpenSessionResponse | null;
   onClose: () => void;
   onNew: () => void;
+  onRefresh: () => Promise<void>;
+  refreshing: boolean;
   onSession: (id: string) => void;
   onThread: (thread: ThreadSummary) => void;
 }
 
 export function SessionSidebar(props: SessionSidebarProps) {
+  const [query, setQuery] = useState("");
+  const visibleSessions = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return props.sessions;
+    return props.sessions.filter((session) => (
+      [session.session_id, session.title, session.workspace_root]
+        .some((value) => String(value || "").toLowerCase().includes(needle))
+    ));
+  }, [props.sessions, query]);
+
   return (
     <aside className={`session-sidebar ${props.open ? "open" : ""}`}>
       <div className="brand-row">
@@ -25,9 +38,37 @@ export function SessionSidebar(props: SessionSidebarProps) {
       <button className="new-session-button" onClick={props.onNew}>
         <Plus size={16} /> New session
       </button>
-      <div className="sidebar-section-label">Sessions</div>
+      <div className="sidebar-tools">
+        <div className="session-search">
+          <Search size={14} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search sessions"
+            aria-label="Search sessions"
+          />
+          {query && (
+            <button className="icon-button small" type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery("")}>
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="sidebar-section-label">
+        <span>Sessions <b>{visibleSessions.length}</b></span>
+        <button
+          className="icon-button small"
+          type="button"
+          title="Refresh sessions"
+          aria-label="Refresh sessions"
+          disabled={props.refreshing}
+          onClick={() => void props.onRefresh()}
+        >
+          <RefreshCw size={13} className={props.refreshing ? "spin" : ""} />
+        </button>
+      </div>
       <nav className="session-list" aria-label="Sessions">
-        {props.sessions.map((session) => {
+        {visibleSessions.map((session) => {
           const active = session.session_id === props.current?.session_id;
           return (
             <div key={session.session_id} className="session-group">
@@ -37,7 +78,10 @@ export function SessionSidebar(props: SessionSidebarProps) {
                 title={session.session_id}
               >
                 <Circle size={7} fill={session.status === "active" ? "currentColor" : "none"} />
-                <span>{shortId(session.session_id)}</span>
+                <span className="session-label">
+                  <b>{session.title || shortId(session.session_id)}</b>
+                  {session.workspace_root && <small>{session.workspace_root}</small>}
+                </span>
                 <small>{session.thread_count}</small>
                 <ChevronRight size={13} />
               </button>
@@ -60,7 +104,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
             </div>
           );
         })}
-        {!props.sessions.length && <div className="sidebar-empty">No sessions</div>}
+        {!visibleSessions.length && <div className="sidebar-empty">{query ? "No matching sessions" : "No sessions"}</div>}
       </nav>
     </aside>
   );

@@ -65,20 +65,28 @@ class UsageService:
             return False
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
-        if not input_tokens and not output_tokens:
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        cache_write = int(usage.get("prompt_cache_write_tokens") or 0)
+        if not any((input_tokens, output_tokens, cache_read, cache_creation, cache_write)):
             return False
         self._usage["input_tokens"] += input_tokens
         self._usage["output_tokens"] += output_tokens
+        reported_total = usage.get("total_tokens")
         self._usage["total_tokens"] += int(
-            usage.get("total_tokens") or input_tokens + output_tokens
+            input_tokens + output_tokens + cache_read + cache_creation + cache_write
+            if reported_total is None else reported_total
         )
-        self._usage["requests"] += int(usage.get("requests") or 1)
+        requests = usage.get("requests")
+        self._usage["requests"] += int(1 if requests is None else requests)
+        context_tokens = usage.get("context_tokens")
         self._usage["context_tokens"] = int(
-            usage.get("context_tokens") or input_tokens
+            input_tokens + cache_read + cache_creation + cache_write
+            if context_tokens is None else context_tokens
         )
-        for key in _FIELDS[5:]:
-            if usage.get(key) is not None:
-                self._usage[key] += int(usage[key])
+        self._usage["cache_read_input_tokens"] += cache_read
+        self._usage["cache_creation_input_tokens"] += cache_creation
+        self._usage["prompt_cache_write_tokens"] += cache_write
         if persist:
             self._persist()
         return True

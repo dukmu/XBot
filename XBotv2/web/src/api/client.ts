@@ -53,13 +53,14 @@ export class XBotApi {
 
   openSession(options: {
     sessionId?: string;
+    threadId?: string;
     workspaceRoot?: string;
     mode: "new" | "resume";
     agent?: string;
   }): Promise<OpenSessionResponse> {
     return this.request("POST", "/sessions", {
       session_id: options.sessionId || null,
-      thread_id: "agent",
+      thread_id: options.threadId || "agent",
       workspace_root: options.workspaceRoot || null,
       mode: options.mode,
       agent: options.agent || null,

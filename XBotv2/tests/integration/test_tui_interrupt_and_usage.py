@@ -203,18 +203,10 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
             yield {
                 "type": "usage",
                 "data": {
-                    "delta": {
-                        "input_tokens": 100,
-                        "output_tokens": 25,
-                        "total_tokens": 125,
-                        "requests": 1,
-                    },
-                    "total": {
-                        "input_tokens": 100,
-                        "output_tokens": 25,
-                        "total_tokens": 125,
-                        "requests": 1,
-                    },
+                    "input_tokens": 100,
+                    "output_tokens": 25,
+                    "total_tokens": 125,
+                    "requests": 1,
                 },
             }
             # Block so we can observe the live usage.

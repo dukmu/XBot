@@ -18,7 +18,7 @@ REGISTER_ROUTE = "http/route"
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
 
 
-def current_model_override() -> BaseProvider | None:
+async def current_model_override() -> BaseProvider | None:
     """FastAPI dependency used by tests and embedded server compositions."""
     return None
 

@@ -37,7 +37,7 @@ from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import Tool
+from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellRunner
 from XBotv2.agentloop.internal_messages import structure_tool_message
@@ -193,7 +193,7 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
             sandbox={"network": False, "external_write": "deny"},
         )
         ctx = await http_app.state.manager.get("sdk-policy", "main")
-        sandbox = ctx.services.sandbox
+        sandbox = ctx.application._context.sandbox
 
         assert updated.permissions == {
             "deny": [{"tool": "edit"}],
@@ -202,15 +202,15 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         assert updated.sandbox["resources"] == [
             {"path": "/tmp/approved", "access": "readwrite"}
         ]
-        assert ctx.services.permissions.check("shell") == "allow"
-        assert ctx.services.permissions.check(
+        assert ctx.application._context.permissions.check("shell") == "allow"
+        assert ctx.application._context.permissions.check(
             "edit", {"path": "a.txt", "mode": "write"}
         ) == "deny"
-        assert ctx.services.sandbox.network is False
-        assert ctx.services.sandbox.external_write == "deny"
-        assert ctx.services.sandbox is sandbox
-        assert ctx.services.jobs is not None
-        assert ctx.engine.tools.registry.get("shell") is not None
+        assert ctx.application._context.sandbox.network is False
+        assert ctx.application._context.sandbox.external_write == "deny"
+        assert ctx.application._context.sandbox is sandbox
+        assert ctx.application._context.jobs is not None
+        assert ctx.application._context.tools._registry.get("shell") is not None
 
         cleared = await sdk.update_session_policy(
             "sdk-policy",
@@ -489,6 +489,12 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         no_plugins=True,
     )
     app = server.server
+    # Integration setup needs runtime capabilities that HTTP consumers reach
+    # only through routes. Keep these test-only handles out of the carrier.
+    app.state.test_context = server
+    app.state.manager = server.sessions
+    app.state.paths = server.runtime_paths
+    app.state.workspace_root = server.workspace_root
     # Inject a mock LLM that returns one canned response per turn.
     set_llm_override(app, MockLLM(responses=[{"content": "hello from mock"}]))
     try:
@@ -629,6 +635,8 @@ async def test_http_session_exposes_independent_thread_resources(
         "status": "active",
         "active_threads": 2,
         "thread_count": 2,
+        "workspace_root": str(http_app.state.workspace_root),
+        "title": "thread-resources",
     }
     threads = (
         await client.get("/sessions/thread-resources/threads")
@@ -736,6 +744,9 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
         no_plugins=False,
     )
     app = server.server
+    app.state.manager = server.sessions
+    app.state.paths = server.runtime_paths
+    app.state.workspace_root = server.workspace_root
     set_llm_override(app, MockLLM(responses=[]))
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -805,6 +816,9 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         no_plugins=False,
     )
     app = server.server
+    app.state.manager = server.sessions
+    app.state.paths = server.runtime_paths
+    app.state.workspace_root = server.workspace_root
     set_llm_override(app, MockLLM(responses=[{"content": "existing answer"}]))
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -837,11 +851,11 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
             "keep this history",
             "existing answer",
         ]
-        assert ctx.engine.tools.registry.get("read") is not None
-        assert ctx.engine.tools.registry.get("edit") is None
+        assert ctx.application._context.tools._registry.get("read") is not None
+        assert ctx.application._context.tools._registry.get("edit") is None
         assert ctx.engine.settings.model == "explorer-model"
         assert ctx.engine.settings.context_window == 64000
-        assert ctx.services.state_store.read_thread_metadata()["agent"] == "Explorer"
+        assert ctx.application._context.state_store.read_thread_metadata()["agent"] == "Explorer"
 
         explorer_path.write_text(
             "---\ndescription: Reloaded exploration\nmode: all\n"
@@ -930,7 +944,7 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     )
     structure_tool_message(tool_message, "sample")
     original.engine.messages.append(tool_message)
-    await original.services.persistence.flush()
+    await original.application._context.persistence.flush()
 
     resumed = await client.post(
         "/sessions",
@@ -1040,6 +1054,104 @@ async def test_http_server_hosts_sessions_from_multiple_workspaces(
     assert response_b.status_code == 200
     assert response_a.json()["workspace_root"] == str(workspace_a.resolve())
     assert response_b.json()["workspace_root"] == str(workspace_b.resolve())
+
+
+@pytest.mark.asyncio
+async def test_http_session_listing_and_resume_preserve_main_thread_workspace(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "history-workspace"
+    workspace.mkdir()
+    opened = await client.post(
+        "/sessions",
+        json={
+            "session_id": "history-main",
+            "thread_id": "main",
+            "workspace_root": str(workspace),
+        },
+    )
+    assert opened.status_code == 200
+
+    sessions = await client.get("/sessions")
+    threads = await client.get("/sessions/history-main/threads")
+    resumed = await client.post(
+        "/sessions",
+        json={"session_id": "history-main", "thread_id": "main", "mode": "resume"},
+    )
+
+    assert sessions.json()["sessions"][-1]["workspace_root"] == str(workspace.resolve())
+    assert threads.json()["threads"][0]["workspace_root"] == str(workspace.resolve())
+    assert resumed.status_code == 200
+    assert resumed.json()["thread_id"] == "main"
+    assert resumed.json()["workspace_root"] == str(workspace.resolve())
+
+
+@pytest.mark.asyncio
+async def test_real_tui_session_command_resumes_history_and_continues_chat(
+    http_app: Any,
+    tmp_path: Path,
+) -> None:
+    """The TUI session switch uses real listing/resume/history/message paths."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    workspace = tmp_path / "persisted-workspace"
+    workspace.mkdir()
+    set_llm_override(http_app, MockLLM(responses=[
+        {"content": "historical reply"},
+        {"content": "continued reply"},
+    ]))
+    setup_client = XBotClient("http://test", transport=ASGITransport(app=http_app))
+    await setup_client.open_session(
+        session_id="persisted-session",
+        thread_id="main",
+        workspace_root=str(workspace),
+    )
+    await _drain_stream(setup_client.send_message(
+        "persisted-session", "main", "historical question", request_id="history"
+    ))
+    await setup_client.close()
+
+    transport = HttpTransport.__new__(HttpTransport)
+    transport._client = XBotClient("http://test", transport=ASGITransport(app=http_app))
+    session = TerminalSession(
+        session_id="tui-current",
+        thread_id="agent",
+        workspace_root=str(tmp_path),
+        transport=transport,
+    )
+    app = XBotTextualApp(session_id="tui-current", thread_id="agent")
+    app.session = session
+
+    async with app.run_test(headless=True, size=(120, 40)) as pilot:
+        for _ in range(60):
+            await pilot.pause()
+            if app._connected:
+                break
+        assert app._connected
+        composer = app.query_one("#input")
+        composer.load_text("/session persisted-session")
+        await app.submit_composer()
+        for _ in range(100):
+            await pilot.pause()
+            if app.state.session_id == "persisted-session" and app.state.status == "Ready":
+                break
+        assert app.state.session_id == "persisted-session"
+        assert app.state.thread_id == "main"
+        assert app.state.workspace_root == str(workspace.resolve())
+        assert [message.content for message in app.state.messages] == [
+            "historical question", "historical reply"
+        ]
+
+        composer.load_text("continue")
+        await app.submit_composer()
+        for _ in range(160):
+            await pilot.pause()
+            if any(message.content == "continued reply" for message in app.state.messages):
+                break
+        assert any(message.content == "continued reply" for message in app.state.messages)
+
+    await transport._client.close()
 
 
 @pytest.mark.asyncio
@@ -1485,7 +1597,7 @@ async def test_http_reload_applies_non_llm_plugin_config(
     assert body["errors"] == []
 
     ctx = await http_app.state.manager.get("soft-restart", "t")
-    assert ctx.services.sandbox.enabled is True
+    assert ctx.application._context.sandbox.enabled is True
 
 
 @pytest.mark.asyncio
@@ -1498,7 +1610,7 @@ async def test_http_reload_applies_workspace_overlay_hot_plug(
         "/sessions", json={"session_id": "workspace-overlay", "thread_id": "t"}
     )
     ctx = await http_app.state.manager.get("workspace-overlay", "t")
-    assert ctx.services.sandbox.enabled is False
+    assert ctx.application._context.sandbox.enabled is False
 
     overlay_dir = Path(http_app.state.workspace_root) / ".xbot"
     overlay_dir.mkdir()
@@ -1518,7 +1630,7 @@ async def test_http_reload_applies_workspace_overlay_hot_plug(
     body = response.json()
     assert "workspace_instructions" in body["reloaded"]
     assert body["errors"] == []
-    assert ctx.services.sandbox.enabled is True
+    assert ctx.application._context.sandbox.enabled is True
 
 
 @pytest.mark.asyncio
@@ -1613,7 +1725,7 @@ async def test_http_policy_api_updates_live_session_policy(
     policy_response = await client.patch(
         "/sessions/policy/policy",
         json={
-            "permissions": {"shell": "allow"},
+            "permissions": {"read": "allow", "shell": "allow"},
             "sandbox": {"external_read": "readonly"},
         },
     )
@@ -1625,28 +1737,32 @@ async def test_http_policy_api_updates_live_session_policy(
     )
     cached_path.parent.mkdir(parents=True)
     cached_path.write_text("cached after policy reload", encoding="utf-8")
-    filesystem_entry = ctx.engine.tools.registry.get("read")
-    assert filesystem_entry is not None
-    cached_result = await filesystem_entry.tool.ainvoke(
-        {"path": "session/artifacts/tool_results/cached.txt"},
-        sandbox=ctx.services.sandbox,
-    )
+    [cached_result] = await ctx.application._context.tools.execute_all([
+        ToolCall(
+            "read-cached-policy",
+            "read",
+            {"path": "session/artifacts/tool_results/cached.txt"},
+        ),
+    ])
     status_response = await client.get("/sessions/policy/policy")
 
     assert policy_response.status_code == 200
     assert status_response.status_code == 200
     assert cached_result.status == "success"
     assert "cached after policy reload" in cached_result.content
-    assert status_response.json()["permissions"]["allow"] == [{"tool": "shell"}]
-    assert [
+    assert {
+        rule["tool"]
+        for rule in status_response.json()["permissions"]["allow"]
+    } == {"read", "shell"}
+    assert {
         rule["tool"]
         for rule in status_response.json()["effective_permissions"]["allow"]
-    ] == ["shell"]
+    } == {"read", "shell"}
     assert status_response.json()["sandbox"] == {"external_read": "readonly"}
     assert status_response.json()["effective_sandbox"]["external_read"] == "readonly"
     assert (
         status_response.json()["effective_sandbox"]["enabled"]
-        is ctx.services.sandbox.enabled
+        is ctx.application._context.sandbox.enabled
     )
     state_root = http_app.state.paths.session("policy").thread("t").state_dir
     events_path = state_root / "events.jsonl"
@@ -1796,21 +1912,21 @@ async def test_http_policy_patch_reset_rebuilds_live_policy(
         json={"permissions": {"shell": "deny"}},
     )
     assert permission_set.status_code == 200
-    assert ctx.services.permissions.check("shell", {}) == "deny"
+    assert ctx.application._context.permissions.check("shell", {}) == "deny"
 
     permission_reset = await client.patch(
         "/sessions/policy-reset/policy",
         json={"remove_permissions": ["shell"]},
     )
     assert permission_reset.status_code == 200
-    assert ctx.services.permissions.check("shell", {}) == "ask"
+    assert ctx.application._context.permissions.check("shell", {}) == "ask"
 
     sandbox_status = await client.get("/sessions/policy-reset/policy")
     assert sandbox_status.status_code == 200
     assert sandbox_status.json()["sandbox"] == {}
     assert (
         sandbox_status.json()["effective_sandbox"]["enabled"]
-        is ctx.services.sandbox.enabled
+        is ctx.application._context.sandbox.enabled
     )
 
     sandbox_update = await client.patch(
@@ -1818,7 +1934,7 @@ async def test_http_policy_patch_reset_rebuilds_live_policy(
         json={"sandbox": {"external_read": "deny"}},
     )
     assert sandbox_update.status_code == 200
-    assert ctx.services.sandbox.external_read == "deny"
+    assert ctx.application._context.sandbox.external_read == "deny"
 
 
 @pytest.mark.asyncio
@@ -2076,8 +2192,8 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     async def record(ctx):
         observed.append(ctx.request_id)
 
-    session.services.on(Events.TURN_START, record)
-    session.services.on(Events.STATE_CHANGED, record)
+    session.application.events.on(Events.TURN_START, record)
+    session.application.events.on(Events.STATE_CHANGED, record)
 
     async with client.stream(
         "POST",
@@ -2109,7 +2225,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     async def record(ctx):
         observed.append(ctx.request_id)
 
-    session.services.on(Events.TURN_START, record)
+    session.application.events.on(Events.TURN_START, record)
 
     async with client.stream(
         "POST",
@@ -2336,9 +2452,9 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
-    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tools.registry.restrict(None)
+    ctx.application._context.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    ctx.application._context.tools._registry.register(Tool.from_function(wait_for_release))
+    ctx.application._context.tools._registry.restrict(None)
 
     async def collect(stream):
         return [event async for event in stream]
@@ -2404,7 +2520,7 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
         no_plugins=True,
         llm_override=llm,
     )
-    ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    ctx.application._context.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     tool_started = asyncio.Event()
 
     async def wait_for_release(value: str) -> str:
@@ -2412,8 +2528,8 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
         await release_tool.wait()
         return value
 
-    ctx.engine.tools.registry.register(Tool.from_function(wait_for_release))
-    ctx.engine.tools.registry.restrict(None)
+    ctx.application._context.tools._registry.register(Tool.from_function(wait_for_release))
+    ctx.application._context.tools._registry.restrict(None)
 
     async def collect(stream):
         return [event async for event in stream]
@@ -2478,21 +2594,21 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         Message(role="assistant", content="the earlier request is complete"),
     ])
 
-    await ctx._collect_completion({
-        "type": "background_task",
-        "kind": "background_task",
-        "task_id": "task-1",
-        "status": "completed",
-        "command": "printf done",
-        "data": {"task_id": "task-1"},
-    })
+    task_id = await _start_background_shell(
+        ctx.application._context,
+        "printf done",
+    )
+    await ctx.application._context.jobs.wait([task_id], timeout=1)
 
     # The completion is broadcast as a notice and staged in the inbox; it
     # must NOT start a turn on its own.
-    splice = await asyncio.wait_for(events.get(), timeout=1)
-    assert splice["type"] == Events.INBOX_SPLICE
-    notice = await asyncio.wait_for(events.get(), timeout=1)
-    assert notice["type"] == "completion_notice"
+    observed = []
+    async with asyncio.timeout(1):
+        while not {
+            Events.INBOX_SPLICE,
+            "completion_notice",
+        }.issubset({event["type"] for event in observed}):
+            observed.append(await events.get())
     await asyncio.sleep(0.05)
     assert llm.call_count == 0, "general message must not wake a turn"
     assert len(ctx.engine.inbox) == 1
@@ -2512,7 +2628,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     runtime_event = ET.fromstring(runtime_msgs[0].content)
     payload = json.loads(runtime_event.findtext("payload"))
     assert payload["kind"] == "background_task"
-    assert payload["task_id"] == "task-1"
+    assert payload["task_id"] == task_id
 
 
 @pytest.mark.asyncio
@@ -2538,7 +2654,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
     )
     events = ctx.attach_event_stream()
 
-    job_id = await _start_background_shell(ctx.services, "printf result")
+    job_id = await _start_background_shell(ctx.application._context, "printf result")
 
     # Completion is broadcast as a notice and staged in the agent inbox, but
     # must NOT wake a turn on its own.
@@ -2603,8 +2719,8 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
         no_plugins=True,
         llm_override=llm,
     )
-    await _start_background_shell(ctx.services, "printf one")
-    await _start_background_shell(ctx.services, "printf two")
+    await _start_background_shell(ctx.application._context, "printf one")
+    await _start_background_shell(ctx.application._context, "printf two")
     await asyncio.sleep(0.1)
     # Completions stage into the inbox without waking a turn.
     assert llm.call_count == 0, "completions must not wake an LLM turn"
@@ -2648,7 +2764,7 @@ async def test_typed_task_stop_is_idempotent(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
     ctx = await http_app.state.manager.get("task-stop", "t")
-    task_id = await _start_background_shell(ctx.services, "sleep forever")
+    task_id = await _start_background_shell(ctx.application._context, "sleep forever")
     await asyncio.sleep(0)
 
     busy_fork = await client.post("/sessions/task-stop/fork")
@@ -3262,6 +3378,9 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         no_plugins=False,
     )
     app = server.server
+    app.state.manager = server.sessions
+    app.state.paths = server.runtime_paths
+    app.state.workspace_root = server.workspace_root
     set_llm_override(app, MockLLM(responses=[{"content": "ok"}]))
     try:
         yield app
@@ -3362,7 +3481,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         if not ctx.turn_lock.locked():
             break
         await asyncio.sleep(0)
-    goal_plugin = ctx.services.loader.get("goal")
+    goal_plugin = ctx.application._context.loader.get("goal")
     assert await goal_plugin._read_goal() == {
         "objective": "ship the API",
         "status": "complete",
@@ -3507,8 +3626,8 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     assert set_ext.status_code == 200
 
     ctx = await http_app.state.manager.get("sandbox-persist", "t")
-    assert ctx.services.sandbox.network is False
-    assert ctx.services.sandbox.external_read == "deny"
+    assert ctx.application._context.sandbox.network is False
+    assert ctx.application._context.sandbox.external_read == "deny"
 
     # The session configuration was updated.
     assert policy_path.exists()
@@ -3544,7 +3663,7 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     )
     assert resumed.status_code == 200
     resumed_ctx = await http_app.state.manager.get("sandbox-persist", "t")
-    assert resumed_ctx.services.sandbox.network is True
+    assert resumed_ctx.application._context.sandbox.network is True
 
 
 @pytest.mark.asyncio
@@ -3618,9 +3737,9 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
         assert app._connected, "TUI did not connect to the server"
 
         ctx = await http_app.state.manager.get("tui-q", "t")
-        ctx.services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
-        ctx.engine.tools.registry.register(Tool.from_function(blocker))
-        ctx.engine.tools.registry.restrict(None)
+        ctx.application._context.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+        ctx.application._context.tools._registry.register(Tool.from_function(blocker))
+        ctx.application._context.tools._registry.restrict(None)
 
         composer = app.query_one("#input")
         composer.load_text("A")

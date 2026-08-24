@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { XBotApi, XBotApiError } from "../api/client";
-import type { InteractionRequest, OpenSessionResponse, ServerEvent, ThreadSummary } from "../api/types";
+import type { InteractionRequest, OpenSessionResponse, ServerEvent, TaskData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
@@ -15,12 +15,31 @@ export function useXBot() {
   const threadRefreshTimer = useRef<number | null>(null);
   const streamEvents = useRef<ServerEvent[]>([]);
   const streamFlushTimer = useRef<number | null>(null);
+  const navigationGeneration = useRef(0);
+
+  const resetStreamingState = useCallback(() => {
+    eventController.current?.abort();
+    eventController.current = null;
+    if (streamFlushTimer.current !== null) {
+      window.clearTimeout(streamFlushTimer.current);
+      streamFlushTimer.current = null;
+    }
+    streamEvents.current = [];
+    for (const controller of messageControllers.current) controller.abort();
+    messageControllers.current.clear();
+    for (const timer of taskTimers.current.values()) window.clearTimeout(timer);
+    taskTimers.current.clear();
+    if (threadRefreshTimer.current !== null) {
+      window.clearTimeout(threadRefreshTimer.current);
+      threadRefreshTimer.current = null;
+    }
+  }, []);
 
   const flushStreamEvents = useCallback(() => {
     streamFlushTimer.current = null;
     const pending = streamEvents.current;
     streamEvents.current = [];
-    for (const event of pending) dispatch({ type: "event", event });
+    if (pending.length > 0) dispatch({ type: "events", events: pending });
   }, []);
 
   const queueStreamEvent = useCallback((event: ServerEvent) => {
@@ -30,15 +49,17 @@ export function useXBot() {
     }
   }, [flushStreamEvents]);
 
-  const reportError = useCallback((error: unknown) => {
+  const reportError = useCallback((error: unknown, turnFailed = false) => {
     if (error instanceof DOMException && error.name === "AbortError") return;
     const message = error instanceof XBotApiError
       ? `${error.code}: ${error.message}`
       : error instanceof Error ? error.message : String(error);
-    dispatch({ type: "error", message });
+    dispatch({ type: turnFailed ? "turn_error" : "error", message });
   }, []);
 
-  const handleEvent = useCallback((event: ServerEvent) => {
+  const handleEvent = useCallback((event: ServerEvent, generation?: number) => {
+    if (generation !== undefined && generation !== navigationGeneration.current) return;
+    const eventGeneration = generation ?? navigationGeneration.current;
     const isHighFrequencyDelta = event.type === "assistant_message_delta" || event.type === "tool_call_delta";
     if (isHighFrequencyDelta) queueStreamEvent(event);
     else {
@@ -55,6 +76,7 @@ export function useXBot() {
       if (existing) window.clearTimeout(existing);
       if (taskId && (status === "completed" || status === "stopped")) {
         taskTimers.current.set(taskId, window.setTimeout(() => {
+          if (eventGeneration !== navigationGeneration.current) return;
           dispatch({ type: "remove_task", taskId });
           taskTimers.current.delete(taskId);
         }, 4000));
@@ -62,15 +84,18 @@ export function useXBot() {
       if (event.data.kind === "agent" && event.session_id) {
         if (threadRefreshTimer.current) window.clearTimeout(threadRefreshTimer.current);
         threadRefreshTimer.current = window.setTimeout(() => {
+          if (eventGeneration !== navigationGeneration.current) return;
           void api.listThreads(event.session_id)
-            .then((threads) => dispatch({ type: "threads", threads }))
+            .then((threads) => {
+              if (eventGeneration === navigationGeneration.current) dispatch({ type: "threads", threads });
+            })
             .catch(reportError);
         }, 250);
       }
     }
   }, [api, flushStreamEvents, queueStreamEvent, reportError]);
 
-  const startEventStream = useCallback((session: OpenSessionResponse) => {
+  const startEventStream = useCallback((session: OpenSessionResponse, generation: number) => {
     eventController.current?.abort();
     const controller = new AbortController();
     eventController.current = controller;
@@ -81,34 +106,48 @@ export function useXBot() {
           session.thread_id,
           controller.signal,
         )) {
-          handleEvent(event);
+          handleEvent(event, generation);
         }
-        if (!controller.signal.aborted) dispatch({ type: "connected", value: false });
+        if (!controller.signal.aborted && generation === navigationGeneration.current) dispatch({ type: "connected", value: false });
       } catch (error) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && generation === navigationGeneration.current) {
           dispatch({ type: "connected", value: false });
-          reportError(error);
+          reportError(error, true);
         }
       }
     })();
   }, [api, handleEvent, reportError]);
 
-  const activate = useCallback(async (session: OpenSessionResponse) => {
+  const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
+    if (generation !== navigationGeneration.current) return;
+    resetStreamingState();
     dispatch({ type: "opened", session });
-    const [threads, agents, tasks] = await Promise.all([
-      api.listThreads(session.session_id),
-      api.listAgents(session.session_id, session.thread_id),
-      api.listTasks(session.session_id, session.thread_id),
-    ]);
+    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[]];
+    try {
+      resources = await Promise.all([
+        api.listThreads(session.session_id),
+        api.listAgents(session.session_id, session.thread_id),
+        api.listTasks(session.session_id, session.thread_id),
+      ]);
+    } catch (error) {
+      if (generation === navigationGeneration.current) dispatch({ type: "connected", value: false });
+      throw error;
+    }
+    const [threads, agents, tasks] = resources;
+    if (generation !== navigationGeneration.current) return;
     dispatch({ type: "threads", threads });
     dispatch({ type: "agents", agents });
     dispatch({ type: "tasks", tasks });
-    startEventStream(session);
-  }, [api, startEventStream]);
+    startEventStream(session, generation);
+  }, [api, resetStreamingState, startEventStream]);
 
   const refreshSessions = useCallback(async () => {
-    dispatch({ type: "sessions", sessions: await api.listSessions() });
-  }, [api]);
+    try {
+      dispatch({ type: "sessions", sessions: await api.listSessions() });
+    } catch (error) {
+      reportError(error);
+    }
+  }, [api, reportError]);
 
   useEffect(() => {
     let alive = true;
@@ -140,53 +179,92 @@ export function useXBot() {
   }, [api, reportError]);
 
   const createSession = useCallback(async (workspaceRoot: string) => {
+    if (state.turnRunning) {
+      reportError(new Error("Interrupt the active turn before switching sessions"));
+      return;
+    }
+    const generation = ++navigationGeneration.current;
+    resetStreamingState();
+    dispatch({ type: "connected", value: false });
     dispatch({ type: "loading", value: true });
     try {
       const session = await api.openSession({
         workspaceRoot: workspaceRoot.trim() || undefined,
         mode: "new",
       });
-      await activate(session);
-      await refreshSessions();
+      if (generation !== navigationGeneration.current) return;
+      await activate(session, generation);
+      if (generation === navigationGeneration.current) await refreshSessions();
     } catch (error) {
-      reportError(error);
+      if (generation === navigationGeneration.current) reportError(error);
     } finally {
-      dispatch({ type: "loading", value: false });
+      if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, refreshSessions, reportError]);
+  }, [activate, api, refreshSessions, reportError, resetStreamingState, state.turnRunning]);
 
   const resumeSession = useCallback(async (sessionId?: string) => {
     const id = sessionId || state.current?.session_id;
     if (!id) return;
+    if (state.turnRunning) {
+      reportError(new Error("Interrupt the active turn before switching sessions"));
+      return;
+    }
+    const generation = ++navigationGeneration.current;
+    dispatch({ type: "connected", value: false });
+    resetStreamingState();
     dispatch({ type: "loading", value: true });
     try {
-      const session = await api.openSession({ sessionId: id, mode: "resume" });
-      await activate(session);
-      await refreshSessions();
+      const threads = await api.listThreads(id);
+      if (generation !== navigationGeneration.current) return;
+      const mainThread = threads.find((thread) => thread.kind === "main") || threads[0];
+      if (!mainThread) throw new Error(`Session ${id} has no resumable threads`);
+      const session = await api.openSession({
+        sessionId: id,
+        threadId: mainThread.thread_id,
+        workspaceRoot: mainThread.workspace_root,
+        mode: "resume",
+      });
+      if (generation !== navigationGeneration.current) return;
+      await activate(session, generation);
+      if (generation === navigationGeneration.current) await refreshSessions();
     } catch (error) {
-      reportError(error);
+      if (generation === navigationGeneration.current) reportError(error);
     } finally {
-      dispatch({ type: "loading", value: false });
+      if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, refreshSessions, reportError, state.current?.session_id]);
+  }, [activate, api, refreshSessions, reportError, resetStreamingState, state.current?.session_id, state.turnRunning]);
 
   const selectThread = useCallback(async (thread: ThreadSummary) => {
     if (!state.current || thread.thread_id === state.current.thread_id) return;
+    if (state.turnRunning) {
+      reportError(new Error("Interrupt the active turn before switching threads"));
+      return;
+    }
+    const generation = ++navigationGeneration.current;
+    dispatch({ type: "connected", value: false });
+    resetStreamingState();
     dispatch({ type: "loading", value: true });
     try {
       const session = thread.kind === "main"
-        ? await api.openSession({ sessionId: state.current.session_id, mode: "resume" })
+        ? await api.openSession({
+          sessionId: state.current.session_id,
+          threadId: thread.thread_id,
+          workspaceRoot: thread.workspace_root,
+          mode: "resume",
+        })
         : await openSubagentThread(api, state.current.thread_id, state.current.session_id, thread);
-      await activate(session);
+      if (generation !== navigationGeneration.current) return;
+      await activate(session, generation);
     } catch (error) {
-      reportError(error);
+      if (generation === navigationGeneration.current) reportError(error);
     } finally {
-      dispatch({ type: "loading", value: false });
+      if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, reportError, state.current]);
+  }, [activate, api, reportError, resetStreamingState, state.current]);
 
   const sendMessage = useCallback(async (rawContent: string, attachments: PendingAttachment[] = []) => {
     const current = state.current;
+    const generation = navigationGeneration.current;
     const content = rawContent.trim();
     if (!current || (!content && attachments.length === 0)) return;
     dispatch({
@@ -209,10 +287,10 @@ export function useXBot() {
           .map(({ data, media_type, name }) => ({ data, media_type, name })),
         controller.signal,
       )) {
-        handleEvent(event);
+        handleEvent(event, generation);
       }
     } catch (error) {
-      reportError(error);
+      if (generation === navigationGeneration.current) reportError(error, true);
     } finally {
       messageControllers.current.delete(controller);
     }
@@ -363,6 +441,7 @@ export function useXBot() {
     fork,
     stopTask,
     stopAllTasks,
+    refreshSessions,
     clearError: () => dispatch({ type: "clear_error" }),
   };
 }
@@ -374,7 +453,7 @@ async function openSubagentThread(
   thread: ThreadSummary,
 ): Promise<OpenSessionResponse> {
   if (currentThreadId !== thread.parent_thread_id) {
-    await api.openSession({ sessionId, mode: "resume" });
+    await api.openSession({ sessionId, threadId: thread.parent_thread_id, mode: "resume" });
   }
   return api.openThread(sessionId, thread);
 }

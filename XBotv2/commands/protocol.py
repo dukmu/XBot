@@ -110,6 +110,16 @@ def build_commands_router(*, events: Any) -> APIRouter:
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
+        catalog = await dispatch_session_operation(
+            events,
+            SessionRef(session_id, thread_id),
+            LIST_COMMANDS,
+            EmptyRequest(),
+        )
+        declared = next(
+            (item for item in catalog.commands if item.name == command.lower()),
+            None,
+        )
         raw_args = raw.strip()
         if raw_args.startswith("/"):
             _, _, raw_args = raw_args.partition(" ")
@@ -123,6 +133,7 @@ def build_commands_router(*, events: Any) -> APIRouter:
                 command=command,
                 kind=payload.kind,
                 raw_args=raw_args,
+                exclusive=declared.exclusive if declared is not None else True,
             ),
         )
         return CommandResponse.model_validate({

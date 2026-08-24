@@ -23,6 +23,9 @@ export interface UsageData {
   total_tokens: number;
   requests: number;
   context_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  prompt_cache_write_tokens: number;
 }
 
 export interface SessionSummary {
@@ -30,6 +33,8 @@ export interface SessionSummary {
   status: "active" | "inactive";
   active_threads: number;
   thread_count: number;
+  workspace_root?: string;
+  title?: string;
 }
 
 export interface ThreadSummary {
@@ -48,6 +53,8 @@ export interface ThreadSummary {
   usage: UsageData;
   pending_interactions: string[];
   status_slots: Record<string, string>;
+  workspace_root?: string;
+  title?: string;
 }
 
 export interface HistoryItem {
@@ -169,4 +176,7 @@ export const EMPTY_USAGE: UsageData = {
   total_tokens: 0,
   requests: 0,
   context_tokens: 0,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 0,
+  prompt_cache_write_tokens: 0,
 };

@@ -101,9 +101,15 @@ class WorkspaceInstructionsPlugin:
         owner (event listeners run outside any plugin ``apply`` fiber), so
         re-registering replaces the previous set instead of raising.
         """
-        del event
         self._register_workspace_agents(self.ctx)
-        await self._apply_workspace_patch(self.ctx, self.workspace_root / ".xbot" / "plugins.yaml")
+        overlay = self.workspace_root / ".xbot" / "plugins.yaml"
+        affected = await self._apply_workspace_patch(
+            self.ctx,
+            overlay,
+        )
+        if overlay.is_file() and self.name not in event.reloaded:
+            event.reloaded.append(self.name)
+        event.reloaded.extend(affected)
 
     def _register_workspace_agents(self, ctx: Any) -> None:
         """Discover and register workspace Agent definitions as overlays."""
@@ -127,14 +133,14 @@ class WorkspaceInstructionsPlugin:
             return
         catalog.unregister_owned(self.name, overlay=True)
 
-    async def _apply_workspace_patch(self, ctx: Any, overlay: Path) -> None:
+    async def _apply_workspace_patch(self, ctx: Any, overlay: Path) -> list[str]:
         """Apply ``<workspace>/.xbot/plugins.yaml`` as a tree patch."""
         if not overlay.is_file():
-            return
+            return []
         loader = ctx.loader
         loader._patch_owner = self.name
         try:
-            await loader.apply_patch(loader.patch_from_path(overlay))
+            return await loader.apply_patch(loader.patch_from_path(overlay))
         finally:
             loader._patch_owner = None
 

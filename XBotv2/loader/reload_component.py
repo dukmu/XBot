@@ -6,6 +6,7 @@ from typing import Any
 
 from XBotv2.commands import Command, CommandResult, command_usage, guard_command
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.errors import OperationError
 from XBotv2.loader.contracts import (
     RELOAD_PLUGINS,
     SOFT_RELOAD,
@@ -19,6 +20,12 @@ class LoaderReloadComponent:
     inject = ["loader", "reload_plan", "agent_runtime", "commands"]
 
     def apply(self, ctx: Any, config: Any = None) -> None:
+        # A system reload may briefly withdraw and re-provide injected
+        # services while dependent fibers settle.  This operation is already
+        # running under the runtime that accepted it, so retain that explicit
+        # owner instead of looking it up again after the reload event.
+        agent_runtime = ctx.agent_runtime
+
         async def reload_plugins(_request: EmptyRequest) -> Reloaded:
             event = SoftReload(
                 scope="system",
@@ -26,7 +33,14 @@ class LoaderReloadComponent:
                 variables=dict(ctx.reload_plan.variables),
             )
             await ctx.emit(SOFT_RELOAD, event)
-            selected = ctx.agent_runtime.current_selection()
+            # Definition/config contributors finish during the event. Rebind
+            # only afterwards so the active Agent sees the complete new
+            # catalog rather than whichever listener happened to run first.
+            await agent_runtime.rebind_on_soft_reload(event)
+            invalid = [error for error in event.errors if error.startswith("llm:")]
+            if invalid:
+                raise OperationError("config_invalid", "; ".join(invalid))
+            selected = agent_runtime.current_selection()
             return Reloaded(
                 reloaded=tuple(event.reloaded),
                 errors=tuple(event.errors),

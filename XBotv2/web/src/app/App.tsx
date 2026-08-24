@@ -34,6 +34,8 @@ export function App() {
         current={state.current}
         onClose={() => setSidebarOpen(false)}
         onNew={() => setNewSessionOpen(true)}
+        onRefresh={runtime.refreshSessions}
+        refreshing={state.loading}
         onSession={(id) => {
           setSidebarOpen(false);
           void runtime.resumeSession(id);
@@ -73,7 +75,12 @@ export function App() {
 
         {state.current ? (
           <>
-            <Timeline entries={state.entries} turnRunning={state.turnRunning} onRetry={runtime.retryLast} />
+            <Timeline
+              key={`${state.current.session_id}/${state.current.thread_id}`}
+              entries={state.entries}
+              turnRunning={state.turnRunning}
+              onRetry={runtime.retryLast}
+            />
             <div className="runtime-controls">
               <TaskDock
                 tasks={Object.values(state.tasks)}

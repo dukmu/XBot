@@ -49,13 +49,21 @@ def usage_metadata(
             input_tokens
             + cache_read_input_tokens
             + cache_creation_input_tokens
+            + prompt_cache_write_tokens
             + output_tokens
             if total_tokens is None
             else total_tokens
         ),
         "requests": 1,
         "context_tokens": (
-            input_tokens if context_tokens is None else context_tokens
+            (
+                input_tokens
+                + cache_read_input_tokens
+                + cache_creation_input_tokens
+                + prompt_cache_write_tokens
+            )
+            if context_tokens is None
+            else context_tokens
         ),
     }
     for key, value in (

@@ -60,7 +60,11 @@ class TerminalSession:
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
         self._agent = agent
-        self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
+        self._workspace_root = (
+            None
+            if self._session_mode == "resume" and workspace_root is None
+            else str(Path(workspace_root or Path.cwd()).resolve())
+        )
         self._transport: Transport = transport or HttpTransport(
             base_url, token=token, uds_path=uds_path
         )
@@ -108,6 +112,45 @@ class TerminalSession:
             session_id=self._session_id,
             thread_id=self._thread_id,
         )
+
+    async def list_sessions(self) -> dict[str, Any]:
+        return await self._transport.list_sessions()
+
+    async def list_threads(self, session_id: str | None = None) -> dict[str, Any]:
+        return await self._transport.list_threads(
+            session_id=session_id or self._session_id,
+        )
+
+    async def switch(
+        self,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        workspace_root: str | None = None,
+        mode: str = "resume",
+    ) -> dict[str, Any] | None:
+        """Close the current runtime and connect to another session/thread.
+
+        The HTTP transport remains open so switching does not invalidate the
+        client connection. Persisted sessions retain their recorded workspace
+        when ``workspace_root`` is omitted; ``new`` sessions use the supplied
+        workspace or the current working directory.
+        """
+        if self._connected:
+            try:
+                await self._transport.shutdown(session_id=self._session_id)
+            except Exception:
+                pass
+        self._session_id = session_id or _new_session_id()
+        self._thread_id = thread_id
+        self._workspace_root = (
+            None
+            if mode == "resume" and workspace_root is None
+            else str(Path(workspace_root or Path.cwd()).resolve())
+        )
+        self._session_mode = mode
+        self._connected = False
+        return await self.connect()
 
     async def run_command(
         self,
@@ -204,5 +247,3 @@ class TerminalSession:
             decision=decision,
             scope=scope,
         )
-
-

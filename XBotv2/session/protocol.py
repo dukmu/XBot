@@ -99,6 +99,8 @@ class ThreadSummary(WireModel):
     usage: UsageData = Field(default_factory=_empty_usage)
     pending_interactions: list[str] = Field(default_factory=list)
     status_slots: dict[str, str] = Field(default_factory=dict)
+    workspace_root: str = ""
+    title: str = ""
 
 
 class ThreadListResponse(WireModel):
@@ -111,6 +113,8 @@ class SessionSummary(WireModel):
     status: Literal["active", "inactive"]
     active_threads: int = Field(default=0, ge=0)
     thread_count: int = Field(default=0, ge=0)
+    workspace_root: str = ""
+    title: str = ""
 
 
 class SessionListResponse(WireModel):
@@ -282,6 +286,8 @@ def _session_summary(value: SessionSnapshot) -> SessionSummary:
         status=value.status,
         active_threads=value.active_threads,
         thread_count=value.thread_count,
+        workspace_root=value.workspace_root,
+        title=value.title,
     )
 
 
@@ -302,6 +308,8 @@ def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
         usage=value.usage,
         pending_interactions=list(value.pending_interactions),
         status_slots=value.status_slots,
+        workspace_root=value.workspace_root,
+        title=value.title,
     )
 
 
@@ -350,9 +358,15 @@ def build_session_router(
                 raw_session_id,
                 status=409,
             )
-        workspace_root = str(
-            Path(payload.workspace_root or options.workspace_root).resolve()
-        )
+        workspace_root_value = payload.workspace_root
+        if payload.mode == "resume" and raw_session_id and not workspace_root_value:
+            try:
+                workspace_root_value = (
+                    await sessions.thread_summary(raw_session_id, thread_id)
+                ).workspace_root or options.workspace_root
+            except (SessionNotFound, OperationError):
+                workspace_root_value = options.workspace_root
+        workspace_root = str(Path(workspace_root_value or options.workspace_root).resolve())
         try:
             opened = await sessions.open(OpenSession(
                 session_id=raw_session_id,

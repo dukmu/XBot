@@ -331,6 +331,39 @@ class TestLoaderSoftReload:
         assert event.reloaded == ["browser"]
         assert event.errors == ["browser: restart required"]
 
+    @pytest.mark.asyncio
+    async def test_server_reload_does_not_mount_unscoped_agent_entries(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        loader = Loader(
+            make_plugin_ctx(tmp_path),
+            tree=PluginTree.from_dict([{"id": "llm", "name": "llm"}]),
+            profile="server",
+        )
+        config_path = tmp_path / "plugins.yaml"
+        config_path.write_text(yaml.safe_dump([
+            {"id": "llm", "name": "llm", "config": {"default": "test"}},
+            {"id": "sandbox", "name": "sandbox"},
+            {
+                "id": "server-extension",
+                "name": "server_extension",
+                "profiles": ["server"],
+            },
+        ]), encoding="utf-8")
+        applied = []
+
+        async def apply_patch(patch):
+            applied.append(patch.entries[0].id)
+            return [patch.entries[0].id]
+
+        monkeypatch.setattr(loader, "apply_patch", apply_patch)
+
+        await loader.apply_external_layer(config_path, {})
+
+        assert applied == ["llm", "server-extension"]
+
 
 class TestOrderIndependence:
     """Activation is service-availability driven: row order has no semantics."""

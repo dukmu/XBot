@@ -129,7 +129,11 @@ class AgentsService:
                 else DEFAULT_MAX_ITERATIONS
             ),
         ))
-        ctx.set("engine", engine)
+        # The loop driver belongs to the Agent application, not to the
+        # reloadable runtime-component fiber.  Keep it on the root context so
+        # replacing configuration services does not discard the live turn
+        # history and leave the reactivated component uninitialized.
+        ctx.root.set("engine", engine)
         return engine
 
     def definition(self, name: str) -> AgentDefinition | None:
@@ -436,7 +440,9 @@ class AgentsService:
                 "plugin_unavailable",
                 "Agent definition plugin is not loaded.",
             )
-        await self.ctx.emit(SOFT_RELOAD, SoftReload(scope="agents"))
+        event = SoftReload(scope="agents")
+        await self.ctx.emit(SOFT_RELOAD, event)
+        await self.rebind_on_soft_reload(event)
         definition = self.definition(active)
         if definition is None or definition.mode == "subagent":
             raise OperationError(
@@ -450,7 +456,10 @@ class AgentsService:
 
     async def rebind_on_soft_reload(self, event: SoftReload) -> None:
         """Rebind the active model client after a soft restart."""
-        active = self.ctx.engine.settings.agent_name
+        engine = self.ctx.get("engine", strict=False)
+        if engine is None:
+            return
+        active = engine.settings.agent_name
         definition = self.definition(active)
         if definition is not None and definition.mode != "subagent":
             try:

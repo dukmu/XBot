@@ -353,6 +353,17 @@ class SessionManager:
             for (active_session_id, _), runtime in active.items()
             if active_session_id == session_id
         ]
+        if any(runtime.turn_lock.locked() for runtime in runtimes):
+            raise OperationError(
+                "thread_busy",
+                "Cannot fork while a session thread has an active turn.",
+                retryable=True,
+            )
+        if any(not runtime.application.persistence_available for runtime in runtimes):
+            raise OperationError(
+                "persistence_unavailable",
+                f"Cannot fork {session_id}: message persistence is not mounted",
+            )
         for runtime in runtimes:
             await runtime.application.events.emit(
                 PREPARE_FORK,
@@ -751,11 +762,14 @@ async def session_summary(
     active_threads = sum(
         1 for active_session_id, _ in active if active_session_id == session_id
     )
-    main = (
-        await thread_summary(manager, session_id, "agent")
-        if "agent" in thread_ids
-        else None
-    )
+    main_id = "agent" if "agent" in thread_ids else None
+    if main_id is None:
+        for candidate_id in thread_ids:
+            candidate = await thread_summary(manager, session_id, candidate_id)
+            if not candidate.parent_thread_id:
+                main_id = candidate_id
+                break
+    main = await thread_summary(manager, session_id, main_id) if main_id else None
     return SessionSnapshot(
         session_id=session_id,
         status="active" if active_threads else "inactive",
@@ -828,7 +842,8 @@ class SessionManagerComponent:
                 envelope.target.thread_id,
             )
             runtime.touch()
-            if not envelope.operation.exclusive:
+            exclusive = envelope.operation.requires_exclusive(envelope.request)
+            if not exclusive:
                 result = await dispatch_operation(
                     runtime.application.events,
                     envelope.operation,
@@ -878,7 +893,8 @@ class SessionManagerComponent:
                     "thread_not_active",
                     "Session operations require at least one active thread.",
                 )
-            if envelope.operation.exclusive and any(
+            exclusive = envelope.operation.requires_exclusive(envelope.request)
+            if exclusive and any(
                 runtime.turn_lock.locked() for runtime in runtimes
             ):
                 raise OperationError(
@@ -887,7 +903,7 @@ class SessionManagerComponent:
                     retryable=True,
                 )
             async with AsyncExitStack() as stack:
-                if envelope.operation.exclusive:
+                if exclusive:
                     for runtime in runtimes:
                         await stack.enter_async_context(runtime.turn_lock)
                 results = []

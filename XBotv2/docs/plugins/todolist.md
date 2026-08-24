@@ -1,8 +1,8 @@
 # TodoList Plugin
 
-`todolist` provides session-scoped progress tracking through
-one atomic, model-facing Tool. It uses only the public Tool, Hook, and
-`ctx.state.namespace(...)` APIs and does not infer tasks from assistant prose.
+`todolist` provides thread-scoped progress tracking through
+one atomic, model-facing Tool. It uses the public Tool and thread storage APIs
+and does not infer tasks from assistant prose.
 
 ## Tool Contract
 
@@ -47,10 +47,12 @@ the result remains visible to the next model call so the model knows that its
 update succeeded. The plugin does not rewrite provider context or repeatedly
 inject the active list as a system message.
 
-The plugin stores only the ordered active item list. Old ID-based state is read
-without exposing or continuing its identifiers. A changed list performs one
-immediate `ctx.state.namespace(...)` write, so session resume observes the same current
-checklist. Unloading removes the Tool while retaining session data.
+The plugin stores only the ordered active item list in
+`state/plugin_states/todolist.yaml`. Old ID-based state is read without exposing
+or continuing its identifiers. A changed list performs one immediate plugin
+state write, so thread resume observes the same checklist. Unloading removes
+the Tool while retaining its state. Todo data is not written into core
+`state.json`.
 
 Todo items track concrete work. They do not own the durable session objective;
 that belongs to the separate Goal plugin.

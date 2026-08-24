@@ -133,10 +133,13 @@ def status_renderable(
         segments.insert(activity_index, (activity, ""))
 
     if width >= 80:
-        # "in" is the full prompt sent to the provider (uncached + cache-read);
+        # "in" is the full prompt sent to the provider, including cache I/O;
         # deepseek reports uncached input as 0 when everything is cached.
         full_input = (
-            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+            usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+            + usage.get("prompt_cache_write_tokens", 0)
         )
         detailed_tokens = (
             f"tokens:{_compact_count(total)} "

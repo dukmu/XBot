@@ -120,6 +120,61 @@ class _ScriptedSession:
         }
 
 
+class _SwitchableSession(_ScriptedSession):
+    def __init__(self):
+        super().__init__()
+        self.sessions = [
+            {
+                "session_id": "old-session",
+                "status": "inactive",
+                "thread_count": 1,
+                "workspace_root": "/work/old",
+                "title": "Old work",
+            },
+            {
+                "session_id": "other-session",
+                "status": "inactive",
+                "thread_count": 1,
+                "workspace_root": "/work/other",
+                "title": "Other work",
+            },
+        ]
+        self.switches: list[dict[str, str]] = []
+
+    async def list_sessions(self):
+        return {"sessions": self.sessions}
+
+    async def list_threads(self, session_id):
+        return {
+            "session_id": session_id,
+            "threads": [{
+                "session_id": session_id,
+                "thread_id": "main",
+                "kind": "main",
+                "workspace_root": "/work/other",
+            }],
+        }
+
+    async def switch(self, *, session_id, thread_id, workspace_root=None, mode="resume"):
+        self.session_id = session_id or "new-session"
+        self.thread_id = thread_id
+        self.switches.append({
+            "session_id": self.session_id,
+            "thread_id": thread_id,
+            "workspace_root": workspace_root or "",
+            "mode": mode,
+        })
+        return {
+            "session_id": self.session_id,
+            "thread_id": thread_id,
+            "agent_name": "OtherBot",
+            "workspace_root": workspace_root or "/work/other",
+            "provider": "mock",
+            "model": "mock",
+            "history": [{"role": "user", "content": "restored"}],
+        }
+
+
 @pytest.fixture
 def scripted_session() -> _ScriptedSession:
     return _ScriptedSession()
@@ -980,6 +1035,44 @@ async def test_slash_status_appends_state_notice(scripted_session) -> None:
     assert "turn=0" in body
     assert "mode=composing" in body  # Mode enum value
     assert scripted_session.sent == []
+
+
+@pytest.mark.asyncio
+async def test_session_command_lists_and_switches_workspace() -> None:
+    session = _SwitchableSession()
+    app = XBotTextualApp(session_id="current", thread_id="agent")
+    app.session = session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        for _ in range(5):
+            await pilot.pause()
+            if app._connected:
+                break
+
+        composer = app.query_one("#input")
+        composer.load_text("/session")
+        await app.submit_composer()
+        await pilot.pause()
+        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
+        assert listing and "old-session" in listing[-1].text
+        assert "/work/old" in listing[-1].text
+
+        composer.load_text("/session other-session")
+        await app.submit_composer()
+        for _ in range(10):
+            await pilot.pause()
+            if app.state.session_id == "other-session" and app.state.status == "Ready":
+                break
+
+        assert session.switches == [{
+            "session_id": "other-session",
+            "thread_id": "main",
+            "workspace_root": "/work/other",
+            "mode": "resume",
+        }]
+        assert app.state.session_id == "other-session"
+        assert app.state.thread_id == "main"
+        assert app.state.workspace_root == "/work/other"
+        assert [message.content for message in app.state.messages] == ["restored"]
 
 
 # ----------------------------------------------------------------------

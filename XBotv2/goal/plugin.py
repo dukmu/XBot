@@ -64,6 +64,7 @@ class GoalPlugin:
                 "/goal pause",
                 "/goal complete Implementation, tests, and docs are complete",
             ),
+            exclusive=False,
         ))
 
     async def create_goal(

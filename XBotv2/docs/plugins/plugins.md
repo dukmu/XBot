@@ -243,9 +243,10 @@ resume observes the same summary and recent tail without deleting raw records. S
 ### TodolistPlugin (`todolist/`)
 
 Provides one atomic `update_todos` Tool backed by an immediately persisted
-`ctx.state.namespace(...)` value. Each call supplies the complete ordered checklist; invalid
-lists cannot partially change stored state. Its normal Tool result confirms the
-update to the next model call; the plugin does not inject repeated context.
+thread-local `plugin_states/todolist.yaml` value. Each call supplies the complete
+ordered checklist; invalid lists cannot partially change stored state. Its
+normal Tool result confirms the update to the next model call; the plugin does
+not inject repeated context.
 See [TodoList plugin](todolist.md).
 
 ### GoalPlugin (`goal/`)

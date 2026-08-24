@@ -46,6 +46,24 @@ describe("runtimeReducer", () => {
     });
   });
 
+  it("applies a streaming batch in wire order", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("assistant_message_delta", { content: "hello " }),
+        event("assistant_message_delta", { content: "world" }),
+        event("assistant_message", { content: "hello world", tool_calls: [] }),
+      ],
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "message",
+      content: "hello world",
+      streaming: false,
+    });
+  });
+
   it("accumulates usage deltas but replaces the current context count", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, {
@@ -56,6 +74,9 @@ describe("runtimeReducer", () => {
         total_tokens: 45,
         requests: 1,
         context_tokens: 250,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 10,
+        prompt_cache_write_tokens: 4,
       }),
     });
 
@@ -65,7 +86,23 @@ describe("runtimeReducer", () => {
       total_tokens: 55,
       requests: 1,
       context_tokens: 250,
+      cache_read_input_tokens: 30,
+      cache_creation_input_tokens: 10,
+      prompt_cache_write_tokens: 4,
     });
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", {
+        input_tokens: 0,
+        output_tokens: 1,
+        total_tokens: 1,
+        requests: 1,
+        context_tokens: 0,
+      }),
+    });
+    expect(state.usage.context_tokens).toBe(0);
+    expect(state.usage.total_tokens).toBe(56);
   });
 
   it("queues interactions in event order and resolves one at a time", () => {
@@ -118,6 +155,17 @@ describe("runtimeReducer", () => {
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
+  });
+
+  it("closes a turn and preserves a visible error when the stream fails", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "partial" }) });
+    state = runtimeReducer(state, { type: "event", event: event("error", { message: "provider failed" }) });
+
+    expect(state.turnRunning).toBe(false);
+    expect(state.entries.at(-1)).toMatchObject({ kind: "notice", level: "error", content: "provider failed" });
+    expect(state.entries.find((entry) => entry.kind === "message")).toMatchObject({ streaming: false });
   });
 
   it("renders a persisted tool result even when its call is outside display history", () => {

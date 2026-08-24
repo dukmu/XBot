@@ -17,7 +17,6 @@ from XBotv2.agents.contracts import (
     SelectAgent,
 )
 from XBotv2.agents.contracts import AgentCreateOptions
-from XBotv2.loader import SOFT_RELOAD
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.llm import (
     EffortSelection,
@@ -52,11 +51,7 @@ class AgentRuntimeComponent:
         ctx.set("agent_runtime", service)
         for command in build_agent_commands(service, ctx.agent_catalog):
             ctx.commands.register(command)
-        ctx.on(SOFT_RELOAD, service.rebind_on_soft_reload)
-        engine: Any = None
-
         async def initialize(request: AgentCreateOptions) -> AgentInitialized:
-            nonlocal engine
             engine = await service.create(request)
             return AgentInitialized(
                 active=engine.settings.agent_name,
@@ -67,6 +62,7 @@ class AgentRuntimeComponent:
             )
 
         def catalog() -> AgentCatalog:
+            engine = ctx.get("engine", strict=False)
             if engine is None:
                 raise RuntimeError("Agent runtime is not initialized")
             return AgentCatalog(

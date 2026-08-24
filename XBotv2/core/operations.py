@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Generic, Protocol, TypeVar
 
 from XBotv2.core.errors import OperationError
@@ -24,7 +25,11 @@ class Operation(Generic[RequestT, ResponseT]):
     name: str
     request_type: type[RequestT]
     response_type: type[ResponseT]
-    exclusive: bool = False
+    exclusive: bool | Callable[[RequestT], bool] = False
+
+    def requires_exclusive(self, request: RequestT) -> bool:
+        rule = self.exclusive
+        return bool(rule(request)) if callable(rule) else rule
 
 
 @dataclass(frozen=True, slots=True)

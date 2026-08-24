@@ -6,11 +6,10 @@ import asyncio
 import importlib
 import inspect
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
-from xcore import Context, FiberState
+from xcore import Context, FiberState, current_fiber
 
 from XBotv2.loader.contracts import SOFT_RELOAD, SoftReload
 from XBotv2.loader.types import LoadError, PluginEntry, PluginTree
@@ -52,9 +51,16 @@ def _is_module(value: Any) -> bool:
 class Loader:
     """Mount tree entries as XCore plugins (registered as ``ctx.loader``)."""
 
-    def __init__(self, ctx: Context, *, tree: PluginTree) -> None:
+    def __init__(
+        self,
+        ctx: Context,
+        *,
+        tree: PluginTree,
+        profile: str = "agent",
+    ) -> None:
         self.ctx = ctx
         self.tree = tree
+        self.profile = profile
         self._handles: dict[str, Any] = {}
         self._plugins: dict[str, Any] = {}
 
@@ -183,7 +189,7 @@ class Loader:
         return True
 
     async def reload(self, entry_id: str) -> bool:
-        """Reload one mounted entry (re-imports its module and re-applies it).
+        """Reload one mounted entry's implementation and re-apply it.
 
         Used by the agent reload endpoint to re-read workspace Agent
         definitions.  Returns whether the entry is mounted after the attempt.
@@ -194,20 +200,12 @@ class Loader:
         )
         if entry is None or entry_id not in self._handles:
             return False
-        names = {
-            entry.name,
-            f"{entry.name}.plugin",
-            f"XBotv2.{entry.name}",
-            f"XBotv2.{entry.name}.plugin",
-        }
-        for stale in list(sys.modules):
-            if any(
-                stale == name or stale.startswith(f"{name}.")
-                for name in names
-            ):
-                sys.modules.pop(stale, None)
+        plugin = self._plugins[entry_id]
+        module_name = getattr(plugin, "__module__", type(plugin).__module__)
         await self.unload(entry_id)
         try:
+            module = importlib.import_module(module_name)
+            importlib.reload(module)
             await self._mount(entry)
         except BaseException:
             logger.exception("loader: reload of entry %s failed", entry_id)
@@ -223,20 +221,94 @@ class Loader:
         mounted; entries the patch disables are unloaded.  The caller (the
         patch-applying plugin itself) is skipped so it does not reload itself.
         """
-        self.tree = self.tree.merged_with(patch)
+        previous = {entry.id: entry for entry in self.tree.entries}
+        merged = self.tree.merged_with(patch)
+        effective = {entry.id: entry for entry in merged.entries}
+        self.tree = merged
         affected: list[str] = []
-        for entry in patch.entries:
+        for requested in patch.entries:
+            entry = effective[requested.id]
             if entry.id == getattr(self, "_patch_owner", None):
+                continue
+            old_entry = previous.get(entry.id)
+            if old_entry == entry:
                 continue
             if entry.disabled:
                 if entry.id in self._handles:
                     await self.unload(entry.id)
             elif entry.id in self._handles:
-                await self.reload(entry.id)
+                await self._reapply_config(entry, old_entry)
             else:
-                await self._mount(entry)
+                try:
+                    await self._mount(entry)
+                except BaseException:
+                    await self.unload(entry.id)
+                    self._restore_tree_entry(old_entry, entry.id)
+                    raise
             affected.append(entry.id)
+        await self._settle_dependents()
         return affected
+
+    async def _settle_dependents(self) -> None:
+        """Wait for fibers affected by service replacement to converge."""
+        applying = current_fiber()
+        for _round in range(16):
+            # Service provision schedules dependent refreshes. Give those
+            # tasks a chance to mark their fibers pending before inspecting
+            # the loader's handles.
+            await asyncio.sleep(0)
+            awaiting = [
+                handle
+                for handle in self._handles.values()
+                if handle._fiber is not applying
+                if handle.state not in (FiberState.RUNNING, FiberState.FAILED)
+            ]
+            if not awaiting:
+                await asyncio.sleep(0)
+                awaiting = [
+                    handle
+                    for handle in self._handles.values()
+                    if handle._fiber is not applying
+                    if handle.state not in (FiberState.RUNNING, FiberState.FAILED)
+                ]
+                if not awaiting:
+                    return
+            await asyncio.gather(*awaiting)
+
+    async def _reapply_config(
+        self,
+        entry: PluginEntry,
+        previous: PluginEntry | None,
+    ) -> None:
+        """Re-apply changed config without re-importing implementation code."""
+        await self.unload(entry.id)
+        try:
+            await self._mount(entry)
+        except BaseException:
+            await self.unload(entry.id)
+            self._restore_tree_entry(previous, entry.id)
+            if previous is not None and not previous.disabled:
+                await self._mount(previous)
+            raise
+
+    def _restore_tree_entry(
+        self,
+        previous: PluginEntry | None,
+        entry_id: str,
+    ) -> None:
+        entries = list(self.tree.entries)
+        index = next(
+            (position for position, item in enumerate(entries) if item.id == entry_id),
+            None,
+        )
+        if previous is None:
+            if index is not None:
+                entries.pop(index)
+        elif index is None:
+            entries.append(previous)
+        else:
+            entries[index] = previous
+        self.tree = PluginTree(entries)
 
     def patch_from_path(self, path: Path) -> "PluginTree":
         """Parse a yaml patch file without touching the tree."""
@@ -266,6 +338,17 @@ class Loader:
         good binding and is reported instead of aborting the restart.
         """
         patch = _config_layer(path, values)
+        existing = {entry.id for entry in self.tree.entries}
+        patch = PluginTree([
+            entry
+            for entry in patch.entries
+            if entry.id in existing
+            or (
+                self.profile in entry.profiles
+                if entry.profiles is not None
+                else self.profile == "agent"
+            )
+        ])
         reloaded: list[str] = []
         notices: list[str] = []
         for entry in patch.entries:
@@ -287,7 +370,7 @@ class Loader:
         """SOFT_RELOAD listener: re-apply the external tree for system scope."""
         if event.scope != "system":
             return
-        if event.config_path is None or not event.variables:
+        if event.config_path is None:
             return
         reloaded, notices = await self.apply_external_layer(
             event.config_path,
@@ -316,11 +399,12 @@ class LoaderComponent:
 
     name = "xbot.loader"
 
-    def __init__(self, tree: PluginTree) -> None:
+    def __init__(self, tree: PluginTree, *, profile: str = "agent") -> None:
         self._tree = tree
+        self._profile = profile
 
     def apply(self, ctx: Context, config: Any = None) -> None:
-        loader = Loader(ctx, tree=self._tree)
+        loader = Loader(ctx, tree=self._tree, profile=self._profile)
         ctx.set("loader", loader)
         ctx.on(SOFT_RELOAD, loader.handle_soft_reload)
         # XCore owns application teardown. Keep the loader's bookkeeping in

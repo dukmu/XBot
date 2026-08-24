@@ -29,6 +29,7 @@ class Command:
     usage: str = ""
     examples: tuple[str, ...] = ()
     parameters: dict[str, str] = field(default_factory=dict)
+    exclusive: bool = True
 
     def __post_init__(self) -> None:
         if not _COMMAND_NAME.fullmatch(self.name):
@@ -92,6 +93,7 @@ class CommandDescription:
     usage: str
     examples: tuple[str, ...]
     parameters: dict[str, str]
+    exclusive: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,7 @@ class ExecuteCommand:
     command: str
     kind: Literal["server", "prompt"]
     raw_args: str
+    exclusive: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +121,7 @@ EXECUTE_COMMAND = Operation(
     "commands/execute",
     ExecuteCommand,
     CommandExecution,
-    exclusive=True,
+    exclusive=lambda request: request.exclusive,
 )
 
 

@@ -26,6 +26,7 @@ from XBotv2.tui.client import (
     TuiNotice,
     TuiState,
     TuiTranscriptEntry,
+    _effective_context_tokens,
     _parse_permission_decision,
 )
 from XBotv2.tui.command import (
@@ -188,6 +189,8 @@ class XBotTextualApp(App[None]):
         self._active_choice_index = 0
         self._pending_stream_deltas = 0
         self._stream_timer: asyncio.Task | None = None
+        self._tool_refresh_timer: asyncio.Task | None = None
+        self._deferred_tool_ids: set[str] = set()
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
         self._replay_loading = False
@@ -200,6 +203,7 @@ class XBotTextualApp(App[None]):
         self._history_index: int | None = None
         self._spinner_index = 0
         self._activity_timer = None
+        self._session_events_worker = None
         self._reasoning_expanded = False
         self._tool_details_expanded = False
         self._pending_images: list[tuple[str, dict[str, str]]] = []
@@ -276,6 +280,9 @@ class XBotTextualApp(App[None]):
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
+        await self._cancel_tool_refresh_timer()
+        self._deferred_tool_ids.clear()
+        self._stop_session_events()
         if self._connected:
             await self.session.disconnect()
 
@@ -294,44 +301,7 @@ class XBotTextualApp(App[None]):
             self.state.status = "Connecting"
             self._refresh_all()
             session = await self.session.connect()
-            if isinstance(session, dict):
-                self.state.session_id = str(
-                    session.get("session_id") or self.state.session_id
-                )
-                self.state.thread_id = str(
-                    session.get("thread_id") or self.state.thread_id
-                )
-                self.state.agent_name = str(
-                    session.get("agent_name") or self.state.agent_name
-                )
-                self.state.workspace_root = str(session.get("workspace_root") or "")
-                self.state.provider = str(session.get("provider") or "")
-                self.state.model = str(session.get("model") or "")
-                self.state.model_mode = str(
-                    session.get("model_mode") or ""
-                )
-                slots = session.get("status_slots")
-                if isinstance(slots, dict):
-                    self.state.status_slots = {
-                        str(name): str(value) for name, value in slots.items()
-                    }
-                self.state.context_window = int(session.get("context_window") or 0)
-                usage = session.get("usage")
-                if isinstance(usage, dict):
-                    for key in self.state.usage:
-                        self.state.usage[key] = int(usage.get(key) or 0)
-                    self.state.context_input_tokens = int(
-                        usage.get("context_tokens")
-                        or usage.get("input_tokens")
-                        or 0
-                    )
-            history = session.get("history") if isinstance(session, dict) else None
-            if isinstance(history, list):
-                self.state.restore_history(history)
-                # Replay windowed: mount only the most recent entries so a
-                # long resumed session does not pay full DOM construction on
-                # startup. The full history stays in state for lazy loading.
-                await self._render_replay_window()
+            await self._apply_open_session(session)
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
@@ -342,14 +312,50 @@ class XBotTextualApp(App[None]):
             self._connected = True
             self.state.status = "Ready"
             self._refresh_all()
-            if hasattr(self.session, "session_events"):
-                self.run_worker(
-                    self._collect_session_events,
-                    exclusive=False,
-                    name="session_events",
-                )
+            self._start_session_events()
         except Exception as exc:
             self._record_error(exc)
+
+    async def _apply_open_session(self, session: dict[str, Any] | None) -> None:
+        if isinstance(session, dict):
+            self.state.session_id = str(session.get("session_id") or self.state.session_id)
+            self.state.thread_id = str(session.get("thread_id") or self.state.thread_id)
+            self.state.agent_name = str(session.get("agent_name") or self.state.agent_name)
+            self.state.workspace_root = str(session.get("workspace_root") or "")
+            self.state.provider = str(session.get("provider") or "")
+            self.state.model = str(session.get("model") or "")
+            self.state.model_mode = str(session.get("model_mode") or "")
+            slots = session.get("status_slots")
+            if isinstance(slots, dict):
+                self.state.status_slots = {str(name): str(value) for name, value in slots.items()}
+            self.state.context_window = int(session.get("context_window") or 0)
+            usage = session.get("usage")
+            if isinstance(usage, dict):
+                for key in self.state.usage:
+                    self.state.usage[key] = int(usage.get(key) or 0)
+                self.state.context_input_tokens = _effective_context_tokens(usage)
+            history = session.get("history")
+            if isinstance(history, list):
+                self.state.restore_history(history)
+                await self._render_replay_window()
+
+    def _start_session_events(self) -> None:
+        if not hasattr(self.session, "session_events"):
+            return
+        self._stop_session_events()
+        self._session_events_worker = self.run_worker(
+            self._collect_session_events,
+            exclusive=False,
+            name="session_events",
+        )
+
+    def _stop_session_events(self) -> None:
+        worker = self._session_events_worker
+        self._session_events_worker = None
+        if worker is not None and not getattr(worker, "is_finished", False):
+            cancel = getattr(worker, "cancel", None)
+            if callable(cancel):
+                cancel()
 
     async def submit_composer(self) -> None:
         composer = self.query_one("#input", ComposerTextArea)
@@ -552,10 +558,113 @@ class XBotTextualApp(App[None]):
         if spec.name == "attach":
             await self._cmd_attach(spec.args)
             return
+        if spec.name == "session":
+            await self._cmd_session(spec.args)
+            return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
         await self._dispatch_remote_command(spec)
+
+    async def _cmd_session(self, args: str) -> None:
+        """List or switch sessions using the same persisted session API as WebUI."""
+        if not self._connected:
+            await self._append_local_notice("/session", "Not connected")
+            return
+        try:
+            values = shlex.split(args)
+        except ValueError as exc:
+            await self._append_local_notice("/session", str(exc))
+            return
+        if not values:
+            try:
+                payload = await self.session.list_sessions()
+            except Exception as exc:
+                self._record_error(exc)
+                return
+            sessions = payload.get("sessions") if isinstance(payload, dict) else []
+            if not sessions:
+                await self._append_local_notice("Sessions", "No persisted sessions")
+                return
+            lines = []
+            for item in sessions:
+                sid = str(item.get("session_id") or "")
+                title = str(item.get("title") or "")
+                workspace = str(item.get("workspace_root") or "")
+                suffix = f"  {workspace}" if workspace else ""
+                lines.append(f"{sid}{('  ' + title) if title else ''}{suffix}")
+            await self._append_local_notice("Sessions", "\n".join(lines))
+            return
+        if values[0].lower() == "new":
+            if len(values) > 2:
+                await self._append_local_notice(
+                    "/session", "Usage: /session [<session-id> [workspace] | new [workspace]]"
+                )
+                return
+            workspace = values[1] if len(values) > 1 else self.state.workspace_root or None
+            mode = "new"
+            session_id = None
+        else:
+            if len(values) > 2:
+                await self._append_local_notice(
+                    "/session", "Usage: /session [<session-id> [workspace] | new [workspace]]"
+                )
+                return
+            session_id = values[0]
+            try:
+                threads_payload = await self.session.list_threads(session_id)
+            except Exception as exc:
+                self._record_error(exc)
+                return
+            threads = threads_payload.get("threads") if isinstance(threads_payload, dict) else []
+            main = next((item for item in threads if item.get("kind") == "main"), None)
+            if main is None and threads:
+                main = threads[0]
+            if main is None:
+                await self._append_local_notice("/session", f"Session has no resumable threads: {session_id}")
+                return
+            thread_id = str(main.get("thread_id") or "agent")
+            workspace = values[1] if len(values) > 1 else str(main.get("workspace_root") or "") or None
+            mode = "resume"
+        if self.state.turn_active or self._pending_messages:
+            await self._append_local_notice("/session", "Finish or interrupt the active turn before switching")
+            return
+        try:
+            self._stop_session_events()
+            self._cancel_interaction_response()
+            self._pending_images.clear()
+            self._history_index = None
+            self._connected = False
+            opened = await self.session.switch(
+                session_id=session_id,
+                thread_id=thread_id if session_id else "agent",
+                workspace_root=workspace,
+                mode=mode,
+            )
+            await self._cmd_clear()
+            self.state = TuiState(
+                session_id=self.session.session_id,
+                thread_id=self.session.thread_id,
+            )
+            self.commands.reset()
+            await self._apply_open_session(opened)
+            try:
+                payload = await self.session.list_commands()
+                commands = payload.get("commands") if isinstance(payload, dict) else []
+                if isinstance(commands, list):
+                    self.commands.merge_server(commands)
+            except Exception:
+                logger.exception("failed to load server commands after session switch")
+            self._connected = True
+            self.state.status = "Ready"
+            self._refresh_all()
+            self._start_session_events()
+            await self._append_local_notice(
+                "/session",
+                f"Switched to {self.state.session_id} ({self.state.workspace_root or 'workspace unavailable'})",
+            )
+        except Exception as exc:
+            self._record_error(exc)
 
     async def _dispatch_remote_command(self, spec: CommandSpec) -> None:
         if not self._connected:
@@ -588,14 +697,12 @@ class XBotTextualApp(App[None]):
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
 
+        await self._cancel_tool_refresh_timer()
+        self._deferred_tool_ids.clear()
         stream = self._safe_query_one("#transcript", VerticalScroll)
         if stream is not None:
             await stream.remove_children()
-        self.state.transcript.clear()
-        self.state.messages.clear()
-        self.state.tools.clear()
-        self.state.notices.clear()
-        self.state.errors.clear()
+        self.state.reset_history()
         self._window_start = 0
         self._window_end = 0
         self._mounted_entry_widgets.clear()
@@ -1074,6 +1181,7 @@ class XBotTextualApp(App[None]):
             self._cancel_interaction_response()
             self._resolve_active_choice("request ended")
             await self._cancel_stream_timer()
+            await self._flush_tool_refresh()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
             refresh_input = True
@@ -1081,6 +1189,7 @@ class XBotTextualApp(App[None]):
             self._cancel_interaction_response()
             self._resolve_active_choice("request cancelled")
             await self._cancel_stream_timer()
+            await self._flush_tool_refresh()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
             self._refresh_status()
@@ -1097,10 +1206,15 @@ class XBotTextualApp(App[None]):
             await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
         elif event_type == "tool_call_delta":
-            await self._refresh_changed_tool_widgets()
+            self._deferred_tool_ids.update(self.state._changed_tool_ids)
+            self._schedule_tool_refresh()
+            self._refresh_status()
+            return
         elif event_type == "tool_calls_started":
+            await self._flush_tool_refresh()
             await self._refresh_changed_tool_widgets()
         elif event_type == "tool_result":
+            await self._flush_tool_refresh()
             await self._refresh_changed_tool_widgets()
         elif event_type == "task_updated":
             self._refresh_task_panel()
@@ -1112,6 +1226,7 @@ class XBotTextualApp(App[None]):
                 self.state.restore_history(history)
             await self._render_new_transcript_entries()
         elif event_type == "permission_request":
+            await self._flush_tool_refresh()
             await self._render_new_transcript_entries()
             await self._refresh_changed_tool_widgets()
             refresh_input = True
@@ -1164,6 +1279,40 @@ class XBotTextualApp(App[None]):
             except asyncio.CancelledError:
                 pass
             self._stream_timer = None
+
+    def _schedule_tool_refresh(self) -> None:
+        if self._tool_refresh_timer is None:
+            self._tool_refresh_timer = asyncio.create_task(
+                self._delayed_tool_refresh()
+            )
+
+    async def _delayed_tool_refresh(self) -> None:
+        try:
+            await asyncio.sleep(0.05)
+            self._tool_refresh_timer = None
+            await self._flush_tool_refresh()
+        except asyncio.CancelledError:
+            pass
+
+    async def _cancel_tool_refresh_timer(self) -> None:
+        task = self._tool_refresh_timer
+        self._tool_refresh_timer = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _flush_tool_refresh(self) -> None:
+        ids = set(self._deferred_tool_ids)
+        self._deferred_tool_ids.clear()
+        task = self._tool_refresh_timer
+        if task is not None and task is not asyncio.current_task():
+            await self._cancel_tool_refresh_timer()
+        if ids:
+            await self._render_new_transcript_entries()
+            await self._refresh_changed_tool_widgets(ids)
 
     async def _render_replay_window(self) -> None:
         """Mount only the tail of a resumed history on startup.
@@ -1255,6 +1404,12 @@ class XBotTextualApp(App[None]):
             # bottom; never yank the viewport while reading older entries.
             follow = stream.is_vertical_scroll_end
             self._transcript_follow = follow
+            # Keep live updates in state while the user is reading older
+            # content. They are mounted in bounded batches when the user
+            # returns to the bottom, so a long-running turn cannot grow the
+            # Textual DOM behind the user's back.
+            if not follow:
+                return False
             await self._mount_entries(stream, self._window_end, end)
             self._window_end = end
             await self._drop_leading_excess(stream, follow)
@@ -1608,7 +1763,10 @@ class XBotTextualApp(App[None]):
         elapsed = self._turn_elapsed()
         usage = self.state.turn_usage
         full_input = (
-            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+            usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+            + usage.get("prompt_cache_write_tokens", 0)
         )
         marker = "done" if final else spinner(self._spinner_index)
         verb = "completed" if final else "working"
@@ -1729,12 +1887,15 @@ class XBotTextualApp(App[None]):
                 )
             )
 
-    async def _refresh_changed_tool_widgets(self) -> None:
+    async def _refresh_changed_tool_widgets(
+        self, tool_ids: set[str] | None = None
+    ) -> None:
         for old_id, new_id in self.state._tool_id_renames.items():
             widget = self._tool_widgets.pop(old_id, None)
             if widget is not None:
                 self._tool_widgets[new_id] = widget
-        for tool_call_id in list(self.state._changed_tool_ids):
+        changed_ids = tool_ids if tool_ids is not None else self.state._changed_tool_ids
+        for tool_call_id in list(changed_ids):
             await self._refresh_tool_widget(tool_call_id)
 
     async def _refresh_streaming_assistant_widget(self) -> None:

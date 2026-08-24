@@ -14,6 +14,10 @@ export function StatusBar({ state }: { state: RuntimeState }) {
   const contextFree = current.context_window > 0
     ? Math.max(0, Math.round((1 - state.usage.context_tokens / current.context_window) * 100))
     : null;
+  const fullInput = state.usage.input_tokens
+    + state.usage.cache_read_input_tokens
+    + state.usage.cache_creation_input_tokens
+    + state.usage.prompt_cache_write_tokens;
   return (
     <footer className="status-bar">
       <span className={`connection-state ${state.connected ? "online" : "offline"}`} title={state.connected ? "Connected" : "Disconnected"} />
@@ -24,7 +28,7 @@ export function StatusBar({ state }: { state: RuntimeState }) {
       ))}
       <span className="status-spacer" />
       {contextFree !== null && <span className="status-context">ctx-free:{contextFree}%</span>}
-      <span className="status-tokens" title={`${state.usage.input_tokens} in / ${state.usage.output_tokens} out`}>
+      <span className="status-tokens" title={`${fullInput} in / ${state.usage.output_tokens} out · ${state.usage.cache_read_input_tokens} cache read`}>
         tokens:{compact(state.usage.total_tokens)}
       </span>
     </footer>

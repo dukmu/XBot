@@ -2,7 +2,6 @@
 
 from XBotv2.tests.helpers import make_engine
 
-import json
 from pathlib import Path
 
 import pytest
@@ -27,7 +26,7 @@ class SetupContext:
         self.tools: dict = {}
         self.options: dict = {}
         self.commands: dict = {}
-        for entry in self.ctx.tools.registry.registered_entries():
+        for entry in self.ctx.tools._registry.registered_entries():
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
@@ -93,7 +92,7 @@ async def test_update_todos_atomically_replaces_the_complete_list(state_store):
     assert created.status == "success"
     assert unchanged.status == "success"
     assert updated.status == "success"
-    assert await plugin.store.get("state") == {"items": replacement}
+    assert plugin.storage.get_plugin_state("todolist") == {"items": replacement}
 
 
 @pytest.mark.asyncio
@@ -124,7 +123,7 @@ async def test_invalid_list_never_partially_changes_state(state_store):
         "invalid_todo_status",
         "invalid_todos",
     ]
-    assert await plugin.store.get("state") == {"items": original}
+    assert plugin.storage.get_plugin_state("todolist") == {"items": original}
 
 
 @pytest.mark.asyncio
@@ -137,7 +136,7 @@ async def test_all_completed_returns_final_list_then_clears_active_state(state_s
 
     assert result.status == "success"
     assert "All todos completed" in result.content
-    assert await plugin.store.get("state") == {"items": []}
+    assert plugin.storage.get_plugin_state("todolist") == {"items": []}
 
 
 @pytest.mark.asyncio
@@ -148,13 +147,13 @@ async def test_empty_list_clears_without_requiring_progress_item(state_store):
     result = await plugin.update_todos([])
 
     assert result.status == "success"
-    assert await plugin.store.get("state") == {"items": []}
+    assert plugin.storage.get_plugin_state("todolist") == {"items": []}
 
 
 @pytest.mark.asyncio
 async def test_old_id_based_state_is_read_without_exposing_ids(state_store):
     plugin = make_plugin(state_store)
-    await plugin.store.set("state", {
+    plugin.storage.set_plugin_state("todolist", {
         "next_id": 3,
         "items": [
             {"id": "todo-2", "content": "resume work", "status": "in_progress"},
@@ -168,12 +167,12 @@ async def test_old_id_based_state_is_read_without_exposing_ids(state_store):
 async def test_todolist_rejects_invalid_persisted_state(state_store):
     plugin = make_plugin(state_store)
     invalid = {"items": "not-a-list"}
-    await plugin.store.set("state", invalid)
+    plugin.storage.set_plugin_state("todolist", invalid)
 
     with pytest.raises(ValueError, match="Todo list state is invalid"):
         await plugin._read_items()
 
-    assert await plugin.store.get("state") == invalid
+    assert plugin.storage.get_plugin_state("todolist") == invalid
 
 
 @pytest.mark.asyncio
@@ -188,7 +187,7 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
     from XBotv2.loader.runtime import Loader
 
     ctx = mount_ctx(state_store)
-    registry = ctx.tools.registry
+    registry = ctx.tools._registry
     loader = Loader(ctx, tree=PluginTree.from_dict([
         {"id": "todolist", "name": "todolist"},
     ]))
@@ -201,10 +200,13 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
 
     assert await loader.unload("todolist") is True
     assert registry.registered_names() == []
-    state_file = state_store.paths.state_dir / "state.json"
-    assert json.loads(state_file.read_text(encoding="utf-8"))["todolist.state"] == {
+    assert state_store.get_plugin_state("todolist") == {
         "items": active,
     }
+    assert (
+        state_store.paths.plugin_states_dir / "todolist.yaml"
+    ).is_file()
+    assert not (state_store.paths.state_dir / "state.json").exists()
 
     await loader.load()
     assert registry.registered_names() == ["update_todos"]

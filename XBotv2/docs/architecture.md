@@ -306,10 +306,10 @@ independently records the checkpoint.
 ### TodolistPlugin (`todolist/`)
 
 Provides one atomic `update_todos` Tool that replaces the complete ordered
-checklist after validation. One `ctx.state.namespace(...)` value holds the active items;
-Tool calls and results use the normal conversation path without a repeated
-context event. It does not infer state from conversation text or duplicate goal
-ownership.
+checklist after validation. Its thread-local `plugin_states/todolist.yaml` file
+holds the active items; Tool calls and results use the normal conversation path
+without a repeated context event. It does not infer state from conversation
+text or duplicate goal ownership.
 
 ### GoalPlugin (`goal/`)
 

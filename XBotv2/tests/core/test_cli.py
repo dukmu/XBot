@@ -189,6 +189,9 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
             return _decorate
 
+        def add_exception_handler(self, exc_class: object, handler: object) -> None:
+            self.exception_handlers[exc_class] = handler
+
     monkeypatch.setattr(http, "create_app", lambda **_kwargs: _FakeApp())
     served = {}
     monkeypatch.setattr(

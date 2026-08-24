@@ -39,6 +39,7 @@ _CLIENT_ALIASES: dict[str, str] = {
     "/clear-screen": "clear-screen", "/cls": "clear-screen", "/help": "help",
     "/thinking": "thinking", "/details": "details",
     "/attach": "attach",
+    "/session": "session",
 }
 
 _CLIENT_COMMANDS: dict[str, CommandSpec] = {
@@ -79,11 +80,22 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/attach <path> | /attach clear",
         raw="/attach",
     ),
+    "session": CommandSpec(
+        name="session",
+        kind="client",
+        description="List, resume, or create sessions",
+        usage="/session [<session-id> | new [workspace]]",
+        raw="/session",
+        parameters={
+            "<session-id>": "Resume a persisted session",
+            "new [workspace]": "Create a session in a workspace",
+        },
+    ),
 }
 _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
 _CLIENT_SEARCH_ORDER = (
-    "help", "clear-screen", "thinking", "details", "attach", "exit",
+    "help", "session", "clear-screen", "thinking", "details", "attach", "exit",
 )
 
 

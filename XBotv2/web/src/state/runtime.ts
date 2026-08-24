@@ -82,6 +82,8 @@ export type RuntimeAction =
   | { type: "tasks"; tasks: TaskData[] }
   | { type: "user_message"; content: string; images: MessageImage[] }
   | { type: "event"; event: ServerEvent }
+  | { type: "events"; events: ServerEvent[] }
+  | { type: "turn_error"; message: string }
   | { type: "interaction_resolved"; requestId: string }
   | { type: "remove_task"; taskId: string }
   | { type: "agent_selected"; agent: string; provider: string; model: string; modelMode: string; contextWindow: number }
@@ -127,7 +129,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         loading: false,
         current: action.session,
         entries: historyEntries(action.session.history),
-        usage: { ...action.session.usage },
+        usage: normalizeUsage(action.session.usage),
         interactions: [],
         tasks: {},
         turnRunning: false,
@@ -152,6 +154,16 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       };
     case "event":
       return applyEvent(state, action.event);
+    case "events":
+      return action.events.reduce(applyEvent, state);
+    case "turn_error":
+      return {
+        ...state,
+        turnRunning: false,
+        queuedMessages: 0,
+        entries: finalizeAssistant(state.entries),
+        error: action.message,
+      };
     case "interaction_resolved":
       return {
         ...state,
@@ -260,11 +272,16 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
       };
     case "error":
-      return {
-        ...state,
-        error: stringValue(data.message) || "XBot turn failed",
-        entries: [...state.entries, noticeEntry(stringValue(data.message) || "XBot turn failed", "error")],
-      };
+      {
+        const message = stringValue(data.message) || "XBot turn failed";
+        return {
+          ...state,
+          turnRunning: false,
+          queuedMessages: 0,
+          entries: [...finalizeAssistant(state.entries), noticeEntry(message, "error")],
+          error: message,
+        };
+      }
     default:
       return state;
   }
@@ -451,7 +468,25 @@ function addUsage(current: UsageData, data: JsonObject): UsageData {
     output_tokens: current.output_tokens + numberValue(data.output_tokens),
     total_tokens: current.total_tokens + numberValue(data.total_tokens),
     requests: current.requests + numberValue(data.requests),
-    context_tokens: numberValue(data.context_tokens) || current.context_tokens,
+    context_tokens: Object.hasOwn(data, "context_tokens")
+      ? numberValue(data.context_tokens)
+      : current.context_tokens,
+    cache_read_input_tokens: current.cache_read_input_tokens + numberValue(data.cache_read_input_tokens),
+    cache_creation_input_tokens: current.cache_creation_input_tokens + numberValue(data.cache_creation_input_tokens),
+    prompt_cache_write_tokens: current.prompt_cache_write_tokens + numberValue(data.prompt_cache_write_tokens),
+  };
+}
+
+function normalizeUsage(usage: Partial<UsageData>): UsageData {
+  return {
+    input_tokens: numberValue(usage.input_tokens),
+    output_tokens: numberValue(usage.output_tokens),
+    total_tokens: numberValue(usage.total_tokens),
+    requests: numberValue(usage.requests),
+    context_tokens: numberValue(usage.context_tokens),
+    cache_read_input_tokens: numberValue(usage.cache_read_input_tokens),
+    cache_creation_input_tokens: numberValue(usage.cache_creation_input_tokens),
+    prompt_cache_write_tokens: numberValue(usage.prompt_cache_write_tokens),
   };
 }
 
