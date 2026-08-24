@@ -44,25 +44,6 @@ class BrowserPlugin:
         self._browser: BrowserSession | None = None
         self._artifacts_dir = Path(".")
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        self._search.update(config.get("search") or {})
-        network = config.get("network") or {}
-        self._network_options = NetworkOptions(
-            timeout_seconds=float(network.get("timeout_seconds", 20)),
-            max_response_bytes=int(network.get("max_response_bytes", 5_000_000)),
-            allow_private=bool(network.get("allow_private", False)),
-        )
-        self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
-        self._browser_options.update(config.get("browser") or {})
-
-    async def on_unload(self) -> None:
-        if self._browser is not None:
-            await self._browser.shutdown()
-        if self._web is not None:
-            await self._web.close()
-        self._browser = None
-        self._web = None
-
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         config = config or {}
@@ -75,7 +56,7 @@ class BrowserPlugin:
         )
         self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
         self._browser_options.update(config.get("browser") or {})
-        ctx.dispose(self._on_unload)
+        ctx.dispose(self._dispose)
         self._artifacts_dir = Path(ctx.variables["artifacts"])
         for function in (
             self.web_search,
@@ -233,7 +214,7 @@ class BrowserPlugin:
         }
 
 
-    async def _on_unload(self) -> None:
+    async def _dispose(self) -> None:
         if self._browser is not None:
             await self._browser.shutdown()
         if self._web is not None:

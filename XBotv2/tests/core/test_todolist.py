@@ -176,7 +176,7 @@ async def test_todolist_rejects_invalid_persisted_state(state_store):
 
 
 @pytest.mark.asyncio
-async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_store):
+async def test_plugin_dispose_removes_tool_but_retains_todos(tmp_path, state_store):
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
     (plugins_root / "todolist").symlink_to(
@@ -184,21 +184,21 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
         target_is_directory=True,
     )
     from XBotv2.loader import PluginTree
-    from XBotv2.loader.runtime import Loader
+    from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools._registry
-    loader = Loader(ctx, tree=PluginTree.from_dict([
+    handles = mount_plugin_tree(ctx, PluginTree.from_dict([
         {"id": "todolist", "name": "todolist"},
     ]))
 
-    await loader.load()
-    assert isinstance(loader.get("todolist"), TodolistPlugin)
+    await ctx.start()
+    validate_mounted_tree(handles)
     assert registry.registered_names() == ["update_todos"]
     active = [todo("survive unload", "in_progress")]
     await registry.get("update_todos").tool.ainvoke({"todos": active})
 
-    assert await loader.unload("todolist") is True
+    await handles["todolist"].dispose()
     assert registry.registered_names() == []
     assert state_store.get_plugin_state("todolist") == {
         "items": active,
@@ -208,9 +208,6 @@ async def test_loader_unload_removes_tool_but_retains_todos(tmp_path, state_stor
     ).is_file()
     assert not (state_store.paths.state_dir / "state.json").exists()
 
-    await loader.load()
-    assert registry.registered_names() == ["update_todos"]
-    await loader.unload_all()
 
 
 @pytest.mark.asyncio

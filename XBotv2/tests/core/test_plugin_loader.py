@@ -7,7 +7,11 @@ import pytest
 import yaml
 
 from XBotv2.loader import PluginEntry, PluginTree
-from XBotv2.loader.runtime import Loader, resolve_plugin_from_module
+from XBotv2.loader.runtime import (
+    mount_plugin_tree,
+    resolve_plugin_from_module,
+    validate_mounted_tree,
+)
 
 
 def _write_plugin(tmp_path, name: str, code: str) -> Path:
@@ -47,6 +51,13 @@ def make_plugin_ctx(tmp_path):
     ctx.set("runtime", None)
     ctx.set("paths", None)
     return ctx
+
+
+async def start_plugin_tree(ctx, tree: PluginTree):
+    handles = mount_plugin_tree(ctx, tree)
+    await ctx.start()
+    validate_mounted_tree(handles)
+    return handles
 
 
 # ------------------------------------------------------------------
@@ -124,7 +135,6 @@ class DemoPlugin:
 
 plugin = DemoPlugin()
 """)
-        from XBotv2.loader.runtime import Loader as _  # noqa
         import importlib
 
         module = importlib.import_module("demo")
@@ -157,12 +167,12 @@ plugin = DemoPlugin()
 
 
 # ------------------------------------------------------------------
-# Loader behavior
+# Startup tree mounting
 # ------------------------------------------------------------------
 
 
-class TestLoader:
-    async def test_load_mounts_entries_and_skips_disabled(self, tmp_path):
+class TestPluginTreeMounting:
+    async def test_mounts_entries_and_skips_disabled(self, tmp_path):
         _write_plugin(tmp_path, "alpha", """
 from XBotv2.core import Tool
 
@@ -181,19 +191,17 @@ class BetaPlugin:
     def apply(self, ctx, config=None):
         pass
 
-plugin = BetaPlugin()
+        plugin = BetaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        handles = await start_plugin_tree(ctx, PluginTree.from_dict([
             {"id": "alpha", "name": "alpha"},
             {"id": "beta", "name": "beta", "disabled": True},
         ]))
-        await loader.load()
-        assert loader.loaded_ids == ("alpha",)
+        assert tuple(handles) == ("alpha",)
         assert "alpha_tool" in ctx.tools.registered_names()
-        assert loader.get("alpha").name == "alpha"
 
-    async def test_unload_cleans_registrations(self, tmp_path):
+    async def test_context_destroy_cleans_registrations(self, tmp_path):
         _write_plugin(tmp_path, "gamma", """
 from XBotv2.core import Tool
 
@@ -206,14 +214,13 @@ class GammaPlugin:
 plugin = GammaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.from_dict([
             {"id": "gamma", "name": "gamma"},
         ]))
-        await loader.load()
-        assert "gamma_tool" in ctx.tools.registered_names()
-        await loader.unload("gamma")
-        assert loader.loaded_ids == ()
-        assert "gamma_tool" not in ctx.tools.registered_names()
+        tools = ctx.tools
+        assert "gamma_tool" in tools.registered_names()
+        await ctx.destroy()
+        assert "gamma_tool" not in tools.registered_names()
 
     async def test_config_reaches_apply(self, tmp_path):
         _write_plugin(tmp_path, "delta", """
@@ -221,31 +228,17 @@ class DeltaPlugin:
     name = "delta"
 
     def apply(self, ctx, config=None):
-        self.received = (config or {}).get("value")
+        ctx.set("delta_value", (config or {}).get("value"))
 
 plugin = DeltaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.from_dict([
             {"id": "delta", "name": "delta", "config": {"value": 42}},
         ]))
-        await loader.load()
-        assert loader.get("delta").received == 42
+        assert ctx.delta_value == 42
 
-    async def test_unload_all_reverse_order(self, tmp_path):
-        order = []
-
-        def make(name):
-            return f"""
-class {name.title()}Plugin:
-    name = "{name}"
-
-    def apply(self, ctx, config=None):
-        {name}_plugin = self
-        ctx.dispose(lambda: order.append("{name}"))
-
-plugin = {make("one").strip().splitlines()[0] if False else ""}{""}
-"""
+    async def test_context_destroy_cleans_all_plugins(self, tmp_path):
         marker_one = tmp_path / "one.txt"
         marker_two = tmp_path / "two.txt"
         _write_plugin(tmp_path, "one", f"""
@@ -269,13 +262,12 @@ class TwoPlugin:
 plugin = TwoPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.from_dict([
             {"id": "one", "name": "one"},
             {"id": "two", "name": "two"},
         ]))
-        await loader.load()
-        await loader.unload_all()
-        assert marker_two.exists()  # reverse load order: two unloads first
+        await ctx.destroy()
+        assert marker_two.exists()
         assert marker_one.exists()
 
     async def test_isolate_entry_scopes_services(self, tmp_path):
@@ -298,14 +290,16 @@ class ScopedProviderPlugin:
 plugin = ScopedProviderPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.from_dict([
             {"id": "provider", "name": "provider"},
-            {"id": "scoped", "name": "scoped_provider", "isolate": {"thing": True}},
+            {
+                "id": "scoped",
+                "name": "scoped_provider",
+                "isolate": {"thing": "scoped"},
+            },
         ]))
-        await loader.load()
         assert ctx.get("thing") == "root-thing"
-        scoped_ctx = loader.handle("scoped")._fiber.ctx
-        assert scoped_ctx.get("thing") == "scoped-thing"
+        assert ctx.isolate("thing", "scoped").get("thing") == "scoped-thing"
 
 
 class TestOrderIndependence:
@@ -366,6 +360,7 @@ class TestOrderIndependence:
             llm_override=MockLLM(responses=[{"content": "ok"}]),
         )
         assert application.engine is not None
-        assert "tools" in application.loader.loaded_ids
-        assert "agent-runtime" in application.loader.loaded_ids
-        assert "agentloop" in application.loader.loaded_ids
+        assert application.tools is not None
+        assert application.agent_runtime is not None
+        assert application.agent_loop_factory is not None
+        assert application.get("loader", strict=False) is None

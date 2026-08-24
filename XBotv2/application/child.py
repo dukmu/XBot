@@ -122,7 +122,7 @@ class ChildApplicationSession:
         except Exception as exc:  # noqa: BLE001 - close errors become results
             return f"Subagent close failed: {exc}"
         finally:
-            await self.context.stop()
+            await self.context.destroy()
         return ""
 
     def _record(self, event: str, *, error: str = "") -> None:

@@ -291,7 +291,7 @@ async def test_mcp_plugin_unload_disconnects_external_resources():
     plugin._client.disconnect_all = AsyncMock()
     plugin._server_status["server"] = {"status": "ready"}
 
-    await plugin._on_unload()
+    await plugin._dispose()
 
     plugin._client.disconnect_all.assert_awaited_once()
     assert plugin._server_status == {}

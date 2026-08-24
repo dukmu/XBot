@@ -56,7 +56,7 @@ class MountedAgentApplication:
         )
 
     async def close(self) -> None:
-        await self._context.stop()
+        await self._context.destroy()
 
 
 def mounted_application(context: Context) -> MountedAgentApplication:

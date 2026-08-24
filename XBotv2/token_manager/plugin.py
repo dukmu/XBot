@@ -17,14 +17,7 @@ class TokenManagerPlugin:
     def __init__(self) -> None:
         self._latest: dict[str, Any] = {}
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        del config
-
-    async def on_unload(self) -> None:
-        self._latest = {}
-
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
         ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
         ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 

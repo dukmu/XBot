@@ -326,9 +326,9 @@ Initialization is idempotent within an open session. A registration failure
 rolls back every tool and the connection for that server. Optional server
 failures leave diagnostics degraded and allow startup to continue; a server
 with `required: true` rolls back every server initialized by that hook call and
-fails Agent startup. Session close resets the plugin so a later initialization can
-reconnect and register a fresh tool set. `on_unload` remains a final cleanup
-path for startup failures and abnormal shutdown.
+fails Agent startup. Session close resets the plugin so a later initialization
+can reconnect and register a fresh tool set. Its XCore disposer remains the
+final cleanup path for startup failures and application destruction.
 
 **Transport types:**
 - `local` (stdio): official MCP SDK stdio transport.

@@ -171,6 +171,28 @@ async def test_inject_wakes_dependent_when_service_appears_in_apply():
     assert h2.state.value == "running"
 
 
+async def test_start_resolves_pre_mounted_dependencies_without_row_order():
+    ctx = Context()
+    loaded: list[str] = []
+
+    def consumer(ctx_, config):
+        loaded.append(ctx_.database)
+
+    consumer.inject = ["database"]
+
+    def provider(ctx_, config):
+        ctx_.set("database", "db-impl")
+
+    consumer_handle = ctx.plugin(consumer)
+    provider_handle = ctx.plugin(provider)
+
+    await ctx.start()
+
+    assert provider_handle.state.value == "running"
+    assert consumer_handle.state.value == "running"
+    assert loaded == ["db-impl"]
+
+
 async def test_inject_dependent_rolls_back_when_service_removed():
     ctx = Context()
     states: list[str] = []

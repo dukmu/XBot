@@ -101,15 +101,6 @@ class AgentSelection:
     context_window: int
 
 
-@dataclass(frozen=True, slots=True)
-class AgentInitialized:
-    active: str
-    provider: str
-    model: str
-    model_mode: str
-    context_window: int
-
-
 LIST_AGENTS = Operation(
     "agents/list",
     EmptyRequest,
@@ -121,24 +112,14 @@ SELECT_AGENT = Operation(
     AgentSelection,
     exclusive=True,
 )
-INITIALIZE_AGENT = Operation(
-    "agents/initialize",
-    AgentCreateOptions,
-    AgentInitialized,
-    exclusive=True,
-)
-
-
 __all__ = [
     "AgentCatalog",
     "AgentCreateOptions",
     "AgentDefinition",
-    "AgentInitialized",
     "AgentMode",
     "AgentSession",
     "AgentSessionResult",
     "AgentSelection",
-    "INITIALIZE_AGENT",
     "LIST_AGENTS",
     "SELECT_AGENT",
     "SelectAgent",

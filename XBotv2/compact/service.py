@@ -56,7 +56,7 @@ class CompactService:
         self._keep_recent_turns = config.keep_recent_turns
         self._summary_max_chars = config.summary_max_chars
 
-    async def _on_unload(self) -> None:
+    async def _dispose(self) -> None:
         self._manual_requested = False
         self._compactions = 0
         self._last_reason = ""

@@ -3369,18 +3369,16 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         if not ctx.turn_lock.locked():
             break
         await asyncio.sleep(0)
-    goal_plugin = ctx.application._context.loader.get("goal")
-    assert await goal_plugin._read_goal() == {
-        "objective": "ship the API",
-        "status": "complete",
-        "summary": "API tests passed",
-        "token_budget": 2000,
-    }
     get_response = await skills_client.post(
         "/sessions/goal-state/threads/t/commands",
         json={"command": "goal", "raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
+    assert get_response.json()["data"]["message"] == (
+        "[complete] ship the API\n"
+        "Token budget: 2000\n"
+        "Execution summary: API tests passed"
+    )
 
 
 @pytest.mark.asyncio

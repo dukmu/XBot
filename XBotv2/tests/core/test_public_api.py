@@ -132,7 +132,6 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "AgentRuntimePort",
         "AgentSession",
         "AgentSessionResult",
-        "INITIALIZE_AGENT",
     }
     assert set(config.__all__) >= {
         "PatchPolicy",

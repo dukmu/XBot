@@ -7,7 +7,7 @@
 
 - `ctx.plugin()` 只注册（fiber 进入 `pending`）。加载由两条路径触发：
   1. `await ctx.start()`：置 active → **迭代不动点**加载所有依赖满足的
-     pending/failed fiber（直到无进展；等待中的保持 pending，不报错）→
+     pending fiber（直到无进展；等待中的保持 pending，不报错）→
      `emit("ready")`。
   2. 运行期服务变化（`set`/`unset`/提供方状态迁移）：满足的 pending fiber 立即
      加载；运行中且依赖丢失的 fiber 回滚到 pending。**仅在 active 时生效**（start
@@ -19,7 +19,6 @@
 
 ```python
 await ctx.start()            # 激活 + 不动点加载 + ready
-await ctx.settle()           # 运行期等待依赖图达到稳定状态
 await ctx.stop()             # 卸载全部 fiber（逆加载序）到 pending + dispose 事件
 await ctx.start()            # 再次 start：插件重新 apply（可恢复）
 await ctx.destroy()          # 永久拆除（不可再 start）
@@ -34,11 +33,6 @@ await ctx.destroy()          # 永久拆除（不可再 start）
 | 卸载顺序 | 按加载逆序（逆拓扑） |
 | destroy 后 start | 抛 `RuntimeError`（不可恢复） |
 | 可恢复性 | `ctx.state` 持久内容跨 stop→start 保留（见 `state.md`） |
-
-`settle()` 是 composition boundary API：配置装载器或应用入口在一批服务替换完成后
-调用它，等待 XCore 自动卸载/重载所有受影响的 fiber。插件自己的 `apply` 尚未返回时
-不能调用 `settle()`，否则该调用会等待正在装载的自己；XCore 会明确抛出
-`RuntimeError`，而不是跳过当前 fiber 或进行私有状态轮询。
 
 ## ready / dispose 事件
 

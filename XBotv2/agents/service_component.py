@@ -7,10 +7,7 @@ from xcore import Context
 from XBotv2.agents.commands import build_agent_commands
 from XBotv2.agents.contracts import (
     AgentCatalog,
-    AgentCreateOptions,
-    AgentInitialized,
     AgentSelection,
-    INITIALIZE_AGENT,
     LIST_AGENTS,
     SELECT_AGENT,
     SelectAgent,
@@ -38,16 +35,6 @@ class AgentRuntimeOperations:
     ) -> None:
         self._service = service
         self._catalog = catalog
-
-    async def initialize(self, request: AgentCreateOptions) -> AgentInitialized:
-        engine = await self._service.create(request)
-        return AgentInitialized(
-            active=engine.settings.agent_name,
-            provider=engine.settings.provider,
-            model=engine.settings.model,
-            model_mode=engine.settings.model_mode,
-            context_window=engine.context_window,
-        )
 
     def list_agents(self, _request: EmptyRequest) -> AgentCatalog:
         return AgentCatalog(
@@ -93,7 +80,6 @@ class AgentRuntimeOperations:
     def register(self, ctx: Context) -> None:
         for command in build_agent_commands(self._service, self._catalog):
             ctx.commands.register(command)
-        ctx.on(INITIALIZE_AGENT.name, self.initialize)
         ctx.on(LIST_AGENTS.name, self.list_agents)
         ctx.on(SELECT_AGENT.name, self.select_agent)
         ctx.on(SELECT_PROVIDER.name, self.select_provider)
@@ -111,15 +97,17 @@ class AgentRuntimeComponent:
         "tools",
         "loop_state",
         "commands",
+        "agent_options",
     ]
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(self, ctx: Context, config: object | None = None) -> None:
         service = AgentsService(
             ctx,
             catalog=ctx.agent_catalog,
             factory=ctx.agent_loop_factory,
         )
         ctx.set("agent_runtime", service)
+        await service.create(ctx.agent_options)
         AgentRuntimeOperations(service, ctx.agent_catalog).register(ctx)
 
 

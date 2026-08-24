@@ -32,8 +32,7 @@ from XBotv2.session import PREPARE_FORK, PrepareFork
 
 class JobsComponent:
     inject = {
-        "required": ["commands"],
-        "optional": ["engine"],
+        "required": ["commands", "engine"],
     }
     """Register the job registry as ``ctx.jobs``."""
 
@@ -57,25 +56,21 @@ class JobsComponent:
         async def publish_completion(snapshot: dict[str, Any]) -> None:
             task = task_snapshot(snapshot)
             event = task_completion_event(task)
-            engine = cast(
-                AgentLoopDriverPort | None,
-                ctx.get("engine", strict=False),
+            engine = cast(AgentLoopDriverPort, ctx.engine)
+            payload = event.data
+            await engine.inject(
+                prompt_container(
+                    "runtime_event",
+                    [prompt_element(
+                        "payload",
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                        attributes={"encoding": "json"},
+                    )],
+                    attributes={"source": "tasks", "event": "completed"},
+                ),
+                source=task.task_id,
+                metadata={"kind": "notification", "payload": payload},
             )
-            if engine is not None:
-                payload = event.data
-                await engine.inject(
-                    prompt_container(
-                        "runtime_event",
-                        [prompt_element(
-                            "payload",
-                            json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                            attributes={"encoding": "json"},
-                        )],
-                        attributes={"source": "tasks", "event": "completed"},
-                    ),
-                    source=task.task_id,
-                    metadata={"kind": "notification", "payload": payload},
-                )
             await ctx.emit(
                 RUNTIME_EVENT,
                 RuntimeEvent(client_event=event),

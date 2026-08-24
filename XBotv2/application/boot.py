@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import xcore
+from xcore import Context
 
 from XBotv2.loader import PluginTree
-from XBotv2.loader.runtime import LoaderComponent
+from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
 
 
 async def boot_application(
@@ -19,9 +20,9 @@ async def boot_application(
     tree: PluginTree,
     data_dir: Path,
     plugin_dirs: list[Path | str] | None = None,
-    prepare: Callable[[Any], Any] | None = None,
-) -> Any:
-    """Create, prepare, mount, and settle one XCore application context."""
+    prepare: Callable[[Context], Any] | None = None,
+) -> Context:
+    """Create, prepare, mount, and start one XCore application context."""
     import_paths: list[str] = []
     for plugin_dir in plugin_dirs or []:
         root = Path(plugin_dir)
@@ -43,9 +44,9 @@ async def boot_application(
             prepared = prepare(ctx)
             if inspect.isawaitable(prepared):
                 await prepared
-        ctx.plugin(LoaderComponent(tree))
+        handles = mount_plugin_tree(ctx, tree)
         await ctx.start()
-        await ctx.loader.load()
+        validate_mounted_tree(handles)
         return ctx
     except BaseException as startup_error:
         try:

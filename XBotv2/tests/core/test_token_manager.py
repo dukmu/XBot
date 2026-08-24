@@ -104,17 +104,3 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     assert latest["estimate_source"] == "estimated"
     assert latest["provider_usage"]["context_tokens"] == 180
     assert latest["provider_usage"]["cache_read_input_tokens"] == 80
-
-
-@pytest.mark.asyncio
-async def test_plugin_unload_clears_only_ephemeral_observation():
-    plugin = make_plugin()
-    plugin._latest = {"context_tokens_estimate": 10}
-
-    await plugin.on_unload()
-
-    assert plugin.diagnostics() == {
-        "status": "ready",
-        "mode": "observe_only",
-        "latest_request": {},
-    }

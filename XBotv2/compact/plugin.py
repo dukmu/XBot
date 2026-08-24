@@ -31,7 +31,7 @@ class CompactPlugin(CompactService):
     def apply(self, ctx: Any, config: Any = None) -> None:
         self.bind(ctx, ctx.model, parse_compact_config(config))
 
-        ctx.dispose(self._on_unload)
+        ctx.dispose(self._dispose)
         ctx.on(Events.BEFORE_CONTEXT, self._on_before_context)
         ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
         ctx.tools.register(build_compact_tool(self))

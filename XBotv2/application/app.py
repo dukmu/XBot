@@ -2,9 +2,9 @@
 
 This module is the application boundary corresponding to DSH's app boot: it
 creates the root context, publishes launcher-owned entry services, mounts and
-settles the configured plugin tree, and dispatches the public Agent initialize
-operation. It disposes partial state when
-startup fails; it does not construct an Engine or implement Agent policy.
+starts the configured plugin tree, then announces the initialized application.
+It disposes partial state when startup fails; it does not construct an Engine
+or implement Agent policy.
 """
 
 from __future__ import annotations
@@ -29,8 +29,6 @@ from XBotv2.application.services import (
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
-from XBotv2.core.operations import dispatch_operation
-from XBotv2.agents import INITIALIZE_AGENT
 from XBotv2.session import AgentApplicationOptions
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
@@ -97,8 +95,21 @@ async def start_application(
         session_paths=session_paths,
     )
 
-    def prepare(ctx: Any) -> None:
+    agent_options = AgentCreateOptions(
+        session_id=session_id,
+        thread_id=thread_id,
+        workspace_root=str(workspace_root),
+        provider_name=provider_name,
+        agent_definition=agent_definition,
+        model_override=llm_override,
+        selected_agent=selected_agent,
+        parent_thread_id=parent_thread_id,
+        is_subagent=is_subagent,
+    )
+
+    def prepare(ctx: Context) -> None:
         ctx.set("runtime_paths", paths)
+        ctx.set("agent_options", agent_options)
         ctx.set("session_launch", SessionLaunch(
             session_id=session_id,
             thread_id=thread_id,
@@ -119,22 +130,7 @@ async def start_application(
             plugin_dirs=plugin_dirs,
             prepare=prepare,
         )
-        await dispatch_operation(
-            plugin_ctx,
-            INITIALIZE_AGENT,
-            AgentCreateOptions(
-                session_id=session_id,
-                thread_id=thread_id,
-                workspace_root=str(workspace_root),
-                provider_name=provider_name,
-                agent_definition=agent_definition,
-                model_override=llm_override,
-                selected_agent=selected_agent,
-                parent_thread_id=parent_thread_id,
-                is_subagent=is_subagent,
-            ),
-        )
-        await plugin_ctx.settle()
+        await plugin_ctx.agent_runtime.announce_initialized()
 
         return plugin_ctx
     except BaseException as startup_error:

@@ -61,7 +61,7 @@ diagnostic only and never trigger compaction.
 | `summary_max_chars` | `8000` | Maximum persisted summary length. |
 
 Configuration is validated before plugin import. Schema defaults remain
-documentation; `CompactPlugin.on_load()` owns the runtime defaults.
+documentation; `CompactPlugin.apply()` receives the validated runtime values.
 The former `trigger_chars` setting was removed because a fixed character count
 cannot represent 32K, 200K, and 1M provider windows consistently.
 

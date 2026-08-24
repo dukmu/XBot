@@ -37,19 +37,10 @@ class MCPPlugin:
         self._server_tools: dict[str, list[str]] = {}
         self._initialized = False
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        self._config = dict(config)
-
-    async def on_unload(self) -> None:
-        await self._client.disconnect_all()
-        self._server_status.clear()
-        self._server_tools.clear()
-        self._initialized = False
-
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self._config = dict(config or {})
-        ctx.dispose(self._on_unload)
+        ctx.dispose(self._dispose)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.SESSION_CLOSE, self._on_session_close)
 
@@ -301,7 +292,7 @@ class MCPPlugin:
             "servers": dict(self._server_status),
         }
 
-    async def _on_unload(self) -> None:
+    async def _dispose(self) -> None:
         await self._client.disconnect_all()
         self._server_status.clear()
         self._server_tools.clear()

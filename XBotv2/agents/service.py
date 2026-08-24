@@ -112,16 +112,6 @@ class AgentsService:
             llm_is_override=options.model_override is not None,
         )
         ctx.model.replace(model)
-        await ctx.emit(
-            APPLICATION_INITIALIZED,
-            ApplicationInitialized(
-                agent=definition,
-                session=state.session,
-                settings=loop_settings,
-            ),
-        )
-        self._restrict_tools(ctx.tools, config, definition)
-
         engine = self._factory.create(LoopFactoryOptions(
             model_client=ctx.model,
             tools=ctx.tools,
@@ -136,6 +126,23 @@ class AgentsService:
         ))
         ctx.set("engine", engine)
         return engine
+
+    async def announce_initialized(self) -> None:
+        """Notify fully mounted plugins after the dependency graph is running."""
+        definition = self.active_definition()
+        self._restrict_tools(
+            self.ctx.tools,
+            self.runtime_config(definition),
+            definition,
+        )
+        await self.ctx.emit(
+            APPLICATION_INITIALIZED,
+            ApplicationInitialized(
+                agent=definition,
+                session=self.ctx.loop_state.session,
+                settings=self.ctx.engine.settings,
+            ),
+        )
 
     def definition(self, name: str) -> AgentDefinition | None:
         return self.catalog.get(name)

@@ -213,7 +213,7 @@ class TestApplicationStartupBasics:
         assert "Traceback" not in captured.err
 
     @pytest.mark.asyncio
-    async def test_session_init_failure_unloads_runtime_plugin_resources(
+    async def test_session_init_failure_disposes_runtime_plugin_resources(
         self,
         temp_data_dir,
         tmp_path,
@@ -223,7 +223,7 @@ class TestApplicationStartupBasics:
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "init_fail"
         plugin_dir.mkdir(parents=True)
-        unload_marker = tmp_path / "unloaded.txt"
+        dispose_marker = tmp_path / "disposed.txt"
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
@@ -238,7 +238,7 @@ class InitFailPlugin:
     def apply(self, ctx, config=None):
         self.ctx = ctx
         self._tool_names = []
-        ctx.dispose(self.on_unload)
+        ctx.dispose(self.dispose)
         ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
 
     async def on_session_init(self, event):
@@ -250,10 +250,10 @@ class InitFailPlugin:
         self._tool_names.append(name)
         raise RuntimeError("session init failed")
 
-    async def on_unload(self):
+    async def dispose(self):
         for name in reversed(self._tool_names):
             self.ctx.tools.unregister(name)
-        Path({str(unload_marker)!r}).write_text("unloaded", encoding="utf-8")
+        Path({str(dispose_marker)!r}).write_text("disposed", encoding="utf-8")
 
 
 plugin = InitFailPlugin()""",
@@ -275,11 +275,11 @@ plugin = InitFailPlugin()""",
                 plugin_dirs=[plugins_root],
                 llm_override=MockLLM(responses=[]),
             )
-        assert unload_marker.read_text(encoding="utf-8") == "unloaded"
+        assert dispose_marker.read_text(encoding="utf-8") == "disposed"
         assert str(plugins_root) not in sys.path
 
     @pytest.mark.asyncio
-    async def test_normal_session_close_unloads_runtime_plugin_resources(
+    async def test_normal_session_close_disposes_runtime_plugin_resources(
         self,
         temp_data_dir,
         tmp_path,
@@ -305,7 +305,7 @@ class NormalClosePlugin:
     def apply(self, ctx, config=None):
         self.ctx = ctx
         self._tool_names = []
-        ctx.dispose(self.on_unload)
+        ctx.dispose(self.dispose)
         ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
         ctx.on(Events.SESSION_CLOSE, self.on_session_close)
 
@@ -321,11 +321,11 @@ class NormalClosePlugin:
         del ctx
         LOG.write_text("close\\n", encoding="utf-8")
 
-    async def on_unload(self):
+    async def dispose(self):
         for name in reversed(self._tool_names):
             self.ctx.tools.unregister(name)
         with LOG.open("a", encoding="utf-8") as stream:
-            stream.write("unload\\n")
+            stream.write("dispose\\n")
 
 
 plugin = NormalClosePlugin()""",
@@ -343,22 +343,20 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[plugins_root],
             llm_override=MockLLM(responses=[]),
         )
-        loader = application.loader
         engine = application.engine
         tool_name = "plugin:normal-close:runtime_tool"
-        assert loader is not None
+        assert application.get("loader", strict=False) is None
         assert tool_name in engine.tools.registered_names()
 
         await engine.start_session()
         await engine.close_session()
-        await application.stop()
+        await application.destroy()
 
         assert lifecycle_log.read_text(encoding="utf-8").splitlines() == [
             "close",
-            "unload",
+            "dispose",
         ]
         assert tool_name not in engine.tools.registered_names()
-        assert loader.loaded_ids == ()
         assert application.get("loader", strict=False) is None
 
     @pytest.mark.asyncio
@@ -651,7 +649,7 @@ async def before_user_message(ctx):
     async def test_application_startup_passes_external_plugin_configs(
         self, temp_data_dir, tmp_path, monkeypatch
     ):
-        """External application_startup plugin_configs reach plugin on_load."""
+        """External application startup configs reach plugin apply."""
         plugin_root = tmp_path / "plugins"
         plugin_dir = plugin_root / "configured"
         plugin_dir.mkdir(parents=True)
@@ -880,10 +878,10 @@ plugin = ConfiguredPlugin()
         assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
-    async def test_workspace_agents_are_discovered_by_workspace_instructions(
+    async def test_workspace_agents_are_independent_of_workspace_instructions(
         self, temp_data_dir, temp_workspace
     ):
-        """Disabling workspace_instructions also disables workspace Agents."""
+        """Agent catalog ownership is independent from AGENTS.md injection."""
         (temp_workspace / ".agents").mkdir()
         (temp_workspace / ".agents" / "reviewer.md").write_text(
             "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
@@ -906,10 +904,11 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.agent_catalog.get("reviewer") is None
+        assert application.agent_catalog.get("reviewer") is not None
         assert {item.name for item in application.agent_catalog.definitions()} == {
             "default",
             "Explorer",
+            "reviewer",
         }
         await application.stop()
 

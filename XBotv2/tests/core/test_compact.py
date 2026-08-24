@@ -433,7 +433,7 @@ async def test_unload_resets_plugin_owned_state():
     plugin._compactions = 2
     plugin._last_reason = "automatic"
 
-    await plugin._on_unload()
+    await plugin._dispose()
 
     assert plugin._manual_requested is False
     assert plugin.diagnostics()["compactions"] == 0

@@ -79,6 +79,11 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
 async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
 
+    async def followup(*args, **kwargs):
+        pass
+
+    plugin.ctx.set("engine", SimpleNamespace(followup=followup))
+
     empty = await plugin.get_goal()
     created = await plugin.create_goal("stabilize the API", token_budget=8000)
     duplicate = await plugin.create_goal("replace implicitly")
@@ -332,7 +337,7 @@ async def test_goal_rejects_invalid_persisted_state(state_store):
 
 
 @pytest.mark.asyncio
-async def test_loader_unload_removes_goal_resources_but_retains_state(
+async def test_plugin_dispose_removes_goal_resources_but_retains_state(
     tmp_path,
     state_store,
 ):
@@ -343,21 +348,22 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
         target_is_directory=True,
     )
     from XBotv2.loader import PluginTree
-    from XBotv2.loader.runtime import Loader
+    from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
 
     ctx = mount_ctx(state_store)
+    ctx.set("engine", object())
     tools = ctx.tools
-    loader = Loader(ctx, tree=PluginTree.from_dict([
+    handles = mount_plugin_tree(ctx, PluginTree.from_dict([
         {"id": "goal", "name": "goal"},
     ]))
 
-    await loader.load()
-    assert isinstance(loader.get("goal"), GoalPlugin)
+    await ctx.start()
+    validate_mounted_tree(handles)
     tool = tools.resolve("create_goal")
     assert tool is not None
     await tool.ainvoke({"objective": "retain me"})
 
-    assert await loader.unload("goal") is True
+    await handles["goal"].dispose()
     assert tools.registered_names() == ()
     import json as _json
     state_path = state_store.paths.state_dir / "state.json"

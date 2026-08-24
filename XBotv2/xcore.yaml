@@ -32,9 +32,6 @@
 - id: session
   name: session
 
-- id: agents-builtins
-  name: agents.builtins_component
-
 - id: jobs
   name: jobs
   config:

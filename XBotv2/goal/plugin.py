@@ -20,15 +20,11 @@ _STATUSES = {"active", "complete", "blocked", "paused"}
 
 class GoalPlugin:
     inject = {
-        "required": ["tools", "commands"],
-        "optional": ["engine"],
+        "required": ["tools", "commands", "engine"],
     }
     name = "goal"
 
     def __init__(self) -> None:
-        self._continuation_pending = False
-
-    async def on_unload(self) -> None:
         self._continuation_pending = False
 
     async def _contribute_status(self, slots: StatusSlots) -> None:
@@ -284,11 +280,8 @@ class GoalPlugin:
     async def start(self) -> None:
         """Schedule the next active-goal turn if one is not already pending."""
         goal = await self._active_goal()
-        engine = cast(
-            AgentLoopDriverPort | None,
-            self.ctx.get("engine", strict=False),
-        )
-        if goal is None or self._continuation_pending or engine is None:
+        engine = cast(AgentLoopDriverPort, self.ctx.engine)
+        if goal is None or self._continuation_pending:
             return
         self._continuation_pending = True
         await engine.followup(

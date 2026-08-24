@@ -42,7 +42,7 @@ flowchart TB
     end
 
     subgraph Application["Application composition"]
-        APP["application/app.py<br/>launcher facts · mount · settle"]
+        APP["application/app.py<br/>launcher facts · mount · start"]
         AGS["agents service<br/>registry · create seam"]
         FAC["agentloop factory<br/>Engine construction"]
         SRT["SessionRuntime (session/runtime.py)<br/>response routing · event stream"]
