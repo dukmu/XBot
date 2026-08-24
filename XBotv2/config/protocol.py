@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import Field, StrictBool, field_validator, model_validator
+from xcore import Context
 
 from XBotv2.config.contracts import (
     GET_POLICY,
@@ -13,15 +14,11 @@ from XBotv2.config.contracts import (
     PatchPolicy,
     PolicySnapshot,
 )
-from XBotv2.loader import RELOAD_PLUGINS, SOFT_RELOAD, ReloadPlan, SoftReload
-from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
 from XBotv2.session import (
-    SessionRef,
     dispatch_session_group_operation,
-    dispatch_session_operation,
 )
 
 
@@ -86,17 +83,6 @@ class SessionPolicyResponse(WireModel):
     effective_sandbox: dict[str, Any] = Field(default_factory=dict)
 
 
-class ConfigReloadResponse(WireModel):
-    session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    reloaded: list[str] = Field(default_factory=list)
-    provider: str = ""
-    model: str = ""
-    model_mode: str = ""
-    context_window: int = Field(default=0, ge=0)
-    errors: list[str] = Field(default_factory=list)
-
-
 def _policy_response(
     session_id: str,
     snapshot: PolicySnapshot,
@@ -110,51 +96,8 @@ def _policy_response(
     )
 
 
-def build_router(
-    *,
-    events: Any,
-    host_reload_plan: ReloadPlan | None = None,
-) -> APIRouter:
+def build_router(*, events: Any) -> APIRouter:
     router = APIRouter()
-
-    @router.post(
-        "/sessions/{session_id}/threads/{thread_id}/config/reload",
-        operation_id="reload_config",
-    )
-    async def reload_config(
-        session_id: str,
-        thread_id: str,
-    ) -> ConfigReloadResponse:
-        reloaded = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            RELOAD_PLUGINS,
-            EmptyRequest(),
-        )
-        if host_reload_plan is not None:
-            host_event = SoftReload(
-                scope="system",
-                config_path=host_reload_plan.config_path,
-                variables=dict(host_reload_plan.variables),
-            )
-            await events.emit(SOFT_RELOAD, host_event)
-            invalid = [
-                error
-                for error in host_event.errors
-                if error.startswith("llm:")
-            ]
-            if invalid:
-                raise OperationError("config_invalid", "; ".join(invalid))
-        return ConfigReloadResponse(
-            session_id=session_id,
-            thread_id=thread_id,
-            reloaded=list(reloaded.reloaded),
-            provider=reloaded.provider,
-            model=reloaded.model,
-            model_mode=reloaded.model_mode,
-            context_window=reloaded.context_window,
-            errors=list(reloaded.errors),
-        )
 
     @router.get(
         "/sessions/{session_id}/policy",
@@ -195,13 +138,13 @@ def build_router(
 
 class ConfigProtocolPlugin:
     name = "xbot.protocol.config"
-    inject = ["server", "reload_plan"]
+    inject = ["server"]
 
-    async def apply(self, ctx: Any, config: Any = None) -> None:
+    async def apply(self, ctx: Context, config: object | None = None) -> None:
         await contribute_router(
             ctx,
             owner=self.name,
-            router=build_router(events=ctx, host_reload_plan=ctx.reload_plan),
+            router=build_router(events=ctx),
         )
 
 
@@ -209,7 +152,6 @@ plugin = ConfigProtocolPlugin()
 
 
 __all__ = [
-    "ConfigReloadResponse",
     "PermissionDecision",
     "SandboxKey",
     "SandboxValue",

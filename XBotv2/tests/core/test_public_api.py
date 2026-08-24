@@ -82,8 +82,10 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert set(llm.__all__) >= {
         "LIST_PROVIDERS",
         "LlmCatalogPort",
+        "ModelConfig",
         "ModelPort",
         "ProviderCatalog",
+        "ProviderConfig",
     }
     assert mcp_plugin.__all__ == ["MCP_PLUGIN_ID"]
     assert set(permissions.__all__) == {
@@ -136,6 +138,7 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "PatchPolicy",
         "POLICY_CHANGED",
         "PolicyChanged",
+        "RuntimeConfig",
         "SettingsPort",
     }
     assert set(context_builder.__all__) == {
@@ -152,8 +155,6 @@ def test_plugin_package_roots_export_declarations_not_implementations():
     assert set(loader.__all__) >= {
         "PluginEntry",
         "PluginTree",
-        "RELOAD_PLUGINS",
-        "ReloadPlan",
     }
     assert set(application.__all__) >= {
         "APPLICATION_INITIALIZED",
@@ -436,9 +437,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}",
         "/sessions/{session_id}/threads/{thread_id}/agent",
         "/sessions/{session_id}/threads/{thread_id}/agents",
-        "/sessions/{session_id}/threads/{thread_id}/agents/reload",
         "/sessions/{session_id}/threads/{thread_id}/close",
-        "/sessions/{session_id}/threads/{thread_id}/config/reload",
         "/sessions/{session_id}/threads/{thread_id}/effort",
         "/sessions/{session_id}/threads/{thread_id}/events",
         "/sessions/{session_id}/threads/{thread_id}/history/clear",

@@ -78,7 +78,7 @@ success. Fork also rejects pending or running background tasks.
 
 Session policy patches update exact top-level Tool decisions and sparse sandbox
 keys. They preserve parameter-specific permission rules and sandbox resource
-approvals. The server persists the patch to the session `config.yaml` and reloads every
+approvals. The server persists the patch to the session `config.yaml` and updates every
 active thread without replacing parent/child permission intersections.
 The policy response keeps session-local overrides in `permissions` and
 `sandbox`; `effective_permissions` and `effective_sandbox` report the merged

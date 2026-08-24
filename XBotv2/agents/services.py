@@ -53,8 +53,6 @@ class AgentRuntimePort(Protocol):
 
     async def select(self, name: str) -> dict[str, object]: ...
 
-    async def reload_active(self) -> dict[str, object]: ...
-
     async def select_provider(
         self,
         name: str,

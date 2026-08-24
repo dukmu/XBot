@@ -121,12 +121,6 @@ SELECT_AGENT = Operation(
     AgentSelection,
     exclusive=True,
 )
-RELOAD_AGENTS = Operation(
-    "agents/reload",
-    EmptyRequest,
-    AgentCatalog,
-    exclusive=True,
-)
 INITIALIZE_AGENT = Operation(
     "agents/initialize",
     AgentCreateOptions,
@@ -146,7 +140,6 @@ __all__ = [
     "AgentSelection",
     "INITIALIZE_AGENT",
     "LIST_AGENTS",
-    "RELOAD_AGENTS",
     "SELECT_AGENT",
     "SelectAgent",
     "SubagentAgentError",

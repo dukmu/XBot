@@ -126,7 +126,7 @@ XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 <data_dir>/config/plugins.yaml   # global user tree overlay (seeded on first run)
 <data_dir>/config/config.yaml    # runtime Agent settings/policy
 <data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
-<workspace_root>/AGENTS.md       # reloaded for each model context build
+<workspace_root>/AGENTS.md       # read for each model context build
 <workspace_root>/.agents/*.md    # workspace Agent definitions (discovered by workspace_instructions)
 <workspace_root>/.xbot/plugins.yaml
 <workspace_root>/.xbot/config.yaml
@@ -413,8 +413,8 @@ turn coroutines are connection-owned and are never restored.
 
 Every executable slash command is registered by the plugin that owns it:
 the LLM component registers `/provider` `/model` `/effort`, the agents
-plugin `/agent`, session `/status` `/clear` `/undo` `/fork`, loader `/reload`
-(system soft restart), jobs `/tasks` `/task`, permissions `/permission`,
+plugin `/agent`, session `/status` `/clear` `/undo` `/fork`, jobs `/tasks`
+`/task`, permissions `/permission`,
 and sandbox `/sandbox` — all into the shared `ctx.commands` registry.
 `GET/POST
 /sessions/{sid}/threads/{tid}/commands` is the only command wire: clients
@@ -426,13 +426,10 @@ capabilities that may reuse private business methods.  Ordinary model and
 MCP Tools do not become slash commands.
 
 `application/` owns only startup/assembly; per-domain logic lives in plugin
-services and command handlers resolve those services at runtime.
-The Commands plugin translates use-case failures into command results. A
-system soft restart is the loader-owned `SOFT_RELOAD` event: `/reload` and
-`/agent reload` emit it, the LLM service validates its merged catalog
-fail-closed first, the loader re-applies the external tree layer, the
-agents service rebinds the active model, and workspace_instructions
-re-reads its workspace sources.  Machine clients (SDK/ACP) keep using the
+services and named command handlers. The Commands plugin translates use-case
+failures into command results. Plugin-tree and Agent-definition changes take
+effect when the Agent application starts; XBot exposes no live reconfiguration
+event, command, or protocol route. Machine clients (SDK/ACP) keep using the
 typed resource endpoints; human UIs use the command plane only, so the
 TUI, Web, and future clients share one command model.
 

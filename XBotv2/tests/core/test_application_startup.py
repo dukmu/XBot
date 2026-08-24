@@ -754,7 +754,7 @@ plugin = ConfiguredPlugin()
         )
 
     @pytest.mark.asyncio
-    async def test_workspace_agents_md_reloads_between_model_requests(
+    async def test_workspace_agents_md_is_read_between_model_requests(
         self, temp_data_dir, temp_workspace
     ):
         instructions = temp_workspace / "AGENTS.md"
@@ -1053,6 +1053,7 @@ class TestApplicationStartupNoPlugins:
         paths = RuntimePaths.from_data_dir(tmp)
         return load_agent_tree(
             paths=paths,
+            workspace_root=tmp,
             is_subagent=False,
             plugin_dirs=plugin_dirs if not include_builtins else None,
             extra_plugins=None,

@@ -52,8 +52,8 @@ the ``config`` plugin's tree config (``user``) — there are no separate
 ```
 
 Workspace Tool and Hook modules are trusted startup code. Configuration is
-loaded when a thread starts; session policy changes are reloaded explicitly by
-the policy API.
+loaded when a thread starts; the policy API applies session-policy changes to
+active threads explicitly.
 
 ## Providers
 
@@ -144,37 +144,19 @@ These process-level controls deliberately do not belong to YAML configuration:
 Once a response chunk has been emitted, a stream failure is returned to Core
 instead of replaying partial output.
 
-## Soft Restart (`/reload`)
+## Configuration Activation
 
-`/reload` is a loader command whose semantics is a *system soft restart*:
-it applies configuration changes to the live session without a process
-restart.  The LLM service validates the merged provider catalog first
-(fail-closed), then the loader-owned `SOFT_RELOAD` event fans out — the loader
-re-applies the global `<data_dir>/config/plugins.yaml` layer (changed
-entries re-applied, new entries mounted, disabled entries unloaded), the
-`workspace_instructions` plugin re-applies the workspace
-`<workspace>/.xbot/plugins.yaml` overlay (also re-discovering
-`<workspace>/.agents/*.md`), and the agents service re-binds the active
-model client from the merged provider catalog.  `/agent reload` emits the
-same event for its narrower scope.
+The bundled tree, global `<data_dir>/config/plugins.yaml`, and workspace
+`<workspace>/.xbot/plugins.yaml` are merged once before an Agent application
+starts. Later layers win and plugin configuration is deep-merged. Loader then
+imports and mounts that fixed tree; it has no runtime patch or hot-update path.
 
-The merged LLM provider catalog is validated before anything is touched: an
-invalid provider section fails the whole reload with `config_invalid` and the
-running configuration stays untouched.  A per-entry reload failure or a
-missing active provider/model keeps the previous binding and is reported in
-`errors` (last-good semantics, matching dsh settings snapshots); the session
-never goes down because of a bad overlay.
-
-Session-lifecycle entries declare `reloadable: false` in the plugin tree
-(`session`, `persistence`, `jobs`, `agentloop`, `agents-service`) — the
-loop, message stores, and running jobs hold their state and cannot be
-re-applied live.  Overriding those entries in an overlay is reported as
-restart-required and only takes effect after a process restart.
-
-`AGENTS.md` is read before every context build and needs no reload.
-`/agent reload` remains the focused command for Agent definitions; `/reload`
-also re-discovers workspace Agents because it reloads
-`workspace_instructions`.
+Changes to either `plugins.yaml` file or to `.agents/*.md` require a new Agent
+application. Close and reopen the thread, resume it through a carrier that
+rebuilds the application, or restart the owning process. Existing applications
+keep their current plugin graph and Agent catalog. `AGENTS.md` is different:
+it is read before every context build, so instruction edits affect the next
+model request without rebuilding the application.
 
 ## Agent Definitions
 
@@ -187,15 +169,13 @@ root wins over the built-in, workspace wins over the data root).  Disabling
 `workspace_instructions` also disables workspace Agent definitions.
 
 Agent frontmatter may select a provider/model and override generation or
-context limits; these values do not belong in plugin config.  Agent
-definitions are immutable during a turn. Run `/agent reload` while the thread
-is idle to reload the Agent and workspace plugins and reapply the active
-definition.  `/agent list` and `/agent use <name>` operate on the loaded
-definitions.
+context limits; these values do not belong in plugin config. Agent definitions
+are immutable for the lifetime of an Agent application. `/agent list` and
+`/agent use <name>` operate on definitions loaded at startup; source changes
+require rebuilding the application.
 
 `<workspace>/AGENTS.md` is different: the `workspace_instructions` plugin reads
-it before every context build, so edits apply to the next model request without
-an Agent reload.
+it before every context build, so edits apply to the next model request.
 
 ## Runtime Variables
 

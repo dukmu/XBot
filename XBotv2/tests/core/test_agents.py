@@ -54,7 +54,7 @@ def test_catalog_base_unload_keeps_workspace_overlay():
     catalog.register(base)
     catalog.register(overlay, overlay=True)
 
-    # Reloading the agents plugin removes its base layer only.
+    # Removing the base owner leaves the independent workspace overlay.
     assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
     assert catalog.get("reviewer") is overlay
     assert catalog.unregister_owned("unknown") == ["reviewer"]

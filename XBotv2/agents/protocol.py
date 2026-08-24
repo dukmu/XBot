@@ -6,10 +6,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import Field
+from xcore import Context
 
 from XBotv2.agents.contracts import (
     LIST_AGENTS,
-    RELOAD_AGENTS,
     SELECT_AGENT,
     SelectAgent,
 )
@@ -101,35 +101,6 @@ def build_router(*, events: Any) -> APIRouter:
             context_window=selected.context_window,
         )
 
-    @router.post(
-        "/sessions/{session_id}/threads/{thread_id}/agents/reload",
-        operation_id="reload_agents",
-    )
-    async def reload_agents(
-        session_id: str,
-        thread_id: str,
-    ) -> AgentListResponse:
-        catalog = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            RELOAD_AGENTS,
-            EmptyRequest(),
-        )
-        return AgentListResponse(
-            active=catalog.active,
-            agents=[
-                AgentInfo(
-                    name=definition.name,
-                    description=definition.description,
-                    mode=definition.mode,
-                    provider=definition.provider or "",
-                    model=definition.model or "",
-                    context_window=definition.context_window or 0,
-                )
-                for definition in catalog.agents
-            ],
-        )
-
     return router
 
 
@@ -137,7 +108,7 @@ class AgentsProtocolPlugin:
     name = "xbot.protocol.agents"
     inject = ["server"]
 
-    async def apply(self, ctx: Any, config: Any = None) -> None:
+    async def apply(self, ctx: Context, config: object | None = None) -> None:
         await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
 
 

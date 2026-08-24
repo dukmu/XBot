@@ -352,3 +352,37 @@ async def test_inject_dependency_appears_mid_run():
     await asyncio.sleep(0.05)
     assert handle.state is FiberState.RUNNING
     assert loaded == ["consumer"]
+
+
+async def test_settle_waits_for_dependency_reactivation_without_sleep():
+    ctx = Context()
+    activations: list[str] = []
+
+    def provider(ctx_, config):
+        ctx_.set("dependency", config["value"])
+
+    def consumer(ctx_, config):
+        activations.append(ctx_.dependency)
+
+    consumer.inject = ["dependency"]
+    await ctx.start()
+    consumer_handle = ctx.plugin(consumer)
+    provider_handle = ctx.plugin(provider, {"value": "first"})
+
+    await ctx.settle()
+
+    assert provider_handle.state is FiberState.RUNNING
+    assert consumer_handle.state is FiberState.RUNNING
+    assert activations == ["first"]
+
+
+async def test_settle_rejects_reentrant_plugin_apply():
+    ctx = Context()
+
+    async def plugin(ctx_, config):
+        await ctx_.settle()
+
+    await ctx.start()
+    handle = ctx.plugin(plugin)
+    with pytest.raises(RuntimeError, match="cannot run inside plugin apply"):
+        await handle

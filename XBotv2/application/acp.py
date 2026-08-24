@@ -38,7 +38,6 @@ async def start_acp_application(
     return await boot_application(
         tree=tree,
         data_dir=paths.data_dir,
-        profile="acp",
         prepare=prepare,
     )
 

@@ -18,7 +18,6 @@ async def boot_application(
     *,
     tree: PluginTree,
     data_dir: Path,
-    profile: str = "agent",
     plugin_dirs: list[Path | str] | None = None,
     prepare: Callable[[Any], Any] | None = None,
 ) -> Any:
@@ -44,7 +43,7 @@ async def boot_application(
             prepared = prepare(ctx)
             if inspect.isawaitable(prepared):
                 await prepared
-        ctx.plugin(LoaderComponent(tree, profile=profile))
+        ctx.plugin(LoaderComponent(tree))
         await ctx.start()
         await ctx.loader.load()
         return ctx

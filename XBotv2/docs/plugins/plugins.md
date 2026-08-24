@@ -16,16 +16,18 @@ Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
 ```python
 class Plugin:
     name = "example"
-    inject = {"required": ["tools"], "optional": []}
+    inject = ["tools"]
 
-    def apply(self, ctx, config=None): ...
+    def apply(self, ctx: Context, config=None): ...
 ```
 
 There is no required base class. A plugin exports a `plugin` object, a `Plugin`
 class, or an object/module with `apply`. The loader creates a fresh instance for
 object plugins, mounts it through XCore, and activates it when every declared
-required service is available. Use the mapping form of `inject` when a service
-is optional; read an optional service with `ctx.get(name, strict=False)`.
+required service is available. Prefer required dependencies: they let XCore
+hold the plugin pending until its complete contract is present. Use an optional
+dependency only when absence is an intentional feature mode, and resolve that
+single optional boundary explicitly instead of scattering fallback checks.
 
 ## Lifecycle Contract
 

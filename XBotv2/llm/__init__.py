@@ -1,6 +1,7 @@
 """Public declarations for the configured model-provider plugin."""
 
 from XBotv2.llm.commands import build_llm_commands
+from XBotv2.llm.config import ModelConfig, ProviderConfig
 from XBotv2.llm.contracts import (
     EffortSelection,
     LIST_PROVIDERS,
@@ -22,9 +23,11 @@ __all__ = [
     "LIST_PROVIDERS",
     "LlmCatalogPort",
     "ModelDescription",
+    "ModelConfig",
     "ModelInfo",
     "ModelPort",
     "ProviderCatalog",
+    "ProviderConfig",
     "ProviderDescription",
     "ProviderInfo",
     "ProviderListResponse",

@@ -9,7 +9,6 @@ from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.tree import load_server_tree
 from XBotv2.config.seed import ensure_initial_config
-from XBotv2.loader import ReloadPlan
 from XBotv2.server import ServerOptions
 
 
@@ -34,15 +33,10 @@ async def start_server_application(
         ctx.set("workspace_root", options.workspace_root)
         ctx.set("server_options", options)
         ctx.set("agent_application_factory", create_agent_application)
-        ctx.set("reload_plan", ReloadPlan(
-            config_path=paths.config_dir / "plugins.yaml",
-            variables={},
-        ))
 
     return await boot_application(
         tree=tree,
         data_dir=paths.data_dir,
-        profile="server",
         prepare=prepare,
     )
 

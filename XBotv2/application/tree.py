@@ -25,6 +25,7 @@ OPTIONAL_CAPABILITIES = frozenset({
 def load_agent_tree(
     *,
     paths: Any,
+    workspace_root: Path | str,
     is_subagent: bool,
     plugin_dirs: list[Path | str] | None,
     extra_plugins: list[dict[str, Any]] | None,
@@ -45,6 +46,11 @@ def load_agent_tree(
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
         tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
+    workspace_plugins = Path(workspace_root) / ".xbot" / "plugins.yaml"
+    if workspace_plugins.exists():
+        tree = tree.merged_with(
+            PluginTree.from_yaml(workspace_plugins, values=values)
+        )
     return tree.for_profile("agent")
 
 

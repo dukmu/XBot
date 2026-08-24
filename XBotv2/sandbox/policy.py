@@ -406,7 +406,7 @@ class SandboxPolicy:
 
         This is the sibling of ``_load_config`` for
         post-startup live updates (e.g. ``/sandbox set``
-        and session-policy reload).
+        and session-policy updates).
         """
 
         if "enabled" in config:

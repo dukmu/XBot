@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
 from XBotv2.agentloop.engine import Engine
 from XBotv2.agentloop.services import LoopFactoryOptions
@@ -27,7 +27,7 @@ class AgentLoopFactory:
 class AgentLoopFactoryComponent:
     name = "xbot.agentloop.factory"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         ctx.set("agent_loop_factory", AgentLoopFactory())
 
 

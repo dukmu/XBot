@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from xcore import Context
+
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
     AgentDefinition,
@@ -19,12 +21,15 @@ from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
+    AgentLoopDriverPort,
     AgentLoopFactoryPort,
     LoopFactoryOptions,
     LoopSettings,
+    ToolsPort,
 )
+from XBotv2.config import RuntimeConfig
 from XBotv2.core.errors import OperationError
-from XBotv2.loader import SOFT_RELOAD, SoftReload
+from XBotv2.llm import ModelConfig, ProviderConfig
 from XBotv2.agents.services import AgentCatalogPort
 
 
@@ -33,7 +38,7 @@ class AgentsService:
 
     def __init__(
         self,
-        ctx: Any,
+        ctx: Context,
         catalog: AgentCatalogPort,
         factory: AgentLoopFactoryPort,
     ) -> None:
@@ -41,7 +46,7 @@ class AgentsService:
         self.catalog = catalog
         self._factory = factory
 
-    async def create(self, options: AgentCreateOptions) -> Any:
+    async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort:
         """Resolve one Agent and publish the driver returned by its factory."""
         ctx = self.ctx
         state = ctx.loop_state
@@ -129,11 +134,7 @@ class AgentsService:
                 else DEFAULT_MAX_ITERATIONS
             ),
         ))
-        # The loop driver belongs to the Agent application, not to the
-        # reloadable runtime-component fiber.  Keep it on the root context so
-        # replacing configuration services does not discard the live turn
-        # history and leave the reactivated component uninitialized.
-        ctx.root.set("engine", engine)
+        ctx.set("engine", engine)
         return engine
 
     def definition(self, name: str) -> AgentDefinition | None:
@@ -163,7 +164,7 @@ class AgentsService:
     def runtime_config(
         self,
         definition: AgentDefinition | None = None,
-    ) -> Any:
+    ) -> RuntimeConfig:
         """Resolve current runtime config with the active Agent overlay."""
         state = self.ctx.loop_state
         config = self.ctx.settings.load_runtime_config(
@@ -296,61 +297,6 @@ class AgentsService:
             "model_mode": model_config.model_mode,
         }
 
-    async def rebind_active(self) -> dict[str, Any]:
-        """Rebuild the active model client from the current catalog.
-
-        The catalog is configured by the LLM plugin; this method only
-        re-resolves the active provider/model and rebinds the engine.  When
-        the active binding no longer resolves, the previous client is kept
-        and the error is reported (last-good semantics).
-        """
-        ctx = self.ctx
-        engine = ctx.engine
-        provider_name = engine.settings.provider
-        model_name = engine.settings.model
-        try:
-            entry = ctx.llm.provider_config(
-                provider_name,
-                require_key=not engine.settings.llm_is_override,
-            )
-            model_config = entry.resolve(model_name)
-            if not engine.settings.llm_is_override:
-                ctx.model.replace(
-                    ctx.llm.create(
-                        entry, model_config, media_root=ctx.loop_state.media_root
-                    )
-                )
-            engine.configure(
-                model_client=ctx.model,
-                provider=provider_name,
-                model=model_config.model,
-                model_mode=model_config.model_mode,
-                context_window=model_config.max_context_tokens,
-                max_output_tokens=model_config.max_output_tokens or 0,
-            )
-            ctx.loop_state.session.provider = provider_name
-            ctx.loop_state.metadata.update({
-                "provider": provider_name,
-                "model": model_config.model,
-                "model_mode": model_config.model_mode,
-                "context_window": model_config.max_context_tokens,
-            })
-            return {
-                "provider": provider_name,
-                "model": model_config.model,
-                "model_mode": model_config.model_mode,
-                "context_window": model_config.max_context_tokens,
-                "errors": [],
-            }
-        except Exception as error:  # noqa: BLE001 - keep last good binding
-            return {
-                "provider": provider_name,
-                "model": model_name,
-                "model_mode": engine.settings.model_mode,
-                "context_window": engine.context_window,
-                "errors": [f"active {provider_name}/{model_name}: {error}"],
-            }
-
     async def select_effort(self, value: str) -> dict[str, Any]:
         """Switch the active model's reasoning effort to an advertised tier.
 
@@ -426,55 +372,6 @@ class AgentsService:
             "context_window": self.ctx.engine.context_window,
         }
 
-    async def reload_active(self) -> dict[str, Any]:
-        """Reload Agent definitions and notify a soft restart.
-
-        Caller owns idle-check and turn lock; the agents plugin rebinds the
-        active model and workspace_instructions re-reads its workspace
-        sources through the ``SOFT_RELOAD`` event.
-        """
-        loader = self.ctx.loader
-        active = self.ctx.engine.settings.agent_name
-        if not await loader.reload("agents-builtins"):
-            raise OperationError(
-                "plugin_unavailable",
-                "Agent definition plugin is not loaded.",
-            )
-        event = SoftReload(scope="agents")
-        await self.ctx.emit(SOFT_RELOAD, event)
-        await self.rebind_on_soft_reload(event)
-        definition = self.definition(active)
-        if definition is None or definition.mode == "subagent":
-            raise OperationError(
-                "agent_not_found",
-                f"Active Agent definition no longer exists: {active}",
-            )
-        return {
-            "active": active,
-            "agents": self.definitions(),
-        }
-
-    async def rebind_on_soft_reload(self, event: SoftReload) -> None:
-        """Rebind the active model client after a soft restart."""
-        engine = self.ctx.get("engine", strict=False)
-        if engine is None:
-            return
-        active = engine.settings.agent_name
-        definition = self.definition(active)
-        if definition is not None and definition.mode != "subagent":
-            try:
-                selected = await self.activate(active)
-            except Exception as error:  # noqa: BLE001 - keep last good binding
-                event.errors.append(
-                    f"active agent {active}: {error}"
-                )
-                selected = await self.rebind_active()
-        else:
-            selected = await self.rebind_active()
-        errors = selected.pop("errors", [])
-        if errors:
-            event.errors.extend(errors)
-
     def _resolve_definition(
         self,
         options: AgentCreateOptions,
@@ -544,7 +441,10 @@ class AgentsService:
         return AgentDefinition(**values)
 
     @staticmethod
-    def _apply_definition(config: Any, definition: AgentDefinition) -> None:
+    def _apply_definition(
+        config: RuntimeConfig,
+        definition: AgentDefinition,
+    ) -> None:
         config.agent_name = definition.name
         config.agent_role = definition.description
         config.agent_instructions = definition.prompt
@@ -555,9 +455,9 @@ class AgentsService:
 
     @staticmethod
     def _resolve_model_config(
-        provider: Any,
+        provider: ProviderConfig,
         definition: AgentDefinition | None,
-    ) -> Any:
+    ) -> ModelConfig:
         """Resolve the catalog model for an Agent definition.
 
         ``definition.model`` selects one catalog entry (default when unset);
@@ -592,8 +492,8 @@ class AgentsService:
 
     @staticmethod
     def _restrict_tools(
-        tools: Any,
-        config: Any,
+        tools: ToolsPort,
+        config: RuntimeConfig,
         definition: AgentDefinition | None,
     ) -> None:
         selectors = (

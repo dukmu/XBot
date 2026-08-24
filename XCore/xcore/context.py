@@ -30,6 +30,7 @@ from xcore.plugin import (
     _TARGET_CONVERGE,
     _TARGET_DISPOSED,
     _TARGET_PENDING,
+    current_fiber,
 )
 from xcore.service import ServiceStore
 from xcore.state import StateService
@@ -465,6 +466,20 @@ class Context:
         """Mount a dependency-gated callback (Cordis ``ctx.inject``)."""
         return self._registry.inject(deps, callback, parent_ctx=self)
 
+    async def settle(self) -> None:
+        """Drive the dependency graph to a stable state.
+
+        This is a composition-boundary operation.  A plugin must finish its
+        own ``apply`` callback before asking the graph to settle; otherwise it
+        would wait for the very fiber that is currently loading.
+        """
+        if current_fiber() is not None:
+            raise RuntimeError(
+                "ctx.settle() cannot run inside plugin apply; finish the "
+                "plugin lifecycle phase first"
+            )
+        await self._load_fixpoint()
+
     # -- effects and cleanup ------------------------------------------------
 
     def effect(
@@ -519,7 +534,18 @@ class Context:
                 if fiber.state is FiberState.RUNNING:
                     progressed = True
             if not progressed:
-                return
+                # A service notification may already be driving a transition
+                # in the background.  Queue behind every fiber once, then
+                # repeat if that transition made another dependency loadable.
+                transitioning = [
+                    fiber
+                    for fiber in self._registry._all_fibers()
+                    if fiber.state in (FiberState.LOADING, FiberState.UNLOADING)
+                ]
+                if not transitioning:
+                    return
+                for fiber in transitioning:
+                    await fiber.settle_to(_TARGET_CONVERGE)
 
     async def stop(self) -> None:
         """Stop the app: unload fibers in reverse load order, emit ``dispose``.

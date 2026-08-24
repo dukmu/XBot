@@ -37,7 +37,10 @@
 - 派发原语：`emit/parallel -> None`（await 完成）；`serial/bail -> Any`；
   `waterfall(event, *args, next) -> Any`。
 - `PluginHandle`：可 `await`（加载完成/失败重抛）；`dispose() -> Awaitable[None]`；
-  `state: FiberState`；`restart() -> Awaitable[None]`。
+  `state: FiberState`；`error: BaseException | None`；
+  `missing_dependencies: tuple[str, ...]`；`restart() -> Awaitable[None]`。
+- `Context.settle() -> Awaitable[None]`：仅供应用/装载器边界等待依赖图稳定，禁止在
+  插件 `apply` 内重入。
 - `StateService`：`get/set/delete/clear/keys/all` 全 async；`namespace(prefix) -> StateService`。
 - `Service`：子类定义 `name`；`__init__(ctx, *, name=None)`。
 - `S`：`S.any()/string()/number()/boolean()/array(item)/object({...})/union([...])/

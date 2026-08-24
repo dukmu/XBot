@@ -31,7 +31,7 @@ and injected services, never by reaching into the loop.
   path per concrete operation.
 - **One job lifecycle for background work.** Background shell commands and
   subagents share a single `JobRegistry` with `wait` / `read` / `cancel`.
-- **Workspace-native.** `AGENTS.md` is reloaded for every model request,
+- **Workspace-native.** `AGENTS.md` is read for every model request,
   `<workspace>/.agents/*.md` define workspace Agents, and
   `<workspace>/.xbot/plugins.yaml` overlays the plugin tree — all owned by
   the `workspace_instructions` plugin.
@@ -83,7 +83,7 @@ tree into `<data-dir>/config/plugins.yaml`, which overlays the bundled
 └── sessions/<session-id>/threads/<thread>/...
 
 <workspace>/
-├── AGENTS.md                    # workspace instructions, reloaded per request
+├── AGENTS.md                    # workspace instructions, read per request
 ├── .agents/*.md                 # workspace Agent definitions
 └── .xbot/plugins.yaml           # workspace plugin overlay
 ```

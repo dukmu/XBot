@@ -722,6 +722,20 @@ class PluginHandle:
     def uid(self) -> int | None:
         return self._fiber.uid
 
+    @property
+    def error(self) -> BaseException | None:
+        """Failure captured from the latest activation attempt."""
+        return self._fiber._error
+
+    @property
+    def missing_dependencies(self) -> tuple[str, ...]:
+        """Required services currently unavailable to this plugin."""
+        return tuple(
+            name
+            for name, required in self._fiber.inject.items()
+            if required and self._fiber.ctx.get(name, strict=True) is None
+        )
+
     async def dispose(self) -> None:
         """Permanently unload this plugin instance."""
         await self._fiber.settle_to(_TARGET_DISPOSED)

@@ -31,9 +31,6 @@ class PluginEntry:
     name: str
     config: dict[str, Any] = field(default_factory=dict)
     disabled: bool = False
-    # False marks session-lifecycle entries whose live re-apply would destroy
-    # engine/session state; the soft-restart path skips them.
-    reloadable: bool = True
     isolate: dict[str, Any] | None = None
     # Bundled entries may opt into one or more application profiles. External
     # entries without a profile belong to the Agent profile by default.
@@ -126,7 +123,6 @@ def _entry_from_dict(
         name=str(data["name"]),
         config=dict(resolved_config or {}),
         disabled=bool(_resolve_ref(data.get("disabled", False), values)),
-        reloadable=bool(_resolve_ref(data.get("reloadable", True), values)),
         isolate=_resolve_ref(data.get("isolate"), values),
         profiles=profiles,
     )
@@ -179,8 +175,8 @@ class PluginTree:
 
         The later entry's ``config`` is deep-merged into the base entry's
         config (so an overlay can patch one field without restating the
-        session-dynamic values); ``disabled`` / ``reloadable`` / ``isolate`` /
-        ``profiles`` are replaced by the later entry. Service dependencies are
+        session-dynamic values); ``disabled`` / ``isolate`` / ``profiles`` are
+        replaced by the later entry. Service dependencies are
         plugin declarations and are intentionally absent from tree entries.
         """
         merged: dict[str, PluginEntry] = {entry.id: entry for entry in self.entries}
@@ -192,7 +188,6 @@ class PluginTree:
                     name=entry.name,
                     config=_merge_config(existing.config, entry.config),
                     disabled=entry.disabled,
-                    reloadable=entry.reloadable,
                     isolate=entry.isolate if entry.isolate is not None else existing.isolate,
                     profiles=(
                         entry.profiles

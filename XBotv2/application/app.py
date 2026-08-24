@@ -32,7 +32,6 @@ from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.core.operations import dispatch_operation
 from XBotv2.agents import INITIALIZE_AGENT
 from XBotv2.session import AgentApplicationOptions
-from XBotv2.loader import ReloadPlan
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
@@ -80,6 +79,7 @@ async def start_application(
 
     tree = load_agent_tree(
         paths=paths,
+        workspace_root=workspace_root,
         is_subagent=is_subagent,
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,
@@ -109,12 +109,6 @@ async def start_application(
             is_subagent=is_subagent,
         ))
         ctx.set("parent_permissions", ParentPermissions(parent_permission_system))
-        ctx.set("reload_plan", ReloadPlan(
-            config_path=paths.config_dir / "plugins.yaml",
-            variables={"disabled": tuple(
-                ["subagents"] if is_subagent else []
-            )},
-        ))
         ctx.set("client_events", ClientEventRouter(parent=client_events))
         ctx.set("child_applications", children)
 
@@ -140,6 +134,7 @@ async def start_application(
                 is_subagent=is_subagent,
             ),
         )
+        await plugin_ctx.settle()
 
         return plugin_ctx
     except BaseException as startup_error:

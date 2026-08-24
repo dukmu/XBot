@@ -17,10 +17,11 @@ Package roots may re-export only explicit `types`, `invariants`, `commands`,
 
 ```python
 from XBotv2.commands import Command, CommandResult
+from XBotv2.config import RuntimeConfig
 from XBotv2.jobs import Job, JobKind, JobStatus, JobsPort
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
-from XBotv2.llm import LlmCatalogPort, ProviderCatalog
-from XBotv2.loader import PluginTree, ReloadPlan
+from XBotv2.llm import LlmCatalogPort, ModelConfig, ProviderConfig
+from XBotv2.loader import PluginTree
 ```
 
 Concrete services, registries, managers, routers, and plugin implementations

@@ -15,7 +15,6 @@ from XBotv2.agents import (
 )
 from XBotv2.agentloop import ToolListResponse
 from XBotv2.config import (
-    ConfigReloadResponse,
     PermissionDecision,
     SandboxKey,
     SandboxValue,
@@ -266,15 +265,6 @@ class XBotClient:
             AgentSelectionRequest(name=name),
         )
 
-    async def reload_agents(
-        self, session_id: str, thread_id: str
-    ) -> AgentListResponse:
-        return await self._request(
-            "POST",
-            f"{_thread_path(session_id, thread_id)}/agents/reload",
-            AgentListResponse,
-        )
-
     async def select_effort(
         self, session_id: str, thread_id: str, effort: str
     ) -> EffortSelectionResponse:
@@ -283,15 +273,6 @@ class XBotClient:
             f"{_thread_path(session_id, thread_id)}/effort",
             EffortSelectionResponse,
             EffortSelectionRequest(effort=effort),
-        )
-
-    async def reload_config(
-        self, session_id: str, thread_id: str
-    ) -> ConfigReloadResponse:
-        return await self._request(
-            "POST",
-            f"{_thread_path(session_id, thread_id)}/config/reload",
-            ConfigReloadResponse,
         )
 
     async def select_provider(

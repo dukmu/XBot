@@ -93,7 +93,7 @@ triggers one final model request with Tools disabled and a runtime notice so the
 Agent can report incomplete work and the next action; it is not treated as
 ordinary completion.
 
-`AGENTS.md` remains a standard workspace instruction file. It is reloaded for
+`AGENTS.md` remains a standard workspace instruction file. It is read for
 each primary-agent and subagent model request and is never parsed as an Agent
 definition.
 

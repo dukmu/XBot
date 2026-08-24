@@ -19,7 +19,8 @@ API:
 
 ```python
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
-from XBotv2.llm import LlmCatalogPort, ProviderCatalog
+from XBotv2.config import RuntimeConfig
+from XBotv2.llm import LlmCatalogPort, ModelConfig, ProviderConfig
 ```
 
 Package roots may re-export explicit declaration modules only: `types`,
@@ -118,6 +119,6 @@ The Session root exports `SessionInfo` and its other domain declarations;
 Session wire DTOs remain lazily exported from the same root. Display-history
 projection is internal to the Session plugin.
 
-The Loader root exports plugin-tree declarations and reload operations.
+The Loader root exports plugin-tree declarations.
 Concrete loading and XCore mounting live in `loader.runtime` and are used only
 by application composition.

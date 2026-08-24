@@ -81,7 +81,7 @@ class _ScriptedSession:
                 "parameters": {},
             }
             for name in (
-                "status", "provider", "model", "effort", "reload", "agent",
+                "status", "provider", "model", "effort", "agent",
                 "clear", "undo", "fork", "tasks", "task", "permission",
                 "sandbox",
             )
@@ -1104,7 +1104,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         names = {spec.name for spec in app.commands.search("")}
         assert {"help", "clear-screen", "exit"} <= names
         assert {
-            "status", "provider", "model", "effort", "reload", "agent",
+            "status", "provider", "model", "effort", "agent",
             "clear", "undo", "fork", "tasks", "task", "permission", "sandbox",
         } <= names
 

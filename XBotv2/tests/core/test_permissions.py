@@ -186,7 +186,7 @@ class TestPermissionSystemBasics:
 
 
 @pytest.mark.asyncio
-async def test_session_policy_reload_cannot_expand_child_past_parent(tmp_path):
+async def test_session_policy_update_cannot_expand_child_past_parent(tmp_path):
     from XBotv2.permissions.plugin import PermissionsService
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
