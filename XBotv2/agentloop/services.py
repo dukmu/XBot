@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
 from XBotv2.agentloop.contracts import LoopSettings, LoopState, ToolRegistration
 from XBotv2.agentloop.events import EventContext, EventPort
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import GuardDecision, JsonObject, Tool, ToolCall
 from XBotv2.llm import ModelPort
@@ -29,7 +30,7 @@ class AgentLoopDriverPort(Protocol):
     """Session-host surface of one active Agent loop driver."""
 
     settings: LoopSettings
-    messages: list[Message]
+    messages: Sequence[Message]
     context_window: int
     pending_input_count: int
 
@@ -53,7 +54,7 @@ class AgentLoopDriverPort(Protocol):
         *,
         request_id: str = "",
         images: list[ImageContent] | None = None,
-        artifacts: list[JsonObject] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> AsyncIterator[JsonObject]: ...
 
     def run_pending(

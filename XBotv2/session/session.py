@@ -71,8 +71,8 @@ class Session:
         return SessionStatus(
             session_id=self.session_id,
             thread_id=self.thread_id,
-            provider=str(self.state.metadata.get("provider") or self.provider),
-            model=str(self.state.metadata.get("model") or ""),
+            provider=self.state.metadata.value.provider or self.provider,
+            model=self.state.metadata.value.model,
         )
 
     async def fork(self) -> str:
@@ -86,41 +86,34 @@ class Session:
 
     async def clear_history(self) -> int:
         """Remove every user turn; caller owns idle-check and turn lock."""
-        removed = sum(
-            message.role == "user"
-            for message in self.ctx.engine.messages
-        )
-        await self._replace_history([], operation="clear")
+        history = self.state.history
+        removed = sum(message.role == "user" for message in history)
+        history.clear()
+        self.state._update_turn_count()
+        await self._announce_history_change("clear")
         return removed
 
     async def undo_history(self, count: int) -> list[Message]:
         """Undo complete user turns; caller owns idle-check and turn lock."""
-        messages = list(self.ctx.engine.messages)
-        user_indexes = [
-            index for index, message in enumerate(messages)
-            if message.role == "user"
-        ]
-        if count > len(user_indexes):
+        try:
+            messages = self.state.history.undo(count)
+        except ValueError as exc:
             raise OperationError(
                 "invalid_undo_count",
-                f"Cannot undo {count} turns; session has {len(user_indexes)}.",
-            )
-        kept = messages[:user_indexes[-count]]
-        await self._replace_history(kept, operation="undo", turns=count)
-        return kept
+                str(exc),
+            ) from exc
+        self.state._update_turn_count()
+        await self._announce_history_change("undo", count)
+        return list(messages)
 
-    async def _replace_history(
+    async def _announce_history_change(
         self,
-        messages: list[Message],
-        *,
         operation: str,
         turns: int = 0,
     ) -> None:
-        state = self.state
-        state.replace_messages(messages)
         await self.ctx.emit(
             HISTORY_CHANGED,
-            HistoryChanged(tuple(state.messages), operation, turns),
+            HistoryChanged(self.state.history.snapshot(), operation, turns),
         )
 
     def new_thread_id(self, agent: str) -> str:

@@ -5,13 +5,13 @@ from XBotv2.tests.helpers import make_engine
 from pathlib import Path
 
 import pytest
-from XBotv2.todolist.plugin import TodolistPlugin
+from XBotv2.todolist.plugin import TodolistPlugin, TodolistService
 import xcore
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
 from XBotv2.config.models import RuntimeConfig
 from XBotv2.llm.mock import MockLLM
-from XBotv2.persistence.store import CoreStateStore
+from XBotv2.persistence.store import ThreadPersistence
 from plugin_harness import mount_ctx, mount_plugin
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
@@ -44,19 +44,23 @@ def _mount(plugin, state_store):
     return mount_plugin(plugin, state_store)
 
 
-def make_plugin(state_store) -> TodolistPlugin:
-    from XBotv2.todolist.plugin import TodolistPlugin
+def make_plugin(state_store) -> TodolistService:
+    component = _mount(TodolistPlugin(), state_store)
+    return component.ctx.todolist
 
-    return _mount(TodolistPlugin(), state_store)
 
-
-def setup_plugin(state_store) -> tuple[TodolistPlugin, SetupContext]:
-    plugin = make_plugin(state_store)
-    return plugin, SetupContext(plugin)
+def setup_plugin(state_store) -> tuple[TodolistService, SetupContext]:
+    component = _mount(TodolistPlugin(), state_store)
+    return component.ctx.todolist, SetupContext(component)
 
 
 def todo(content: str, status: str) -> dict[str, str]:
     return {"content": content, "status": status}
+
+
+async def plugin_snapshot(plugin: TodolistService) -> list[dict[str, str]]:
+    snapshot = await plugin.snapshot()
+    return [item.to_dict() for item in snapshot.items]
 
 
 def test_todolist_registers_one_atomic_tool(state_store):
@@ -92,7 +96,12 @@ async def test_update_todos_atomically_replaces_the_complete_list(state_store):
     assert created.status == "success"
     assert unchanged.status == "success"
     assert updated.status == "success"
-    assert plugin.storage.get_plugin_state("todolist") == {"items": replacement}
+    assert updated.data == {
+        "kind": "todo_snapshot",
+        "schema_version": 1,
+        "items": replacement,
+    }
+    assert await plugin_snapshot(plugin) == replacement
 
 
 @pytest.mark.asyncio
@@ -123,7 +132,7 @@ async def test_invalid_list_never_partially_changes_state(state_store):
         "invalid_todo_status",
         "invalid_todos",
     ]
-    assert plugin.storage.get_plugin_state("todolist") == {"items": original}
+    assert await plugin_snapshot(plugin) == original
 
 
 @pytest.mark.asyncio
@@ -136,7 +145,7 @@ async def test_all_completed_returns_final_list_then_clears_active_state(state_s
 
     assert result.status == "success"
     assert "All todos completed" in result.content
-    assert plugin.storage.get_plugin_state("todolist") == {"items": []}
+    assert await plugin_snapshot(plugin) == []
 
 
 @pytest.mark.asyncio
@@ -147,32 +156,34 @@ async def test_empty_list_clears_without_requiring_progress_item(state_store):
     result = await plugin.update_todos([])
 
     assert result.status == "success"
-    assert plugin.storage.get_plugin_state("todolist") == {"items": []}
+    assert await plugin_snapshot(plugin) == []
 
 
 @pytest.mark.asyncio
-async def test_old_id_based_state_is_read_without_exposing_ids(state_store):
+async def test_todolist_rejects_obsolete_id_based_state(state_store):
     plugin = make_plugin(state_store)
-    plugin.storage.set_plugin_state("todolist", {
-        "next_id": 3,
+    await state_store.state.namespace("todolist").set("snapshot", {
+        "schema_version": 1,
         "items": [
-            {"id": "todo-2", "content": "resume work", "status": "in_progress"},
+        {"id": "todo-2", "content": "resume work", "status": "in_progress"},
         ],
     })
 
-    assert await plugin._read_items() == [todo("resume work", "in_progress")]
+    with pytest.raises(ValueError, match="only content and status"):
+        await plugin.snapshot()
 
 
 @pytest.mark.asyncio
 async def test_todolist_rejects_invalid_persisted_state(state_store):
     plugin = make_plugin(state_store)
-    invalid = {"items": "not-a-list"}
-    plugin.storage.set_plugin_state("todolist", invalid)
+    invalid = {"schema_version": 1, "items": "not-a-list"}
+    store = state_store.state.namespace("todolist")
+    await store.set("snapshot", invalid)
 
-    with pytest.raises(ValueError, match="Todo list state is invalid"):
-        await plugin._read_items()
+    with pytest.raises(TypeError, match="items must be a list"):
+        await plugin.snapshot()
 
-    assert plugin.storage.get_plugin_state("todolist") == invalid
+    assert await store.get("snapshot") == invalid
 
 
 @pytest.mark.asyncio
@@ -200,13 +211,9 @@ async def test_plugin_dispose_removes_tool_but_retains_todos(tmp_path, state_sto
 
     await handles["todolist"].dispose()
     assert registry.registered_names() == []
-    assert state_store.get_plugin_state("todolist") == {
-        "items": active,
-    }
-    assert (
-        state_store.paths.plugin_states_dir / "todolist.yaml"
-    ).is_file()
-    assert not (state_store.paths.state_dir / "state.json").exists()
+    stored = await ctx.state.namespace("todolist").get("snapshot")
+    assert stored["items"] == active
+    assert (state_store.paths.plugin_state_dir / "state.json").is_file()
 
 
 
@@ -258,6 +265,11 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     second_context = llm.get_call_messages(1)
 
     assert tool_event["data"]["status"] == "success"
+    assert tool_event["data"]["data"] == {
+        "kind": "todo_snapshot",
+        "schema_version": 1,
+        "items": active,
+    }
     assert "Todo list" in tool_event["data"]["content"]
     assert [message.role for message in second_context][-3:] == [
         "user", "assistant", "tool",

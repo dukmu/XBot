@@ -29,6 +29,7 @@ from weakref import WeakKeyDictionary
 
 import httpx
 
+from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
@@ -57,6 +58,7 @@ async def read(
     include_hidden: bool = True,
     *,
     sandbox=None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> ToolResult:
     """Read file content, bytes, metadata, an image, or a directory listing.
 
@@ -112,6 +114,7 @@ async def read(
             data=data,
             media_type=media_type,
             sandbox=sandbox,
+            artifacts=artifacts,
         )
     if mode == "list":
         return await list_files(
@@ -146,6 +149,7 @@ async def _read_media(
     data: str | None,
     media_type: str | None,
     sandbox: Any,
+    artifacts: ArtifactStorePort | None,
 ) -> ToolResult:
     """Open one media item by type and make it visible to the model.
 
@@ -179,7 +183,17 @@ async def _read_media(
                 f"Content exceeds {MAX_CONTENT_BYTES} bytes",
             )
         selected = _image_type(payload, media_type)
-        image = _store_image(payload, selected, sandbox)
+        if artifacts is None:
+            raise _ImageError(
+                "content_storage_unavailable",
+                "Session artifact storage is not available",
+            )
+        ref = artifacts.put(
+            ArtifactKind.MEDIA,
+            payload,
+            media_type=selected,
+        )
+        image = ImageContent(ref.id, ref.media_type, ref.size)
     except _ImageError as exc:
         return ToolResult.failure(exc.code, exc.message)
 
@@ -347,32 +361,6 @@ def _infer_image_type(payload: bytes) -> str | None:
     if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
         return "image/webp"
     return None
-
-
-def _store_image(
-    payload: bytes,
-    media_type: str,
-    sandbox: Any,
-) -> ImageContent:
-    session_root = (
-        getattr(sandbox, "session_root", None) if sandbox is not None else None
-    )
-    if session_root is None:
-        raise _ImageError(
-            "content_storage_unavailable",
-            "Session media storage is not available",
-        )
-    root = Path(session_root)
-    digest = hashlib.sha256(payload).hexdigest()
-    target = root / "artifacts" / "media" / digest
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        target.write_bytes(payload)
-    return ImageContent(
-        path=target.relative_to(root).as_posix(),
-        media_type=media_type,
-        size=len(payload),
-    )
 
 
 async def read_file(
@@ -953,12 +941,17 @@ async def find_files(
 # ----------------------------------------------------------------------
 
 
-def filesystem_tools(sandbox: Any) -> tuple[Tool, ...]:
+def filesystem_tools(
+    sandbox: Any,
+    artifacts: ArtifactStorePort | None = None,
+) -> tuple[Tool, ...]:
     """Build the merged filesystem Tools for one session sandbox."""
     return tuple(
         replace(
             Tool.from_function(function, name=name),
-            function=partial(function, sandbox=sandbox),
+            function=partial(function, sandbox=sandbox, artifacts=artifacts)
+            if function is read
+            else partial(function, sandbox=sandbox),
         )
         for name, function in (
             ("read", read),

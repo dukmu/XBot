@@ -211,7 +211,8 @@ class CompactService:
         proposal["compact_metrics"] = metrics
 
         previous_count = len(original_messages)
-        ctx.messages[:] = messages
+        self.state.replace_messages(messages)
+        ctx.messages = list(self.state.messages)
         committed = AfterCompact(
             messages=tuple(ctx.messages),
             session=ctx.session,

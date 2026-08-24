@@ -177,7 +177,7 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
 
     records = [
         json.loads(line)
-        for line in application.state_store.paths.session.threads_log.read_text(
+        for line in application.thread_persistence.paths.session.threads_log.read_text(
             encoding="utf-8"
         ).splitlines()
     ]
@@ -188,7 +188,7 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
     ).thread(child_thread).messages_file.read_text(encoding="utf-8")
     assert "Review change A" in child_messages
     assert "Child review result" in child_messages
-    assert application.state_store.thread_id == "agent"
+    assert application.thread_persistence.thread_id == "agent"
     await engine.close_session()
     await application.stop()
 
@@ -428,7 +428,7 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     assert "Follow the builder workflow." in "\n".join(
         str(message.content) for message in first_llm.get_call_messages(0)
     )
-    assert first_application.state_store.read_thread_metadata()["agent"] == "builder"
+    assert first_application.thread_persistence.metadata.load().agent == "builder"
     await first.close_session()
     await first_application.stop()
 
@@ -543,7 +543,7 @@ async def test_new_primary_thread_selects_builtin_default_agent(
     engine = application.engine
     assert engine.settings.agent_name == "default"
     assert "Default prompt." in engine.settings.agent_instructions
-    assert application.state_store.read_thread_metadata()["agent"] == "default"
+    assert application.thread_persistence.metadata.load().agent == "default"
     await engine.close_session()
     await application.stop()
 
@@ -627,7 +627,7 @@ def _make_session(tmp_path, *, registry, factory):
         new_thread_id=lambda agent: f"{agent}-child",
     )
     children = types.SimpleNamespace(
-        spawn=lambda request: factory(
+        spawn=lambda request, _lifecycle: factory(
             request.definition,
             request.thread_id,
             request.prompt,
@@ -637,6 +637,7 @@ def _make_session(tmp_path, *, registry, factory):
         catalog=registry,
         session=session,
         children=children,
+        lifecycle=types.SimpleNamespace(append=lambda _record: None),
         parent_permissions=object(),
         client_events=None,
     )

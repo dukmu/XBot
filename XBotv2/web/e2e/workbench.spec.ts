@@ -50,11 +50,11 @@ test("renders Todo state as a checklist", async ({ page }) => {
   await composer.press("Enter");
 
   await expect(page.getByText("update_todos", { exact: true })).toBeVisible();
-  await expect(page.getByText("0/2 done · Inspect the bug", { exact: true })).toBeVisible();
+  await expect(page.getByText("1/2 done · Verify the fix", { exact: true })).toBeVisible();
   await page.getByText("update_todos", { exact: true }).click();
   await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Inspect the bug");
   await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("In progress");
-  await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Pending");
+  await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Done");
 });
 
 test("restores historical sessions and their workspaces", async ({ page }) => {
@@ -245,10 +245,20 @@ async function mockProtocol(page: Page) {
           { content: "Inspect the bug", status: "in_progress" },
           { content: "Verify the fix", status: "pending" },
         ];
+        const current = [
+          { content: "Inspect the bug", status: "completed" },
+          { content: "Verify the fix", status: "in_progress" },
+        ];
         return sse(route, [
           { type: "turn_started", data: { turn: 2 } },
           { type: "tool_calls_started", data: { tool_calls: [{ id: "todo-1", name: "update_todos", args: { todos } }] } },
-          { type: "tool_result", data: { tool_call_id: "todo-1", name: "update_todos", content: "Todo list updated.", status: "success" } },
+          { type: "tool_result", data: {
+            tool_call_id: "todo-1",
+            name: "update_todos",
+            content: "Todo list updated.",
+            status: "success",
+            data: { kind: "todo_snapshot", schema_version: 1, items: current },
+          } },
           { type: "assistant_message", data: { content: "I will work through the checklist.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ]);

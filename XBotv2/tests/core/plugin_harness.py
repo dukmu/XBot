@@ -15,7 +15,10 @@ def mount_ctx(state_store):
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
 
-    ctx = Context(data_dir=state_store.paths.state_dir)
+    ctx = Context(
+        data_dir=state_store.paths.plugin_state_dir,
+        state_service=state_store.state,
+    )
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
@@ -33,7 +36,8 @@ def mount_ctx(state_store):
     from XBotv2.sandbox.policy import SandboxPolicy
 
     ctx.set("model", ModelService())
-    ctx.set("storage", state_store)
+    ctx.set("artifacts", state_store.artifacts)
+    ctx.set("thread_persistence", state_store)
     ctx.set("thread_paths", state_store.paths)
     ctx.set("loop_state", LoopState(
         session=SessionInfo(
@@ -42,13 +46,12 @@ def mount_ctx(state_store):
             workspace_root=str(state_store.workspace_root),
             provider="default",
         ),
-        media_root=str(state_store.root),
     ))
     ctx.set("sandbox", SandboxPolicy(
         {"enabled": False, "resources": []},
         data_root=state_store.paths.runtime.data_dir,
         workspace_root=state_store.workspace_root,
-        session_root=state_store.root,
+        session_root=state_store.paths.state_dir,
         variables=ctx.variables,
     ))
     return ctx
@@ -75,10 +78,10 @@ def mount_plugin_standalone(plugin, config=None):
     from pathlib import Path
 
     from XBotv2.core.paths import RuntimePaths
-    from XBotv2.persistence.store import CoreStateStore
+    from XBotv2.persistence.store import ThreadPersistence
 
     tmp = Path(tempfile.mkdtemp())
-    store = CoreStateStore.create(
+    store = ThreadPersistence.create(
         RuntimePaths.from_data_dir(tmp).session("s"),
         thread_id="t",
         workspace_root=str(tmp),

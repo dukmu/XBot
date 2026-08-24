@@ -14,6 +14,7 @@ import XBotv2.core as public_api
 from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.context_builder import ContextComponent
 from XBotv2.core import (
+    ArtifactKind,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -227,10 +228,10 @@ def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
     variables = RuntimeVariables.for_thread(runtime, tmp_path / "workspace", thread)
 
     assert variables["tool_results"] == str(
-        thread.artifacts_dir / "tool_results"
+        thread.artifact_dir(ArtifactKind.TOOL_RESULT)
     )
     assert variables.expand("Read ${tool_results}/result.txt") == (
-        f"Read {thread.artifacts_dir}/tool_results/result.txt"
+        f"Read {thread.artifact_dir(ArtifactKind.TOOL_RESULT)}/result.txt"
     )
     assert variables.expand_markdown(
         "Literal ${workspace}.\n\n```var\n${workspace}\n```"

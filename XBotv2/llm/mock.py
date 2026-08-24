@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider, InputModality
 from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.core.usage import normalize_usage
+
+
+@dataclass
+class _MockState:
+    call_count: int = 0
+    call_history: list[list[Message]] = field(default_factory=list)
 
 
 class MockLLM(BaseProvider):
@@ -20,18 +28,25 @@ class MockLLM(BaseProvider):
         responses: list[dict[str, Any]] | None = None,
         *,
         input_modalities: list[InputModality] | None = None,
-        media_root: Path | str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         super().__init__(
             model="mock",
             temperature=0,
             max_output_tokens=None,
             input_modalities=input_modalities,
-            media_root=media_root,
+            artifacts=artifacts,
         )
         self.responses = responses or []
-        self.call_count = 0
-        self.call_history: list[list[Message]] = []
+        self._state = _MockState()
+
+    @property
+    def call_count(self) -> int:
+        return self._state.call_count
+
+    @property
+    def call_history(self) -> list[list[Message]]:
+        return self._state.call_history
 
     def bind_tools(
         self,
@@ -68,13 +83,13 @@ class MockLLM(BaseProvider):
         return self.call_history[index]
 
     def next_response(self) -> dict[str, Any]:
-        if self.call_count >= len(self.responses):
+        if self._state.call_count >= len(self.responses):
             raise RuntimeError(
                 f"MockLLM exhausted after {len(self.responses)} responses "
-                f"(requested response #{self.call_count + 1})"
+                f"(requested response #{self._state.call_count + 1})"
             )
-        response = self.responses[self.call_count]
-        self.call_count += 1
+        response = self.responses[self._state.call_count]
+        self._state.call_count += 1
         return response
 
     def to_response(self, response: dict[str, Any]) -> ModelResponse:
@@ -83,7 +98,7 @@ class MockLLM(BaseProvider):
             reasoning=str(response.get("reasoning") or ""),
             tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
             response_metadata=dict(response.get("response_metadata") or {}),
-            usage_metadata=dict(response.get("usage_metadata") or {}),
+            usage_metadata=normalize_usage(response.get("usage_metadata") or {}),
             additional_kwargs=dict(response.get("additional_kwargs") or {}),
         )
 
@@ -106,7 +121,7 @@ class MockLLM(BaseProvider):
                 for chunk in raw.get("tool_call_chunks") or []
             ],
             response_metadata=dict(raw.get("response_metadata") or {}),
-            usage_metadata=dict(raw.get("usage_metadata") or {}),
+            usage_metadata=normalize_usage(raw.get("usage_metadata") or {}),
             additional_kwargs=dict(raw.get("additional_kwargs") or {}),
         )
 
@@ -121,12 +136,12 @@ def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
     return normalized
 
 
-def create_mock_provider(provider_config, model_config, *, media_root=None):
+def create_mock_provider(provider_config, model_config, *, artifacts=None):
     """Factory for the deterministic mock route."""
     return MockLLM(
         responses=model_config.mock_responses,
         input_modalities=model_config.input_modalities,
-        media_root=media_root,
+        artifacts=artifacts,
     )
 
 

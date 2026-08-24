@@ -20,7 +20,7 @@ from XBotv2.sandbox.commands import build_sandbox_commands
 
 class SandboxComponent:
     inject = [
-        "storage", "session", "tools", "data_root", "variables",
+        "thread_paths", "session", "tools", "data_root", "variables",
         "workspace_root", "commands", "settings",
     ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
@@ -32,7 +32,7 @@ class SandboxComponent:
             (config or {}).get("sandbox"),
             data_root=ctx.data_root,
             workspace_root=ctx.workspace_root,
-            session_root=ctx.storage.root,
+            session_root=ctx.thread_paths.state_dir,
             variables=ctx.variables,
         )
         ctx.set("sandbox", policy)

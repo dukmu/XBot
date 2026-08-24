@@ -258,15 +258,15 @@ Compacts a completed history prefix through the public `BEFORE_CONTEXT`
 contract. The `compact` tool requests a manual compaction; current provider input
 usage triggers it automatically, with a character fallback when usage is absent.
 Recent complete user turns remain verbatim, the
-auxiliary model call has no tools, and only a successful summary is returned as
-a message replacement. The persistence listener appends a history checkpoint, so
-resume observes the same summary and recent tail without deleting raw records. See
+auxiliary model call has no tools, and only a successful summary is committed as
+one effective-history replacement. Resume observes the same summary and recent
+tail; removed raw records are not retained in the conversation store. See
 [Compact plugin](compact.md).
 
 ### TodolistPlugin (`todolist/`)
 
-Provides one atomic `update_todos` Tool backed by an immediately persisted
-thread-local `plugin_states/todolist.yaml` value. Each call supplies the complete
+Provides one atomic `update_todos` Tool backed by a versioned snapshot in
+`ctx.state.namespace("todolist")`. Each call supplies the complete
 ordered checklist; invalid lists cannot partially change stored state. Its
 normal Tool result confirms the update to the next model call; the plugin does
 not inject repeated context.

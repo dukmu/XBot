@@ -1,132 +1,88 @@
-"""Cumulative model-usage accounting, independent of the agent loop."""
+"""Cumulative model usage stored through the shared state protocol."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from collections.abc import Mapping, Sequence
 
-import yaml
+from xcore import Context
+from xcore.state import StateService
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.core.filesystem.atomic import write_text_atomic
-
-
-_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "requests",
-    "context_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "prompt_cache_write_tokens",
-)
-
-
-def _empty() -> dict[str, int]:
-    return {key: 0 for key in _FIELDS}
+from XBotv2.agentloop import EventContext, Events, LoopState
+from XBotv2.core.messages import Message
+from XBotv2.core.usage import UsageDelta
+from XBotv2.usage.models import UsageSnapshot
 
 
 class UsageService:
-    """Own cumulative usage and its plugin-local persisted state."""
+    """Own the one cumulative usage snapshot for a thread."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._has_snapshot = path.exists()
-        stored = self._read()
-        if stored:
-            self._usage = {
-                key: int(stored.get(key) or 0)
-                for key in _FIELDS
-            }
-        else:
-            self._usage = _empty()
+    def __init__(self, store: StateService) -> None:
+        self._store = store
+        self._snapshot = UsageSnapshot()
+        self._initialized = False
 
-    def initialize(self, messages: list[Any]) -> None:
-        """Rebuild a missing snapshot after optional state hydration settles."""
-        if self._has_snapshot:
+    async def initialize(self, messages: Sequence[Message]) -> None:
+        if self._initialized:
             return
-        for message in messages:
-            self.add(getattr(message, "usage_metadata", None), persist=False)
-        self._persist()
-        self._has_snapshot = True
+        stored = await self._store.get("snapshot")
+        if stored is None:
+            snapshot = UsageSnapshot()
+            for message in messages:
+                usage = message.usage_metadata
+                if usage:
+                    delta = UsageDelta.from_mapping(usage)
+                    if not delta.is_empty():
+                        snapshot = snapshot.add(delta)
+            self._snapshot = snapshot
+            if snapshot.requests:
+                await self._store.set("snapshot", snapshot.to_dict())
+        else:
+            if not isinstance(stored, Mapping):
+                raise TypeError("Persisted usage snapshot must be an object")
+            self._snapshot = UsageSnapshot.from_dict(stored)
+        self._initialized = True
 
     def snapshot(self) -> dict[str, int]:
-        return dict(self._usage)
+        return self._snapshot.totals()
 
-    def add(
-        self,
-        usage: dict[str, Any] | None,
-        *,
-        persist: bool = True,
-    ) -> bool:
-        if not isinstance(usage, dict):
+    async def add(self, usage: Mapping[str, object]) -> bool:
+        if not self._initialized:
+            raise RuntimeError("UsageService must be initialized before recording usage")
+        delta = UsageDelta.from_mapping(usage)
+        if delta.is_empty():
             return False
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        cache_read = int(usage.get("cache_read_input_tokens") or 0)
-        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
-        cache_write = int(usage.get("prompt_cache_write_tokens") or 0)
-        if not any((input_tokens, output_tokens, cache_read, cache_creation, cache_write)):
-            return False
-        self._usage["input_tokens"] += input_tokens
-        self._usage["output_tokens"] += output_tokens
-        reported_total = usage.get("total_tokens")
-        self._usage["total_tokens"] += int(
-            input_tokens + output_tokens + cache_read + cache_creation + cache_write
-            if reported_total is None else reported_total
-        )
-        requests = usage.get("requests")
-        self._usage["requests"] += int(1 if requests is None else requests)
-        context_tokens = usage.get("context_tokens")
-        self._usage["context_tokens"] = int(
-            input_tokens + cache_read + cache_creation + cache_write
-            if context_tokens is None else context_tokens
-        )
-        self._usage["cache_read_input_tokens"] += cache_read
-        self._usage["cache_creation_input_tokens"] += cache_creation
-        self._usage["prompt_cache_write_tokens"] += cache_write
-        if persist:
-            self._persist()
+        self._snapshot = self._snapshot.add(delta)
+        await self._store.set("snapshot", self._snapshot.to_dict())
         return True
 
-    def _persist(self) -> None:
-        write_text_atomic(
-            self._path,
-            yaml.safe_dump(self._usage, allow_unicode=True, sort_keys=False),
-        )
 
-    def _read(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
-        loaded = yaml.safe_load(self._path.read_text(encoding="utf-8"))
-        if loaded is None:
-            return {}
-        if not isinstance(loaded, dict):
-            raise ValueError("Persisted usage must be a mapping")
-        return loaded
+class UsageHandlers:
+    def __init__(self, service: UsageService, state: LoopState) -> None:
+        self._service = service
+        self._state = state
+
+    async def initialize(self, _event: ApplicationInitialized) -> None:
+        await self._service.initialize(self._state.messages)
+
+    async def record(self, event: EventContext) -> None:
+        response = event.model_response
+        if response is not None and response.usage_metadata:
+            await self._service.add(response.usage_metadata)
 
 
 class UsageComponent:
-    inject = ["thread_paths", "loop_state"]
+    inject = ["state", "loop_state"]
     name = "xbot.usage"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        service = UsageService(
-            ctx.thread_paths.usage_file,
-        )
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        service = UsageService(ctx.state.namespace("usage"))
+        handlers = UsageHandlers(service, ctx.loop_state)
         ctx.set("usage", service)
-
-        async def initialize(_event: ApplicationInitialized) -> None:
-            service.initialize(ctx.loop_state.messages)
-
-        async def record(event: EventContext) -> None:
-            usage = getattr(event.model_response, "usage_metadata", None)
-            service.add(usage)
-
-        ctx.on(Events.AFTER_MODEL_RESPONSE, record)
-        ctx.on(APPLICATION_INITIALIZED, initialize, prepend=True)
+        ctx.on(Events.AFTER_MODEL_RESPONSE, handlers.record)
+        ctx.on(APPLICATION_INITIALIZED, handlers.initialize, prepend=True)
 
 
 plugin = UsageComponent()
+
+__all__ = ["UsageComponent", "UsageHandlers", "UsageService"]

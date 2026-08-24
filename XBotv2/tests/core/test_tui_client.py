@@ -227,6 +227,34 @@ def test_tool_details_preserve_full_structured_result():
     assert "report.txt" in detail
 
 
+def test_todo_tool_details_use_current_snapshot_projection():
+    from XBotv2.tui.textual_widgets import tool_detail
+
+    state = TuiState()
+    state.apply_event({
+        "type": "tool_result",
+        "data": {
+            "tool_call_id": "todo-1",
+            "name": "update_todos",
+            "status": "success",
+            "content": "Todo list updated.",
+            "data": {
+                "kind": "todo_snapshot",
+                "schema_version": 1,
+                "items": [
+                    {"content": "Inspect", "status": "completed"},
+                    {"content": "Implement", "status": "in_progress"},
+                ],
+            },
+        },
+    })
+
+    detail = tool_detail(state.tools["todo-1"])
+
+    assert "[x] Inspect" in detail
+    assert "[>] Implement" in detail
+
+
 def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
     state = TuiState()
 

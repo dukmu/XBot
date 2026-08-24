@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import time
 import uuid
@@ -12,12 +14,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
-
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.core.errors import OperationError
-from XBotv2.core.messages import Message
+from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
+from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
+from XBotv2.usage.models import UsageSnapshot
 from XBotv2.session.runtime import SessionBusy, SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
@@ -71,33 +74,33 @@ class SessionManager:
         *,
         idle_timeout: float | None = 3600.0,
         reap_interval: float = 60.0,
-        state_store_factory: Any | None = None,
+        thread_persistence_factory: ThreadPersistenceFactory | None = None,
         application_factory: AgentApplicationFactory | None = None,
     ) -> None:
         self.paths = paths
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
-        self.state_store_factory = state_store_factory
+        self.thread_persistence_factory = thread_persistence_factory
         self.application_factory = application_factory
         self._sessions: dict[tuple[str, str], SessionRuntime] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
 
-    def _state_store(
+    def _thread_persistence(
         self,
-        session_paths: Any,
+        session_paths: SessionPaths,
         *,
         thread_id: str,
         workspace_root: str = "",
         provider: str = "",
-    ) -> Any:
+    ) -> ThreadPersistencePort:
         """Construct a persisted-state reader through the persistence host."""
-        if self.state_store_factory is None:
+        if self.thread_persistence_factory is None:
             raise OperationError(
                 "persistence_unavailable",
-                "no state_store_factory (persistence host not mounted)",
+                "no thread_persistence_factory (persistence host not mounted)",
             )
-        return self.state_store_factory(
+        return self.thread_persistence_factory(
             session_paths,
             thread_id=thread_id,
             workspace_root=workspace_root,
@@ -191,6 +194,12 @@ class SessionManager:
             existing = self._sessions.get(key)
             if existing is not None:
                 if mode == "resume":
+                    if not existing.application.persistence_available:
+                        raise OperationError(
+                            "persistence_unavailable",
+                            f"Cannot resume {session_id}/{thread_id}: "
+                            "message persistence is not mounted",
+                        )
                     self._sessions.pop(key)
                     await existing.close()
                 else:
@@ -238,11 +247,9 @@ class SessionManager:
                     # silently reopen as an empty session on reconnect.
                     # Remove the fresh metadata the aborted start wrote so
                     # the leftover stays untouched.
-                    for thread_paths in (
-                        session_paths.thread(thread_id),
-                        session_paths.thread(thread_id, legacy=True),
-                    ):
-                        thread_paths.metadata_file.unlink(missing_ok=True)
+                    session_paths.thread(thread_id).metadata_file.unlink(
+                        missing_ok=True
+                    )
                     await application.close()
                     raise SessionNotFound(
                         f"{session_id}/{thread_id} has no persisted session"
@@ -387,9 +394,12 @@ class SessionManager:
                 raise SessionNotFound(
                     f"{request.session_id}/{request.thread_id}"
                 )
-            store = self._state_store(session, thread_id=request.thread_id)
+            persistence = self._thread_persistence(
+                session,
+                thread_id=request.thread_id,
+            )
             parent_thread_id = str(
-                store.read_thread_metadata().get("parent_thread_id") or ""
+                persistence.metadata.load().parent_thread_id
             )
         if not parent_thread_id or parent_thread_id == request.thread_id:
             raise OperationError(
@@ -440,7 +450,8 @@ class SessionManager:
         session = self.paths.session(session_id)
         if not session.has_thread(thread_id):
             raise SessionNotFound(f"{session_id}/{thread_id}")
-        return tuple(self._state_store(session, thread_id=thread_id).read_messages())
+        persistence = self._thread_persistence(session, thread_id=thread_id)
+        return tuple(persistence.history.load())
 
     async def clear_history(
         self,
@@ -470,15 +481,20 @@ class SessionManager:
         request: SendMessage,
     ) -> AsyncIterator[SessionStreamEvent]:
         runtime = await self.get(request.session_id, request.thread_id)
-        images = [
-            runtime.application.media.store_image(item.data, item.media_type)
-            for item in request.images
-        ]
+        images = []
+        for item in request.images:
+            ref = runtime.application.artifacts.put(
+                ArtifactKind.MEDIA,
+                _upload_bytes(item.data),
+                media_type=item.media_type,
+            )
+            images.append(ImageContent(ref.id, ref.media_type, ref.size))
         attachments = [
-            runtime.application.media.store_attachment(
-                item.data,
-                item.media_type,
-                item.name,
+            runtime.application.artifacts.put(
+                ArtifactKind.ATTACHMENT,
+                _upload_bytes(item.data),
+                media_type=item.media_type,
+                name=item.name,
             )
             for item in request.attachments
         ]
@@ -648,10 +664,7 @@ def _has_persisted_session(
     thread_id: str,
 ) -> bool:
     """Whether a thread has committed real session evidence on disk."""
-    if session_paths.thread(thread_id).metadata_file.exists():
-        return True
-    legacy = session_paths.thread(thread_id, legacy=True)
-    return legacy.metadata_file.exists()
+    return session_paths.thread(thread_id).metadata_file.exists()
 
 
 async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
@@ -678,8 +691,6 @@ def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:
         thread_ids.update(
             path.name for path in session.threads_dir.iterdir() if path.is_dir()
         )
-    if (session.root / "state").is_dir():
-        thread_ids.add("agent")
     return sorted(thread_ids)
 
 
@@ -716,38 +727,49 @@ async def thread_summary(
     session = manager.paths.session(session_id)
     if not session.has_thread(thread_id):
         raise SessionNotFound(f"{session_id}/{thread_id}")
-    store = manager._state_store(
+    persistence = manager._thread_persistence(
         session,
         thread_id=thread_id,
     )
-    metadata = store.read_thread_metadata()
-    parent_thread_id = str(metadata.get("parent_thread_id") or "")
+    metadata = persistence.metadata.load()
+    parent_thread_id = metadata.parent_thread_id
     return ThreadSnapshot(
         session_id=session_id,
         thread_id=thread_id,
         status="inactive",
         kind="subagent" if parent_thread_id else "main",
         parent_thread_id=parent_thread_id,
-        agent=str(metadata.get("agent") or ""),
-        provider=str(metadata.get("provider") or ""),
-        model=str(metadata.get("model") or ""),
-        model_mode=str(metadata.get("model_mode") or ""),
-        context_window=int(metadata.get("context_window") or 0),
-        message_count=store.message_count(),
-        usage=_read_usage(store.paths.usage_file),
-        workspace_root=str(metadata.get("workspace_root") or ""),
-        title=str(metadata.get("title") or session_id),
+        agent=metadata.agent,
+        provider=metadata.provider,
+        model=metadata.model,
+        model_mode=metadata.model_mode,
+        context_window=metadata.context_window,
+        message_count=persistence.history.count(),
+        usage=await _read_usage(persistence),
+        workspace_root=metadata.workspace_root,
+        title=metadata.title or session_id,
     )
 
 
-def _read_usage(path: Any) -> dict[str, int]:
-    if not path.exists():
+async def _read_usage(
+    persistence: ThreadPersistencePort,
+) -> dict[str, int]:
+    stored = await persistence.state.namespace("usage").get("snapshot")
+    if stored is None:
         return _empty_usage()
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(loaded, dict):
-        return _empty_usage()
-    empty = _empty_usage()
-    return {key: int(loaded.get(key) or 0) for key in empty}
+    if not isinstance(stored, dict):
+        raise TypeError("Persisted usage snapshot must be an object")
+    return UsageSnapshot.from_dict(stored).totals()
+
+
+def _upload_bytes(data: str) -> bytes:
+    try:
+        payload = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("upload data must be valid base64") from exc
+    if not payload:
+        raise ValueError("upload data must not be empty")
+    return payload
 
 
 async def session_summary(
@@ -755,13 +777,18 @@ async def session_summary(
     session_id: str,
 ) -> SessionSnapshot:
     session = manager.paths.session(session_id)
-    if not session.root.is_dir():
-        raise SessionNotFound(session_id)
-    thread_ids = persisted_thread_ids(manager.paths, session_id)
     active = await manager.active_threads()
-    active_threads = sum(
-        1 for active_session_id, _ in active if active_session_id == session_id
+    active_ids = {
+        thread_id
+        for (active_session_id, thread_id) in active
+        if active_session_id == session_id
+    }
+    if not session.root.is_dir() and not active_ids:
+        raise SessionNotFound(session_id)
+    thread_ids = sorted(
+        set(persisted_thread_ids(manager.paths, session_id)) | active_ids
     )
+    active_threads = len(active_ids)
     main_id = "agent" if "agent" in thread_ids else None
     if main_id is None:
         for candidate_id in thread_ids:
@@ -820,7 +847,7 @@ class SessionManagerComponent:
 
     name = "xbot.session.manager"
     inject = [
-        "state_store_factory",
+        "thread_persistence_factory",
         "runtime_paths",
         "agent_application_factory",
         "workspace_root",
@@ -829,7 +856,7 @@ class SessionManagerComponent:
     def apply(self, ctx, config=None) -> None:
         manager = SessionManager(
             ctx.runtime_paths,
-            state_store_factory=ctx.state_store_factory,
+            thread_persistence_factory=ctx.thread_persistence_factory,
             application_factory=ctx.agent_application_factory,
         )
         ctx.set("sessions", manager)

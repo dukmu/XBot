@@ -5,6 +5,8 @@ package. Plugin-owned declarations are exported by their owning package roots;
 engine internals remain implementation details.
 """
 
+from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
+from XBotv2.core.history import ConversationHistory, HistorySink
 from XBotv2.core.messages import (
     ContentPart,
     ImageContent,
@@ -37,7 +39,6 @@ from XBotv2.core.tokens import (
     estimate_request_tokens,
 )
 from XBotv2.core.tools import (
-    ArtifactRef,
     ClientEvent,
     JsonObject,
     JsonValue,
@@ -46,13 +47,18 @@ from XBotv2.core.tools import (
     ToolCallDelta,
     ToolError,
     ToolResult,
+    json_object,
+    json_value,
 )
 from XBotv2.core.variables import RuntimeVariables
 
 __all__ = [
     "ArtifactRef",
+    "ArtifactKind",
+    "ArtifactStorePort",
     "ClientEvent",
     "ContentPart",
+    "ConversationHistory",
     "EmptyRequest",
     "Operation",
     "OperationContext",
@@ -61,6 +67,7 @@ __all__ = [
     "InputModality",
     "JsonObject",
     "JsonValue",
+    "HistorySink",
     "MESSAGE_FORMAT_KEY",
     "Message",
     "ModelChunk",
@@ -87,4 +94,6 @@ __all__ = [
     "estimate_request_tokens",
     "prompt_container",
     "prompt_element",
+    "json_object",
+    "json_value",
 ]

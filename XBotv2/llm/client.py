@@ -12,6 +12,7 @@ import logging
 import os
 
 from XBotv2.llm.config import ProviderConfig, expand_env
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.providers import BaseProvider
 
 logger = logging.getLogger("llm")
@@ -23,7 +24,7 @@ def create_llm(
     provider_config: ProviderConfig,
     model_config,
     *,
-    media_root: str | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> BaseProvider:
     """Create a provider adapter for one adapter instance + specific model.
 
@@ -35,19 +36,19 @@ def create_llm(
         from XBotv2.llm.mock import create_mock_provider
 
         return create_mock_provider(
-            provider_config, model_config, media_root=media_root
+            provider_config, model_config, artifacts=artifacts
         )
     if protocol == "openai":
         from XBotv2.llm.openai import create_openai_provider
 
         return create_openai_provider(
-            provider_config, model_config, media_root=media_root
+            provider_config, model_config, artifacts=artifacts
         )
     if protocol == "anthropic":
         from XBotv2.llm.anthropic import create_anthropic_provider
 
         return create_anthropic_provider(
-            provider_config, model_config, media_root=media_root
+            provider_config, model_config, artifacts=artifacts
         )
     raise ValueError(f"Unknown protocol implementation: {protocol!r}")
 

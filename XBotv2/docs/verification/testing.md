@@ -30,7 +30,7 @@ tests/
 │   ├── test_engine.py       # ReAct loop, hooks, streaming, reasoning, compaction
 │   ├── test_context.py      # ContextBuilder, sanitize, cache
 │   ├── test_application_startup.py # Application startup, tool filter
-│   ├── test_state.py        # CoreStateStore
+│   ├── test_state.py        # ThreadPersistence layout and state
 │   ├── test_persistence.py  # Message persistence, artifacts
 │   ├── test_command.py      # CommandSpec, kind field, search/completion
 │   ├── test_sandbox.py      # SandboxPolicy, BubblewrapBackend capabilities
@@ -71,7 +71,7 @@ llm = MockLLM(responses=[{
 
 - `temp_data_dir`: isolated data directory (contains `config/` subdir)
 - `temp_workspace`: isolated workspace directory
-- `state_store`: CoreStateStore with a session
+- `state_store`: ThreadPersistence for one temporary thread
 - `sandbox_policy`: SandboxPolicy(enabled=False)
 - `tests/fixtures/sse/`: golden HTTP/SSE stream envelopes used by integration
   tests.

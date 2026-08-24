@@ -84,6 +84,7 @@ def make_engine(
     from XBotv2.agentloop.engine import Engine
     from XBotv2.config.models import RuntimeConfig
     from XBotv2.agentloop import LoopSettings, LoopState
+    from XBotv2.core.history import ConversationHistory
     from XBotv2.session import SessionInfo
     from XBotv2.permissions.system import PermissionSystem
     from XBotv2.sandbox.policy import SandboxPolicy
@@ -109,8 +110,11 @@ def make_engine(
             workspace_root=str(state_store.workspace_root),
             provider="default",
         ),
-        media_root=str(state_store.root),
     )
+    state.set_history(ConversationHistory(
+        state_store.history.load(),
+        sink=state_store.history,
+    ))
     settings = LoopSettings(
         provider="default",
         model="mock",

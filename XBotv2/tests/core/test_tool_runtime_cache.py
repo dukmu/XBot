@@ -27,6 +27,8 @@ from XBotv2.agentloop import EventContext, Events
 from XBotv2.session import SessionInfo
 from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
+from XBotv2.core.history import ConversationHistory
+from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.permission_request import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import PERMISSION_REQUESTED
@@ -36,7 +38,6 @@ from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
 from XBotv2.permission_request.service import ApprovalService
-from XBotv2.persistence.plugin import PersistenceService
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.interactions.plugin import InteractionsService
 from XBotv2.tests.helpers import make_tool_ctx
@@ -841,14 +842,16 @@ async def test_before_tool_call_rejects_policy_shortcuts(
 
 
 @pytest.mark.asyncio
-async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
+async def test_after_tools_cache_hook_truncates_before_history_and_events(
+    state_store, artifact_store, temp_workspace
+):
     registry = ToolRegistry()
     registry.register(large_output_tool)
     plugin_ctx = xcore.Context()
     plugin_ctx.on(
         Events.AFTER_TOOLS,
         make_tool_result_cache_hook(
-            state_store,
+            artifact_store,
             max_inline_chars=100,
             preview_chars=20,
         ),
@@ -877,11 +880,11 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
             workspace_root=str(temp_workspace),
             provider="default",
         ),
-        messages=state_store.read_messages(),
-        media_root=str(state_store.root),
+        messages=ConversationHistory(
+            state_store.history.load(),
+            sink=state_store.history,
+        ),
     )
-    persistence = PersistenceService(state_store, state)
-    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
     engine = Engine(
         model_client=llm,
         tools=plugin_ctx.tools,
@@ -901,26 +904,29 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     assert "x" * 100 not in tool_message.content
     assert cached.find("preview/ending") is not None
     assert cached.find("read_instruction") is not None
-    assert tool_message.artifact["kind"] == "cached_tool_result"
-    assert tool_message.artifact["tool_call_id"] == "call_large"
-    assert tool_message.artifact["cache_path"].startswith("session/artifacts/tool_results/")
-    assert not Path(tool_message.artifact["cache_path"]).is_absolute()
-    assert str(state_store.root) not in tool_message.content
+    assert len(tool_message.artifact) == 1
+    assert tool_message.artifact[0].kind is ArtifactKind.TOOL_RESULT
+    assert not Path(artifact_store.model_path(tool_message.artifact[0])).is_absolute()
+    assert str(state_store.paths.state_dir) not in tool_message.content
 
-    cache_files = list((Path(state_store.artifacts_dir) / "tool_results").glob("*.txt"))
+    cache_files = list(
+        state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).glob("*.txt")
+    )
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
 
     restored_tool_message = next(
-        m for m in state_store.read_messages() if m.role == "tool"
+        m for m in state_store.history.load() if m.role == "tool"
     )
     assert restored_tool_message.artifact == tool_message.artifact
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_store):
+async def test_cache_hook_stores_original_text_instead_of_json_wrapper(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
+        artifact_store,
         max_inline_chars=100,
         preview_chars=20,
     )
@@ -933,7 +939,7 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
 
     await hook(SimpleNamespace(tool_results=[message]))
 
-    cache_dir = Path(state_store.artifacts_dir) / "tool_results"
+    cache_dir = state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT)
     cache_files = list(cache_dir.glob("*.txt"))
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == original
@@ -941,14 +947,17 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     cached = ET.fromstring(message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["original_chars"] == str(len(original))
-    assert message.artifact["kind"] == "cached_tool_result"
-    assert message.artifact["cache_path"].endswith(cache_files[0].name)
+    assert len(message.artifact) == 1
+    assert message.artifact[0].kind is ArtifactKind.TOOL_RESULT
+    assert message.artifact[0].id.endswith(cache_files[0].name)
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_ignores_large_sidecar_data(state_store):
+async def test_cache_hook_ignores_large_sidecar_data(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
+        artifact_store,
         max_inline_chars=100,
         preview_chars=20,
     )
@@ -961,13 +970,15 @@ async def test_cache_hook_ignores_large_sidecar_data(state_store):
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "30 files found."
-    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).exists()
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_ignores_string_sidecar_data(state_store):
+async def test_cache_hook_ignores_string_sidecar_data(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
+        artifact_store,
         max_inline_chars=20,
         preview_chars=10,
     )
@@ -980,7 +991,7 @@ async def test_cache_hook_ignores_string_sidecar_data(state_store):
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "Structured result."
-    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).exists()
 
 
 def _event_context(**kwargs):

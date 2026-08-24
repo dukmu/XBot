@@ -95,9 +95,11 @@ class AgentRuntimeComponent:
         "llm",
         "model",
         "tools",
+        "artifacts",
         "loop_state",
         "commands",
         "agent_options",
+        "thread_metadata",
     ]
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:

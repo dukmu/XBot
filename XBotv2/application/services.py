@@ -9,11 +9,14 @@ from typing import Any, Protocol
 
 from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.agents import AgentDefinition, AgentSession
-from XBotv2.core.messages import ImageContent, Message
+from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.messages import Message
+from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
 from XBotv2.core.tools import ClientEvent, JsonObject
 from XBotv2.permissions import PermissionsPort
+from XBotv2.persistence import ThreadLifecycleWriterPort
 
 
 COLLECT_STATUS_SLOTS = "application/status-slots/collect"
@@ -112,17 +115,6 @@ class ClientEventsPort(Protocol):
     def pending_request_ids(self) -> list[str]: ...
 
 
-class MediaStoragePort(Protocol):
-    def store_image(self, data: str, media_type: str) -> ImageContent: ...
-
-    def store_attachment(
-        self,
-        data: str,
-        media_type: str,
-        name: str,
-    ) -> dict[str, Any]: ...
-
-
 class SessionHistoryPort(Protocol):
     async def clear_history(self) -> int: ...
 
@@ -134,13 +126,13 @@ class UsageSnapshotPort(Protocol):
 
 
 class LoopStateView(Protocol):
-    metadata: dict[str, Any]
+    metadata: ThreadMetadataState
 
 
 class AgentApplicationPort(Protocol):
     events: ApplicationEventsPort
     driver: AgentLoopDriverPort
-    media: MediaStoragePort
+    artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
     persistence_available: bool
@@ -179,7 +171,11 @@ class ChildApplicationRequest:
 
 
 class ChildApplicationsPort(Protocol):
-    async def spawn(self, request: ChildApplicationRequest) -> AgentSession: ...
+    async def spawn(
+        self,
+        request: ChildApplicationRequest,
+        lifecycle: ThreadLifecycleWriterPort,
+    ) -> AgentSession: ...
 
 
 __all__ = [
@@ -194,7 +190,6 @@ __all__ = [
     "InteractionResultPort",
     "InteractionWaiterPort",
     "LoopStateView",
-    "MediaStoragePort",
     "ParentPermissions",
     "SessionLaunch",
     "SessionHistoryPort",

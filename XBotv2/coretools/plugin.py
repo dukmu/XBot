@@ -17,7 +17,7 @@ from XBotv2.core.tools import Tool
 
 class CoreToolsComponent:
     inject = [
-        "tools", "session", "storage", "sandbox", "jobs", "workspace_root",
+        "tools", "session", "artifacts", "sandbox", "jobs", "workspace_root",
     ]
     """Register base tools and core event listeners (mounted after tools)."""
 
@@ -25,7 +25,7 @@ class CoreToolsComponent:
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         config = config or {}
-        storage = ctx.storage
+        artifacts = ctx.artifacts
         result_config = dict(config.get("tool_results") or {})
         max_inline_chars = int(result_config.get("max_inline_chars", 12_000))
         preview_chars = int(result_config.get("preview_chars", 4_000))
@@ -49,7 +49,7 @@ class CoreToolsComponent:
         # ``read(mode=media)`` is the single model-facing content tool; it
         # covers path, URL, and base64 media input (images today).
         tools = (
-            *filesystem_tools(ctx.sandbox),
+            *filesystem_tools(ctx.sandbox, artifacts),
             *shell_tools(ctx.sandbox, ctx.jobs, str(ctx.workspace_root)),
         )
         for tool in tools:
@@ -58,7 +58,7 @@ class CoreToolsComponent:
         ctx.on(
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
-                storage,
+                artifacts,
                 max_inline_chars=max_inline_chars,
                 preview_chars=preview_chars,
             ),

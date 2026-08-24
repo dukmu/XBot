@@ -9,6 +9,7 @@ observer events with ``ctx.emit``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -98,7 +99,7 @@ class EventContext:
     event payloads never expose the application service container.
     """
 
-    messages: list[Message] = field(default_factory=list)
+    messages: Sequence[Message] = field(default_factory=tuple)
     settings: LoopSettings | None = None
     continuation: bool = False
     session: SessionInfo | None = None

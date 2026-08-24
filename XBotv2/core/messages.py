@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.tools import JsonValue, ToolCall, ToolCallDelta
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,10 +182,12 @@ class _PartBacked:
 @dataclass(init=False)
 class Message(_PartBacked):
     role: str
-    parts: list[ContentPart]
+    parts: Sequence[ContentPart]
     tool_call_id: str
+    input_id: str
     name: str
     status: str
+    data: JsonValue
     additional_kwargs: dict[str, Any]
     response_metadata: dict[str, Any]
     usage_metadata: dict[str, Any]
@@ -191,6 +195,7 @@ class Message(_PartBacked):
     error: dict[str, Any] | None
     client_events: list[dict[str, Any]]
     turn_complete: bool
+    _sealed: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -198,8 +203,10 @@ class Message(_PartBacked):
         content: str = "",
         tool_calls: list[ToolCall] | None = None,
         tool_call_id: str = "",
+        input_id: str = "",
         name: str = "",
         status: str = "",
+        data: JsonValue = None,
         additional_kwargs: dict[str, Any] | None = None,
         response_metadata: dict[str, Any] | None = None,
         usage_metadata: dict[str, Any] | None = None,
@@ -211,10 +218,13 @@ class Message(_PartBacked):
         client_events: list[dict[str, Any]] | None = None,
         turn_complete: bool = False,
     ) -> None:
+        self._sealed = False
         self.role = role
         self.tool_call_id = tool_call_id
+        self.input_id = input_id
         self.name = name
         self.status = status
+        self.data = data
         self.additional_kwargs = dict(additional_kwargs or {})
         self.response_metadata = dict(response_metadata or {})
         self.usage_metadata = dict(usage_metadata or {})
@@ -232,25 +242,105 @@ class Message(_PartBacked):
             tool_calls=tool_calls,
         )
 
-    def fingerprint(self) -> int:
-        """Cheap stable fingerprint for persisted-message change detection.
+    def __setattr__(self, name: str, value: object) -> None:
+        if name != "_sealed" and self._sealed:
+            raise RuntimeError("A message in ConversationHistory is immutable")
+        object.__setattr__(self, name, value)
 
-        ``str`` hashes are cached, so fingerprinting large message content is
-        much cheaper than serializing it while still catching in-place edits.
-        """
-        return hash((
-            self.role,
-            str(self.content or ""),
-            self.tool_call_id,
-            self.status,
-            self.name,
-            len(self.parts),
-            len(self.additional_kwargs or {}),
-            len(self.usage_metadata or {}),
-            len(self.response_metadata or {}),
-            self.error is not None,
+    def seal(self) -> None:
+        if self._sealed:
+            return
+        self.parts = _FrozenList(_freeze_part(part) for part in self.parts)
+        self.additional_kwargs = _freeze_object(self.additional_kwargs)
+        self.response_metadata = _freeze_object(self.response_metadata)
+        self.usage_metadata = _freeze_object(self.usage_metadata)
+        self.data = _freeze_json(self.data)
+        self.artifact = _freeze_artifact(self.artifact)
+        self.error = _freeze_object(self.error) if self.error is not None else None
+        self.client_events = _FrozenList(
+            _freeze_object(event) for event in self.client_events
+        )
+        self._sealed = True
+
+
+class _FrozenDict(dict[str, Any]):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("A message in ConversationHistory is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> "_FrozenDict":
+        return self
+
+
+class _FrozenList(list[Any]):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("A message in ConversationHistory is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> "_FrozenList":
+        return self
+
+
+def _freeze_part(part: ContentPart) -> ContentPart:
+    if isinstance(part, ReasoningPart):
+        return ReasoningPart(part.text, _freeze_object(part.provider_data))
+    if isinstance(part, ToolCallPart):
+        return ToolCallPart(ToolCall(
+            part.call.id,
+            part.call.name,
+            _freeze_object(part.call.args),
         ))
+    return part
 
+
+def _freeze_object(value: Mapping[str, object]) -> _FrozenDict:
+    return _FrozenDict({key: _freeze_json(item) for key, item in value.items()})
+
+
+def _freeze_json(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_freeze_json(item) for item in value)
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Message JSON object keys must be strings")
+        return _freeze_object(value)
+    raise TypeError(
+        f"Message persisted fields must be JSON-compatible, got {type(value).__name__}"
+    )
+
+
+def _freeze_artifact(value: object) -> object:
+    if isinstance(value, ArtifactRef):
+        return value
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_freeze_artifact(item) for item in value)
+    if isinstance(value, Mapping):
+        return _freeze_object(value)
+    if value is None:
+        return None
+    raise TypeError(f"Unsupported message artifact value: {type(value).__name__}")
 
 @dataclass(init=False)
 class ModelResponse(_PartBacked):

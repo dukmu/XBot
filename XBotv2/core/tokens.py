@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
+from XBotv2.core.messages import Message
 from XBotv2.core.tools import provider_tool_schema
 
 REQUEST_ESTIMATE_KEY = "xbotv2_request_estimated_tokens"
@@ -23,18 +25,16 @@ def estimate_text_tokens(text: str) -> int:
     )
 
 
-def estimate_messages_tokens(messages: list[Any]) -> int:
+def estimate_messages_tokens(messages: Sequence[Message]) -> int:
     total = 0
     for message in messages:
         total += 4
-        total += estimate_text_tokens(str(getattr(message, "role", "") or ""))
-        total += estimate_text_tokens(str(getattr(message, "content", "") or ""))
-        for call in getattr(message, "tool_calls", None) or []:
-            total += estimate_text_tokens(str(getattr(call, "name", "") or ""))
-            total += estimate_text_tokens(_stable_json(getattr(call, "args", {})))
-        reasoning = getattr(message, "reasoning", "")
-        if isinstance(reasoning, str):
-            total += estimate_text_tokens(reasoning)
+        total += estimate_text_tokens(message.role)
+        total += estimate_text_tokens(message.content)
+        for call in message.tool_calls:
+            total += estimate_text_tokens(call.name)
+            total += estimate_text_tokens(_stable_json(call.args))
+        total += estimate_text_tokens(message.reasoning)
     return total
 
 
@@ -46,7 +46,7 @@ def estimate_tool_schema_tokens(tools: list[Any]) -> int:
 
 
 def estimate_request_tokens(
-    messages: list[Any],
+    messages: Sequence[Message],
     tools: list[Any] | None = None,
 ) -> int:
     return estimate_messages_tokens(messages) + estimate_tool_schema_tokens(
@@ -55,9 +55,9 @@ def estimate_request_tokens(
 
 
 def calibrated_context_tokens(
-    messages: list[Any],
+    messages: Sequence[Message],
     tools: list[Any],
-    history: list[Any],
+    history: Sequence[Message],
     *,
     provider: str = "",
     context_window: int = 0,
@@ -70,8 +70,8 @@ def calibrated_context_tokens(
     """
     current_estimate = estimate_request_tokens(messages, tools)
     for message in reversed(history):
-        usage = getattr(message, "usage_metadata", {}) or {}
-        metadata = getattr(message, "response_metadata", {}) or {}
+        usage = message.usage_metadata
+        metadata = message.response_metadata
         context_tokens = int(usage.get("context_tokens") or 0)
         previous_estimate = int(metadata.get(REQUEST_ESTIMATE_KEY) or 0)
         previous_provider = str(metadata.get(REQUEST_PROVIDER_KEY) or "")
@@ -104,16 +104,12 @@ def context_token_limit(
 
 
 def _stable_json(value: Any) -> str:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-    except (TypeError, ValueError):
-        return str(value)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 __all__ = [

@@ -1,544 +1,381 @@
-"""Tests for message history persistence and session restore."""
-
-from XBotv2.tests.helpers import make_engine as helpers_make_engine
+"""Conversation history and strict thread persistence tests."""
 
 import json
-import base64
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from XBotv2.core.messages import Message
-from XBotv2.persistence.store import (
-    CoreStateStore,
-    message_to_dict,
-    dict_to_message,
-)
-from XBotv2.agentloop.engine import Engine
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.config.models import RuntimeConfig
-import xcore
-from XBotv2.llm.mock import MockLLM
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.history import ConversationHistory
+from XBotv2.core.messages import ImageContent, Message
+from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import ToolCall
+from XBotv2.agentloop.inbox import InboxInput, InboxTarget
+from XBotv2.persistence.models import (
+    MessageRecord,
+    ThreadLifecycleRecord,
+    ThreadMetadata,
+)
+from XBotv2.persistence.store import ThreadPersistence
 
 
-# ------------------------------------------------------------------
-# Message serialization
-# ------------------------------------------------------------------
+def thread_persistence(tmp_path, session_id="s1"):
+    return ThreadPersistence.create(
+        RuntimePaths.from_data_dir(tmp_path).session(session_id),
+        thread_id="t1",
+        workspace_root="/workspace",
+        provider="default",
+    )
 
-class TestMessageSerialization:
-    """message_to_dict / dict_to_message round-trip."""
 
-    def test_human_message_roundtrip(self):
-        msg = Message(role="user", content="hello world")
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "user"
-        assert restored.content == "hello world"
-
-    def test_ai_message_with_tool_calls_roundtrip(self):
-        msg = Message(
+class TestMessageRecord:
+    def test_roundtrip_preserves_model_visible_fields(self):
+        message = Message(
             role="assistant",
-            content="calling tool",
-            tool_calls=[
-                ToolCall("call_1", "shell", {"command": "ls"}),
-            ],
-        )
-        d = message_to_dict(msg)
-        assert d["parts"] == [
-            {"type": "text", "text": "calling tool"},
-            {
-                "type": "tool_call",
-                "id": "call_1",
-                "name": "shell",
-                "args": {"command": "ls"},
-            },
-        ]
-        assert "content" not in d and "tool_calls" not in d
-        restored = dict_to_message(d)
-        assert restored.role == "assistant"
-        assert restored.tool_calls is not None
-        assert len(restored.tool_calls) == 1
-        assert restored.tool_calls[0].name == "shell"
-
-    def test_ai_message_metadata_roundtrip(self):
-        msg = Message(
-            role="assistant",
-            content="response text",
+            content="calling",
+            tool_calls=[ToolCall("call-1", "echo", {"value": "hello"})],
             name="assistant",
-            additional_kwargs={"refusal": None, "provider_note": {"a": 1}},
-            response_metadata={"model_name": "mock", "token_usage": {"total_tokens": 9}},
-            usage_metadata={"input_tokens": 5, "output_tokens": 4},
+            status="success",
+            additional_kwargs={"provider_note": {"a": 1}},
+            response_metadata={"model": "mock"},
+            usage_metadata={"input_tokens": 2, "output_tokens": 1},
         )
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "assistant"
-        assert restored.name == "assistant"
-        assert restored.additional_kwargs["provider_note"] == {"a": 1}
-        assert restored.response_metadata["token_usage"]["total_tokens"] == 9
-        # usage_metadata must round-trip — without this, TUI
-        # token totals reset to 0 on resume (see issue from
-        # session 20260609-170727-7449).
-        assert restored.usage_metadata == {"input_tokens": 5, "output_tokens": 4}
-        assert d["usage_metadata"] == {"input_tokens": 5, "output_tokens": 4}
 
-    def test_tool_message_roundtrip(self):
-        msg = Message(role="tool", content="output", tool_call_id="call_1")
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "tool"
-        assert restored.content == "output"
-        assert restored.tool_call_id == "call_1"
+        record = MessageRecord.from_message(message, 1)
+        restored = MessageRecord.from_dict(record.to_dict()).to_message()
 
-    def test_tool_message_metadata_roundtrip(self):
-        msg = Message(
+        assert restored.role == message.role
+        assert restored.content == message.content
+        assert restored.tool_calls == message.tool_calls
+        assert restored.additional_kwargs == message.additional_kwargs
+        assert restored.response_metadata == message.response_metadata
+        assert restored.usage_metadata == message.usage_metadata
+
+    def test_rejects_unknown_record_fields(self):
+        record = MessageRecord.from_message(Message(role="user", content="x"), 1)
+        raw = record.to_dict()
+        raw["surprise"] = True
+
+        with pytest.raises(ValueError, match="unknown"):
+            MessageRecord.from_dict(raw)
+
+    def test_rejects_non_json_provider_metadata(self):
+        message = Message(
+            role="assistant",
+            content="x",
+            response_metadata={"bad": object()},
+        )
+
+        with pytest.raises(TypeError, match="JSON-compatible"):
+            MessageRecord.from_message(message, 1)
+
+    def test_runtime_only_fields_are_not_persisted(self):
+        message = Message(
             role="tool",
-            content="output",
-            tool_call_id="call_1",
-            name="filesystem_read",
-            additional_kwargs={"visible": "kept"},
-            response_metadata={"duration_ms": 5},
-            error={"code": "failed"},
-            client_events=[{"type": "client_message", "data": {}}],
+            content="done",
+            tool_call_id="call-1",
+            client_events=[{"type": "notice", "data": {}}],
             turn_complete=True,
         )
-        d = message_to_dict(msg)
-        restored = dict_to_message(d)
-        assert restored.role == "tool"
-        assert restored.name == "filesystem_read"
-        assert restored.additional_kwargs == {"visible": "kept"}
-        assert restored.error == {"code": "failed"}
+
+        restored = MessageRecord.from_message(message, 1).to_message()
+
         assert restored.client_events == []
         assert restored.turn_complete is False
-        assert restored.response_metadata == {"duration_ms": 5}
-
-    def test_multiline_content(self):
-        msg = Message(role="user", content="line 1\nline 2\nline 3")
-        d = message_to_dict(msg)
-        assert d["parts"] == [{
-            "type": "text",
-            "text": "line 1\nline 2\nline 3",
-        }]
-        assert "content" not in d
-        restored = dict_to_message(d)
-        assert restored.content == "line 1\nline 2\nline 3"
 
 
-# ------------------------------------------------------------------
-# CoreStateStore message persistence
-# ------------------------------------------------------------------
+class TestMessageHistoryStore:
+    def test_append_uses_strict_contiguous_records(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+        ])
 
-class TestMessagePersistence:
-    """Messages stored in and restored from CoreStateStore."""
+        records = _raw_records(persistence)
+        assert [record["position"] for record in records] == [1, 2]
+        assert all(record["schema_version"] == 1 for record in records)
+        assert [message.content for message in persistence.history.load()] == [
+            "one", "two",
+        ]
 
-    @pytest.fixture
-    def store(self, tmp_path):
-        return CoreStateStore.create(
-            RuntimePaths.from_data_dir(tmp_path).session("s1"),
-            thread_id="t1",
-            workspace_root="/workspace",
-            provider="default",
-        )
+    def test_replace_stores_only_effective_history(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([
+            Message(role="user", content="discarded input"),
+            Message(role="assistant", content="discarded answer"),
+        ])
 
-    def test_append_and_read_single_message(self, store):
-        msg = Message(role="user", content="hello")
-        store.append_messages([msg])
-        assert store.message_count() == 1
+        persistence.history.replace([
+            Message(role="system", content="summary"),
+            Message(role="user", content="retained"),
+        ])
 
-        restored = store.read_messages()
-        assert len(restored) == 1
-        assert restored[0].content == "hello"
+        text = persistence.history.path.read_text(encoding="utf-8")
+        assert "discarded input" not in text
+        assert "discarded answer" not in text
+        assert [message.content for message in persistence.history.load()] == [
+            "summary", "retained",
+        ]
 
-    def test_image_payload_is_stored_once_outside_the_journal(self, store):
+    def test_incomplete_record_is_an_explicit_error(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="durable")])
+        with persistence.history.path.open("a", encoding="utf-8") as stream:
+            stream.write('{"schema_version": 1')
+
+        with pytest.raises(ValueError, match="Invalid messages.jsonl"):
+            persistence.history.load()
+
+    def test_artifacts_are_references_not_payloads(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
         payload = b"small-image"
-        image = store.store_image(
-            base64.b64encode(payload).decode("ascii"),
-            "image/png",
+        ref = persistence.artifacts.put(
+            ArtifactKind.MEDIA,
+            payload,
+            media_type="image/png",
         )
-        store.append_messages([Message(role="user", images=[image])])
+        image = ImageContent(ref.id, ref.media_type, ref.size)
 
-        record = json.loads(store.messages_path.read_text(encoding="utf-8"))
-        assert "small-image" not in store.messages_path.read_text(encoding="utf-8")
-        assert record["parts"] == [{"type": "image", **image.to_dict()}]
-        assert "images" not in record
-        assert (store.root / image.path).read_bytes() == payload
-        assert store.read_messages()[0].images == [image]
+        persistence.history.append([
+            Message(role="user", images=[image], artifact=[ref])
+        ])
 
-    def test_uploaded_attachment_is_stored_outside_the_journal(self, store):
-        payload = b"binary\x00payload"
-        attachment = store.store_attachment(
-            base64.b64encode(payload).decode("ascii"),
-            "application/octet-stream",
-            "archive.bin",
-        )
-        store.append_messages([Message(role="user", artifact=[attachment])])
+        text = persistence.history.path.read_text(encoding="utf-8")
+        assert "small-image" not in text
+        restored = persistence.history.load()[0]
+        assert restored.images == [image]
+        assert restored.artifact == [ref]
+        assert persistence.artifacts.read(ref) == payload
 
-        assert (store.root / attachment["id"]).read_bytes() == payload
-        assert "binary" not in store.messages_path.read_text(encoding="utf-8")
-        assert store.read_messages()[0].artifact == [attachment]
+    def test_recreation_reads_same_history(self, tmp_path):
+        first = thread_persistence(tmp_path)
+        first.history.append([Message(role="user", content="persistent")])
 
-    def test_append_multiple_messages(self, store):
-        messages = [
-            Message(role="user", content="first"),
-            Message(role="assistant", content="response"),
-            Message(role="user", content="second"),
-            Message(role="assistant", content="done"),
+        second = thread_persistence(tmp_path)
+
+        assert [message.content for message in second.history.load()] == [
+            "persistent"
         ]
-        store.append_messages(messages)
-        assert store.message_count() == 4
 
-        restored = store.read_messages()
-        assert len(restored) == 4
-        assert restored[0].content == "first"
-        assert restored[3].content == "done"
 
-    def test_sync_messages_preserves_existing_message_ids(self, store):
-        messages = [
-            Message(role="user", content="first"),
-            Message(role="assistant", content="response"),
-        ]
-        store.append_messages(messages)
-        before = _raw_messages(store)
+class TestConversationHistory:
+    def test_append_and_extend_are_durable_before_visible(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
 
-        messages.append(Message(role="user", content="second"))
-        count = store.sync_messages(messages)
-        messages.append(Message(role="assistant", content="done"))
-        store.sync_messages(messages)
+        history.append(Message(role="user", content="one"))
+        history.extend([Message(role="assistant", content="two")])
 
-        after = _raw_messages(store)
-        assert count == 3
-        assert after[0]["msg_id"] == before[0]["msg_id"]
-        assert after[0]["ts"] == before[0]["ts"]
-        assert after[1]["msg_id"] == before[1]["msg_id"]
-        assert after[1]["ts"] == before[1]["ts"]
-        assert after[2]["msg_id"] == 3
-        assert after[3]["msg_id"] == 4
-        assert all("record_type" not in record for record in after)
+        assert history.revision == 2
+        assert [message.content for message in history] == ["one", "two"]
+        assert persistence.history.load() == history
 
-    def test_history_operations_append_without_removing_prior_records(self, store):
-        store.append_messages([
-            Message(role="user", content="first"),
+    def test_undo_and_clear_replace_current_history(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        history.extend([
+            Message(role="user", content="one"),
             Message(role="assistant", content="answer one"),
-            Message(role="user", content="second"),
+            Message(role="user", content="two"),
             Message(role="assistant", content="answer two"),
         ])
-        original = store.messages_path.read_text(encoding="utf-8")
 
-        store.append_undo(1)
-        after_undo = store.messages_path.read_text(encoding="utf-8")
-        store.append_clear()
-        after_clear = store.messages_path.read_text(encoding="utf-8")
-
-        assert after_undo.startswith(original)
-        assert after_clear.startswith(after_undo)
-        assert [message.content for message in store.read_messages()] == []
-        records = _raw_messages(store)
-        assert records[-2]["record_type"] == "history_undo"
-        assert records[-1]["record_type"] == "history_clear"
-
-    def test_replay_starts_from_last_checkpoint_then_applies_undo(self, store):
-        store.append_messages([
-            Message(role="user", content="discarded raw input"),
-            Message(role="assistant", content="discarded raw answer"),
-        ])
-        checkpoint = [
-            Message(role="system", content="summary"),
-            Message(role="user", content="kept turn"),
-            Message(role="assistant", content="kept answer"),
-            Message(role="user", content="undo turn"),
-            Message(role="assistant", content="undo answer"),
+        assert [message.content for message in history.undo(1)] == [
+            "one", "answer one",
         ]
-        store.append_checkpoint(checkpoint, reason="compact:automatic")
-        store.append_undo(1)
-
-        restored = store.read_messages()
-
-        assert [message.content for message in restored] == [
-            "summary", "kept turn", "kept answer",
-        ]
-        assert "discarded raw input" in store.messages_path.read_text(
+        assert "answer two" not in persistence.history.path.read_text(
             encoding="utf-8"
         )
 
-    def test_replay_ignores_only_an_incomplete_trailing_record(self, store):
-        store.append_messages([Message(role="user", content="durable")])
-        with store.messages_path.open("a", encoding="utf-8") as stream:
-            stream.write('{"record_type":"history_checkpoint"')
+        history.clear()
 
-        assert [message.content for message in store.read_messages()] == ["durable"]
+        assert history.snapshot() == ()
+        assert persistence.history.load() == []
 
-        store.append_messages([Message(role="assistant", content="continued")])
+    def test_persisted_message_nested_fields_are_immutable(self, tmp_path):
+        history = ConversationHistory(sink=thread_persistence(tmp_path).history)
+        message = Message(
+            role="assistant",
+            tool_calls=[ToolCall("call-1", "echo", {"nested": {"value": 1}})],
+            usage_metadata={"input_tokens": 1},
+            data={"items": [{"status": "pending"}]},
+        )
 
-        assert [message.content for message in store.read_messages()] == [
-            "durable", "continued",
+        history.append(message)
+
+        with pytest.raises(RuntimeError, match="immutable"):
+            message.usage_metadata["input_tokens"] = 2
+        with pytest.raises(RuntimeError, match="immutable"):
+            message.tool_calls[0].args["nested"]["value"] = 2
+        with pytest.raises(RuntimeError, match="immutable"):
+            message.data["items"].append({"status": "completed"})
+
+    def test_failed_sink_write_does_not_change_history_or_revision(self):
+        class FailingSink:
+            def append(self, _messages):
+                raise OSError("disk full")
+
+            def replace(self, _messages):
+                raise OSError("disk full")
+
+        original = Message(role="user", content="stable")
+        history = ConversationHistory([original], sink=FailingSink())
+
+        with pytest.raises(OSError, match="disk full"):
+            history.append(Message(role="assistant", content="not durable"))
+        assert history.snapshot() == (original,)
+        assert history.revision == 0
+
+        with pytest.raises(OSError, match="disk full"):
+            history.clear()
+        assert history.snapshot() == (original,)
+        assert history.revision == 0
+
+
+class TestThreadMetadataStore:
+    def test_typed_metadata_roundtrip(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        metadata = ThreadMetadata(
+            provider="mock",
+            model="mock-1",
+            workspace_root="/workspace",
+            title="Example",
+        )
+
+        persistence.metadata.save(metadata)
+
+        assert persistence.metadata.load() == metadata
+
+    def test_unknown_metadata_is_rejected(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.paths.metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        persistence.paths.metadata_file.write_text(
+            json.dumps({"schema_version": 1, "unknown": True}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="fields mismatch"):
+            persistence.metadata.load()
+
+    def test_metadata_state_persists_each_typed_replacement(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        state = ThreadMetadataState(
+            persistence.metadata.load(),
+            sink=persistence.metadata,
+        )
+        selected = ThreadMetadata(
+            provider="mock",
+            model="mock-2",
+            model_mode="high",
+            workspace_root="/workspace",
+        )
+
+        state.replace(selected)
+
+        assert state.value == selected
+        assert persistence.metadata.load() == selected
+
+
+class TestInboxStore:
+    def test_reconcile_removes_inputs_already_committed_to_history(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        inputs = [
+            InboxInput(
+                content="one",
+                target=InboxTarget.NEXT_TURN,
+                source="user",
+                message_id="accepted",
+            ),
+            InboxInput(
+                content="two",
+                target=InboxTarget.NEXT_STEP,
+                source="user",
+                message_id="pending",
+            ),
         ]
-        assert store.messages_path.read_bytes().endswith(b"\n")
+        persistence.inbox.replace(inputs)
 
-    def test_message_ids_are_sequential(self, store):
-        store.append_messages([
-            Message(role="user", content="m1"),
-            Message(role="user", content="m2"),
-        ])
-        assert [record["msg_id"] for record in _raw_messages(store)] == [1, 2]
+        pending = persistence.inbox.reconcile({"accepted"})
 
-    def test_has_existing_session(self, store):
-        """Session detection works based on stored messages."""
-        assert store.has_existing_session() is False
+        assert [item.message_id for item in pending] == ["pending"]
+        assert [item.message_id for item in persistence.inbox.load()] == ["pending"]
 
-        store.append_messages([Message(role="user", content="hello")])
-        assert store.has_existing_session() is True
-
-    def test_persistence_survives_store_recreation(self, tmp_path):
-        """Messages persist even after creating a new store instance."""
-        paths = RuntimePaths.from_data_dir(tmp_path).session("s1")
-
-        # First store — write messages
-        store1 = CoreStateStore.create(
-            paths,
-            thread_id="t1",
-            workspace_root="/workspace",
-            provider="p",
+    def test_unknown_snapshot_fields_fail_explicitly(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.paths.inbox_file.write_text(
+            json.dumps({"schema_version": 1, "items": [], "legacy": []}),
+            encoding="utf-8",
         )
-        store1.append_messages([
-            Message(role="user", content="persistent"),
-            Message(role="assistant", content="survives restart"),
-        ])
 
-        # Second store — read them back
-        store2 = CoreStateStore(
-            paths=paths,
-            thread_id="t1",
-            workspace_root="/workspace",
-            provider="p",
+        with pytest.raises(ValueError, match="fields mismatch"):
+            persistence.inbox.load()
+
+
+class TestThreadLifecycleStore:
+    def test_typed_lifecycle_roundtrip(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        record = ThreadLifecycleRecord.create(
+            "started",
+            thread_id="child",
+            parent_thread_id="t1",
+            agent="builder",
         )
-        assert store2.message_count() == 2
-        restored = store2.read_messages()
-        assert len(restored) == 2
-        assert restored[0].content == "persistent"
-        assert restored[1].content == "survives restart"
 
+        persistence.lifecycle.append(record)
 
-# ------------------------------------------------------------------
-# Engine integration — save and restore
-# ------------------------------------------------------------------
+        assert persistence.lifecycle.load() == [record]
 
-def echo(message: str) -> str:
-    """Echo a message."""
-    return f"Echo: {message}"
-
-echo_tool = Tool.from_function(echo, name="echo")
-
-
-def make_engine(llm, registry, store, workspace, plugin_ctx=None):
-    """Build an Engine with production-equivalent persistence wiring.
-
-    Persistence is an observer of ``STATE_CHANGED`` and hydrates ``LoopState``
-    when the store already holds a session; the loop driver never calls the
-    store directly.
-    """
-    from XBotv2.agentloop import Events
-    from XBotv2.persistence.plugin import PersistenceService
-
-    ctx = plugin_ctx or xcore.Context()
-    engine = helpers_make_engine(
-        llm=llm,
-        tool_registry=registry,
-        plugin_ctx=ctx,
-        state_store=store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(workspace)),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
-    )
-    persistence = PersistenceService(store, engine.state)
-    ctx.on(Events.STATE_CHANGED, persistence.state_changed)
-    if store.has_existing_session():
-        messages = store.read_messages()
-        engine.state.messages = messages
-        engine.state.turn_count = sum(
-            1 for message in messages if message.role == "user"
+    def test_invalid_lifecycle_timestamp_fails_explicitly(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        raw = ThreadLifecycleRecord.create(
+            "started",
+            thread_id="child",
+            parent_thread_id="t1",
+            agent="builder",
+        ).to_dict()
+        raw["timestamp"] = "not-a-time"
+        persistence.paths.session.threads_log.parent.mkdir(parents=True, exist_ok=True)
+        persistence.paths.session.threads_log.write_text(
+            json.dumps(raw) + "\n", encoding="utf-8"
         )
-        engine.state.resumed = True
-        engine.state.metadata = store.read_thread_metadata()
-        engine.state.inbox_events = store.read_events(Events.INBOX_SPLICE)
-        engine.state.session.turn_count = engine.state.turn_count
-    return engine
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            persistence.lifecycle.load()
+
+    def test_concurrent_thread_writers_append_complete_records(self, tmp_path):
+        session = RuntimePaths.from_data_dir(tmp_path).session("shared")
+
+        def append(index: int) -> None:
+            persistence = ThreadPersistence.create(
+                session,
+                thread_id=f"child-{index}",
+                workspace_root="/workspace",
+                provider="default",
+            )
+            persistence.lifecycle.append(ThreadLifecycleRecord.create(
+                "completed",
+                thread_id=f"child-{index}",
+                parent_thread_id="agent",
+                agent="worker",
+            ))
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(append, range(40)))
+
+        records = ThreadPersistence.open(
+            session,
+            thread_id="agent",
+        ).lifecycle.load()
+        assert len(records) == 40
+        assert {record.thread_id for record in records} == {
+            f"child-{index}" for index in range(40)
+        }
 
 
-class TestEnginePersistence:
-    """Engine saves messages after turns and restores on resume."""
-
-    @pytest.mark.asyncio
-    async def test_messages_persisted_after_turn(self, temp_data_dir, temp_workspace):
-        """After run_turn, messages are on disk."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[{"content": "Hello!"}])
-        registry = ToolRegistry()
-
-        engine = make_engine(llm, registry, store, temp_workspace)
-        await engine.start_session()
-
-        _ = [e async for e in engine.run_turn("hi")]
-
-        # Messages should be persisted
-        assert store.message_count() > 0
-        restored = store.read_messages()
-        contents = [m.content for m in restored]
-        assert "hi" in contents  # User message
-        assert "Hello!" in contents  # AI response
-
-    @pytest.mark.asyncio
-    async def test_session_restores_messages(self, temp_data_dir, temp_workspace):
-        """A new engine on the same store restores previous messages."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
-        registry = ToolRegistry()
-
-        # First engine — run 2 turns
-        engine1 = make_engine(llm, registry, store, temp_workspace)
-        await engine1.start_session()
-        _ = [e async for e in engine1.run_turn("turn 1")]
-        _ = [e async for e in engine1.run_turn("turn 2")]
-
-        msg_count = store.message_count()
-        assert msg_count >= 4  # 2 user + 2 AI
-
-        # Second engine — should restore all messages
-        engine2 = make_engine(llm, registry, store, temp_workspace)
-        await engine2.start_session()
-        assert len(engine2.messages) == msg_count
-        assert engine2.turn_count == 2
-
-    @pytest.mark.asyncio
-    async def test_restored_messages_are_sent_to_the_model(
-        self, temp_data_dir, temp_workspace
-    ):
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"),
-            thread_id="t1",
-            workspace_root="/workspace",
-            provider="p",
-        )
-        first_llm = MockLLM(responses=[{"content": "remembered answer"}])
-        engine1 = make_engine(first_llm, ToolRegistry(), store, temp_workspace)
-        await engine1.start_session()
-        _ = [event async for event in engine1.run_turn("remembered question")]
-        await engine1.close_session()
-
-        resumed_llm = MockLLM(responses=[{"content": "resumed"}])
-        engine2 = make_engine(resumed_llm, ToolRegistry(), store, temp_workspace)
-        await engine2.start_session()
-        _ = [event async for event in engine2.run_turn("what came before?")]
-
-        request = resumed_llm.get_call_messages(0)
-        history = [(message.role, message.content) for message in request]
-        assert ("user", "remembered question") in history
-        assert ("assistant", "remembered answer") in history
-        assert ("user", "what came before?") in history
-
-    @pytest.mark.asyncio
-    async def test_engine_save_preserves_existing_message_ids(self, temp_data_dir, temp_workspace):
-        """Repeated turn saves do not churn ids for unchanged history messages."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[{"content": "First"}, {"content": "Second"}])
-        registry = ToolRegistry()
-
-        engine = make_engine(llm, registry, store, temp_workspace)
-        await engine.start_session()
-        _ = [e async for e in engine.run_turn("turn 1")]
-        first_save = _raw_messages(store)
-
-        _ = [e async for e in engine.run_turn("turn 2")]
-        second_save = _raw_messages(store)
-
-        assert second_save[0]["parts"] == first_save[0]["parts"]
-        assert second_save[0]["msg_id"] == first_save[0]["msg_id"]
-        assert second_save[0]["ts"] == first_save[0]["ts"]
-        assert second_save[1]["parts"] == first_save[1]["parts"]
-        assert second_save[1]["msg_id"] == first_save[1]["msg_id"]
-        assert second_save[1]["ts"] == first_save[1]["ts"]
-
-    @pytest.mark.asyncio
-    async def test_resume_session_explicit(self, temp_data_dir, temp_workspace):
-        """Explicit resume_session loads messages and turn count."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[{"content": "Before resume"}])
-        registry = ToolRegistry()
-
-        engine1 = make_engine(llm, registry, store, temp_workspace)
-        await engine1.start_session()
-        _ = [e async for e in engine1.run_turn("before")]
-        await engine1.close_session()
-
-        # New engine — explicit resume
-        engine2 = make_engine(llm, registry, store, temp_workspace)
-        await engine2.resume_session()
-        assert engine2.turn_count == 1
-        restored = engine2.messages
-        contents = [m.content for m in restored]
-        assert "before" in contents
-
-    @pytest.mark.asyncio
-    async def test_tool_call_messages_persist(self, temp_data_dir, temp_workspace):
-        """Messages with tool calls round-trip through persistence."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("s1"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        llm = MockLLM(responses=[
-            {
-                "content": "Calling echo",
-                "tool_calls": [{"name": "echo", "args": {"message": "test"}, "id": "call_1"}],
-            },
-            {"content": "Done after tool."},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool)
-
-        engine = make_engine(llm, registry, store, temp_workspace)
-        await engine.start_session()
-        _ = [e async for e in engine.run_turn("use echo")]
-
-        # All messages should be on disk
-        restored = store.read_messages()
-        roles = [m.role for m in restored]
-        assert "user" in roles
-
-        # Verify tool call detail preserved
-        model_msgs = [m for m in restored if m.tool_calls]
-        assert len(model_msgs) >= 1
-        assert model_msgs[0].tool_calls[0].name == "echo"
-
-    @pytest.mark.asyncio
-    async def test_fresh_session_has_no_messages(self, temp_data_dir, temp_workspace):
-        """A brand-new session starts with zero messages."""
-        store = CoreStateStore.create(
-            RuntimePaths.from_data_dir(temp_data_dir).session("fresh"), thread_id="t1", workspace_root="/workspace", provider="p",
-        )
-        assert store.message_count() == 0
-        assert store.has_existing_session() is False
-
-        llm = MockLLM(responses=[])
-        registry = ToolRegistry()
-        engine = make_engine(llm, registry, store, temp_workspace)
-        await engine.start_session()
-        assert len(engine.messages) == 0
-
-def _raw_messages(store: CoreStateStore) -> list[dict]:
-    if not store.messages_path.exists():
-        return []
+def _raw_records(persistence: ThreadPersistence) -> list[dict]:
     return [
         json.loads(line)
-        for line in store.messages_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        for line in persistence.history.path.read_text(encoding="utf-8").splitlines()
     ]

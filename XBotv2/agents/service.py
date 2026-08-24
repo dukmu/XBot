@@ -7,7 +7,7 @@ loop composition.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from xcore import Context
@@ -29,6 +29,8 @@ from XBotv2.agentloop import (
 )
 from XBotv2.config import RuntimeConfig
 from XBotv2.core.errors import OperationError
+from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.core.tools import json_object
 from XBotv2.llm import ModelConfig, ProviderConfig
 from XBotv2.agents.services import AgentCatalogPort
 
@@ -50,15 +52,17 @@ class AgentsService:
         """Resolve one Agent and publish the driver returned by its factory."""
         ctx = self.ctx
         state = ctx.loop_state
+        state.metadata = ctx.thread_metadata
         config = ctx.settings.load_runtime_config(
             options.workspace_root,
             options.session_id,
         )
-        definition = self._resolve_definition(options, state.metadata)
+        stored_metadata = state.metadata.value
+        definition = self._resolve_definition(options, stored_metadata)
         provider_name = self._resolve_provider(
             options,
             definition,
-            state.metadata,
+            stored_metadata,
             configured_provider=config.provider,
         )
         if definition is not None:
@@ -78,21 +82,24 @@ class AgentsService:
         )
         config.max_output_tokens = model_config.max_output_tokens
         state.session.provider = provider_name
-        state.metadata = {
-            "agent": definition.name if definition is not None else "",
-            "agent_definition": asdict(definition) if definition is not None else None,
-            "provider": provider_name,
-            "parent_thread_id": options.parent_thread_id,
-            "workspace_root": options.workspace_root,
-            "model": model_config.model,
-            "model_mode": model_config.model_mode,
-            "context_window": config.max_context_tokens,
-        }
+        state.metadata.replace(ThreadMetadata(
+            agent=definition.name if definition is not None else "",
+            agent_definition=(
+                json_object(asdict(definition)) if definition is not None else None
+            ),
+            provider=provider_name,
+            parent_thread_id=options.parent_thread_id,
+            workspace_root=options.workspace_root,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=config.max_context_tokens,
+            title=stored_metadata.title,
+        ))
 
         model = (
-            options.model_override
+            options.model_override.bind_artifacts(ctx.artifacts)
             if options.model_override is not None
-            else ctx.llm.create(provider, model_config, media_root=state.media_root)
+            else ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
         )
         user = ctx.settings.user_context()
         loop_settings = LoopSettings(
@@ -151,7 +158,7 @@ class AgentsService:
         return self.catalog.definitions()
 
     def active_definition(self) -> AgentDefinition | None:
-        stored = self.ctx.loop_state.metadata.get("agent_definition")
+        stored = self.ctx.loop_state.metadata.value.agent_definition
         return (
             self._restore_definition(stored)
             if isinstance(stored, dict)
@@ -206,7 +213,7 @@ class AgentsService:
         config.max_output_tokens = model_config.max_output_tokens
         if not engine.settings.llm_is_override:
             ctx.model.replace(
-                ctx.llm.create(provider, model_config, media_root=state.media_root)
+                ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
             )
 
         self._restrict_tools(ctx.tools, config, definition)
@@ -225,14 +232,15 @@ class AgentsService:
             memory=config.memory,
         )
         state.session.provider = provider_name
-        state.metadata.update({
-            "agent": definition.name,
-            "agent_definition": asdict(definition),
-            "provider": provider_name,
-            "model": model_config.model,
-            "model_mode": model_config.model_mode,
-            "context_window": config.max_context_tokens,
-        })
+        state.metadata.replace(replace(
+            state.metadata.value,
+            agent=definition.name,
+            agent_definition=json_object(asdict(definition)),
+            provider=provider_name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=config.max_context_tokens,
+        ))
         await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=definition,
             session=state.session,
@@ -272,7 +280,7 @@ class AgentsService:
         model_config = provider.resolve(model)
         if not engine.settings.llm_is_override:
             ctx.model.replace(
-                ctx.llm.create(provider, model_config, media_root=state.media_root)
+                ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
             )
         engine.configure(
             model_client=ctx.model,
@@ -283,12 +291,13 @@ class AgentsService:
             max_output_tokens=model_config.max_output_tokens or 0,
         )
         state.session.provider = name
-        state.metadata.update({
-            "provider": name,
-            "model": model_config.model,
-            "model_mode": model_config.model_mode,
-            "context_window": model_config.max_context_tokens,
-        })
+        state.metadata.replace(replace(
+            state.metadata.value,
+            provider=name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=model_config.max_context_tokens,
+        ))
         await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=None,
             session=state.session,
@@ -335,7 +344,7 @@ class AgentsService:
         )
         if not engine.settings.llm_is_override:
             ctx.model.replace(
-                ctx.llm.create(entry, model_config, media_root=ctx.loop_state.media_root)
+                ctx.llm.create(entry, model_config, artifacts=ctx.artifacts)
             )
         engine.configure(
             model_client=ctx.model,
@@ -345,12 +354,13 @@ class AgentsService:
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens or 0,
         )
-        ctx.loop_state.metadata.update({
-            "provider": provider_name,
-            "model": model_name,
-            "model_mode": model_config.model_mode,
-            "context_window": model_config.max_context_tokens,
-        })
+        ctx.loop_state.metadata.replace(replace(
+            ctx.loop_state.metadata.value,
+            provider=provider_name,
+            model=model_name,
+            model_mode=model_config.model_mode,
+            context_window=model_config.max_context_tokens,
+        ))
         return {
             "provider": provider_name,
             "model": model_name,
@@ -382,11 +392,11 @@ class AgentsService:
     def _resolve_definition(
         self,
         options: AgentCreateOptions,
-        metadata: dict[str, Any],
+        metadata: ThreadMetadata,
     ) -> AgentDefinition | None:
         definition = options.agent_definition
-        stored_name = str(metadata.get("agent") or "") or None
-        stored_definition = metadata.get("agent_definition")
+        stored_name = metadata.agent or None
+        stored_definition = metadata.agent_definition
         if definition is None and isinstance(stored_definition, dict):
             definition = self._restore_definition(stored_definition)
 
@@ -426,7 +436,7 @@ class AgentsService:
         self,
         options: AgentCreateOptions,
         definition: AgentDefinition | None,
-        metadata: dict[str, Any],
+        metadata: ThreadMetadata,
         *,
         configured_provider: str,
     ) -> str:
@@ -437,7 +447,7 @@ class AgentsService:
             provider_name = self.ctx.llm.default_name()
         if definition is not None and definition.provider:
             provider_name = definition.provider
-        return str(metadata.get("provider") or provider_name)
+        return metadata.provider or provider_name
 
     @staticmethod
     def _restore_definition(data: dict[str, Any]) -> AgentDefinition:

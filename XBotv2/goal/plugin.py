@@ -1,67 +1,40 @@
-"""Persistent session goal state machine."""
+"""Persistent thread Goal state and automatic continuation."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
 import json
-from typing import Any, Literal, cast
+from typing import Literal
 
-from XBotv2.core import (
-    Tool,
-    ToolResult,
-)
+from xcore import Context
+from xcore.state import StateService
+
 from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
-from XBotv2.commands import Command, CommandResult
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
+from XBotv2.commands import Command, CommandResult
+from XBotv2.core import Tool, ToolResult
+from XBotv2.goal.models import GOAL_STATUSES, GoalSnapshot
 
 
 _MAX_TEXT_CHARS = 2_000
-_STATUSES = {"active", "complete", "blocked", "paused"}
 
 
-class GoalPlugin:
-    inject = {
-        "required": ["tools", "commands", "engine"],
-    }
-    name = "goal"
+class GoalService:
+    """Own one thread's typed Goal state and continuation scheduling."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: StateService, engine: AgentLoopDriverPort) -> None:
+        self._store = store
+        self._engine = engine
         self._continuation_pending = False
 
-    async def _contribute_status(self, slots: StatusSlots) -> None:
-        goal = await self._read_goal()
-        if goal is not None:
-            slots.add("goal", goal["status"])
-
-    def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        self.store = ctx.state.namespace("goal")
-        ctx.on(Events.TURN_START, self._start_goal_turn)
-        ctx.on(Events.TURN_END, self._on_turn_end)
-        ctx.on(COLLECT_STATUS_SLOTS, self._contribute_status)
-        ctx.tools.register(
-            Tool.from_function(self.create_goal, name="create_goal"),
-        )
-        ctx.tools.register(
-            Tool.from_function(self.get_goal, name="get_goal"),
-        )
-        ctx.tools.register(
-            Tool.from_function(self.update_goal, name="update_goal"),
-        )
-        ctx.commands.register(Command(
-            name="goal",
-            description="Set or manage the persistent session goal.",
-            handler=self._goal_command,
-            usage=(
-                "/goal | /goal [--token-budget <tokens>] <objective> | "
-                "/goal pause|resume|clear|complete <summary>|block <summary>"
-            ),
-            examples=(
-                "/goal Stabilize the C/S API",
-                "/goal pause",
-                "/goal complete Implementation, tests, and docs are complete",
-            ),
-            exclusive=False,
-        ))
+    async def snapshot(self) -> GoalSnapshot | None:
+        stored = await self._store.get("snapshot")
+        if stored is None:
+            return None
+        if not isinstance(stored, Mapping):
+            raise TypeError("Persisted Goal snapshot must be an object")
+        return GoalSnapshot.from_dict(stored)
 
     async def create_goal(
         self,
@@ -87,7 +60,10 @@ class GoalPlugin:
         Use this when Goal status, objective, summary, or budget is needed. It
         returns no Goal when the session has none.
         """
-        return await self._get()
+        goal = await self.snapshot()
+        if goal is None:
+            return ToolResult.success("No goal has been created.")
+        return ToolResult.success(_format_goal(goal))
 
     async def update_goal(
         self,
@@ -110,21 +86,16 @@ class GoalPlugin:
         """
         if status not in {"complete", "blocked"}:
             return ToolResult.failure(
-                "invalid_status",
-                "Goal status must be complete or blocked",
+                "invalid_status", "Goal status must be complete or blocked"
             )
         return await self._finish(
-            "block" if status == "blocked" else "complete",
-            summary,
+            "block" if status == "blocked" else "complete", summary
         )
 
-    async def _goal_command(
-        self,
-        raw_args: str,
-    ) -> CommandResult:
+    async def command(self, raw_args: str) -> CommandResult:
         action, value, token_budget = _parse_goal_command(raw_args)
         if action == "get":
-            result = await self._get()
+            result = await self.get_goal()
         elif action == "set":
             result = await self._set(value, token_budget)
         elif action == "pause":
@@ -139,11 +110,38 @@ class GoalPlugin:
             await self.start()
         return _command_result(result)
 
-    async def _get(self) -> ToolResult:
-        goal = await self._read_goal()
-        if goal is None:
-            return ToolResult.success("No goal has been created.")
-        return ToolResult.success(_format_goal(goal))
+    async def contribute_status(self, slots: StatusSlots) -> None:
+        goal = await self.snapshot()
+        if goal is not None:
+            slots.add("goal", goal.status)
+
+    async def start_goal_turn(self, event: EventContext) -> None:
+        if not event.continuation:
+            return
+        self._continuation_pending = False
+        goal = await self._active_goal()
+        if goal is not None:
+            event.user_input = _goal_context(goal)
+
+    async def on_turn_end(self, event: EventContext) -> None:
+        if event.stop_reason == "client_interrupt":
+            goal = await self._active_goal()
+            if goal is not None:
+                await self._write(replace(goal, status="paused"))
+            return
+        await self.start()
+
+    async def start(self) -> None:
+        """Schedule the next active-goal turn if one is not already pending."""
+        goal = await self._active_goal()
+        if goal is None or self._continuation_pending:
+            return
+        self._continuation_pending = True
+        await self._engine.followup(
+            "[goal continuation]",
+            source="goal",
+            metadata={"continuation": True},
+        )
 
     async def _create(
         self,
@@ -158,46 +156,35 @@ class GoalPlugin:
             error = _text_error("summary", summary)
             if error is not None:
                 return error
-        if token_budget is not None and token_budget < 1:
-            return ToolResult.failure(
-                "invalid_token_budget",
-                "Goal token budget must be a positive integer",
-            )
-        current = await self._read_goal()
-        if current is not None and current["status"] == "active":
+        if not _valid_budget(token_budget):
+            return _invalid_budget()
+        current = await self.snapshot()
+        if current is not None and current.status == "active":
             return ToolResult.failure(
                 "goal_exists",
                 "Complete, block, or clear the active goal before creating another",
             )
-        goal = {
-            "objective": objective.strip(),
-            "status": "active",
-            "summary": summary.strip() if summary is not None else "",
-            "token_budget": token_budget,
-        }
-        await self.store.set("goal", goal)
+        goal = GoalSnapshot(
+            objective=objective.strip(),
+            summary=summary.strip() if summary is not None else "",
+            token_budget=token_budget,
+        )
+        await self._write(goal)
         return ToolResult.success(_format_goal(goal))
 
     async def _set(
-        self,
-        objective: str | None,
-        token_budget: int | None,
+        self, objective: str | None, token_budget: int | None
     ) -> ToolResult:
         error = _text_error("objective", objective)
         if error is not None:
             return error
-        if token_budget is not None and token_budget < 1:
-            return ToolResult.failure(
-                "invalid_token_budget",
-                "Goal token budget must be a positive integer",
-            )
-        goal = {
-            "objective": objective.strip(),
-            "status": "active",
-            "summary": "",
-            "token_budget": token_budget,
-        }
-        await self.store.set("goal", goal)
+        if not _valid_budget(token_budget):
+            return _invalid_budget()
+        goal = GoalSnapshot(
+            objective=objective.strip(),
+            token_budget=token_budget,
+        )
+        await self._write(goal)
         return ToolResult.success(_format_goal(goal))
 
     async def _finish(self, action: str, summary: str | None) -> ToolResult:
@@ -207,106 +194,96 @@ class GoalPlugin:
         goal = await self._active_goal()
         if goal is None:
             return _no_active_goal()
-        goal["status"] = "blocked" if action == "block" else "complete"
-        goal["summary"] = summary.strip()
-        await self.store.set("goal", goal)
-        message = "Goal completed." if action == "complete" else "Goal blocked."
+        status = "blocked" if action == "block" else "complete"
+        updated = replace(goal, status=status, summary=summary.strip())
+        await self._write(updated)
+        message = "Goal completed." if status == "complete" else "Goal blocked."
         return ToolResult.success(
-            f"{message}\nExecution summary: {goal['summary']}",
+            f"{message}\nExecution summary: {updated.summary}"
         )
 
     async def _resume(self) -> ToolResult:
-        goal = await self._read_goal()
+        goal = await self.snapshot()
         if goal is None:
             return ToolResult.failure("no_goal", "No goal exists to resume")
-        if goal["status"] == "active":
+        if goal.status == "active":
             return ToolResult.failure("goal_active", "The goal is already active")
-        goal["status"] = "active"
-        await self.store.set("goal", goal)
-        return ToolResult.success(_format_goal(goal))
+        updated = replace(goal, status="active")
+        await self._write(updated)
+        return ToolResult.success(_format_goal(updated))
 
     async def _pause(self) -> ToolResult:
         goal = await self._active_goal()
         if goal is None:
             return _no_active_goal()
-        goal["status"] = "paused"
-        await self.store.set("goal", goal)
-        return ToolResult.success(_format_goal(goal))
+        updated = replace(goal, status="paused")
+        await self._write(updated)
+        return ToolResult.success(_format_goal(updated))
 
     async def _clear(self) -> ToolResult:
-        goal = await self._read_goal()
+        goal = await self.snapshot()
         if goal is None:
             return ToolResult.success("No goal has been created.")
-        await self.store.delete("goal")
+        await self._store.delete("snapshot")
         return ToolResult.success("No goal has been created.")
 
-    async def _active_goal(self) -> dict[str, Any] | None:
-        goal = await self._read_goal()
-        if goal is None or goal["status"] != "active":
+    async def _active_goal(self) -> GoalSnapshot | None:
+        goal = await self.snapshot()
+        if goal is None or goal.status != "active":
             return None
         return goal
 
-    async def _read_goal(self) -> dict[str, Any] | None:
-        goal = await self.store.get("goal")
-        if goal is None:
-            return None
-        if not _valid_goal(goal):
-            raise ValueError("Goal state is invalid")
-        return {
-            "objective": goal["objective"],
-            "status": goal["status"],
-            "summary": goal["summary"],
-            "token_budget": goal["token_budget"],
-        }
+    async def _write(self, goal: GoalSnapshot) -> None:
+        await self._store.set("snapshot", goal.to_dict())
 
-    async def _start_goal_turn(self, ctx: EventContext) -> None:
-        if not ctx.continuation:
-            return
-        self._continuation_pending = False
-        goal = await self._active_goal()
-        if goal is not None:
-            ctx.user_input = _goal_context(goal)
 
-    async def _on_turn_end(self, ctx: EventContext) -> None:
-        if ctx.stop_reason == "client_interrupt":
-            goal = await self._active_goal()
-            if goal is None:
-                return
-            goal["status"] = "paused"
-            await self.store.set("goal", goal)
-            return
-        await self.start()
+class GoalPlugin:
+    """Register a GoalService for each mounted application."""
 
-    async def start(self) -> None:
-        """Schedule the next active-goal turn if one is not already pending."""
-        goal = await self._active_goal()
-        engine = cast(AgentLoopDriverPort, self.ctx.engine)
-        if goal is None or self._continuation_pending:
-            return
-        self._continuation_pending = True
-        await engine.followup(
-            "[goal continuation]",
-            source="goal",
-            metadata={"continuation": True},
-        )
+    inject = ["tools", "commands", "engine", "state"]
+    name = "goal"
 
-    def diagnostics(self) -> dict[str, Any]:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        service = GoalService(ctx.state.namespace(self.name), ctx.engine)
+        ctx.set("goal", service)
+        ctx.on(Events.TURN_START, service.start_goal_turn)
+        ctx.on(Events.TURN_END, service.on_turn_end)
+        ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
+        ctx.tools.register(Tool.from_function(service.create_goal, name="create_goal"))
+        ctx.tools.register(Tool.from_function(service.get_goal, name="get_goal"))
+        ctx.tools.register(Tool.from_function(service.update_goal, name="update_goal"))
+        ctx.commands.register(Command(
+            name="goal",
+            description="Set or manage the persistent session goal.",
+            handler=service.command,
+            usage=(
+                "/goal | /goal [--token-budget <tokens>] <objective> | "
+                "/goal pause|resume|clear|complete <summary>|block <summary>"
+            ),
+            examples=(
+                "/goal Stabilize the C/S API",
+                "/goal pause",
+                "/goal complete Implementation, tests, and docs are complete",
+            ),
+            exclusive=False,
+        ))
+
+    def diagnostics(self) -> dict[str, object]:
         return {
             "status": "ready",
             "scope": "session",
-            "goal_statuses": sorted(_STATUSES),
+            "goal_statuses": sorted(GOAL_STATUSES),
             "automatic_continuation": True,
         }
 
 
 def _text_error(field: str, value: str | None) -> ToolResult | None:
-    value = value.strip() if isinstance(value, str) else ""
-    if not value:
+    text = value.strip() if isinstance(value, str) else ""
+    if not text:
         return ToolResult.failure(
-            f"invalid_{field}",
-            f"Goal {field} must not be empty",
+            f"invalid_{field}", f"Goal {field} must not be empty"
         )
-    if len(value) > _MAX_TEXT_CHARS:
+    if len(text) > _MAX_TEXT_CHARS:
         return ToolResult.failure(
             f"{field}_too_long",
             f"Goal {field} must not exceed {_MAX_TEXT_CHARS} characters",
@@ -314,39 +291,34 @@ def _text_error(field: str, value: str | None) -> ToolResult | None:
     return None
 
 
-def _valid_goal(goal: Any) -> bool:
-    budget = goal.get("token_budget") if isinstance(goal, dict) else None
-    return (
-        isinstance(goal, dict)
-        and isinstance(goal.get("objective"), str)
-        and bool(goal["objective"].strip())
-        and goal.get("status") in _STATUSES
-        and isinstance(goal.get("summary"), str)
-        and (
-            budget is None
-            or isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
-        )
+def _valid_budget(value: int | None) -> bool:
+    return value is None or type(value) is int and value > 0
+
+
+def _invalid_budget() -> ToolResult:
+    return ToolResult.failure(
+        "invalid_token_budget", "Goal token budget must be a positive integer"
     )
 
 
-def _format_goal(goal: dict[str, Any]) -> str:
-    lines = [f"[{goal['status']}] {goal['objective']}"]
-    if goal["token_budget"] is not None:
-        lines.append(f"Token budget: {goal['token_budget']}")
-    if goal["summary"]:
-        lines.append(f"Execution summary: {goal['summary']}")
+def _format_goal(goal: GoalSnapshot) -> str:
+    lines = [f"[{goal.status}] {goal.objective}"]
+    if goal.token_budget is not None:
+        lines.append(f"Token budget: {goal.token_budget}")
+    if goal.summary:
+        lines.append(f"Execution summary: {goal.summary}")
     return "\n".join(lines)
 
 
-def _goal_context(goal: dict[str, Any]) -> str:
-    context = {
-        "objective": goal["objective"],
-        "status": goal["status"],
+def _goal_context(goal: GoalSnapshot) -> str:
+    context: dict[str, object] = {
+        "objective": goal.objective,
+        "status": goal.status,
     }
-    if goal["token_budget"] is not None:
-        context["token_budget"] = goal["token_budget"]
-    if goal["summary"]:
-        context["summary"] = goal["summary"]
+    if goal.token_budget is not None:
+        context["token_budget"] = goal.token_budget
+    if goal.summary:
+        context["summary"] = goal.summary
     return json.dumps(context, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -385,8 +357,10 @@ def _parse_goal_command(raw_args: str) -> tuple[str, str | None, int | None]:
 def _command_result(result: ToolResult) -> CommandResult:
     return CommandResult(
         message=result.content,
-        status="ok" if result.status == "success" else "error"
+        status="ok" if result.status == "success" else "error",
     )
 
 
 plugin = GoalPlugin()
+
+__all__ = ["GoalPlugin", "GoalService"]

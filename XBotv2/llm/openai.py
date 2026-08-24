@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any, AsyncIterator, Callable
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import (
     ContentPart,
     ImagePart,
@@ -41,7 +42,7 @@ class OpenAICompatibleProvider(BaseProvider):
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
-        media_root: str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -54,7 +55,7 @@ class OpenAICompatibleProvider(BaseProvider):
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
             input_modalities=input_modalities,
-            media_root=media_root,
+            artifacts=artifacts,
         )
         kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
@@ -321,7 +322,7 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
 __all__ = ["OpenAICompatibleProvider"]
 
 
-def create_openai_provider(provider_config, model_config, *, media_root=None):
+def create_openai_provider(provider_config, model_config, *, artifacts=None):
     """Factory for the openai-compatible protocol route.
 
     ``provider_config`` is the adapter instance (endpoint + credentials);
@@ -355,7 +356,7 @@ def create_openai_provider(provider_config, model_config, *, media_root=None):
         max_retries=max_retries,
         retry_backoff_factor=retry_backoff_factor,
         input_modalities=model_config.input_modalities,
-        media_root=media_root,
+        artifacts=artifacts,
     )
 
 

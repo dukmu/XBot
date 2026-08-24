@@ -17,6 +17,7 @@ from XBotv2.application import (
     ClientEventsPort,
     RuntimeEvent,
 )
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.agentloop import EventContext, Events
@@ -158,7 +159,7 @@ class SessionRuntime:
         request_id: str,
         *,
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Deliver one user input.
 
@@ -430,7 +431,7 @@ async def _pump_turn(
     content: str | None,
     request_id: str,
     images: list[ImageContent] | None = None,
-    artifacts: list[dict[str, Any]] | None = None,
+    artifacts: list[ArtifactRef] | None = None,
 ) -> None:
     turn_stream = None
     try:
@@ -474,7 +475,7 @@ async def run_turn_stream(
     content: str | None,
     request_id: str = "",
     images: list[ImageContent] | None = None,
-    artifacts: list[dict[str, Any]] | None = None,
+    artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if runtime.turn_lock.locked():

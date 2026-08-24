@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.agentloop import EventContext, Events
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
     MAX_USER_INLINE_CHARS,
@@ -25,25 +26,25 @@ class ContentCacheService:
     def bound_context_messages(
         self,
         messages: list[Any],
-        state_store: Any,
+        artifacts: ArtifactStorePort,
         *,
         max_inline_chars: int = MAX_INLINE_CHARS,
     ) -> list[Any]:
         return bound_context_messages(
-            messages, state_store, max_inline_chars=max_inline_chars
+            messages, artifacts, max_inline_chars=max_inline_chars
         )
 
     def externalize_content(
         self,
         content: str,
-        state_store: Any,
+        artifacts: ArtifactStorePort,
         *,
         max_inline_chars: int = MAX_INLINE_CHARS,
         kind: str = "content",
     ) -> str:
         return externalize_content(
             content,
-            state_store,
+            artifacts,
             max_inline_chars=max_inline_chars,
             kind=kind,
         )
@@ -52,7 +53,7 @@ class ContentCacheService:
 class ContentCacheComponent:
     """Register the content cache service as ``ctx.content_cache``."""
 
-    inject = ["storage"]
+    inject = ["artifacts"]
     name = "xbot.content_cache"
 
     def apply(self, ctx: Any, config: Any = None) -> None:
@@ -65,7 +66,7 @@ class ContentCacheComponent:
                 return
             request.messages = service.bound_context_messages(
                 request.messages,
-                ctx.storage,
+                ctx.artifacts,
             )
 
         ctx.on(Events.MODEL_REQUEST_READY, bind_model_request)

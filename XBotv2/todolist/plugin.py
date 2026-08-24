@@ -1,18 +1,17 @@
-"""Thread-scoped todo list plugin."""
+"""Thread-scoped Todo state and tool projection."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import inspect
-from typing import Any
 
-from XBotv2.core import (
-    Tool,
-    ToolResult,
-)
-from xcore import S
+from xcore import Context
+from xcore.state import StateService
+
+from XBotv2.core import Tool, ToolResult
+from XBotv2.todolist.models import TodoSnapshot, TodoValidationError
 
 
-_STATUSES = {"pending", "in_progress", "completed"}
 _UPDATE_TODOS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -37,22 +36,19 @@ _UPDATE_TODOS_SCHEMA = {
 }
 
 
-class TodolistPlugin:
-    inject = ["tools", "storage"]
-    name = "todolist"
+class TodolistService:
+    """Own the typed Todo snapshot for one thread."""
 
-    def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        self.storage = ctx.storage
-        ctx.tools.register(
-            Tool(
-                name="update_todos",
-                description=inspect.getdoc(self.update_todos) or "",
-                function=self.update_todos,
-                parameters=_UPDATE_TODOS_SCHEMA,
-            ),
+    def __init__(self, store: StateService) -> None:
+        self._store = store
 
-        )
+    async def snapshot(self) -> TodoSnapshot:
+        stored = await self._store.get("snapshot")
+        if stored is None:
+            return TodoSnapshot()
+        if not isinstance(stored, Mapping):
+            raise TypeError("Persisted Todo snapshot must be an object")
+        return TodoSnapshot.from_dict(stored)
 
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
@@ -71,101 +67,55 @@ class TodolistPlugin:
             todos: Complete ordered checklist. Each item contains content and a
                 status: pending, in_progress, or completed.
         """
-        normalized = _normalize_todos(todos)
-        if isinstance(normalized, ToolResult):
-            return normalized
+        try:
+            requested = TodoSnapshot.from_items(todos)
+        except TodoValidationError as exc:
+            return ToolResult.failure(exc.code, str(exc))
 
-        in_progress = sum(
-            item["status"] == "in_progress" for item in normalized
-        )
-        unfinished = any(item["status"] != "completed" for item in normalized)
+        in_progress = sum(item.status == "in_progress" for item in requested.items)
+        unfinished = any(item.status != "completed" for item in requested.items)
         if unfinished and in_progress != 1:
             return ToolResult.failure(
                 "invalid_todo_progress",
                 "An unfinished Todo list must contain exactly one in_progress item",
             )
 
-        current = await self._read_items()
-        cleared = bool(normalized) and not unfinished
-        active = [] if cleared else normalized
+        current = await self.snapshot()
+        cleared = bool(requested.items) and not unfinished
+        active = TodoSnapshot(items=() if cleared else requested.items)
         changed = current != active
         if changed:
-            self.storage.set_plugin_state(self.name, {"items": active})
+            await self._store.set("snapshot", active.to_dict())
 
         if cleared:
             content = "All todos completed; the active checklist was cleared."
-        elif not active:
+        elif not active.items:
             content = "Todo list cleared." if changed else "Todo list is already empty."
         else:
             action = "updated" if changed else "unchanged"
             content = f"Todo list {action}."
             if not changed:
                 content += "\nDo not call update_todos again until the work changes."
-        return ToolResult.success(content)
-
-    async def _read_items(self) -> list[dict[str, str]]:
-        state = self.storage.get_plugin_state(self.name)
-        if not state:
-            return []
-        if not isinstance(state, dict) or not isinstance(state.get("items"), list):
-            raise ValueError("Todo list state is invalid")
-        items: list[dict[str, str]] = []
-        for item in state["items"]:
-            if not _valid_item(item):
-                raise ValueError("Todo list contains an invalid item")
-            items.append({
-                "content": item["content"],
-                "status": item["status"],
-            })
-        return items
-
-    def diagnostics(self) -> dict[str, Any]:
-        return {
-            "status": "ready",
-            "scope": "thread",
-            "tool": "update_todos",
-            "item_statuses": sorted(_STATUSES),
-        }
+        return ToolResult.success(content, data=active.projection())
 
 
-def _normalize_todos(value: Any) -> list[dict[str, str]] | ToolResult:
-    if not isinstance(value, list):
-        return ToolResult.failure("invalid_todos", "Todos must be a list")
-    normalized: list[dict[str, str]] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            return ToolResult.failure(
-                "invalid_todos",
-                f"Todo at index {index} must be an object",
-            )
-        if set(item) != {"content", "status"}:
-            return ToolResult.failure(
-                "invalid_todos",
-                f"Todo at index {index} must contain only content and status",
-            )
-        content = item.get("content")
-        status = item.get("status")
-        if not isinstance(content, str) or not content.strip():
-            return ToolResult.failure(
-                "invalid_todo",
-                f"Todo at index {index} must have non-empty content",
-            )
-        if status not in _STATUSES:
-            return ToolResult.failure(
-                "invalid_todo_status",
-                f"Todo at index {index} has an invalid status",
-            )
-        normalized.append({"content": content.strip(), "status": status})
-    return normalized
+class TodolistPlugin:
+    inject = ["tools", "state"]
+    name = "todolist"
 
-
-def _valid_item(item: Any) -> bool:
-    return (
-        isinstance(item, dict)
-        and isinstance(item.get("content"), str)
-        and bool(item["content"].strip())
-        and item.get("status") in _STATUSES
-    )
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        service = TodolistService(ctx.state.namespace(self.name))
+        ctx.set("todolist", service)
+        ctx.tools.register(
+            Tool(
+                name="update_todos",
+                description=inspect.getdoc(service.update_todos) or "",
+                function=service.update_todos,
+                parameters=_UPDATE_TODOS_SCHEMA,
+            ),
+        )
 
 
 plugin = TodolistPlugin()
+
+__all__ = ["TodolistPlugin", "TodolistService"]

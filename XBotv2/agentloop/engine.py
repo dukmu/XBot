@@ -39,6 +39,8 @@ from XBotv2.agentloop.contracts import (
     ModelRequest,
 )
 from XBotv2.agentloop.services import ToolsPort
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
     ImageContent,
     Message,
@@ -140,6 +142,8 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
         ),
         "status": message.status or "success",
     }
+    if message.data is not None:
+        data["data"] = message.data
     if message.error is not None:
         data["error"] = message.error
     if message.artifact:
@@ -191,7 +195,11 @@ class Engine:
         self.state = state
         self.settings = settings
         self.max_iterations = max_iterations
-        self.inbox = AgentInbox(record_splice=self._record_inbox_splice)
+        self.inbox = AgentInbox(
+            items=state.inbox_items,
+            sink=state.inbox_sink,
+            record_splice=self._record_inbox_splice,
+        )
         self.continuation: bool = False
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -199,12 +207,8 @@ class Engine:
         )
 
     @property
-    def messages(self) -> list[Message]:
+    def messages(self) -> ConversationHistory:
         return self.state.messages
-
-    @messages.setter
-    def messages(self, value: list[Message]) -> None:
-        self.state.messages = value
 
     @property
     def turn_count(self) -> int:
@@ -369,7 +373,7 @@ class Engine:
         *,
         request_id: str = "",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         await self.inbox.send(
             user_input,
@@ -465,6 +469,14 @@ class Engine:
                 )
         finally:
             try:
+                await self.inbox.reconcile(
+                    [item.message_id for item in claimed],
+                    {
+                        message.input_id
+                        for message in self.messages
+                        if message.input_id
+                    },
+                )
                 await self._publish_state_change()
             finally:
                 self.continuation = False
@@ -619,7 +631,7 @@ class Engine:
                 response_metadata=response_metadata,
                 additional_kwargs=response.additional_kwargs,
             )
-            self.messages.append(response_msg)
+            response_history = [*self.messages, response_msg]
             yield agentloop_event(
                 "assistant_message",
                 {
@@ -631,11 +643,15 @@ class Engine:
                 yield agentloop_event("usage", response_msg.usage_metadata)
 
             # ON_ASSISTANT_MESSAGE hook
-            am_ctx = self._make_event_context(agent_response=response
+            am_ctx = self._make_event_context(
+                history_messages=response_history,
+                agent_response=response,
             )
             await self._dispatch(Events.ASSISTANT_MESSAGE, am_ctx, short_circuit=False)
 
-            response_ctx = self._make_event_context(context_messages=context_messages,
+            response_ctx = self._make_event_context(
+                history_messages=response_history,
+                context_messages=context_messages,
                 agent_response=response,
                 model_request=model_request,
                 model_response=response,
@@ -645,9 +661,13 @@ class Engine:
             )
 
             # AFTER_AGENT hook
-            aa_ctx = self._make_event_context(agent_response=response)
+            aa_ctx = self._make_event_context(
+                history_messages=response_history,
+                agent_response=response,
+            )
             agent_result = await self._dispatch(Events.AFTER_AGENT, aa_ctx, short_circuit=True
             )
+            self.messages.append(response_msg)
             if agent_result is not None:
                 if isinstance(agent_result, dict):
                     if "messages" in agent_result:
@@ -793,12 +813,14 @@ class Engine:
         *,
         input_kind: str = "user_message",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        input_id: str = "",
     ) -> _TurnStartResult:
         accepted = await self._accept_user_message(
             user_input,
             images=images,
             artifacts=artifacts,
+            input_id=input_id,
             new_turn=True,
         )
         if not accepted.proceed:
@@ -818,7 +840,14 @@ class Engine:
             # A hook replaced the user input (e.g. the goal plugin injects the
             # active goal context on a continuation turn); reflect it in the
             # retained message so the model sees it on the next step.
-            self.messages[-1] = Message(role="user", content=str(turn_ctx.user_input))
+            previous = self.messages[-1]
+            self.state.history.replace_last(Message(
+                role="user",
+                content=str(turn_ctx.user_input),
+                input_id=previous.input_id,
+                images=previous.images,
+                artifact=previous.artifact,
+            ))
         accepted.events.append(agentloop_event(
             "turn_started",
             {"turn": self.turn_count},
@@ -847,13 +876,18 @@ class Engine:
             )
             events.extend(accepted.events)
             if not accepted.proceed:
+                await self.inbox.commit([
+                    claimed_item.message_id for claimed_item in claimed
+                ])
                 return _TurnStartResult(item.content, events, False)
         primary = claimed[primary_index]
         started = await self._start_turn(
             primary.content,
             images=primary.images,
             artifacts=primary.artifacts,
+            input_id=primary.message_id,
         )
+        await self.inbox.commit([item.message_id for item in claimed])
         started.events = [
             {
                 "type": "_inbox_claimed",
@@ -880,8 +914,6 @@ class Engine:
             short_circuit=True,
         )
         if isinstance(before_context_result, dict):
-            if "messages" in before_context_result:
-                self.messages = list(before_context_result["messages"])
             if "event" in before_context_result:
                 return _ContextBuildResult(
                     event=before_context_result["event"],
@@ -1214,6 +1246,7 @@ class Engine:
     def _make_event_context(
         self,
         *,
+        history_messages: list[Message] | None = None,
         user_input: str | None = None,
         context_messages: list[Message] | None = None,
         agent_response: ModelResponse | None = None,
@@ -1229,7 +1262,11 @@ class Engine:
     ) -> EventContext:
         return EventContext(
             request_id=self._request_id.get(),
-            messages=self.messages,
+            messages=(
+                history_messages
+                if history_messages is not None
+                else self.messages
+            ),
             settings=self.settings,
             continuation=self.continuation,
             session=self.session,
@@ -1258,9 +1295,11 @@ class Engine:
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
+                input_id=item.message_id,
             )
             if accepted.proceed:
                 accepted_ids.append(item.message_id)
+        await self.inbox.commit([item.message_id for item in items])
         return {
             "type": "_inbox_claimed",
             "data": {"message_ids": accepted_ids},
@@ -1271,7 +1310,8 @@ class Engine:
         user_input: str,
         *,
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        input_id: str = "",
         new_turn: bool = False,
     ) -> _TurnStartResult:
         accept_ctx = self._make_event_context(user_input=user_input,
@@ -1301,6 +1341,7 @@ class Engine:
         self.messages.append(Message(
             role="user",
             content=user_input,
+            input_id=input_id,
             images=list(images or []),
             artifact=list(artifacts or []),
         ))

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+from XBotv2.core.history import ConversationHistory
+from XBotv2.agentloop.inbox import InboxInput, InboxSink
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.tools import JsonObject, Tool
 from XBotv2.llm import ModelPort
 from XBotv2.session import SessionInfo
@@ -13,21 +16,49 @@ from XBotv2.session import SessionInfo
 DEFAULT_MAX_ITERATIONS = 200
 
 
-@dataclass(slots=True)
 class LoopState:
     """Mutable conversation state owned by the Agent loop."""
 
-    session: SessionInfo
-    messages: list[Message] = field(default_factory=list)
-    turn_count: int = 0
-    resumed: bool = False
-    metadata: JsonObject = field(default_factory=dict)
-    inbox_events: list[JsonObject] = field(default_factory=list)
-    media_root: str = ""
+    def __init__(
+        self,
+        session: SessionInfo,
+        messages: list[Message] | ConversationHistory | None = None,
+        turn_count: int = 0,
+        resumed: bool = False,
+        metadata: ThreadMetadata | JsonObject | None = None,
+        inbox_items: list[InboxInput] | None = None,
+        inbox_sink: InboxSink | None = None,
+    ) -> None:
+        self.session = session
+        self.history = (
+            messages
+            if isinstance(messages, ConversationHistory)
+            else ConversationHistory(messages or ())
+        )
+        self.turn_count = turn_count
+        self.resumed = resumed
+        self.metadata = ThreadMetadataState(
+            metadata
+            if isinstance(metadata, ThreadMetadata)
+            else ThreadMetadata.from_state(metadata or {})
+        )
+        self.inbox_items = list(inbox_items or [])
+        self.inbox_sink = inbox_sink
+
+    @property
+    def messages(self) -> ConversationHistory:
+        return self.history
+
+    def set_history(self, history: ConversationHistory) -> None:
+        self.history = history
+        self._update_turn_count()
 
     def replace_messages(self, messages: list[Message]) -> None:
-        self.messages = list(messages)
-        self.turn_count = sum(message.role == "user" for message in self.messages)
+        self.history.replace(messages)
+        self._update_turn_count()
+
+    def _update_turn_count(self) -> None:
+        self.turn_count = sum(message.role == "user" for message in self.history)
         self.session.turn_count = self.turn_count
 
 

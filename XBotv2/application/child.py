@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from XBotv2.application.services import ChildApplicationRequest
 from XBotv2.agents import AgentSessionResult, SubagentTurnError
-from XBotv2.core.paths import SessionPaths
+from XBotv2.persistence.models import ThreadLifecycleRecord
+from XBotv2.persistence import ThreadLifecycleWriterPort
 
 
 @dataclass(slots=True)
@@ -28,10 +26,10 @@ class ChildApplications:
     llm_override: Any
     parent_thread_id: str
     interactive: bool
-    session_paths: SessionPaths
     async def spawn(
         self,
         request: ChildApplicationRequest,
+        lifecycle: ThreadLifecycleWriterPort,
     ) -> "ChildApplicationSession":
         from XBotv2.application.app import start_application
 
@@ -56,8 +54,8 @@ class ChildApplications:
             prompt=request.prompt,
             agent=request.definition.name,
             thread_id=request.thread_id,
-            session_paths=self.session_paths,
             parent_thread_id=self.parent_thread_id,
+            lifecycle=lifecycle,
         )
         child.record_started()
         return child
@@ -71,8 +69,8 @@ class ChildApplicationSession:
     prompt: str
     agent: str
     thread_id: str
-    session_paths: SessionPaths
     parent_thread_id: str
+    lifecycle: ThreadLifecycleWriterPort
 
     def record_started(self) -> None:
         self._record("started")
@@ -127,22 +125,21 @@ class ChildApplicationSession:
             await self.context.destroy()
         return ""
 
-    def _record(self, event: str, *, error: str = "") -> None:
-        path = self.session_paths.threads_log
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "event": event,
-            "thread_id": self.thread_id,
-            "parent_thread_id": self.parent_thread_id,
-            "agent": self.agent,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if error:
-            record["error"] = error
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+    def _record(
+        self,
+        event: Literal["started", "completed", "failed", "cancelled"],
+        *,
+        error: str = "",
+    ) -> None:
+        self.lifecycle.append(
+            ThreadLifecycleRecord.create(
+                event,
+                thread_id=self.thread_id,
+                parent_thread_id=self.parent_thread_id,
+                agent=self.agent,
+                error=error,
+            )
+        )
 
 
 __all__ = ["ChildApplicationSession", "ChildApplications"]

@@ -20,7 +20,6 @@ class AgentLoopFactory:
             settings=options.settings,
             max_iterations=options.max_iterations,
         )
-        engine.inbox.restore(options.state.inbox_events)
         return engine
 
 

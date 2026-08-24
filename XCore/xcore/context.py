@@ -60,6 +60,7 @@ class Context:
         config: Any = None,
         parent: "Context | None" = None,
         data_dir: Path | str | None = None,
+        state_service: StateService | None = None,
     ) -> None:
         self._name = name
         self._config = config
@@ -77,12 +78,16 @@ class Context:
             self._default_labels: dict[str, object] = {}
             self._middleware: list[_MiddlewareRecord] = []
             self._middleware_seq = 0
-            self._state_service: StateService | None = None
+            self._state_service = state_service
             self._filters: list[Callable[[Any], bool]] = []
             self._isolate: dict[str, object] = {}
             self._fiber: RootFiber = RootFiber(self)
             self._install_internal_listener()
+            if state_service is not None:
+                self.set("state", state_service)
         else:
+            if state_service is not None:
+                raise ValueError("child contexts use the root state service")
             self._root = parent._root
             self._services = parent._services
             self._bus = parent._bus

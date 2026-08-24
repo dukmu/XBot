@@ -8,6 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from XBotv2.core.paths import RuntimePaths, ThreadPaths
+from XBotv2.core.artifacts import ArtifactKind
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -55,12 +56,7 @@ class RuntimeVariables(Mapping[str, str]):
             values["thread_dir"] = thread_dir
         if state_dir is not None:
             state_path = Path(state_dir)
-            values.update({
-                "state_dir": state_path,
-                "plugin_states": state_path / "plugin_states",
-                "artifacts": state_path / "artifacts",
-                "tool_results": state_path / "artifacts" / "tool_results",
-            })
+            values["state_dir"] = state_path
         return cls(values)
 
     @classmethod
@@ -70,13 +66,18 @@ class RuntimeVariables(Mapping[str, str]):
         workspace: Path | str,
         thread: ThreadPaths,
     ) -> "RuntimeVariables":
-        return cls.from_roots(
+        values = dict(cls.from_roots(
             workspace=workspace,
             data_dir=runtime.data_dir,
             session_dir=thread.session.root,
             thread_dir=thread.root,
             state_dir=thread.state_dir,
-        )
+        ))
+        values.update({
+            "artifacts": thread.artifacts_dir,
+            "tool_results": thread.artifact_dir(ArtifactKind.TOOL_RESULT),
+        })
+        return cls(values)
 
     def __getitem__(self, name: str) -> str:
         return self._values[name]

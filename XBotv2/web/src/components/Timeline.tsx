@@ -249,8 +249,15 @@ interface TodoItem {
 }
 
 function todoItems(tool: ToolEntry): TodoItem[] | null {
-  if (tool.name !== "update_todos" || !tool.args || typeof tool.args !== "object") return null;
-  const raw = (tool.args as Record<string, unknown>).todos;
+  if (tool.name !== "update_todos") return null;
+  const projection = tool.data && typeof tool.data === "object" && !Array.isArray(tool.data)
+    ? tool.data as Record<string, unknown>
+    : null;
+  const raw = projection?.kind === "todo_snapshot"
+    ? projection.items
+    : tool.args && typeof tool.args === "object"
+      ? (tool.args as Record<string, unknown>).todos
+      : null;
   if (!Array.isArray(raw)) return null;
   const items: TodoItem[] = [];
   for (const value of raw) {

@@ -32,9 +32,9 @@ the resulting core-state mutation for persistence observers.
   work, and known unknowns while distinguishing evidence from plans.
 - The summary becomes a system history message. The plugin runs
   `PRE_COMPACT` and `POST_COMPACT`, then publishes the typed session
-  `HISTORY_CHANGED` event; persistence appends a `history_checkpoint`
-  record. Earlier raw records remain available, while resume starts replay at
-  the latest checkpoint.
+  `HISTORY_CHANGED` event. It commits exactly one atomic
+  `ConversationHistory.replace()`; the persisted current history no longer
+  retains or replays the removed raw prefix.
 - The summary instruction explicitly requires preservation of human directives;
   the plugin does not append the same directives a second time after summarizing.
 - A cancelled summary propagates cancellation. A failed manual request reports
@@ -77,7 +77,7 @@ the same plugin. Only the Agent path enters Tool Hooks and permissions; it sets
 the manual-request flag for the next safe `BEFORE_CONTEXT` boundary. The plugin
 does not bypass the standard Tool guard pipeline. The human command acquires the
 session turn lock and immediately runs the same `BEFORE_CONTEXT`, `PRE_COMPACT`,
-`POST_COMPACT`, and `STATE_CHANGED` path without starting a model turn. If
+and `POST_COMPACT` path without starting a model turn. If
 another turn owns the lock, the command runs as soon as that turn ends.
 Automatic requests are evaluated at `BEFORE_MODEL_REQUEST`; a successful replacement
 causes Core to rebuild context before issuing any provider request.

@@ -330,6 +330,7 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
         return Message(
             role="tool",
             content=value.content,
+            data=value.data,
             tool_call_id=tool_call_id,
             status=value.status,
             artifact=list(value.artifacts),

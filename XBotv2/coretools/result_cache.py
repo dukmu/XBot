@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
 from typing import Any
 
+from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
 from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
     DISPLAY_CONTENT_KEY,
@@ -19,7 +18,7 @@ DEFAULT_TAIL_CHARS = 1000
 
 
 def make_tool_result_cache_hook(
-    state_store: Any,
+    artifacts: ArtifactStorePort,
     *,
     max_inline_chars: int = DEFAULT_MAX_INLINE_CHARS,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
@@ -34,51 +33,34 @@ def make_tool_result_cache_hook(
         if not ctx.tool_results:
             return None
 
-        cache_dir = Path(state_store.artifacts_dir) / "tool_results"
         for message in ctx.tool_results:
             candidate = _cache_candidate(message, max_inline_chars)
             if candidate is None:
                 continue
             content, suffix = candidate
 
-            cache_dir.mkdir(parents=True, exist_ok=True)
             tool_call_id = getattr(message, "tool_call_id", "tool")
-            name = _safe_name(tool_call_id)
-            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            path = cache_dir / f"{name}-{digest[:16]}.{suffix}"
-            if not path.exists():
-                path.write_text(content, encoding="utf-8")
-            cache_path = Path("session") / path.relative_to(Path(state_store.root))
+            stored = artifacts.put(
+                ArtifactKind.TOOL_RESULT,
+                content.encode("utf-8"),
+                media_type="application/json" if suffix == "json" else "text/plain",
+                name=f"{_safe_name(tool_call_id)}.{suffix}",
+                suffix=f".{suffix}",
+            )
+            cache_path = artifacts.model_path(stored)
             replacement = _format_cached_result(
                 content=content,
                 cache_path=cache_path,
                 max_inline_chars=max_inline_chars,
                 preview_chars=preview_chars,
+                sha256=stored.sha256,
             )
-            reference = {
-                "cached": True,
-                "cache_path": str(cache_path),
-                "original_chars": len(content),
-                "sha256": digest,
-            }
             message.content = replacement
             message.additional_kwargs[CACHED_CONTENT_KEY] = True
             message.additional_kwargs[DISPLAY_CONTENT_KEY] = (
                 f"Tool result cached at {cache_path} ({len(content)} characters)."
             )
-            artifact = {
-                "kind": "cached_tool_result",
-                "tool_call_id": tool_call_id,
-                **reference,
-                "inline_chars": len(replacement),
-            }
-            message.artifact = artifact
-
-            if hasattr(state_store, "append_event"):
-                state_store.append_event(
-                    "tool_result_cached",
-                    artifact,
-                )
+            message.artifact = [stored]
 
         return None
 
@@ -88,9 +70,10 @@ def make_tool_result_cache_hook(
 def _format_cached_result(
     *,
     content: str,
-    cache_path: Path,
+    cache_path: str,
     max_inline_chars: int,
     preview_chars: int,
+    sha256: str,
 ) -> str:
     preview_chars = max(0, min(preview_chars, len(content)))
     tail_chars = min(DEFAULT_TAIL_CHARS, preview_chars)
@@ -105,7 +88,7 @@ def _format_cached_result(
         omitted_chars=omitted,
         beginning=head,
         ending=tail,
-        sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        sha256=sha256,
         inline_limit_chars=max_inline_chars,
     )
 

@@ -22,7 +22,6 @@ from XBotv2.core import (
     estimate_request_tokens,
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
-from XBotv2.session import HISTORY_CHANGED
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
@@ -171,7 +170,7 @@ async def test_human_command_compacts_and_persists_immediately(
     plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext(plugin)
     original = history(3)
-    state_store.sync_messages(original)
+    state_store.history.replace(original)
     llm = MockLLM(responses=[{
         "content": "Earlier requirements.",
         "usage_metadata": {
@@ -195,13 +194,7 @@ async def test_human_command_compacts_and_persists_immediately(
     )
     setup.ctx.model.replace(llm)
     plugin.state = engine.state
-    engine.state.messages = list(original)
     engine.state.session.turn_count = 3
-    from XBotv2.persistence.plugin import PersistenceService
-
-    persistence = PersistenceService(state_store, engine.state)
-    setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
-    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
     await engine.start_session()
     runtime_events = []
 
@@ -214,20 +207,11 @@ async def test_human_command_compacts_and_persists_immediately(
 
     records = [
         json.loads(line)
-        for line in state_store.messages_path.read_text(encoding="utf-8").splitlines()
+        for line in state_store.history.path.read_text(encoding="utf-8").splitlines()
     ]
-    checkpoint = next(
-        record for record in records
-        if record.get("record_type") == "history_checkpoint"
-    )
-    assert checkpoint["reason"] == "compact:manual"
-    assert any(
-        any(
-            part.get("type") == "text"
-            and part.get("text") == "user 0 message"
-            for part in record.get("parts", [])
-        )
-        for record in records
+    assert all(record["schema_version"] == 1 for record in records)
+    assert "user 0 message" not in state_store.history.path.read_text(
+        encoding="utf-8"
     )
 
     assert result.status == "ok"
@@ -252,7 +236,7 @@ async def test_human_command_compacts_and_persists_immediately(
     assert llm.call_count == 1
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content
-    assert state_store.read_messages() == engine.messages
+    assert state_store.history.load() == engine.messages
 
 
 @pytest.mark.asyncio
@@ -454,7 +438,7 @@ async def test_compact_tool_rewrites_and_persists_history(
         setup.tool,
         namespace=setup.options.namespace,
     )
-    state_store.sync_messages(history(2))
+    state_store.history.replace(history(2))
     llm = MockLLM(responses=[
         {
             "content": "requesting compact",
@@ -477,16 +461,11 @@ async def test_compact_tool_rewrites_and_persists_history(
         config=RuntimeConfig(),
     )
     setup.ctx.model.replace(llm)
-    engine.state.messages = list(state_store.read_messages())
-    from XBotv2.persistence.plugin import PersistenceService
-
-    persistence = PersistenceService(state_store, engine.state)
-    setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
-    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
+    plugin.state = engine.state
     await engine.start_session()
 
     events = [event async for event in engine.run_turn("compact this history")]
-    persisted = state_store.read_messages()
+    persisted = state_store.history.load()
 
     assert llm.call_count == 3
     assert persisted[0].role == "system"
@@ -520,13 +499,7 @@ async def test_compact_tool_rewrites_and_persists_history(
         permission_system=PermissionSystem(default_decision="allow"),
         config=RuntimeConfig(),
     )
-    if state_store.has_existing_session():
-        messages = state_store.read_messages()
-        resumed.state.messages = messages
-        resumed.state.turn_count = sum(
-            1 for message in messages if message.role == "user"
-        )
-        resumed.state.resumed = True
+    resumed.state.resumed = True
     await resumed.start_session()
 
     assert resumed.messages == persisted
@@ -539,7 +512,7 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
 ):
     plugin = make_plugin({"keep_recent_turns": 1, "trigger_ratio": 0.5})
     setup = SetupContext(plugin)
-    state_store.sync_messages(history(3, content="x" * 5_000))
+    state_store.history.replace(history(3, content="x" * 5_000))
     llm = MockLLM(responses=[
         {"content": (
             "## Requirements\nPreserve the request.\n\n"
@@ -570,17 +543,13 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
         config=RuntimeConfig(max_context_tokens=10_000),
     )
     setup.ctx.model.replace(llm)
-    engine.state.messages = list(state_store.read_messages())
-    from XBotv2.persistence.plugin import PersistenceService
-
-    persistence = PersistenceService(state_store, engine.state)
-    setup.ctx.on(Events.STATE_CHANGED, persistence.state_changed)
-    setup.ctx.on(HISTORY_CHANGED, persistence.history_changed)
+    plugin.state = engine.state
     await engine.start_session()
 
     events = [event async for event in engine.run_turn("continue")]
 
     assert llm.call_count == 2
+    assert engine.messages.revision == 3
     assert any(event["type"] == "assistant_message" for event in events)
     assert engine.messages[0].role == "system"
     root = ET.fromstring(engine.messages[0].content)

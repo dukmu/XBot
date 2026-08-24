@@ -81,9 +81,9 @@ ambiguity before large implementation changes.
 - Keep caller-level contract tests for message, tool, and permission event
   families. `BEFORE_TOOLS` exposes parsed `tool_calls` and the originating
   `agent_response` directly.
-- Persistence events bracket changed-message checkpoints rather than every
-  save attempt. Normal completion no longer emits a duplicate unchanged
-  checkpoint, while tool batches retain immediate durability.
+- `ConversationHistory` owns append and replace operations. Its persistence
+  sink commits the current effective history before the in-memory projection
+  changes; runtime events do not double as persistence checkpoints.
 - Move direct runtime access out of event payloads only after equivalent
   plugin capabilities exist.
 - Engine turn orchestration delegates message admission, context building,
@@ -93,20 +93,20 @@ ambiguity before large implementation changes.
 
 ## 4. Plugin Lifecycle Model
 
-- Setup and runtime registrations now share one ownership record; duplicate
-  tool keys fail before mutation, and unload removes core resources even when a
-  plugin cleanup callback fails.
-- A plugin whose `on_load` fails now receives best-effort `on_unload`, allowing
-  partial external resources to be released before loader-wide rollback.
-- Failures after plugin loading but before bootstrap completes now trigger
-  `unload_all`, including failures from runtime-registering
-  `APPLICATION_INITIALIZED` listeners.
-- Normal session close now attempts close hooks, message persistence, and
-  reverse plugin unload even when an earlier close phase fails.
+- Setup and runtime registrations share one fiber ownership record; duplicate
+  Tool keys fail before mutation, and disposal removes owned effects even when
+  a plugin cleanup callback fails.
+- Plugin setup is the component's `apply()` lifecycle. XCore fibers own its
+  registered services, listeners, Tools, commands, and disposers; failed
+  activation and application destruction unwind those effects in reverse
+  ownership order without a second XBot lifecycle API.
+- Normal session close destroys the mounted application once. Conversation
+  mutations are already durable at their owning History/State/Inbox boundary,
+  so close does not run a second persistence flush.
 - Manifest `config_schema` and configured values now use Draft 2020-12
   validation before plugin import.
-- `PluginStore` now has immediate atomic persistence, uncached snapshot reads,
-  explicit YAML mapping validation, and documented unload persistence.
+- Recoverable plugin state uses the shared `StateService` and a plugin
+  namespace. Configuration remains startup input and is never a state file.
 - Runtime/dynamic tool registrations are tracked by the plugin and
   unregistered in its disposer so unload and rollback remain complete.
 - MCP initialization is idempotent and transactional per server. Optional
@@ -184,19 +184,23 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 - The plugin provides one atomic `update_todos` Tool; every call supplies the
   complete ordered checklist instead of per-item CRUD operations.
-- A single `PluginStore` value makes each changed list one immediate persisted
-  replacement. Resume retains only current active items.
+- A versioned `TodoSnapshot` in the plugin's shared `StateService` namespace
+  makes each changed list one immediate persisted replacement. Resume retains
+  the current active items.
 - Todo calls and results remain on the normal conversation path so the next
   model call sees the update confirmation. The plugin does not repeatedly
-  inject the active list. Real-provider loop behavior still requires
-  verification.
+  inject the active list. ToolResult carries a typed current-snapshot
+  projection used consistently by persisted history, WebUI, and TUI; HTTP
+  close/resume and completion clearing are covered with MockLLM.
 
 ### Goal
 
 - `/goal` owns human lifecycle control. Agent-facing `create_goal`, `get_goal`,
   and `update_goal` use structured schemas and the normal Tool runtime.
-- Active, complete, and blocked goals append concise non-persisted context;
-  completion retains its execution summary and explicitly prevents repetition.
+- A versioned `GoalSnapshot` in the Goal namespace retains objective, status,
+  summary, and optional token budget. Only continuation turns replace their
+  accepted input with the active Goal context; terminal state does not inject
+  context into unrelated turns.
 - Todo items remain concrete work tracking. Active Goal continuation uses the
   runtime-only continuation; ESC pauses it and resume does not restore it. Real-provider tool selection, internal permission baseline,
   restart recovery, context injection, and terminal retention are verified.

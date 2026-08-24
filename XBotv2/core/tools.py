@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin, get_type_hints
 
+from XBotv2.core.artifacts import ArtifactRef
+
 if TYPE_CHECKING:
     from XBotv2.core.messages import ImageContent
 
@@ -110,52 +112,43 @@ def json_object(value: Mapping[object, object]) -> JsonObject:
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError("JSON object keys must be strings")
-        result[key] = _json_value(item)
+        result[key] = json_value(item)
     return result
 
 
-def _json_value(value: object) -> JsonValue:
+def json_value(value: object) -> JsonValue:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
+        return [json_value(item) for item in value]
     if isinstance(value, Mapping):
         return json_object(value)
     raise TypeError(f"value must be JSON-compatible, got {type(value).__name__}")
 
 
 @dataclass(frozen=True)
-class ArtifactRef:
-    id: str
-    media_type: str = "application/octet-stream"
-    name: str = ""
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "id": self.id,
-            "media_type": self.media_type,
-            "name": self.name,
-        }
-
-
-@dataclass(frozen=True)
 class ToolResult:
     status: Literal["success", "error", "denied", "cancelled"] = "success"
     content: str = ""
+    data: JsonValue = None
     error: ToolError | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
     images: tuple["ImageContent", ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
     turn_complete: bool = False
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", json_value(self.data))
+
     @classmethod
     def success(
         cls,
         content: str = "",
         *,
+        data: JsonValue = None,
         images: tuple["ImageContent", ...] = (),
     ) -> "ToolResult":
-        return cls(content=content, images=images)
+        return cls(content=content, data=json_value(data), images=images)
 
     @classmethod
     def failure(
@@ -364,6 +357,7 @@ __all__ = [
     "ToolError",
     "ToolResult",
     "json_object",
+    "json_value",
     "tool_parameters_schema",
     "provider_tool_schema",
 ]

@@ -34,8 +34,11 @@ plugin implementations.
 | Symbol | Kind | Purpose |
 |---|---|---|
 | `ArtifactRef` | dataclass |  |
+| `ArtifactKind` | enum | Logical artifact category independent of filesystem layout. |
+| `ArtifactStorePort` | protocol | Typed artifact write, read, existence, and model-reference contract. |
 | `ClientEvent` | dataclass |  |
 | `ContentPart` | type alias |  |
+| `ConversationHistory` | class | Single owner of the effective conversation history. |
 | `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
 | `Operation` | dataclass | Typed XCore operation name and request/response contract. |
 | `OperationContext` | protocol | Narrow event-dispatch surface used by typed operations. |
@@ -44,6 +47,7 @@ plugin implementations.
 | `InputModality` | type alias |  |
 | `JsonObject` | type alias | JSON object carried by generic core envelopes. |
 | `JsonValue` | type alias |  |
+| `HistorySink` | protocol | Durable append/replace boundary used by ConversationHistory. |
 | `MESSAGE_FORMAT_KEY` | constant |  |
 | `Message` | dataclass |  |
 | `ModelChunk` | dataclass |  |
@@ -70,6 +74,8 @@ plugin implementations.
 | `estimate_request_tokens` | function |  |
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |
+| `json_object` | function | Validate and copy a JSON object. |
+| `json_value` | function | Validate and copy a JSON value. |
 
 ## Agents Declarations (`XBotv2.agents`)
 

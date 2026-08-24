@@ -10,7 +10,7 @@ from XBotv2.permissions.system import PermissionSystem
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.llm.mock import MockLLM
-from XBotv2.persistence.store import CoreStateStore
+from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.paths import RuntimePaths
 
 
@@ -56,14 +56,19 @@ def mock_llm():
 
 @pytest.fixture
 def state_store(temp_data_dir):
-    """CoreStateStore in temp directory."""
-    store = CoreStateStore.create(
+    """ThreadPersistence in a temporary data directory."""
+    store = ThreadPersistence.create(
         RuntimePaths.from_data_dir(temp_data_dir).session("test-session"),
         thread_id="test-thread",
         workspace_root=str(temp_data_dir),
         provider="default",
     )
     return store
+
+
+@pytest.fixture
+def artifact_store(state_store):
+    return state_store.artifacts
 
 
 @pytest.fixture

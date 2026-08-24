@@ -190,7 +190,6 @@ Each thread receives one immutable runtime-variable mapping:
 | `${session_dir}` | Shared session directory |
 | `${thread_dir}` | Current thread directory |
 | `${state_dir}` | Current thread state directory |
-| `${plugin_states}` | Plugin-state directory |
 | `${artifacts}` | Thread artifact directory |
 | `${tool_results}` | Cached Tool-result directory |
 

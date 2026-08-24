@@ -59,6 +59,8 @@ use `EventContext` as a universal business payload.
 ## Configuration and Tree
 
 Plugin objects may expose an XCore `Config` schema. Tree entries provide `id`,
-`name`, optional `profiles`, `disabled`/`reloadable`, and `config`. Schema
+`name`, optional `profiles`, `disabled`, and `config`. XBot does not expose a
+runtime reload contract: compose the complete tree before `Context.start()`
+and let each mounted component own its registered effects. Schema
 defaults are documentation/runtime validation concerns; do not assume a
 service or a hidden config default exists until the mounted context provides it.

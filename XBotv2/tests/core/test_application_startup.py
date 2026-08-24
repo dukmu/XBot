@@ -716,8 +716,8 @@ plugin = ConfiguredPlugin()
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        assert application.state_store.session_id == "test-session"
-        assert application.state_store.messages_path.exists()
+        assert application.thread_persistence.session_id == "test-session"
+        assert application.thread_persistence.paths.metadata_file.exists()
 
     @pytest.mark.asyncio
     async def test_application_startup_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
@@ -974,7 +974,7 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        session_id = application.state_store.session_id
+        session_id = application.thread_persistence.session_id
         assert session_id != "default"
         assert "-" in session_id
         assert (
@@ -1219,8 +1219,8 @@ class TestApplicationStartupNoPlugins:
             workspace_root=temp_workspace,
             llm_override=MockLLM(responses=[{"content": "in memory"}]),
         )
-        assert application.get("state_store", strict=False) is None
-        assert application.storage.root.is_dir()
+        assert application.get("thread_persistence", strict=False) is None
+        assert application.artifacts is not None
         events = [
             event async for event in application.engine.run_turn("hello")
         ]

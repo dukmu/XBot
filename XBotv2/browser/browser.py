@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from XBotv2.core import ArtifactRef, ToolResult
+from XBotv2.core import ArtifactKind, ArtifactStorePort, ToolResult
 
 from .network import UrlPolicy, network_available
 
@@ -49,12 +49,12 @@ class BrowserSession:
         self,
         *,
         policy: UrlPolicy,
-        artifacts_dir: Path,
+        artifacts: ArtifactStorePort,
         headless: bool,
         timeout_seconds: float,
     ) -> None:
         self.policy = policy
-        self.artifacts_dir = artifacts_dir
+        self.artifacts = artifacts
         self.headless = headless
         self.timeout_ms = int(timeout_seconds * 1000)
         self._playwright: Any = None
@@ -157,19 +157,22 @@ class BrowserSession:
     async def screenshot(self) -> ToolResult:
         if not self.active:
             return ToolResult.failure("browser_not_open", "Open a page first")
-        directory = self.artifacts_dir / "browser"
-        directory.mkdir(parents=True, exist_ok=True)
         name = f"screenshot-{time.time_ns()}.png"
-        path = directory / name
         try:
-            await self._page.screenshot(path=str(path), full_page=True)
+            payload = await self._page.screenshot(full_page=True)
         except Exception as exc:
             return ToolResult.failure("browser_screenshot_failed", f"Screenshot failed: {exc}")
-        relative = f"browser/{name}"
+        artifact = self.artifacts.put(
+            ArtifactKind.BROWSER,
+            payload,
+            media_type="image/png",
+            name=name,
+            suffix=".png",
+        )
+        model_path = self.artifacts.model_path(artifact)
         return ToolResult(
-            content=f"Screenshot saved to session/artifacts/{relative}",
-            data={"path": f"session/artifacts/{relative}", "url": self._page.url},
-            artifacts=(ArtifactRef(id=relative, media_type="image/png", name=name),),
+            content=f"Screenshot saved to {model_path}",
+            artifacts=(artifact,),
         )
 
     async def close(self) -> ToolResult:

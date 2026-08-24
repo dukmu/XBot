@@ -1,8 +1,6 @@
-"""Tests for CoreStateStore — plugin state and message persistence."""
+"""Tests for ThreadPersistence message persistence."""
 
-import pytest
-
-from XBotv2.persistence.store import CoreStateStore
+from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 
@@ -11,82 +9,28 @@ def _session_paths(data_dir, session_id="s1"):
     return RuntimePaths.from_data_dir(data_dir).session(session_id)
 
 
-class TestCoreStateStoreCreation:
+class TestThreadPersistenceCreation:
     """State store creation and directory layout."""
 
     def test_create_initializes_directories(self, temp_data_dir):
-        store = CoreStateStore.create(
+        store = ThreadPersistence.create(
             _session_paths(temp_data_dir),
             thread_id="t1", workspace_root="/workspace", provider="default"
         )
-        assert store.messages_path.exists()
-        assert store.plugin_states_dir.exists()
-        assert store.artifacts_dir.exists()
+        assert store.paths.state_dir.exists()
+        assert not store.history.path.exists()
+        assert not store.paths.artifacts_dir.exists()
 
     def test_threads_keep_independent_state(self, temp_data_dir):
         paths = _session_paths(temp_data_dir)
-        first = CoreStateStore.create(
+        first = ThreadPersistence.create(
             paths, thread_id="first", workspace_root="/workspace", provider="default"
         )
-        second = CoreStateStore.create(
+        second = ThreadPersistence.create(
             paths, thread_id="second", workspace_root="/workspace", provider="default"
         )
 
-        first.append_messages([Message(role="user", content="first thread")])
-        first.set_plugin_state("sample", {"thread": "first"})
-
-        assert second.read_messages() == []
-        assert second.get_plugin_state("sample") == {}
-        assert first.root == paths.threads_dir / "first" / "state"
-        assert second.root == paths.threads_dir / "second" / "state"
-        CoreStateStore.create(paths, thread_id="t1", workspace_root="/workspace", provider="default")
-
-
-class TestPluginState:
-    """Plugin state isolation."""
-
-    def test_get_plugin_state_defaults_empty(self, temp_data_dir):
-        store = CoreStateStore.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1", workspace_root="/workspace", provider="default"
-        )
-        assert store.get_plugin_state("nonexistent") == {}
-
-    def test_set_and_get_plugin_state(self, temp_data_dir):
-        store = CoreStateStore.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1", workspace_root="/workspace", provider="default"
-        )
-        store.set_plugin_state("test_plugin", {"key": "value", "count": 42})
-        assert store.get_plugin_state("test_plugin") == {"key": "value", "count": 42}
-
-    def test_delete_plugin_state(self, temp_data_dir):
-        store = CoreStateStore.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1", workspace_root="/workspace", provider="default"
-        )
-        store.set_plugin_state("test_plugin", {"key": "value"})
-        store.delete_plugin_state("test_plugin")
-        assert store.get_plugin_state("test_plugin") == {}
-
-    def test_plugin_state_isolation(self, temp_data_dir):
-        store = CoreStateStore.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1", workspace_root="/workspace", provider="default"
-        )
-        store.set_plugin_state("plugin_a", {"enabled": True})
-        store.set_plugin_state("plugin_b", {"enabled": False})
-        assert store.get_plugin_state("plugin_a") == {"enabled": True}
-        assert store.get_plugin_state("plugin_b") == {"enabled": False}
-
-    @pytest.mark.parametrize("name", ["", ".", "..", "../escape", "nested/name"])
-    def test_plugin_state_paths_reject_unsafe_names(self, temp_data_dir, name):
-        store = CoreStateStore.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1",
-            workspace_root="/workspace",
-            provider="default",
-        )
-
-        with pytest.raises(ValueError, match="Invalid plugin state name"):
-            store.set_plugin_state(name, {"value": True})
+        first.history.append([Message(role="user", content="first thread")])
+        assert second.history.load() == []
+        assert first.paths.state_dir == paths.threads_dir / "first" / "state"
+        assert second.paths.state_dir == paths.threads_dir / "second" / "state"

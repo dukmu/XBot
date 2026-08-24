@@ -13,12 +13,12 @@ from XBotv2.application.services import (
     ClientEventsPort,
     COLLECT_STATUS_SLOTS,
     LoopStateView,
-    MediaStoragePort,
     SessionHistoryPort,
     StatusSlots,
     UsageSnapshotPort,
 )
 from XBotv2.permissions import PermissionsPort
+from XBotv2.core.artifacts import ArtifactStorePort
 
 
 @dataclass(slots=True)
@@ -28,7 +28,7 @@ class MountedAgentApplication:
     _context: Context
     events: ApplicationEventsPort
     driver: AgentLoopDriverPort
-    media: MediaStoragePort
+    artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
     usage: UsageSnapshotPort
@@ -51,7 +51,7 @@ class MountedAgentApplication:
             context_window=self.driver.context_window,
             messages=tuple(self.driver.messages),
             usage=dict(self.usage.snapshot()),
-            metadata=dict(self.loop_state.metadata),
+            metadata=self.loop_state.metadata.value.to_state(),
             status_slots=await self.status_slots(),
         )
 
@@ -65,13 +65,13 @@ def mounted_application(context: Context) -> MountedAgentApplication:
         _context=context,
         events=context,
         driver=context.engine,
-        media=context.storage,
+        artifacts=context.artifacts,
         client_events=context.client_events,
         history=context.session,
         usage=context.usage,
         loop_state=context.loop_state,
         parent_permissions=context.permissions,
-        persistence_available=context.has("state_store"),
+        persistence_available=context.has("thread_persistence"),
     )
 
 

@@ -25,6 +25,13 @@ from XBotv2.coretools.filesystem import (
     write_file,
 )
 from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.core.paths import RuntimePaths
+
+
+def _artifact_store(tmp_path: Path) -> ArtifactStore:
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    return ArtifactStore(paths.session("test").thread("agent"))
 
 
 class TestReadImage:
@@ -45,13 +52,16 @@ class TestReadImage:
             def resolve_filesystem_args(self, _operation, args):
                 return args
 
-        result = await read(path=str(path), mode="media", sandbox=Sandbox())
+        artifacts = _artifact_store(tmp_path)
+        result = await read(
+            path=str(path), mode="media", sandbox=Sandbox(), artifacts=artifacts
+        )
 
         assert result.status == "success"
         assert len(result.images) == 1
         image = result.images[0]
         assert image.media_type == "image/png"
-        assert (tmp_path / "session" / image.path).read_bytes() == payload
+        assert artifacts.read(image.path) == payload
 
     @pytest.mark.asyncio
     async def test_read_image_accepts_base64_and_data_url(self, tmp_path):
@@ -66,12 +76,17 @@ class TestReadImage:
             enabled = False
             network = True
 
-        raw = await read(path="", mode="media", data=encoded, sandbox=Sandbox())
+        artifacts = _artifact_store(tmp_path)
+        raw = await read(
+            path="", mode="media", data=encoded,
+            sandbox=Sandbox(), artifacts=artifacts,
+        )
         data_url = await read(
             path="",
             mode="media",
             data=f"data:image/png;base64,{encoded}",
             sandbox=Sandbox(),
+            artifacts=artifacts,
         )
 
         assert raw.status == "success"
@@ -124,6 +139,7 @@ class TestReadImage:
             mode="media",
             url="https://example.com/cat.png",
             sandbox=Sandbox(),
+            artifacts=_artifact_store(tmp_path),
         )
 
         assert result.status == "success"

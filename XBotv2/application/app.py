@@ -18,6 +18,9 @@ from typing import Any
 from xcore import Context
 
 from XBotv2.application.boot import boot_application
+from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.application.host import mounted_application
@@ -74,7 +77,6 @@ async def start_application(
     session_preexisting = session_paths.root.exists()
     thread_preexisting = session_paths.has_thread(thread_id)
     thread_paths = session_paths.thread(thread_id)
-
     plugin_ctx: Context | None = None
 
     tree = load_agent_tree(
@@ -84,6 +86,24 @@ async def start_application(
         no_plugins=no_plugins,
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,
+    )
+    persistence_enabled = any(
+        entry.id == "persistence" and not entry.disabled for entry in tree.entries
+    )
+    thread_persistence = (
+        ThreadPersistence.create(
+            thread_paths,
+            thread_id=thread_id,
+            workspace_root=str(workspace_root),
+            provider=provider_name,
+        )
+        if persistence_enabled
+        else None
+    )
+    artifacts = (
+        thread_persistence.artifacts
+        if thread_persistence is not None
+        else ArtifactStore(thread_paths)
     )
 
     children = ChildApplications(
@@ -96,7 +116,6 @@ async def start_application(
         llm_override=llm_override,
         parent_thread_id=thread_id,
         interactive=interactive,
-        session_paths=session_paths,
     )
 
     agent_options = AgentCreateOptions(
@@ -126,11 +145,21 @@ async def start_application(
         ctx.set("parent_permissions", ParentPermissions(parent_permission_system))
         ctx.set("client_events", ClientEventRouter(parent=client_events))
         ctx.set("child_applications", children)
+        ctx.set("artifacts", artifacts)
+        if thread_persistence is not None:
+            ctx.set("thread_persistence", thread_persistence)
+        else:
+            ctx.set("thread_metadata", ThreadMetadataState())
 
     try:
         plugin_ctx = await boot_application(
             tree=tree,
-            data_dir=thread_paths.state_dir,
+            data_dir=thread_paths.plugin_state_dir,
+            state_service=(
+                thread_persistence.state
+                if thread_persistence is not None
+                else None
+            ),
             plugin_dirs=plugin_dirs,
             prepare=prepare,
         )

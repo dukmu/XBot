@@ -27,6 +27,7 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
             "tool_calls": [call.to_dict() for call in message.tool_calls or []],
             "tool_call_id": message.tool_call_id or "",
             "status": message.status or "",
+            "data": message.data,
             "images": [image.to_dict() for image in message.images],
             "artifacts": [
                 data

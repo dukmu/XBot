@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 from XBotv2.llm.config import ProviderConfig, parse_provider_config
 from XBotv2.core.providers import BaseProvider
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.llm.contracts import (
     ModelDescription,
@@ -132,7 +133,7 @@ class LlmService:
         model_config: Any = None,
         *,
         model: str | None = None,
-        media_root: str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> BaseProvider:
         """Create a provider client: protocol -> adapter instance -> model.
 
@@ -145,7 +146,7 @@ class LlmService:
         factory = self._factories.get(protocol)
         if factory is None:
             raise ValueError(f"Unknown protocol implementation: {protocol!r}")
-        return factory(provider_config, model_config, media_root=media_root)
+        return factory(provider_config, model_config, artifacts=artifacts)
 
 
 class ModelService:

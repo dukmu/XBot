@@ -2,13 +2,12 @@
 
 from XBotv2.tests.helpers import make_engine
 
-from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message, ReasoningPart
+from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.tools import ToolCall
 from XBotv2.content_cache.content_cache import (
     MAX_INLINE_CHARS,
@@ -25,7 +24,9 @@ from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
-def test_externalizes_provider_copy_without_mutating_history(state_store):
+def test_externalizes_provider_copy_without_mutating_history(
+    state_store, artifact_store
+):
     content = "begin:" + "a" * MAX_INLINE_CHARS + ":end"
     argument = "argument:" + "b" * MAX_INLINE_CHARS
     reasoning = "reasoning:" + "c" * MAX_INLINE_CHARS
@@ -36,7 +37,7 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
         reasoning=reasoning,
     )
 
-    bounded = bound_context_messages([message], state_store)[0]
+    bounded = bound_context_messages([message], artifact_store)[0]
 
     assert bounded is not message
     cached_values = [bounded.content, bounded.reasoning]
@@ -55,28 +56,30 @@ def test_externalizes_provider_copy_without_mutating_history(state_store):
     assert message.tool_calls[0].args["value"] == argument
     assert message.reasoning == reasoning
 
-    cached = sorted((Path(state_store.artifacts_dir) / "context").glob("*.txt"))
+    cached = sorted(
+        state_store.paths.artifact_dir(ArtifactKind.CONTEXT).glob("*.txt")
+    )
     assert {path.read_text(encoding="utf-8") for path in cached} == {
         content,
         reasoning,
     }
 
 
-def test_never_externalizes_tool_call_arguments(state_store):
+def test_never_externalizes_tool_call_arguments(state_store, artifact_store):
     argument = "argument:" + "b" * MAX_USER_INLINE_CHARS
     message = Message(
         role="assistant",
         tool_calls=[ToolCall("call-1", "filesystem_write", {"content": argument})],
     )
 
-    bounded = bound_context_messages([message], state_store)[0]
+    bounded = bound_context_messages([message], artifact_store)[0]
 
     assert bounded is message
     assert bounded.tool_calls[0].args["content"] == argument
-    assert not (Path(state_store.artifacts_dir) / "context").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.CONTEXT).exists()
 
 
-def test_preserves_provider_signed_reasoning(state_store):
+def test_preserves_provider_signed_reasoning(state_store, artifact_store):
     reasoning = "signed:" + "x" * MAX_INLINE_CHARS
     message = Message(
         role="assistant",
@@ -86,18 +89,22 @@ def test_preserves_provider_signed_reasoning(state_store):
         )],
     )
 
-    bounded = bound_context_messages([message], state_store)[0]
+    bounded = bound_context_messages([message], artifact_store)[0]
 
     assert bounded is message
     assert bounded.reasoning == reasoning
-    assert not (Path(state_store.artifacts_dir) / "context").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.CONTEXT).exists()
 
 
-def test_reuses_relative_content_cache_reference(state_store):
+def test_reuses_relative_content_cache_reference(state_store, artifact_store):
     content = "x" * (MAX_USER_INLINE_CHARS + 1)
 
-    first = bound_context_messages([Message(role="user", content=content)], state_store)
-    second = bound_context_messages([Message(role="user", content=content)], state_store)
+    first = bound_context_messages(
+        [Message(role="user", content=content)], artifact_store
+    )
+    second = bound_context_messages(
+        [Message(role="user", content=content)], artifact_store
+    )
 
     assert first[0].content == second[0].content
     cached = ET.fromstring(first[0].content)
@@ -105,12 +112,15 @@ def test_reuses_relative_content_cache_reference(state_store):
     assert cached.findtext("cache_path").strip().startswith(
         "session/artifacts/context/"
     )
-    assert len(list((Path(state_store.artifacts_dir) / "context").glob("*.txt"))) == 1
+    assert len(list(
+        state_store.paths.artifact_dir(ArtifactKind.CONTEXT).glob("*.txt")
+    )) == 1
 
 
 @pytest.mark.asyncio
 async def test_engine_keeps_large_current_user_input_until_user_threshold(
     state_store,
+    artifact_store,
     temp_workspace,
 ):
     user_input = "request:" + "z" * MAX_INLINE_CHARS
@@ -130,13 +140,10 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
     )
 
     from XBotv2.content_cache.plugin import ContentCacheComponent
-    from XBotv2.persistence.plugin import PersistenceService
 
     plugin_ctx = engine._events
-    plugin_ctx.set("storage", state_store)
+    plugin_ctx.set("artifacts", artifact_store)
     ContentCacheComponent().apply(plugin_ctx, None)
-    persistence = PersistenceService(state_store, engine.state)
-    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     events = [event async for event in engine.run_turn(user_input)]
 
@@ -147,13 +154,14 @@ async def test_engine_keeps_large_current_user_input_until_user_threshold(
     )
     assert provider_user.content == user_input
     assert engine.messages[0].content == user_input
-    assert state_store.read_messages()[0].content == user_input
+    assert state_store.history.load()[0].content == user_input
     assert any(event["type"] == "turn_finished" for event in events)
 
 
 @pytest.mark.asyncio
 async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     state_store,
+    artifact_store,
     temp_workspace,
 ):
     user_input = "request:" + "z" * MAX_USER_INLINE_CHARS
@@ -173,13 +181,10 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     )
 
     from XBotv2.content_cache.plugin import ContentCacheComponent
-    from XBotv2.persistence.plugin import PersistenceService
 
     plugin_ctx = engine._events
-    plugin_ctx.set("storage", state_store)
+    plugin_ctx.set("artifacts", artifact_store)
     ContentCacheComponent().apply(plugin_ctx, None)
-    persistence = PersistenceService(state_store, engine.state)
-    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
 
     _events = [event async for event in engine.run_turn(user_input)]
 
@@ -195,11 +200,11 @@ async def test_engine_externalizes_oversized_user_input_with_read_instructions(
     assert engine.messages[0].content == user_input
 
 
-def test_never_externalizes_the_complete_system_context(state_store):
+def test_never_externalizes_the_complete_system_context(artifact_store):
     content = "<xbot_context>" + "x" * MAX_USER_INLINE_CHARS + "</xbot_context>"
     message = Message(role="system", content=content)
 
-    bounded = bound_context_messages([message], state_store)[0]
+    bounded = bound_context_messages([message], artifact_store)[0]
 
     assert bounded is message
     assert bounded.content == content

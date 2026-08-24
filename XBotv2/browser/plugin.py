@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core import (
@@ -16,7 +15,7 @@ from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
 
 
 class BrowserPlugin:
-    inject = ['tools', 'session', 'sandbox', 'variables']
+    inject = ['tools', 'session', 'sandbox', 'artifacts']
     name = "browser"
     Config = S.object({
         "search": S.object({
@@ -42,7 +41,7 @@ class BrowserPlugin:
         self._browser_options = {"headless": True, "timeout_seconds": 30.0}
         self._web: WebAccess | None = None
         self._browser: BrowserSession | None = None
-        self._artifacts_dir = Path(".")
+        self._artifacts = None
 
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
@@ -57,7 +56,7 @@ class BrowserPlugin:
         self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
         self._browser_options.update(config.get("browser") or {})
         ctx.dispose(self._dispose)
-        self._artifacts_dir = Path(ctx.variables["artifacts"])
+        self._artifacts = ctx.artifacts
         for function in (
             self.web_search,
             self.web_fetch,
@@ -195,7 +194,7 @@ class BrowserPlugin:
         if self._browser is None:
             self._browser = BrowserSession(
                 policy=self._url_policy,
-                artifacts_dir=self._artifacts_dir,
+                artifacts=self._artifacts,
                 headless=bool(self._browser_options["headless"]),
                 timeout_seconds=float(self._browser_options["timeout_seconds"]),
             )

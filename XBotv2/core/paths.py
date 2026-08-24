@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from XBotv2.core.artifacts import ArtifactKind
+
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -82,14 +84,12 @@ class SessionPaths:
     def threads_log(self) -> Path:
         return self.root / "threads.jsonl"
 
-    def thread(self, thread_id: str, *, legacy: bool = False) -> ThreadPaths:
-        return ThreadPaths(self, _identifier("thread_id", thread_id), legacy)
+    def thread(self, thread_id: str) -> ThreadPaths:
+        return ThreadPaths(self, _identifier("thread_id", thread_id))
 
     def has_thread(self, thread_id: str) -> bool:
         thread = self.thread(thread_id)
-        return thread.state_dir.exists() or (
-            thread_id == "agent" and (self.root / "state").exists()
-        )
+        return thread.root.exists()
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +98,6 @@ class ThreadPaths:
 
     session: SessionPaths
     thread_id: str
-    legacy: bool = False
 
     @property
     def runtime(self) -> RuntimePaths:
@@ -110,8 +109,6 @@ class ThreadPaths:
 
     @property
     def root(self) -> Path:
-        if self.legacy:
-            return self.session.root
         return self.session.threads_dir / self.thread_id
 
     @property
@@ -123,20 +120,45 @@ class ThreadPaths:
         return self.state_dir / "messages.jsonl"
 
     @property
-    def usage_file(self) -> Path:
-        return self.state_dir / "usage.yaml"
+    def inbox_file(self) -> Path:
+        return self.state_dir / "inbox.json"
 
     @property
-    def plugin_states_dir(self) -> Path:
-        return self.state_dir / "plugin_states"
+    def plugin_state_dir(self) -> Path:
+        return self.state_dir / "plugin_state"
+
+    @property
+    def plugin_state_file(self) -> Path:
+        return self.plugin_state_dir / "state.json"
 
     @property
     def artifacts_dir(self) -> Path:
         return self.state_dir / "artifacts"
 
+    def artifact_dir(self, kind: ArtifactKind) -> Path:
+        return self.artifacts_dir / kind.value
+
+    def artifact_file(self, artifact_id: str) -> Path:
+        """Resolve one validated logical artifact id to its physical file."""
+        parts = artifact_id.split("/")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid artifact id: {artifact_id!r}")
+        category, filename = parts
+        try:
+            kind = ArtifactKind(category)
+        except ValueError as exc:
+            raise ValueError(f"Unknown artifact kind: {category!r}") from exc
+        if (
+            not filename
+            or filename in {".", ".."}
+            or Path(filename).name != filename
+        ):
+            raise ValueError(f"Invalid artifact file name: {filename!r}")
+        return self.artifact_dir(kind) / filename
+
     @property
     def metadata_file(self) -> Path:
-        return self.root / "thread.yaml"
+        return self.root / "thread.json"
 
 
 __all__ = ["RuntimePaths", "SessionPaths", "ThreadPaths"]

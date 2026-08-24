@@ -33,6 +33,7 @@ from XBotv2.jobs import (
     JobsPort,
     JobStatus,
 )
+from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.session import SessionPort
 from xcore import S
 
@@ -49,12 +50,14 @@ class SubagentLauncher:
         catalog: AgentCatalogPort,
         session: SessionPort,
         children: ChildApplicationsPort,
+        lifecycle: ThreadLifecycleWriterPort,
         parent_permissions: object,
         client_events: object | None,
     ) -> None:
         self._catalog = catalog
         self._session = session
         self._children = children
+        self._lifecycle = lifecycle
         self._parent_permissions = parent_permissions
         self._client_events = client_events
         self._active: list[AgentSession] = []
@@ -72,13 +75,16 @@ class SubagentLauncher:
             raise SubagentAgentError(f"Unknown subagent: {agent}")
         if not prompt.strip():
             raise SubagentAgentError("Subagent prompt cannot be empty")
-        child = await self._children.spawn(ChildApplicationRequest(
-            definition=definition,
-            thread_id=self._session.new_thread_id(definition.name),
-            prompt=prompt,
-            parent_permissions=self._parent_permissions,
-            client_events=self._client_events,
-        ))
+        child = await self._children.spawn(
+            ChildApplicationRequest(
+                definition=definition,
+                thread_id=self._session.new_thread_id(definition.name),
+                prompt=prompt,
+                parent_permissions=self._parent_permissions,
+                client_events=self._client_events,
+            ),
+            self._lifecycle,
+        )
         self._active.append(child)
         return child
 
@@ -126,16 +132,19 @@ class SubagentRunner:
 
 
 class SubagentsPlugin:
-    inject = [
-        "session",
-        "agent_catalog",
-        "child_applications",
-        "permissions",
-        "client_events",
-        "jobs",
-        "tools",
-        "prompts",
-    ]
+    inject = {
+        "required": [
+            "session",
+            "agent_catalog",
+            "child_applications",
+            "permissions",
+            "client_events",
+            "jobs",
+            "tools",
+            "prompts",
+        ],
+        "optional": ["thread_persistence"],
+    }
     """Register subagent job tools and their prompt catalog."""
 
     name = "agents.subagents"
@@ -149,14 +158,15 @@ class SubagentsPlugin:
     def apply(self, ctx, config=None) -> None:
         self.ctx = ctx
         self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
-        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
-        if ctx.session is None or ctx.jobs is None:
+        if not ctx.has("thread_persistence"):
             return
+        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
 
         launcher = SubagentLauncher(
             catalog=ctx.agent_catalog,
             session=ctx.session,
             children=ctx.child_applications,
+            lifecycle=ctx.thread_persistence.lifecycle,
             parent_permissions=ctx.permissions,
             client_events=ctx.client_events,
         )
@@ -290,6 +300,8 @@ class SubagentsPlugin:
                 )
             store = job.result.output_store if job.result is not None else None
             if store is None:
+                if job.error is not None:
+                    return ToolResult.failure(job.error.code, job.error.message)
                 return ToolResult.success("No response captured yet")
             chunk = await store.read(cursor=cursor, max_bytes=max_chars)
             return ToolResult.success(chunk.data)

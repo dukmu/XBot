@@ -37,7 +37,7 @@ from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.tools import ArtifactRef, Tool, ToolCall
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellRunner
 from XBotv2.agentloop.internal_messages import structure_tool_message
@@ -164,7 +164,7 @@ async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> No
     assert artifact["name"] == "sample.bin"
     assert not str(artifact["id"]).startswith("/")
     user = next(message for message in llm.get_call_messages(0) if message.role == "user")
-    assert user.artifact == [artifact]
+    assert [ref.to_dict() for ref in user.artifact] == [artifact]
 
 
 @pytest.mark.asyncio
@@ -528,6 +528,29 @@ async def client(http_app) -> AsyncIterator[httpx.AsyncClient]:
         yield ac
 
 
+@pytest_asyncio.fixture
+async def full_http_app(http_app):
+    """HTTP app whose Agent sessions include optional built-in plugins."""
+    server = await start_server_application(
+        provider_name="default",
+        paths=http_app.state.paths,
+        workspace_root=str(http_app.state.workspace_root),
+        no_plugins=False,
+    )
+    try:
+        yield server.server
+    finally:
+        await server.stop()
+
+
+@pytest_asyncio.fixture
+async def full_client(full_http_app) -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=full_http_app), base_url="http://test"
+    ) as ac:
+        yield ac
+
+
 @pytest.mark.asyncio
 async def test_http_health_returns_ok(client: httpx.AsyncClient) -> None:
     response = await client.get("/health")
@@ -699,6 +722,132 @@ async def test_http_session_exposes_independent_thread_resources(
 
 
 @pytest.mark.asyncio
+async def test_todo_and_usage_survive_http_close_resume(
+    full_client: httpx.AsyncClient,
+    full_http_app,
+) -> None:
+    client = full_client
+    set_llm_override(full_http_app, MockLLM(responses=[
+        {
+            "content": "Planning.",
+            "tool_calls": [{
+                "id": "todo-create",
+                "name": "update_todos",
+                "args": {"todos": [
+                    {"content": "implement", "status": "in_progress"},
+                    {"content": "verify", "status": "pending"},
+                ]},
+            }],
+            "usage_metadata": {"input_tokens": 10, "output_tokens": 2},
+        },
+        {
+            "content": "Plan saved.",
+            "usage_metadata": {"input_tokens": 12, "output_tokens": 3},
+        },
+        {
+            "content": "Finishing.",
+            "tool_calls": [{
+                "id": "todo-complete",
+                "name": "update_todos",
+                "args": {"todos": [
+                    {"content": "implement", "status": "completed"},
+                    {"content": "verify", "status": "completed"},
+                ]},
+            }],
+            "usage_metadata": {"input_tokens": 14, "output_tokens": 2},
+        },
+        {
+            "content": "Checklist complete.",
+            "usage_metadata": {"input_tokens": 16, "output_tokens": 3},
+        },
+    ]))
+    opened = await client.post(
+        "/sessions", json={"session_id": "todo-recovery", "thread_id": "main"}
+    )
+    assert opened.status_code == 200
+
+    first_turn = await client.post(
+        "/sessions/todo-recovery/threads/main/messages",
+        json={"content": "make a plan"},
+    )
+    assert first_turn.status_code == 200
+    active = (
+        await client.get("/sessions/todo-recovery/threads/main")
+    ).json()
+    assert {
+        key: active["usage"][key]
+        for key in (
+            "input_tokens", "output_tokens", "total_tokens",
+            "requests", "context_tokens",
+        )
+    } == {
+        "input_tokens": 22,
+        "output_tokens": 5,
+        "total_tokens": 27,
+        "requests": 2,
+        "context_tokens": 12,
+    }
+    messages = (
+        await client.get("/sessions/todo-recovery/threads/main/messages")
+    ).json()["messages"]
+    todo = next(
+        message["data"]
+        for message in messages
+        if message["role"] == "tool" and message["data"]
+    )
+    assert todo == {
+        "kind": "todo_snapshot",
+        "schema_version": 1,
+        "items": [
+            {"content": "implement", "status": "in_progress"},
+            {"content": "verify", "status": "pending"},
+        ],
+    }
+
+    closed = await client.post(
+        "/sessions/todo-recovery/threads/main/close"
+    )
+    assert closed.status_code == 200
+    inactive = (
+        await client.get("/sessions/todo-recovery/threads/main")
+    ).json()
+    assert inactive["status"] == "inactive"
+    assert inactive["usage"] == active["usage"]
+
+    resumed = await client.post(
+        "/sessions",
+        json={
+            "session_id": "todo-recovery",
+            "thread_id": "main",
+            "mode": "resume",
+        },
+    )
+    assert resumed.status_code == 200
+    assert any(
+        message["data"] == todo
+        for message in resumed.json()["history"]
+        if message["role"] == "tool"
+    )
+
+    second_turn = await client.post(
+        "/sessions/todo-recovery/threads/main/messages",
+        json={"content": "finish it"},
+    )
+    assert second_turn.status_code == 200
+    final_messages = (
+        await client.get("/sessions/todo-recovery/threads/main/messages")
+    ).json()["messages"]
+    projections = [
+        message["data"]
+        for message in final_messages
+        if message["role"] == "tool"
+        and isinstance(message["data"], dict)
+        and message["data"].get("kind") == "todo_snapshot"
+    ]
+    assert projections[-1]["items"] == []
+
+
+@pytest.mark.asyncio
 async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     manager = http_app.state.manager
     tmp = http_app.state.paths
@@ -855,7 +1004,7 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert ctx.application._context.tools._registry.get("edit") is None
         assert ctx.engine.settings.model == "explorer-model"
         assert ctx.engine.settings.context_window == 64000
-        assert ctx.application._context.state_store.read_thread_metadata()["agent"] == "Explorer"
+        assert ctx.application._context.thread_persistence.metadata.load().agent == "Explorer"
 
         child_only = await ac.put(
             "/sessions/switch-primary/threads/main/agent",
@@ -919,13 +1068,14 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
         tool_call_id="call-1",
         status="error",
         error={"code": "failed", "message": "bad input"},
-        artifact=[
-            {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
-        ],
+        artifact=[ArtifactRef(
+            id="attachments/artifact-1",
+            name="report.txt",
+            media_type="text/plain",
+        )],
     )
     structure_tool_message(tool_message, "sample")
     original.engine.messages.append(tool_message)
-    await original.application._context.persistence.flush()
 
     resumed = await client.post(
         "/sessions",
@@ -1272,21 +1422,27 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert any(
-        any(part.get("text") == "second" for part in record.get("parts", []))
+    assert not any(
+        any(part.get("text") == "second" for part in record["parts"])
         for record in source_records
     )
-    assert source_records[-1]["record_type"] == "history_undo"
-    (source.plugin_states_dir / "sample.yaml").write_text("value: kept\n")
-    (source.artifacts_dir / "cached.txt").write_text("cached")
+    assert all(record["schema_version"] == 1 for record in source_records)
+    source.plugin_state_dir.mkdir(exist_ok=True)
+    (source.plugin_state_dir / "state.json").write_text(
+        '{"sample.value": "kept"}\n'
+    )
+    source.artifact_file("context/cached.txt").parent.mkdir(parents=True)
+    source.artifact_file("context/cached.txt").write_text("cached")
     source_session.config_file.write_text("permissions: {}\n")
     forked = await client.post("/sessions/history/fork")
     fork_id = forked.json()["session_id"]
     fork_session = paths.session(fork_id)
     fork_paths = fork_session.thread("t")
 
-    assert (fork_paths.plugin_states_dir / "sample.yaml").read_text() == "value: kept\n"
-    assert (fork_paths.artifacts_dir / "cached.txt").read_text() == "cached"
+    assert (fork_paths.plugin_state_dir / "state.json").read_text() == (
+        '{"sample.value": "kept"}\n'
+    )
+    assert fork_paths.artifact_file("context/cached.txt").read_text() == "cached"
     assert fork_session.config_file.read_text() == "permissions: {}\n"
     assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
     resumed = await client.post(
@@ -1308,8 +1464,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert cleared_records[:len(source_records)] == source_records
-    assert cleared_records[-1]["record_type"] == "history_clear"
+    assert cleared_records == []
 
     await client.post("/sessions/history/close")
     inactive_fork = await client.post("/sessions/history/fork")

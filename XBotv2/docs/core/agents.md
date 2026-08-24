@@ -35,18 +35,17 @@ data/sessions/<session-id>/
 ├── config.yaml
 ├── threads.jsonl
 └── threads/<thread-id>/
-    ├── thread.yaml
+    ├── thread.json
     ├── state/messages.jsonl
-    ├── state/usage.yaml
-    ├── state/plugin_states/
+    ├── state/inbox.json
+    ├── state/plugin_state/state.json
     ├── state/artifacts/
-    └── session journal (messages.jsonl)
+    └── current effective history (messages.jsonl)
 ```
 
 Session policy is shared. Conversation history, usage, plugin state, cached
-artifacts are thread-local. Existing sessions with
-the legacy `state/` layout remain readable as the `agent` thread; new writes
-use the thread layout.
+artifacts are thread-local. Normal startup reads only the current thread layout;
+legacy layout conversion, when needed, is an explicit migration operation.
 
 ## Workspace Definitions
 
@@ -105,7 +104,7 @@ one-file regular expression.
 
 Select a `primary` or `all` definition with `xbot --agent <name>`. The HTTP
 session-open request exposes the same optional `agent` field. The selected name
-and resolved definition are written to `thread.yaml`, so resume keeps the same
+and resolved definition are written to strict `thread.json`, so resume keeps the same
 prompt, model settings, and tool policy even if the source Markdown later
 changes. `/agent list` reports available definitions and `/agent use <name>`
 switches the active Primary Agent for subsequent turns. The session, thread,

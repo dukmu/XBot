@@ -33,10 +33,10 @@ The plugin does not register per-item list, create, update, or remove Tools.
 
 ## Results And Completion
 
-Every result includes `todos` and `cleared` as structured Tool data. Repeating
-the current list is a no-op and tells the model to continue the work before
-calling the Tool again. When every supplied item is completed, the result
-carries the final completed list and the active stored checklist is cleared.
+Every successful result includes a versioned `todo_snapshot` as structured Tool
+data. Repeating the current list is a no-op and tells the model to continue the
+work before calling the Tool again. When every supplied item is completed, the
+stored and projected current snapshot is empty.
 Clients receive this through the existing `tool_result` protocol event; Todo
 does not add a plugin-specific wire event.
 
@@ -47,12 +47,12 @@ the result remains visible to the next model call so the model knows that its
 update succeeded. The plugin does not rewrite provider context or repeatedly
 inject the active list as a system message.
 
-The plugin stores only the ordered active item list in
-`state/plugin_states/todolist.yaml`. Old ID-based state is read without exposing
-or continuing its identifiers. A changed list performs one immediate plugin
-state write, so thread resume observes the same checklist. Unloading removes
-the Tool while retaining its state. Todo data is not written into core
-`state.json`.
+The plugin stores one strict `TodoSnapshot` through
+`ctx.state.namespace("todolist")`. It never selects a filename or writes the
+plugin-state directory directly. A changed list performs one atomic state
+write, so thread resume observes the same checklist. The same structured
+snapshot is persisted on the normal Tool-result message and drives WebUI/TUI
+live and restored rendering; clients do not infer current state from Tool args.
 
 Todo items track concrete work. They do not own the durable session objective;
 that belongs to the separate Goal plugin.

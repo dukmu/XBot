@@ -116,8 +116,10 @@ class StateService:
         full_key = self._full_key(key)
         async with self._shared.lock:
             data = await self._ensure_loaded()
-            data[full_key] = value
-            await self._persist(data)
+            updated = copy.deepcopy(data)
+            updated[full_key] = copy.deepcopy(value)
+            await self._persist(updated)
+            self._shared.data = updated
 
     async def delete(self, key: str) -> None:
         """Remove one key and persist immediately (no-op when absent)."""
@@ -125,20 +127,24 @@ class StateService:
         async with self._shared.lock:
             data = await self._ensure_loaded()
             if full_key in data:
-                del data[full_key]
-                await self._persist(data)
+                updated = copy.deepcopy(data)
+                del updated[full_key]
+                await self._persist(updated)
+                self._shared.data = updated
 
     async def clear(self) -> None:
         """Remove every key in this view's namespace and persist."""
         async with self._shared.lock:
             data = await self._ensure_loaded()
+            updated = copy.deepcopy(data)
             if self._prefix:
-                affected = [k for k in data if k.startswith(self._prefix)]
+                affected = [k for k in updated if k.startswith(self._prefix)]
                 for key in affected:
-                    del data[key]
+                    del updated[key]
             else:
-                data.clear()
-            await self._persist(data)
+                updated.clear()
+            await self._persist(updated)
+            self._shared.data = updated
 
     async def keys(self) -> list[str]:
         """Snapshot of the keys visible in this view (unprefixed)."""

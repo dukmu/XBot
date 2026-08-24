@@ -598,6 +598,13 @@ def _tool_argument_summary(tool: TuiTool) -> str:
 
 def tool_detail(tool: TuiTool) -> str:
     parts: list[str] = []
+    todo = _todo_projection(tool)
+    if todo is not None:
+        parts.append("plan:\n" + "\n".join(
+            f"  {_todo_marker(str(item.get('status') or ''))} "
+            f"{str(item.get('content') or '')}"
+            for item in todo
+        ))
     if tool.args_finalized and tool.args:
         parts.append(f"args: {format_value(tool.args, indent=2)}")
     elif tool.args_finalized and tool.args_streaming:
@@ -617,6 +624,24 @@ def tool_detail(tool: TuiTool) -> str:
     if tool.images:
         parts.append(f"images: {format_value(tool.images, indent=2)}")
     return "\n".join(parts)
+
+
+def _todo_projection(tool: TuiTool) -> list[dict[str, object]] | None:
+    data = tool.data
+    if not isinstance(data, dict) or data.get("kind") != "todo_snapshot":
+        return None
+    items = data.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return None
+    return items
+
+
+def _todo_marker(status: str) -> str:
+    if status == "completed":
+        return "[x]"
+    if status == "in_progress":
+        return "[>]"
+    return "[ ]"
 
 
 def entry_widget(kind: str, title: str, body: str, *, reasoning: str = "") -> Vertical:

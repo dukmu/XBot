@@ -10,6 +10,7 @@ from typing import Any
 
 import xcore
 from xcore import Context
+from xcore.state import StateService
 
 from XBotv2.loader import PluginTree
 from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
@@ -19,6 +20,7 @@ async def boot_application(
     *,
     tree: PluginTree,
     data_dir: Path,
+    state_service: StateService | None = None,
     plugin_dirs: list[Path | str] | None = None,
     prepare: Callable[[Context], Any] | None = None,
 ) -> Context:
@@ -30,7 +32,8 @@ async def boot_application(
             sys.path.insert(0, str(root))
             import_paths.append(str(root))
 
-    ctx = xcore.Context(data_dir=data_dir)
+    ctx = xcore.Context(data_dir=data_dir, state_service=state_service)
+    _ = ctx.state
     def release_import_paths() -> None:
         for path in reversed(import_paths):
             try:

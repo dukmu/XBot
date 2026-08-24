@@ -62,9 +62,9 @@ flowchart TB
     end
 
     subgraph PersistenceLayer["Persistence"]
-        STORAGE["ThreadStorage (core/filesystem/)<br/>artifacts · plugin state"]
-        STORE["CoreStateStore (persistence/store.py)"]
-        JRNL["messages.jsonl (append-only)"]
+        STORAGE["ArtifactStore · StateService"]
+        STORE["ThreadPersistence<br/>history · metadata · inbox · lifecycle"]
+        JRNL["messages.jsonl (effective history)"]
     end
 
     subgraph PluginsLayer["Plugins ()"]
@@ -126,7 +126,7 @@ Configuration:
 XBotv2/xcore.yaml                # bundled default plugin tree (single document)
 <data_dir>/config/plugins.yaml   # global user tree overlay (seeded on first run)
 <data_dir>/config/config.yaml    # runtime Agent settings/policy
-<data_dir>/sessions/<session-id>/threads/<thread>/thread.yaml
+<data_dir>/sessions/<session-id>/threads/<thread>/thread.json
 <workspace_root>/AGENTS.md       # read for each model context build
 <workspace_root>/.agents/*.md    # workspace Agent definitions (discovered by workspace_instructions)
 <workspace_root>/.xbot/plugins.yaml
@@ -154,12 +154,14 @@ factory. The LLM plugin owns the mutable `ctx.model` binding; Engine and
 auxiliary model capabilities consume that port, while `ctx.llm` remains the
 provider route directory.
 
-The session service creates thread paths, the Agentloop-owned `LoopState`, and the neutral
-`ThreadStorage` used for artifacts and plugin-local files. Message persistence
-is a separate optional projection: it hydrates `LoopState` when mounted and
-observes state changes, but sandbox, caches, tools, uploads, and usage do not
-depend on it. The default application mounts persistence; a profile may disable
-it for an in-memory conversation without disabling other capabilities.
+The application composition root creates one typed `ThreadPersistence` when
+persistence is enabled. It groups history, state, artifacts, metadata, inbox,
+and lifecycle ports and shares its single `StateService` instance with XCore.
+The session service creates the Agentloop-owned `LoopState`; the persistence
+component hydrates `ConversationHistory`, pending inbox input, and typed thread
+metadata before Agent construction. A profile may disable message persistence;
+that profile receives an in-memory metadata state and an independent
+ArtifactStore without publishing the `thread_persistence` capability.
 
 ## Core Components
 
@@ -178,9 +180,9 @@ orchestrator and never cross the C/S event boundary.
 
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, and `ON_STOP_FAILURE`. Compact owns
-its own `PRE_COMPACT`/`POST_COMPACT` transaction and publishes the typed
-session `HISTORY_CHANGED` event; persistence observes both history mutations
-and the agent loop's neutral `STATE_CHANGED` commits.
+its own `PRE_COMPACT`/`POST_COMPACT` transaction and is the only caller of
+`ConversationHistory.replace()`. Engine only appends accepted conversation
+messages; Session owns undo and clear.
 
 ### Tool System (`agentloop/tool_*.py`)
 
@@ -302,12 +304,12 @@ system messages.
 Observes context pressure and uses its injected LLM service to summarize a
 completed history prefix. It owns pre/post bracketing and core-history
 replacement, then publishes session-owned `HISTORY_CHANGED`; persistence
-independently records the checkpoint.
+stores exactly the resulting effective history.
 
 ### TodolistPlugin (`todolist/`)
 
 Provides one atomic `update_todos` Tool that replaces the complete ordered
-checklist after validation. Its thread-local `plugin_states/todolist.yaml` file
+checklist after validation. Its `ctx.state.namespace("todolist")` snapshot
 holds the active items; Tool calls and results use the normal conversation path
 without a repeated context event. It does not infer state from conversation
 text or duplicate goal ownership.
@@ -441,22 +443,24 @@ data/sessions/<sid>/
 ├── config.yaml             # session configuration and approvals
 ├── threads.jsonl           # parent/child Agent lifecycle journal
 └── threads/<thread-id>/
-    ├── thread.yaml         # selected Agent, Provider, and parent thread
+    ├── thread.json         # strict ThreadMetadata
     └── state/
-        ├── messages.jsonl  # append-only Messages and history operations
-        ├── usage.yaml      # thread-local provider usage
-        ├── plugin_states/  # thread-local per-plugin YAML state
-        └── artifacts/      # cached tool outputs and provider context
+        ├── messages.jsonl  # current effective MessageRecords only
+        ├── inbox.json      # pending InboxSnapshot
+        ├── plugin_state/
+        │   └── state.json  # namespaced Goal/Todo/Usage/plugin state
+        └── artifacts/      # content-addressed typed artifacts
 ```
 
-No `events.jsonl` or `state.yaml`. `CoreStateStore` appends normal Messages,
-Compact checkpoints, Undo/Clear stack operations, and Mailbox delivery records.
-`read_messages()` materializes current provider history from the last checkpoint
-forward without rewriting or deleting prior interaction records.
+`ThreadPersistence` is the composition boundary. `messages.jsonl` contains only
+the current effective history: normal turns append records, while Compact,
+Undo, and Clear atomically replace it. It contains no checkpoints, stack
+operations, runtime events, inbox payloads, or artifact bytes. Pending input is
+stored once in `inbox.json` until its stable `input_id` is committed to history.
 Each Message record stores one ordered `parts` list containing text, reasoning,
 image references, and Tool calls. Derived `content` and `tool_calls` fields are
-not duplicated in the journal. Image bytes live once under
-`artifacts/media/`; history stores only the session-relative reference.
+not duplicated. Image and attachment bytes live once in ArtifactStore; history
+stores only typed references.
 
 ## Streaming & Reasoning
 

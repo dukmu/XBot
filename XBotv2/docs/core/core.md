@@ -159,29 +159,24 @@ No rewrite event can bypass the monotonic guard pipeline.
 
 ```
 data/sessions/<sid>/threads/<thread-id>/state/
-├── messages.jsonl          # append-only messages and history operations
-├── usage.yaml              # provider usage for this thread
-├── plugin_states/          # per-plugin YAML files for this thread
-└── artifacts/              # cached large tool outputs and provider context
+├── messages.jsonl          # current effective MessageRecords
+├── inbox.json              # pending InboxSnapshot
+├── plugin_state/state.json # StateService namespaces, including Usage/Todo
+└── artifacts/              # typed content-addressed artifacts
 ```
 
-`CoreStateStore` (`persistence/store.py`):
-- `sync_messages()`: append normal message extensions
-- `append_checkpoint()`: append a Compact or explicit replacement baseline
-- `append_undo()` / `append_clear()`: append replayable stack operations
-- `read_messages()`: replay the latest checkpoint, later messages, Undo, and Clear
-- `has_existing_session()`: session resume detection
-- `_max_msg_id` cached to avoid O(n) scan
-
-Old message-only files remain readable. No operation removes earlier JSONL
-records; Compact replay starts at the last checkpoint for bounded reconstruction.
-There is no separate `events.jsonl` or `state.yaml`.
+`ThreadPersistence` groups strict history, StateService, ArtifactStore,
+ThreadMetadata, InboxSnapshot, and lifecycle ports. `ConversationHistory` is
+the only owner of effective message mutation: append is durable before visible,
+and replace atomically rewrites the effective history for Compact, Undo, or
+Clear. Normal startup does not probe or replay legacy layouts.
 
 `SessionRuntime` (`session/runtime.py`) owns transport waiters and event
-streams. The session service creates the Agentloop-owned `LoopState`; Engine owns the agent inbox
-and consumes that state but never a plugin service container. Persistence may
-hydrate the state and observes `STATE_CHANGED`; inbox splices are restored
-through `LoopState`. Interaction waiters remain runtime-only.
+streams. The session service creates the Agentloop-owned `LoopState`; Engine owns
+the agent inbox and consumes that state but never a plugin service container.
+Persistence hydrates `ConversationHistory` and reconciles pending inputs by
+stable `input_id`; runtime splice events are not a persistence journal.
+Interaction waiters remain runtime-only.
 
 ## Context Builder (`context_builder/contracts.py`)
 

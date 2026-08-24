@@ -11,14 +11,13 @@ from typing import Any
 
 from XBotv2.agentloop import LoopState
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.core.filesystem.storage import ThreadStorage
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
 from XBotv2.session.types import SessionInfo
 
 
 class SessionComponent:
-    inject = ["runtime_paths", "session_launch", "commands"]
+    inject = ["runtime_paths", "session_launch", "commands", "artifacts"]
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
@@ -32,14 +31,7 @@ class SessionComponent:
         workspace_root = launch.workspace_root
         session_paths = launch.session_paths
 
-        thread_paths = session_paths.thread(
-            thread_id,
-            legacy=(
-                thread_id == "agent"
-                and (session_paths.root / "state").exists()
-                and not session_paths.thread(thread_id).state_dir.exists()
-            ),
-        )
+        thread_paths = session_paths.thread(thread_id)
         data_root = paths.data_dir
         variables = RuntimeVariables.for_thread(
             paths, workspace_root, thread_paths
@@ -51,12 +43,8 @@ class SessionComponent:
                 workspace_root=str(workspace_root),
                 provider="default",
             ),
-            media_root=str(thread_paths.state_dir),
         )
-        storage = ThreadStorage.create(
-            thread_paths,
-            workspace_root=str(workspace_root),
-        )
+        artifacts = ctx.artifacts
         session = Session(
             ctx=ctx,
             session_id=session_id,
@@ -75,7 +63,6 @@ class SessionComponent:
         ctx.set("variables", variables)
         ctx.set("thread_paths", thread_paths)
         ctx.set("loop_state", state)
-        ctx.set("storage", storage)
         for command in build_session_commands(session):
             ctx.commands.register(command)
 

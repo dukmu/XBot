@@ -9,24 +9,25 @@ internals directly.
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
+
+from XBotv2.core.paths import SessionPaths
+from XBotv2.persistence.store import ThreadPersistence
 
 
-def state_store_factory(
-    session_paths: Any,
+def thread_persistence_factory(
+    session_paths: SessionPaths,
     *,
     thread_id: str = "",
     workspace_root: str = "",
     provider: str = "",
-) -> Any:
-    """Construct a :class:`CoreStateStore` reader for a persisted thread.
+) -> ThreadPersistence:
+    """Construct a :class:`ThreadPersistence` reader for a persisted thread.
 
     ``session_paths`` is a ``SessionPaths`` object from
     ``RuntimePaths.session(session_id)``.
     """
-    from XBotv2.persistence.store import CoreStateStore
-
-    return CoreStateStore(
+    return ThreadPersistence.open(
         session_paths,
         thread_id=thread_id,
         workspace_root=workspace_root,
@@ -35,12 +36,12 @@ def state_store_factory(
 
 
 class PersistenceHost:
-    """Provides ``ctx.state_store_factory`` in the server composition root."""
+    """Provide inactive-thread persistence readers to session management."""
 
     name = "xbot.persistence.host"
 
-    def apply(self, ctx, config=None) -> None:
-        ctx.set("state_store_factory", state_store_factory)
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        ctx.set("thread_persistence_factory", thread_persistence_factory)
 
 
 plugin = PersistenceHost()
